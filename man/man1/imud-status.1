@@ -1,0 +1,53 @@
+.TH IMUD\-STATUS 1 "May 2026" "imud 1.0" "User Commands"
+.SH NAME
+imud\-status \- query imud daemon health and sensor status
+.SH SYNOPSIS
+.B imud-status
+[\fB\-\-socket\fR \fIPATH\fR]
+.SH DESCRIPTION
+.B imud-status
+connects to the running
+.BR imud (8)
+daemon over a Unix domain socket, requests a status snapshot, and prints a
+formatted summary to stdout.
+.PP
+The summary includes:
+.PP
+.RS 4
+\(bu\ \ IMU and magnetometer driver names and sample rates
+.br
+\(bu\ \ MEKF convergence state
+.br
+\(bu\ \ Calibration flags (gyro, accel, magnetometer)
+.br
+\(bu\ \ Output stream status (NMEA, high-rate, JSON)
+.br
+\(bu\ \ Current heading, pitch, and roll
+.br
+\(bu\ \ Declination and true heading (when available)
+.RE
+.PP
+Exits immediately after printing one snapshot.
+For a continuous live display use
+.BR imud-mon (1).
+.SH OPTIONS
+.TP
+.BI \-\-socket \ PATH
+Connect to the daemon's Unix socket at
+.I PATH
+instead of the default
+.IR /run/imud/status.sock .
+.SH EXIT STATUS
+.B 0
+on success,
+.B 1
+if the daemon is not reachable.
+.SH EXAMPLES
+.EX
+imud-status
+.EE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-mon (1)
+.SH AUTHORS
+Richard Simpson

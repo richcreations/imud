@@ -1,0 +1,101 @@
+.TH IMUD\-MON 1 "May 2026" "imud 1.0" "User Commands"
+.SH NAME
+imud\-mon \- live monitor for imud output streams
+.SH SYNOPSIS
+.B imud-mon
+[\fB\-\-config\fR \fIPATH\fR]
+[\fBnmea\fR]
+[\fBjson\fR]
+[\fBbinary\fR]
+.SH DESCRIPTION
+.B imud-mon
+listens on the UDP ports configured for
+.BR imud (8)
+and prints a live, updating display of the received data.
+The display refreshes once per second.
+.PP
+By default all three streams are monitored simultaneously.
+Pass one or more stream names as arguments to restrict to those streams.
+.PP
+Each stream section shows:
+.PP
+.RS 4
+.TP
+.B NMEA
+Heading, pitch, roll, and rate of turn parsed from
+.BR $PASHR ,
+true heading from
+.B $HCHDT
+(when available), and the last received sentence.
+.TP
+.B JSON
+Heading, pitch, roll, rate of turn, quaternion, gyro bias, covariance,
+and true heading (when
+.B true_heading_deg
+is present in the datagram).
+.TP
+.B Binary
+All fields from the high-rate binary packet: heading, pitch, roll,
+rate of turn, quaternion, calibrated and raw gyro/accel/mag vectors,
+covariance, declination, and status flags.
+.RE
+.PP
+Status flags are shown as a compact string.
+Each character represents a flag:
+.TS
+l l.
+C	Fusion filter converged
+V	Magnetometer reading valid (not rejected)
+A	Accelerometer calibration loaded
+G	Gyroscope calibration loaded
+M	Magnetometer calibration loaded
+D	Declination valid; true heading available
+S	Startup / settling period active
+.TE
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Config file used to determine UDP ports and addresses to listen on.
+Defaults to
+.I /etc/imud/imud.conf
+(then
+.IR ~/.config/imud/imud.conf ).
+.TP
+.B nmea
+Monitor only the NMEA stream.
+.TP
+.B json
+Monitor only the NDJSON stream.
+.TP
+.B binary
+Monitor only the high-rate binary stream.
+.SH EXAMPLES
+Monitor all streams:
+.PP
+.RS 4
+.EX
+imud-mon
+.EE
+.RE
+.PP
+Monitor NMEA and JSON only:
+.PP
+.RS 4
+.EX
+imud-mon nmea json
+.EE
+.RE
+.PP
+Use a non-default config (e.g.\& sim mode):
+.PP
+.RS 4
+.EX
+imud-mon --config config/sim.conf
+.EE
+.RE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-status (1),
+.BR imud.conf (5)
+.SH AUTHORS
+Richard Simpson
