@@ -1,0 +1,405 @@
+/*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * test_config.c — unit tests for config_defaults() and config_load()
+ *
+ * Tests exercise type dispatch (hex int, bool, float, double, quoted string),
+ * error paths (missing file, bad type), tilde expansion, unknown-key /
+ * unknown-section tolerance, and [position] WMM keys (Step 2).
+ * Edge-case tests write small temp files to /tmp/imud_test_NNN.conf and
+ * remove them on exit.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <math.h>
+#include "config.h"
+
+/* ── Minimal test framework ─────────────────────────────────────────────── */
+
+static int g_pass, g_fail;
+
+#define EXPECT(cond, msg) do { \
+    if (cond) { g_pass++; } \
+    else { g_fail++; fprintf(stderr, "  FAIL  %s:%d  %s\n", \
+           __FILE__, __LINE__, (msg)); } \
+} while (0)
+
+#define EXPECT_NEAR_D(a, b, eps, msg) \
+    EXPECT(fabs((double)(a) - (double)(b)) < (double)(eps), msg)
+
+#define EXPECT_STR(a, b, msg) \
+    EXPECT(strcmp((a), (b)) == 0, msg)
+
+static void begin_test(const char *name)
+{
+    printf("%-44s", name);
+    fflush(stdout);
+}
+
+static void end_test(int fail_before)
+{
+    puts(g_fail == fail_before ? "OK" : "FAIL");
+}
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
+
+/* Write lines to a temp file, return path (static buffer — one at a time). */
+static const char *write_tmpconf(int id, const char *content)
+{
+    static char path[64];
+    snprintf(path, sizeof(path), "/tmp/imud_test_%d.conf", id);
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen tmp"); exit(1); }
+    fputs(content, f);
+    fclose(f);
+    return path;
+}
+
+/* ── Tests ──────────────────────────────────────────────────────────────── */
+
+/* config_defaults() spot-checks: types and values from spec §9. */
+static void test_defaults_values(void)
+{
+    begin_test("test_defaults_values");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    EXPECT_STR(cfg.i2c_bus,          "/dev/i2c-1",    "i2c_bus default");
+    EXPECT_STR(cfg.imu_driver,       "ism330dhcx",    "imu_driver default");
+    EXPECT(cfg.imu_addr     == 0x6B,                  "imu_addr default");
+    EXPECT(cfg.imu_odr_hz   == 833,                   "imu_odr_hz default");
+    EXPECT(cfg.imu_accel_g  == 8,                     "imu_accel_g default");
+    EXPECT(cfg.imu_gyro_dps == 2000,                  "imu_gyro_dps default");
+    EXPECT(cfg.imu_fifo_wm  == 64,                    "imu_fifo_wm default");
+    EXPECT_STR(cfg.mag_driver,       "mmc5983ma",     "mag_driver default");
+    EXPECT(cfg.mag_addr     == 0x30,                  "mag_addr default");
+    EXPECT(cfg.nmea_enabled  == true,                 "nmea_enabled default");
+    EXPECT(cfg.nmea_rate_hz  == 10,                   "nmea_rate_hz default");
+    EXPECT(cfg.nmea_dest_port == 10110,               "nmea_dest_port default");
+    EXPECT(cfg.highrate_enabled == false,             "highrate_enabled default (opt-in)");
+    EXPECT(cfg.highrate_rate_hz == 500,               "highrate_rate_hz default");
+    EXPECT(cfg.highrate_dest_port == 10111,           "highrate_dest_port default");
+    EXPECT_STR(cfg.highrate_coord_frame, "NED",       "coord_frame default");
+    EXPECT_NEAR_D(cfg.mekf_gyro_noise,  0.007,  1e-9, "gyro_noise default");
+    EXPECT_NEAR_D(cfg.mag_reject_gauss, 0.0008, 1e-9, "mag_reject default");
+    EXPECT_NEAR_D(cfg.accel_skip_thresh,0.05,   1e-9, "accel_skip default");
+    EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
+    EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
+    EXPECT(cfg.log_stats_hz == 1,                     "log_stats_hz default");
+    end_test(fb);
+}
+
+/* cal_file default is an absolute path to the service data directory. */
+static void test_defaults_cal_file(void)
+{
+    begin_test("test_defaults_cal_file");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    EXPECT(cfg.cal_file[0] == '/',  "cal_file default is an absolute path");
+    EXPECT_STR(cfg.cal_file, "/etc/imud/cal.json", "cal_file default value");
+    end_test(fb);
+}
+
+/*
+ * Load the real config/imud.conf and check a spread of types:
+ *   - hex int  (imu_addr = 0x6B)
+ *   - decimal int (highrate_dest_port = 10111)
+ *   - bool (nmea_enabled = true)
+ *   - float (mag_set_period_s = 5.0)
+ *   - double (mekf_gyro_noise = 0.007)
+ *   - quoted string (nmea_dest_addr = "255.255.255.255")
+ */
+static void test_load_real_conf(void)
+{
+    begin_test("test_load_real_conf");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    int rc = config_load("config/imud.conf", &cfg);
+    EXPECT(rc == 0, "config_load returns 0");
+    if (rc != 0) { end_test(fb); return; }
+
+    EXPECT(cfg.imu_addr == 0x6B,                      "hex int 0x6B");
+    EXPECT(cfg.imu_addr == 107,                        "0x6B == 107");
+    EXPECT(cfg.imu_odr_hz == 833,                      "decimal int odr_hz");
+    EXPECT(cfg.imu_fifo_wm == 32,                      "decimal int fifo_wm");
+    EXPECT(cfg.nmea_enabled == true,                   "bool true");
+    EXPECT(cfg.highrate_enabled == true,               "highrate enabled in conf");
+    EXPECT(cfg.highrate_dest_port == 10111,            "decimal int port");
+    EXPECT_NEAR_D(cfg.mag_set_period_s, 5.0, 1e-5,    "float set_period_s");
+    EXPECT_NEAR_D(cfg.mekf_gyro_noise,  0.007, 1e-9,  "double gyro_noise");
+    EXPECT_NEAR_D(cfg.mekf_gyro_bias,   0.00015, 1e-9,"double gyro_bias");
+    EXPECT_STR(cfg.nmea_dest_addr, "255.255.255.255",  "quoted string");
+    EXPECT_STR(cfg.highrate_coord_frame, "NED",        "quoted coord_frame");
+    EXPECT_STR(cfg.imu_driver, "ism330dhcx",           "quoted driver string");
+    end_test(fb);
+}
+
+/* Missing file must return -1. */
+static void test_load_missing_file(void)
+{
+    begin_test("test_load_missing_file");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load("/tmp/imud_no_such_file_xyz.conf", &cfg);
+    EXPECT(rc == -1, "missing file returns -1");
+    end_test(fb);
+}
+
+/* Bad integer value must return -1. */
+static void test_load_bad_int(void)
+{
+    begin_test("test_load_bad_int");
+    int fb = g_fail;
+    const char *path = write_tmpconf(1,
+        "[imu]\n"
+        "odr_hz = notanumber\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == -1, "bad int returns -1");
+    remove(path);
+    end_test(fb);
+}
+
+/* Bad boolean value must return -1. */
+static void test_load_bad_bool(void)
+{
+    begin_test("test_load_bad_bool");
+    int fb = g_fail;
+    const char *path = write_tmpconf(2,
+        "[nmea]\n"
+        "enabled = yes\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == -1, "bad bool returns -1");
+    remove(path);
+    end_test(fb);
+}
+
+/* Unknown section: load must succeed, keys inside it are skipped. */
+static void test_load_unknown_section(void)
+{
+    begin_test("test_load_unknown_section");
+    int fb = g_fail;
+    const char *path = write_tmpconf(3,
+        "[unknown_section]\n"
+        "foo = bar\n"
+        "[nmea]\n"
+        "rate_hz = 5\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0, "unknown section doesn't abort load");
+    EXPECT(cfg.nmea_rate_hz == 5, "subsequent known key still applied");
+    remove(path);
+    end_test(fb);
+}
+
+/* Unknown key in a known section: warning only, load continues. */
+static void test_load_unknown_key(void)
+{
+    begin_test("test_load_unknown_key");
+    int fb = g_fail;
+    const char *path = write_tmpconf(4,
+        "[imu]\n"
+        "no_such_key = 99\n"
+        "odr_hz = 416\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,               "unknown key doesn't abort load");
+    EXPECT(cfg.imu_odr_hz == 416, "subsequent known key still applied");
+    remove(path);
+    end_test(fb);
+}
+
+/* Inline comment after value is stripped; quoted string with # is preserved. */
+static void test_load_inline_comment(void)
+{
+    begin_test("test_load_inline_comment");
+    int fb = g_fail;
+    const char *path = write_tmpconf(5,
+        "[imu]\n"
+        "odr_hz = 208  # rounds to nearest\n"
+        "[nmea]\n"
+        "dest_addr = \"10.0.0.255\"  # LAN broadcast\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                              "inline comment load ok");
+    EXPECT(cfg.imu_odr_hz == 208,                "int after inline comment");
+    EXPECT_STR(cfg.nmea_dest_addr, "10.0.0.255","quoted string before comment");
+    remove(path);
+    end_test(fb);
+}
+
+/* Tilde in a loaded string value must be expanded to $HOME. */
+static void test_load_tilde_expansion(void)
+{
+    begin_test("test_load_tilde_expansion");
+    int fb = g_fail;
+    const char *path = write_tmpconf(6,
+        "[calibration]\n"
+        "file = \"~/.config/imud/cal.json\"\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                 "tilde conf loads ok");
+    EXPECT(cfg.cal_file[0] != '~',  "tilde expanded in loaded value");
+    EXPECT(strstr(cfg.cal_file, "/.config/imud/cal.json") != NULL,
+           "expanded path has correct suffix");
+    remove(path);
+    end_test(fb);
+}
+
+/* config_load() must override only the specified keys, leave others at
+ * their defaults.  (Verifies the caller must call config_defaults first.) */
+static void test_load_partial_override(void)
+{
+    begin_test("test_load_partial_override");
+    int fb = g_fail;
+    const char *path = write_tmpconf(7,
+        "[imu]\n"
+        "odr_hz = 104\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    config_load(path, &cfg);
+    EXPECT(cfg.imu_odr_hz  == 104,    "overridden key updated");
+    EXPECT(cfg.imu_accel_g == 8,      "untouched key stays at default");
+    EXPECT(cfg.nmea_rate_hz == 10,    "different section stays at default");
+    remove(path);
+    end_test(fb);
+}
+
+/* [position] defaults: all zero / disabled, wmm_file = /etc/imud/WMM.COF. */
+static void test_defaults_position(void)
+{
+    begin_test("test_defaults_position");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    EXPECT_NEAR_D(cfg.pos_declination_deg, 0.0, 1e-9, "pos_declination_deg default 0");
+    EXPECT_NEAR_D(cfg.pos_lat_deg,         0.0, 1e-9, "pos_lat_deg default 0");
+    EXPECT_NEAR_D(cfg.pos_lon_deg,         0.0, 1e-9, "pos_lon_deg default 0");
+    EXPECT_STR(cfg.pos_wmm_file, "/etc/imud/WMM.COF", "pos_wmm_file default");
+    EXPECT_NEAR_D(cfg.pos_fix_max_age_h,  24.0, 1e-5, "pos_fix_max_age_h default 24 h");
+    end_test(fb);
+}
+
+/* fix_max_age_h can be loaded and overridden (0 = never expire). */
+static void test_fix_max_age_h_load(void)
+{
+    begin_test("test_fix_max_age_h_load");
+    int fb = g_fail;
+    const char *path = write_tmpconf(9,
+        "[position]\n"
+        "fix_max_age_h = 48.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                                      "fix_max_age_h loads ok");
+    EXPECT_NEAR_D(cfg.pos_fix_max_age_h, 48.0, 1e-5,    "fix_max_age_h = 48.0");
+    remove(path);
+    end_test(fb);
+}
+
+/* fix_max_age_h = 0 means never expire. */
+static void test_fix_max_age_h_zero(void)
+{
+    begin_test("test_fix_max_age_h_zero");
+    int fb = g_fail;
+    const char *path = write_tmpconf(10,
+        "[position]\n"
+        "fix_max_age_h = 0.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                                  "fix_max_age_h = 0 loads ok");
+    EXPECT_NEAR_D(cfg.pos_fix_max_age_h, 0.0, 1e-9, "fix_max_age_h = 0 (never expire)");
+    remove(path);
+    end_test(fb);
+}
+
+/* [position] keys are parsed: lat/lon as double, wmm_file as string. */
+static void test_position_keys_load(void)
+{
+    begin_test("test_position_keys_load");
+    int fb = g_fail;
+    const char *path = write_tmpconf(8,
+        "[position]\n"
+        "lat_deg  = 47.6062\n"
+        "lon_deg  = -122.3321\n"
+        "wmm_file = \"data/WMM.COF\"\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                               "position keys load ok");
+    EXPECT_NEAR_D(cfg.pos_lat_deg,  47.6062,  1e-9, "lat_deg parsed as double");
+    EXPECT_NEAR_D(cfg.pos_lon_deg, -122.3321, 1e-9, "lon_deg parsed as double");
+    EXPECT_STR(cfg.pos_wmm_file, "data/WMM.COF",    "wmm_file string parsed");
+    remove(path);
+    end_test(fb);
+}
+
+/* config/sim.conf must load cleanly and select the sim driver. */
+static void test_sim_conf_loads(void)
+{
+    begin_test("test_sim_conf_loads");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    int rc = config_load("config/sim.conf", &cfg);
+    EXPECT(rc == 0,                        "sim.conf loads without error");
+    EXPECT_STR(cfg.imu_driver, "sim",      "imu driver = sim");
+    EXPECT_STR(cfg.mag_driver, "sim",      "mag driver = sim");
+    EXPECT(cfg.imu_int_gpio == 0,          "imu int_gpio = 0 (timer fallback)");
+    EXPECT(cfg.mag_int_gpio == 0,          "mag int_gpio = 0 (timer fallback)");
+    EXPECT_NEAR_D(cfg.gyro_bias_sec, 0.0,  1e-9, "gyro_bias_sec = 0 (skip estimation)");
+    EXPECT_STR(cfg.pos_wmm_file, "data/WMM.COF",   "sim wmm_file is dev path");
+    EXPECT_NEAR_D(cfg.pos_lat_deg, 0.0,    1e-9, "sim pos_lat_deg = 0 (WMM disabled)");
+    EXPECT_NEAR_D(cfg.pos_lon_deg, 0.0,    1e-9, "sim pos_lon_deg = 0 (WMM disabled)");
+    end_test(fb);
+}
+
+/* ── main ───────────────────────────────────────────────────────────────── */
+
+int main(void)
+{
+    puts("=== imud config tests ===");
+
+    test_defaults_values();
+    test_defaults_cal_file();
+    test_defaults_position();
+    test_fix_max_age_h_load();
+    test_fix_max_age_h_zero();
+    test_load_real_conf();
+    test_load_missing_file();
+    test_load_bad_int();
+    test_load_bad_bool();
+    test_load_unknown_section();
+    test_load_unknown_key();
+    test_load_inline_comment();
+    test_load_tilde_expansion();
+    test_load_partial_override();
+    test_position_keys_load();
+    test_sim_conf_loads();
+
+    printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    return g_fail ? 1 : 0;
+}
