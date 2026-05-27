@@ -1,0 +1,96 @@
+.TH IMUD\-CAL 8 "May 2026" "imud 1.0" "System Manager's Manual"
+.SH NAME
+imud\-cal \- IMU calibration tool for imud
+.SH SYNOPSIS
+.B imud-cal
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-output\fR \fIPATH\fR]
+.I mode
+.SH DESCRIPTION
+.B imud-cal
+performs interactive sensor calibration and writes the result to a JSON
+calibration file read by
+.BR imud (8)
+at startup.
+.PP
+Each mode operates the hardware directly (without the daemon running) and
+guides the operator through a collection procedure via stdout prompts.
+Results are merged into the calibration file: existing sections for other
+modes are preserved.
+.PP
+Run
+.B imud-cal
+once after installing the hardware.
+Re-run after physically repositioning the sensor or after a hard reset
+that clears non-volatile sensor registers.
+.SH MODES
+.TP
+.B gyro
+Gyroscope bias capture.
+Keep the board completely still during collection.
+The bias vector is averaged over the settle window and written to the
+calibration file.
+Takes approximately 5\(en10 seconds.
+.TP
+.B accel
+Accelerometer 6-position calibration.
+Place the board in each of the six cardinal orientations
+(+X, \-X, +Y, \-Y, +Z, \-Z face up) as prompted.
+Fits a scale-and-offset model that corrects for sensitivity and misalignment.
+Takes approximately 2\(en5 minutes.
+.TP
+.B mag
+Magnetometer hard/soft-iron calibration.
+Perform at least two slow 360\(de rotations about each axis in the local
+magnetic environment (away from large metal objects).
+Fits an ellipsoid model that corrects for hard-iron offsets and soft-iron
+distortion.
+Takes approximately 3\(en10 minutes.
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Config file to use.
+Defaults to
+.I /etc/imud/imud.conf
+(then
+.IR ~/.config/imud/imud.conf ).
+Determines which sensor driver, I2C bus, and GPIO lines to use.
+.TP
+.BI \-\-output \ PATH
+Write calibration output to
+.I PATH
+instead of the path set by
+.B calibration.file
+in the config.
+.SH FILES
+.TP
+.I /etc/imud/cal.json
+Default calibration output path.
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+.SH NOTES
+The daemon
+.RB ( imud )
+and
+.B imud-cal
+must not run simultaneously; both open the same I2C device.
+Stop the daemon before running calibration:
+.PP
+.RS 4
+.EX
+sudo systemctl stop imud
+sudo imud-cal --config /etc/imud/imud.conf mag
+sudo systemctl start imud
+.EE
+.RE
+.SH EXIT STATUS
+.B 0
+on success,
+.B 1
+on configuration or hardware error.
+.SH SEE ALSO
+.BR imud (8),
+.BR imud.conf (5)
+.SH AUTHORS
+Richard Simpson

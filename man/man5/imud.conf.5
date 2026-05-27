@@ -1,0 +1,511 @@
+.TH IMUD.CONF 5 "May 2026" "imud 1.0" "File Formats"
+.SH NAME
+imud.conf \- configuration file for the imud IMU daemon
+.SH SYNOPSIS
+.I /etc/imud/imud.conf
+.br
+.I ~/.config/imud/imud.conf
+.SH DESCRIPTION
+.B imud.conf
+is a TOML-like text file that controls all aspects of
+.BR imud (8):
+which sensors to use, MEKF filter parameters, output stream destinations,
+magnetic declination, and logging.
+.PP
+.B imud
+searches for the configuration file in this order:
+.PP
+.RS 4
+1. Path given on the command line with
+.B \-\-config
+.br
+2.
+.I /etc/imud/imud.conf
+.br
+3.
+.I ~/.config/imud/imud.conf
+.RE
+.SS Syntax
+.TP
+Sections
+.B [section_name]
+on its own line.
+.TP
+Key\-value pairs
+.IB key \ = \ value
+.TP
+Comments
+.B #
+to end of line; inline comments are allowed.
+.TP
+Strings
+Must be double-quoted:
+.BR "driver = \(dqism330dhcx\(dq" .
+Paths beginning with
+.B ~/
+are expanded to
+.IR $HOME/ .
+.TP
+Integers
+Decimal or hexadecimal
+.RB ( 0x6B ).
+.TP
+Booleans
+.B true
+or
+.BR false .
+.TP
+Arrays
+Comma-separated values in brackets; used only for
+.BR rotation_euler_deg .
+.SS Reload semantics
+Keys marked
+.B [restart]
+below take effect only after a full daemon restart.
+.br
+Keys marked
+.B [hot]
+are applied live by sending
+.B SIGHUP
+to the daemon
+.RB ( "sudo systemctl reload imud" ).
+.SH SECTIONS
+.SS [device]
+Hardware bus selection.
+.B [restart]
+.TP
+.B i2c_bus
+.RI (string,\ default:\ \(dq/dev/i2c-1\(dq)
+I2C bus device node.
+.TP
+.B gpio_chip
+.RI (string,\ default:\ \(dqgpiochip0\(dq)
+gpiochip device name.
+Use
+.B gpiochip0
+on Raspberry Pi 4 and
+.B gpiochip4
+on Raspberry Pi 5 (RP1 GPIO controller).
+.SS [imu]
+IMU driver settings.
+.B [restart]
+.TP
+.B driver
+.RI (string,\ default:\ \(dqism330dhcx\(dq)
+Driver name:
+.BR ism330dhcx ,
+.BR icm20948 ,
+or
+.B sim
+(software simulation, no hardware required).
+.TP
+.B i2c_addr
+.RI (int,\ default:\ 0x6B)
+I2C address.
+ISM330DHCX: 0x6B (SA0 high) or 0x6A (SA0 low).
+.TP
+.B int_gpio
+.RI (int,\ default:\ 17)
+BCM GPIO number for the FIFO watermark interrupt.
+Set
+.B 0
+to use a 10\~ms polling timer instead.
+.TP
+.B odr_hz
+.RI (int,\ default:\ 833)
+Output data rate in Hz.
+The driver rounds to the nearest supported rate.
+ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660.
+.TP
+.B accel_g
+.RI (int,\ default:\ 8)
+Accelerometer full-scale range in g.
+ISM330DHCX: 2, 4, 8, 16.
+.TP
+.B gyro_dps
+.RI (int,\ default:\ 2000)
+Gyroscope full-scale range in degrees/second.
+ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.
+.TP
+.B fifo_wm
+.RI (int,\ default:\ 64)
+FIFO watermark in sample-sets.
+At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.
+.SS [mag]
+Magnetometer driver settings.
+.B [restart]
+.TP
+.B driver
+.RI (string,\ default:\ \(dqmmc5983ma\(dq)
+Driver name:
+.BR mmc5983ma ,
+.BR ak09916 ,
+or
+.BR sim .
+.TP
+.B i2c_addr
+.RI (int,\ default:\ 0x30)
+I2C address.
+MMC5983MA has a fixed address (0x30).
+.TP
+.B int_gpio
+.RI (int,\ default:\ 27)
+BCM GPIO for the measurement-done interrupt.
+Set
+.B 0
+to use a polling timer.
+.TP
+.B odr_hz
+.RI (int,\ default:\ 100)
+Output data rate in Hz.
+MMC5983MA supports: 1, 10, 20, 50, 100, 200, 1000.
+.TP
+.B set_period_s
+.RI (float,\ default:\ 5.0)
+Interval in seconds between degauss (SET/RESET) pulses.
+Set
+.B 0
+to disable.
+.SS [fusion]
+MEKF noise parameters and rejection thresholds.
+.B [hot]
+.TP
+.B mekf_gyro_noise
+.RI (double,\ default:\ 0.007)
+Gyro noise density in rad/s/sqrt(Hz).
+.TP
+.B mekf_gyro_bias
+.RI (double,\ default:\ 0.00015)
+In-run gyro bias instability in rad/s.
+.TP
+.B mekf_accel_noise
+.RI (double,\ default:\ 0.0022)
+Accelerometer noise density in m/s^2/sqrt(Hz).
+.TP
+.B mekf_mag_noise
+.RI (double,\ default:\ 0.0004)
+Magnetometer noise density in Gauss/sqrt(Hz).
+.TP
+.B mag_reject_gauss
+.RI (double,\ default:\ 0.0008)
+Reject magnetometer updates whose post-calibration residual exceeds this value (Gauss).
+.TP
+.B accel_skip_thresh
+.RI (double,\ default:\ 0.05)
+Skip accelerometer updates when
+.RI |a|\(en1g
+exceeds this fraction of g.
+.TP
+.B engine_vibration_g2
+.RI (double,\ default:\ 0.0)
+EMA threshold (m^2/s^4) for engine-vibration detection.
+Set
+.B 0
+to disable.
+.TP
+.B engine_accel_skip_thresh
+.RI (double,\ default:\ 0.20)
+Accelerometer skip threshold override applied while engine vibration is detected.
+.SS [calibration]
+.B [restart]
+.TP
+.B file
+.RI (string,\ default:\ \(dq/etc/imud/cal.json\(dq)
+Path to the calibration file produced by
+.BR imud-cal (8).
+Supports
+.B ~/
+expansion.
+.TP
+.B startup_settle_sec
+.RI (double,\ default:\ 5.0)
+Seconds to discard sensor output after chip initialisation.
+Set
+.B 0
+for the
+.B sim
+driver.
+.TP
+.B gyro_bias_sec
+.RI (double,\ default:\ 2.0)
+Length of the stationary bias-estimation window at startup.
+Set
+.B 0
+to skip.
+.SS [nmea]
+NMEA 0183 UDP output.
+.B [restart]:
+.BR enabled ,
+.BR dest_addr ,
+.BR dest_port .
+.B [hot]:
+.BR rate_hz .
+.TP
+.B enabled
+.RI (bool,\ default:\ true)
+Enable NMEA output.
+.TP
+.B rate_hz
+.RI (int,\ default:\ 10)
+Output rate in Hz.
+.TP
+.B dest_addr
+.RI (string,\ default:\ \(dq255.255.255.255\(dq)
+Destination IP address (broadcast, unicast, or multicast).
+.TP
+.B dest_port
+.RI (int,\ default:\ 10110)
+Destination UDP port.
+.PP
+Sentences emitted:
+.BR $PASHR ,
+.BR $HCHDM ,
+.BR $TIROT ,
+.BR $IIXDR .
+When declination is configured,
+.B $HCHDT
+(true heading) is added.
+.SS [highrate]
+High-rate binary UDP stream.
+.B [restart]:
+.BR enabled ,
+.BR dest_addr ,
+.BR dest_port ,
+.BR coord_frame .
+.B [hot]:
+.BR rate_hz .
+.TP
+.B enabled
+.RI (bool,\ default:\ false)
+Enable the high-rate stream.
+.TP
+.B rate_hz
+.RI (int,\ default:\ 500)
+Output rate in Hz.
+.TP
+.B dest_addr
+.RI (string,\ default:\ \(dq239.255.0.1\(dq)
+Destination IP.
+Default is an IPv4 multicast group (TTL=1, link-local).
+Use
+.B 255.255.255.255
+for broadcast or a unicast IP for point-to-point.
+.TP
+.B dest_port
+.RI (int,\ default:\ 10111)
+Destination UDP port.
+.TP
+.B coord_frame
+.RI (string,\ default:\ \(dqNED\(dq)
+Output frame:
+.B NED
+(North-East-Down) or
+.B ENU
+(East-North-Up).
+.SS [json]
+NDJSON UDP stream.
+.B [restart]:
+.BR enabled ,
+.BR dest_addr ,
+.BR dest_port .
+.B [hot]:
+.BR rate_hz .
+.TP
+.B enabled
+.RI (bool,\ default:\ false)
+Enable the JSON stream.
+.TP
+.B rate_hz
+.RI (int,\ default:\ 100)
+Output rate in Hz.
+.TP
+.B dest_addr
+.RI (string,\ default:\ \(dq255.255.255.255\(dq)
+Destination IP address.
+.TP
+.B dest_port
+.RI (int,\ default:\ 10112)
+Destination UDP port.
+.SS [mount]
+Board-to-body rotation.
+.B [restart]
+.TP
+.B rotation_euler_deg
+.RI (array,\ default:\ [0.0,\ 0.0,\ 0.0])
+Rotation as [roll, pitch, yaw] in degrees.
+Applied as R = Rz(yaw) x Ry(pitch) x Rx(roll).
+Only the yaw component is normally non-zero; set it to correct for
+the angle between the chip X axis and the vessel bow.
+.TP
+.B preset
+.RI (string,\ unset)
+Named rotation shortcut.
+One of:
+.BR identity ,
+.BR yaw_90 ,
+.BR yaw_180 ,
+.BR yaw_270 ,
+.BR roll_90 ,
+.BR roll_270 ,
+.BR pitch_90 ,
+.BR pitch_270 .
+Overrides
+.B rotation_euler_deg
+when set.
+.SS [logging]
+.B [hot]
+.TP
+.B level
+.RI (string,\ default:\ \(dqwarn\(dq)
+Log verbosity:
+.BR debug ,
+.BR info ,
+.BR warn ,
+or
+.BR error .
+.B warn
+is recommended for production (SD card friendly).
+.B info
+adds a periodic
+.B [stats]
+heartbeat.
+.TP
+.B file
+.RI (string,\ default:\ \(dq\(dq)
+Log destination.
+Empty = write to stderr (captured by journald).
+Set an absolute path to redirect to a file.
+.TP
+.B stats_hz
+.RI (int,\ default:\ 1)
+Rate of the
+.B [stats]
+heartbeat line.
+Only visible at
+.B info
+or
+.B debug
+level.
+.SS [position]
+Magnetic declination and true heading.
+.B [restart]
+.PP
+When declination is active, imud emits
+.B $HCHDT
+in NMEA,
+.B true_heading_deg
+in JSON, and sets
+.B FLAG_DECLINATION_VALID
+in the binary packet.
+.PP
+Three modes (highest priority wins):
+.TP
+1.\ WMM\ auto-compute
+Set
+.B lat_deg
+and
+.B lon_deg
+(both non-zero).
+imud loads
+.B wmm_file
+and computes declination at startup and on SIGHUP.
+Accurate to \(+-0.5\(de for a fixed installation.
+.TP
+2.\ Static\ override
+Set
+.B declination_deg
+only (leave lat/lon at 0.0).
+East declination is positive (+), west is negative (\-).
+.TP
+3.\ Disabled\ (default)
+All three values at zero.
+.PP
+Configuration keys:
+.TP
+.B declination_deg
+.RI (float,\ default:\ 0.0)
+Static magnetic declination in degrees.
+Ignored when
+.B lat_deg
+and
+.B lon_deg
+are both non-zero.
+.TP
+.B lat_deg
+.RI (double,\ default:\ 0.0)
+Geodetic latitude in decimal degrees (+N / \-S).
+Set with
+.B lon_deg
+to enable WMM auto-compute.
+.TP
+.B lon_deg
+.RI (double,\ default:\ 0.0)
+Geodetic longitude in decimal degrees (+E / \-W).
+.TP
+.B wmm_file
+.RI (string,\ default:\ \(dq/etc/imud/WMM.COF\(dq)
+Path to the WMM2025 coefficient file.
+Valid 2025.0\(en2030.0.
+Replace with WMM2030 around late 2029:
+.EX
+    sudo cp WMM2030.COF /etc/imud/WMM.COF
+    sudo systemctl reload imud
+.EE
+.TP
+.B gpsd_enabled
+.RI (bool,\ default:\ false)
+Connect to gpsd for live position updates.
+.TP
+.B gpsd_host
+.RI (string,\ default:\ \(dqlocalhost\(dq)
+Hostname or IP address of the gpsd instance.
+.TP
+.B gpsd_port
+.RI (int,\ default:\ 2947)
+TCP port of the gpsd instance.
+.TP
+.B signalk_enabled
+.RI (bool,\ default:\ false)
+Poll the SignalK REST API for position (every 30\~s).
+.TP
+.B signalk_host
+.RI (string,\ default:\ \(dqlocalhost\(dq)
+Hostname or IP address of the SignalK server.
+.TP
+.B signalk_port
+.RI (int,\ default:\ 3000)
+HTTP port of the SignalK server.
+.TP
+.B signalk_path
+.RI (string,\ default:\ \(dq/signalk/v1/api/vessels/self/navigation/position\(dq)
+REST endpoint path.
+.TP
+.B fix_max_age_h
+.RI (float,\ default:\ 24.0)
+Hours to retain a GPS-derived declination without a new fix.
+An anchored vessel with continuous GPS reception keeps its declination
+indefinitely; the TTL only fires during a genuine GPS outage.
+Set
+.B 0
+to never expire.
+.SH FILES
+.TP
+.I /etc/imud/imud.conf
+System-wide configuration.
+.TP
+.I ~/.config/imud/imud.conf
+Per-user override.
+.TP
+.I /etc/imud/cal.json
+Calibration data written by
+.BR imud-cal (8).
+.TP
+.I /etc/imud/WMM.COF
+World Magnetic Model 2025 coefficients.
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-cal (8),
+.BR imud-mon (1),
+.BR imud-status (1)
+.SH AUTHORS
+Richard Simpson

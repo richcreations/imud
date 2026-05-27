@@ -120,6 +120,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 PREFIX  ?= /usr/local
 ETCDIR  ?= /etc/imud
 SVCDIR  ?= /etc/systemd/system
+MANDIR  ?= $(PREFIX)/share/man
 
 install: imud imud-cal imud-status imud-mon
 	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
@@ -156,11 +157,21 @@ install: imud imud-cal imud-status imud-mon
 	install -m 644 etc/imud.service $(DESTDIR)$(SVCDIR)/imud.service
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
-	    echo ""; \
-	    echo "Next steps:"; \
-	    echo "  sudo systemctl enable --now imud"; \
-	    echo "  review $(ETCDIR)/imud.conf  (i2c_bus, gpio_chip, rotation_euler_deg)"; \
 	fi
+	# ── Man pages ──────────────────────────────────────────────────────────
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man1 \
+	                   $(DESTDIR)$(MANDIR)/man5 \
+	                   $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man1/imud-status.1 > $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz
+	gzip -9c man/man1/imud-mon.1    > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
+	gzip -9c man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
+	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
+	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
+	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  sudo systemctl enable --now imud"
+	@echo "  review $(ETCDIR)/imud.conf  (i2c_bus, gpio_chip, rotation_euler_deg)"
 
 uninstall:
 	@if command -v systemctl >/dev/null 2>&1; then \
@@ -170,7 +181,12 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mon \
-	      $(DESTDIR)$(SVCDIR)/imud.service
+	      $(DESTDIR)$(SVCDIR)/imud.service \
+	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
+	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi

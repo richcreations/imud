@@ -1,0 +1,140 @@
+.TH IMUD 8 "May 2026" "imud 1.0" "System Manager's Manual"
+.SH NAME
+imud \- IMU daemon for marine and robotics navigation
+.SH SYNOPSIS
+.B imud
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-skip\-bias\-cal\fR]
+[\fB\-\-no\-nmea\fR]
+[\fB\-\-no\-highrate\fR]
+[\fB\-\-no\-json\fR]
+[\fB\-\-foreground\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B imud
+reads from an IMU (gyroscope + accelerometer) and a magnetometer over I2C,
+fuses the sensor data with a Multiplicative Extended Kalman Filter (MEKF),
+and publishes attitude estimates over UDP in three optional formats:
+.PP
+.RS 4
+\(bu\ \ NMEA 0183 sentences (port 10110) for chartplotters and autopilots
+.br
+\(bu\ \ High-rate binary packets (port 10111) for machine-vision and ROS2
+.br
+\(bu\ \ NDJSON datagrams (port 10112) for dashboards and scripted consumers
+.RE
+.PP
+When magnetic declination is configured (via
+.IR imud.conf (5)),
+imud also emits true (geographic) heading in all three streams.
+.PP
+imud is normally run as a systemd service.
+Use
+.BR "systemctl enable --now imud"
+after installation.
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Load configuration from
+.I PATH
+instead of the default search path.
+The daemon searches in order:
+.IR /etc/imud/imud.conf ,
+then
+.IR ~/.config/imud/imud.conf .
+.TP
+.B \-\-skip\-bias\-cal
+Skip the stationary gyro-bias estimation window at startup.
+Useful when restarting quickly and the sensor has not moved since the previous run.
+.TP
+.B \-\-no\-nmea
+Disable the NMEA output stream regardless of the config file setting.
+.TP
+.B \-\-no\-highrate
+Disable the high-rate binary output stream regardless of the config file setting.
+.TP
+.B \-\-no\-json
+Disable the NDJSON output stream regardless of the config file setting.
+.TP
+.B \-\-foreground
+(Accepted but currently a no-op; imud does not daemonize.)
+.TP
+.B \-\-version
+Print the version string and exit.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload hot-reloadable configuration fields without restarting.
+Hot fields include MEKF noise parameters, output rates, and log level.
+Fields marked
+.B [restart]
+in
+.IR imud.conf (5)
+require a full restart and are ignored during a reload.
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown: flush output, join all threads, close hardware.
+.SH FILES
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+.TP
+.I ~/.config/imud/imud.conf
+Per-user configuration override.
+.TP
+.I /etc/imud/cal.json
+Calibration data (hard/soft-iron offsets, gyro bias, accelerometer corrections).
+Written by
+.BR imud-cal (8).
+.TP
+.I /etc/imud/WMM.COF
+World Magnetic Model 2025 coefficient file.
+Used for automatic magnetic-declination computation when
+.B position.lat_deg
+and
+.B position.lon_deg
+are set.
+Valid 2025.0\(en2030.0; replace with WMM2030 around late 2029.
+.TP
+.I /run/imud/status.sock
+Unix domain socket used by
+.BR imud-status (1)
+to query daemon health.
+.SH SUPPORTED HARDWARE
+.TP
+IMUs
+ISM330DHCX (ST), ICM-20948 (TDK), sim (software simulation)
+.TP
+Magnetometers
+MMC5983MA (MEMSIC), AK09916 (via ICM-20948 I2C master), sim
+.SH EXIT STATUS
+.B 0
+on graceful shutdown,
+.B 1
+on configuration or hardware initialisation error.
+.SH EXAMPLES
+Run in the foreground with the simulation driver:
+.PP
+.RS 4
+.EX
+imud --config /etc/imud/imud.conf --no-nmea
+.EE
+.RE
+.PP
+Reload configuration at runtime:
+.PP
+.RS 4
+.EX
+sudo systemctl reload imud
+# or:
+kill -HUP $(pidof imud)
+.EE
+.RE
+.SH SEE ALSO
+.BR imud-cal (8),
+.BR imud-status (1),
+.BR imud-mon (1),
+.BR imud.conf (5),
+.BR gpsd (8)
+.SH AUTHORS
+Richard Simpson
