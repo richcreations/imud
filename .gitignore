@@ -1,0 +1,26 @@
+# Build artifacts
+src/*.o
+src/drivers/*.o
+imud
+imud-cal
+imud-status
+
+# Test binaries
+test_fusion
+test_config
+test_nmea
+test_packet
+test_ring
+test_mount
+test_cal
+test_cal_math
+
+# Editor and OS
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/settings.json
+
+# Cal file (machine-specific, not for version control)
+cal.json
