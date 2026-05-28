@@ -15,7 +15,11 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
               src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c \
               src/drivers/ak09916.c \
-              src/drivers/sim.c
+              src/drivers/sim.c \
+              src/drivers/lsm6dso.c \
+              src/drivers/icm42688p.c \
+              src/drivers/lis3mdl.c \
+              src/drivers/lis2mdl.c
 
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \

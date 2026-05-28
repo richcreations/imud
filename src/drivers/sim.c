@@ -223,6 +223,7 @@ static int sim_imu_read(int fd, uint8_t addr,
 
 const imu_ops_t sim_imu_ops = {
     .name               = "sim",
+    .experimental       = false,
     .probe              = sim_imu_probe,
     .reset              = sim_imu_reset,
     .init               = sim_imu_init,
@@ -275,6 +276,7 @@ static int sim_mag_read(int fd, uint8_t addr, mag_sample_t *out)
 
 const mag_ops_t sim_mag_ops = {
     .name             = "sim",
+    .experimental     = false,
     .probe            = sim_mag_probe,
     .reset            = sim_mag_reset,
     .init             = sim_mag_init,

@@ -18,15 +18,23 @@
 
 extern const imu_ops_t ism330dhcx_ops;
 extern const imu_ops_t icm20948_ops;
+extern const imu_ops_t icm42688p_ops;
+extern const imu_ops_t lsm6dso_ops;
+extern const imu_ops_t lsm6dsox_ops;
 extern const imu_ops_t sim_imu_ops;
 
 extern const mag_ops_t mmc5983ma_ops;
 extern const mag_ops_t ak09916_ops;
+extern const mag_ops_t lis3mdl_ops;
+extern const mag_ops_t lis2mdl_ops;
 extern const mag_ops_t sim_mag_ops;
 
 static const imu_ops_t *imu_registry[] = {
     &ism330dhcx_ops,
     &icm20948_ops,
+    &icm42688p_ops,
+    &lsm6dso_ops,
+    &lsm6dsox_ops,
     &sim_imu_ops,
     NULL,
 };
@@ -34,6 +42,8 @@ static const imu_ops_t *imu_registry[] = {
 static const mag_ops_t *mag_registry[] = {
     &mmc5983ma_ops,
     &ak09916_ops,
+    &lis3mdl_ops,
+    &lis2mdl_ops,
     &sim_mag_ops,
     NULL,
 };

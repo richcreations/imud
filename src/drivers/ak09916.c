@@ -203,6 +203,7 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
 
 const mag_ops_t ak09916_ops = {
     .name            = "ak09916",
+    .experimental    = true,
     .probe           = ak_probe,
     .reset           = ak_reset,
     .init            = ak_init,

@@ -358,6 +358,7 @@ static int ism_read(int fd, uint8_t addr,
 
 const imu_ops_t ism330dhcx_ops = {
     .name             = "ism330dhcx",
+    .experimental     = false,
     .probe            = ism_probe,
     .reset            = ism_reset,
     .init             = ism_init,

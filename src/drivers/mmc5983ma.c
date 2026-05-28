@@ -248,6 +248,7 @@ static int mmc_set_reset(int fd, uint8_t addr)
 
 const mag_ops_t mmc5983ma_ops = {
     .name             = "mmc5983ma",
+    .experimental     = false,
     .probe            = mmc_probe,
     .reset            = mmc_reset,
     .init             = mmc_init,

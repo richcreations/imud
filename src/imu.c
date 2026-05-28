@@ -718,11 +718,18 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         fprintf(stderr, "[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
         goto fail;
     }
+    if (ctx->imu_ops->experimental)
+        fprintf(stderr, "[imu] WARNING: driver '%s' is EXPERIMENTAL — "
+                "not yet validated on hardware\n", cfg->imu_driver);
+
     ctx->mag_ops = mag_driver_find(cfg->mag_driver);
     if (!ctx->mag_ops) {
         fprintf(stderr, "[imu] unknown mag driver '%s'\n", cfg->mag_driver);
         goto fail;
     }
+    if (ctx->mag_ops->experimental)
+        fprintf(stderr, "[mag] WARNING: driver '%s' is EXPERIMENTAL — "
+                "not yet validated on hardware\n", cfg->mag_driver);
 
     ctx->actual_odr_hz = nearest_odr(ctx->imu_ops->supported_odr_hz, cfg->imu_odr_hz);
 

@@ -38,6 +38,7 @@ typedef struct {
 
 typedef struct {
     const char *name;   /* must match config [imu] driver = "..." */
+    bool experimental;  /* true → print warning at startup; not validated on hardware */
 
     /* Return 0 on success, -1 on failure. */
     int (*probe)  (int fd, uint8_t addr);
@@ -65,6 +66,7 @@ typedef struct {
 
 typedef struct {
     const char *name;   /* must match config [mag] driver = "..." */
+    bool experimental;  /* true → print warning at startup; not validated on hardware */
 
     int (*probe)    (int fd, uint8_t addr);
     int (*reset)    (int fd, uint8_t addr);
