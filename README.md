@@ -15,18 +15,22 @@ Quick highlights:
 
 Supported hardware:
 
-| Driver name | Chip | Type | Notes |
-| --- | --- | --- | --- |
-| `ism330dhcx` | ISM330DHCX (ST) | IMU | Stable; primary reference platform |
-| `icm20948` | ICM-20948 (TDK/InvenSense) | IMU | Experimental |
-| `icm42688p` | ICM-42688-P (TDK/InvenSense) | IMU | Experimental |
-| `lsm6dso` | LSM6DSO (ST) | IMU | Experimental |
-| `lsm6dsox` | LSM6DSOX (ST) | IMU | Experimental |
-| `mmc5983ma` | MMC5983MA (MEMSIC) | Magnetometer | Stable; primary reference platform |
-| `ak09916` | AK09916 (AKM) | Magnetometer | Experimental |
-| `lis3mdl` | LIS3MDL (ST) | Magnetometer | Experimental |
-| `lis2mdl` | LIS2MDL (ST) | Magnetometer | Experimental |
-| `sim` | — | IMU + Magnetometer | Software simulation; no hardware required |
+| Driver name | Chip | Type | GPIO interrupt | Notes |
+| --- | --- | --- | --- | --- |
+| `ism330dhcx` | ISM330DHCX (ST) | IMU | BCM 17 · pin 11 | Stable; primary reference platform |
+| `icm20948` | ICM-20948 (TDK/InvenSense) | IMU | BCM 17 · pin 11 | Experimental |
+| `icm42688p` | ICM-42688-P (TDK/InvenSense) | IMU | BCM 17 · pin 11 | Experimental |
+| `lsm6dso` | LSM6DSO (ST) | IMU | BCM 17 · pin 11 | Experimental |
+| `lsm6dsox` | LSM6DSOX (ST) | IMU | BCM 17 · pin 11 | Experimental |
+| `mmc5983ma` | MMC5983MA (MEMSIC) | Magnetometer | BCM 27 · pin 13 | Stable; primary reference platform |
+| `ak09916` | AK09916 (AKM) | Magnetometer | none (polling) | Experimental; no external INT pin in bypass mode |
+| `lis3mdl` | LIS3MDL (ST) | Magnetometer | BCM 27 · pin 13 | Experimental |
+| `lis2mdl` | LIS2MDL (ST) | Magnetometer | BCM 27 · pin 13 | Experimental |
+| `sim` | — | IMU + Magnetometer | none | Software simulation; no hardware required |
+
+GPIO pins shown are the defaults (`imu.int_gpio = 17`, `mag.int_gpio = 27`).
+Set `int_gpio = 0` in config to disable the interrupt and use a polling timer
+instead — useful when the pin is wired differently or unavailable.
 
 Experimental drivers have their register maps verified from datasheets but have
 not been validated on physical hardware.  imud prints a startup warning when an
