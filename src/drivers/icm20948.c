@@ -340,6 +340,7 @@ static int icm_read(int fd, uint8_t addr,
 
 const imu_ops_t icm20948_ops = {
     .name             = "icm20948",
+    .experimental     = true,
     .probe            = icm_probe,
     .reset            = icm_reset,
     .init             = icm_init,

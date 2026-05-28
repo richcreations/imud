@@ -256,13 +256,20 @@ fallback (polled once when gpsd drops), still respecting the 30-second minimum i
 
 ## Supported drivers
 
-| Driver name | Chip | Type | Notes |
-|-------------|------|------|-------|
-| `"ism330dhcx"` | ST ISM330DHCX | IMU | Primary supported IMU. FIFO + interrupt driven. |
-| `"icm20948"` | TDK ICM-20948 | IMU | Includes built-in AK09916 magnetometer via I²C master. |
-| `"mmc5983ma"` | MEMSIC MMC5983MA | Magnetometer | 18-bit, paired with ISM330DHCX. |
-| `"ak09916"` | AK09916 | Magnetometer | Used via ICM-20948's I²C master bus. |
-| `"sim"` | — | IMU + Mag | Software simulation. Simulates a small boat under way. No hardware required. Set `int_gpio = 0` on both sensors. |
+| Driver name | Chip | Type | I²C address | Notes |
+| --- | --- | --- | --- | --- |
+| `"ism330dhcx"` | ST ISM330DHCX | IMU | 0x6A–0x6B | Primary validated IMU. FIFO + interrupt driven. |
+| `"icm20948"` | TDK ICM-20948 | IMU | 0x68–0x69 | (experimental) Includes built-in AK09916 mag via I²C master. |
+| `"icm42688p"` | TDK ICM-42688-P | IMU | 0x68–0x69 | (experimental) Best-in-class noise floor. FIFO + hw timestamp. |
+| `"lsm6dso"` | ST LSM6DSO | IMU | 0x6A–0x6B | (experimental) Near-clone of ISM330DHCX. ODR up to 6664 Hz. |
+| `"lsm6dsox"` | ST LSM6DSOX | IMU | 0x6A–0x6B | (experimental) LSM6DSO with machine-learning core; same driver. |
+| `"mmc5983ma"` | MEMSIC MMC5983MA | Magnetometer | 0x30 | Primary validated mag. 18-bit, SET/RESET coil. |
+| `"ak09916"` | AK09916 | Magnetometer | 0x0C | (experimental) Used via ICM-20948 I²C bypass mode. |
+| `"lis3mdl"` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | (experimental) Popular standalone mag. INT pin. ±4 G fixed. |
+| `"lis2mdl"` | ST LIS2MDL | Magnetometer | 0x1E | (experimental) LIS3MDL successor. Fixed ±50 G, 0.15 µT/LSB. |
+| `"sim"` | — | IMU + Mag | — | Software simulation. Simulates a small boat under way. No hardware required. Set `int_gpio = 0` on both sensors. |
+
+Drivers marked **(experimental)** have their register maps verified against the datasheet but have not yet been validated on real hardware. A warning is printed at startup when an experimental driver is selected.
 
 ---
 

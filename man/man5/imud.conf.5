@@ -95,9 +95,17 @@ IMU driver settings.
 Driver name:
 .BR ism330dhcx ,
 .BR icm20948 ,
+.BR icm42688p ,
+.BR lsm6dso ,
+.BR lsm6dsox ,
 or
 .B sim
 (software simulation, no hardware required).
+Drivers other than
+.B ism330dhcx
+and
+.B sim
+are experimental (register map verified from datasheet; not yet validated on hardware).
 .TP
 .B i2c_addr
 .RI (int,\ default:\ 0x6B)
@@ -140,8 +148,15 @@ Magnetometer driver settings.
 Driver name:
 .BR mmc5983ma ,
 .BR ak09916 ,
+.BR lis3mdl ,
+.BR lis2mdl ,
 or
 .BR sim .
+Drivers other than
+.B mmc5983ma
+and
+.B sim
+are experimental.
 .TP
 .B i2c_addr
 .RI (int,\ default:\ 0x30)
