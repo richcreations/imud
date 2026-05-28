@@ -15,16 +15,26 @@ Quick highlights:
 
 Supported hardware:
 
-- IMUs:
-	- ISM330DHCX (ST)
-	- ICM-20948
-	- `sim` (software simulation for testing)
-- Magnetometers:
-	- MMC5983MA
-	- AK09916
-	- `sim` (simulated magnetometer)
+| Driver name | Chip | Type | Notes |
+| --- | --- | --- | --- |
+| `ism330dhcx` | ISM330DHCX (ST) | IMU | Stable; primary reference platform |
+| `icm20948` | ICM-20948 (TDK/InvenSense) | IMU | Experimental |
+| `icm42688p` | ICM-42688-P (TDK/InvenSense) | IMU | Experimental |
+| `lsm6dso` | LSM6DSO (ST) | IMU | Experimental |
+| `lsm6dsox` | LSM6DSOX (ST) | IMU | Experimental |
+| `mmc5983ma` | MMC5983MA (MEMSIC) | Magnetometer | Stable; primary reference platform |
+| `ak09916` | AK09916 (AKM) | Magnetometer | Experimental |
+| `lis3mdl` | LIS3MDL (ST) | Magnetometer | Experimental |
+| `lis2mdl` | LIS2MDL (ST) | Magnetometer | Experimental |
+| `sim` | — | IMU + Magnetometer | Software simulation; no hardware required |
 
-The drivers live in `src/drivers/` and the active registry is in `src/drivers.c`.
+Experimental drivers have their register maps verified from datasheets but have
+not been validated on physical hardware.  imud prints a startup warning when an
+experimental driver is active.
+
+The driver config names above are the values for `imu.driver` and `mag.driver`
+in `imud.conf`.  The drivers live in `src/drivers/` and the registry is in
+`src/drivers.c`.
 
 See the full protocol details in [spec.md](spec.md).
 
