@@ -12,6 +12,9 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
 TimeoutStartSec=30
+# Health thread pets the watchdog every ~1 s; a hung daemon misses the
+# 10 s window and systemd restarts it (counts as failure → Restart=).
+WatchdogSec=10
 
 # Dedicated system user; I2C and GPIO access via group membership.
 # Create with: useradd -r -s /sbin/nologin -G i2c,gpio imud

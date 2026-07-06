@@ -234,7 +234,7 @@ def _parse(buf: bytes) -> Optional[ImudPacket]:
     if len(buf) != IMUD_PACKET_SIZE:
         return None
 
-    # Validate CRC before full unpack (covers bytes 0..183)
+    # Validate CRC before full unpack (covers bytes 0..187)
     crc_offset = IMUD_PACKET_SIZE - 4
     computed = zlib.crc32(buf[:crc_offset]) & 0xFFFFFFFF
     stored   = struct.unpack_from('<I', buf, crc_offset)[0]

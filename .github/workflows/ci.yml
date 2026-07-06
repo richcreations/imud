@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev
+
+      - name: Build (imud, imud-cal, imud-status, imud-mon)
+        run: make
+
+      # make test builds and runs all host-side test binaries; it must run
+      # from the repo root (test_wmm loads data/WMM.COF by relative path).
+      - name: Test
+        run: make test
+
+      # Importing the Python client runs its struct-size assertion, catching
+      # wire-format drift in the pure-Python parser too.
+      - name: Python client self-check
+        run: python3 -c "import sys; sys.path.insert(0, 'lib'); import imud_client; print('imud_client.py OK')"

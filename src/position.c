@@ -57,6 +57,14 @@
 /* TCP connect timeout (seconds). */
 #define POS_CONNECT_TIMEOUT_S   5
 
+/* Sentinel for last_lat/last_lon guaranteed to exceed the update threshold,
+ * forcing a declination recompute on the next valid fix. */
+#define POS_FORCE_UPDATE_DEG 1000.0
+
+/* read_line() return code: select() timed out with no complete line buffered.
+ * The connection is still up; the caller may run periodic housekeeping. */
+#define POS_READ_IDLE (-2)
+
 /* ── JSON field extractor ─────────────────────────────────────────────────── */
 
 /*
@@ -81,9 +89,11 @@ bool pos_json_double(const char *json, const char *key, double *out)
 /* ── TCP helpers ─────────────────────────────────────────────────────────── */
 
 /*
- * tcp_connect_host — open a non-blocking TCP connection with a timeout.
- * Sets SO_RCVTIMEO = 10s on the resulting socket.
- * Returns fd on success, -1 on failure.
+ * tcp_connect_host — open a TCP connection with a per-address timeout.
+ * Tries every address getaddrinfo returns (a multi-homed host whose first
+ * address is down still connects).  Sets SO_RCVTIMEO = 10s on the result.
+ * Returns fd on success; -1 on failure with errno describing the last
+ * real connect error, so callers' strerror(errno) messages are accurate.
  */
 static int tcp_connect_host(const char *host, int port)
 {
@@ -92,30 +102,39 @@ static int tcp_connect_host(const char *host, int port)
     hints.ai_socktype = SOCK_STREAM;
     char portstr[16];
     snprintf(portstr, sizeof portstr, "%d", port);
-    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
-
-    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) { freeaddrinfo(res); return -1; }
-
-    /* Non-blocking connect so we can impose a timeout. */
-    fcntl(fd, F_SETFL, O_NONBLOCK);
-    int r = connect(fd, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
-
-    if (r < 0 && errno == EINPROGRESS) {
-        fd_set wfds; FD_ZERO(&wfds); FD_SET(fd, &wfds);
-        struct timeval tv = { .tv_sec = POS_CONNECT_TIMEOUT_S, .tv_usec = 0 };
-        if (select(fd + 1, NULL, &wfds, NULL, &tv) > 0) {
-            int err = 0; socklen_t sl = sizeof(err);
-            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &sl);
-            if (err != 0) { close(fd); return -1; }
-        } else {
-            /* Timeout or select error. */
-            close(fd); return -1;
-        }
-    } else if (r < 0) {
-        close(fd); return -1;
+    if (getaddrinfo(host, portstr, &hints, &res) != 0) {
+        errno = EHOSTUNREACH;   /* getaddrinfo failure doesn't set errno */
+        return -1;
     }
+
+    int fd = -1, err = EHOSTUNREACH;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) { err = errno; continue; }
+
+        /* Non-blocking connect so we can impose a timeout. */
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+        int r = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (r == 0) break;                       /* immediate connect */
+        if (r < 0 && errno == EINPROGRESS) {
+            fd_set wfds; FD_ZERO(&wfds); FD_SET(fd, &wfds);
+            struct timeval tv = { .tv_sec = POS_CONNECT_TIMEOUT_S, .tv_usec = 0 };
+            if (select(fd + 1, NULL, &wfds, NULL, &tv) > 0) {
+                int soerr = 0; socklen_t sl = sizeof(soerr);
+                getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl);
+                if (soerr == 0) break;           /* connected */
+                err = soerr;
+            } else {
+                err = ETIMEDOUT;
+            }
+        } else {
+            err = errno;
+        }
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) { errno = err; return -1; }
 
     /* Restore blocking mode for normal I/O. */
     int flags = fcntl(fd, F_GETFL, 0);
@@ -151,7 +170,10 @@ static void line_reader_init(line_reader_t *r, int fd)
 /*
  * read_line — read one newline-terminated line from a TCP socket.
  * Uses select() with a 1-second timeout to remain responsive to ctx->stop.
- * Returns the line length (≥ 0) on success, -1 on disconnect or stop.
+ * Returns the line length (≥ 0) on success, -1 on disconnect or stop, or
+ * POS_READ_IDLE when a full second passes with no data and no partial line
+ * pending — so the caller can run housekeeping while a quiet connection
+ * stays up.
  */
 static int read_line(line_reader_t *r, char *out, int outsz,
                      volatile sig_atomic_t *stop)
@@ -163,7 +185,12 @@ static int read_line(line_reader_t *r, char *out, int outsz,
             struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
             int s = select(r->fd + 1, &fds, NULL, NULL, &tv);
             if (s < 0) return -1;
-            if (s == 0) continue;   /* timeout — check stop and retry */
+            if (s == 0) {
+                /* Mid-line data would be lost by returning here, so only
+                 * report idle between lines; gpsd writes whole lines. */
+                if (n == 0) return POS_READ_IDLE;
+                continue;
+            }
             r->len = (int)recv(r->fd, r->buf, sizeof(r->buf), 0);
             if (r->len <= 0) return -1;   /* EOF or error */
             r->pos = 0;
@@ -192,7 +219,7 @@ static int read_line(line_reader_t *r, char *out, int outsz,
  * — an anchored vessel receiving steady fixes never trips the watchdog.
  */
 static void maybe_update_decl(pos_ctx_t *ctx, const wmm_t *wmm,
-                               double lat, double lon,
+                               double lat, double lon, double alt_m,
                                double *last_lat, double *last_lon,
                                time_t *last_fix_time)
 {
@@ -205,12 +232,47 @@ static void maybe_update_decl(pos_ctx_t *ctx, const wmm_t *wmm,
         return;
 
     double year = wmm_decimal_year();
-    double decl = wmm_declination(lat, lon, 0.0, year, wmm);
-    imu_ctx_set_declination(ctx->imu, (float)decl);
+    double decl = wmm_declination(lat, lon, alt_m, year, wmm);
+    imu_ctx_set_declination(ctx->imu, (float)decl, true);
     fprintf(stderr, "[pos] fix (%.4f°N, %.4f°E) → decl=%.2f°E\n",
             lat, lon, decl);
     *last_lat = lat;
     *last_lon = lon;
+}
+
+/*
+ * check_fix_ttl — clear declination when the last GPS fix is older than
+ * pos_fix_max_age_h hours, so FLAG_DECLINATION_VALID drops and true-heading
+ * output stops rather than steering on stale variation.
+ * fix_max_age_h = 0 disables the watchdog (declination persists forever).
+ *
+ * Called from the outer thread loop (SignalK mode, gpsd reconnect cycles)
+ * AND from inside run_gpsd's read loop, so it also fires while a gpsd
+ * session stays connected but stops delivering fixes (antenna failure,
+ * device removed).
+ *
+ * On expiry, last_lat/last_lon are reset to the force-update sentinel so
+ * the next valid fix — even at an unchanged anchorage — recomputes
+ * declination immediately instead of waiting for a ≥ POS_UPDATE_THRESH_DEG
+ * move that an anchored vessel may never make.
+ *
+ * Non-static: exposed in position.h for unit tests (like pos_json_double).
+ */
+void check_fix_ttl(pos_ctx_t *ctx, time_t *last_fix_time,
+                   double *last_lat, double *last_lon)
+{
+    if (ctx->cfg->pos_fix_max_age_h <= 0.0f || *last_fix_time == 0)
+        return;
+    if (difftime(time(NULL), *last_fix_time) <=
+            (double)(ctx->cfg->pos_fix_max_age_h * 3600.0f))
+        return;
+
+    fprintf(stderr, "[pos] GPS fix expired (>%.1f h old) — clearing declination\n",
+            (double)ctx->cfg->pos_fix_max_age_h);
+    imu_ctx_set_declination(ctx->imu, 0.0f, false);
+    *last_fix_time = 0;   /* prevent repeated clears */
+    *last_lat = POS_FORCE_UPDATE_DEG;
+    *last_lon = POS_FORCE_UPDATE_DEG;
 }
 
 /* ── gpsd streaming ──────────────────────────────────────────────────────── */
@@ -240,7 +302,16 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
     line_reader_init(&rdr, fd);
     char line[4096];
 
-    while (read_line(&rdr, line, sizeof line, &ctx->stop) >= 0) {
+    for (;;) {
+        /* Run the fix-TTL watchdog per iteration: this loop can hold the
+         * thread for hours (streaming fixless TPVs, or a silent-but-open
+         * session), and the outer-loop check only runs between connects. */
+        check_fix_ttl(ctx, last_fix_time, last_lat, last_lon);
+
+        int r = read_line(&rdr, line, sizeof line, &ctx->stop);
+        if (r == POS_READ_IDLE) continue;   /* quiet second — watchdog ran */
+        if (r < 0) break;                   /* disconnect or stop */
+
         if (!strstr(line, "\"class\":\"TPV\"")) continue;
         double mode = 0;
         pos_json_double(line, "mode", &mode);
@@ -248,7 +319,13 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
         double lat, lon;
         if (!pos_json_double(line, "lat", &lat)) continue;
         if (!pos_json_double(line, "lon", &lon)) continue;
-        maybe_update_decl(ctx, wmm, lat, lon, last_lat, last_lon, last_fix_time);
+        /* Altitude barely moves marine declination but costs nothing to use:
+         * newer gpsd emits altMSL, older builds plain alt. Optional. */
+        double alt = 0.0;
+        if (!pos_json_double(line, "altMSL", &alt))
+            pos_json_double(line, "alt", &alt);
+        maybe_update_decl(ctx, wmm, lat, lon, alt,
+                          last_lat, last_lon, last_fix_time);
     }
 
     fprintf(stderr, "[pos] gpsd disconnected\n");
@@ -288,6 +365,13 @@ static void poll_signalk(pos_ctx_t *ctx, const wmm_t *wmm,
     close(fd);
     resp[total] = '\0';
 
+    /* The position endpoint returns a few hundred bytes; a full buffer means
+     * the path points at something bigger and the tail was dropped. */
+    if (total >= (int)sizeof(resp) - 1)
+        fprintf(stderr, "[pos] SignalK response truncated at %zu bytes — "
+                "check signalk_path points at the position endpoint\n",
+                sizeof(resp) - 1);
+
     /* Skip HTTP response headers. */
     const char *body = strstr(resp, "\r\n\r\n");
     if (!body) return;
@@ -297,10 +381,12 @@ static void poll_signalk(pos_ctx_t *ctx, const wmm_t *wmm,
      * SignalK position response:
      *   {"value":{"longitude":-122.315,"latitude":37.870},...}
      */
-    double lat, lon;
+    double lat, lon, alt = 0.0;
     if (!pos_json_double(body, "latitude",  &lat)) return;
     if (!pos_json_double(body, "longitude", &lon)) return;
-    maybe_update_decl(ctx, wmm, lat, lon, last_lat, last_lon, last_fix_time);
+    pos_json_double(body, "altitude", &alt);   /* optional in SignalK */
+    maybe_update_decl(ctx, wmm, lat, lon, alt,
+                      last_lat, last_lon, last_fix_time);
 }
 
 /* ── Thread entry point ──────────────────────────────────────────────────── */
@@ -334,7 +420,7 @@ void *position_thread(void *arg)
     fputc('\n', stderr);
 
     /* Force first update regardless of position change. */
-    double last_lat = 1000.0, last_lon = 1000.0;
+    double last_lat = POS_FORCE_UPDATE_DEG, last_lon = POS_FORCE_UPDATE_DEG;
 
     /* Timestamp of the last valid GPS fix received (any source).
      * Updated by maybe_update_decl() on every fix, regardless of threshold.
@@ -347,27 +433,9 @@ void *position_thread(void *arg)
     time_t last_signalk_time = 0;
 
     while (!ctx->stop) {
-        /*
-         * TTL expiry watchdog — if a fix was previously obtained but hasn't
-         * been refreshed within pos_fix_max_age_h hours, clear the declination
-         * so FLAG_DECLINATION_VALID drops and true-heading output stops.
-         * Set fix_max_age_h = 0 to disable (declination persists indefinitely).
-         *
-         * Note: when gpsd is connected and streaming, run_gpsd() below blocks
-         * until the connection drops, so this check runs each reconnect cycle
-         * (typically every POS_GPSD_RETRY_S seconds on failure).  A live gpsd
-         * session with valid fixes keeps last_fix_time current, so the TTL only
-         * fires during a multi-hour GPS outage.
-         */
-        if (ctx->cfg->pos_fix_max_age_h > 0.0f &&
-            last_fix_time > 0 &&
-            difftime(time(NULL), last_fix_time) >
-                    (double)(ctx->cfg->pos_fix_max_age_h * 3600.0f)) {
-            fprintf(stderr, "[pos] GPS fix expired (>%.1f h old) — clearing declination\n",
-                    (double)ctx->cfg->pos_fix_max_age_h);
-            imu_ctx_set_declination(ctx->imu, 0.0f);
-            last_fix_time = 0;   /* prevent repeated clears */
-        }
+        /* Fix-TTL watchdog (also runs inside run_gpsd's read loop — see
+         * check_fix_ttl for why both call sites are needed). */
+        check_fix_ttl(ctx, &last_fix_time, &last_lat, &last_lon);
 
         if (ctx->cfg->pos_gpsd_enabled) {
             /*

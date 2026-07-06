@@ -158,34 +158,45 @@ static void test_load_missing_file(void)
     end_test(fb);
 }
 
-/* Bad integer value must return -1. */
+/* Bad integer value: reported as CONFIG_ERR_PARSE, but the parse continues —
+ * the bad key keeps its default and later lines are still applied. */
 static void test_load_bad_int(void)
 {
     begin_test("test_load_bad_int");
     int fb = g_fail;
     const char *path = write_tmpconf(1,
         "[imu]\n"
-        "odr_hz = notanumber\n");
+        "odr_hz = notanumber\n"
+        "gyro_dps = 500\n");
+    imud_config_t def;
+    config_defaults(&def);
     imud_config_t cfg;
     config_defaults(&cfg);
     int rc = config_load(path, &cfg);
-    EXPECT(rc == -1, "bad int returns -1");
+    EXPECT(rc == CONFIG_ERR_PARSE,          "bad int returns CONFIG_ERR_PARSE");
+    EXPECT(cfg.imu_odr_hz == def.imu_odr_hz, "bad key keeps its default");
+    EXPECT(cfg.imu_gyro_dps == 500,          "line after the bad one still applied");
     remove(path);
     end_test(fb);
 }
 
-/* Bad boolean value must return -1. */
+/* Bad boolean value: same continue-and-report contract as bad int. */
 static void test_load_bad_bool(void)
 {
     begin_test("test_load_bad_bool");
     int fb = g_fail;
     const char *path = write_tmpconf(2,
         "[nmea]\n"
-        "enabled = yes\n");
+        "enabled = yes\n"
+        "rate_hz = 5\n");
+    imud_config_t def;
+    config_defaults(&def);
     imud_config_t cfg;
     config_defaults(&cfg);
     int rc = config_load(path, &cfg);
-    EXPECT(rc == -1, "bad bool returns -1");
+    EXPECT(rc == CONFIG_ERR_PARSE,                  "bad bool returns CONFIG_ERR_PARSE");
+    EXPECT(cfg.nmea_enabled == def.nmea_enabled,     "bad key keeps its default");
+    EXPECT(cfg.nmea_rate_hz == 5,                    "line after the bad one still applied");
     remove(path);
     end_test(fb);
 }
@@ -294,10 +305,64 @@ static void test_defaults_position(void)
     config_defaults(&cfg);
 
     EXPECT_NEAR_D(cfg.pos_declination_deg, 0.0, 1e-9, "pos_declination_deg default 0");
+    EXPECT(!cfg.pos_declination_valid,                 "pos_declination_valid default false");
     EXPECT_NEAR_D(cfg.pos_lat_deg,         0.0, 1e-9, "pos_lat_deg default 0");
     EXPECT_NEAR_D(cfg.pos_lon_deg,         0.0, 1e-9, "pos_lon_deg default 0");
     EXPECT_STR(cfg.pos_wmm_file, "/etc/imud/WMM.COF", "pos_wmm_file default");
     EXPECT_NEAR_D(cfg.pos_fix_max_age_h,  24.0, 1e-5, "pos_fix_max_age_h default 24 h");
+    end_test(fb);
+}
+
+/* [stream] defaults and key loading. */
+static void test_stream_section(void)
+{
+    begin_test("test_stream_section");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(!cfg.stream_enabled,                        "stream disabled by default");
+    EXPECT(cfg.stream_rate_hz == 100,                  "stream rate_hz default 100");
+    EXPECT_STR(cfg.stream_socket, "/run/imud/imud-stream.sock",
+               "stream socket default path");
+
+    const char *path = write_tmpconf(14,
+        "[stream]\n"
+        "enabled = true\n"
+        "socket  = \"/tmp/alt-stream.sock\"\n"
+        "rate_hz = 50\n");
+    EXPECT(config_load(path, &cfg) == 0,               "stream section loads");
+    EXPECT(cfg.stream_enabled,                         "stream enabled loaded");
+    EXPECT(cfg.stream_rate_hz == 50,                   "stream rate_hz loaded");
+    EXPECT_STR(cfg.stream_socket, "/tmp/alt-stream.sock", "stream socket loaded");
+    remove(path);
+    end_test(fb);
+}
+
+/* declination_deg sets the validity flag: non-zero → valid, 0.0 → disabled. */
+static void test_declination_valid_flag(void)
+{
+    begin_test("test_declination_valid_flag");
+    int fb = g_fail;
+
+    const char *path = write_tmpconf(12,
+        "[position]\n"
+        "declination_deg = 13.2\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,               "non-zero declination loads");
+    EXPECT(cfg.pos_declination_valid,                  "non-zero declination → valid");
+    EXPECT_NEAR_D(cfg.pos_declination_deg, 13.2, 1e-5, "declination value applied");
+    remove(path);
+
+    path = write_tmpconf(13,
+        "[position]\n"
+        "declination_deg = 0.0\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,   "zero declination loads");
+    EXPECT(!cfg.pos_declination_valid,     "explicit 0.0 stays disabled (config semantics)");
+    remove(path);
+
     end_test(fb);
 }
 
@@ -386,6 +451,8 @@ int main(void)
     test_defaults_values();
     test_defaults_cal_file();
     test_defaults_position();
+    test_stream_section();
+    test_declination_valid_flag();
     test_fix_max_age_h_load();
     test_fix_max_age_h_zero();
     test_load_real_conf();

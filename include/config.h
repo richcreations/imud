@@ -8,7 +8,9 @@
  * config.h — runtime configuration loaded from TOML file (§9)
  *
  * config_load() parses the file; config_defaults() fills safe defaults.
- * SIGHUP reloads the fields marked [hot]: fusion gains, log level.
+ * SIGHUP reloads the fields marked [hot]: fusion noise/threshold params,
+ * output rates, stats heartbeat rate, and static declination (unless a live
+ * position source owns it). Log level is applied once at startup.
  * Fields marked [restart] require a full daemon restart to take effect.
  */
 #ifndef IMUD_CONFIG_H
@@ -72,6 +74,11 @@ typedef struct {
     char  json_dest_addr[64];
     int   json_dest_port;
 
+    /* [stream]  local AF_UNIX subscription stream (binary packets) */
+    bool  stream_enabled;         /* [restart] */
+    char  stream_socket[108];     /* [restart] listen path; sized to sun_path */
+    int   stream_rate_hz;         /* [hot] per-subscriber packet rate */
+
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
     char  log_file[256];
@@ -79,6 +86,10 @@ typedef struct {
 
     /* [position]  [restart] */
     float  pos_declination_deg;   /* static magnetic declination °E+; 0 = disabled */
+    bool   pos_declination_valid; /* derived, not a config key: true when declination
+                                   * came from an explicit non-zero declination_deg or
+                                   * a WMM computation (which may legitimately be 0.0
+                                   * on the agonic line) */
     double pos_lat_deg;           /* geodetic latitude  (+N / -S); 0 = WMM disabled */
     double pos_lon_deg;           /* geodetic longitude (+E / -W); 0 = WMM disabled */
     char   pos_wmm_file[256];     /* path to WMM.COF; default /etc/imud/WMM.COF */
@@ -107,10 +118,17 @@ typedef struct {
 
 } imud_config_t;
 
+/* config_load return codes */
+#define CONFIG_ERR_OPEN  (-1)  /* file could not be opened; cfg untouched */
+#define CONFIG_ERR_PARSE (-2)  /* file read, but one or more values were bad */
+
 /*
  * config_load: parse TOML file at path into cfg.
- * Returns 0 on success, -1 on parse error (error logged to stderr).
- * Unknown keys are warned but not fatal.
+ * Returns 0 on success, CONFIG_ERR_OPEN or CONFIG_ERR_PARSE on failure.
+ * A bad value does not stop the parse: every error in the file is logged
+ * to stderr and all valid lines are applied, but CONFIG_ERR_PARSE is
+ * returned so the caller can treat the file as unfit to run on.
+ * Unknown keys/sections are warned but not fatal.
  */
 int  config_load(const char *path, imud_config_t *cfg);
 

@@ -67,12 +67,15 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg);
 
 /*
  * Update the magnetic declination live, without a full config reload.
- * Called by the position thread whenever a GPS fix triggers a WMM recompute.
- * The fusion thread reads pos_declination_deg on every predict step, so the
+ * Called by the position thread whenever a GPS fix triggers a WMM recompute
+ * (valid = true) or the fix-TTL watchdog expires (valid = false).
+ * `valid` drives FLAG_DECLINATION_VALID explicitly, so a genuine 0.0°
+ * declination on the agonic line is still reported as valid.
+ * The fusion thread reads these fields on every predict step, so the
  * new value takes effect within one IMU sample period.
  * Safe to call from any thread while fusion_thread is running.
  */
-void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg);
+void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid);
 
 /* Release I2C fd, GPIO lines, ring buffers, and the context itself.
  * Call only after all three threads have been joined. */

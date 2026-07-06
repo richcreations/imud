@@ -158,8 +158,15 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->json_dest_addr, sizeof(cfg->json_dest_addr), "255.255.255.255");
     cfg->json_dest_port = 10112;
 
+    /* [stream] */
+    cfg->stream_enabled = false;
+    snprintf(cfg->stream_socket, sizeof(cfg->stream_socket),
+             "/run/imud/imud-stream.sock");
+    cfg->stream_rate_hz = 100;
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
+    cfg->pos_declination_valid = false;
     cfg->pos_lat_deg  = 0.0;
     cfg->pos_lon_deg  = 0.0;
     snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file), "/etc/imud/WMM.COF");
@@ -223,6 +230,7 @@ typedef enum {
     SEC_NMEA,
     SEC_HIGHRATE,
     SEC_JSON,
+    SEC_STREAM,
     SEC_LOGGING,
     SEC_POSITION
 } section_t;
@@ -238,6 +246,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[nmea]")        == 0) return SEC_NMEA;
     if (strcmp(s, "[highrate]")    == 0) return SEC_HIGHRATE;
     if (strcmp(s, "[json]")        == 0) return SEC_JSON;
+    if (strcmp(s, "[stream]")      == 0) return SEC_STREAM;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
     return SEC_UNKNOWN;
@@ -429,6 +438,13 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else WARN_UNKNOWN();
         break;
 
+    case SEC_STREAM:
+        if      (strcmp(key, "enabled") == 0) NEED_BOOL(cfg->stream_enabled);
+        else if (strcmp(key, "socket")  == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "rate_hz") == 0) NEED_INT(cfg->stream_rate_hz);
+        else WARN_UNKNOWN();
+        break;
+
     case SEC_LOGGING:
         if      (strcmp(key, "level")    == 0) NEED_STR(cfg->log_level);
         else if (strcmp(key, "file")     == 0) NEED_STR(cfg->log_file);
@@ -437,7 +453,12 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_POSITION:
-        if      (strcmp(key, "declination_deg")  == 0) NEED_FLT(cfg->pos_declination_deg);
+        if      (strcmp(key, "declination_deg")  == 0) {
+            NEED_FLT(cfg->pos_declination_deg);
+            /* Config-key semantics stay "0.0 = disabled"; only WMM-computed
+             * declination may be valid at exactly 0.0 (agonic line). */
+            cfg->pos_declination_valid = (cfg->pos_declination_deg != 0.0f);
+        }
         else if (strcmp(key, "lat_deg")           == 0) NEED_DBL(cfg->pos_lat_deg);
         else if (strcmp(key, "lon_deg")           == 0) NEED_DBL(cfg->pos_lon_deg);
         else if (strcmp(key, "wmm_file")          == 0) NEED_STR(cfg->pos_wmm_file);
@@ -468,7 +489,7 @@ int config_load(const char *path, imud_config_t *cfg)
     FILE *f = fopen(path, "r");
     if (!f) {
         fprintf(stderr, "config: cannot open '%s': %s\n", path, strerror(errno));
-        return -1;
+        return CONFIG_ERR_OPEN;
     }
 
     section_t sec = SEC_NONE;
@@ -522,10 +543,12 @@ int config_load(const char *path, imud_config_t *cfg)
             continue;
         }
 
-        if (apply_kv(cfg, sec, key, val, path, lineno) != 0) {
-            rc = -1;
-            break;
-        }
+        /* Report and keep parsing so every error in the file is surfaced
+         * in one pass. The caller decides whether a bad file is fatal;
+         * aborting here would silently discard all settings after the
+         * first bad line while keeping the ones before it. */
+        if (apply_kv(cfg, sec, key, val, path, lineno) != 0)
+            rc = CONFIG_ERR_PARSE;
     }
 
     fclose(f);
