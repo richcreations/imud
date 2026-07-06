@@ -85,22 +85,29 @@ struct imu_ctx {
     imu_sample_t     latest_imu;
     imu_sample_t     raw_imu;
 
-    /* Stats — each field written by exactly one thread; no extra lock needed. */
-    uint64_t         imu_sample_count;
-    uint64_t         mag_sample_count;
-    uint64_t         fifo_overflow_count;
-    uint64_t         imu_error_count;
-    uint64_t         mag_error_count;
+    /* Stats — each field written by exactly one thread. _Atomic so the
+     * cross-thread reads in imu_get_stats() are tear-free even on a
+     * 32-bit build (free on 64-bit: plain loads/stores). */
+    _Atomic uint64_t imu_sample_count;
+    _Atomic uint64_t mag_sample_count;
+    _Atomic uint64_t fifo_overflow_count;
+    _Atomic uint64_t imu_error_count;
+    _Atomic uint64_t mag_error_count;
 
     float            vib_ema;       /* EMA of (|a|-g)² for engine detection, ism_reader only */
 
+    /* Cross-thread signal flags: _Atomic int rather than volatile so the
+     * single-writer/single-reader handshakes are C11-clean, not just
+     * "works on ARM". Syntax of all existing reads/writes is unchanged.
+     * `stop` stays volatile int because its address is passed to
+     * imu_ring_pop(..., volatile int *stop) — same effective semantics. */
     volatile int     stop;
     _Atomic int      settled;      /* release-written by fusion_thread at Phase 4 entry;
                                     * acquire-read by output/health threads to suppress
                                     * output until settle + bias estimation + alignment done */
-    volatile int     reconfigure;  /* set by main on SIGHUP; cleared by fusion_thread */
-    volatile int     mag_set_flag; /* set by mag_reader after SET pulse; cleared by fusion_thread */
-    volatile int     engine_on;    /* set by ism_reader when vibration EMA exceeds threshold */
+    _Atomic int      reconfigure;  /* set by main on SIGHUP; cleared by fusion_thread */
+    _Atomic int      mag_set_flag; /* set by mag_reader after SET pulse; cleared by fusion_thread */
+    _Atomic int      engine_on;    /* set by ism_reader when vibration EMA exceeds threshold */
 };
 
 /* ── Calibration helpers ─────────────────────────────────────────────────── */
@@ -665,8 +672,9 @@ void *fusion_thread(void *arg)
         }
         state.imu_seq = s.seq;
 
-        /* Static declination: opt-in; zero means feature disabled. */
-        if (ctx->cfg.pos_declination_deg != 0.0f) {
+        /* Declination validity is an explicit flag, not a 0.0 sentinel, so a
+         * WMM-computed 0.0° on the agonic line still yields true heading. */
+        if (ctx->cfg.pos_declination_valid) {
             state.declination_deg = ctx->cfg.pos_declination_deg;
             state.flags |= FLAG_DECLINATION_VALID;
         }
@@ -853,19 +861,36 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
     ctx->cfg.accel_skip_thresh         = new_cfg->accel_skip_thresh;
     ctx->cfg.engine_vibration_g2       = new_cfg->engine_vibration_g2;
     ctx->cfg.engine_accel_skip_thresh  = new_cfg->engine_accel_skip_thresh;
-    ctx->cfg.pos_declination_deg       = new_cfg->pos_declination_deg;
+    /* Static declination applies only when no live position source is
+     * configured. With gpsd/SignalK enabled the position thread owns this
+     * field via imu_ctx_set_declination(); copying main's static value
+     * (typically 0.0) here would clobber the live GPS-derived declination
+     * on every SIGHUP and drop true-heading output until the next ≥5 km
+     * position change. */
+    if (!new_cfg->pos_gpsd_enabled && !new_cfg->pos_signalk_enabled) {
+        ctx->cfg.pos_declination_deg   = new_cfg->pos_declination_deg;
+        ctx->cfg.pos_declination_valid = new_cfg->pos_declination_valid;
+    }
     ctx->reconfigure = 1;
 }
 
-void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg)
+void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
 {
     /*
-     * Write a single aligned float — naturally atomic on ARM and x86.
-     * The fusion thread reads pos_declination_deg each predict step; the
-     * new value takes effect within one IMU sample period (~1.2 ms at 833 Hz).
+     * Two single-word writes — each naturally atomic on ARM and x86.
+     * The fusion thread reads them each predict step; the new value takes
+     * effect within one IMU sample period (~1.2 ms at 833 Hz).  Value is
+     * written before the flag when validating (and the flag first when
+     * clearing) so a torn pair can at worst apply one stale-but-sane sample.
      * Follows the same lockless pattern as imu_ctx_update_config().
      */
-    ctx->cfg.pos_declination_deg = decl_deg;
+    if (valid) {
+        ctx->cfg.pos_declination_deg   = decl_deg;
+        ctx->cfg.pos_declination_valid = true;
+    } else {
+        ctx->cfg.pos_declination_valid = false;
+        ctx->cfg.pos_declination_deg   = decl_deg;
+    }
 }
 
 void imu_ctx_stop(imu_ctx_t *ctx)

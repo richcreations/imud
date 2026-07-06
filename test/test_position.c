@@ -25,14 +25,16 @@
 
 /*
  * Minimal stub so position.c can be linked without imu.c.
- * Records the last declination value written for assertion.
+ * Records the last declination value + validity written for assertion.
  */
-float g_last_decl = -999.0f;
+float g_last_decl  = -999.0f;
+bool  g_last_valid = true;
 
-void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg)
+void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
 {
     (void)ctx;
-    g_last_decl = decl_deg;
+    g_last_decl  = decl_deg;
+    g_last_valid = valid;
 }
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
@@ -245,6 +247,60 @@ static void test_fix_ttl_arithmetic(void)
     end(fb);
 }
 
+/*
+ * check_fix_ttl() behavior — the real watchdog function, driven directly.
+ *
+ * Regression test for the anchored-vessel recovery bug: on expiry the
+ * watchdog must reset last_lat/last_lon to the force-update sentinel so
+ * the next fix at an unchanged position recomputes declination immediately,
+ * not after a ≥5 km move.
+ */
+static void test_check_fix_ttl(void)
+{
+    begin("test_check_fix_ttl");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    memset(&cfg, 0, sizeof cfg);
+    pos_ctx_t ctx = { .cfg = &cfg, .imu = NULL, .stop = 0 };
+
+    /* Expired fix (2 h old, 1 h TTL) → clear + sentinel reset. */
+    cfg.pos_fix_max_age_h = 1.0f;
+    time_t fix  = time(NULL) - 7200;
+    double lat  = 37.87, lon = -122.32;
+    g_last_decl = -999.0f; g_last_valid = true;
+    check_fix_ttl(&ctx, &fix, &lat, &lon);
+    EXPECT_NEAR_D(g_last_decl, 0.0, 1e-9, "expired fix clears declination");
+    EXPECT(!g_last_valid,                 "expired fix marks declination invalid");
+    EXPECT(fix == 0,                      "expired fix zeroes last_fix_time");
+    EXPECT(lat > 900.0 && lon > 900.0,    "expired fix resets position sentinel");
+
+    /* Fresh fix → untouched. */
+    fix = time(NULL);
+    lat = 37.87; lon = -122.32;
+    g_last_decl = -999.0f;
+    check_fix_ttl(&ctx, &fix, &lat, &lon);
+    EXPECT_NEAR_D(g_last_decl, -999.0, 1e-9, "fresh fix leaves declination alone");
+    EXPECT(fix != 0,                          "fresh fix keeps last_fix_time");
+    EXPECT_NEAR_D(lat, 37.87, 1e-9,           "fresh fix keeps position");
+
+    /* TTL disabled → stale fix untouched. */
+    cfg.pos_fix_max_age_h = 0.0f;
+    fix = time(NULL) - 7200;
+    g_last_decl = -999.0f;
+    check_fix_ttl(&ctx, &fix, &lat, &lon);
+    EXPECT_NEAR_D(g_last_decl, -999.0, 1e-9, "disabled TTL never clears");
+
+    /* No fix yet (last_fix_time = 0) → untouched. */
+    cfg.pos_fix_max_age_h = 1.0f;
+    fix = 0;
+    g_last_decl = -999.0f;
+    check_fix_ttl(&ctx, &fix, &lat, &lon);
+    EXPECT_NEAR_D(g_last_decl, -999.0, 1e-9, "no-fix-yet never clears");
+
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -264,6 +320,7 @@ int main(void)
     test_gpsd_no_fix();
     test_json_multiple_keys();
     test_fix_ttl_arithmetic();
+    test_check_fix_ttl();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

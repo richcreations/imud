@@ -38,7 +38,7 @@ int wmm_load(const char *path, wmm_t *out)
     /* Skip the rest of the header line */
     { char buf[256]; if (!fgets(buf, sizeof(buf), fp)) { fclose(fp); return -1; } }
 
-    int n, m;
+    int n, m, rows = 0;
     double g, h, gs, hs;
     while (fscanf(fp, " %d %d %lf %lf %lf %lf", &n, &m, &g, &h, &gs, &hs) == 6) {
         if (n > 12) break;          /* 999…9 terminator */
@@ -47,9 +47,19 @@ int wmm_load(const char *path, wmm_t *out)
         out->h[n][m]    = h;
         out->g_sv[n][m] = gs;
         out->h_sv[n][m] = hs;
+        rows++;
     }
 
     fclose(fp);
+
+    /* A degree-12 WMM has exactly 90 (n,m) coefficient rows.  Fewer means a
+     * truncated or corrupt file; silently accepting it would run an
+     * all-zero (or partial) model whose declination is garbage. */
+    if (rows < 90) {
+        fprintf(stderr, "wmm: '%s' has %d coefficient rows (expected 90) — "
+                "rejecting\n", path, rows);
+        return -1;
+    }
     return 0;
 }
 

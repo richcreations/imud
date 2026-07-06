@@ -275,11 +275,14 @@ Destination UDP port.
 Sentences emitted:
 .BR $PASHR ,
 .BR $HCHDM ,
+.BR $HCHDG ,
 .BR $TIROT ,
 .BR $IIXDR .
 When declination is configured,
 .B $HCHDT
-(true heading) is added.
+(true heading) is added and
+.B $HCHDG
+carries the variation fields.
 .SS [highrate]
 High-rate binary UDP stream.
 .B [restart]:
@@ -341,6 +344,30 @@ Destination IP address.
 .B dest_port
 .RI (int,\ default:\ 10112)
 Destination UDP port.
+.SS [stream]
+Local AF_UNIX subscription stream carrying the same 192-byte binary packets
+as
+.B [highrate]
+over a SOCK_STREAM socket: loss-free for same-host consumers, up to 8
+subscribers. Slow consumers get dropped packets (visible as imu_seq gaps),
+never a stalled daemon.
+.B [restart]:
+.BR enabled ,
+.BR socket .
+.B [hot]:
+.BR rate_hz .
+.TP
+.B enabled
+.RI (bool,\ default:\ false)
+Enable the subscription stream.
+.TP
+.B socket
+.RI (string,\ default:\ \(dq/run/imud/imud-stream.sock\(dq)
+Listen socket path (mode 0660).
+.TP
+.B rate_hz
+.RI (int,\ default:\ 100)
+Per-subscriber packet rate in Hz.
 .SS [mount]
 Board-to-body rotation.
 .B [restart]

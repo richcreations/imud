@@ -122,6 +122,25 @@ int main(void)
         if (ok) passed++; else failed++;
     }
 
+    /* A header-only / truncated COF must be rejected, not silently loaded
+     * as an all-zero model whose declination is a meaningless 0.0. */
+    {
+        const char *tpath = "/tmp/imud_test_truncated.COF";
+        FILE *fp = fopen(tpath, "w");
+        int ok = 0;
+        if (fp) {
+            fprintf(fp, "  2025.0   WMM-2025   11/13/2024\n"
+                        "  1  0  -29351.8       0.0       12.6        0.0\n");
+            fclose(fp);
+            wmm_t bad;
+            ok = (wmm_load(tpath, &bad) == -1);
+            remove(tpath);
+        }
+        printf("  %s  wmm_load(truncated file) returns -1\n",
+               ok ? "PASS" : "FAIL");
+        if (ok) passed++; else failed++;
+    }
+
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

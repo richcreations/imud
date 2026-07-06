@@ -10,10 +10,12 @@
  * Key correctness properties verified:
  *   - Every emitted sentence has a valid XOR checksum
  *   - Sentences are CRLF-terminated
- *   - Exactly 4 sentences per burst (no FLAG_DECLINATION_VALID)
- *   - Exactly 5 sentences per burst when FLAG_DECLINATION_VALID is set
+ *   - Exactly 5 sentences per burst (no FLAG_DECLINATION_VALID)
+ *   - Exactly 6 sentences per burst when FLAG_DECLINATION_VALID is set
  *   - $HCHDT not emitted without FLAG_DECLINATION_VALID
  *   - $HCHDT emitted with correct true heading when FLAG_DECLINATION_VALID set
+ *   - $HCHDG always emitted; variation fields carry declination (E/W) when
+ *     FLAG_DECLINATION_VALID is set, empty otherwise
  *   - PASHR T/M flag is always 'M' (magnetic heading)
  *   - Rate-of-turn sign preserved in $TIROT
  *   - Buffer-too-small returns -1
@@ -134,7 +136,7 @@ static void test_all_checksums_valid(void)
         checked++;
         p++;
     }
-    EXPECT(checked == 4, "exactly 4 sentences present");
+    EXPECT(checked == 5, "exactly 5 sentences present");
     end(fb);
 }
 
@@ -146,7 +148,7 @@ static void test_sentence_count(void)
     char buf[NMEA_BUF_MIN];
     fused_state_t s = make_state(0, 0, 90.0f, 0);
     nmea_encode(buf, sizeof(buf), &s);
-    EXPECT(count_sentences(buf) == 4, "exactly 4 sentences per burst");
+    EXPECT(count_sentences(buf) == 5, "exactly 5 sentences per burst");
     end(fb);
 }
 
@@ -189,7 +191,54 @@ static void test_sentence_count_with_declination(void)
     s.flags |= FLAG_DECLINATION_VALID;
     s.declination_deg = 14.5f;
     nmea_encode(buf, sizeof(buf), &s);
-    EXPECT(count_sentences(buf) == 5, "5 sentences when FLAG_DECLINATION_VALID set");
+    EXPECT(count_sentences(buf) == 6, "6 sentences when FLAG_DECLINATION_VALID set");
+    end(fb);
+}
+
+/* $HCHDG is always emitted; variation fields are empty without declination. */
+static void test_hchdg_no_declination(void)
+{
+    begin("test_hchdg_no_declination");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(0, 0, 214.7f, 0);
+    nmea_encode(buf, sizeof(buf), &s);
+    EXPECT(has_sentence(buf, "HCHDG"), "$HCHDG emitted without declination");
+    EXPECT(strstr(buf, "$HCHDG,214.7,,,,*") != NULL,
+           "variation fields empty without FLAG_DECLINATION_VALID");
+    end(fb);
+}
+
+/* $HCHDG variation: value + E for positive (east) declination. */
+static void test_hchdg_variation_east(void)
+{
+    begin("test_hchdg_variation_east");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(0, 0, 90.0f, 0);
+    s.flags |= FLAG_DECLINATION_VALID;
+    s.declination_deg = 13.2f;
+    nmea_encode(buf, sizeof(buf), &s);
+    EXPECT(strstr(buf, "$HCHDG,090.0,,,13.2,E*") != NULL,
+           "positive declination → variation 13.2,E");
+    end(fb);
+}
+
+/* $HCHDG variation: magnitude + W for negative (west) declination. */
+static void test_hchdg_variation_west(void)
+{
+    begin("test_hchdg_variation_west");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(0, 0, 90.0f, 0);
+    s.flags |= FLAG_DECLINATION_VALID;
+    s.declination_deg = -4.5f;
+    nmea_encode(buf, sizeof(buf), &s);
+    EXPECT(strstr(buf, "$HCHDG,090.0,,,4.5,W*") != NULL,
+           "negative declination → variation 4.5,W (magnitude + W)");
     end(fb);
 }
 
@@ -389,6 +438,9 @@ int main(void)
     test_sentence_count_with_declination();
     test_hchdt_true_heading_value();
     test_hchdt_checksum_valid();
+    test_hchdg_no_declination();
+    test_hchdg_variation_east();
+    test_hchdg_variation_west();
     test_crlf_termination();
     test_tm_flag_always_magnetic();
     test_rot_sign_positive();

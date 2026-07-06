@@ -100,6 +100,7 @@ static void usage(const char *prog)
         "  --no-nmea          Disable NMEA output stream\n"
         "  --no-highrate      Disable high-rate binary stream\n"
         "  --no-json          Disable JSON output stream\n"
+        "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
         "  --version          Print version and exit\n",
         prog);
 }
@@ -151,7 +152,8 @@ static void pid_remove(const char *path)
 
 /* ── sd_notify ───────────────────────────────────────────────────────────── */
 
-static void sd_notify_ready(void)
+/* Send one sd_notify(3)-style datagram to systemd; no-op outside systemd. */
+static void sd_notify_msg(const char *msg)
 {
     const char *sock = getenv("NOTIFY_SOCKET");
     if (!sock) return;
@@ -168,9 +170,14 @@ static void sd_notify_ready(void)
 
     int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return;
-    sendto(fd, "READY=1", 7, MSG_NOSIGNAL,
+    sendto(fd, msg, strlen(msg), MSG_NOSIGNAL,
            (struct sockaddr *)&addr, sizeof(addr));
     close(fd);
+}
+
+static void sd_notify_ready(void)
+{
+    sd_notify_msg("READY=1");
 }
 
 /* ── Clock health check ──────────────────────────────────────────────────── */
@@ -353,6 +360,12 @@ static void *health_thread(void *arg)
     ts_add_ns(&next_stats, stats_period_ns);
 
     while (!*ctx->stop) {
+        /* systemd watchdog heartbeat — this loop ticks at least once per
+         * second, well inside the unit's WatchdogSec window; a hung daemon
+         * stops petting the dog and systemd restarts it. No-op when not
+         * run under systemd or when WatchdogSec is unset. */
+        sd_notify_msg("WATCHDOG=1");
+
         /* Poll the status socket with 1 s timeout. */
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -447,7 +460,8 @@ static void apply_wmm_if_configured(imud_config_t *cfg)
 
     double decl = wmm_declination(cfg->pos_lat_deg, cfg->pos_lon_deg,
                                   0.0, year, &wmm);
-    cfg->pos_declination_deg = (float)decl;
+    cfg->pos_declination_deg   = (float)decl;
+    cfg->pos_declination_valid = true;   /* WMM result is valid even at 0.0° */
     fprintf(stderr, "[pos] WMM declination at (%.4f°N, %.4f°E): %.2f°E\n",
             cfg->pos_lat_deg, cfg->pos_lon_deg, decl);
 }
@@ -472,7 +486,16 @@ int main(int argc, char **argv)
     imud_config_t cfg;
     config_defaults(&cfg);
 
-    if (config_load(args.config_path, &cfg) < 0) {
+    /* A config file that exists but fails to parse is fatal: starting with
+     * a half-applied config (everything after the bad line discarded) is
+     * worse than not starting at all. A missing file is fine — defaults. */
+    int cfg_rc = config_load(args.config_path, &cfg);
+    if (cfg_rc == CONFIG_ERR_PARSE) {
+        fprintf(stderr, "[main] %s has errors (see above) — refusing to start\n",
+                args.config_path);
+        return 1;
+    }
+    if (cfg_rc == CONFIG_ERR_OPEN) {
         /* Fallback: try the other default */
         char alt[256];
         const char *home = getenv("HOME");
@@ -481,8 +504,13 @@ int main(int argc, char **argv)
         else
             snprintf(alt, sizeof(alt), "/etc/imud/imud.conf");
 
-        if (strcmp(args.config_path, alt) != 0)
-            config_load(alt, &cfg);  /* ignore error — defaults remain */
+        if (strcmp(args.config_path, alt) != 0 &&
+            config_load(alt, &cfg) == CONFIG_ERR_PARSE) {
+            fprintf(stderr, "[main] %s has errors (see above) — refusing to start\n",
+                    alt);
+            return 1;
+        }
+        /* Neither file existing is fine — defaults remain. */
     }
 
     /* Apply CLI overrides */
@@ -564,9 +592,10 @@ int main(int argc, char **argv)
 
     /* Reader threads first — must be running before fusion blocks on ring. */
     pthread_t ism_tid, mag_tid, fusion_tid, health_tid;
-    pthread_t nmea_tid = 0, hirate_tid = 0, json_tid = 0, pos_tid = 0;
+    pthread_t nmea_tid = 0, hirate_tid = 0, json_tid = 0, stream_tid = 0,
+              pos_tid = 0;
     bool nmea_started = false, hirate_started = false, json_started = false;
-    bool pos_started  = false;
+    bool stream_started = false, pos_started = false;
 
     if (pthread_create(&ism_tid, NULL, ism_reader_thread, imu) != 0) {
         fprintf(stderr, "[main] fatal: cannot create ism_reader thread: %s\n", strerror(errno));
@@ -629,6 +658,14 @@ int main(int argc, char **argv)
             json_started = true;
         }
     }
+    if (cfg.stream_enabled) {
+        if (pthread_create(&stream_tid, NULL, stream_out_thread, out) != 0) {
+            fprintf(stderr, "[main] warning: cannot create stream_out thread: %s\n", strerror(errno));
+            cfg.stream_enabled = false;
+        } else {
+            stream_started = true;
+        }
+    }
 
     /* Position thread — optional; only runs when gpsd or signalk is enabled. */
     static pos_ctx_t pos_ctx;   /* static: lifetime matches daemon */
@@ -667,6 +704,7 @@ int main(int argc, char **argv)
                 cfg.nmea_rate_hz        = new_cfg.nmea_rate_hz;
                 cfg.highrate_rate_hz    = new_cfg.highrate_rate_hz;
                 cfg.json_rate_hz        = new_cfg.json_rate_hz;
+                cfg.stream_rate_hz      = new_cfg.stream_rate_hz;
                 cfg.log_stats_hz        = new_cfg.log_stats_hz;
                 /* Fusion noise params + declination — push into running filter */
                 cfg.mekf_gyro_noise     = new_cfg.mekf_gyro_noise;
@@ -678,8 +716,12 @@ int main(int argc, char **argv)
                 cfg.engine_vibration_g2        = new_cfg.engine_vibration_g2;
                 cfg.engine_accel_skip_thresh   = new_cfg.engine_accel_skip_thresh;
                 cfg.pos_declination_deg        = new_cfg.pos_declination_deg;
+                cfg.pos_declination_valid      = new_cfg.pos_declination_valid;
                 imu_ctx_update_config(imu, &cfg);
                 fprintf(stderr, "[main] config reloaded\n");
+            } else {
+                fprintf(stderr, "[main] config reload failed — "
+                        "keeping current config\n");
             }
         }
     }
@@ -701,6 +743,7 @@ int main(int argc, char **argv)
     if (nmea_started)   join_thread(nmea_tid,   "nmea_out");
     if (hirate_started) join_thread(hirate_tid, "hirate_out");
     if (json_started)   join_thread(json_tid,   "json_out");
+    if (stream_started) join_thread(stream_tid, "stream_out");
 
     /* Stop sensor and fusion threads. */
     imu_ctx_stop(imu);

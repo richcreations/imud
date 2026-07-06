@@ -10,6 +10,12 @@ Two libraries for consuming the imud high-rate binary stream (Stream B, UDP port
 Both libraries validate the CRC32 on every packet and silently discard any
 datagram that is the wrong size, has the wrong magic/version, or fails CRC.
 
+`sudo make install` installs them system-wide: the C header to
+`/usr/local/include/imud_client.h` and the Python module to
+`/usr/local/share/imud/imud_client.py`. The `test_client` binary in
+`make test` cross-checks both packet definitions against the daemon's
+encoder on every run.
+
 ---
 
 ## C — `imud_client.h`
@@ -144,8 +150,9 @@ python3 imud_client.py --port 10111 --addr 239.255.0.1
 
 ---
 
-## Stream B packet layout (v6, 188 bytes)
+## Stream B packet layout (v1.0, 192 bytes)
 
-See `spec.md §8` for the complete wire format. The stream is little-endian
-with an IEEE 802.3 CRC32 over the first 184 bytes. Both libraries validate
-magic, version, and CRC before returning a packet.
+See `spec.md §8` for the complete wire format. The stream is little-endian,
+192 bytes per packet (version field = 10, i.e. v1.0), with an IEEE 802.3
+CRC32 over the first 188 bytes (0–187). Both libraries validate magic,
+version, and CRC before returning a packet.

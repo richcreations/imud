@@ -65,7 +65,10 @@ Print the version string and exit.
 .TP
 .B SIGHUP
 Reload hot-reloadable configuration fields without restarting.
-Hot fields include MEKF noise parameters, output rates, and log level.
+Hot fields include MEKF noise parameters, output rates, the stats heartbeat
+rate, and static declination (unless a live position source owns it).
+The log level is read once at startup and is not hot-reloadable.
+If the reloaded file fails to parse, the current configuration is kept.
 Fields marked
 .B [restart]
 in
@@ -96,17 +99,22 @@ and
 are set.
 Valid 2025.0\(en2030.0; replace with WMM2030 around late 2029.
 .TP
-.I /run/imud/status.sock
+.I /run/imud/imud.sock
 Unix domain socket used by
 .BR imud-status (1)
 to query daemon health.
 .SH SUPPORTED HARDWARE
 .TP
 IMUs
-ISM330DHCX (ST), ICM-20948 (TDK), sim (software simulation)
+ISM330DHCX (ST), ICM-20948 (TDK)*, ICM-42688-P (TDK)*, LSM6DSO/LSM6DSOX (ST)*,
+sim (software simulation)
 .TP
 Magnetometers
-MMC5983MA (MEMSIC), AK09916 (via ICM-20948 I2C master), sim
+MMC5983MA (MEMSIC), AK09916 (via ICM-20948 I2C master)*, LIS3MDL (ST)*,
+LIS2MDL (ST)*, sim
+.PP
+Drivers marked * are experimental: implemented but not yet validated on real
+silicon; imud logs a warning at startup when one is selected.
 .SH EXIT STATUS
 .B 0
 on graceful shutdown,

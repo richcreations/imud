@@ -68,11 +68,17 @@ imud-mon: src/config.o src/mon_main.o
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
 
+# -MMD -MP writes a .d makefile fragment per object so header edits rebuild
+# their dependents; the -include pulls in whichever fragments exist so far.
+DEPFLAGS = -MMD -MP
+
 src/%.o: src/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 src/drivers/%.o: src/drivers/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+-include $(wildcard src/*.d src/drivers/*.d)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -106,8 +112,18 @@ test_wmm: src/wmm.c test/test_wmm.c
 test_position: src/position.c src/wmm.c test/test_position.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# Wire-format compatibility: daemon packet_build vs lib/imud_client.h.
+# test_client_impl.c compiles the client header in its own translation unit,
+# exactly as a third-party consumer would.
+test_client: src/packet.c test/test_client.c test/test_client_impl.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# End-to-end AF_UNIX subscription stream: real output.c, stubbed imu accessors
+test_stream: src/output.c src/nmea.c src/packet.c src/config.c test/test_stream.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
-      test_cal test_cal_math test_wmm test_position
+      test_cal test_cal_math test_wmm test_position test_client test_stream
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -118,6 +134,8 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_cal_math
 	./test_wmm
 	./test_position
+	./test_client
+	./test_stream
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -162,6 +180,11 @@ install: imud imud-cal imud-status imud-mon
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+	# ── Client libraries ───────────────────────────────────────────────────
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/share/imud
+	install -m 644 lib/imud_client.h  $(DESTDIR)$(PREFIX)/include/imud_client.h
+	install -m 644 lib/imud_client.py $(DESTDIR)$(PREFIX)/share/imud/imud_client.py
+	@echo "Installed client libs:  $(DESTDIR)$(PREFIX)/include/imud_client.h, $(DESTDIR)$(PREFIX)/share/imud/imud_client.py"
 	# ── Man pages ──────────────────────────────────────────────────────────
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man1 \
 	                   $(DESTDIR)$(MANDIR)/man5 \
@@ -185,6 +208,8 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mon \
+	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
+	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
@@ -199,7 +224,7 @@ uninstall:
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f src/*.o src/drivers/*.o \
+	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
 	      imud imud-cal imud-status imud-mon \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
-	      test_cal test_cal_math test_wmm test_position
+	      test_cal test_cal_math test_wmm test_position test_client test_stream

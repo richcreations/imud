@@ -81,6 +81,27 @@ static int build_hchdm(char *buf, size_t bufsz, int *pos, float heading_deg)
     return append_sentence(buf, bufsz, pos, content);
 }
 
+/*
+ * $HCHDG — heading, deviation, variation.
+ * Deviation fields are empty: hard/soft-iron calibration is applied upstream,
+ * so there is no residual deviation estimate to report.
+ * Variation fields carry the WMM/static declination when known (E = east/+,
+ * W = west/-) and are empty otherwise — this lets consumers like Signal K
+ * ingest magnetic variation directly and apply it themselves.
+ */
+static int build_hchdg(char *buf, size_t bufsz, int *pos,
+                       float heading_deg, float decl_deg, int decl_valid)
+{
+    char content[64];
+    if (decl_valid)
+        snprintf(content, sizeof(content), "HCHDG,%05.1f,,,%.1f,%c",
+                 heading_deg, fabsf(decl_deg),
+                 decl_deg < 0.0f ? 'W' : 'E');
+    else
+        snprintf(content, sizeof(content), "HCHDG,%05.1f,,,,", heading_deg);
+    return append_sentence(buf, bufsz, pos, content);
+}
+
 /* $HCHDT — true heading; only emitted when FLAG_DECLINATION_VALID is set */
 static int build_hchdt(char *buf, size_t bufsz, int *pos,
                        float heading_deg, float decl_deg)
@@ -124,8 +145,12 @@ int nmea_encode(char *buf, size_t bufsz, const fused_state_t *state)
     float pitch_deg = state->pitch * (float)(180.0 / M_PI);
     float roll_deg  = state->roll  * (float)(180.0 / M_PI);
 
+    int decl_valid = (state->flags & FLAG_DECLINATION_VALID) != 0;
+
     if (build_pashr(buf, bufsz, &pos, state)               < 0) return -1;
     if (build_hchdm(buf, bufsz, &pos, state->heading_deg)  < 0) return -1;
+    if (build_hchdg(buf, bufsz, &pos, state->heading_deg,
+                    state->declination_deg, decl_valid)    < 0) return -1;
     if (state->flags & FLAG_DECLINATION_VALID) {
         if (build_hchdt(buf, bufsz, &pos,
                         state->heading_deg, state->declination_deg) < 0) return -1;

@@ -29,7 +29,10 @@
 #include <math.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -54,15 +57,30 @@
 
 #ifndef TIMER_ABSTIME
 # define TIMER_ABSTIME 1
+/* Best-effort on non-Linux dev machines (the Pi uses the real syscall):
+ * TIMER_ABSTIME deadlines must be converted to a relative sleep, otherwise
+ * nanosleep() would treat the absolute timestamp as a duration. */
 static int clock_nanosleep(clockid_t clk, int flags,
                            const struct timespec *req, struct timespec *rem)
 {
-    (void)clk; (void)flags; (void)rem;
-    return nanosleep(req, NULL); /* best-effort on non-Linux */
+    (void)rem;
+    if (flags & TIMER_ABSTIME) {
+        struct timespec now, d;
+        clock_gettime(clk, &now);
+        d.tv_sec  = req->tv_sec  - now.tv_sec;
+        d.tv_nsec = req->tv_nsec - now.tv_nsec;
+        if (d.tv_nsec < 0) { d.tv_sec--; d.tv_nsec += 1000000000L; }
+        if (d.tv_sec < 0) return 0;       /* deadline already passed */
+        return nanosleep(&d, NULL);
+    }
+    return nanosleep(req, NULL);
 }
 #endif
 
 /* ── Context ─────────────────────────────────────────────────────────────── */
+
+/* Max simultaneous AF_UNIX stream subscribers. */
+#define STREAM_MAX_CLIENTS 8
 
 struct out_ctx {
     const imud_config_t *cfg;
@@ -74,6 +92,12 @@ struct out_ctx {
     struct sockaddr_in   nmea_dest;
     struct sockaddr_in   hirate_dest;
     struct sockaddr_in   json_dest;
+
+    /* AF_UNIX subscription stream — listen fd plus connected subscribers.
+     * Only stream_out_thread touches clients[]/nclients after startup. */
+    int                  stream_fd;
+    int                  stream_clients[STREAM_MAX_CLIENTS];
+    int                  stream_nclients;
 
     /* Send-error counts (stats only; best-effort, no lock). */
     uint64_t             nmea_errors;
@@ -180,6 +204,12 @@ void *nmea_out_thread(void *arg)
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        /* Re-derive each tick so a SIGHUP rate_hz change takes effect
+         * immediately ([hot] in imud.conf(5)); single-word load, same
+         * lockless pattern as the fusion params. */
+        period_ns = (ctx->cfg->nmea_rate_hz > 0)
+            ? 1000000000L / ctx->cfg->nmea_rate_hz
+            : 100000000L;
         ts_add_ns(&next, period_ns);
 
         if (!imu_ctx_is_settled(ctx->imu)) continue;
@@ -225,6 +255,10 @@ void *hirate_out_thread(void *arg)
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
+        period_ns = (ctx->cfg->highrate_rate_hz > 0)
+            ? 1000000000L / ctx->cfg->highrate_rate_hz
+            : 2000000L;
         ts_add_ns(&next, period_ns);
 
         if (!imu_ctx_is_settled(ctx->imu)) continue;
@@ -274,6 +308,10 @@ void *json_out_thread(void *arg)
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
+        period_ns = (ctx->cfg->json_rate_hz > 0)
+            ? 1000000000L / ctx->cfg->json_rate_hz
+            : 10000000L;
         ts_add_ns(&next, period_ns);
 
         if (!imu_ctx_is_settled(ctx->imu)) continue;
@@ -334,6 +372,140 @@ void *json_out_thread(void *arg)
     return NULL;
 }
 
+/* ── stream_out_thread ───────────────────────────────────────────────────── */
+
+/*
+ * Local AF_UNIX subscription stream (Stream D) — the "third tier".
+ *
+ * Same 192-byte binary packets as the UDP high-rate stream, but over a
+ * SOCK_STREAM socket: no datagram loss for same-host consumers, and clients
+ * subscribe by connecting instead of listening on a port.  The fixed packet
+ * size plus magic/CRC make the stream self-framing — read 192 bytes at a
+ * time and validate exactly as with UDP (lib/imud_client.h works unchanged
+ * on chunks read from this socket).
+ *
+ * Slow-consumer policy: sends are non-blocking. A full kernel buffer
+ * (EAGAIN) drops that packet for that subscriber; a PARTIAL write would
+ * corrupt framing, so it disconnects the subscriber instead. Consumers are
+ * expected to drain at rate_hz — anything that can't keep up gets packet
+ * gaps (detectable via imu_seq), never a stalled daemon.
+ */
+void *stream_out_thread(void *arg)
+{
+    out_ctx_t *ctx = arg;
+    imu_packet_t  pkt;
+    fused_state_t state;
+    mag_sample_t  mag;
+    imu_sample_t  imu;
+
+    long period_ns = (ctx->cfg->stream_rate_hz > 0)
+        ? 1000000000L / ctx->cfg->stream_rate_hz
+        : 10000000L;   /* 100 Hz fallback if misconfigured */
+
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    next.tv_nsec = (next.tv_nsec / period_ns + 1) * period_ns;
+    while (next.tv_nsec >= 1000000000L) {
+        next.tv_sec++;
+        next.tv_nsec -= 1000000000L;
+    }
+
+    while (!ctx->stop) {
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
+        period_ns = (ctx->cfg->stream_rate_hz > 0)
+            ? 1000000000L / ctx->cfg->stream_rate_hz
+            : 10000000L;
+        ts_add_ns(&next, period_ns);
+
+        /* Accept pending subscribers (listen fd is non-blocking). */
+        for (;;) {
+            int c = accept(ctx->stream_fd, NULL, NULL);
+            if (c < 0) break;
+            APPLY_CLOEXEC(c);
+            fcntl(c, F_SETFL, O_NONBLOCK);
+            if (ctx->stream_nclients >= STREAM_MAX_CLIENTS) {
+                fprintf(stderr, "[stream_out] subscriber limit (%d) reached "
+                        "— rejecting\n", STREAM_MAX_CLIENTS);
+                close(c);
+            } else {
+                ctx->stream_clients[ctx->stream_nclients++] = c;
+                fprintf(stderr, "[stream_out] subscriber connected (%d/%d)\n",
+                        ctx->stream_nclients, STREAM_MAX_CLIENTS);
+            }
+        }
+
+        if (!imu_ctx_is_settled(ctx->imu)) continue;
+        if (ctx->stream_nclients == 0)     continue;
+
+        imu_sample_t raw_imu;
+        imu_get_state(ctx->imu, &state, &mag, &imu, &raw_imu);
+        packet_build(&pkt, &state, &mag, &imu, &raw_imu,
+                     ctx->cfg->highrate_coord_frame);
+
+        for (int i = 0; i < ctx->stream_nclients; ) {
+            ssize_t s = send(ctx->stream_clients[i], &pkt, sizeof(pkt),
+                             MSG_NOSIGNAL);
+            if (s == (ssize_t)sizeof(pkt)) { i++; continue; }
+            if (s < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                i++;            /* buffer full: drop this packet, keep client */
+                continue;
+            }
+            /* Error, hangup, or partial write (would corrupt framing). */
+            close(ctx->stream_clients[i]);
+            ctx->stream_clients[i] =
+                ctx->stream_clients[--ctx->stream_nclients];
+            fprintf(stderr, "[stream_out] subscriber disconnected (%d/%d)\n",
+                    ctx->stream_nclients, STREAM_MAX_CLIENTS);
+        }
+    }
+
+    for (int i = 0; i < ctx->stream_nclients; i++)
+        close(ctx->stream_clients[i]);
+    ctx->stream_nclients = 0;
+    return NULL;
+}
+
+/*
+ * Open the AF_UNIX listen socket for the subscription stream.
+ * Unlinks a stale socket first; mode 0660 to match the status socket.
+ */
+static int open_stream_listener(const char *path)
+{
+    struct sockaddr_un addr;
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        fprintf(stderr, "[output] stream socket path too long: %s\n", path);
+        return -1;
+    }
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        fprintf(stderr, "[output] stream socket(): %s\n", strerror(errno));
+        return -1;
+    }
+    APPLY_CLOEXEC(fd);
+
+    unlink(path);   /* remove stale socket from a previous run */
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "[output] stream bind(%s): %s\n", path, strerror(errno));
+        close(fd); return -1;
+    }
+    chmod(path, 0660);
+    if (listen(fd, 4) < 0) {
+        fprintf(stderr, "[output] stream listen(): %s\n", strerror(errno));
+        close(fd); unlink(path); return -1;
+    }
+    /* Non-blocking so stream_out_thread can poll accept() each tick. */
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    return fd;
+}
+
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
 int out_ctx_open(out_ctx_t **ctx_out,
@@ -348,6 +520,7 @@ int out_ctx_open(out_ctx_t **ctx_out,
     ctx->nmea_fd   = -1;
     ctx->hirate_fd = -1;
     ctx->json_fd   = -1;
+    ctx->stream_fd = -1;
 
     if (cfg->nmea_enabled) {
         ctx->nmea_fd = open_udp_out(cfg->nmea_dest_addr, cfg->nmea_dest_port,
@@ -378,6 +551,13 @@ int out_ctx_open(out_ctx_t **ctx_out,
                 cfg->json_dest_addr, cfg->json_dest_port, cfg->json_rate_hz);
     }
 
+    if (cfg->stream_enabled) {
+        ctx->stream_fd = open_stream_listener(cfg->stream_socket);
+        if (ctx->stream_fd < 0) goto fail;
+        fprintf(stderr, "[output] stream AF_UNIX → %s (%d Hz, max %d subscribers)\n",
+                cfg->stream_socket, cfg->stream_rate_hz, STREAM_MAX_CLIENTS);
+    }
+
     *ctx_out = ctx;
     return 0;
 
@@ -385,13 +565,15 @@ fail:
     if (ctx->nmea_fd   >= 0) close(ctx->nmea_fd);
     if (ctx->hirate_fd >= 0) close(ctx->hirate_fd);
     if (ctx->json_fd   >= 0) close(ctx->json_fd);
+    if (ctx->stream_fd >= 0) { close(ctx->stream_fd); unlink(cfg->stream_socket); }
     free(ctx);
     return -1;
 }
 
 void out_ctx_send_shutdown(out_ctx_t *ctx)
 {
-    if (!ctx || ctx->hirate_fd < 0) return;
+    if (!ctx) return;
+    if (ctx->hirate_fd < 0 && ctx->stream_nclients == 0) return;
 
     fused_state_t state;
     mag_sample_t  mag;
@@ -402,9 +584,16 @@ void out_ctx_send_shutdown(out_ctx_t *ctx)
 
     imu_packet_t pkt;
     packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s, ctx->cfg->highrate_coord_frame);
-    sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
-           (struct sockaddr *)&ctx->hirate_dest,
-           sizeof(ctx->hirate_dest));
+    if (ctx->hirate_fd >= 0)
+        sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
+               (struct sockaddr *)&ctx->hirate_dest,
+               sizeof(ctx->hirate_dest));
+
+    /* Best-effort final packet to stream subscribers; stream_out_thread is
+     * still parked in clock_nanosleep at this point, so the client list is
+     * stable (it's joined after out_ctx_stop). */
+    for (int i = 0; i < ctx->stream_nclients; i++)
+        send(ctx->stream_clients[i], &pkt, sizeof(pkt), MSG_NOSIGNAL);
 }
 
 void out_ctx_stop(out_ctx_t *ctx)
@@ -418,5 +607,9 @@ void out_ctx_free(out_ctx_t *ctx)
     if (ctx->nmea_fd   >= 0) close(ctx->nmea_fd);
     if (ctx->hirate_fd >= 0) close(ctx->hirate_fd);
     if (ctx->json_fd   >= 0) close(ctx->json_fd);
+    if (ctx->stream_fd >= 0) {
+        close(ctx->stream_fd);
+        unlink(ctx->cfg->stream_socket);
+    }
     free(ctx);
 }

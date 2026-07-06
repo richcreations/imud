@@ -25,6 +25,7 @@
 
 #include <signal.h>
 #include <stdbool.h>
+#include <time.h>
 #include "config.h"
 
 /* Forward declaration — keeps position.h independent of imu.h internals. */
@@ -55,5 +56,17 @@ void *position_thread(void *arg);
  * or the value is not a number (e.g. null, string).
  */
 bool pos_json_double(const char *json, const char *key, double *out);
+
+/*
+ * check_fix_ttl — clear declination when the last GPS fix is older than
+ * cfg->pos_fix_max_age_h hours.  On expiry it zeroes the declination via
+ * imu_ctx_set_declination(), zeroes *last_fix_time, and resets the
+ * last_lat/last_lon outputs to the force-update sentinel so the next valid fix
+ * recomputes declination immediately.  No-op when the TTL is disabled
+ * (fix_max_age_h = 0), no fix was received yet, or the fix is fresh.
+ * Exposed here for unit tests.
+ */
+void check_fix_ttl(pos_ctx_t *ctx, time_t *last_fix_time,
+                   double *last_lat, double *last_lon);
 
 #endif /* IMUD_POSITION_H */

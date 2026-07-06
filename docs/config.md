@@ -106,6 +106,7 @@ NMEA 0183 UDP output stream. **[restart]**: `enabled`, `dest_addr`, `dest_port`.
 Sentences emitted per burst (at `rate_hz`):
 - `$PASHR` — roll, pitch, heading, heave, accuracy flags
 - `$HCHDM` — magnetic heading
+- `$HCHDG` — heading + magnetic variation *(variation fields filled when declination is known, empty otherwise)*
 - `$TIROT` — rate of turn (deg/min)
 - `$IIXDR` — pitch and roll transducer readings
 - `$HCHDT` — true heading *(only when declination is configured; see `[position]`)*
@@ -148,6 +149,18 @@ Fields per object: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`, `rot_dpm`, `qua
 | `rate_hz` | int | `100` | Output rate in Hz. Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. |
 | `dest_port` | int | `10112` | Destination UDP port. |
+
+---
+
+## `[stream]`
+
+Local AF_UNIX subscription stream — the same 192-byte binary packets as `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a loss-free stream and subscribe by connecting (up to 8 at once). Slow consumers get dropped packets (visible as `imu_seq` gaps), never a stalled daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the subscription stream. |
+| `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
+| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
 
 ---
 

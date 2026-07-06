@@ -2,7 +2,7 @@
 
 ## `imud` — SparkFun 9DoF IMU Bridge for NMEA 0183 + Machine Vision
 
-**Version:** 0.3  
+**Version:** 1.0  
 **Hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA (SEN-19895)  
 **Platform:** Raspberry Pi (any model with I2C), Linux  
 **Language:** C11, POSIX — no external dependencies beyond libc and libgpiod
@@ -168,11 +168,16 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
 |`json_out`    |rate_hz timer (100 Hz)      |Encode fused state as NDJSON; send UDP                                   |
-|`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries                                 |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 192-byte binary packets to local AF_UNIX subscribers               |
+|`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
+|`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
 `nmea_out` is only started when `nmea.enabled = true`.
 `hirate_out` is only started when `highrate.enabled = true`.
 `json_out` is only started when `json.enabled = true`.
+`stream_out` is only started when `stream.enabled = true`.
+`position` is only started when `position.gpsd_enabled` or
+`position.signalk_enabled` is true (see §9 `[position]`).
 
 -----
 
@@ -231,18 +236,27 @@ the configured name at startup and fatals if no match is found.
 ```c
 static const imu_ops_t *imu_registry[] = {
     &ism330dhcx_ops,   /* ISM330DHCX — reference hardware */
-    &icm20948_ops,     /* ICM-20948 — alternate IMU */
+    &icm20948_ops,     /* ICM-20948 — alternate IMU        [experimental] */
+    &icm42688p_ops,    /* ICM-42688-P                      [experimental] */
+    &lsm6dso_ops,      /* LSM6DSO                          [experimental] */
+    &lsm6dsox_ops,     /* LSM6DSOX (alias of lsm6dso)      [experimental] */
     &sim_imu_ops,      /* synthetic driver for testing without hardware */
     NULL
 };
 
 static const mag_ops_t *mag_registry[] = {
     &mmc5983ma_ops,    /* MMC5983MA — reference hardware */
-    &ak09916_ops,      /* AK09916 — internal compass on ICM-20948 */
+    &ak09916_ops,      /* AK09916 — compass on ICM-20948   [experimental] */
+    &lis3mdl_ops,      /* LIS3MDL                          [experimental] */
+    &lis2mdl_ops,      /* LIS2MDL                          [experimental] */
     &sim_mag_ops,      /* synthetic driver for testing without hardware */
     NULL
 };
 ```
+
+Drivers marked `[experimental]` set `experimental = true` in their ops struct
+and have not been validated on real silicon; the daemon logs a warning at
+startup when one is selected.
 
 ### Synthetic (sim) Driver
 
@@ -488,6 +502,20 @@ $HCHDM,HHH.H,M*hh<CR><LF>
 Example: $HCHDM,214.7,M*3C<CR><LF>
 ```
 
+**`$HCHDG` — Heading, Deviation, Variation**
+
+Deviation fields are always empty (hard/soft-iron calibration is applied
+upstream). Variation fields carry the WMM/static declination when known
+(`E` = east/+, `W` = west/-) and are empty otherwise — consumers like
+Signal K read magnetic variation from this sentence directly.
+
+```text
+$HCHDG,HHH.H,,,VV.V,a*hh<CR><LF>
+
+Example: $HCHDG,214.7,,,13.2,E*hh<CR><LF>   (declination known)
+         $HCHDG,214.7,,,,*hh<CR><LF>        (declination unknown)
+```
+
 **`$HCHDT` — True Heading** *(emitted only when `FLAG_DECLINATION_VALID` is set)*
 
 Requires `[position]` declination to be configured (WMM auto-compute or static override).
@@ -518,7 +546,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 |Talker|Meaning                   |Used for                        |
 |------|--------------------------|--------------------------------|
-|`HC`  |Heading/Compass           |`$HCHDM`, `$HCHDT`              |
+|`HC`  |Heading/Compass           |`$HCHDM`, `$HCHDG`, `$HCHDT`    |
 |`II`  |Integrated Instrumentation|`$IIXDR`                        |
 |`TI`  |Turn Indicator            |`$TIROT`                        |
 |`P`   |Proprietary               |`$PASHR`                        |
@@ -617,10 +645,11 @@ Configurable to ENU via `coord_frame = "ENU"`.
 ```toml
 [device]
 i2c_bus        = "/dev/i2c-1"
+gpio_chip      = "gpiochip0"     # Pi 4 = gpiochip0; Pi 5 (RP1) = gpiochip4
 
 [imu]
 # [restart]
-driver         = "ism330dhcx"    # ism330dhcx | icm20948 | sim
+driver         = "ism330dhcx"    # ism330dhcx | icm20948 | icm42688p | lsm6dso | lsm6dsox | sim
 i2c_addr       = 0x6B            # 0x6A via jumper
 int_gpio       = 17              # BCM GPIO for FIFO watermark interrupt; 0 = timer fallback
 odr_hz         = 833             # driver rounds to nearest: 12/26/52/104/208/416/833/1660
@@ -635,7 +664,7 @@ fifo_wm        = 64              # FIFO watermark in sample-sets (ignored if no 
 
 [mag]
 # [restart]
-driver         = "mmc5983ma"     # mmc5983ma | ak09916 | sim
+driver         = "mmc5983ma"     # mmc5983ma | ak09916 | lis3mdl | lis2mdl | sim
 i2c_addr       = 0x30
 int_gpio       = 27              # BCM GPIO for measurement-done interrupt; 0 = timer fallback
 odr_hz         = 100             # driver rounds to nearest: 1/10/20/50/100/200/1000
@@ -656,9 +685,16 @@ mekf_mag_noise      = 0.0004    # Gauss/√Hz (MMC5983MA: 0.4 mGauss RMS)
 mag_reject_gauss    = 0.0008    # reject mag if residual > 0.8 mGauss post-cal
 accel_skip_thresh   = 0.05      # skip accel update if ||a| - 1g| > 5% of g
 
+# Engine-vibration detection: when the EMA of (|a|-g)² exceeds
+# engine_vibration_g2, the accel-update skip threshold is relaxed to
+# engine_accel_skip_thresh so a running diesel doesn't starve the filter.
+engine_vibration_g2      = 0.0   # g² threshold; 0.0 = detection disabled
+engine_accel_skip_thresh = 0.20  # skip threshold used while engine detected
+
 [calibration]
-file           = "~/.config/imud/cal.json"
-gyro_bias_sec  = 2.0             # stationary still-window at startup (0 to skip)
+file               = "/etc/imud/cal.json"   # written by imud-cal, read by imud
+startup_settle_sec = 5.0         # discard sensor data for this long after start
+gyro_bias_sec      = 2.0         # stationary still-window at startup (0 to skip)
 
 [nmea]
 # [restart]: enabled, dest_addr, dest_port
@@ -676,6 +712,23 @@ rate_hz        = 500
 dest_addr      = "239.255.0.1"   # multicast (224.0.0.0/4), broadcast, or unicast
 dest_port      = 10111
 coord_frame    = "NED"           # "NED" or "ENU"
+
+[json]
+# [restart]: enabled, dest_addr, dest_port
+# [hot]:     rate_hz
+enabled        = false
+rate_hz        = 100
+dest_addr      = "255.255.255.255"
+dest_port      = 10112
+
+[stream]
+# [restart]: enabled, socket
+# [hot]:     rate_hz
+# Local AF_UNIX subscription stream — 192-byte binary packets (§8 format)
+# over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
+enabled        = false
+socket         = "/run/imud/imud-stream.sock"
+rate_hz        = 100
 
 [mount]
 # Board → body rotation expressed as Euler angles [roll, pitch, yaw] in degrees.
@@ -766,7 +819,9 @@ One object per datagram:
   "quat":        [0.998, 0.001, -0.054, 0.031],
   "gyro_bias":   [0.00012, -0.00008, 0.00003],
   "cov_trace":   4.2e-6,
-  "flags":       20
+  "flags":       20,
+  "declination_deg": 13.2,
+  "true_heading_deg": 227.9
 }
 ```
 
@@ -781,8 +836,25 @@ One object per datagram:
 | `gyro_bias` | current MEKF bias estimate, rad/s |
 | `cov_trace` | trace of attitude error covariance, rad² |
 | `flags` | same bitmask as §8 binary packet |
+| `declination_deg` | °E+; present only while `FLAG_DECLINATION_VALID` is set |
+| `true_heading_deg` | 0–360° true; present only while `FLAG_DECLINATION_VALID` is set |
 
 Useful for ROS2 bridges, web dashboards, SignalK plugins, or any consumer that prefers text over binary.
+
+### Output Stream D — AF_UNIX subscription stream (optional)
+
+**Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
+**Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
+**Format:** identical 192-byte binary packets as Stream B (§8)
+**Enabled by:** `stream.enabled = true` (disabled by default)
+
+Local consumers subscribe by connecting (up to 8 concurrent); each receives
+every packet as an exact 192-byte frame — no datagram loss, self-framing via
+the fixed size plus magic/CRC, so `lib/imud_client.h` validation works
+unchanged on 192-byte reads. Sends are non-blocking: a slow consumer gets
+dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
+framing, so it disconnects that subscriber instead. The daemon never blocks
+on a consumer.
 
 -----
 
@@ -806,10 +878,15 @@ Useful for ROS2 bridges, web dashboards, SignalK plugins, or any consumer that p
 10. Open AF_UNIX status socket at /run/imud/imud.sock (mode 0660)
 11. Start threads: ism_reader, mag_reader, fusion, health (always);
     nmea_out if nmea.enabled; hirate_out if highrate.enabled;
-    json_out if json.enabled
+    json_out if json.enabled; stream_out if stream.enabled;
+    position if position.gpsd_enabled or position.signalk_enabled
 12. Write /run/imud/imud.pid
 13. sd_notify("READY=1")
 ```
+
+A config file that exists but contains bad values is fatal at startup: every
+error in the file is reported and the daemon exits 1 rather than running on a
+partially-applied config. A missing config file is not an error (defaults).
 
 ### SIGHUP Hot-Reload
 
@@ -817,13 +894,17 @@ The following fields take effect immediately on SIGHUP without restarting:
 
 | Section     | Fields                                                                 |
 |-------------|------------------------------------------------------------------------|
-| `[fusion]`  | All six noise/threshold params — MEKF scalars recomputed next predict  |
+| `[fusion]`  | All eight noise/threshold params — MEKF scalars recomputed next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
 | `[json]`    | `rate_hz`                                                              |
+| `[stream]`  | `rate_hz`                                                              |
 | `[logging]` | `stats_hz`                                                             |
+| `[position]`| `declination_deg`, `lat_deg`/`lon_deg` (WMM recomputed) — applied only when no live position source (gpsd/SignalK) is enabled; a live source owns declination |
 
 Fields not listed require a full daemon restart (chip reinit / socket rebind).
+If the reloaded file fails to parse, the previously loaded config is kept and
+the failure is logged.
 
 ### Shutdown (SIGTERM / SIGINT)
 
@@ -849,6 +930,7 @@ ExecStart=/usr/local/bin/imud --config /etc/imud/imud.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
+WatchdogSec=10
 User=imud
 Group=gpio
 SupplementaryGroups=i2c
@@ -872,6 +954,7 @@ imud [OPTIONS]
   --skip-bias-cal    Skip startup gyro bias estimation
   --no-nmea          Disable NMEA output stream
   --no-highrate      Disable high-rate binary stream
+  --no-json          Disable JSON output stream
   --foreground       Accepted and ignored (always foreground under systemd)
   --version          Print version and exit
 ```
@@ -919,6 +1002,27 @@ Results:
   RMS residual:     0.23 µT  (< 1.0 µT is good)
   Coverage:         20/24 sectors (83%)
 ```
+
+### imud-mon
+
+Live monitor for the three UDP output streams — a receive-side sanity check
+run on any machine on the vessel LAN (no daemon socket needed). Reads port
+numbers and multicast addresses from the config file, joins multicast groups
+where needed, and prints a once-per-second snapshot line per stream.
+
+```text
+imud-mon [--config PATH] [nmea] [json] [binary]
+
+  --config PATH  Config file (default: /etc/imud/imud.conf)
+
+  nmea    Monitor NMEA 0183 stream (UDP port 10110)
+  json    Monitor NDJSON stream    (UDP port 10112)
+  binary  Monitor binary stream    (UDP port 10111)
+
+  With no stream arguments all three streams are shown.
+```
+
+Binary packets are validated (magic + CRC32) before display.
 
 ### imud-status
 
@@ -1015,14 +1119,20 @@ endif
 
 DRIVER_SRCS = src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c   src/drivers/ak09916.c   \
+              src/drivers/icm42688p.c  src/drivers/lsm6dso.c   \
+              src/drivers/lis3mdl.c    src/drivers/lis2mdl.c   \
               src/drivers/sim.c
 
-all: imud imud-cal
+all: imud imud-cal imud-status imud-mon
 
-imud:     $(IMUD_OBJS) src/main.c
-imud-cal: $(CAL_OBJS)  src/cal_main.c
+imud:        $(IMUD_OBJS) src/main.c
+imud-cal:    $(CAL_OBJS)  src/cal_main.c
 imud-status: src/status_main.c
+imud-mon:    src/config.o src/mon_main.c
 ```
+
+`make install` also installs the five man pages (imud.8, imud-cal.8,
+imud.conf.5, imud-status.1, imud-mon.1) and `data/WMM.COF` → `/etc/imud/`.
 
 Cross-compile for Pi from x86 host:
 

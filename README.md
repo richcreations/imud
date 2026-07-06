@@ -84,13 +84,17 @@ imud --config config/imud.conf
 
 ## What imud provides
 
-- **NMEA 0183** (broadcast UDP port 10110): `$PASHR`, `$HCHDM`, `$TIROT`, `$IIXDR` at up to 10 Hz.
-  When magnetic declination is configured, a fifth sentence `$HCHDT` (true heading) is added automatically.
+- **NMEA 0183** (broadcast UDP port 10110): `$PASHR`, `$HCHDM`, `$HCHDG`, `$TIROT`, `$IIXDR` at up to 10 Hz.
+  When magnetic declination is configured, `$HCHDT` (true heading) is added automatically and
+  `$HCHDG` carries the magnetic variation fields.
 - **High-rate binary** (UDP port 10111): calibrated and raw sensor samples, quaternion, covariance,
   timestamps, and — when declination is available — the `declination_deg` field so consumers can
   compute true heading themselves.
 - **NDJSON** (UDP port 10112, optional): one JSON object per packet with heading, pitch, roll,
   rate-of-turn, quaternion, covariance, and `true_heading_deg` when declination is known.
+- **Local subscription stream** (AF_UNIX socket, optional): the same binary packets over
+  `SOCK_STREAM` for loss-free same-host consumers — subscribe by connecting to
+  `/run/imud/imud-stream.sock`.
 - `imud-status` — inspect sensor, fusion, and stream health at a glance.
 
 If you only need heading/pitch/roll for a chartplotter or autopilot, enable the NMEA output and

@@ -1,9 +1,12 @@
 # Build artifacts
 src/*.o
 src/drivers/*.o
+src/*.d
+src/drivers/*.d
 imud
 imud-cal
 imud-status
+imud-mon
 
 # Test binaries
 test_fusion
@@ -14,6 +17,10 @@ test_ring
 test_mount
 test_cal
 test_cal_math
+test_wmm
+test_position
+test_client
+test_stream
 
 # Editor and OS
 .DS_Store
