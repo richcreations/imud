@@ -70,6 +70,7 @@ typedef struct {
     float    heading_deg;    /* 0–360° magnetic */
     float    declination_deg; /* °E+; valid only when FLAG_DECLINATION_VALID set */
     float    rate_of_turn;   /* deg/min, derived from yaw rate */
+    float    heave_m;        /* vertical displacement, m, + up; 0 when disabled */
     uint16_t flags;          /* FLAG_* bitmask */
     uint32_t imu_seq;        /* ISM330 sample counter of last prediction step */
     uint64_t ts_wall_ns;     /* CLOCK_REALTIME of last prediction step (ns) */

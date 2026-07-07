@@ -276,6 +276,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     double mn[3] = { samps[0][0], samps[0][1], samps[0][2] };
     double mx[3] = { samps[0][0], samps[0][1], samps[0][2] };
     double rms = 0.0;
+    ellipse_accum_t eacc = {0};
 
     for (int i = 0; i < n; i++) {
         double dx = samps[i][0] - center[0];
@@ -283,6 +284,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         double dz = samps[i][2] - center[2];
         double res = sqrt(dx*dx + dy*dy + dz*dz) - radius;
         rms += res * res;
+        ellipse_add(&eacc, (float)dx, (float)dy);
         for (int k = 0; k < 3; k++) {
             if (samps[i][k] - center[k] < mn[k]) mn[k] = samps[i][k] - center[k];
             if (samps[i][k] - center[k] > mx[k]) mx[k] = samps[i][k] - center[k];
@@ -294,6 +296,20 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     /* Per-axis half-range after centering */
     double half[3];
     for (int k = 0; k < 3; k++) half[k] = (mx[k] - mn[k]) / 2.0;
+
+    /*
+     * Horizontal soft iron: 2D ellipse fit on the centered X/Y samples.
+     * Unlike the per-axis half-range scale, this recovers the CROSS term —
+     * a distortion ellipse whose axes are rotated away from the sensor
+     * axes, which is the common case and shows up as a periodic heading
+     * error around the swing circle. Falls back to the diagonal method
+     * when the fit is degenerate (poor coverage).
+     */
+    double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
+    /* Horizontal radius: half the mean horizontal extent (the sphere-fit
+     * radius includes Z and over-scales flat swing data). */
+    double r_h = 0.5 * (half[0] + half[1]);
+    bool ellipse_ok = (ellipse_fit(&eacc, r_h, S2) == 0);
 
     /* Only apply Z soft-iron correction if we have meaningful Z coverage.
      * For horizontal boat data, half[2] << radius; forcing a correction
@@ -309,9 +325,19 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     printf("  Hard iron (µT):   [%7.2f, %7.2f, %7.2f]\n",
            center[0], center[1], center[2]);
     printf("  Field radius:     %.1f µT  (typical: 25–65 µT)\n", radius);
-    printf("  Soft iron diag:   [%.4f, %.4f, %.4f]%s\n",
-           si[0], si[1], si[2],
-           half[2] < 0.3 * radius ? "  (Z: no 3D coverage, left as 1.0)" : "");
+    if (ellipse_ok) {
+        printf("  Soft iron (2D):   [%.4f %+.4f; %+.4f %.4f]  Z=%.4f%s\n",
+               S2[0][0], S2[0][1], S2[1][0], S2[1][1], si[2],
+               half[2] < 0.3 * radius ? "  (Z: no 3D coverage, left as 1.0)" : "");
+        if (fabs(S2[0][1]) > 0.005)
+            printf("                    (cross term %+.4f: distortion axes are "
+                   "rotated — a diagonal fit would miss this)\n", S2[0][1]);
+    } else {
+        printf("  Soft iron diag:   [%.4f, %.4f, %.4f]%s  (ellipse fit degenerate "
+               "— using per-axis fallback)\n",
+               si[0], si[1], si[2],
+               half[2] < 0.3 * radius ? "  (Z: no 3D coverage, left as 1.0)" : "");
+    }
     printf("  RMS residual:     %.2f µT  (< 1.0 µT is good)\n", rms);
     printf("  Coverage:         %d/%d sectors (%.0f%%)%s\n",
            covered, N_SECTORS, 100.0 * covered / N_SECTORS,
@@ -348,6 +374,13 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             cal->mag_soft_iron[i][j] = (i == j) ? (float)si[i] : 0.0f;
+    if (ellipse_ok) {
+        /* 2×2 horizontal block (with cross term) + Z from the guard above. */
+        cal->mag_soft_iron[0][0] = (float)S2[0][0];
+        cal->mag_soft_iron[0][1] = (float)S2[0][1];
+        cal->mag_soft_iron[1][0] = (float)S2[1][0];
+        cal->mag_soft_iron[1][1] = (float)S2[1][1];
+    }
 
     cal->has_mag = true;
 
@@ -396,23 +429,30 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
 
     printf("Collecting for %d s...\n", GYRO_COLLECT_S);
 
-    double gyro_sum[3] = {0};
-    int n = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
-                        GYRO_COLLECT_S * 1000, gyro_sum, NULL);
+    /* Collect in two halves: differing half-means reveal motion or drift
+     * during the window (rocking dock, hand-held sensor) that a single
+     * mean would silently absorb into the bias. */
+    double sum_a[3] = {0}, sum_b[3] = {0};
+    int na = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+                         GYRO_COLLECT_S * 500, sum_a, NULL);
+    int nb = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+                         GYRO_COLLECT_S * 500, sum_b, NULL);
 
     signal(SIGINT, SIG_DFL);
 
-    if (n < 10) {
+    int n = na + nb;
+    if (na < 5 || nb < 5) {
         fprintf(stderr, "cal: too few samples (%d) — sensor not producing data\n", n);
         if (fd >= 0) close(fd);
         return -1;
     }
 
-    double bias[3] = {
-        gyro_sum[0] / n,
-        gyro_sum[1] / n,
-        gyro_sum[2] / n,
-    };
+    double bias[3], half_diff = 0.0;
+    for (int k = 0; k < 3; k++) {
+        bias[k] = (sum_a[k] + sum_b[k]) / n;
+        double d = fabs(sum_a[k] / na - sum_b[k] / nb);
+        if (d > half_diff) half_diff = d;
+    }
 
     /* Convert to deg/s for display */
     double d2r = M_PI / 180.0;
@@ -426,6 +466,10 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     if (mag > 0.05)
         printf("WARNING: bias magnitude %.4f rad/s (%.2f deg/s) is large — "
                "was the sensor moving?\n", mag, mag / d2r);
+    if (half_diff > 0.0035)   /* 0.2 °/s between window halves */
+        printf("WARNING: half-window means differ by %.3f deg/s — "
+               "the sensor moved during capture; re-run on a still surface\n",
+               half_diff / d2r);
 
     printf("\nWrite gyro calibration to %s? [y/N] ", cfg->cal_file);
     fflush(stdout);

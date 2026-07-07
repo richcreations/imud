@@ -41,6 +41,8 @@ typedef struct {
     float mag_set_period_s;     /* degauss interval seconds; 0 = disable */
 
     /* [fusion]  [hot]: gains and thresholds */
+    bool   mag_yaw_only;          /* [hot] heading-only mag fusion (marine default) */
+    float  heave_tau_s;           /* [hot] heave filter time constant, s; 0 = off */
     double mekf_gyro_noise;      /* rad/s/√Hz — from datasheet */
     double mekf_gyro_bias;       /* rad/s — in-run bias instability */
     double mekf_accel_noise;     /* m/s²/√Hz — from datasheet */

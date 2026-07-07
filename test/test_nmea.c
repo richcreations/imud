@@ -195,6 +195,23 @@ static void test_sentence_count_with_declination(void)
     end(fb);
 }
 
+/* $PASHR heave field carries the fused heave value (was hard-coded 0.0). */
+static void test_pashr_heave_field(void)
+{
+    begin("test_pashr_heave_field");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(0, 0, 90.0f, 0);
+    s.heave_m = 1.23f;
+    nmea_encode(buf, sizeof(buf), &s);
+
+    const char *f = sentence_field(buf, "PASHR", 4);   /* hdg,M,roll,pitch,heave */
+    EXPECT(f != NULL, "$PASHR heave field present");
+    EXPECT(f && strncmp(f, "+1.23", 5) == 0, "$PASHR heave = +1.23");
+    end(fb);
+}
+
 /* $HCHDG is always emitted; variation fields are empty without declination. */
 static void test_hchdg_no_declination(void)
 {
@@ -438,6 +455,7 @@ int main(void)
     test_sentence_count_with_declination();
     test_hchdt_true_heading_value();
     test_hchdt_checksum_valid();
+    test_pashr_heave_field();
     test_hchdg_no_declination();
     test_hchdg_variation_east();
     test_hchdg_variation_west();

@@ -28,6 +28,7 @@ test_stream
 *.swo
 *~
 .vscode/settings.json
-
+.claude
+ROADMAP.md
 # Cal file (machine-specific, not for version control)
 cal.json

@@ -66,8 +66,8 @@ static int build_pashr(char *buf, size_t bufsz, int *pos,
 
     char content[128];
     snprintf(content, sizeof(content),
-             "PASHR,%05.1f,M,%+06.1f,%+06.1f,0.0,%04.1f,%04.1f,0,A,,",
-             s->heading_deg, roll_deg, pitch_deg,
+             "PASHR,%05.1f,M,%+06.1f,%+06.1f,%+.2f,%04.1f,%04.1f,0,A,,",
+             s->heading_deg, roll_deg, pitch_deg, s->heave_m,
              roll_acc_deg, pitch_acc_deg);
 
     return append_sentence(buf, bufsz, pos, content);

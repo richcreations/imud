@@ -330,12 +330,14 @@ void *json_out_thread(void *arg)
             "\"pitch_deg\":%.3f,"
             "\"roll_deg\":%.3f,"
             "\"rot_dpm\":%.2f,"
+            "\"heave_m\":%.2f,"
             "\"quat\":[%.6f,%.6f,%.6f,%.6f],"
             "\"gyro_bias\":[%.6f,%.6f,%.6f],"
             "\"cov_trace\":%.4e,"
             "\"flags\":%u",
             ts_s,
             state.heading_deg, pitch_deg, roll_deg, state.rate_of_turn,
+            state.heave_m,
             state.q[0], state.q[1], state.q[2], state.q[3],
             state.bias_gyro[0], state.bias_gyro[1], state.bias_gyro[2],
             cov_trace,

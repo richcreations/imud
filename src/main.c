@@ -707,6 +707,8 @@ int main(int argc, char **argv)
                 cfg.stream_rate_hz      = new_cfg.stream_rate_hz;
                 cfg.log_stats_hz        = new_cfg.log_stats_hz;
                 /* Fusion noise params + declination — push into running filter */
+                cfg.mag_yaw_only        = new_cfg.mag_yaw_only;
+                cfg.heave_tau_s         = new_cfg.heave_tau_s;
                 cfg.mekf_gyro_noise     = new_cfg.mekf_gyro_noise;
                 cfg.mekf_gyro_bias      = new_cfg.mekf_gyro_bias;
                 cfg.mekf_accel_noise    = new_cfg.mekf_accel_noise;

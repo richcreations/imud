@@ -44,4 +44,31 @@ int sphere_fit(const sphere_accum_t *a, double center[3], double *radius);
  */
 int gauss4(double A[4][4], double b[4], double x[4]);
 
+/*
+ * Incremental accumulator for the horizontal (2D) ellipse fit used for
+ * soft-iron correction.  Feed CENTERED samples (hard iron already removed
+ * by the sphere fit).
+ */
+typedef struct {
+    double s40, s31, s22, s13, s04;   /* Σx⁴, Σx³y, Σx²y², Σxy³, Σy⁴ */
+    double s20, s11, s02;             /* Σx², Σxy, Σy² */
+    int    n;
+} ellipse_accum_t;
+
+/* Add one centered horizontal measurement (x, y). */
+void ellipse_add(ellipse_accum_t *a, float x, float y);
+
+/*
+ * Fit the centered conic A·x² + B·xy + C·y² = 1 to the accumulated points
+ * and derive the symmetric 2×2 soft-iron correction S = radius·sqrtm(M)
+ * (M the conic matrix): applying S maps the ellipse onto a circle of the
+ * given radius.  Unlike a per-axis (diagonal) scale, S captures the CROSS
+ * term — a soft-iron ellipse whose axes are rotated relative to the sensor
+ * axes, which a diagonal correction cannot fix.
+ *
+ * Requires n >= 8 and a positive-definite conic (a real ellipse).
+ * Returns 0 on success (fills S[2][2]), -1 otherwise.
+ */
+int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2]);
+
 #endif /* IMUD_CAL_MATH_H */
