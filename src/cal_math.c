@@ -61,6 +61,62 @@ void sphere_add(sphere_accum_t *a, float fx, float fy, float fz)
     a->n++;
 }
 
+void ellipse_add(ellipse_accum_t *a, float fx, float fy)
+{
+    double x = fx, y = fy;
+    a->s40 += x*x*x*x;  a->s31 += x*x*x*y;  a->s22 += x*x*y*y;
+    a->s13 += x*y*y*y;  a->s04 += y*y*y*y;
+    a->s20 += x*x;      a->s11 += x*y;      a->s02 += y*y;
+    a->n++;
+}
+
+int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2])
+{
+    if (a->n < 8 || radius <= 0.0) return -1;
+
+    /*
+     * Least squares on A·x² + B·xy + C·y² = 1: normal equations over the
+     * regressors (x², xy, y²).  Solved via gauss4 with an identity pad row.
+     */
+    double M4[4][4] = {
+        { a->s40, a->s31, a->s22, 0 },
+        { a->s31, a->s22, a->s13, 0 },
+        { a->s22, a->s13, a->s04, 0 },
+        { 0,      0,      0,      1 },
+    };
+    double b4[4] = { a->s20, a->s11, a->s02, 0 };
+    double p[4];
+    if (gauss4(M4, b4, p) < 0) return -1;
+
+    /* Conic matrix M = [[A, B/2], [B/2, C]] must be positive definite. */
+    double A = p[0], B = p[1], C = p[2];
+    double det = A*C - 0.25*B*B;
+    if (A <= 0.0 || det <= 0.0) return -1;
+
+    /* S = radius · sqrtm(M) via 2×2 symmetric eigendecomposition. */
+    double half_tr = 0.5*(A + C);
+    double disc    = sqrt(0.25*(A - C)*(A - C) + 0.25*B*B);
+    double l1 = half_tr + disc, l2 = half_tr - disc;
+    if (l2 <= 0.0) return -1;
+
+    /* Eigenvector for l1 (pick the better-conditioned expression). */
+    double vx, vy;
+    if (fabs(B) > 1e-12) { vx = 0.5*B; vy = l1 - A; }
+    else if (A >= C)     { vx = 1.0;   vy = 0.0;    }
+    else                 { vx = 0.0;   vy = 1.0;    }
+    double vn = sqrt(vx*vx + vy*vy);
+    if (vn < 1e-15) return -1;
+    vx /= vn; vy /= vn;
+
+    double s1 = radius * sqrt(l1), s2 = radius * sqrt(l2);
+    /* S = s1·v·vᵀ + s2·v⊥·v⊥ᵀ with v⊥ = (−vy, vx) */
+    S[0][0] = s1*vx*vx + s2*vy*vy;
+    S[0][1] = s1*vx*vy - s2*vx*vy;
+    S[1][0] = S[0][1];
+    S[1][1] = s1*vy*vy + s2*vx*vx;
+    return 0;
+}
+
 int sphere_fit(const sphere_accum_t *a, double center[3], double *radius)
 {
     if (a->n < 5) return -1;

@@ -89,8 +89,10 @@ static void test_defaults_values(void)
     EXPECT(cfg.highrate_dest_port == 10111,           "highrate_dest_port default");
     EXPECT_STR(cfg.highrate_coord_frame, "NED",       "coord_frame default");
     EXPECT_NEAR_D(cfg.mekf_gyro_noise,  0.007,  1e-9, "gyro_noise default");
-    EXPECT_NEAR_D(cfg.mag_reject_gauss, 0.0008, 1e-9, "mag_reject default");
+    EXPECT_NEAR_D(cfg.mag_reject_gauss, 0.05,   1e-9, "mag_reject default (0.05 G anomaly)");
     EXPECT_NEAR_D(cfg.accel_skip_thresh,0.05,   1e-9, "accel_skip default");
+    EXPECT(cfg.mag_yaw_only == true,                  "mag_yaw_only default true (marine)");
+    EXPECT_NEAR_D(cfg.heave_tau_s, 12.0, 1e-5,        "heave_tau_s default 12 s");
     EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
     EXPECT(cfg.log_stats_hz == 1,                     "log_stats_hz default");
@@ -313,6 +315,25 @@ static void test_defaults_position(void)
     end_test(fb);
 }
 
+/* [fusion] marine keys: mag_yaw_only and heave_tau_s load and override. */
+static void test_fusion_marine_keys(void)
+{
+    begin_test("test_fusion_marine_keys");
+    int fb = g_fail;
+
+    const char *path = write_tmpconf(16,
+        "[fusion]\n"
+        "mag_yaw_only = false\n"
+        "heave_tau_s  = 8.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,        "fusion marine keys load");
+    EXPECT(cfg.mag_yaw_only == false,           "mag_yaw_only=false loaded");
+    EXPECT_NEAR_D(cfg.heave_tau_s, 8.0, 1e-5,   "heave_tau_s loaded");
+    remove(path);
+    end_test(fb);
+}
+
 /* [stream] defaults and key loading. */
 static void test_stream_section(void)
 {
@@ -451,6 +472,7 @@ int main(void)
     test_defaults_values();
     test_defaults_cal_file();
     test_defaults_position();
+    test_fusion_marine_keys();
     test_stream_section();
     test_declination_valid_flag();
     test_fix_max_age_h_load();

@@ -125,11 +125,16 @@ void config_defaults(imud_config_t *cfg)
     cfg->mag_set_period_s = 5.0f;
 
     /* [fusion] */
+    cfg->mag_yaw_only      = true;   /* marine default: mag corrects heading only */
+    cfg->heave_tau_s       = 12.0f;
     cfg->mekf_gyro_noise   = 0.007;
     cfg->mekf_gyro_bias    = 0.00015;
     cfg->mekf_accel_noise  = 0.0022;
     cfg->mekf_mag_noise    = 0.0004;
-    cfg->mag_reject_gauss          = 0.0008;
+    /* Strong-anomaly threshold (nearby iron/magnet). 0.05 G ≈ 10% of the
+     * Earth field: transient attitude wobble in a seaway must not trip it —
+     * fine-grained consistency is handled by the χ² innovation gates. */
+    cfg->mag_reject_gauss          = 0.05;
     cfg->accel_skip_thresh         = 0.05;
     cfg->engine_vibration_g2       = 0.0;    /* disabled */
     cfg->engine_accel_skip_thresh  = 0.20;
@@ -395,7 +400,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_FUSION:
-        if      (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);
+        if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
+        else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
+        else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);
         else if (strcmp(key, "mekf_gyro_bias")    == 0) NEED_DBL(cfg->mekf_gyro_bias);
         else if (strcmp(key, "mekf_accel_noise")  == 0) NEED_DBL(cfg->mekf_accel_noise);
         else if (strcmp(key, "mekf_mag_noise")    == 0) NEED_DBL(cfg->mekf_mag_noise);

@@ -460,6 +460,47 @@ mag_cal    = soft_iron × (mag_raw − hard_iron)            (matrix × vector)
 mag_z      = −raw_mag_z                                   (Z sign flip, always)
 ```
 
+The soft-iron matrix from `imud-cal mag` carries a full 2×2 horizontal block
+(including the cross term) from a least-squares ellipse fit of the swing
+circle — a distortion ellipse whose axes are rotated relative to the sensor
+axes cannot be corrected by per-axis scales alone. Z stays 1.0 unless the
+data has real 3D coverage.
+
+### Rough-sea mechanics (v1.1 fusion revision)
+
+- **Joseph-form covariance updates** everywhere, plus explicit
+  symmetrization after predict — P stays symmetric positive-definite in
+  float arithmetic over multi-day runs.
+- **Per-sample dt**: the predict step integrates over the measured
+  inter-sample interval from hardware timestamps (clamped to [0.5×, 2×]
+  nominal), so IMU oscillator tolerance does not scale integrated rotation.
+- **χ² innovation handling** on accel and mag updates: the normalised
+  innovation distance d² = νᵀS⁻¹ν is capped Huber-style at the χ² 99 %
+  quantile (influence bounded, information still flows in a steady seaway)
+  and rejected outright beyond 9× the gate. Because S contains P, the gate
+  self-regulates: inactive while the filter is still acquiring.
+- **`mag_yaw_only` (default true)**: scalar heading update via
+  H = [−(R̂ e_D)ᵀ | 0]; the magnetometer never pulls on roll/pitch.
+- **m_ref self-healing**: the magnetic reference's magnitude and dip are
+  slowly (τ ≈ 5 min) re-estimated from attitude-independent invariants
+  (field magnitude; angle between mag vector and the accel-measured gravity
+  direction), but only while the platform is quiescent
+  (EMA of (|a|/g−1)² < 2·10⁻⁴, τ ≈ 2 s). The horizontal direction — the
+  heading anchor — is never adapted (no gauge feedback).
+- **Alignment averaging**: initial tilt/heading alignment averages ~1 s of
+  accel and all mag samples in that window instead of one instantaneous
+  reading.
+- **Rate of turn** is the true Euler yaw rate
+  ψ̇ = (ω_y·sinφ + ω_z·cosφ)/cosθ, not raw body-Z rate (falls back to ω_z
+  near ±90° pitch).
+- **Heave** (§7 PASHR / §10 JSON): leaky double integration of NED vertical
+  acceleration through a true output high-pass (exact zero at DC); triple
+  pole at 1/τ ⇒ allow ~10·τ settling after startup.
+
+Synthetic rough-sea benchmark (±15° roll @ 0.2 Hz, ±8° pitch, 0.12 g
+orbital accel, run by `test_fusion`): attitude RMS 7.1° → 2.7°, heading RMS
+4.9° → 2.4° versus the v1.0 filter.
+
 -----
 
 ## 7. Output Stream A — NMEA 0183 UDP
@@ -485,7 +526,8 @@ Fields:
   M       Always magnetic (PASHR carries magnetic heading regardless of declination)
   RRR.R   Roll, degrees (+ = starboard up)
   PPP.P   Pitch, degrees (+ = bow up)
-  0.0     Heave, metres (not measured)
+  h.hh    Heave, metres, positive up (band-passed vertical-accel double
+          integration; live when heave_tau_s > 0, else 0.0)
   ra.r    Roll accuracy estimate, degrees (from MEKF covariance)
   pa.p    Pitch accuracy estimate, degrees (from MEKF covariance)
   0       GPS quality flag (0 = no GPS)
@@ -682,12 +724,21 @@ mekf_gyro_noise     = 0.007      # rad/s/√Hz  (ISM330DHCX: 7 mdps/√Hz)
 mekf_gyro_bias      = 0.00015   # rad/s      (in-run bias instability)
 mekf_accel_noise    = 0.0022    # m/s²/√Hz  (ISM330DHCX: ~186 µg/√Hz × 9.81)
 mekf_mag_noise      = 0.0004    # Gauss/√Hz (MMC5983MA: 0.4 mGauss RMS)
-mag_reject_gauss    = 0.0008    # reject mag if residual > 0.8 mGauss post-cal
+mag_reject_gauss    = 0.05      # strong-anomaly cutoff (~10% of Earth field);
+                                 # fine consistency is handled by χ² innovation gates
 accel_skip_thresh   = 0.05      # skip accel update if ||a| - 1g| > 5% of g
 
+# Heading-only mag fusion (marine default): mag never pulls on roll/pitch.
+# Set false for full 3D vector fusion (clean installs with true 3D cal).
+mag_yaw_only        = true
+
+# Heave estimator time constant; feeds $PASHR heave + JSON heave_m. 0 = off.
+heave_tau_s         = 12.0
+
 # Engine-vibration detection: when the EMA of (|a|-g)² exceeds
-# engine_vibration_g2, the accel-update skip threshold is relaxed to
-# engine_accel_skip_thresh so a running diesel doesn't starve the filter.
+# engine_vibration_g2, the accel-update skip window widens to
+# engine_accel_skip_thresh (so a running diesel doesn't starve the filter)
+# and the accel measurement noise is inflated ×4.
 engine_vibration_g2      = 0.0   # g² threshold; 0.0 = detection disabled
 engine_accel_skip_thresh = 0.20  # skip threshold used while engine detected
 
@@ -816,6 +867,7 @@ One object per datagram:
   "pitch_deg":   -3.1,
   "roll_deg":     9.5,
   "rot_dpm":     -6.2,
+  "heave_m":     0.42,
   "quat":        [0.998, 0.001, -0.054, 0.031],
   "gyro_bias":   [0.00012, -0.00008, 0.00003],
   "cov_trace":   4.2e-6,
@@ -832,6 +884,7 @@ One object per datagram:
 | `pitch_deg` | degrees, + = bow up |
 | `roll_deg` | degrees, + = starboard up |
 | `rot_dpm` | rate of turn deg/min, + = turning right |
+| `heave_m` | vertical displacement, metres, + up (0.0 when `heave_tau_s = 0`) |
 | `quat` | unit quaternion `[w, x, y, z]`, body→NED |
 | `gyro_bias` | current MEKF bias estimate, rad/s |
 | `cov_trace` | trace of attitude error covariance, rad² |
@@ -894,7 +947,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 
 | Section     | Fields                                                                 |
 |-------------|------------------------------------------------------------------------|
-| `[fusion]`  | All eight noise/threshold params — MEKF scalars recomputed next predict |
+| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s` — applied next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
 | `[json]`    | `rate_hz`                                                              |

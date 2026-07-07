@@ -80,10 +80,12 @@ physical constants, not tuning knobs. The rejection thresholds (`mag_reject_gaus
 | `mekf_gyro_bias` | double | `0.00015` | In-run gyro bias instability in rad/s. Used to set the bias random-walk process noise. |
 | `mekf_accel_noise` | double | `0.0022` | Accelerometer noise density in m/s²/√Hz. ISM330DHCX: ~186 µg/√Hz × 9.81. |
 | `mekf_mag_noise` | double | `0.0004` | Magnetometer noise density in Gauss/√Hz. MMC5983MA: 0.4 mGauss RMS. |
-| `mag_reject_gauss` | double | `0.0008` | Reject a magnetometer measurement if its post-calibration residual exceeds this value (Gauss). Protects against local magnetic disturbances. Increase if nearby ferrous objects cause frequent rejections. |
+| `mag_reject_gauss` | double | `0.05` | Strong-anomaly cutoff: reject a magnetometer measurement if its post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so this should stay a coarse threshold (~10% of the Earth field). |
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
+| `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's dip channel is its least-calibrated component. Set `false` for full 3D vector fusion (magnetically clean installs with a true 3D calibration). |
+| `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Vertical displacement from band-passed double integration of vertical acceleration; feeds the `$PASHR` heave field and JSON `heave_m`. Passband covers ~2–15 s wave periods at the default; allow ~2 min settling after startup. `0` disables. |
 | `engine_vibration_g2` | double | `0.0` | EMA threshold (m²/s⁴) for engine-vibration detection. The filter maintains an exponential moving average of `(|a| − g)²`; when the EMA exceeds this value, the engine is considered on and `engine_accel_skip_thresh` overrides `accel_skip_thresh`. Set `0` to disable (default). |
-| `engine_accel_skip_thresh` | double | `0.20` | Accelerometer skip threshold override applied when engine vibration is detected. Should be tighter (smaller) than `accel_skip_thresh` to prevent high-frequency vibration from corrupting tilt. Only active when `engine_vibration_g2 > 0`. |
+| `engine_accel_skip_thresh` | double | `0.20` | Accelerometer skip threshold override while engine vibration is detected: wider than `accel_skip_thresh` so the filter isn't starved, while the accel measurement noise is inflated ×4 so the vibration-contaminated samples that pass are trusted proportionally less. Only active when `engine_vibration_g2 > 0`. |
 
 ---
 
@@ -140,8 +142,8 @@ The binary packet format is documented in [spec.md](../spec.md). Consumer librar
 
 NDJSON UDP stream — one JSON object per datagram, newline-terminated. **[restart]**: `enabled`, `dest_addr`, `dest_port`. **[hot]**: `rate_hz`.
 
-Fields per object: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`, `rot_dpm`, `quat`, `gyro_bias`,
-`cov_trace`, `flags`, and `true_heading_deg` (when declination is configured).
+Fields per object: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`, `rot_dpm`, `heave_m`, `quat`,
+`gyro_bias`, `cov_trace`, `flags`, and `true_heading_deg` (when declination is configured).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

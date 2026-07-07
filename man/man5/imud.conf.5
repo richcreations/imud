@@ -202,14 +202,33 @@ Accelerometer noise density in m/s^2/sqrt(Hz).
 Magnetometer noise density in Gauss/sqrt(Hz).
 .TP
 .B mag_reject_gauss
-.RI (double,\ default:\ 0.0008)
-Reject magnetometer updates whose post-calibration residual exceeds this value (Gauss).
+.RI (double,\ default:\ 0.05)
+Strong-anomaly cutoff: reject magnetometer updates whose post-calibration
+residual exceeds this value (Gauss). Fine-grained consistency is handled by
+internal chi-squared innovation gates; keep this a coarse threshold
+(~10% of the Earth field).
 .TP
 .B accel_skip_thresh
 .RI (double,\ default:\ 0.05)
 Skip accelerometer updates when
 .RI |a|\(en1g
 exceeds this fraction of g.
+.TP
+.B mag_yaw_only
+.RI (bool,\ default:\ true)
+Heading-only magnetometer fusion (marine default): the magnetometer corrects
+heading and never pulls on roll/pitch. Set
+.B false
+for full 3D vector fusion (magnetically clean installs with a true 3D
+calibration).
+.TP
+.B heave_tau_s
+.RI (float,\ default:\ 12.0)
+Heave filter time constant, seconds. Vertical displacement from band-passed
+double integration of vertical acceleration; feeds the $PASHR heave field
+and JSON heave_m. Allow ~2 minutes settling after startup.
+.B 0
+disables.
 .TP
 .B engine_vibration_g2
 .RI (double,\ default:\ 0.0)
@@ -220,7 +239,8 @@ to disable.
 .TP
 .B engine_accel_skip_thresh
 .RI (double,\ default:\ 0.20)
-Accelerometer skip threshold override applied while engine vibration is detected.
+Accelerometer skip threshold override applied while engine vibration is
+detected (wider gate; accel noise is additionally inflated 4x).
 .SS [calibration]
 .B [restart]
 .TP

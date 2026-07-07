@@ -198,6 +198,123 @@ static void test_sphere_add_count(void)
     end(fb);
 }
 
+/* ── ellipse_fit tests ───────────────────────────────────────────────────── */
+
+/*
+ * Generate points on a distorted circle m = D·c, |c| = r, with D a known
+ * symmetric 2×2 (soft iron). ellipse_fit must recover S ≈ D⁻¹ so that S·m
+ * lies back on the radius-r circle: check S·D ≈ I.
+ */
+static void gen_ellipse(ellipse_accum_t *acc, const double D[2][2],
+                        double r, int n, double noise)
+{
+    unsigned rng = 7;
+    for (int i = 0; i < n; i++) {
+        double th = 2.0*M_PI*i/n;
+        double cx = r*cos(th), cy = r*sin(th);
+        double mx = D[0][0]*cx + D[0][1]*cy;
+        double my = D[1][0]*cx + D[1][1]*cy;
+        if (noise > 0) {
+            rng = rng*1664525u + 1013904223u;
+            mx += ((double)(int)(rng>>8)/8388608.0 - 1.0) * noise;
+            rng = rng*1664525u + 1013904223u;
+            my += ((double)(int)(rng>>8)/8388608.0 - 1.0) * noise;
+        }
+        ellipse_add(acc, (float)mx, (float)my);
+    }
+}
+
+/* D = R(30°)·diag(1.2, 0.9)·R(−30°): rotated-axis distortion whose cross
+ * term a diagonal fit cannot represent. */
+static void make_D(double D[2][2])
+{
+    double c = cos(30.0*M_PI/180.0), s = sin(30.0*M_PI/180.0);
+    double a = 1.2, b = 0.9;
+    D[0][0] = c*c*a + s*s*b;
+    D[0][1] = c*s*(a - b);
+    D[1][0] = D[0][1];
+    D[1][1] = s*s*a + c*c*b;
+}
+
+static void check_SD_identity(const double S[2][2], const double D[2][2],
+                              double tol, const char *tag)
+{
+    char msg[96];
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 2; j++) {
+            double sd = S[i][0]*D[0][j] + S[i][1]*D[1][j];
+            snprintf(msg, sizeof msg, "%s: (S*D)[%d][%d] = I", tag, i, j);
+            EXPECT_NEAR_D(sd, (i == j) ? 1.0 : 0.0, tol, msg);
+        }
+}
+
+static void test_ellipse_fit_rotated(void)
+{
+    begin("test_ellipse_fit_rotated");
+    int fb = g_fail;
+
+    double D[2][2];
+    make_D(D);
+    ellipse_accum_t acc = {0};
+    gen_ellipse(&acc, D, 45.0, 360, 0.0);
+
+    double S[2][2];
+    EXPECT(ellipse_fit(&acc, 45.0, S) == 0, "fit succeeds");
+    EXPECT(fabs(S[0][1]) > 0.01, "cross term recovered (non-diagonal)");
+    check_SD_identity(S, D, 1e-3, "exact");
+    end(fb);
+}
+
+static void test_ellipse_fit_noise(void)
+{
+    begin("test_ellipse_fit_noise");
+    int fb = g_fail;
+
+    double D[2][2];
+    make_D(D);
+    ellipse_accum_t acc = {0};
+    gen_ellipse(&acc, D, 45.0, 720, 0.25);   /* ±0.25 µT ≈ 0.5% noise */
+
+    double S[2][2];
+    EXPECT(ellipse_fit(&acc, 45.0, S) == 0, "noisy fit succeeds");
+    check_SD_identity(S, D, 0.02, "noisy");
+    end(fb);
+}
+
+static void test_ellipse_fit_circle_identity(void)
+{
+    begin("test_ellipse_fit_circle_identity");
+    int fb = g_fail;
+
+    double I2[2][2] = {{1, 0}, {0, 1}};
+    ellipse_accum_t acc = {0};
+    gen_ellipse(&acc, I2, 30.0, 360, 0.0);
+
+    double S[2][2];
+    EXPECT(ellipse_fit(&acc, 30.0, S) == 0, "circle fit succeeds");
+    check_SD_identity(S, I2, 1e-3, "circle");
+    end(fb);
+}
+
+static void test_ellipse_fit_degenerate(void)
+{
+    begin("test_ellipse_fit_degenerate");
+    int fb = g_fail;
+
+    double S[2][2];
+    ellipse_accum_t few = {0};
+    ellipse_add(&few, 1.0f, 0.0f);
+    ellipse_add(&few, 0.0f, 1.0f);
+    EXPECT(ellipse_fit(&few, 1.0, S) == -1, "too few points rejected");
+
+    /* Collinear points: conic is degenerate, must be rejected. */
+    ellipse_accum_t line = {0};
+    for (int i = 0; i < 50; i++)
+        ellipse_add(&line, (float)(i - 25), (float)(2.0*(i - 25)));
+    EXPECT(ellipse_fit(&line, 10.0, S) == -1, "collinear points rejected");
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -212,6 +329,10 @@ int main(void)
     test_sphere_fit_unit_origin();
     test_sphere_fit_hard_iron_offset();
     test_sphere_fit_large_offset();
+    test_ellipse_fit_rotated();
+    test_ellipse_fit_noise();
+    test_ellipse_fit_circle_identity();
+    test_ellipse_fit_degenerate();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

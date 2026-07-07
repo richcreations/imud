@@ -52,8 +52,14 @@ typedef struct {
     float Rm;            /* mag meas noise var per axis, Gauss² */
     float accel_skip_lo; /* skip accel update if |a|/g < this */
     float accel_skip_hi; /* skip accel update if |a|/g > this */
+    float Ra_scale;      /* extra accel-noise inflation (engine vibration ×4) */
     float mag_reject_sq; /* skip mag update if |residual|² > this */
     float conv_thresh;   /* trace threshold for converged flag */
+    bool  mag_yaw_only;  /* heading-only mag fusion (marine default) */
+    float mref_alpha;    /* per-sample EMA gain for m_ref re-estimation */
+    float g_body[3];     /* latest accel-measured gravity direction, body */
+    bool  g_body_valid;  /* true once an accel update has stashed g_body */
+    float acc_quiet_ema; /* EMA of (|a|/g−1)², τ≈2 s — platform quiescence */
 } mekf_t;
 
 /*
@@ -76,8 +82,10 @@ void mekf_align(mekf_t *f, const float accel[3], const float mag[3]);
 /*
  * mekf_predict — gyro integration + covariance propagation.
  * Call for every IMU sample at the configured ODR.
+ * dt_s: measured interval since the previous sample (from hardware
+ * timestamps); pass 0 or f->dt to use the nominal 1/ODR period.
  */
-void mekf_predict(mekf_t *f, const imu_sample_t *s);
+void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s);
 
 /*
  * mekf_update_accel — accelerometer tilt correction.
@@ -99,6 +107,29 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m);
  * The function adds FLAG_FUSION_CONVERGED and FLAG_STARTUP as appropriate.
  */
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in);
+
+/* ── Heave estimator ──────────────────────────────────────────────────────── */
+
+/*
+ * Leaky double integration of NED vertical linear acceleration.
+ * Self-contained; driven by fusion_thread after each predict/update cycle.
+ * τ = 0 disables (heave_update returns 0.0).
+ */
+typedef struct {
+    float tau;       /* leak / high-pass time constant, s */
+    float dt;        /* sample period, s */
+    float vel;       /* leaked vertical velocity, m/s (down +) */
+    float disp;      /* leaked vertical displacement, m (down +) */
+    float disp_prev; /* previous displacement (high-pass state) */
+    float hp_y;      /* high-passed displacement (down +) */
+    bool  enabled;
+} heave_t;
+
+void  heave_init(heave_t *h, float tau_s, float dt);
+
+/* Returns heave in metres, positive up. q = current attitude (body→NED),
+ * accel = calibrated specific force in body frame (m/s²). */
+float heave_update(heave_t *h, const float q[4], const float accel[3]);
 
 /*
  * mekf_reconfigure — update filter noise parameters from a new config.

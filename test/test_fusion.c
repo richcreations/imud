@@ -67,7 +67,7 @@ static imud_config_t make_cfg(void)
     c.mekf_accel_noise  = 0.0022;
     c.mekf_mag_noise    = 0.0004;
     c.accel_skip_thresh = 0.05;
-    c.mag_reject_gauss  = 0.0008f;
+    c.mag_reject_gauss  = 0.05f;
     c.mag_odr_hz        = 100;
     return c;
 }
@@ -140,7 +140,7 @@ TEST(test_quat_norm_preserved)
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     imu_sample_t s = make_gyro(0.1f, -0.2f, 0.3f);
-    for (int i = 0; i < 1000; i++) mekf_predict(&f, &s);
+    for (int i = 0; i < 1000; i++) mekf_predict(&f, &s, f.dt);
 
     EXPECT_NEAR(q_norm(f.q), 1.0f, 1e-5f, "q norm after 1000 steps");
 }
@@ -162,7 +162,7 @@ TEST(test_predict_static_no_drift)
     float p0 = p_att_trace(&f);
 
     imu_sample_t zero = make_gyro(0, 0, 0);
-    for (int i = 0; i < 100; i++) mekf_predict(&f, &zero);
+    for (int i = 0; i < 100; i++) mekf_predict(&f, &zero, f.dt);
 
     /* q should be unchanged (zero gyro input) */
     EXPECT_NEAR(f.q[0], q0[0], 1e-6f, "w unchanged for zero gyro");
@@ -189,7 +189,7 @@ TEST(test_predict_known_rotation_yaw)
     float wz = 90.0f * DEG;  /* rad/s around Z (yaw) */
     imu_sample_t s = make_gyro(0, 0, wz);
 
-    for (int i = 0; i < 833; i++) mekf_predict(&f, &s);
+    for (int i = 0; i < 833; i++) mekf_predict(&f, &s, f.dt);
 
     float roll, pitch, yaw;
     q_to_euler(f.q, &roll, &pitch, &yaw);
@@ -212,7 +212,7 @@ TEST(test_predict_known_rotation_roll)
 
     float wx = 45.0f * DEG;
     imu_sample_t s = make_gyro(wx, 0, 0);
-    for (int i = 0; i < 833*2; i++) mekf_predict(&f, &s);
+    for (int i = 0; i < 833*2; i++) mekf_predict(&f, &s, f.dt);
 
     float roll, pitch, yaw;
     q_to_euler(f.q, &roll, &pitch, &yaw);
@@ -461,7 +461,7 @@ TEST(test_convergence_flag)
     imu_sample_t sg = make_gyro(0, 0, 0);
 
     for (int i = 0; i < 2000; i++) {
-        mekf_predict(&f, &sg);
+        mekf_predict(&f, &sg, f.dt);
         mekf_update_accel(&f, &sa);
         if (i % 8 == 0) mekf_update_mag(&f, &sm);  /* ~100 Hz at 833 Hz predict */
     }
@@ -496,7 +496,7 @@ TEST(test_precomputed_bias_used)
 
     for (int i = 0; i < 833; i++) {
         imu_sample_t sg = make_gyro(known_bias[0], known_bias[1], known_bias[2]);
-        mekf_predict(&f, &sg);
+        mekf_predict(&f, &sg, f.dt);
         mekf_update_accel(&f, &sa);
         if (i % 8 == 0) mekf_update_mag(&f, &sm);
     }
@@ -698,7 +698,7 @@ TEST(test_sim_gyro_heading)
 
     imu_sample_t sg = make_gyro(0, 0, SIM_YAW_DEG_S * DEG);
     for (int i = 0; i < 833 * 10; i++)
-        mekf_predict(&f, &sg);
+        mekf_predict(&f, &sg, f.dt);
 
     float roll, pitch, yaw;
     q_to_euler(f.q, &roll, &pitch, &yaw);
@@ -723,7 +723,7 @@ TEST(test_sim_heading_wraps)
 
     imu_sample_t sg = make_gyro(0, 0, SIM_YAW_DEG_S * DEG);
     for (int i = 0; i < 833 * 61; i++)
-        mekf_predict(&f, &sg);
+        mekf_predict(&f, &sg, f.dt);
 
     float roll, pitch, yaw;
     q_to_euler(f.q, &roll, &pitch, &yaw);
@@ -754,7 +754,7 @@ TEST(test_sim_full_fusion)
         elapsed += dt;
 
         imu_sample_t sg = make_gyro(0, 0, wz_rad);
-        mekf_predict(&f, &sg);
+        mekf_predict(&f, &sg, f.dt);
 
         imu_sample_t sa = make_accel(0, 0, -G);
         mekf_update_accel(&f, &sa);
@@ -776,6 +776,436 @@ TEST(test_sim_full_fusion)
     EXPECT_NEAR(state.heading_deg,                      180.0f, 3.0f, "heading ≈ 180° after 30 s");
     EXPECT_NEAR(state.pitch * (180.0f/(float)M_PI), 0.0f,   1.0f, "pitch ≈ 0°");
     EXPECT_NEAR(state.roll  * (180.0f/(float)M_PI), 0.0f,   1.0f, "roll ≈ 0°");
+}
+
+/* ── New-mechanics tests: Joseph form, χ² cap, m_ref EMA, yaw-only ─────────── */
+
+/*
+ * Joseph form must keep P symmetric and positive on the diagonal through
+ * tens of thousands of noisy update cycles (the simple form slowly loses
+ * both in float arithmetic).
+ */
+TEST(test_joseph_symmetry_psd)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    uint32_t rng = 42;
+    for (int i = 0; i < 50000; i++) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n1 = ((float)(int32_t)rng) * (1.0f/2147483648.0f);
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n2 = ((float)(int32_t)rng) * (1.0f/2147483648.0f);
+
+        imu_sample_t g = make_gyro(0.05f*n1, -0.03f*n2, 0.04f*n1);
+        mekf_predict(&f, &g, f.dt);
+
+        imu_sample_t a = make_accel(0.2f*n2, 0.2f*n1, -G);
+        mekf_update_accel(&f, &a);
+
+        if (i % 8 == 0) {
+            mag_sample_t m = make_mag(0.20f + 0.002f*n1, 0.002f*n2, 0.40f);
+            mekf_update_mag(&f, &m);
+        }
+    }
+
+    float max_asym = 0.0f, min_diag = 1e9f;
+    for (int i = 0; i < 6; i++) {
+        if (f.P[i][i] < min_diag) min_diag = f.P[i][i];
+        for (int j = 0; j < 6; j++) {
+            float d = fabsf(f.P[i][j] - f.P[j][i]);
+            if (d > max_asym) max_asym = d;
+        }
+    }
+    EXPECT(max_asym == 0.0f, "P exactly symmetric after 50k updates");
+    EXPECT(min_diag > 0.0f,  "P diagonal stays positive after 50k updates");
+    EXPECT_NEAR(q_norm(f.q), 1.0f, 1e-4f, "q unit norm after 50k updates");
+}
+
+/*
+ * χ² innovation handling: a gravity-magnitude accel pointing far from the
+ * predicted direction (wave orbital motion) must have bounded influence —
+ * one such sample may not yank a converged filter.
+ */
+TEST(test_accel_innovation_capped)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* Converge on clean data. */
+    imu_sample_t still = make_accel(0, 0, -G);
+    imu_sample_t zg    = make_gyro(0, 0, 0);
+    for (int i = 0; i < 5000; i++) {
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_accel(&f, &still);
+    }
+    float q0[4]; memcpy(q0, f.q, sizeof q0);
+
+    /* |a| = g exactly, but direction 25° off — passes the magnitude gate. */
+    float th = 25.0f * DEG;
+    imu_sample_t tilted = make_accel(G*sinf(th), 0, -G*cosf(th));
+    mekf_update_accel(&f, &tilted);
+
+    float roll, pitch, yaw, roll0, pitch0, yaw0;
+    q_to_euler(f.q, &roll, &pitch, &yaw);
+    q_to_euler(q0, &roll0, &pitch0, &yaw0);
+    /* Uncapped Kalman gain on a converged filter is small anyway; the cap
+     * bounds the movement — assert the single sample moved pitch < 0.1°. */
+    EXPECT(fabsf(pitch - pitch0) < 0.1f*DEG,
+           "single 25°-off accel sample has bounded influence");
+}
+
+/*
+ * m_ref EMA heals a wrong dip/magnitude reference but must NOT touch the
+ * horizontal direction (heading anchor).
+ */
+TEST(test_mref_ema_heals_dip)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* Corrupt the reference the way a mid-swing alignment does: right
+     * heading direction, dip/magnitude off by ~8° (within the EMA's
+     * direction-agreement bound). */
+    f.m_ref[0] = 0.24f;   /* true horizontal is 0.20 */
+    f.m_ref[2] = 0.34f;   /* true vertical   is 0.40 */
+    float hdg_dir0 = atan2f(f.m_ref[1], f.m_ref[0]);
+
+    /* Shorten τ so the test runs in seconds (real τ is 5 min). */
+    f.mref_alpha = 1.0f / (15.0f * 833.0f);   /* τ = 15 s at this call rate */
+
+    imu_sample_t still = make_accel(0, 0, -G);
+    imu_sample_t zg    = make_gyro(0, 0, 0);
+    mag_sample_t m     = make_mag(0.20f, 0.0f, 0.40f);
+
+    for (int i = 0; i < 60000; i++) {   /* ~72 s ≈ 4.8 τ */
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_mag(&f, &m);
+        mekf_update_accel(&f, &still);
+    }
+
+    float mh = sqrtf(f.m_ref[0]*f.m_ref[0] + f.m_ref[1]*f.m_ref[1]);
+    EXPECT_NEAR(mh,          0.20f, 0.015f, "m_ref horizontal magnitude healed");
+    EXPECT_NEAR(f.m_ref[2],  0.40f, 0.015f, "m_ref dip component healed");
+    EXPECT_NEAR(atan2f(f.m_ref[1], f.m_ref[0]), hdg_dir0, 1e-4f,
+                "m_ref horizontal DIRECTION untouched (no gauge feedback)");
+}
+
+/*
+ * Yaw-only mode: a mag disturbance that (in 3D mode) would pull roll/pitch
+ * must leave tilt untouched and only steer heading.
+ */
+TEST(test_yaw_only_leaves_tilt)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mag_yaw_only = true;
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    imu_sample_t zg = make_gyro(0, 0, 0);
+    float roll0, pitch0, yaw0;
+    q_to_euler(f.q, &roll0, &pitch0, &yaw0);
+
+    /* Disturbed field: horizontal direction twisted ~9°, dip changed —
+     * total magnitude within the ratio gate (m_ref here is (0.20,0,0.05),
+     * |m_ref| = 0.206; this sample is 0.227 → ratio 1.1). */
+    mag_sample_t bad = make_mag(0.19f, 0.03f, 0.12f);
+    for (int i = 0; i < 2000; i++) {
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_mag(&f, &bad);
+    }
+
+    float roll, pitch, yaw;
+    q_to_euler(f.q, &roll, &pitch, &yaw);
+    EXPECT(fabsf(roll  - roll0)  < 0.05f*DEG, "yaw-only: roll untouched by mag");
+    EXPECT(fabsf(pitch - pitch0) < 0.05f*DEG, "yaw-only: pitch untouched by mag");
+    EXPECT(fabsf(yaw - yaw0) > 1.0f*DEG,      "yaw-only: heading does follow mag");
+}
+
+/* ── Heave estimator tests ──────────────────────────────────────────────────── */
+
+/*
+ * Drive heave_update at flat attitude with a synthetic sinusoidal heave of
+ * known amplitude: accel_z = −g + Hω²·sin(ωt) corresponds to heave
+ * H·sin(ωt) (positive up). After settling, the recovered amplitude must be
+ * close to H across ordinary wave periods.
+ */
+static float heave_sine_amp(float period_s, float amp_m, float tau_s)
+{
+    const float fs = 833.0f, dt = 1.0f/fs;
+    float w = 2.0f*(float)M_PI/period_s;
+
+    heave_t h;
+    heave_init(&h, tau_s, dt);
+    float q_id[4] = {1, 0, 0, 0};
+
+    /* The filter has a triple pole at 1/τ (two leaky integrators + output
+     * high-pass): the start-up transient decays as t²·e^(−t/τ), so allow a
+     * full 10 τ before measuring. */
+    float peak = 0.0f;
+    int n_settle = (int)(10.0f*tau_s*fs);
+    int n_meas   = (int)(2.0f*period_s*fs);
+    for (int i = 0; i < n_settle + n_meas; i++) {
+        float t = (float)i*dt;
+        float acc[3] = { 0, 0, -G + amp_m*w*w*sinf(w*t) };
+        float hv = heave_update(&h, q_id, acc);
+        if (i >= n_settle && fabsf(hv) > peak) peak = fabsf(hv);
+    }
+    return peak;
+}
+
+TEST(test_heave_sine_amplitude)
+{
+    EXPECT_NEAR(heave_sine_amp(3.0f,  1.0f, 12.0f), 1.0f, 0.05f,
+                "heave amplitude within 5% at 3 s period");
+    EXPECT_NEAR(heave_sine_amp(8.0f,  1.5f, 12.0f), 1.5f, 0.15f,
+                "heave amplitude within 10% at 8 s period");
+    EXPECT_NEAR(heave_sine_amp(12.0f, 2.0f, 12.0f), 2.0f, 0.30f,
+                "heave amplitude within 15% at 12 s period");
+}
+
+TEST(test_heave_disabled_and_settle)
+{
+    const float fs = 833.0f, dt = 1.0f/fs;
+    float q_id[4] = {1, 0, 0, 0};
+    float still[3] = {0, 0, -G};
+
+    /* tau = 0 disables. */
+    heave_t off;
+    heave_init(&off, 0.0f, dt);
+    EXPECT(heave_update(&off, q_id, still) == 0.0f, "tau=0 → heave 0.0");
+
+    /* Zero input settles to (numerically) zero. */
+    heave_t h;
+    heave_init(&h, 12.0f, dt);
+    float last = 0;
+    for (int i = 0; i < (int)(30.0f*fs); i++)
+        last = heave_update(&h, q_id, still);
+    EXPECT(fabsf(last) < 1e-3f, "zero input settles to ~0");
+
+    /* A constant accel-bias step must not run away: the bias tracker +
+     * leaks bound the response and pull it back toward zero. */
+    heave_t hb;
+    heave_init(&hb, 5.0f, dt);
+    float biased[3] = {0, 0, -G + 0.2f};
+    float peak = 0, final = 0;
+    for (int i = 0; i < (int)(300.0f*fs); i++) {
+        final = heave_update(&hb, q_id, biased);
+        if (fabsf(final) > peak) peak = fabsf(final);
+    }
+    EXPECT(peak < 6.0f,          "bias step response bounded");
+    EXPECT(fabsf(final) < 0.05f, "bias step fully absorbed after 300 s");
+}
+
+/* ── Rough-sea wave benchmark ───────────────────────────────────────────────── */
+
+/*
+ * Synthetic rough-sea scenario driven straight into the MEKF API.
+ *
+ * Truth: roll ±15° @ 0.2 Hz, pitch ±8° @ 0.14 Hz, fixed heading 60°,
+ * wave-orbital linear acceleration ~0.12 g laterally + 0.10 g vertically,
+ * true gyro bias the filter must find. Sensors get deterministic
+ * pseudo-random noise. Alignment mimics the daemon: one instantaneous
+ * (mid-swing, noisy) sample at t = 0.
+ *
+ * After a 60 s warm-up, attitude/heading RMS error over the next 120 s is
+ * printed (benchmark) and asserted against a regression bound.
+ */
+
+static uint32_t bench_rng_state = 0x1234ABCDu;
+static float bench_rand(void)   /* uniform in [-1, 1) */
+{
+    bench_rng_state ^= bench_rng_state << 13;
+    bench_rng_state ^= bench_rng_state >> 17;
+    bench_rng_state ^= bench_rng_state << 5;
+    return ((float)(int32_t)bench_rng_state) * (1.0f / 2147483648.0f);
+}
+static float bench_noise(float sigma)  /* zero-mean, std ≈ sigma */
+{
+    return bench_rand() * sigma * 1.732f;   /* uniform with matching variance */
+}
+
+/* ZYX Euler → quaternion (body→NED). */
+static void euler_to_q(float roll, float pitch, float yaw, float q[4])
+{
+    float cr = cosf(roll*0.5f),  sr = sinf(roll*0.5f);
+    float cp = cosf(pitch*0.5f), sp = sinf(pitch*0.5f);
+    float cy = cosf(yaw*0.5f),   sy = sinf(yaw*0.5f);
+    q[0] = cy*cp*cr + sy*sp*sr;
+    q[1] = cy*cp*sr - sy*sp*cr;
+    q[2] = cy*sp*cr + sy*cp*sr;
+    q[3] = sy*cp*cr - cy*sp*sr;
+}
+
+/* Rotation matrix (body→NED) from quaternion — mirror of fusion.c q_to_R. */
+static void bench_q_to_R(const float q[4], float R[3][3])
+{
+    float w=q[0], x=q[1], y=q[2], z=q[3];
+    R[0][0]=1-2*(y*y+z*z); R[0][1]=2*(x*y-w*z);   R[0][2]=2*(x*z+w*y);
+    R[1][0]=2*(x*y+w*z);   R[1][1]=1-2*(x*x+z*z); R[1][2]=2*(y*z-w*x);
+    R[2][0]=2*(x*z-w*y);   R[2][1]=2*(y*z+w*x);   R[2][2]=1-2*(x*x+y*y);
+}
+
+/* Angle (rad) between two unit quaternions. */
+static float q_angle_between(const float a[4], const float b[4])
+{
+    float d = fabsf(a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]);
+    if (d > 1.0f) d = 1.0f;
+    return 2.0f * acosf(d);
+}
+
+static void run_wave_scenario(bool yaw_only,
+                              float *rms_att_out, float *rms_hdg_out,
+                              float *bias_err_out, float m_ref_out[3])
+{
+    const float fs   = 833.0f;
+    const float dt   = 1.0f / fs;
+    const float d2r  = (float)(M_PI / 180.0);
+
+    /* Wave truth parameters */
+    const float Ar = 15.0f * d2r,  wr = 2.0f*(float)M_PI*0.20f;  /* roll  */
+    const float Ap =  8.0f * d2r,  wp = 2.0f*(float)M_PI*0.14f;  /* pitch */
+    const float yaw_true = 60.0f * d2r;
+
+    /* Earth field: 0.47 G total, 62° dip (mid-latitude), magnetic-NED */
+    const float m_ned[3] = { 0.2206f, 0.0f, 0.4149f };  /* Gauss */
+
+    /* True gyro bias; filter is seeded with an imperfect estimate. */
+    const float bias_true[3] = { 0.0020f, -0.0010f, 0.0015f };
+    float bias_init[3] = { 0.0025f, -0.0005f, 0.0010f };
+
+    imud_config_t cfg = make_cfg();
+    cfg.mag_yaw_only = yaw_only;
+    mekf_t f;
+    mekf_init(&f, &cfg, fs, bias_init);
+    bench_rng_state = 0x1234ABCDu;
+
+    const float warmup_s = 60.0f, measure_s = 120.0f;
+    const int   n_total  = (int)((warmup_s + measure_s) * fs);
+
+    double sum_att2 = 0.0, sum_hdg2 = 0.0;
+    int    n_meas   = 0;
+
+    for (int i = 0; i < n_total; i++) {
+        float t = (float)i * dt;
+
+        /* Truth attitude and rates */
+        float roll  = Ar * sinf(wr * t);
+        float pitch = Ap * sinf(wp * t + 1.0f);
+        float rolld = Ar * wr * cosf(wr * t);
+        float pitchd= Ap * wp * cosf(wp * t + 1.0f);
+
+        float q_true[4];
+        euler_to_q(roll, pitch, yaw_true, q_true);
+        float Rt[3][3];
+        bench_q_to_R(q_true, Rt);
+
+        /* Body rates for ZYX Euler with yaw-dot = 0 */
+        float w_body[3] = {
+            rolld,
+            pitchd * cosf(roll),
+            -pitchd * sinf(roll),
+        };
+
+        /* Wave-orbital linear acceleration in NED (m/s²) */
+        float a_lin[3] = {
+            1.2f * sinf(wr * t + 0.5f),
+            1.2f * cosf(0.8f * wr * t),
+            1.0f * sinf(wr * t),
+        };
+
+        /* Specific force in body: f_b = Rᵀ (a_lin − g·e_down) */
+        float f_ned[3] = { a_lin[0], a_lin[1], a_lin[2] - G };
+        imu_sample_t s;
+        memset(&s, 0, sizeof s);
+        for (int k = 0; k < 3; k++) {
+            s.accel[k] = Rt[0][k]*f_ned[0] + Rt[1][k]*f_ned[1] + Rt[2][k]*f_ned[2]
+                       + bench_noise(0.03f);
+            s.gyro[k]  = w_body[k] + bias_true[k] + bench_noise(0.002f);
+        }
+
+        /* Alignment: one instantaneous noisy sample, like the daemon */
+        if (i == 0) {
+            float mb[3];
+            for (int k = 0; k < 3; k++)
+                mb[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
+                        * 100.0f + bench_noise(0.3f);   /* µT */
+            mekf_align(&f, s.accel, mb);
+            continue;
+        }
+
+        mekf_predict(&f, &s, f.dt);
+
+        /* Mag update at ~104 Hz */
+        if (i % 8 == 0) {
+            mag_sample_t m;
+            memset(&m, 0, sizeof m);
+            for (int k = 0; k < 3; k++)
+                m.field[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
+                             * 100.0f + bench_noise(0.3f);
+            m.valid = true;
+            mekf_update_mag(&f, &m);
+        }
+
+        mekf_update_accel(&f, &s);
+
+        if (t >= warmup_s) {
+            float err = q_angle_between(f.q, q_true);
+            sum_att2 += (double)err * err;
+
+            float r_e, p_e, y_e;
+            q_to_euler(f.q, &r_e, &p_e, &y_e);
+            float hd = y_e - yaw_true;
+            while (hd >  (float)M_PI) hd -= 2.0f*(float)M_PI;
+            while (hd < -(float)M_PI) hd += 2.0f*(float)M_PI;
+            sum_hdg2 += (double)hd * hd;
+            n_meas++;
+        }
+    }
+
+    *rms_att_out  = (float)sqrt(sum_att2 / n_meas) / d2r;
+    *rms_hdg_out  = (float)sqrt(sum_hdg2 / n_meas) / d2r;
+    *bias_err_out = fabsf(f.bias[2] - bias_true[2]);
+    if (m_ref_out) memcpy(m_ref_out, f.m_ref, sizeof f.m_ref);
+}
+
+static void test_wave_benchmark(void)
+{
+    float att3, hdg3, be3, atty, hdgy, bey;
+    float mr3[3], mry[3];
+    run_wave_scenario(false, &att3, &hdg3, &be3, mr3);  /* 3D vector mag */
+    run_wave_scenario(true,  &atty, &hdgy, &bey, mry);  /* yaw-only (default) */
+
+    printf("\n    [wave bench 3D  ] attitude RMS = %.3f°  heading RMS = %.3f°  "
+           "bias_z err = %.5f rad/s  m_ref=[%.3f %.3f %.3f]\n",
+           att3, hdg3, be3, mr3[0], mr3[1], mr3[2]);
+    printf("    [wave bench yaw ] attitude RMS = %.3f°  heading RMS = %.3f°  "
+           "bias_z err = %.5f rad/s  m_ref=[%.3f %.3f %.3f]\n    ",
+           atty, hdgy, bey, mry[0], mry[1], mry[2]);
+
+    /*
+     * Regression bounds. Pre-improvement baseline (simple covariance form,
+     * hard magnitude gate only, static m_ref, single-sample values):
+     * attitude RMS 7.10°, heading RMS 4.88°. The improved filter measured
+     * ~5.1° / ~2.6°; bounds leave headroom for platform float variance.
+     */
+    EXPECT(att3 < 6.0f,      "wave-bench 3D attitude RMS under bound");
+    EXPECT(hdg3 < 3.5f,      "wave-bench 3D heading RMS under bound");
+    EXPECT(be3  < 0.001f,    "wave-bench 3D bias error under bound");
+    EXPECT(atty < 6.0f,      "wave-bench yaw-only attitude RMS under bound");
+    EXPECT(hdgy < 3.5f,      "wave-bench yaw-only heading RMS under bound");
+    EXPECT(bey  < 0.001f,    "wave-bench yaw-only bias error under bound");
 }
 
 /* ── Main ────────────────────────────────────────────────────────────────────── */
@@ -805,6 +1235,13 @@ int main(void)
     RUN(test_sim_gyro_heading);
     RUN(test_sim_heading_wraps);
     RUN(test_sim_full_fusion);
+    RUN(test_joseph_symmetry_psd);
+    RUN(test_accel_innovation_capped);
+    RUN(test_mref_ema_heals_dip);
+    RUN(test_yaw_only_leaves_tilt);
+    RUN(test_heave_sine_amplitude);
+    RUN(test_heave_disabled_and_settle);
+    RUN(test_wave_benchmark);
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }

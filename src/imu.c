@@ -519,28 +519,54 @@ void *fusion_thread(void *arg)
         int n_needed = (int)(ctx->cfg.gyro_bias_sec * odr_hz);
         if (n_needed < 1) n_needed = 1;
 
-        float acc[3] = {0.0f, 0.0f, 0.0f};
-        int count = 0;
+        double sum[3] = {0}, sumsq[3] = {0};
+        int  count = 0, target = n_needed;
+        bool extended = false;
         imu_sample_t s;
 
         fprintf(stderr, "[fusion] gyro bias estimation: collecting %d samples\n",
                 n_needed);
 
-        while (count < n_needed && !ctx->stop) {
-            if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) == 0) {
-                acc[0] += s.gyro[0];
-                acc[1] += s.gyro[1];
-                acc[2] += s.gyro[2];
-                count++;
+        /* Motion check: on a vessel rolling at anchor, the mean over a
+         * short window is contaminated by wave rotation. If the per-axis
+         * std exceeds ~0.5 °/s, warn and double the window once — a longer
+         * average spans more wave cycles and cancels better. The MEKF
+         * refines the bias online either way. */
+        while (count < target && !ctx->stop) {
+            if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
+                continue;
+            for (int k = 0; k < 3; k++) {
+                sum[k]   += s.gyro[k];
+                sumsq[k] += (double)s.gyro[k] * s.gyro[k];
+            }
+            count++;
+
+            if (count == target && !extended) {
+                float std_max = 0.0f;
+                for (int k = 0; k < 3; k++) {
+                    double mean = sum[k] / count;
+                    double var  = sumsq[k] / count - mean * mean;
+                    if (var > 0 && (float)sqrt(var) > std_max)
+                        std_max = (float)sqrt(var);
+                }
+                if (std_max > 0.00873f) {   /* 0.5 °/s */
+                    extended = true;
+                    target *= 2;
+                    fprintf(stderr, "[fusion] gyro std %.2f °/s during bias "
+                            "window — vessel moving; extending capture to "
+                            "%.1f s\n", std_max * (float)(180.0 / M_PI),
+                            2.0 * ctx->cfg.gyro_bias_sec);
+                }
             }
         }
         if (count > 0) {
-            init_bias[0] = acc[0] / count;
-            init_bias[1] = acc[1] / count;
-            init_bias[2] = acc[2] / count;
+            init_bias[0] = (float)(sum[0] / count);
+            init_bias[1] = (float)(sum[1] / count);
+            init_bias[2] = (float)(sum[2] / count);
             cal_flags |= FLAG_GYRO_CAL;
-            fprintf(stderr, "[fusion] gyro bias = [%.5f, %.5f, %.5f] rad/s\n",
-                    init_bias[0], init_bias[1], init_bias[2]);
+            fprintf(stderr, "[fusion] gyro bias = [%.5f, %.5f, %.5f] rad/s"
+                    "%s\n", init_bias[0], init_bias[1], init_bias[2],
+                    extended ? "  (motion during capture — treat as rough)" : "");
         }
     }
 
@@ -551,43 +577,86 @@ void *fusion_thread(void *arg)
     mekf_t f;
     mekf_init(&f, &ctx->cfg, odr_hz, init_bias);
 
-    /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ───── */
+    heave_t heave;
+    heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
+    if (heave.enabled)
+        fprintf(stderr, "[fusion] heave estimator on (tau=%.0f s)\n",
+                (double)ctx->cfg.heave_tau_s);
+
+    /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ─────
+     *
+     * Average ~1 s of accel and every mag sample seen in that window rather
+     * than aligning from one instantaneous reading: a single mid-swing
+     * sample in waves can be ~10° off, and any alignment error is baked
+     * into m_ref (the heading reference), so averaging directly improves
+     * the long-term estimate. Wave-orbital accelerations largely cancel
+     * over the window. */
 
     {
-        imu_sample_t isample;  memset(&isample, 0, sizeof(isample));
-        mag_sample_t msample;  memset(&msample, 0, sizeof(msample));
-        bool have_imu = false, have_mag = false;
+        double acc_sum[3] = {0}, mag_sum[3] = {0};
+        int    acc_n = 0, mag_n = 0;
+        int    n_avg = (int)odr_hz;      /* ~1 s of IMU samples */
+        if (n_avg < 8) n_avg = 8;
 
         struct timespec align_start;
         clock_gettime(CLOCK_MONOTONIC, &align_start);
 
-        while ((!have_imu || !have_mag) && !ctx->stop) {
-            if (!have_imu && imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0)
-                have_imu = true;
-            if (!have_mag && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0)
-                have_mag = true;
+        imu_sample_t isample;
+        mag_sample_t msample;
 
-            if (!have_mag) {
-                struct timespec now;
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
-                               + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
-                if (elapsed > 5.0 && have_imu) {
-                    /* Timeout: align without heading (assume forward = North). */
-                    fprintf(stderr, "[fusion] no mag sample after 5 s; "
-                            "aligning without heading\n");
-                    msample.field[0] = 1.0f;
-                    msample.field[1] = 0.0f;
-                    msample.field[2] = 0.0f;
-                    have_mag = true;
-                } else {
-                    usleep(1000);
+        while (acc_n < n_avg && !ctx->stop) {
+            if (imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0) {
+                acc_sum[0] += isample.accel[0];
+                acc_sum[1] += isample.accel[1];
+                acc_sum[2] += isample.accel[2];
+                acc_n++;
+            }
+            while (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+                if (msample.valid) {
+                    mag_sum[0] += msample.field[0];
+                    mag_sum[1] += msample.field[1];
+                    mag_sum[2] += msample.field[2];
+                    mag_n++;
                 }
             }
         }
 
-        if (!ctx->stop)
-            mekf_align(&f, isample.accel, msample.field);
+        /* Keep waiting (up to 5 s total) for at least one mag sample. */
+        while (mag_n == 0 && !ctx->stop) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
+                           + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
+            if (elapsed > 5.0) break;
+            if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+                if (msample.valid) {
+                    mag_sum[0] += msample.field[0];
+                    mag_sum[1] += msample.field[1];
+                    mag_sum[2] += msample.field[2];
+                    mag_n++;
+                }
+            } else {
+                usleep(1000);
+            }
+        }
+
+        if (!ctx->stop && acc_n > 0) {
+            float acc_avg[3], mag_avg[3];
+            for (int k = 0; k < 3; k++)
+                acc_avg[k] = (float)(acc_sum[k] / acc_n);
+            if (mag_n > 0) {
+                for (int k = 0; k < 3; k++)
+                    mag_avg[k] = (float)(mag_sum[k] / mag_n);
+            } else {
+                /* Timeout: align without heading (assume forward = North). */
+                fprintf(stderr, "[fusion] no mag sample after 5 s; "
+                        "aligning without heading\n");
+                mag_avg[0] = 1.0f; mag_avg[1] = 0.0f; mag_avg[2] = 0.0f;
+            }
+            mekf_align(&f, acc_avg, mag_avg);
+            fprintf(stderr, "[fusion] aligned from %d accel + %d mag samples\n",
+                    acc_n, mag_n);
+        }
     }
 
     if (ctx->stop) return NULL;
@@ -602,6 +671,8 @@ void *fusion_thread(void *arg)
     mag_sample_t m;
     int prev_engine_on = -1;   /* track transitions for logging */
     bool mag_healthy   = false; /* set on first valid mag update; drives FLAG_MAG_VALID */
+    uint64_t prev_wall_ns = 0;  /* previous sample time for per-sample dt */
+    uint32_t prev_gen     = 0;
 
     while (!ctx->stop) {
         if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
@@ -609,10 +680,38 @@ void *fusion_thread(void *arg)
 
         if (ctx->reconfigure) {
             mekf_reconfigure(&f, &ctx->cfg);
+            /* heave_tau_s is [hot]: re-derive constants, keep filter state
+             * unless toggling between enabled/disabled. */
+            if ((ctx->cfg.heave_tau_s > 0.0f) != heave.enabled)
+                heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
+            else
+                heave.tau = ctx->cfg.heave_tau_s;
             ctx->reconfigure = 0;
         }
 
-        mekf_predict(&f, &s);
+        /* Timestamps + per-sample dt. For hw-timestamp chips, chip_ts
+         * encodes the exact sample time; feeding the measured interval to
+         * the predict step keeps oscillator tolerance (a few % on the
+         * ISM330's internal clock) from scaling all integrated rotation.
+         * Clamped to [0.5×, 2×] nominal so FIFO-overflow gaps and anchor
+         * resets fall back to the nominal period. */
+        uint64_t wall = 0, tai = 0;
+        uint32_t gen  = 0;
+        bool have_ts  = (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp);
+        float dt      = f.dt;
+        if (have_ts) {
+            chip_to_wall(&ctx->anchor, s.chip_ts, &wall, &tai, &gen);
+            if (ctx->imu_ops->has_hw_timestamp && s.chip_ts != 0 &&
+                prev_wall_ns != 0 && gen == prev_gen && wall > prev_wall_ns) {
+                float d = (float)((double)(wall - prev_wall_ns) * 1e-9);
+                if (d > 0.5f * f.dt && d < 2.0f * f.dt)
+                    dt = d;
+            }
+            prev_wall_ns = wall;
+            prev_gen     = gen;
+        }
+
+        mekf_predict(&f, &s, dt);
 
         /* Drain all pending mag samples before the accel update. */
         while (mag_ring_try_pop(&ctx->mag_ring, &m) == 0) {
@@ -627,7 +726,10 @@ void *fusion_thread(void *arg)
             pthread_mutex_unlock(&ctx->shared.lock);
         }
 
-        /* Switch accel skip threshold when engine vibration is detected. */
+        /* Switch accel gating when engine vibration is detected: widen the
+         * skip window so the filter isn't starved, but also inflate the
+         * accel noise ×4 so the vibration-contaminated samples that do pass
+         * are trusted proportionally less. */
         if (ctx->cfg.engine_vibration_g2 > 0.0 &&
             ctx->engine_on != prev_engine_on) {
             prev_engine_on = ctx->engine_on;
@@ -636,8 +738,11 @@ void *fusion_thread(void *arg)
                        : (float)ctx->cfg.accel_skip_thresh;
             f.accel_skip_lo = 1.0f - sk;
             f.accel_skip_hi = 1.0f + sk;
-            fprintf(stderr, "[fusion] engine vibration %s — accel_skip=%.2f\n",
-                    ctx->engine_on ? "detected" : "cleared", sk);
+            f.Ra_scale      = ctx->engine_on ? 4.0f : 1.0f;
+            fprintf(stderr, "[fusion] engine vibration %s — accel_skip=%.2f "
+                    "Ra×%.0f\n",
+                    ctx->engine_on ? "detected" : "cleared", sk,
+                    (double)f.Ra_scale);
         }
 
         mekf_update_accel(&f, &s);
@@ -645,6 +750,8 @@ void *fusion_thread(void *arg)
         /* Extract fused state and fill fields mekf_get_state leaves as stubs. */
         fused_state_t state;
         mekf_get_state(&f, &state, cal_flags);
+
+        state.heave_m = heave_update(&heave, f.q, s.accel);
 
         if (mag_healthy)
             state.flags |= FLAG_MAG_VALID;
@@ -654,17 +761,22 @@ void *fusion_thread(void *arg)
             ctx->mag_set_flag = 0;
         }
 
-        /* rate_of_turn: bias-corrected yaw rate (NED Z), rad/s → deg/min */
-        state.rate_of_turn = (s.gyro[2] - f.bias[2])
-                             * (float)(180.0 / M_PI) * 60.0f;
+        /* rate_of_turn: true heading rate (Euler yaw rate), not raw body-Z.
+         * ψ̇ = (ω_y·sinφ + ω_z·cosφ)/cosθ — with 20° of roll the raw body-Z
+         * gyro under-reads ROT and couples in pitch rate, which autopilots
+         * notice. Falls back to body-Z near ±90° pitch (cosθ → 0). */
+        {
+            float wy = s.gyro[1] - f.bias[1];
+            float wz = s.gyro[2] - f.bias[2];
+            float ct = cosf(state.pitch);
+            float psi_dot = (fabsf(ct) > 0.2f)
+                ? (wy * sinf(state.roll) + wz * cosf(state.roll)) / ct
+                : wz;
+            state.rate_of_turn = psi_dot * (float)(180.0 / M_PI) * 60.0f;
+        }
 
-        /* For hw-timestamp chips: chip_ts encodes exact sample time.
-         * For chips without hw timestamp: chip_ts=0 always; anchor_wall_ns
-         * is updated per-burst so it tracks current time adequately. */
-        if (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp) {
-            uint64_t wall, tai;
-            uint32_t gen;
-            chip_to_wall(&ctx->anchor, s.chip_ts, &wall, &tai, &gen);
+        /* Timestamps computed once above (also feed the per-sample dt). */
+        if (have_ts) {
             state.ts_wall_ns    = wall;
             state.ts_tai_ns     = tai;
             state.ts_chip_ticks = s.chip_ts;

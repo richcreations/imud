@@ -169,19 +169,24 @@ static void q_from_rotvec(const float v[3], float dq[4])
 /*
  * Generic measurement update.  (Solà §4.2)
  *
- * h:       predicted measurement in body frame (3×1)
- * z:       actual measurement in body frame (3×1)
- * R_noise: isotropic measurement noise variance (scalar, applied to I₃)
+ * h:         predicted measurement in body frame (3×1)
+ * z:         actual measurement in body frame (3×1)
+ * R_noise:   isotropic measurement noise variance (scalar, applied to I₃)
+ * chi2_gate: innovation gate — skip the update when the normalised
+ *            innovation distance d² = innovᵀ·S⁻¹·innov exceeds this
+ *            (χ²₃ quantile); 0 disables the gate.
  *
  * H = [-[h×]  |  0₃]  (3×6)  — Jacobian of h w.r.t. error-state δθ
  * (Solà eq. 276, with sign from body-frame observation of a NED reference.)
  *
- * Returns 0 on success, -1 if S is singular (update skipped).
+ * Returns 0 on success, -1 if S is singular, +1 if the innovation gate
+ * rejected the measurement (update skipped either way).
  */
 static int eskf_update(mekf_t *f,
                        const float h[3],
                        const float z[3],
-                       float R_noise)
+                       float R_noise,
+                       float chi2_gate)
 {
     /*
      * H (3×6): H[0:3][0:3] = +[h×], H[0:3][3:6] = 0₃
@@ -234,6 +239,29 @@ static int eskf_update(mekf_t *f,
     /* innovation = z − h  (3×1) */
     float innov[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
 
+    /* Innovation handling: d² = innovᵀ·S⁻¹·innov follows χ²(3) when the
+     * measurement is consistent with the filter. Wave-orbital acceleration
+     * can keep |a| ≈ g while swinging the DIRECTION — the magnitude gate
+     * passes those. A hard reject would starve the filter in a steady
+     * seaway, so instead the influence is capped Huber-style (scale the
+     * innovation so its effective distance equals the gate) and only gross
+     * outliers (9× the gate) are rejected outright. */
+    if (chi2_gate > 0.0f) {
+        /* No convergence gate needed: S = HPHᵀ + R already contains P, so
+         * during acquisition (large P) d² stays small and the cap is
+         * naturally inactive; it engages only once the filter is confident. */
+        float Si[3];
+        for (int i = 0; i < 3; i++)
+            Si[i] = Sinv[i][0]*innov[0] + Sinv[i][1]*innov[1]
+                  + Sinv[i][2]*innov[2];
+        float d2 = innov[0]*Si[0] + innov[1]*Si[1] + innov[2]*Si[2];
+        if (d2 > 9.0f * chi2_gate) return 1;
+        if (d2 > chi2_gate) {
+            float w = sqrtf(chi2_gate / d2);
+            innov[0] *= w; innov[1] *= w; innov[2] *= w;
+        }
+    }
+
     /* δx = K × innovation  (6×1) */
     float dx[6] = {0};
     for (int i = 0; i < 6; i++)
@@ -253,9 +281,11 @@ static int eskf_update(mekf_t *f,
     f->bias[2] += dx[5];
 
     /*
-     * Covariance update: P ← (I − K·H) × P  (simple form)
-     * Numerically adequate for this system; switch to Joseph form if
-     * symmetry loss becomes an issue after long operation.
+     * Covariance update, Joseph form:
+     *   P ← (I − K·H) · P · (I − K·H)ᵀ + K·R·Kᵀ
+     * Guarantees symmetry and positive-definiteness in float arithmetic —
+     * the simple (I−KH)·P form slowly loses both at 833 Hz over multi-day
+     * runs. R is isotropic (R_noise·I₃), so K·R·Kᵀ = R_noise·K·Kᵀ.
      */
     float KH[6][6] = {{0}};
     for (int i = 0; i < 6; i++)
@@ -267,8 +297,99 @@ static int eskf_update(mekf_t *f,
         for (int j = 0; j < 6; j++)
             IKH[i][j] = (i == j ? 1.0f : 0.0f) - KH[i][j];
 
-    float Pnew[6][6];
-    m66_mul(IKH, f->P, Pnew);
+    float Ptmp[6][6], Pnew[6][6];
+    m66_mul(IKH, f->P, Ptmp);
+    m66_mulT(Ptmp, IKH, Pnew);
+
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++) {
+            float s = 0;
+            for (int k = 0; k < 3; k++) s += K[i][k] * K[j][k];
+            Pnew[i][j] += R_noise * s;
+        }
+
+    /* Enforce exact symmetry (cheap insurance against float round-off). */
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < i; j++) {
+            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
+            Pnew[i][j] = Pnew[j][i] = a;
+        }
+
+    memcpy(f->P, Pnew, sizeof f->P);
+
+    return 0;
+}
+
+/*
+ * Scalar yaw measurement update (mag_yaw_only mode).
+ *
+ * y:       heading innovation, rad, wrapped to ±π
+ * R_noise: heading measurement variance, rad²
+ *
+ * For the right-multiplied error convention, a heading innovation relates
+ * to the error state through the NED-down axis expressed in body terms:
+ *   y ≈ −(R̂·δθ)_D  →  H = [ −R̂[2][:] | 0₃ ]  (1×6)
+ * Same Joseph-form covariance update as the vector path.
+ */
+/* χ²(1) 99% quantile — yaw innovation gate. */
+#define YAW_CHI2_GATE 6.63f
+
+static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
+{
+    float R[3][3];
+    q_to_R(f->q, R);
+
+    float H[6] = { -R[2][0], -R[2][1], -R[2][2], 0, 0, 0 };
+
+    float PHt[6];
+    for (int i = 0; i < 6; i++) {
+        float s = 0;
+        for (int k = 0; k < 6; k++) s += f->P[i][k] * H[k];
+        PHt[i] = s;
+    }
+
+    float S = R_noise;
+    for (int i = 0; i < 6; i++) S += H[i] * PHt[i];
+    if (S < 1e-12f) return -1;
+
+    /* Same Huber policy as the vector update: self-regulating via S. */
+    float d2 = y * y / S;
+    if (d2 > 9.0f * YAW_CHI2_GATE) return 1;
+    if (d2 > YAW_CHI2_GATE) y *= sqrtf(YAW_CHI2_GATE / d2);
+
+    float K[6];
+    for (int i = 0; i < 6; i++) K[i] = PHt[i] / S;
+
+    float dx[6];
+    for (int i = 0; i < 6; i++) dx[i] = K[i] * y;
+
+    float dq[4], qnew[4];
+    q_from_rotvec(dx, dq);
+    q_mul(f->q, dq, qnew);
+    memcpy(f->q, qnew, sizeof f->q);
+    q_normalize(f->q);
+
+    f->bias[0] += dx[3];
+    f->bias[1] += dx[4];
+    f->bias[2] += dx[5];
+
+    /* Joseph form, rank-1: P ← (I−KH)·P·(I−KH)ᵀ + R·K·Kᵀ */
+    float IKH[6][6];
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++)
+            IKH[i][j] = (i == j ? 1.0f : 0.0f) - K[i] * H[j];
+
+    float Ptmp[6][6], Pnew[6][6];
+    m66_mul(IKH, f->P, Ptmp);
+    m66_mulT(Ptmp, IKH, Pnew);
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < 6; j++)
+            Pnew[i][j] += R_noise * K[i] * K[j];
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < i; j++) {
+            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
+            Pnew[i][j] = Pnew[j][i] = a;
+        }
     memcpy(f->P, Pnew, sizeof f->P);
 
     return 0;
@@ -334,6 +455,19 @@ void mekf_init(mekf_t *f,
     float mr = (float)cfg->mag_reject_gauss;
     f->mag_reject_sq = mr * mr;
 
+    f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
+    f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
+
+    f->mag_yaw_only = cfg->mag_yaw_only;
+
+    /* m_ref EMA rate: one accepted sample per 1/mag_odr_hz, τ = 300 s. */
+#ifndef MREF_TAU_S
+#define MREF_TAU_S 300.0f
+#endif
+    f->mref_alpha = (cfg->mag_odr_hz > 0 && MREF_TAU_S < 1e9f)
+        ? 1.0f / (MREF_TAU_S * (float)cfg->mag_odr_hz)
+        : 0.0f;
+
     f->conv_thresh = 3.0f * fsq(0.5f * (float)(M_PI/180.0)); /* 3 × (0.5°)² */
 }
 
@@ -362,11 +496,15 @@ void mekf_align(mekf_t *f, const float accel[3], const float mag[3])
     float R[3][3];
     q_to_R(qtilt, R);
 
-    /* m_NED = R × mag_body */
+    /* m_lvl = R(qtilt) × mag_body — the field in the tilt-levelled frame,
+     * which is the true NED field rotated by −yaw: [H·cosψ, −H·sinψ, Z].
+     * Vessel yaw is therefore atan2(−m_y, m_x); the +m_y form returns −ψ
+     * (heading mirrored about north — invisible only when aligning while
+     * pointing north, which is what every early test happened to do). */
     float mnx = R[0][0]*mag[0] + R[0][1]*mag[1] + R[0][2]*mag[2];
     float mny = R[1][0]*mag[0] + R[1][1]*mag[1] + R[1][2]*mag[2];
 
-    float yaw = atan2f(mny, mnx);  /* magnetic heading in NED */
+    float yaw = atan2f(-mny, mnx);  /* magnetic heading in NED */
 
     /* ── 4. Full quaternion: q_yaw ⊗ q_tilt ──────────────────────────── */
     float cy = cosf(yaw*0.5f), sy = sinf(yaw*0.5f);
@@ -390,9 +528,14 @@ void mekf_align(mekf_t *f, const float accel[3], const float mag[3])
     f->initialized = true;
 }
 
-void mekf_predict(mekf_t *f, const imu_sample_t *s)
+void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s)
 {
     if (!f->initialized) return;
+
+    /* Per-sample dt: callers pass the measured inter-sample interval
+     * (hardware timestamps) so oscillator tolerance doesn't scale the
+     * integrated rotation; f->dt (nominal) is the fallback. */
+    float dt = (dt_s > 0.0f) ? dt_s : f->dt;
 
     /* Bias-corrected angular rate */
     float w[3] = {
@@ -402,7 +545,7 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s)
     };
 
     /* ── Propagate quaternion: q ← q ⊗ exp(w × dt)  (Solà eq. 259) ─── */
-    float rv[3] = { w[0]*f->dt, w[1]*f->dt, w[2]*f->dt };
+    float rv[3] = { w[0]*dt, w[1]*dt, w[2]*dt };
     float dq[4];
     q_from_rotvec(rv, dq);
     float qnew[4];
@@ -422,7 +565,6 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s)
      * Diagonal process noise Q_d:
      *   Q_d[0:3][0:3] = Qg·I₃    Q_d[3:6][3:6] = Qb·I₃
      */
-    float dt = f->dt;
     float Phi[6][6] = {{0}};
 
     /* Top-left: I₃ − [w×]·dt */
@@ -438,9 +580,18 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s)
     m66_mul(Phi, f->P, Ptmp);
     m66_mulT(Ptmp, Phi, Pnew);
 
-    /* Add diagonal Q_d */
-    for (int i = 0; i < 3; i++) Pnew[i][i]   += f->Qg;
-    for (int i = 3; i < 6; i++) Pnew[i][i] += f->Qb;
+    /* Add diagonal Q_d, scaled to the actual step length (Qg/Qb are stored
+     * per nominal step; noise variance grows linearly with dt). */
+    float qscale = dt / f->dt;
+    for (int i = 0; i < 3; i++) Pnew[i][i] += f->Qg * qscale;
+    for (int i = 3; i < 6; i++) Pnew[i][i] += f->Qb * qscale;
+
+    /* Keep P exactly symmetric (ΦPΦᵀ picks up float round-off). */
+    for (int i = 0; i < 6; i++)
+        for (int j = 0; j < i; j++) {
+            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
+            Pnew[i][j] = Pnew[j][i] = a;
+        }
 
     memcpy(f->P, Pnew, sizeof f->P);
 
@@ -449,14 +600,30 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s)
     f->converged = (trace < f->conv_thresh);
 }
 
+/* χ²(3) 99% quantile — accel innovation gate (overridable for experiments). */
+#ifndef ACCEL_CHI2_GATE
+#define ACCEL_CHI2_GATE 11.34f
+#endif
+
 void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
 {
     if (!f->initialized) return;
 
     float an = v3_norm(s->accel);
+    float ag = an / G_MS2;
+
+    /* Quiescence tracker (τ ≈ 2 s): EMA of squared |a|-deviation from 1 g,
+     * updated on EVERY sample including gated ones. The m_ref EMA learns
+     * only while this says the platform is calm — in a seaway the wave
+     * phase correlates with which samples pass the gates, and reference
+     * learning from that biased subset drifts m_ref (measured: +10%
+     * horizontal over 3 min of synthetic waves). */
+    {
+        float dev = ag - 1.0f;
+        f->acc_quiet_ema += (dev * dev - f->acc_quiet_ema) * (f->dt / 2.0f);
+    }
 
     /* Skip during linear acceleration (|a|/g outside [1±thresh]) */
-    float ag = an / G_MS2;
     if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return;
 
     /* Gravity direction in body: z = −normalize(specific_force) */
@@ -467,7 +634,26 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
     q_to_R(f->q, R);
     float h[3] = { R[2][0], R[2][1], R[2][2] };
 
-    eskf_update(f, h, z, f->Ra);
+    /*
+     * Ra_scale inflates the accel noise ×4 while engine vibration is
+     * detected (set by fusion_thread) — vibration is high-frequency and
+     * near-zero-mean, so deweighting (not gating) is the right response.
+     * Wave-driven DIRECTION disturbance is handled by the χ² innovation
+     * cap in eskf_update instead: benchmarking showed that deweighting by
+     * |a|-magnitude deviation correlates with wave phase and rectifies the
+     * direction error into an attitude/bias offset, so it is deliberately
+     * NOT done here.
+     */
+    float R_eff = f->Ra * f->Ra_scale;
+
+    /* Stash the accel-measured gravity direction (body frame) — the mag
+     * m_ref EMA uses it as an attitude-independent dip reference. */
+    f->g_body[0] = z[0];
+    f->g_body[1] = z[1];
+    f->g_body[2] = z[2];
+    f->g_body_valid = true;
+
+    eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE);
 }
 
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
@@ -521,10 +707,123 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
     /* Direction gate (always): quaternion correction > 90° is nonsensical. */
     if (res_sq > 4.0f) return;
 
+    /*
+     * Slow m_ref re-estimation (τ ≈ 5 min): adapt only the field MAGNITUDE
+     * and DIP, never the horizontal direction. The horizontal direction IS
+     * the heading reference — updating it from the filter's own attitude
+     * would feed the heading estimate back into its own reference and let
+     * both random-walk away together (gauge drift). Magnitude and dip carry
+     * the alignment-tilt error baked in at startup and the slow change of
+     * the Earth field along a voyage; neither feeds back into heading.
+     *
+     * Both targets are ATTITUDE-INDEPENDENT body-frame invariants: the
+     * total field magnitude, and the dip from the angle between the mag
+     * vector and the accel-measured gravity direction. The filter's
+     * attitude never enters, so a wrong attitude can neither hide the
+     * reference error nor be fed by the healing (no standoff, no gauge
+     * feedback). Runs whenever measurement and prediction roughly agree
+     * (direction within ~18°) — deliberately NOT gated on the tight
+     * converged-only anomaly threshold below, which would reject exactly
+     * the persistent reference error this exists to heal.
+     */
+    if (f->mref_alpha > 0.0f && f->g_body_valid && res_sq < 0.1f &&
+        f->acc_quiet_ema < 2e-4f /* platform calm: |a| within ~1.4% of g */) {
+        float sin_dip = (mx*f->g_body[0] + my*f->g_body[1] + mz*f->g_body[2])
+                        / z_mag;
+        if (sin_dip >  1.0f) sin_dip =  1.0f;
+        if (sin_dip < -1.0f) sin_dip = -1.0f;
+        float cos_dip = sqrtf(1.0f - sin_dip*sin_dip);
+        float tgt_v = z_mag * sin_dip;   /* target vertical component (down +) */
+        float tgt_h = z_mag * cos_dip;   /* target horizontal magnitude */
+
+        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+        if (mh_ref > 1e-6f) {
+            float scale = 1.0f + f->mref_alpha * (tgt_h / mh_ref - 1.0f);
+            f->m_ref[0] *= scale;
+            f->m_ref[1] *= scale;
+        }
+        f->m_ref[2] += f->mref_alpha * (tgt_v - f->m_ref[2]);
+    }
+
     /* Tight anomaly threshold (converged only), scaled to normalised units. */
     if (f->converged && res_sq > f->mag_reject_sq / (h_mag * h_mag)) return;
 
-    eskf_update(f, h, z, Rm_n);
+    int rc;
+    if (f->mag_yaw_only) {
+        /*
+         * Heading-only fusion (marine default): the swing-circle mag cal is
+         * structurally 2D, so the field's dip component is the least
+         * calibrated channel — it must not pull on roll/pitch. Rotate the
+         * measurement into NED with the current attitude and innovate on
+         * the horizontal field direction only.
+         */
+        float m_ned[3];
+        for (int i = 0; i < 3; i++)
+            m_ned[i] = R[i][0]*mx + R[i][1]*my + R[i][2]*mz;
+
+        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+        float mh_mea = sqrtf(m_ned[0]*m_ned[0] + m_ned[1]*m_ned[1]);
+        if (mh_ref < 0.2f * h_mag || mh_mea < 0.2f * h_mag)
+            return;   /* nearly vertical field (magnetic poles) — no heading info */
+
+        float y = atan2f(m_ned[1], m_ned[0])
+                - atan2f(f->m_ref[1], f->m_ref[0]);
+        while (y >  (float)M_PI) y -= 2.0f*(float)M_PI;
+        while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
+
+        /* Heading noise: per-axis field noise over the horizontal magnitude */
+        float R_psi = f->Rm / (mh_ref * mh_ref);
+        rc = eskf_update_yaw(f, y, R_psi);
+    } else {
+        rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE);
+    }
+    (void)rc;
+}
+
+/* ── Heave estimator ───────────────────────────────────────────────────────── */
+
+/*
+ * Leaky double integration of NED vertical linear acceleration, followed by
+ * a true first-order high-pass.
+ *
+ * a_down = (R(q)·accel_body)_D + g   — zero at rest, wave heave otherwise.
+ * The two leaky integration stages bound drift, but they still have a DC
+ * gain of τ² (≈144 m per m/s² at the default τ) — any slow residual (accel
+ * bias, small tilt error, start-up transients) would appear metres-scale.
+ * The output high-pass has an exact zero at DC, so those residuals are
+ * killed structurally rather than estimated. Passband covers ordinary wave
+ * periods: amplitude error ≈ 2 % at 8 s, ≈ 4 % at 12 s for τ = 12 s.
+ * Output is heave in metres, positive UP (PASHR convention).
+ */
+void heave_init(heave_t *h, float tau_s, float dt)
+{
+    memset(h, 0, sizeof *h);
+    h->tau     = tau_s;
+    h->dt      = dt;
+    h->enabled = (tau_s > 0.0f && dt > 0.0f);
+}
+
+float heave_update(heave_t *h, const float q[4], const float accel[3])
+{
+    if (!h->enabled) return 0.0f;
+
+    float R[3][3];
+    q_to_R(q, R);
+    float a_down = R[2][0]*accel[0] + R[2][1]*accel[1] + R[2][2]*accel[2]
+                 + G_MS2;
+
+    float leak = h->dt / h->tau;
+    h->vel  += a_down * h->dt;
+    h->vel  -= h->vel * leak;
+    h->disp += h->vel * h->dt;
+    h->disp -= h->disp * leak;
+
+    /* First-order high-pass: y = α·(y + x − x_prev), exact zero at DC. */
+    float alpha = h->tau / (h->tau + h->dt);
+    h->hp_y = alpha * (h->hp_y + h->disp - h->disp_prev);
+    h->disp_prev = h->disp;
+
+    return -h->hp_y;   /* NED down → heave positive up */
 }
 
 void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
@@ -548,6 +847,8 @@ void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
 
     float mr = (float)cfg->mag_reject_gauss;
     f->mag_reject_sq = mr * mr;
+
+    f->mag_yaw_only = cfg->mag_yaw_only;
 }
 
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
