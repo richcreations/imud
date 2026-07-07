@@ -32,6 +32,7 @@
 #include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "log.h"
 
 /* ── Register addresses (DS9463 §7) ───────────────────────────────────────── */
 
@@ -119,11 +120,11 @@ static int lis_probe(int fd, uint8_t addr)
 {
     uint8_t who;
     if (reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
-        fprintf(stderr, "lis3mdl: WHO_AM_I read failed: %s\n", strerror(errno));
+        LOG_E("lis3mdl: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
     if (who != WHO_AM_I_VALUE) {
-        fprintf(stderr, "lis3mdl: WHO_AM_I = 0x%02X, expected 0x%02X\n",
+        LOG_E("lis3mdl: WHO_AM_I = 0x%02X, expected 0x%02X\n",
                 who, WHO_AM_I_VALUE);
         return -1;
     }

@@ -28,8 +28,8 @@ from typing import Iterator, Optional
 # ── Protocol constants ────────────────────────────────────────────────────────
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
-IMUD_VERSION     = 10    # 1.0 — encoded as decimal: major*10 + minor
-IMUD_PACKET_SIZE = 192
+IMUD_VERSION     = 11    # 1.1 — encoded as decimal: major*10 + minor
+IMUD_PACKET_SIZE = 196
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ class Flags:
 
 # ── Packet struct ─────────────────────────────────────────────────────────────
 #
-# Wire layout (little-endian, 192 bytes):
+# Wire layout (little-endian, 196 bytes):
 #   Offset  Field
 #    0      magic          uint32
 #    4      version        uint16
@@ -90,9 +90,10 @@ class Flags:
 #  144      cov[9]         9× float32   attitude error covariance (rad²)
 #  180      imu_seq        uint32
 #  184      declination_deg float32     °E+, 0.0 when DECLINATION_VALID not set
-#  188      crc32          uint32
+#  188      heave_m        float32     m, + up; 0.0 when heave disabled (v1.1)
+#  192      crc32          uint32
 
-_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'IfI')
+_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'IffI')
 
 assert _STRUCT.size == IMUD_PACKET_SIZE, \
     f"struct size mismatch: {_STRUCT.size} != {IMUD_PACKET_SIZE}"
@@ -150,9 +151,10 @@ class ImudPacket:
     cov_3: float; cov_4: float; cov_5: float
     cov_6: float; cov_7: float; cov_8: float
 
-    # Counters / declination
+    # Counters / declination / heave
     imu_seq:          int
     declination_deg:  float   # °E+; 0.0 when DECLINATION_VALID flag not set
+    heave_m:          float   # m, + up; 0.0 when the heave estimator is off
     crc32:            int
 
     # ── Convenience properties ────────────────────────────────────────────

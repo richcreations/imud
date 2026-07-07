@@ -1,4 +1,4 @@
-.TH IMUD 8 "May 2026" "imud 1.0" "System Manager's Manual"
+.TH IMUD 8 "July 2026" "imud 1.1" "System Manager's Manual"
 .SH NAME
 imud \- IMU daemon for marine and robotics navigation
 .SH SYNOPSIS
@@ -66,8 +66,9 @@ Print the version string and exit.
 .B SIGHUP
 Reload hot-reloadable configuration fields without restarting.
 Hot fields include MEKF noise parameters, output rates, the stats heartbeat
-rate, and static declination (unless a live position source owns it).
-The log level is read once at startup and is not hot-reloadable.
+rate, the log level, and static declination (unless a live position source
+owns it).
+The log file, if configured, is reopened on reload so logrotate can rotate it.
 If the reloaded file fails to parse, the current configuration is kept.
 Fields marked
 .B [restart]

@@ -17,6 +17,7 @@
 #include <string.h>
 #include <errno.h>
 #include "cal.h"
+#include "log.h"
 
 /* ── JSON float-array parser ─────────────────────────────────────────────── */
 
@@ -60,10 +61,10 @@ int cal_load(const char *path, imud_cal_t *cal)
     FILE *f = fopen(path, "r");
     if (!f) {
         if (errno == ENOENT) {
-            fprintf(stderr, "[cal] %s not found — running uncalibrated\n", path);
+            LOG_W("[cal] %s not found — running uncalibrated\n", path);
             return 0;
         }
-        fprintf(stderr, "[cal] cannot open %s: %s\n", path, strerror(errno));
+        LOG_E("[cal] cannot open %s: %s\n", path, strerror(errno));
         return -1;
     }
 
@@ -72,11 +73,11 @@ int cal_load(const char *path, imud_cal_t *cal)
     int ferr = ferror(f);
     fclose(f);
     if (ferr) {
-        fprintf(stderr, "[cal] read error on %s\n", path);
+        LOG_E("[cal] read error on %s\n", path);
         return -1;
     }
     if (nr == sizeof(buf) - 1)
-        fprintf(stderr, "[cal] WARNING: %s may be truncated (exceeds %zu bytes)\n",
+        LOG_W("[cal] WARNING: %s may be truncated (exceeds %zu bytes)\n",
                 path, sizeof(buf) - 1);
     buf[nr] = '\0';
 
@@ -107,7 +108,7 @@ int cal_load(const char *path, imud_cal_t *cal)
             cal->has_gyro = true;
     }
 
-    fprintf(stderr, "[cal] loaded %s  accel:%s  gyro:%s  mag:%s\n", path,
+    LOG_I("[cal] loaded %s  accel:%s  gyro:%s  mag:%s\n", path,
             cal->has_accel ? "yes" : "no",
             cal->has_gyro  ? "yes" : "no",
             cal->has_mag   ? "yes" : "no");
@@ -118,7 +119,7 @@ int cal_write(const char *path, const imud_cal_t *cal)
 {
     FILE *f = fopen(path, "w");
     if (!f) {
-        fprintf(stderr, "[cal] cannot write %s: %s\n", path, strerror(errno));
+        LOG_E("[cal] cannot write %s: %s\n", path, strerror(errno));
         return -1;
     }
 

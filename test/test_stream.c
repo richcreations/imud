@@ -11,7 +11,7 @@
  * imu_get_state()/imu_ctx_is_settled(), starts a real stream_out_thread,
  * connects as a subscriber over the Unix socket, and verifies:
  *   - the listener socket is created and accepts connections
- *   - packets arrive as exact 192-byte frames with correct magic/version
+ *   - packets arrive as exact sizeof(imu_packet_t) frames with correct magic/version
  *   - packet content reflects the fused state (heading roundtrip)
  *   - a disconnected subscriber is pruned and a new one can join
  *   - clean thread stop and socket unlink
@@ -85,12 +85,12 @@ static int connect_subscriber(void)
     return fd;
 }
 
-/* Read exactly one 192-byte frame; returns 0 on success. */
+/* Read exactly one wire-packet frame; returns 0 on success. */
 static int read_frame(int fd, unsigned char *frame)
 {
     size_t got = 0;
-    while (got < 192) {
-        ssize_t n = read(fd, frame + got, 192 - got);
+    while (got < sizeof(imu_packet_t)) {
+        ssize_t n = read(fd, frame + got, sizeof(imu_packet_t) - got);
         if (n <= 0) return -1;   /* timeout, EOF, or error */
         got += (size_t)n;
     }
@@ -128,7 +128,7 @@ int main(void)
     int sub = connect_subscriber();
     EXPECT(sub >= 0, "subscriber connects to the Unix socket");
 
-    unsigned char frame[192];
+    unsigned char frame[sizeof(imu_packet_t)];
     int frames_ok = 0;
     for (int i = 0; i < 3; i++) {
         if (read_frame(sub, frame) != 0) break;
@@ -140,7 +140,7 @@ int main(void)
             fabsf(heading - 123.4f) < 1e-4f)
             frames_ok++;
     }
-    EXPECT(frames_ok == 3, "three exact 192-byte frames with correct "
+    EXPECT(frames_ok == 3, "three exact wire-size frames with correct "
                            "magic/version/heading");
 
     /* Drop the subscriber; the thread must prune it and accept a new one. */

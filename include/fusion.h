@@ -60,6 +60,7 @@ typedef struct {
     float g_body[3];     /* latest accel-measured gravity direction, body */
     bool  g_body_valid;  /* true once an accel update has stashed g_body */
     float acc_quiet_ema; /* EMA of (|a|/g−1)², τ≈2 s — platform quiescence */
+    float speed_mps;     /* speed over ground for centripetal correction; 0 = off */
 } mekf_t;
 
 /*
@@ -78,6 +79,14 @@ void mekf_init(mekf_t *f,
  * Safe to call multiple times; uses the most recent values.
  */
 void mekf_align(mekf_t *f, const float accel[3], const float mag[3]);
+
+/*
+ * mekf_set_mref_invariants — override the magnetic reference magnitude
+ * (horizontal component, Gauss) and dip (vertical component, Gauss, down +)
+ * with analytically known values (WMM at a known position). Preserves the
+ * horizontal DIRECTION (the heading anchor). No-op before alignment.
+ */
+void mekf_set_mref_invariants(mekf_t *f, float h_gauss, float z_gauss);
 
 /*
  * mekf_predict — gyro integration + covariance propagation.

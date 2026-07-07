@@ -7,7 +7,7 @@
 /*
  * types.h — core data structures shared across all imud threads
  *
- * Wire packet is little-endian, 192 bytes. All angle units are radians
+ * Wire packet is little-endian, 196 bytes. All angle units are radians
  * unless the field name ends in _deg. Magnetic field in µT. Accel in m/s².
  * Gyro in rad/s.
  */
@@ -22,7 +22,7 @@
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION  10   /* 1.0 — encoded as decimal: major*10 + minor */
+#define IMUD_VERSION  11   /* 1.1 — encoded as decimal: major*10 + minor */
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 
@@ -79,7 +79,7 @@ typedef struct {
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
-/* ── Wire packet — §8, 192 bytes fixed, little-endian ─────────────────────── */
+/* ── Wire packet — §8, 196 bytes fixed, little-endian ─────────────────────── */
 
 typedef struct __attribute__((packed)) {
     /* Header — 32 bytes */
@@ -125,13 +125,15 @@ typedef struct __attribute__((packed)) {
     float    cov[9];         /* 3×3 row-major, rad² */
     uint32_t imu_seq;        /* monotonic ISM330 sample counter */
     float    declination_deg; /* °E+; 0.0 when FLAG_DECLINATION_VALID not set */
-    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–187 */
+    float    heave_m;        /* vertical displacement, m, + up (v11); 0.0 when
+                              * the heave estimator is disabled */
+    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–191 */
 } imu_packet_t;
 
-_Static_assert(sizeof(imu_packet_t) == 192,
-               "imu_packet_t must be exactly 192 bytes");
-_Static_assert(offsetof(imu_packet_t, crc32) == 188,
-               "crc32 must be at offset 188");
+_Static_assert(sizeof(imu_packet_t) == 196,
+               "imu_packet_t must be exactly 196 bytes");
+_Static_assert(offsetof(imu_packet_t, crc32) == 192,
+               "crc32 must be at offset 192");
 
 /* ── IMU ring buffer — ism_reader → fusion ─────────────────────────────────── */
 

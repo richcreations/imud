@@ -147,12 +147,15 @@ python3 imud_client.py --port 10111 --addr 239.255.0.1
 | `flags` | int | bitmask — see `Flags` class |
 | `flags_str` | str | e.g. `"CVM"` (converged, mag-valid, mag-cal) |
 | `imu_seq` | int | monotonic sample counter |
+| `declination_deg` | float | °E+; 0.0 when DECLINATION_VALID flag not set |
+| `heave_m` | float | vertical displacement, m, + up; 0.0 when heave disabled (v1.1) |
+| `true_heading_deg` | float or None | heading + declination, or None when declination unknown |
 
 ---
 
-## Stream B packet layout (v1.0, 192 bytes)
+## Stream B packet layout (v1.1, 196 bytes)
 
 See `spec.md §8` for the complete wire format. The stream is little-endian,
-192 bytes per packet (version field = 10, i.e. v1.0), with an IEEE 802.3
-CRC32 over the first 188 bytes (0–187). Both libraries validate magic,
+196 bytes per packet (version field = 11, i.e. v1.1), with an IEEE 802.3
+CRC32 over the first 192 bytes (0–191). Both libraries validate magic,
 version, and CRC before returning a packet.

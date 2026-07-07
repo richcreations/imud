@@ -26,6 +26,7 @@
 #include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "log.h"
 
 /* ── Register addresses (datasheet §Register Map) ──────────────────────────── */
 
@@ -112,11 +113,11 @@ static int mmc_probe(int fd, uint8_t addr)
 {
     uint8_t id;
     if (reg_read(fd, addr, REG_PRODUCT_ID, &id) < 0) {
-        fprintf(stderr, "mmc5983ma: product ID read failed: %s\n", strerror(errno));
+        LOG_E("mmc5983ma: product ID read failed: %s\n", strerror(errno));
         return -1;
     }
     if (id != PRODUCT_ID_VALUE) {
-        fprintf(stderr, "mmc5983ma: product ID = 0x%02X, expected 0x%02X\n",
+        LOG_E("mmc5983ma: product ID = 0x%02X, expected 0x%02X\n",
                 id, PRODUCT_ID_VALUE);
         return -1;
     }

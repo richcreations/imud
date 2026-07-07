@@ -43,6 +43,7 @@
 #include "output.h"
 #include "nmea.h"
 #include "packet.h"
+#include "log.h"
 
 /* ── Portability stubs (Linux-only features used at runtime on Pi) ───────── */
 
@@ -126,14 +127,14 @@ static int open_udp_out(const char *dest_ip, int port,
 {
     struct in_addr addr;
     if (inet_pton(AF_INET, dest_ip, &addr) <= 0) {
-        fprintf(stderr, "[output] invalid destination address '%s' "
+        LOG_E("[output] invalid destination address '%s' "
                 "(must be a numeric IPv4 address, not a hostname)\n", dest_ip);
         return -1;
     }
 
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        fprintf(stderr, "[output] socket(): %s\n", strerror(errno));
+        LOG_E("[output] socket(): %s\n", strerror(errno));
         return -1;
     }
     APPLY_CLOEXEC(fd);
@@ -143,20 +144,20 @@ static int open_udp_out(const char *dest_ip, int port,
         uint8_t ttl = 1;
         if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL,
                        &ttl, sizeof(ttl)) < 0) {
-            fprintf(stderr, "[output] IP_MULTICAST_TTL: %s\n", strerror(errno));
+            LOG_E("[output] IP_MULTICAST_TTL: %s\n", strerror(errno));
             close(fd); return -1;
         }
         uint8_t loop = 1;
         if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP,
                        &loop, sizeof(loop)) < 0) {
-            fprintf(stderr, "[output] IP_MULTICAST_LOOP: %s\n", strerror(errno));
+            LOG_E("[output] IP_MULTICAST_LOOP: %s\n", strerror(errno));
             close(fd); return -1;
         }
     } else {
         /* Broadcast or unicast. */
         int yes = 1;
         if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes)) < 0) {
-            fprintf(stderr, "[output] SO_BROADCAST: %s\n", strerror(errno));
+            LOG_E("[output] SO_BROADCAST: %s\n", strerror(errno));
             close(fd); return -1;
         }
     }
@@ -223,8 +224,9 @@ void *nmea_out_thread(void *arg)
                               (struct sockaddr *)&ctx->nmea_dest,
                               sizeof(ctx->nmea_dest));
         if (sent < 0) {
-            if (ctx->nmea_errors++ == 0)   /* log first occurrence only */
-                fprintf(stderr, "[nmea_out] sendto: %s\n", strerror(errno));
+            ctx->nmea_errors++;
+            /* log.c's repeat suppression handles flooding */
+            LOG_W("[nmea_out] sendto: %s\n", strerror(errno));
         }
     }
 
@@ -273,8 +275,8 @@ void *hirate_out_thread(void *arg)
                               (struct sockaddr *)&ctx->hirate_dest,
                               sizeof(ctx->hirate_dest));
         if (sent < 0) {
-            if (ctx->hirate_errors++ == 0)
-                fprintf(stderr, "[hirate_out] sendto: %s\n", strerror(errno));
+            ctx->hirate_errors++;
+            LOG_W("[hirate_out] sendto: %s\n", strerror(errno));
         }
     }
 
@@ -366,8 +368,8 @@ void *json_out_thread(void *arg)
                               (struct sockaddr *)&ctx->json_dest,
                               sizeof(ctx->json_dest));
         if (sent < 0) {
-            if (ctx->json_errors++ == 0)
-                fprintf(stderr, "[json_out] sendto: %s\n", strerror(errno));
+            ctx->json_errors++;
+            LOG_W("[json_out] sendto: %s\n", strerror(errno));
         }
     }
 
@@ -427,12 +429,12 @@ void *stream_out_thread(void *arg)
             APPLY_CLOEXEC(c);
             fcntl(c, F_SETFL, O_NONBLOCK);
             if (ctx->stream_nclients >= STREAM_MAX_CLIENTS) {
-                fprintf(stderr, "[stream_out] subscriber limit (%d) reached "
+                LOG_E("[stream_out] subscriber limit (%d) reached "
                         "— rejecting\n", STREAM_MAX_CLIENTS);
                 close(c);
             } else {
                 ctx->stream_clients[ctx->stream_nclients++] = c;
-                fprintf(stderr, "[stream_out] subscriber connected (%d/%d)\n",
+                LOG_I("[stream_out] subscriber connected (%d/%d)\n",
                         ctx->stream_nclients, STREAM_MAX_CLIENTS);
             }
         }
@@ -457,7 +459,7 @@ void *stream_out_thread(void *arg)
             close(ctx->stream_clients[i]);
             ctx->stream_clients[i] =
                 ctx->stream_clients[--ctx->stream_nclients];
-            fprintf(stderr, "[stream_out] subscriber disconnected (%d/%d)\n",
+            LOG_I("[stream_out] subscriber disconnected (%d/%d)\n",
                     ctx->stream_nclients, STREAM_MAX_CLIENTS);
         }
     }
@@ -476,13 +478,13 @@ static int open_stream_listener(const char *path)
 {
     struct sockaddr_un addr;
     if (strlen(path) >= sizeof(addr.sun_path)) {
-        fprintf(stderr, "[output] stream socket path too long: %s\n", path);
+        LOG_E("[output] stream socket path too long: %s\n", path);
         return -1;
     }
 
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        fprintf(stderr, "[output] stream socket(): %s\n", strerror(errno));
+        LOG_E("[output] stream socket(): %s\n", strerror(errno));
         return -1;
     }
     APPLY_CLOEXEC(fd);
@@ -493,12 +495,12 @@ static int open_stream_listener(const char *path)
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "[output] stream bind(%s): %s\n", path, strerror(errno));
+        LOG_E("[output] stream bind(%s): %s\n", path, strerror(errno));
         close(fd); return -1;
     }
     chmod(path, 0660);
     if (listen(fd, 4) < 0) {
-        fprintf(stderr, "[output] stream listen(): %s\n", strerror(errno));
+        LOG_E("[output] stream listen(): %s\n", strerror(errno));
         close(fd); unlink(path); return -1;
     }
     /* Non-blocking so stream_out_thread can poll accept() each tick. */
@@ -528,7 +530,7 @@ int out_ctx_open(out_ctx_t **ctx_out,
         ctx->nmea_fd = open_udp_out(cfg->nmea_dest_addr, cfg->nmea_dest_port,
                                     &ctx->nmea_dest);
         if (ctx->nmea_fd < 0) goto fail;
-        fprintf(stderr, "[output] NMEA UDP → %s:%d (%.0f Hz)\n",
+        LOG_I("[output] NMEA UDP → %s:%d (%.0f Hz)\n",
                 cfg->nmea_dest_addr, cfg->nmea_dest_port,
                 (double)cfg->nmea_rate_hz);
     }
@@ -538,7 +540,7 @@ int out_ctx_open(out_ctx_t **ctx_out,
                                       cfg->highrate_dest_port,
                                       &ctx->hirate_dest);
         if (ctx->hirate_fd < 0) goto fail;
-        fprintf(stderr, "[output] hi-rate UDP → %s:%d (%.0f Hz, %s, %s)\n",
+        LOG_I("[output] hi-rate UDP → %s:%d (%.0f Hz, %s, %s)\n",
                 cfg->highrate_dest_addr, cfg->highrate_dest_port,
                 (double)cfg->highrate_rate_hz, cfg->highrate_coord_frame,
                 IN_MULTICAST(ntohl(ctx->hirate_dest.sin_addr.s_addr))
@@ -549,14 +551,14 @@ int out_ctx_open(out_ctx_t **ctx_out,
         ctx->json_fd = open_udp_out(cfg->json_dest_addr, cfg->json_dest_port,
                                     &ctx->json_dest);
         if (ctx->json_fd < 0) goto fail;
-        fprintf(stderr, "[output] JSON UDP → %s:%d (%d Hz)\n",
+        LOG_I("[output] JSON UDP → %s:%d (%d Hz)\n",
                 cfg->json_dest_addr, cfg->json_dest_port, cfg->json_rate_hz);
     }
 
     if (cfg->stream_enabled) {
         ctx->stream_fd = open_stream_listener(cfg->stream_socket);
         if (ctx->stream_fd < 0) goto fail;
-        fprintf(stderr, "[output] stream AF_UNIX → %s (%d Hz, max %d subscribers)\n",
+        LOG_I("[output] stream AF_UNIX → %s (%d Hz, max %d subscribers)\n",
                 cfg->stream_socket, cfg->stream_rate_hz, STREAM_MAX_CLIENTS);
     }
 

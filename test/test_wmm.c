@@ -122,6 +122,27 @@ int main(void)
         if (ok) passed++; else failed++;
     }
 
+    /* ── Full field vector (NOAA 2025 test values, nT) ─────────────────── */
+    {
+        struct { double year, alt_km, lat, lon, X, Y, Z; } fv[] = {
+            { 2025.0, 28, 89, -121,  -255.388723, -1482.460628, 56194.288771 },
+            { 2025.0, 65, 43,   93, 24299.852822,   210.517066, 50037.923998 },
+        };
+        for (int i = 0; i < 2; i++) {
+            double ned[3];
+            wmm_field_ned(fv[i].lat, fv[i].lon, fv[i].alt_km * 1000.0,
+                          fv[i].year, &wmm, ned);
+            int ok = fabs(ned[0] - fv[i].X) < 20.0 &&
+                     fabs(ned[1] - fv[i].Y) < 20.0 &&
+                     fabs(ned[2] - fv[i].Z) < 20.0;
+            printf("  %s  wmm_field_ned(%g,%g) = [%.1f %.1f %.1f] nT "
+                   "(exp [%.1f %.1f %.1f])\n",
+                   ok ? "PASS" : "FAIL", fv[i].lat, fv[i].lon,
+                   ned[0], ned[1], ned[2], fv[i].X, fv[i].Y, fv[i].Z);
+            if (ok) passed++; else failed++;
+        }
+    }
+
     /* A header-only / truncated COF must be rejected, not silently loaded
      * as an all-zero model whose declination is a meaningless 0.0. */
     {

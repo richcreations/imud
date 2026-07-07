@@ -42,6 +42,7 @@
 #include "position.h"
 #include "imu.h"
 #include "wmm.h"
+#include "log.h"
 
 /* ── Tunables ────────────────────────────────────────────────────────────── */
 
@@ -232,9 +233,15 @@ static void maybe_update_decl(pos_ctx_t *ctx, const wmm_t *wmm,
         return;
 
     double year = wmm_decimal_year();
-    double decl = wmm_declination(lat, lon, alt_m, year, wmm);
+    double ned[3];
+    wmm_field_ned(lat, lon, alt_m, year, wmm, ned);
+    double decl = atan2(ned[1], ned[0]) * (180.0 / M_PI);
     imu_ctx_set_declination(ctx->imu, (float)decl, true);
-    fprintf(stderr, "[pos] fix (%.4f°N, %.4f°E) → decl=%.2f°E\n",
+    /* Field invariants (nT → Gauss) for the MEKF magnetic reference. */
+    imu_ctx_set_mag_ref(ctx->imu,
+                        (float)(sqrt(ned[0]*ned[0] + ned[1]*ned[1]) * 1e-5),
+                        (float)(ned[2] * 1e-5));
+    LOG_I("[pos] fix (%.4f°N, %.4f°E) → decl=%.2f°E\n",
             lat, lon, decl);
     *last_lat = lat;
     *last_lon = lon;
@@ -267,9 +274,10 @@ void check_fix_ttl(pos_ctx_t *ctx, time_t *last_fix_time,
             (double)(ctx->cfg->pos_fix_max_age_h * 3600.0f))
         return;
 
-    fprintf(stderr, "[pos] GPS fix expired (>%.1f h old) — clearing declination\n",
+    LOG_W("[pos] GPS fix expired (>%.1f h old) — clearing declination\n",
             (double)ctx->cfg->pos_fix_max_age_h);
     imu_ctx_set_declination(ctx->imu, 0.0f, false);
+    imu_ctx_set_speed(ctx->imu, 0.0f, false);   /* stale speed must not steer */
     *last_fix_time = 0;   /* prevent repeated clears */
     *last_lat = POS_FORCE_UPDATE_DEG;
     *last_lon = POS_FORCE_UPDATE_DEG;
@@ -287,12 +295,12 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
 {
     int fd = tcp_connect_host(ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port);
     if (fd < 0) {
-        fprintf(stderr, "[pos] gpsd %s:%d unavailable: %s\n",
+        LOG_W("[pos] gpsd %s:%d unavailable: %s\n",
                 ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port,
                 strerror(errno));
         return;
     }
-    fprintf(stderr, "[pos] gpsd connected %s:%d\n",
+    LOG_I("[pos] gpsd connected %s:%d\n",
             ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port);
 
     const char *watch = "?WATCH={\"enable\":true,\"json\":true}\n";
@@ -324,11 +332,16 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
         double alt = 0.0;
         if (!pos_json_double(line, "altMSL", &alt))
             pos_json_double(line, "alt", &alt);
+        /* Speed over ground feeds the centripetal correction; refresh it on
+         * every fix (not just threshold crossings). */
+        double spd;
+        if (pos_json_double(line, "speed", &spd) && spd >= 0.0)
+            imu_ctx_set_speed(ctx->imu, (float)spd, true);
         maybe_update_decl(ctx, wmm, lat, lon, alt,
                           last_lat, last_lon, last_fix_time);
     }
 
-    fprintf(stderr, "[pos] gpsd disconnected\n");
+    LOG_I("[pos] gpsd disconnected\n");
     close(fd);
 }
 
@@ -345,7 +358,7 @@ static void poll_signalk(pos_ctx_t *ctx, const wmm_t *wmm,
     int fd = tcp_connect_host(ctx->cfg->pos_signalk_host,
                               ctx->cfg->pos_signalk_port);
     if (fd < 0) {
-        fprintf(stderr, "[pos] SignalK %s:%d unavailable: %s\n",
+        LOG_W("[pos] SignalK %s:%d unavailable: %s\n",
                 ctx->cfg->pos_signalk_host, ctx->cfg->pos_signalk_port,
                 strerror(errno));
         return;
@@ -368,7 +381,7 @@ static void poll_signalk(pos_ctx_t *ctx, const wmm_t *wmm,
     /* The position endpoint returns a few hundred bytes; a full buffer means
      * the path points at something bigger and the tail was dropped. */
     if (total >= (int)sizeof(resp) - 1)
-        fprintf(stderr, "[pos] SignalK response truncated at %zu bytes — "
+        LOG_W("[pos] SignalK response truncated at %zu bytes — "
                 "check signalk_path points at the position endpoint\n",
                 sizeof(resp) - 1);
 
@@ -405,19 +418,26 @@ void *position_thread(void *arg)
     wmm_t wmm;
     bool wmm_ok = (wmm_load(ctx->cfg->pos_wmm_file, &wmm) == 0);
     if (!wmm_ok)
-        fprintf(stderr, "[pos] WMM file '%s' unavailable — "
+        LOG_W("[pos] WMM file '%s' unavailable — "
                 "position fixes will not update declination\n",
                 ctx->cfg->pos_wmm_file);
 
-    fprintf(stderr, "[pos] position thread started");
-    if (ctx->cfg->pos_gpsd_enabled)
-        fprintf(stderr, "  gpsd=%s:%d",
-                ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port);
-    if (ctx->cfg->pos_signalk_enabled)
-        fprintf(stderr, "  signalk=%s:%d%s",
-                ctx->cfg->pos_signalk_host, ctx->cfg->pos_signalk_port,
-                ctx->cfg->pos_signalk_path);
-    fputc('\n', stderr);
+    /* Compose the banner first: log lines must be single emissions so the
+     * per-line timestamp/priority prefixes can't split them. */
+    {
+        char banner[192];
+        int  bn = snprintf(banner, sizeof banner, "[pos] position thread started");
+        if (ctx->cfg->pos_gpsd_enabled && bn > 0 && bn < (int)sizeof banner)
+            bn += snprintf(banner + bn, sizeof banner - (size_t)bn,
+                           "  gpsd=%s:%d",
+                           ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port);
+        if (ctx->cfg->pos_signalk_enabled && bn > 0 && bn < (int)sizeof banner)
+            snprintf(banner + bn, sizeof banner - (size_t)bn,
+                     "  signalk=%s:%d%s",
+                     ctx->cfg->pos_signalk_host, ctx->cfg->pos_signalk_port,
+                     ctx->cfg->pos_signalk_path);
+        LOG_I("%s\n", banner);
+    }
 
     /* Force first update regardless of position change. */
     double last_lat = POS_FORCE_UPDATE_DEG, last_lon = POS_FORCE_UPDATE_DEG;

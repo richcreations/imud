@@ -39,6 +39,7 @@ float    client_heading(const void *buf)     { return client_copy(buf).heading_d
 float    client_declination(const void *buf) { return client_copy(buf).declination_deg; }
 float    client_quat_w(const void *buf)      { return client_copy(buf).quat_w; }
 float    client_mag_x(const void *buf)       { return client_copy(buf).mag_x; }
+float    client_heave(const void *buf)       { return client_copy(buf).heave_m; }
 
 float client_true_heading(const void *buf)
 {

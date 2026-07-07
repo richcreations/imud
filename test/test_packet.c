@@ -126,8 +126,8 @@ static void test_packet_size(void)
 {
     begin("test_packet_size");
     int fb = g_fail;
-    EXPECT(sizeof(imu_packet_t) == 192, "imu_packet_t is exactly 192 bytes");
-    EXPECT(offsetof(imu_packet_t, crc32) == 188, "crc32 field at offset 188");
+    EXPECT(sizeof(imu_packet_t) == 196, "imu_packet_t is exactly 196 bytes");
+    EXPECT(offsetof(imu_packet_t, crc32) == 192, "crc32 field at offset 192");
     end(fb);
 }
 
@@ -141,7 +141,7 @@ static void test_magic_version(void)
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "NED");
     EXPECT(pkt.magic   == IMUD_MAGIC,   "magic == 0x494D5544");
-    EXPECT(pkt.version == IMUD_VERSION, "version == 5");
+    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (11 = v1.1)");
     end(fb);
 }
 
