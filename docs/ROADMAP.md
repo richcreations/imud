@@ -9,7 +9,7 @@ Seven drivers are implemented but marked `experimental = true` and have never ru
 real hardware: `icm20948`, `ak09916`, `icm42688p`, `lsm6dso`, `lsm6dsox`, `lis3mdl`,
 `lis2mdl`. Each needs a bench pass (probe/WHO_AM_I, init, ODR verification, FIFO/DRDY
 behavior, sane values in all orientations) before clearing its flag. The driver
-contract in `docs/driver-guide.md` makes this mechanical. The reference pair
+contract in the driver guide in `docs/manual.md` makes this mechanical. The reference pair
 (`ism330dhcx`, `mmc5983ma`) has run on the boat and worked; the chip is confirmed
 stern-facing, so the 180° mount yaw is genuine. The modest heading offset seen in
 that testing likely mixes the since-fixed mekf_align mirror bug (small when booting
