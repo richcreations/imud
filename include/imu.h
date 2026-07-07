@@ -77,6 +77,21 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg);
  */
 void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid);
 
+/*
+ * Push WMM-derived magnetic-field invariants (horizontal magnitude and
+ * vertical component, Gauss) into the running filter — the fusion thread
+ * applies them direction-preservingly via mekf_set_mref_invariants().
+ * Called by the position thread whenever WMM is recomputed.
+ */
+void imu_ctx_set_mag_ref(imu_ctx_t *ctx, float h_gauss, float z_gauss);
+
+/*
+ * Update live speed over ground (m/s) for the centripetal correction.
+ * valid = false disables the correction (GPS fix lost/expired).
+ * Same lockless single-word pattern as imu_ctx_set_declination().
+ */
+void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid);
+
 /* Release I2C fd, GPIO lines, ring buffers, and the context itself.
  * Call only after all three threads have been joined. */
 void imu_ctx_free(imu_ctx_t *ctx);

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* packet.h — 192-byte binary packet encoder for imud Stream B (§8) */
+/* packet.h — 196-byte binary packet encoder for imud Stream B (§8) */
 
 #ifndef IMUD_PACKET_H
 #define IMUD_PACKET_H
@@ -12,7 +12,7 @@
 #include "types.h"
 
 /*
- * Build one 192-byte imu_packet_t from the current fused state, latest mag,
+ * Build one 196-byte imu_packet_t from the current fused state, latest mag,
  * bias-corrected IMU sample, and raw (pre-calibration) IMU sample.
  *
  * coord_frame: "NED" (default) or "ENU".  If "ENU", vectors and quaternion

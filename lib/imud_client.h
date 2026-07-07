@@ -33,8 +33,8 @@
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION      10   /* 1.0 — encode as decimal: major*10 + minor */
-#define IMUD_PACKET_SIZE  192           /* bytes, fixed */
+#define IMUD_VERSION      11   /* 1.1 — encode as decimal: major*10 + minor */
+#define IMUD_PACKET_SIZE  196           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */
 
@@ -50,7 +50,7 @@
 #define IMUD_FLAG_SHUTDOWN             (1u << 9)  /* final packet before clean exit */
 #define IMUD_FLAG_DECLINATION_VALID    (1u << 10) /* declination known; true_heading valid */
 
-/* ── Wire packet — 192 bytes, little-endian ─────────────────────────────── */
+/* ── Wire packet — 196 bytes, little-endian ─────────────────────────────── */
 
 #if defined(_MSC_VER)
 #  pragma pack(push, 1)
@@ -105,7 +105,9 @@ typedef struct IMUD__PACKED {
     float cov[9];             /* 3×3 attitude error covariance, row-major (rad²) */
     uint32_t imu_seq;         /* monotonic sample counter */
     float    declination_deg; /* °E+; 0.0 when IMUD_FLAG_DECLINATION_VALID not set */
-    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–187 */
+    float    heave_m;         /* vertical displacement, m, + up (v1.1); 0.0 when
+                               * the daemon's heave estimator is disabled */
+    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–191 */
 } imud_packet_t;
 
 #if defined(_MSC_VER)

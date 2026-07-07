@@ -28,6 +28,7 @@
 #include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "log.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -151,11 +152,11 @@ static int lsm_probe(int fd, uint8_t addr)
 {
     uint8_t who;
     if (reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
-        fprintf(stderr, "lsm6dso: WHO_AM_I read failed: %s\n", strerror(errno));
+        LOG_E("lsm6dso: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
     if (who != WHO_AM_I_LSM6DSO && who != WHO_AM_I_LSM6DSOX) {
-        fprintf(stderr, "lsm6dso: WHO_AM_I = 0x%02X, expected 0x%02X or 0x%02X\n",
+        LOG_E("lsm6dso: WHO_AM_I = 0x%02X, expected 0x%02X or 0x%02X\n",
                 who, WHO_AM_I_LSM6DSO, WHO_AM_I_LSM6DSOX);
         return -1;
     }
@@ -172,7 +173,7 @@ static int lsm_reset(int fd, uint8_t addr)
         if (reg_read(fd, addr, REG_CTRL3_C, &val) < 0) return -1;
         if (!(val & 0x01)) goto reset_done;
     }
-    fprintf(stderr, "lsm6dso: SW_RESET did not clear after 50 ms\n");
+    LOG_W("lsm6dso: SW_RESET did not clear after 50 ms\n");
     return -1;
 
 reset_done:

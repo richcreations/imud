@@ -23,6 +23,7 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
 
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \
+              src/log.c \
               src/config.c \
               src/ring.c \
               src/fusion.c \
@@ -37,6 +38,7 @@ IMUD_SRCS   = src/cal.c \
 
 # Calibration tool: hardware access + config; no threads or output
 CAL_SRCS    = src/cal.c \
+              src/log.c \
               src/cal_math.c \
               src/config.c \
               src/drivers.c \
@@ -63,7 +65,7 @@ imud-status: src/status_main.o
 	$(CC) $(CFLAGS) -o $@  $^
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
-imud-mon: src/config.o src/mon_main.o
+imud-mon: src/config.o src/log.o src/mon_main.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
@@ -85,7 +87,7 @@ src/drivers/%.o: src/drivers/%.c
 test_fusion: src/fusion.c test/test_fusion.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_config: src/config.c test/test_config.c
+test_config: src/config.c src/log.c test/test_config.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_nmea: src/nmea.c test/test_nmea.c
@@ -97,19 +99,19 @@ test_packet: src/packet.c test/test_packet.c
 test_ring: src/ring.c test/test_ring.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_mount: src/config.c test/test_mount.c
+test_mount: src/config.c src/log.c test/test_mount.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_cal: src/cal.c test/test_cal.c
+test_cal: src/cal.c src/log.c test/test_cal.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_cal_math: src/cal_math.c test/test_cal_math.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_wmm: src/wmm.c test/test_wmm.c
+test_wmm: src/wmm.c src/log.c test/test_wmm.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_position: src/position.c src/wmm.c test/test_position.c
+test_position: src/position.c src/wmm.c src/log.c test/test_position.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 # Wire-format compatibility: daemon packet_build vs lib/imud_client.h.
@@ -119,11 +121,14 @@ test_client: src/packet.c test/test_client.c test/test_client_impl.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 # End-to-end AF_UNIX subscription stream: real output.c, stubbed imu accessors
-test_stream: src/output.c src/nmea.c src/packet.c src/config.c test/test_stream.c
+test_stream: src/output.c src/nmea.c src/packet.c src/config.c src/log.c test/test_stream.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test_log: src/log.c test/test_log.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
-      test_cal test_cal_math test_wmm test_position test_client test_stream
+      test_cal test_cal_math test_wmm test_position test_client test_stream test_log
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -136,6 +141,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_position
 	./test_client
 	./test_stream
+	./test_log
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -227,4 +233,4 @@ clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
 	      imud imud-cal imud-status imud-mon \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
-	      test_cal test_cal_math test_wmm test_position test_client test_stream
+	      test_cal test_cal_math test_wmm test_position test_client test_stream test_log

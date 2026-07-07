@@ -29,6 +29,7 @@
 #include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "log.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -166,11 +167,11 @@ static int icm_probe(int fd, uint8_t addr)
     if (bank_sel(fd, addr, 0) < 0) return -1;
     uint8_t who;
     if (reg_read(fd, addr, B0_WHO_AM_I, &who) < 0) {
-        fprintf(stderr, "icm20948: WHO_AM_I read failed: %s\n", strerror(errno));
+        LOG_E("icm20948: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
     if (who != WHO_AM_I_VALUE) {
-        fprintf(stderr, "icm20948: WHO_AM_I = 0x%02X, expected 0x%02X\n",
+        LOG_E("icm20948: WHO_AM_I = 0x%02X, expected 0x%02X\n",
                 who, WHO_AM_I_VALUE);
         return -1;
     }
@@ -190,7 +191,7 @@ static int icm_reset(int fd, uint8_t addr)
         if (reg_read(fd, addr, B0_PWR_MGMT_1, &val) < 0) return -1;
         if (!(val & 0x80)) goto reset_done;
     }
-    fprintf(stderr, "icm20948: DEVICE_RESET did not clear after 100 ms\n");
+    LOG_W("icm20948: DEVICE_RESET did not clear after 100 ms\n");
     return -1;
 
 reset_done:

@@ -471,6 +471,26 @@ void mekf_init(mekf_t *f,
     f->conv_thresh = 3.0f * fsq(0.5f * (float)(M_PI/180.0)); /* 3 × (0.5°)² */
 }
 
+void mekf_set_mref_invariants(mekf_t *f, float h_gauss, float z_gauss)
+{
+    /*
+     * Override the magnetic reference's magnitude and dip with analytically
+     * known values (WMM at a known position) while PRESERVING the horizontal
+     * direction — the direction is the heading anchor established at
+     * alignment and must never jump. With WMM-known invariants, the
+     * alignment-tilt error that would otherwise bake into m_ref is removed
+     * at the source; the quiescence-gated EMA then only has residual sensor
+     * scale error left to track.
+     */
+    if (!f->m_ref_valid || h_gauss <= 0.0f) return;
+    float mh = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+    if (mh < 1e-6f) return;
+    float s = h_gauss / mh;
+    f->m_ref[0] *= s;
+    f->m_ref[1] *= s;
+    f->m_ref[2]  = z_gauss;
+}
+
 void mekf_align(mekf_t *f, const float accel[3], const float mag[3])
 {
     /* ── 1. Tilt from accelerometer ──────────────────────────────────────
@@ -609,7 +629,25 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
 {
     if (!f->initialized) return;
 
-    float an = v3_norm(s->accel);
+    /*
+     * Speed-aided centripetal correction: in a turn the accelerometer
+     * measures gravity plus ω×v, which tilts the apparent gravity exactly
+     * when the autopilot most needs good roll. With speed over ground from
+     * gpsd (v_body ≈ [v, 0, 0] along the bow — leeway neglected):
+     *   ω×v = [0, ω_z·v, −ω_y·v]
+     * Subtracting it turns coordinated-turn samples from χ²-gate rejects
+     * into usable gravity references. speed_mps = 0 (no live GPS) is a
+     * no-op.
+     */
+    float acc[3] = { s->accel[0], s->accel[1], s->accel[2] };
+    if (f->speed_mps > 0.1f) {
+        float wy = s->gyro[1] - f->bias[1];
+        float wz = s->gyro[2] - f->bias[2];
+        acc[1] -= wz * f->speed_mps;
+        acc[2] += wy * f->speed_mps;
+    }
+
+    float an = v3_norm(acc);
     float ag = an / G_MS2;
 
     /* Quiescence tracker (τ ≈ 2 s): EMA of squared |a|-deviation from 1 g,
@@ -627,7 +665,7 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
     if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return;
 
     /* Gravity direction in body: z = −normalize(specific_force) */
-    float z[3] = { -s->accel[0]/an, -s->accel[1]/an, -s->accel[2]/an };
+    float z[3] = { -acc[0]/an, -acc[1]/an, -acc[2]/an };
 
     /* Predicted gravity in body: h = Rᵀ × [0, 0, 1] = third row of R */
     float R[3][3];

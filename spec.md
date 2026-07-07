@@ -2,7 +2,7 @@
 
 ## `imud` — SparkFun 9DoF IMU Bridge for NMEA 0183 + Machine Vision
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA (SEN-19895)  
 **Platform:** Raspberry Pi (any model with I2C), Linux  
 **Language:** C11, POSIX — no external dependencies beyond libc and libgpiod
@@ -168,7 +168,7 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
 |`json_out`    |rate_hz timer (100 Hz)      |Encode fused state as NDJSON; send UDP                                   |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 192-byte binary packets to local AF_UNIX subscribers               |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 196-byte binary packets to local AF_UNIX subscribers               |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
@@ -490,6 +490,14 @@ data has real 3D coverage.
 - **Alignment averaging**: initial tilt/heading alignment averages ~1 s of
   accel and all mag samples in that window instead of one instantaneous
   reading.
+- **WMM-informed m_ref**: when position is known (static lat/lon or live
+  GPS), the magnetic reference's magnitude and dip are set analytically
+  from the WMM field vector (`wmm_field_ned`), direction-preservingly —
+  removing the alignment bake-in error at the source.
+- **Speed-aided centripetal correction**: with speed over ground from gpsd,
+  ω×v (v ≈ speed along the bow) is subtracted from the accelerometer before
+  the gravity update, so sustained turns no longer tilt the horizon; speed
+  is invalidated with the GPS fix TTL.
 - **Rate of turn** is the true Euler yaw rate
   ψ̇ = (ω_y·sinφ + ω_z·cosφ)/cosθ, not raw body-Z rate (falls back to ω_z
   near ±90° pitch).
@@ -599,8 +607,8 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 **Port:** 10111  
 **Rate:** 500 Hz  
-**Format:** Binary, little-endian, 192 bytes fixed  
-**Wire load:** ~96 KB/s
+**Format:** Binary, little-endian, 196 bytes fixed  
+**Wire load:** ~98 KB/s
 
 ### Packet Layout
 
@@ -608,7 +616,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
  0      4      uint32    magic             0x494D5544 (“IMUD”)
- 4      2      uint16    version           = 10  (v1.0; encoded as major*10+minor)
+ 4      2      uint16    version           = 11  (v1.1; encoded as major*10+minor)
  6      2      uint16    flags             see below
  8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns
@@ -646,9 +654,10 @@ Offset  Bytes  Type      Field             Notes
                                           row-major (rad²); from MEKF P matrix
 180     4      uint32    imu_seq           monotonic ISM330 sample counter
 184     4      float32   declination_deg   °E+; 0.0 when FLAG_DECLINATION_VALID not set
-188     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–187
+188     4      float32   heave_m           m, + up; 0.0 when heave disabled (v1.1)
+192     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–191
 ────────────────────────────────────────────────────────────────────
-Total: 192 bytes
+Total: 196 bytes
 ```
 
 ### Flags Bitmask
@@ -775,7 +784,7 @@ dest_port      = 10112
 [stream]
 # [restart]: enabled, socket
 # [hot]:     rate_hz
-# Local AF_UNIX subscription stream — 192-byte binary packets (§8 format)
+# Local AF_UNIX subscription stream — 196-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
 enabled        = false
 socket         = "/run/imud/imud-stream.sock"
@@ -898,13 +907,13 @@ Useful for ROS2 bridges, web dashboards, SignalK plugins, or any consumer that p
 
 **Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
-**Format:** identical 192-byte binary packets as Stream B (§8)
+**Format:** identical 196-byte binary packets as Stream B (§8)
 **Enabled by:** `stream.enabled = true` (disabled by default)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
-every packet as an exact 192-byte frame — no datagram loss, self-framing via
+every packet as an exact 196-byte frame — no datagram loss, self-framing via
 the fixed size plus magic/CRC, so `lib/imud_client.h` validation works
-unchanged on 192-byte reads. Sends are non-blocking: a slow consumer gets
+unchanged on 196-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead. The daemon never blocks
 on a consumer.
@@ -952,7 +961,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 | `[highrate]`| `rate_hz`                                                              |
 | `[json]`    | `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |
-| `[logging]` | `stats_hz`                                                             |
+| `[logging]` | `level`, `stats_hz`; the log file is also reopened (logrotate)         |
 | `[position]`| `declination_deg`, `lat_deg`/`lon_deg` (WMM recomputed) — applied only when no live position source (gpsd/SignalK) is enabled; a live source owns declination |
 
 Fields not listed require a full daemon restart (chip reinit / socket rebind).
@@ -1089,6 +1098,8 @@ Mag ODR:        100 Hz  (SET every 5 s)
 Fusion:         MEKF converged  cov_trace=4.2e-06 rad2
 Calibration:    accel yes  gyro yes  mag yes
 Attitude:       pitch=-3.1  roll=9.5  heading=214.7 M
+Declination:    +13.20 E  (true heading 227.9 T)
+Heave:          +0.42 m
 NMEA out:       10 Hz  (port 10110)
 Hi-rate out:    disabled
 JSON out:       disabled
@@ -1198,23 +1209,17 @@ make CC=aarch64-linux-gnu-gcc
 
 ## 16. Open Items
 
-1. **`LOG_*` migration (partial)** — The log-level infrastructure is in place:
-   `include/log.h` defines `LOG_D/I/W/E` macros gated on `g_log_level`, and
-   `main.c` sets `g_log_level` from the `[logging] level` config field at startup.
-   Most code paths still use bare `fprintf(stderr, ...)`. Completing the migration
-   means replacing those callsites with the appropriate `LOG_*` macro.
-
-2. **Pi 5 compatibility** — Pi 5 uses the RP1 I/O chip; `gpiod` is the correct
+1. **Pi 5 compatibility** — Pi 5 uses the RP1 I/O chip; `gpiod` is the correct
    abstraction layer but interrupt latency should be re-profiled on Pi 5
    hardware. I2C is on `/dev/i2c-1` with a different underlying driver.
 
-3. **Marine vibration characterization** — Near a diesel or outboard, the
+2. **Marine vibration characterization** — Near a diesel or outboard, the
    ISM330DHCX's embedded low-pass filter settings (LPF2) and the MEKF accel
    update skip threshold may need tuning. The ISM330DHCX's onboard Machine
    Learning Core (MLC) can detect engine-on state and assert a GPIO flag,
    allowing the daemon to tighten `accel_skip_thresh` automatically.
 
-4. **`cal_file` default** — `config_defaults()` sets `/etc/imud/cal.json`
+3. **`cal_file` default** — `config_defaults()` sets `/etc/imud/cal.json`
    (alongside the main config; written by `imud-cal`, read-only by the daemon).
 
 -----

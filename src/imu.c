@@ -45,6 +45,7 @@ typedef struct gpiod_line         imu_gpio_line_t;
 #include "ring.h"
 #include "drivers.h"
 #include "fusion.h"
+#include "log.h"
 
 /* ── Timestamp anchor ───────────────────────────────────────────────────── */
 
@@ -106,6 +107,7 @@ struct imu_ctx {
                                     * acquire-read by output/health threads to suppress
                                     * output until settle + bias estimation + alignment done */
     _Atomic int      reconfigure;  /* set by main on SIGHUP; cleared by fusion_thread */
+    _Atomic int      mref_update;  /* set by position thread; cleared by fusion_thread */
     _Atomic int      mag_set_flag; /* set by mag_reader after SET pulse; cleared by fusion_thread */
     _Atomic int      engine_on;    /* set by ism_reader when vibration EMA exceeds threshold */
 };
@@ -288,7 +290,7 @@ void *ism_reader_thread(void *arg)
             int gr = wait_gpio_edge(ctx->imu_line, 10);
             if (gr < 0) {
                 if (ctx->stop) break;
-                fprintf(stderr, "[ism_reader] GPIO error: %s\n", strerror(errno));
+                LOG_E("[ism_reader] GPIO error: %s\n", strerror(errno));
                 usleep(10000);
                 continue;
             }
@@ -313,16 +315,16 @@ void *ism_reader_thread(void *arg)
         if (rc < 0) {
             ctx->imu_error_count++;
             if (++consec_errors >= 10) {
-                fprintf(stderr, "[ism_reader] 10 consecutive errors — resetting chip\n");
+                LOG_E("[ism_reader] 10 consecutive errors — resetting chip\n");
                 int rok = (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)ctx->cfg.imu_addr) == 0)
                        && (ctx->imu_ops->init (ctx->i2c_fd, (uint8_t)ctx->cfg.imu_addr,
                                                &ctx->imu_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
-                    fprintf(stderr, "[ism_reader] reset failed (%d/3)\n",
+                    LOG_E("[ism_reader] reset failed (%d/3)\n",
                             ++reset_failures);
                     if (reset_failures >= 3) {
-                        fprintf(stderr, "[ism_reader] 3 reset failures — raising SIGTERM\n");
+                        LOG_E("[ism_reader] 3 reset failures — raising SIGTERM\n");
                         raise(SIGTERM);
                         break;
                     }
@@ -441,16 +443,16 @@ void *mag_reader_thread(void *arg)
         if (ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr, &s) < 0) {
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {
-                fprintf(stderr, "[mag_reader] 10 consecutive errors — resetting chip\n");
+                LOG_E("[mag_reader] 10 consecutive errors — resetting chip\n");
                 int rok = (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr) == 0)
                        && (ctx->mag_ops->init (ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr,
                                                &ctx->mag_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
-                    fprintf(stderr, "[mag_reader] reset failed (%d/3)\n",
+                    LOG_E("[mag_reader] reset failed (%d/3)\n",
                             ++reset_failures);
                     if (reset_failures >= 3) {
-                        fprintf(stderr, "[mag_reader] 3 reset failures — raising SIGTERM\n");
+                        LOG_E("[mag_reader] 3 reset failures — raising SIGTERM\n");
                         raise(SIGTERM);
                         break;
                     }
@@ -489,7 +491,7 @@ void *fusion_thread(void *arg)
     if (ctx->cfg.startup_settle_sec > 0.0) {
         int n_settle = (int)(ctx->cfg.startup_settle_sec * odr_hz);
         if (n_settle < 1) n_settle = 1;
-        fprintf(stderr, "[fusion] settling %g s — discarding %d samples\n",
+        LOG_I("[fusion] settling %g s — discarding %d samples\n",
                 ctx->cfg.startup_settle_sec, n_settle);
         imu_sample_t tmp;
         int discarded = 0;
@@ -524,7 +526,7 @@ void *fusion_thread(void *arg)
         bool extended = false;
         imu_sample_t s;
 
-        fprintf(stderr, "[fusion] gyro bias estimation: collecting %d samples\n",
+        LOG_I("[fusion] gyro bias estimation: collecting %d samples\n",
                 n_needed);
 
         /* Motion check: on a vessel rolling at anchor, the mean over a
@@ -552,7 +554,7 @@ void *fusion_thread(void *arg)
                 if (std_max > 0.00873f) {   /* 0.5 °/s */
                     extended = true;
                     target *= 2;
-                    fprintf(stderr, "[fusion] gyro std %.2f °/s during bias "
+                    LOG_W("[fusion] gyro std %.2f °/s during bias "
                             "window — vessel moving; extending capture to "
                             "%.1f s\n", std_max * (float)(180.0 / M_PI),
                             2.0 * ctx->cfg.gyro_bias_sec);
@@ -564,7 +566,7 @@ void *fusion_thread(void *arg)
             init_bias[1] = (float)(sum[1] / count);
             init_bias[2] = (float)(sum[2] / count);
             cal_flags |= FLAG_GYRO_CAL;
-            fprintf(stderr, "[fusion] gyro bias = [%.5f, %.5f, %.5f] rad/s"
+            LOG_I("[fusion] gyro bias = [%.5f, %.5f, %.5f] rad/s"
                     "%s\n", init_bias[0], init_bias[1], init_bias[2],
                     extended ? "  (motion during capture — treat as rough)" : "");
         }
@@ -580,7 +582,7 @@ void *fusion_thread(void *arg)
     heave_t heave;
     heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
     if (heave.enabled)
-        fprintf(stderr, "[fusion] heave estimator on (tau=%.0f s)\n",
+        LOG_I("[fusion] heave estimator on (tau=%.0f s)\n",
                 (double)ctx->cfg.heave_tau_s);
 
     /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ─────
@@ -649,13 +651,19 @@ void *fusion_thread(void *arg)
                     mag_avg[k] = (float)(mag_sum[k] / mag_n);
             } else {
                 /* Timeout: align without heading (assume forward = North). */
-                fprintf(stderr, "[fusion] no mag sample after 5 s; "
+                LOG_W("[fusion] no mag sample after 5 s; "
                         "aligning without heading\n");
                 mag_avg[0] = 1.0f; mag_avg[1] = 0.0f; mag_avg[2] = 0.0f;
             }
             mekf_align(&f, acc_avg, mag_avg);
-            fprintf(stderr, "[fusion] aligned from %d accel + %d mag samples\n",
-                    acc_n, mag_n);
+            /* WMM-known field invariants remove the residual alignment-tilt
+             * error from the magnetic reference at the source. */
+            if (ctx->cfg.pos_mref_valid)
+                mekf_set_mref_invariants(&f, ctx->cfg.pos_mref_h_gauss,
+                                         ctx->cfg.pos_mref_z_gauss);
+            LOG_I("[fusion] aligned from %d accel + %d mag samples%s\n",
+                    acc_n, mag_n,
+                    ctx->cfg.pos_mref_valid ? " (m_ref invariants from WMM)" : "");
         }
     }
 
@@ -688,6 +696,16 @@ void *fusion_thread(void *arg)
                 heave.tau = ctx->cfg.heave_tau_s;
             ctx->reconfigure = 0;
         }
+
+        /* Live WMM field invariants pushed by the position thread. */
+        if (ctx->mref_update) {
+            mekf_set_mref_invariants(&f, ctx->cfg.pos_mref_h_gauss,
+                                     ctx->cfg.pos_mref_z_gauss);
+            ctx->mref_update = 0;
+        }
+
+        /* Speed over ground for the centripetal correction (0 = off). */
+        f.speed_mps = ctx->cfg.pos_speed_valid ? ctx->cfg.pos_speed_mps : 0.0f;
 
         /* Timestamps + per-sample dt. For hw-timestamp chips, chip_ts
          * encodes the exact sample time; feeding the measured interval to
@@ -739,7 +757,7 @@ void *fusion_thread(void *arg)
             f.accel_skip_lo = 1.0f - sk;
             f.accel_skip_hi = 1.0f + sk;
             f.Ra_scale      = ctx->engine_on ? 4.0f : 1.0f;
-            fprintf(stderr, "[fusion] engine vibration %s — accel_skip=%.2f "
+            LOG_I("[fusion] engine vibration %s — accel_skip=%.2f "
                     "Ra×%.0f\n",
                     ctx->engine_on ? "detected" : "cleared", sk,
                     (double)f.Ra_scale);
@@ -835,20 +853,20 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     ctx->imu_ops = imu_driver_find(cfg->imu_driver);
     if (!ctx->imu_ops) {
-        fprintf(stderr, "[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
+        LOG_E("[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
         goto fail;
     }
     if (ctx->imu_ops->experimental)
-        fprintf(stderr, "[imu] WARNING: driver '%s' is EXPERIMENTAL — "
+        LOG_W("[imu] WARNING: driver '%s' is EXPERIMENTAL — "
                 "not yet validated on hardware\n", cfg->imu_driver);
 
     ctx->mag_ops = mag_driver_find(cfg->mag_driver);
     if (!ctx->mag_ops) {
-        fprintf(stderr, "[imu] unknown mag driver '%s'\n", cfg->mag_driver);
+        LOG_E("[imu] unknown mag driver '%s'\n", cfg->mag_driver);
         goto fail;
     }
     if (ctx->mag_ops->experimental)
-        fprintf(stderr, "[mag] WARNING: driver '%s' is EXPERIMENTAL — "
+        LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
                 "not yet validated on hardware\n", cfg->mag_driver);
 
     ctx->actual_odr_hz = nearest_odr(ctx->imu_ops->supported_odr_hz, cfg->imu_odr_hz);
@@ -857,7 +875,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     ctx->i2c_fd = open(cfg->i2c_bus, O_RDWR);
     if (ctx->i2c_fd < 0) {
-        fprintf(stderr, "[imu] cannot open %s: %s\n", cfg->i2c_bus, strerror(errno));
+        LOG_E("[imu] cannot open %s: %s\n", cfg->i2c_bus, strerror(errno));
         goto fail;
     }
 
@@ -874,37 +892,37 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     /* ── Probe + reset + init IMU ────────────────────────────────────────── */
 
     if (ctx->imu_ops->probe(ctx->i2c_fd, (uint8_t)cfg->imu_addr) < 0) {
-        fprintf(stderr, "[imu] %s probe failed at 0x%02X\n",
+        LOG_E("[imu] %s probe failed at 0x%02X\n",
                 ctx->imu_ops->name, cfg->imu_addr);
         goto fail;
     }
     if (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)cfg->imu_addr) < 0) {
-        fprintf(stderr, "[imu] %s reset failed\n", ctx->imu_ops->name);
+        LOG_E("[imu] %s reset failed\n", ctx->imu_ops->name);
         goto fail;
     }
     if (ctx->imu_ops->init(ctx->i2c_fd, (uint8_t)cfg->imu_addr, &ctx->imu_hw_cfg) < 0) {
-        fprintf(stderr, "[imu] %s init failed\n", ctx->imu_ops->name);
+        LOG_E("[imu] %s init failed\n", ctx->imu_ops->name);
         goto fail;
     }
-    fprintf(stderr, "[imu] %s 0x%02X OK — actual ODR %d Hz\n",
+    LOG_I("[imu] %s 0x%02X OK — actual ODR %d Hz\n",
             ctx->imu_ops->name, cfg->imu_addr, ctx->actual_odr_hz);
 
     /* ── Probe + reset + init mag ────────────────────────────────────────── */
 
     if (ctx->mag_ops->probe(ctx->i2c_fd, (uint8_t)cfg->mag_addr) < 0) {
-        fprintf(stderr, "[imu] %s probe failed at 0x%02X\n",
+        LOG_E("[imu] %s probe failed at 0x%02X\n",
                 ctx->mag_ops->name, cfg->mag_addr);
         goto fail;
     }
     if (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)cfg->mag_addr) < 0) {
-        fprintf(stderr, "[imu] %s reset failed\n", ctx->mag_ops->name);
+        LOG_E("[imu] %s reset failed\n", ctx->mag_ops->name);
         goto fail;
     }
     if (ctx->mag_ops->init(ctx->i2c_fd, (uint8_t)cfg->mag_addr, &ctx->mag_hw_cfg) < 0) {
-        fprintf(stderr, "[imu] %s init failed\n", ctx->mag_ops->name);
+        LOG_E("[imu] %s init failed\n", ctx->mag_ops->name);
         goto fail;
     }
-    fprintf(stderr, "[imu] %s 0x%02X OK\n", ctx->mag_ops->name, cfg->mag_addr);
+    LOG_I("[imu] %s 0x%02X OK\n", ctx->mag_ops->name, cfg->mag_addr);
 
     /* ── Configure GPIO lines ────────────────────────────────────────────── */
 
@@ -917,7 +935,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         snprintf(chip_path, sizeof(chip_path), "/dev/%s", cfg->gpio_chip);
         ctx->gpio_chip = gpiod_chip_open(chip_path);
         if (!ctx->gpio_chip) {
-            fprintf(stderr, "[imu] cannot open /dev/%s: %s\n",
+            LOG_E("[imu] cannot open /dev/%s: %s\n",
                     cfg->gpio_chip, strerror(errno));
             goto fail;
         }
@@ -927,7 +945,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (cfg->imu_int_gpio > 0) {
         ctx->imu_line = open_gpio_line(ctx->gpio_chip, (unsigned)cfg->imu_int_gpio);
         if (!ctx->imu_line) {
-            fprintf(stderr, "[imu] cannot request GPIO%d: %s\n",
+            LOG_E("[imu] cannot request GPIO%d: %s\n",
                     cfg->imu_int_gpio, strerror(errno));
             goto fail;
         }
@@ -937,7 +955,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
         ctx->mag_line = open_gpio_line(ctx->gpio_chip, (unsigned)cfg->mag_int_gpio);
         if (!ctx->mag_line) {
-            fprintf(stderr, "[imu] cannot request GPIO%d: %s\n",
+            LOG_E("[imu] cannot request GPIO%d: %s\n",
                     cfg->mag_int_gpio, strerror(errno));
             goto fail;
         }
@@ -982,8 +1000,30 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
     if (!new_cfg->pos_gpsd_enabled && !new_cfg->pos_signalk_enabled) {
         ctx->cfg.pos_declination_deg   = new_cfg->pos_declination_deg;
         ctx->cfg.pos_declination_valid = new_cfg->pos_declination_valid;
+        if (new_cfg->pos_mref_valid) {
+            ctx->cfg.pos_mref_h_gauss = new_cfg->pos_mref_h_gauss;
+            ctx->cfg.pos_mref_z_gauss = new_cfg->pos_mref_z_gauss;
+            ctx->cfg.pos_mref_valid   = true;
+            ctx->mref_update = 1;
+        }
     }
     ctx->reconfigure = 1;
+}
+
+void imu_ctx_set_mag_ref(imu_ctx_t *ctx, float h_gauss, float z_gauss)
+{
+    /* Same single-word lockless pattern as imu_ctx_set_declination:
+     * values first, then the flag the fusion loop polls. */
+    ctx->cfg.pos_mref_h_gauss = h_gauss;
+    ctx->cfg.pos_mref_z_gauss = z_gauss;
+    ctx->cfg.pos_mref_valid   = true;
+    ctx->mref_update = 1;
+}
+
+void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid)
+{
+    ctx->cfg.pos_speed_mps   = speed_mps;
+    ctx->cfg.pos_speed_valid = valid;
 }
 
 void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)

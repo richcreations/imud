@@ -1,4 +1,4 @@
-.TH IMUD.CONF 5 "May 2026" "imud 1.0" "File Formats"
+.TH IMUD.CONF 5 "July 2026" "imud 1.1" "File Formats"
 .SH NAME
 imud.conf \- configuration file for the imud IMU daemon
 .SH SYNOPSIS
@@ -365,7 +365,7 @@ Destination IP address.
 .RI (int,\ default:\ 10112)
 Destination UDP port.
 .SS [stream]
-Local AF_UNIX subscription stream carrying the same 192-byte binary packets
+Local AF_UNIX subscription stream carrying the same 196-byte binary packets
 as
 .B [highrate]
 over a SOCK_STREAM socket: loss-free for same-host consumers, up to 8
@@ -415,7 +415,12 @@ Overrides
 .B rotation_euler_deg
 when set.
 .SS [logging]
-.B [hot]
+.B [hot]:
+.BR level ,
+.BR stats_hz .
+.B [restart]:
+.B file
+(path changes; the file itself is reopened on every reload).
 .TP
 .B level
 .RI (string,\ default:\ \(dqwarn\(dq)
@@ -428,15 +433,20 @@ or
 .B warn
 is recommended for production (SD card friendly).
 .B info
-adds a periodic
+adds lifecycle messages and a periodic
 .B [stats]
 heartbeat.
+Applied live on SIGHUP.
 .TP
 .B file
 .RI (string,\ default:\ \(dq\(dq)
 Log destination.
-Empty = write to stderr (captured by journald).
-Set an absolute path to redirect to a file.
+Empty = write to stderr; under systemd, lines carry sd-daemon priority
+prefixes so journald records real priorities.
+Set an absolute path to redirect to a timestamped log file; the file is
+reopened on SIGHUP, so logrotate can rotate it
+.RB ( "postrotate: systemctl reload imud" ).
+Repeated identical messages are suppressed and logged as a count.
 .TP
 .B stats_hz
 .RI (int,\ default:\ 1)

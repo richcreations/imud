@@ -37,6 +37,23 @@ void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
     g_last_valid = valid;
 }
 
+float g_last_mref_h = -1.0f, g_last_mref_z = -1.0f;
+void imu_ctx_set_mag_ref(imu_ctx_t *ctx, float h_gauss, float z_gauss)
+{
+    (void)ctx;
+    g_last_mref_h = h_gauss;
+    g_last_mref_z = z_gauss;
+}
+
+float g_last_speed = -1.0f;
+bool  g_last_speed_valid = true;
+void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid)
+{
+    (void)ctx;
+    g_last_speed       = speed_mps;
+    g_last_speed_valid = valid;
+}
+
 /* ── Test framework ──────────────────────────────────────────────────────── */
 
 static int g_pass, g_fail;
@@ -269,9 +286,11 @@ static void test_check_fix_ttl(void)
     time_t fix  = time(NULL) - 7200;
     double lat  = 37.87, lon = -122.32;
     g_last_decl = -999.0f; g_last_valid = true;
+    g_last_speed = -1.0f;  g_last_speed_valid = true;
     check_fix_ttl(&ctx, &fix, &lat, &lon);
     EXPECT_NEAR_D(g_last_decl, 0.0, 1e-9, "expired fix clears declination");
     EXPECT(!g_last_valid,                 "expired fix marks declination invalid");
+    EXPECT(!g_last_speed_valid,           "expired fix invalidates speed too");
     EXPECT(fix == 0,                      "expired fix zeroes last_fix_time");
     EXPECT(lat > 900.0 && lon > 900.0,    "expired fix resets position sentinel");
 

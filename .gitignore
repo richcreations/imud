@@ -21,6 +21,7 @@ test_wmm
 test_position
 test_client
 test_stream
+test_log
 
 # Editor and OS
 .DS_Store

@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "log.h"
 
 /* ── WGS-84 constants ───────────────────────────────────────────────────── */
 
@@ -56,7 +57,7 @@ int wmm_load(const char *path, wmm_t *out)
      * truncated or corrupt file; silently accepting it would run an
      * all-zero (or partial) model whose declination is garbage. */
     if (rows < 90) {
-        fprintf(stderr, "wmm: '%s' has %d coefficient rows (expected 90) — "
+        LOG_E("wmm: '%s' has %d coefficient rows (expected 90) — "
                 "rejecting\n", path, rows);
         return -1;
     }
@@ -111,9 +112,9 @@ double wmm_decimal_year(void)
  *
  * Declination = atan2(Y_ned, X_ned).
  */
-double wmm_declination(double lat_deg, double lon_deg,
-                       double alt_m, double decimal_year,
-                       const wmm_t *wmm)
+void wmm_field_ned(double lat_deg, double lon_deg,
+                   double alt_m, double decimal_year,
+                   const wmm_t *wmm, double ned_nT[3])
 {
     const int NMAX = 12;
 
@@ -238,8 +239,16 @@ double wmm_declination(double lat_deg, double lon_deg,
      */
     double gc_lat  = M_PI / 2.0 - theta;   /* geocentric latitude */
     double delta   = lat_r - gc_lat;        /* geodetic − geocentric, > 0 NH */
-    double X_ned   = X_gc * cos(delta) + Z_gc * sin(delta);
-    double Y_ned   = Y_gc;
+    ned_nT[0] = X_gc * cos(delta) + Z_gc * sin(delta);   /* north */
+    ned_nT[1] = Y_gc;                                     /* east  */
+    ned_nT[2] = Z_gc * cos(delta) - X_gc * sin(delta);   /* down  */
+}
 
-    return atan2(Y_ned, X_ned) * (180.0 / M_PI);
+double wmm_declination(double lat_deg, double lon_deg,
+                       double alt_m, double decimal_year,
+                       const wmm_t *wmm)
+{
+    double ned[3];
+    wmm_field_ned(lat_deg, lon_deg, alt_m, decimal_year, wmm, ned);
+    return atan2(ned[1], ned[0]) * (180.0 / M_PI);
 }

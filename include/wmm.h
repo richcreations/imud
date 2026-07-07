@@ -40,6 +40,17 @@ double wmm_declination(double lat_deg, double lon_deg,
                        const wmm_t *wmm);
 
 /*
+ * wmm_field_ned — full geomagnetic field vector in geodetic NED, nT.
+ * ned_nT[0] = north, [1] = east, [2] = down (positive into the earth, NH).
+ * Same inputs as wmm_declination (which is atan2(east, north) of this).
+ * Horizontal magnitude H = hypot(ned[0], ned[1]); the MEKF magnetic
+ * reference in its heading-magnetic frame is [H, 0, ned[2]].
+ */
+void wmm_field_ned(double lat_deg, double lon_deg,
+                   double alt_m, double decimal_year,
+                   const wmm_t *wmm, double ned_nT[3]);
+
+/*
  * wmm_decimal_year — return the current date as a decimal year using
  * CLOCK_REALTIME (e.g. 2025.38 for mid-May 2025).
  */

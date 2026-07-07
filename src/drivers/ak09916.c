@@ -35,6 +35,7 @@
 #include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "log.h"
 
 /* ── Register addresses (AK09916, accessible in bypass mode) ──────────────── */
 
@@ -97,11 +98,11 @@ static int ak_probe(int fd, uint8_t addr)
 {
     uint8_t who;
     if (reg_read(fd, addr, REG_WIA2, &who) < 0) {
-        fprintf(stderr, "ak09916: WIA2 read failed: %s\n", strerror(errno));
+        LOG_E("ak09916: WIA2 read failed: %s\n", strerror(errno));
         return -1;
     }
     if (who != WIA2_VALUE) {
-        fprintf(stderr, "ak09916: WIA2 = 0x%02X, expected 0x%02X\n",
+        LOG_E("ak09916: WIA2 = 0x%02X, expected 0x%02X\n",
                 who, WIA2_VALUE);
         return -1;
     }
@@ -122,7 +123,7 @@ static int ak_reset(int fd, uint8_t addr)
         if (reg_read(fd, addr, REG_CNTL3, &val) < 0) return -1;
         if (!(val & 0x01)) return 0;   /* bit self-clears after reset */
     }
-    fprintf(stderr, "ak09916: SRST did not clear after 20 ms\n");
+    LOG_W("ak09916: SRST did not clear after 20 ms\n");
     return -1;
 }
 

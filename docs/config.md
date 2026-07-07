@@ -156,7 +156,7 @@ Fields per object: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`, `rot_dpm`, `hea
 
 ## `[stream]`
 
-Local AF_UNIX subscription stream — the same 192-byte binary packets as `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a loss-free stream and subscribe by connecting (up to 8 at once). Slow consumers get dropped packets (visible as `imu_seq` gaps), never a stalled daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
+Local AF_UNIX subscription stream — the same 196-byte binary packets as `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a loss-free stream and subscribe by connecting (up to 8 at once). Slow consumers get dropped packets (visible as `imu_seq` gaps), never a stalled daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -191,12 +191,14 @@ preset = "yaw_270"
 
 ## `[logging]`
 
-Diagnostic log output. **[hot]**
+Diagnostic log output. **[hot]**: `level`, `stats_hz`. **[restart]**: `file` (path changes; the file itself is reopened on every reload).
+
+Repeated identical messages are suppressed and logged as a `last message repeated N times` count. The most recent warnings/errors are also shown by `imud-status` ("Recent warnings").
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `level` | string | `"warn"` | Log verbosity. One of `"debug"`, `"info"`, `"warn"`, `"error"`. `"warn"` is recommended for production (SD card friendly). `"info"` adds a periodic `[stats]` heartbeat. `"debug"` logs every sensor burst — very verbose. |
-| `file` | string | `""` | Log destination. Empty string = write to stderr (captured by journald when running as a service). Set an absolute path to redirect to a file instead. |
+| `level` | string | `"warn"` | Log verbosity. One of `"debug"`, `"info"`, `"warn"`, `"error"`. `"warn"` is recommended for production (SD card friendly). `"info"` adds lifecycle messages and a periodic `[stats]` heartbeat. Applied live on SIGHUP. |
+| `file` | string | `""` | Log destination. Empty string = write to stderr; under systemd, lines carry sd-daemon priority prefixes so journald records real priorities (`journalctl -p warning` filters work). Set an absolute path to redirect to a timestamped log file; the file is reopened on SIGHUP so logrotate can rotate it (`postrotate: systemctl reload imud`). |
 | `stats_hz` | int | `1` | Rate of the `[stats]` heartbeat log line. Only visible when `level = "info"` or `"debug"`. |
 
 ---

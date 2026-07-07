@@ -9,8 +9,9 @@
  *
  * config_load() parses the file; config_defaults() fills safe defaults.
  * SIGHUP reloads the fields marked [hot]: fusion noise/threshold params,
- * output rates, stats heartbeat rate, and static declination (unless a live
- * position source owns it). Log level is applied once at startup.
+ * output rates, stats heartbeat rate, log level, and static declination
+ * (unless a live position source owns it); the log file is also reopened
+ * so logrotate can rotate it.
  * Fields marked [restart] require a full daemon restart to take effect.
  */
 #ifndef IMUD_CONFIG_H
@@ -92,6 +93,11 @@ typedef struct {
                                    * came from an explicit non-zero declination_deg or
                                    * a WMM computation (which may legitimately be 0.0
                                    * on the agonic line) */
+    float  pos_mref_h_gauss;      /* derived: WMM horizontal field magnitude, Gauss */
+    float  pos_mref_z_gauss;      /* derived: WMM vertical field (down +), Gauss */
+    bool   pos_mref_valid;        /* derived: true when WMM field was computed */
+    float  pos_speed_mps;         /* derived: live speed over ground from gpsd */
+    bool   pos_speed_valid;       /* derived: cleared when the GPS fix expires */
     double pos_lat_deg;           /* geodetic latitude  (+N / -S); 0 = WMM disabled */
     double pos_lon_deg;           /* geodetic longitude (+E / -W); 0 = WMM disabled */
     char   pos_wmm_file[256];     /* path to WMM.COF; default /etc/imud/WMM.COF */

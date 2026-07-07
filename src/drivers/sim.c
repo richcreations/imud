@@ -11,7 +11,9 @@
  * sinusoidal roll and pitch from wave action and heave acceleration.
  *
  * Motion model:
- *   Yaw    ψ(t) = SIM_YAW_RATE_RPS × t          (6°/s constant sweep)
+ *   Yaw    ψ(t) = 60° + SIM_YAW_RATE_RPS × t    (6°/s sweep from 60° start;
+ *                                                non-zero start catches
+ *                                                heading-mirror bugs)
  *   Roll   φ(t) = SIM_ROLL_AMP  × sin(2π f_r t)        (±4°, 6 s period)
  *   Pitch  θ(t) = SIM_PITCH_AMP × sin(2π f_p t + φ_p)  (±2°, 8 s period)
  *   Heave  h(t) = SIM_HEAVE_AMP × sin(2π f_h t)         (±0.3 m/s², 5 s period)
@@ -40,7 +42,12 @@
 
 #define G_MS2              9.80665f
 
-/* Yaw: one full sweep every 60 s */
+/* Yaw: one full sweep every 60 s.
+ * The sweep starts at 60°, NOT north: heading-convention bugs (sign flips,
+ * mirrors) have a fixed point at 0°, so a north-started sim hides them —
+ * that is exactly how the mekf_align heading-mirror bug survived every
+ * end-to-end test. Never change this back to 0. */
+#define SIM_YAW_START_RAD  (60.0 * (M_PI / 180.0))
 #define SIM_YAW_RATE_RPS   (6.0 * (M_PI / 180.0))
 
 /* NED Earth field: mid-latitude, ~47 µT total.
@@ -94,7 +101,7 @@ static double elapsed_s(void)
 static void sim_attitude(double t,
                          double *psi, double *theta, double *phi)
 {
-    *psi   = SIM_YAW_RATE_RPS * t;
+    *psi   = SIM_YAW_START_RAD + SIM_YAW_RATE_RPS * t;
     *phi   = SIM_ROLL_AMP  * sin(2.0 * M_PI * SIM_ROLL_HZ  * t);
     *theta = SIM_PITCH_AMP * sin(2.0 * M_PI * SIM_PITCH_HZ * t + SIM_PITCH_PHASE);
 }

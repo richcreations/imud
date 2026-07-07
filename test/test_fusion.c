@@ -933,6 +933,77 @@ TEST(test_yaw_only_leaves_tilt)
     EXPECT(fabsf(yaw - yaw0) > 1.0f*DEG,      "yaw-only: heading does follow mag");
 }
 
+/*
+ * WMM-informed m_ref: invariants override magnitude/dip but preserve the
+ * horizontal direction (heading anchor); no-op before alignment.
+ */
+TEST(test_mref_invariants)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+
+    /* Before alignment: no-op. */
+    mekf_set_mref_invariants(&f, 0.25f, 0.45f);
+    EXPECT(!f.m_ref_valid, "no-op before alignment");
+
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){18.0f, 6.0f, 38.0f});
+    float dir0 = atan2f(f.m_ref[1], f.m_ref[0]);
+
+    mekf_set_mref_invariants(&f, 0.25f, 0.45f);
+    float mh = sqrtf(f.m_ref[0]*f.m_ref[0] + f.m_ref[1]*f.m_ref[1]);
+    EXPECT_NEAR(mh,         0.25f, 1e-5f, "horizontal magnitude set from WMM");
+    EXPECT_NEAR(f.m_ref[2], 0.45f, 1e-5f, "vertical component set from WMM");
+    EXPECT_NEAR(atan2f(f.m_ref[1], f.m_ref[0]), dir0, 1e-5f,
+                "horizontal direction preserved (no heading jump)");
+}
+
+/*
+ * Speed-aided centripetal correction: a coordinated turn (constant yaw rate,
+ * constant speed) puts ω×v on the accelerometer. Without speed the filter
+ * leans into the turn (apparent roll); with speed the tilt stays level.
+ */
+static float turn_roll_error(float speed_for_filter)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    f.speed_mps = speed_for_filter;
+
+    const float r = 0.15f;   /* yaw rate, rad/s (~8.6 °/s) */
+    const float v = 6.0f;    /* true speed, m/s */
+
+    imu_sample_t s;
+    memset(&s, 0, sizeof s);
+    s.gyro[2]  = r;                    /* flat coordinated turn */
+    s.accel[0] = 0;
+    s.accel[1] = r * v;                /* centripetal, body lateral */
+    s.accel[2] = -G;
+
+    for (int i = 0; i < 833*20; i++) {  /* 20 s of turning */
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+    }
+
+    float roll, pitch, yaw;
+    q_to_euler(f.q, &roll, &pitch, &yaw);
+    return fabsf(roll);
+}
+
+TEST(test_centripetal_correction)
+{
+    float roll_off = turn_roll_error(0.0f);   /* no speed: leans into turn */
+    float roll_on  = turn_roll_error(6.0f);   /* corrected */
+
+    EXPECT(roll_off > 2.0f*DEG,
+           "without speed, sustained turn tilts the roll estimate");
+    EXPECT(roll_on < 0.3f*DEG,
+           "with speed, roll stays level through the turn");
+}
+
 /* ── Heave estimator tests ──────────────────────────────────────────────────── */
 
 /*
@@ -1239,6 +1310,8 @@ int main(void)
     RUN(test_accel_innovation_capped);
     RUN(test_mref_ema_heals_dip);
     RUN(test_yaw_only_leaves_tilt);
+    RUN(test_mref_invariants);
+    RUN(test_centripetal_correction);
     RUN(test_heave_sine_amplitude);
     RUN(test_heave_disabled_and_settle);
     RUN(test_wave_benchmark);

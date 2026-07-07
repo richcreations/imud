@@ -22,6 +22,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "config.h"
+#include "log.h"
 
 /* ── String helpers ─────────────────────────────────────────────────────── */
 
@@ -271,29 +272,29 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
     bool   bv;
 
 #define WARN_UNKNOWN() \
-    fprintf(stderr, "%s:%d: unknown key '%s' — ignored\n", path, lineno, key)
+    LOG_W("%s:%d: unknown key '%s' — ignored\n", path, lineno, key)
 
 #define NEED_INT(field) \
     do { if (!parse_int(val, &iv)) { \
-        fprintf(stderr, "%s:%d: '%s': expected integer\n", path, lineno, key); \
+        LOG_E("%s:%d: '%s': expected integer\n", path, lineno, key); \
         return -1; } \
         (field) = iv; } while (0)
 
 #define NEED_FLT(field) \
     do { if (!parse_double(val, &dv)) { \
-        fprintf(stderr, "%s:%d: '%s': expected number\n", path, lineno, key); \
+        LOG_E("%s:%d: '%s': expected number\n", path, lineno, key); \
         return -1; } \
         (field) = (float)dv; } while (0)
 
 #define NEED_DBL(field) \
     do { if (!parse_double(val, &dv)) { \
-        fprintf(stderr, "%s:%d: '%s': expected number\n", path, lineno, key); \
+        LOG_E("%s:%d: '%s': expected number\n", path, lineno, key); \
         return -1; } \
         (field) = dv; } while (0)
 
 #define NEED_BOOL(field) \
     do { if (!parse_bool(val, &bv)) { \
-        fprintf(stderr, "%s:%d: '%s': expected true or false\n", path, lineno, key); \
+        LOG_E("%s:%d: '%s': expected true or false\n", path, lineno, key); \
         return -1; } \
         (field) = bv; } while (0)
 
@@ -307,7 +308,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
             /* parse up to 3 floats from an array-like string: [r,p,y] */
             const char *p = strchr(val, '[');
             if (!p) {
-                fprintf(stderr, "%s:%d: '%s': expected array [r,p,y]\n", path, lineno, key);
+                LOG_E("%s:%d: '%s': expected array [r,p,y]\n", path, lineno, key);
                 return -1;
             }
             p++;
@@ -323,7 +324,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
                 count++; p = end;
             }
             if (count == 0) {
-                fprintf(stderr, "%s:%d: '%s': expected numbers in array\n", path, lineno, key);
+                LOG_E("%s:%d: '%s': expected numbers in array\n", path, lineno, key);
                 return -1;
             }
             cfg->mount_set = true;
@@ -354,7 +355,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
             } else if (strcasecmp(preset, "pitch_270") == 0 || strcasecmp(preset, "rot_y_270") == 0) {
                 cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 270.0; cfg->mount_euler_deg[2] = 0.0;
             } else {
-                fprintf(stderr, "%s:%d: unknown mount preset '%s' — ignored\n", path, lineno, preset);
+                LOG_W("%s:%d: unknown mount preset '%s' — ignored\n", path, lineno, preset);
                 /* leave mount_set true only if rotation_euler_deg provided earlier */
             }
 
@@ -365,7 +366,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_NONE:
-        fprintf(stderr, "%s:%d: key '%s' appears before any section — ignored\n",
+        LOG_W("%s:%d: key '%s' appears before any section — ignored\n",
                 path, lineno, key);
         break;
 
@@ -495,7 +496,7 @@ int config_load(const char *path, imud_config_t *cfg)
 {
     FILE *f = fopen(path, "r");
     if (!f) {
-        fprintf(stderr, "config: cannot open '%s': %s\n", path, strerror(errno));
+        LOG_E("config: cannot open '%s': %s\n", path, strerror(errno));
         return CONFIG_ERR_OPEN;
     }
 
@@ -519,7 +520,7 @@ int config_load(const char *path, imud_config_t *cfg)
             rstrip(p);
             section_t s = parse_section(p);
             if (s == SEC_UNKNOWN) {
-                fprintf(stderr, "%s:%d: unknown section '%s' — skipping\n",
+                LOG_W("%s:%d: unknown section '%s' — skipping\n",
                         path, lineno, p);
             }
             sec = s;
@@ -532,7 +533,7 @@ int config_load(const char *path, imud_config_t *cfg)
 
         char *eq = strchr(p, '=');
         if (!eq) {
-            fprintf(stderr, "%s:%d: no '=' found — line skipped\n", path, lineno);
+            LOG_W("%s:%d: no '=' found — line skipped\n", path, lineno);
             continue;
         }
 
@@ -546,7 +547,7 @@ int config_load(const char *path, imud_config_t *cfg)
         rstrip(val);
 
         if (*key == '\0') {
-            fprintf(stderr, "%s:%d: empty key — line skipped\n", path, lineno);
+            LOG_W("%s:%d: empty key — line skipped\n", path, lineno);
             continue;
         }
 
