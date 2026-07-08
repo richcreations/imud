@@ -57,6 +57,7 @@ C standard library. Nothing else.
 | `imud-cal` | Calibration tool (gyro bias, accel 6-position, magnetometer swing). |
 | `imud-status` | Query a running daemon's health over its Unix socket. |
 | `imud-mon` | Live monitor of the UDP output streams from any host on the LAN. |
+| `imud-signalk` | Bridge daemon: reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
 
 ---
 
@@ -307,6 +308,22 @@ daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 | `enabled` | bool | `false` | Enable the subscription stream. |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
+
+### `[imud-signalk]`
+
+Configuration for the `imud-signalk` bridge daemon ([§9a](#9a-signal-k-bridge-imud-signalk)),
+which reads the `[stream]` socket and pushes Signal K deltas over UDP. **Requires
+`[stream] enabled = true`.** Unrelated to the `signalk_*` keys under `[position]`,
+which are the input side (imud reading position *from* Signal K).
+**[restart]**: `enabled`. **[hot]**: `dest_addr`, `dest_port`, `rate_hz`, `source_label`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Signal K bridge. |
+| `dest_addr` | string | `"127.0.0.1"` | Signal K server host (numeric IPv4). |
+| `dest_port` | int | `10113` | UDP port — must match the Signal K server's UDP input connection. |
+| `rate_hz` | int | `10` | Delta emit rate in Hz. |
+| `source_label` | string | `"imud"` | Signal K delta `source.label` value. |
 
 ### `[mount]`
 
@@ -580,6 +597,54 @@ The `lib/` directory has ready-to-use clients for the binary stream:
 Both validate CRC32 and support multicast. `make install` installs the C
 header to `/usr/local/include` and the Python module to
 `/usr/local/share/imud`. See `lib/README.md` for full usage and examples.
+
+---
+
+## 9a. Signal K bridge (imud-signalk)
+
+`imud-signalk` is a small standalone daemon that feeds a Signal K server
+natively. It connects to imud's `[stream]` socket (the same 196-byte binary
+packets), and emits Signal K **delta** messages (JSON) over UDP — one per
+datagram at `rate_hz` (default 10 Hz) — for every imud value that has a
+standard Signal K path. imud's NMEA output is unchanged; this is an
+alternative path for Signal K, which does not reliably parse all of imud's
+NMEA fields.
+
+It holds no hardware, runs as a separate process, and reconnects automatically
+if imud restarts. It requires `[stream] enabled = true`.
+
+**Field mapping** (Signal K SI units — radians, rad/s, metres):
+
+| imud value | Signal K path | when |
+|---|---|---|
+| magnetic heading | `navigation.headingMagnetic` | always |
+| true heading | `navigation.headingTrue` | declination known |
+| declination | `navigation.magneticVariation` | declination known |
+| rate of turn | `navigation.rateOfTurn` | always |
+| roll / pitch / yaw | `navigation.attitude` `{roll,pitch,yaw}` | always |
+| heave | `environment.heave` | heave estimator enabled (`heave_tau_s > 0`) |
+
+**Setup:**
+
+1. In `imud.conf`, set `[stream] enabled = true` and configure the
+   `[imud-signalk]` section (at minimum `enabled = true` and the Signal K
+   server's `dest_addr`/`dest_port`).
+2. On the Signal K server, add a **UDP** connection (Server → Connections →
+   Add) listening on that port.
+3. Enable the service:
+   ```sh
+   sudo systemctl enable --now imud-signalk
+   ```
+
+Run it in the foreground to check output:
+```sh
+imud-signalk --config /etc/imud/imud.conf
+nc -u -l 10113        # watch the raw deltas
+```
+
+`SIGHUP` reloads `dest_addr`, `dest_port`, `rate_hz`, `source_label`, and the
+log level live. Configuration keys are documented in
+[§4 `[imud-signalk]`](#imud-signalk).
 
 ---
 

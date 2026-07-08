@@ -364,6 +364,47 @@ Listen socket path (mode 0660).
 .B rate_hz
 .RI (int,\ default:\ 100)
 Per-subscriber packet rate in Hz.
+.SS [imud-signalk]
+Configuration for the
+.BR imud-signalk (8)
+bridge daemon, which reads the
+.B [stream]
+socket and emits Signal K delta JSON over UDP.  Requires
+.B [stream]
+enabled.  Unrelated to the
+.B signalk_*
+keys under
+.B [position]
+(those are the input side — imud reading position from Signal K).
+.B [restart]:
+.BR enabled .
+.B [hot]:
+.BR dest_addr ,
+.BR dest_port ,
+.BR rate_hz ,
+.BR source_label .
+.TP
+.B enabled
+.RI (bool,\ default:\ false)
+Enable the Signal K bridge.
+.TP
+.B dest_addr
+.RI (string,\ default:\ \(dq127.0.0.1\(dq)
+Signal K server host (numeric IPv4).
+.TP
+.B dest_port
+.RI (int,\ default:\ 10113)
+UDP port; must match the Signal K server's UDP input connection.
+.TP
+.B rate_hz
+.RI (int,\ default:\ 10)
+Delta emit rate in Hz.
+.TP
+.B source_label
+.RI (string,\ default:\ \(dqimud\(dq)
+Signal K delta
+.B source.label
+value.
 .SS [mount]
 Board-to-body rotation.
 .B [restart]

@@ -76,6 +76,15 @@ typedef struct {
     char  stream_socket[108];     /* [restart] listen path; sized to sun_path */
     int   stream_rate_hz;         /* [hot] per-subscriber packet rate */
 
+    /* [imud-signalk]  Signal K bridge daemon (reads the [stream] socket, emits
+     * Signal K delta JSON over UDP). Consumed only by the imud-signalk binary;
+     * unrelated to the pos_signalk_* input keys in [position]. */
+    bool  sk_enabled;             /* [restart] */
+    char  sk_dest_addr[64];       /* [hot] Signal K server host */
+    int   sk_dest_port;           /* [hot] SK server UDP input port */
+    int   sk_rate_hz;             /* [hot] delta emit rate */
+    char  sk_source_label[32];    /* [hot] Signal K delta source.label */
+
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
     char  log_file[256];

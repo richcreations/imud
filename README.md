@@ -51,7 +51,8 @@ imud is output-agnostic; the same daemon serves very different consumers:
 - **Marine navigation** — NMEA 0183 to chartplotters, autopilots, and
   Signal K, with true heading from the World Magnetic Model and a heave
   estimate. (The most exercised use case today; several fusion options are
-  tuned for it.)
+  tuned for it.) The `imud-signalk` bridge also feeds Signal K natively over
+  UDP when its NMEA parsing falls short.
 - **Robotics / ROS2** — attitude and rate of turn over the binary stream.
 - **Machine vision & camera stabilization** — high-rate quaternion with
   hardware timestamps for frame-accurate correlation.
@@ -108,6 +109,7 @@ in-situ `imud-cal mag`. See the
 | `imud-cal` | Gyro, accelerometer, and magnetometer calibration. |
 | `imud-status` | Query a running daemon's health. |
 | `imud-mon` | Live monitor of the output streams from any host on the network. |
+| `imud-signalk` | Bridge daemon: pushes Signal K deltas over UDP from the local stream socket. |
 
 ## Documentation
 

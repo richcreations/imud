@@ -1,0 +1,106 @@
+.TH IMUD\-SIGNALK 8 "July 2026" "imud 1.1" "System Manager's Manual"
+.SH NAME
+imud\-signalk \- bridge imud's binary stream to Signal K over UDP
+.SH SYNOPSIS
+.B imud-signalk
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B imud-signalk
+connects to the local AF_UNIX binary subscription stream published by
+.BR imud (8)
+and emits Signal K
+.I delta
+messages (JSON) over UDP for every value imud produces that has a standard
+Signal K path.  Signal K did not reliably parse all of imud's NMEA 0183 output;
+this bridge feeds Signal K natively instead, while the NMEA output is left
+unchanged.
+.PP
+The bridge holds no hardware.  It reconnects automatically if
+.BR imud (8)
+restarts, and requires
+.B [stream] enabled = true
+in the configuration (it reads the socket named by
+.BR "[stream] socket" ).
+.PP
+All values use Signal K SI units (radians, rad/s, metres).  The fields emitted
+are:
+.PP
+.RS 4
+.TS
+l l.
+navigation.headingMagnetic	always
+navigation.headingTrue	when declination is known
+navigation.magneticVariation	when declination is known
+navigation.rateOfTurn	always
+navigation.attitude	roll, pitch, yaw (always)
+environment.heave	when the heave estimator is enabled
+.TE
+.RE
+.PP
+One delta is sent per UDP datagram at the configured rate (default 10 Hz),
+timestamped from the packet's wall-clock time.  Configure a matching UDP
+connection on the Signal K server (Server \(-> Connections \(-> Add, type UDP)
+listening on the bridge's destination port.
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Load configuration from
+.I PATH
+instead of
+.IR /etc/imud/imud.conf .
+The
+.B [imud-signalk]
+and
+.B [stream]
+sections are used.
+.TP
+.B \-\-version
+Print the version string and exit.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the configuration.  The emit rate, destination address/port, source
+label, and log level are applied live; if the reload fails to parse, the
+running configuration is kept.
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown.
+.SH CONFIGURATION
+See the
+.B [imud-signalk]
+section in
+.BR imud.conf (5):
+.BR enabled ,
+.BR dest_addr ,
+.BR dest_port ,
+.BR rate_hz ,
+and
+.BR source_label .
+.SH EXAMPLES
+Run in the foreground against a local config:
+.PP
+.RS 4
+.EX
+imud-signalk --config /etc/imud/imud.conf
+.EE
+.RE
+.PP
+Enable as a service (after enabling
+.B [stream]
+and
+.B [imud-signalk]
+in the config):
+.PP
+.RS 4
+.EX
+sudo systemctl enable --now imud-signalk
+.EE
+.RE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud.conf (5),
+.BR imud-mon (1),
+.BR imud-status (1)
+.SH AUTHORS
+Richard Simpson

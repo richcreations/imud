@@ -164,6 +164,13 @@ void config_defaults(imud_config_t *cfg)
              "/run/imud/imud-stream.sock");
     cfg->stream_rate_hz = 100;
 
+    /* [imud-signalk] */
+    cfg->sk_enabled   = false;
+    snprintf(cfg->sk_dest_addr, sizeof(cfg->sk_dest_addr), "127.0.0.1");
+    cfg->sk_dest_port = 10113;
+    cfg->sk_rate_hz   = 10;
+    snprintf(cfg->sk_source_label, sizeof(cfg->sk_source_label), "imud");
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
     cfg->pos_declination_valid = false;
@@ -230,6 +237,7 @@ typedef enum {
     SEC_NMEA,
     SEC_HIGHRATE,
     SEC_STREAM,
+    SEC_SIGNALK,
     SEC_LOGGING,
     SEC_POSITION
 } section_t;
@@ -245,6 +253,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[nmea]")        == 0) return SEC_NMEA;
     if (strcmp(s, "[highrate]")    == 0) return SEC_HIGHRATE;
     if (strcmp(s, "[stream]")      == 0) return SEC_STREAM;
+    if (strcmp(s, "[imud-signalk]")== 0) return SEC_SIGNALK;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
     return SEC_UNKNOWN;
@@ -434,6 +443,15 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled") == 0) NEED_BOOL(cfg->stream_enabled);
         else if (strcmp(key, "socket")  == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "rate_hz") == 0) NEED_INT(cfg->stream_rate_hz);
+        else WARN_UNKNOWN();
+        break;
+
+    case SEC_SIGNALK:
+        if      (strcmp(key, "enabled")      == 0) NEED_BOOL(cfg->sk_enabled);
+        else if (strcmp(key, "dest_addr")    == 0) NEED_STR(cfg->sk_dest_addr);
+        else if (strcmp(key, "dest_port")    == 0) NEED_INT(cfg->sk_dest_port);
+        else if (strcmp(key, "rate_hz")      == 0) NEED_INT(cfg->sk_rate_hz);
+        else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
         else WARN_UNKNOWN();
         break;
 
