@@ -158,12 +158,6 @@ void config_defaults(imud_config_t *cfg)
     cfg->highrate_dest_port = 10111;
     snprintf(cfg->highrate_coord_frame, sizeof(cfg->highrate_coord_frame), "NED");
 
-    /* [json] */
-    cfg->json_enabled   = false;
-    cfg->json_rate_hz   = 100;
-    snprintf(cfg->json_dest_addr, sizeof(cfg->json_dest_addr), "255.255.255.255");
-    cfg->json_dest_port = 10112;
-
     /* [stream] */
     cfg->stream_enabled = false;
     snprintf(cfg->stream_socket, sizeof(cfg->stream_socket),
@@ -235,7 +229,6 @@ typedef enum {
     SEC_CALIBRATION,
     SEC_NMEA,
     SEC_HIGHRATE,
-    SEC_JSON,
     SEC_STREAM,
     SEC_LOGGING,
     SEC_POSITION
@@ -251,7 +244,6 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[calibration]") == 0) return SEC_CALIBRATION;
     if (strcmp(s, "[nmea]")        == 0) return SEC_NMEA;
     if (strcmp(s, "[highrate]")    == 0) return SEC_HIGHRATE;
-    if (strcmp(s, "[json]")        == 0) return SEC_JSON;
     if (strcmp(s, "[stream]")      == 0) return SEC_STREAM;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
@@ -435,14 +427,6 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "dest_addr")   == 0) NEED_STR(cfg->highrate_dest_addr);
         else if (strcmp(key, "dest_port")   == 0) NEED_INT(cfg->highrate_dest_port);
         else if (strcmp(key, "coord_frame") == 0) NEED_STR(cfg->highrate_coord_frame);
-        else WARN_UNKNOWN();
-        break;
-
-    case SEC_JSON:
-        if      (strcmp(key, "enabled")   == 0) NEED_BOOL(cfg->json_enabled);
-        else if (strcmp(key, "rate_hz")   == 0) NEED_INT(cfg->json_rate_hz);
-        else if (strcmp(key, "dest_addr") == 0) NEED_STR(cfg->json_dest_addr);
-        else if (strcmp(key, "dest_port") == 0) NEED_INT(cfg->json_dest_port);
         else WARN_UNKNOWN();
         break;
 

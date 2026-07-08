@@ -23,15 +23,25 @@ NMEA sentence formats, timestamp architecture), see [spec.md](../spec.md).
 
 ## 1. Overview
 
-imud reads a gyroscope/accelerometer (IMU) and a magnetometer over I²C,
-fuses them with a Multiplicative Extended Kalman Filter (MEKF) into a
-real-time attitude estimate (quaternion, Euler angles, magnetic heading),
-and publishes the result on several output streams.
+imud is a general-purpose IMU daemon — *gpsd for IMUs*. It owns the inertial
+sensor and does the real-time work once: it reads a gyroscope/accelerometer
+(IMU) and a magnetometer over I²C, fuses them with a Multiplicative Extended
+Kalman Filter (MEKF) into a real-time attitude estimate (quaternion, Euler
+angles, magnetic and true heading, rate of turn, heave), and publishes the
+result on several standard interfaces that any number of programs can consume
+at once. Consumers get a fused, timestamped estimate rather than raw samples
+to process themselves.
+
+The same daemon serves marine navigation (NMEA 0183, true heading, heave),
+robotics (binary attitude), machine vision and camera stabilization
+(high-rate quaternion with hardware timestamps), and gimbal/pointing systems.
+Output is use-agnostic; a few fusion options have marine defaults (noted where
+they apply).
 
 **Threads.** A reader thread drains the IMU FIFO on a GPIO watermark
 interrupt; a second reads the magnetometer; a fusion thread runs the MEKF at
 the full IMU rate; a health thread serves `imud-status` and pets the systemd
-watchdog; optional output threads emit NMEA, binary, JSON, and a local
+watchdog; optional output threads emit NMEA, binary, and a local
 subscription stream; an optional position thread pulls GPS fixes from gpsd or
 SignalK to keep magnetic declination current. See [spec.md §3](../spec.md)
 for the full architecture.
@@ -137,7 +147,6 @@ imud [OPTIONS]
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
-  --no-json          Disable the JSON output stream
   --foreground       Accepted and ignored (imud always runs in the foreground)
   --version          Print the version and exit
 ```
@@ -242,7 +251,7 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 | `mag_reject_gauss` | double | `0.05` | Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field). |
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
 | `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration. |
-| `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and JSON `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). |
+| `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and the binary packet's `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). |
 | `engine_vibration_g2` | double | `0.0` | EMA threshold (m²/s⁴) for engine-vibration detection. The filter tracks an exponential moving average of `(|a| − g)²`; when it exceeds this value the engine is considered on. Set `0` to disable (default). |
 | `engine_accel_skip_thresh` | double | `0.20` | Accelerometer skip threshold applied while engine vibration is detected: wider than `accel_skip_thresh` so the filter isn't starved, while the accel noise is inflated ×4 so the vibration-contaminated samples that pass are trusted proportionally less. Only active when `engine_vibration_g2 > 0`. |
 
@@ -285,21 +294,6 @@ Consumer libraries are in `lib/`.
 | `dest_port` | int | `10111` | Destination UDP port. |
 | `coord_frame` | string | `"NED"` | Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. |
 
-### `[json]`
-
-NDJSON UDP stream — one JSON object per datagram, newline-terminated. **[restart]**: `enabled`, `dest_addr`, `dest_port`. **[hot]**: `rate_hz`.
-
-Fields per object: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`, `rot_dpm`,
-`heave_m`, `quat`, `gyro_bias`, `cov_trace`, `flags`, and `true_heading_deg`
-(when declination is configured).
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the NDJSON stream. |
-| `rate_hz` | int | `100` | Output rate in Hz. Hot-reloadable. |
-| `dest_addr` | string | `"255.255.255.255"` | Destination IP address. |
-| `dest_port` | int | `10112` | Destination UDP port. |
-
 ### `[stream]`
 
 Local AF_UNIX subscription stream — the same 196-byte binary packets as
@@ -317,18 +311,18 @@ daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 ### `[mount]`
 
 Board-to-body rotation for installations where the chip X axis does not point
-toward the bow. **[restart]**
+along the platform's forward axis (the bow, on a vessel). **[restart]**
 
 The rotation is ZYX intrinsic Euler angles: `R = Rz(yaw) × Ry(pitch) ×
 Rx(roll)`. In practice only `yaw` is non-zero — it corrects for the angle
-between the chip X axis and the vessel's bow.
+between the chip X axis and the platform's forward direction.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `rotation_euler_deg` | array | `[0.0, 0.0, 0.0]` | `[roll, pitch, yaw]` in degrees. Measure the angle between chip X and true bow once with a handbearing compass; set that as `yaw`. |
+| `rotation_euler_deg` | array | `[0.0, 0.0, 0.0]` | `[roll, pitch, yaw]` in degrees. Measure the angle between chip X and the forward axis once (e.g. with a handbearing compass on a vessel); set that as `yaw`. |
 | `preset` | string | *(unset)* | Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. |
 
-**Example** — chip X points to the stern (180° from the bow):
+**Example** — chip X points aft (180° from forward; e.g. to a vessel's stern):
 ```toml
 rotation_euler_deg = [0.0, 0.0, 180.0]
 # or equivalently:
@@ -354,9 +348,9 @@ repeated N times` count. The most recent warnings/errors are also shown by
 
 Magnetic declination and true heading. **[restart]**
 
-When declination is known, imud adds `$HCHDT` to the NMEA stream,
-`true_heading_deg` to the JSON stream, and sets `FLAG_DECLINATION_VALID` in
-the binary packet. A known position also lets the filter set its magnetic
+When declination is known, imud adds `$HCHDT` to the NMEA stream and sets
+`FLAG_DECLINATION_VALID` (with the `declination_deg` field) in the binary
+packet. A known position also lets the filter set its magnetic
 reference (field strength and dip) analytically from the World Magnetic
 Model, which improves heading accuracy, and — with live GPS — enables a
 speed-aided centripetal correction that keeps the horizon level through
@@ -485,7 +479,7 @@ sudo systemctl start imud
 
 ## 7. Output streams
 
-imud publishes on up to four streams simultaneously. Full wire formats are in
+imud publishes on up to three streams simultaneously. Full wire formats are in
 [spec.md §7–8, §10](../spec.md).
 
 ### NMEA 0183 — UDP port 10110 (default on)
@@ -511,13 +505,6 @@ rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 self-describing (magic + version + CRC), so consumers can validate each one
 independently. See [spec.md §8](../spec.md) for the exact layout and the
 consumer libraries in [§9](#9-consumer-libraries).
-
-### NDJSON — UDP port 10112 (default off)
-
-One newline-terminated JSON object per datagram, for dashboards, ROS2
-bridges, and scripts. Fields: `ts`, `heading_deg`, `pitch_deg`, `roll_deg`,
-`rot_dpm`, `heave_m`, `quat`, `gyro_bias`, `cov_trace`, `flags`, and
-`true_heading_deg`/`declination_deg` when declination is known.
 
 ### Local subscription stream — AF_UNIX socket (default off)
 
@@ -551,8 +538,8 @@ A receive-side monitor that listens on the UDP output ports from any host on
 the LAN (it needs no access to the daemon's socket):
 
 ```sh
-imud-mon                      # all three UDP streams, one line each, once/sec
-imud-mon nmea json            # only the named streams
+imud-mon                      # both UDP streams, one line each, once/sec
+imud-mon nmea                 # only the named stream
 imud-mon binary
 imud-mon --config config/sim.conf   # read ports/addresses from a specific config
 ```

@@ -226,7 +226,7 @@ calibration).
 .RI (float,\ default:\ 12.0)
 Heave filter time constant, seconds. Vertical displacement from band-passed
 double integration of vertical acceleration; feeds the $PASHR heave field
-and JSON heave_m. Allow ~2 minutes settling after startup.
+and the binary packet heave_m. Allow ~2 minutes settling after startup.
 .B 0
 disables.
 .TP
@@ -340,30 +340,6 @@ Output frame:
 (North-East-Down) or
 .B ENU
 (East-North-Up).
-.SS [json]
-NDJSON UDP stream.
-.B [restart]:
-.BR enabled ,
-.BR dest_addr ,
-.BR dest_port .
-.B [hot]:
-.BR rate_hz .
-.TP
-.B enabled
-.RI (bool,\ default:\ false)
-Enable the JSON stream.
-.TP
-.B rate_hz
-.RI (int,\ default:\ 100)
-Output rate in Hz.
-.TP
-.B dest_addr
-.RI (string,\ default:\ \(dq255.255.255.255\(dq)
-Destination IP address.
-.TP
-.B dest_port
-.RI (int,\ default:\ 10112)
-Destination UDP port.
 .SS [stream]
 Local AF_UNIX subscription stream carrying the same 196-byte binary packets
 as
@@ -464,11 +440,11 @@ Magnetic declination and true heading.
 .PP
 When declination is active, imud emits
 .B $HCHDT
-in NMEA,
-.B true_heading_deg
-in JSON, and sets
+in NMEA and sets
 .B FLAG_DECLINATION_VALID
-in the binary packet.
+(with the
+.B declination_deg
+field) in the binary packet.
 .PP
 Three modes (highest priority wins):
 .TP

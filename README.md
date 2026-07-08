@@ -1,41 +1,71 @@
 # imud — IMU Daemon
 
-**imud** is a small, reliable attitude/heading daemon for Raspberry Pi. It
-reads an IMU and a magnetometer over I²C, fuses them with a quaternion MEKF
-into a real-time attitude estimate, and publishes heading, pitch, roll, rate
-of turn, and heave on streams that navigation and robotics software can
-consume directly.
+**imud is a general-purpose IMU daemon for Linux — think of it as *gpsd for
+IMUs*.** It owns the inertial sensor, does the hard real-time work once
+(interrupt-driven sampling, calibration, sensor fusion, precise hardware
+timestamps), and publishes a clean attitude/heading/motion estimate on
+standard interfaces that any number of programs can read at the same time.
 
-It is built for the boat: NMEA 0183 for chartplotters and Signal K, a
-high-rate binary stream for machine vision and gimbals, and true heading from
-the World Magnetic Model. It depends only on `libgpiod` and the C standard
-library.
+Instead of every application re-implementing I²C drivers and a Kalman filter,
+you run one small daemon and consume its output. Like gpsd, it's meant to be
+boring, always-on infrastructure: start it, forget it, and point your
+software at the stream.
 
-License: MIT — see [LICENSE](LICENSE).
+```
+   IMU + magnetometer (I²C)                      consumers
+            │                          ┌────────────────────────────┐
+            ▼                          │  chartplotter / autopilot   │
+   ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                  │
+   │      imud       │   binary UDP ──▶│  vision / stabilization     │
+   │  drivers·MEKF·  │   AF_UNIX    ──▶│  gimbal / dish pointing     │
+   │  timestamps     │                 │  loggers, dashboards, …     │
+   └─────────────────┘                 └────────────────────────────┘
+```
 
-## Highlights
+It depends only on `libgpiod` and the C standard library. License: MIT — see
+[LICENSE](LICENSE).
 
-- **NMEA 0183** (UDP 10110) for chartplotters, autopilots, and Signal K —
-  heading, pitch, roll, rate of turn, and heave, plus true heading when
-  declination is known.
-- **High-rate binary** (UDP 10111, up to 500 Hz) and **NDJSON** (UDP 10112)
-  for machine vision, ROS2, and dashboards; plus a loss-free local
-  subscription socket for co-located consumers.
-- **True heading** from WMM2025 declination — set a fixed lat/lon, or track
-  it live from gpsd or Signal K as the vessel moves.
-- **Marine-tuned fusion** — heading-only magnetometer mode, rough-sea
-  accelerometer gating, engine-vibration handling, and a heave estimator.
-- **Small and dependency-light** — C11 + POSIX + `libgpiod`, one config file,
-  a hardened systemd unit.
+## What it does
 
-The reference hardware is the SparkFun 9DoF (ISM330DHCX + MMC5983MA), with
-experimental drivers for several other ST/TDK/AKM parts and a `sim` driver
-that runs the whole pipeline with no hardware. See the
-[driver table](docs/manual.md#5-supported-drivers).
+- **Owns the sensor, once.** Drains the IMU FIFO on a hardware interrupt,
+  applies calibration, and runs a quaternion MEKF at the full sample rate —
+  so consumers get a fused estimate, not raw samples to process themselves.
+- **Publishes on standard interfaces, to many consumers at once.** NMEA 0183,
+  a high-rate binary packet over UDP, and a loss-free local stream socket —
+  broadcast/multicast so several programs share one IMU without contention.
+- **Clean, well-defined outputs.** Quaternion, Euler angles, magnetic and
+  true heading, rate of turn, heave, and the attitude covariance, each with
+  wall-clock, TAI, and per-sample hardware timestamps for correlation with
+  cameras and other sensors.
+- **Pluggable hardware.** A thin driver layer hides chip differences behind
+  one interface. Reference support for the SparkFun 9DoF (ISM330DHCX +
+  MMC5983MA); experimental drivers for several other ST/TDK/AKM parts; and a
+  `sim` driver that runs the whole pipeline with no hardware.
+- **Built to run unattended.** A hardened systemd unit with a watchdog,
+  calibration tools, level-gated logging, and a status socket.
+
+## Example uses
+
+imud is output-agnostic; the same daemon serves very different consumers:
+
+- **Marine navigation** — NMEA 0183 to chartplotters, autopilots, and
+  Signal K, with true heading from the World Magnetic Model and a heave
+  estimate. (The most exercised use case today; several fusion options are
+  tuned for it.)
+- **Robotics / ROS2** — attitude and rate of turn over the binary stream.
+- **Machine vision & camera stabilization** — high-rate quaternion with
+  hardware timestamps for frame-accurate correlation.
+- **Gimbals, pan/tilt rigs, and antenna/dish pointing** — low-latency
+  attitude over the local stream socket or binary UDP.
+
+If you just need heading/pitch/roll for a chartplotter or autopilot, enable
+the NMEA output and point your software at UDP port 10110. If you need
+high-rate quaternion for vision or control, enable the binary stream on port
+10111 or the local socket.
 
 ## Quick start
 
-On the Pi:
+On a Raspberry Pi (or any Linux host with I²C):
 
 ```sh
 # 1. Dependencies
@@ -52,11 +82,11 @@ sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud
 ```
 
-Check it is running and watch the streams:
+Check it and watch the streams:
 
 ```sh
 imud-status        # daemon health, attitude, declination, heave
-imud-mon           # live view of the UDP output streams
+imud-mon           # live view of the output streams
 ```
 
 No hardware yet? Run the full pipeline in simulation:
@@ -67,7 +97,7 @@ imud --config config/sim.conf
 ```
 
 Before first real use, calibrate: `imud-cal gyro`, `imud-cal accel`, and an
-in-situ `imud-cal mag` swing. See the
+in-situ `imud-cal mag`. See the
 [calibration guide](docs/manual.md#6-calibration).
 
 ## Tools
@@ -77,7 +107,7 @@ in-situ `imud-cal mag` swing. See the
 | `imud` | The daemon. |
 | `imud-cal` | Gyro, accelerometer, and magnetometer calibration. |
 | `imud-status` | Query a running daemon's health. |
-| `imud-mon` | Live monitor of the output streams from any host on the LAN. |
+| `imud-mon` | Live monitor of the output streams from any host on the network. |
 
 ## Documentation
 

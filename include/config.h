@@ -71,12 +71,6 @@ typedef struct {
     int   highrate_dest_port;
     char  highrate_coord_frame[8]; /* "NED" | "ENU" */
 
-    /* [json]  [restart]: enabled, port, addr; [hot]: rate */
-    bool  json_enabled;
-    int   json_rate_hz;
-    char  json_dest_addr[64];
-    int   json_dest_port;
-
     /* [stream]  local AF_UNIX subscription stream (binary packets) */
     bool  stream_enabled;         /* [restart] */
     char  stream_socket[108];     /* [restart] listen path; sized to sun_path */

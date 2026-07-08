@@ -31,5 +31,8 @@ test_log
 .vscode/settings.json
 .claude
 
+# Local agent guidance (not shipped)
+AGENTS.md
+
 # Cal file (machine-specific, not for version control)
 cal.json

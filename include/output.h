@@ -9,10 +9,9 @@
 /*
  * output.h — output threads for imud (§7, §8)
  *
- * Four threads:
+ * Three threads:
  *   nmea_out_thread   — NMEA 0183 UDP (port 10110, default 10 Hz)
  *   hirate_out_thread — binary packet UDP (port 10111, default 500 Hz)
- *   json_out_thread   — NDJSON UDP (port 10112, default 100 Hz)
  *   stream_out_thread — binary packets over a local AF_UNIX SOCK_STREAM
  *                       subscription socket (default 100 Hz per subscriber)
  *
@@ -54,7 +53,6 @@ void out_ctx_free(out_ctx_t *ctx);
 /* Thread entry points */
 void *nmea_out_thread  (void *arg);
 void *hirate_out_thread(void *arg);
-void *json_out_thread  (void *arg);
 void *stream_out_thread(void *arg);
 
 #endif /* IMUD_OUTPUT_H */

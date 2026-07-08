@@ -1,10 +1,14 @@
 # IMU Daemon Specification
 
-## `imud` — SparkFun 9DoF IMU Bridge for NMEA 0183 + Machine Vision
+## `imud` — a general-purpose IMU daemon ("gpsd for IMUs")
 
 **Version:** 1.1  
-**Hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA (SEN-19895)  
-**Platform:** Raspberry Pi (any model with I2C), Linux  
+**What:** owns an IMU + magnetometer, fuses to attitude/heading, and publishes
+on NMEA 0183, binary UDP, and a local stream socket for any number of
+consumers (marine nav, robotics, machine vision, gimbals/pointing).  
+**Reference hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA
+(SEN-19895); a driver layer supports other parts (see §4).  
+**Platform:** Raspberry Pi / Linux (any host with I2C)  
 **Language:** C11, POSIX — no external dependencies beyond libc and libgpiod
 
 -----
@@ -167,14 +171,12 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`json_out`    |rate_hz timer (100 Hz)      |Encode fused state as NDJSON; send UDP                                   |
 |`stream_out`  |rate_hz timer (100 Hz)      |Serve 196-byte binary packets to local AF_UNIX subscribers               |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
 `nmea_out` is only started when `nmea.enabled = true`.
 `hirate_out` is only started when `highrate.enabled = true`.
-`json_out` is only started when `json.enabled = true`.
 `stream_out` is only started when `stream.enabled = true`.
 `position` is only started when `position.gpsd_enabled` or
 `position.signalk_enabled` is true (see §9 `[position]`).
@@ -501,7 +503,7 @@ data has real 3D coverage.
 - **Rate of turn** is the true Euler yaw rate
   ψ̇ = (ω_y·sinφ + ω_z·cosφ)/cosθ, not raw body-Z rate (falls back to ω_z
   near ±90° pitch).
-- **Heave** (§7 PASHR / §10 JSON): leaky double integration of NED vertical
+- **Heave** (§7 PASHR / §8 binary packet): leaky double integration of NED vertical
   acceleration through a true output high-pass (exact zero at DC); triple
   pole at 1/τ ⇒ allow ~10·τ settling after startup.
 
@@ -741,7 +743,7 @@ accel_skip_thresh   = 0.05      # skip accel update if ||a| - 1g| > 5% of g
 # Set false for full 3D vector fusion (clean installs with true 3D cal).
 mag_yaw_only        = true
 
-# Heave estimator time constant; feeds $PASHR heave + JSON heave_m. 0 = off.
+# Heave estimator time constant; feeds $PASHR heave + binary heave_m. 0 = off.
 heave_tau_s         = 12.0
 
 # Engine-vibration detection: when the EMA of (|a|-g)² exceeds
@@ -772,14 +774,6 @@ rate_hz        = 500
 dest_addr      = "239.255.0.1"   # multicast (224.0.0.0/4), broadcast, or unicast
 dest_port      = 10111
 coord_frame    = "NED"           # "NED" or "ENU"
-
-[json]
-# [restart]: enabled, dest_addr, dest_port
-# [hot]:     rate_hz
-enabled        = false
-rate_hz        = 100
-dest_addr      = "255.255.255.255"
-dest_port      = 10112
 
 [stream]
 # [restart]: enabled, socket
@@ -821,7 +815,7 @@ stats_hz       = 1               # interval for periodic stats line to log
 #
 #   3. Disabled (default): all zero → no true heading output.
 #
-# When active, imud emits $HCHDT in NMEA, "true_heading_deg" in JSON,
+# When active, imud emits $HCHDT in NMEA,
 # and fills the declination_deg field in the binary packet (FLAG_DECLINATION_VALID).
 declination_deg  = 0.0           # static °E+; ignored when lat/lon set
 lat_deg          = 0.0           # geodetic latitude  (+N / -S); 0 = WMM disabled
@@ -860,50 +854,7 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 
 -----
 
-## 10. Output Stream C — NDJSON UDP (optional)
-
-**Port:** 10112 UDP (configurable)
-**Rate:** 100 Hz default (hot-reloadable via `json.rate_hz`)
-**Format:** NDJSON — one JSON object per UDP datagram, newline-terminated
-**Enabled by:** `json.enabled = true` in config (disabled by default)
-
-One object per datagram:
-
-```json
-{
-  "ts":          1715000000.123,
-  "heading_deg": 214.7,
-  "pitch_deg":   -3.1,
-  "roll_deg":     9.5,
-  "rot_dpm":     -6.2,
-  "heave_m":     0.42,
-  "quat":        [0.998, 0.001, -0.054, 0.031],
-  "gyro_bias":   [0.00012, -0.00008, 0.00003],
-  "cov_trace":   4.2e-6,
-  "flags":       20,
-  "declination_deg": 13.2,
-  "true_heading_deg": 227.9
-}
-```
-
-| Field | Units / notes |
-| --- | --- |
-| `ts` | UNIX epoch seconds (float), from `CLOCK_REALTIME` |
-| `heading_deg` | 0–360° magnetic |
-| `pitch_deg` | degrees, + = bow up |
-| `roll_deg` | degrees, + = starboard up |
-| `rot_dpm` | rate of turn deg/min, + = turning right |
-| `heave_m` | vertical displacement, metres, + up (0.0 when `heave_tau_s = 0`) |
-| `quat` | unit quaternion `[w, x, y, z]`, body→NED |
-| `gyro_bias` | current MEKF bias estimate, rad/s |
-| `cov_trace` | trace of attitude error covariance, rad² |
-| `flags` | same bitmask as §8 binary packet |
-| `declination_deg` | °E+; present only while `FLAG_DECLINATION_VALID` is set |
-| `true_heading_deg` | 0–360° true; present only while `FLAG_DECLINATION_VALID` is set |
-
-Useful for ROS2 bridges, web dashboards, SignalK plugins, or any consumer that prefers text over binary.
-
-### Output Stream D — AF_UNIX subscription stream (optional)
+## 10. Output Stream C — Local AF_UNIX subscription stream (optional)
 
 **Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
@@ -940,7 +891,7 @@ on a consumer.
 10. Open AF_UNIX status socket at /run/imud/imud.sock (mode 0660)
 11. Start threads: ism_reader, mag_reader, fusion, health (always);
     nmea_out if nmea.enabled; hirate_out if highrate.enabled;
-    json_out if json.enabled; stream_out if stream.enabled;
+    stream_out if stream.enabled;
     position if position.gpsd_enabled or position.signalk_enabled
 12. Write /run/imud/imud.pid
 13. sd_notify("READY=1")
@@ -959,7 +910,6 @@ The following fields take effect immediately on SIGHUP without restarting:
 | `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s` — applied next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
-| `[json]`    | `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |
 | `[logging]` | `level`, `stats_hz`; the log file is also reopened (logrotate)         |
 | `[position]`| `declination_deg`, `lat_deg`/`lon_deg` (WMM recomputed) — applied only when no live position source (gpsd/SignalK) is enabled; a live source owns declination |
@@ -1016,7 +966,6 @@ imud [OPTIONS]
   --skip-bias-cal    Skip startup gyro bias estimation
   --no-nmea          Disable NMEA output stream
   --no-highrate      Disable high-rate binary stream
-  --no-json          Disable JSON output stream
   --foreground       Accepted and ignored (always foreground under systemd)
   --version          Print version and exit
 ```
@@ -1073,15 +1022,14 @@ numbers and multicast addresses from the config file, joins multicast groups
 where needed, and prints a once-per-second snapshot line per stream.
 
 ```text
-imud-mon [--config PATH] [nmea] [json] [binary]
+imud-mon [--config PATH] [nmea] [binary]
 
   --config PATH  Config file (default: /etc/imud/imud.conf)
 
   nmea    Monitor NMEA 0183 stream (UDP port 10110)
-  json    Monitor NDJSON stream    (UDP port 10112)
   binary  Monitor binary stream    (UDP port 10111)
 
-  With no stream arguments all three streams are shown.
+  With no stream arguments both streams are shown.
 ```
 
 Binary packets are validated (magic + CRC32) before display.
@@ -1102,7 +1050,6 @@ Declination:    +13.20 E  (true heading 227.9 T)
 Heave:          +0.42 m
 NMEA out:       10 Hz  (port 10110)
 Hi-rate out:    disabled
-JSON out:       disabled
 IMU samples:    1234567  overflows: 0
 Uptime:         00:04:32
 ```

@@ -89,10 +89,8 @@ struct out_ctx {
 
     int                  nmea_fd;
     int                  hirate_fd;
-    int                  json_fd;
     struct sockaddr_in   nmea_dest;
     struct sockaddr_in   hirate_dest;
-    struct sockaddr_in   json_dest;
 
     /* AF_UNIX subscription stream — listen fd plus connected subscribers.
      * Only stream_out_thread touches clients[]/nclients after startup. */
@@ -103,7 +101,6 @@ struct out_ctx {
     /* Send-error counts (stats only; best-effort, no lock). */
     uint64_t             nmea_errors;
     uint64_t             hirate_errors;
-    uint64_t             json_errors;
 
     volatile int         stop;
 };
@@ -283,99 +280,6 @@ void *hirate_out_thread(void *arg)
     return NULL;
 }
 
-/* ── json_out_thread ─────────────────────────────────────────────────────── */
-
-/*
- * Emits one NDJSON object per datagram at the configured rate.
- * Format: compact single-line JSON, newline-terminated.
- * All angles in degrees; quaternion [w, x, y, z]; timestamps as UNIX seconds.
- */
-void *json_out_thread(void *arg)
-{
-    out_ctx_t    *ctx = arg;
-    fused_state_t state;
-    char          buf[512];
-
-    long period_ns = (ctx->cfg->json_rate_hz > 0)
-        ? 1000000000L / ctx->cfg->json_rate_hz
-        : 10000000L;   /* 100 Hz fallback if misconfigured */
-
-    struct timespec next;
-    clock_gettime(CLOCK_MONOTONIC, &next);
-    next.tv_nsec = (next.tv_nsec / period_ns + 1) * period_ns;
-    while (next.tv_nsec >= 1000000000L) {
-        next.tv_sec++;
-        next.tv_nsec -= 1000000000L;
-    }
-
-    while (!ctx->stop) {
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
-        /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
-        period_ns = (ctx->cfg->json_rate_hz > 0)
-            ? 1000000000L / ctx->cfg->json_rate_hz
-            : 10000000L;
-        ts_add_ns(&next, period_ns);
-
-        if (!imu_ctx_is_settled(ctx->imu)) continue;
-
-        imu_get_state(ctx->imu, &state, NULL, NULL, NULL);
-
-        double ts_s      = (double)state.ts_wall_ns * 1e-9;
-        float  pitch_deg = state.pitch * (float)(180.0 / M_PI);
-        float  roll_deg  = state.roll  * (float)(180.0 / M_PI);
-        float  cov_trace = state.cov[0] + state.cov[4] + state.cov[8];
-
-        int n = snprintf(buf, sizeof(buf),
-            "{"
-            "\"ts\":%.6f,"
-            "\"heading_deg\":%.2f,"
-            "\"pitch_deg\":%.3f,"
-            "\"roll_deg\":%.3f,"
-            "\"rot_dpm\":%.2f,"
-            "\"heave_m\":%.2f,"
-            "\"quat\":[%.6f,%.6f,%.6f,%.6f],"
-            "\"gyro_bias\":[%.6f,%.6f,%.6f],"
-            "\"cov_trace\":%.4e,"
-            "\"flags\":%u",
-            ts_s,
-            state.heading_deg, pitch_deg, roll_deg, state.rate_of_turn,
-            state.heave_m,
-            state.q[0], state.q[1], state.q[2], state.q[3],
-            state.bias_gyro[0], state.bias_gyro[1], state.bias_gyro[2],
-            cov_trace,
-            (unsigned)state.flags);
-
-        if (n <= 0 || n >= (int)sizeof(buf)) continue;
-
-        /* Append optional true heading fields when declination is known. */
-        if (state.flags & FLAG_DECLINATION_VALID) {
-            float true_hdg = fmodf(state.heading_deg + state.declination_deg + 360.0f,
-                                   360.0f);
-            int m = snprintf(buf + n, sizeof(buf) - (size_t)n,
-                ",\"declination_deg\":%.2f,\"true_heading_deg\":%.2f",
-                state.declination_deg, true_hdg);
-            if (m > 0 && n + m < (int)sizeof(buf))
-                n += m;
-        }
-
-        /* Close JSON object. */
-        if (n + 3 >= (int)sizeof(buf)) continue;
-        buf[n++] = '}';
-        buf[n++] = '\n';
-        buf[n]   = '\0';
-
-        ssize_t sent = sendto(ctx->json_fd, buf, (size_t)n, 0,
-                              (struct sockaddr *)&ctx->json_dest,
-                              sizeof(ctx->json_dest));
-        if (sent < 0) {
-            ctx->json_errors++;
-            LOG_W("[json_out] sendto: %s\n", strerror(errno));
-        }
-    }
-
-    return NULL;
-}
-
 /* ── stream_out_thread ───────────────────────────────────────────────────── */
 
 /*
@@ -523,7 +427,6 @@ int out_ctx_open(out_ctx_t **ctx_out,
     ctx->imu  = imu;
     ctx->nmea_fd   = -1;
     ctx->hirate_fd = -1;
-    ctx->json_fd   = -1;
     ctx->stream_fd = -1;
 
     if (cfg->nmea_enabled) {
@@ -547,14 +450,6 @@ int out_ctx_open(out_ctx_t **ctx_out,
                     ? "multicast TTL=1" : "broadcast/unicast");
     }
 
-    if (cfg->json_enabled) {
-        ctx->json_fd = open_udp_out(cfg->json_dest_addr, cfg->json_dest_port,
-                                    &ctx->json_dest);
-        if (ctx->json_fd < 0) goto fail;
-        LOG_I("[output] JSON UDP → %s:%d (%d Hz)\n",
-                cfg->json_dest_addr, cfg->json_dest_port, cfg->json_rate_hz);
-    }
-
     if (cfg->stream_enabled) {
         ctx->stream_fd = open_stream_listener(cfg->stream_socket);
         if (ctx->stream_fd < 0) goto fail;
@@ -568,7 +463,6 @@ int out_ctx_open(out_ctx_t **ctx_out,
 fail:
     if (ctx->nmea_fd   >= 0) close(ctx->nmea_fd);
     if (ctx->hirate_fd >= 0) close(ctx->hirate_fd);
-    if (ctx->json_fd   >= 0) close(ctx->json_fd);
     if (ctx->stream_fd >= 0) { close(ctx->stream_fd); unlink(cfg->stream_socket); }
     free(ctx);
     return -1;
@@ -610,7 +504,6 @@ void out_ctx_free(out_ctx_t *ctx)
     if (!ctx) return;
     if (ctx->nmea_fd   >= 0) close(ctx->nmea_fd);
     if (ctx->hirate_fd >= 0) close(ctx->hirate_fd);
-    if (ctx->json_fd   >= 0) close(ctx->json_fd);
     if (ctx->stream_fd >= 0) {
         close(ctx->stream_fd);
         unlink(ctx->cfg->stream_socket);
