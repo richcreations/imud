@@ -49,7 +49,7 @@ CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
 .PHONY: all clean test install uninstall
 
-all: imud imud-cal imud-status imud-mon
+all: imud imud-cal imud-status imud-mon imud-signalk
 
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,11 @@ imud-status: src/status_main.o
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
 imud-mon: src/config.o src/log.o src/mon_main.o
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.
+# Reuses the public client header (lib/imud_client.h) for packet validation.
+imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
@@ -127,8 +132,13 @@ test_stream: src/output.c src/nmea.c src/packet.c src/config.c src/log.c test/te
 test_log: src/log.c test/test_log.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# Signal K delta encoder (pure function; reuses lib/imud_client.h for the struct)
+test_signalk: src/sk_delta.c test/test_signalk.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
-      test_cal test_cal_math test_wmm test_position test_client test_stream test_log
+      test_cal test_cal_math test_wmm test_position test_client test_stream \
+      test_log test_signalk
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -142,6 +152,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_client
 	./test_stream
 	./test_log
+	./test_signalk
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -150,8 +161,8 @@ ETCDIR  ?= /etc/imud
 SVCDIR  ?= /etc/systemd/system
 MANDIR  ?= $(PREFIX)/share/man
 
-install: imud imud-cal imud-status imud-mon
-	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
+install: imud imud-cal imud-status imud-mon imud-signalk
+	install -m 755 imud imud-cal imud-status imud-mon imud-signalk $(DESTDIR)$(PREFIX)/bin/
 	# ── System user ────────────────────────────────────────────────────────
 	@if ! id -u imud >/dev/null 2>&1; then \
 	    useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
@@ -181,8 +192,9 @@ install: imud imud-cal imud-status imud-mon
 	else \
 	    echo "WMM.COF already present — skipping (preserving operator-installed model)"; \
 	fi
-	# ── Systemd service ────────────────────────────────────────────────────
-	install -m 644 etc/imud.service $(DESTDIR)$(SVCDIR)/imud.service
+	# ── Systemd services ───────────────────────────────────────────────────
+	install -m 644 etc/imud.service         $(DESTDIR)$(SVCDIR)/imud.service
+	install -m 644 etc/imud-signalk.service $(DESTDIR)$(SVCDIR)/imud-signalk.service
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -200,6 +212,7 @@ install: imud imud-cal imud-status imud-mon
 	gzip -9c man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
 	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
 	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
+	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
 	@echo ""
 	@echo "Next steps:"
@@ -209,19 +222,23 @@ install: imud imud-cal imud-status imud-mon
 uninstall:
 	@if command -v systemctl >/dev/null 2>&1; then \
 	    systemctl disable --now imud 2>/dev/null || true; \
+	    systemctl disable --now imud-signalk 2>/dev/null || true; \
 	fi
 	rm -f $(DESTDIR)$(PREFIX)/bin/imud \
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mon \
+	      $(DESTDIR)$(PREFIX)/bin/imud-signalk \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
+	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
+	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -231,6 +248,7 @@ uninstall:
 
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
-	      imud imud-cal imud-status imud-mon \
+	      imud imud-cal imud-status imud-mon imud-signalk \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
-	      test_cal test_cal_math test_wmm test_position test_client test_stream test_log
+	      test_cal test_cal_math test_wmm test_position test_client test_stream \
+	      test_log test_signalk

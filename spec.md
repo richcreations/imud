@@ -1054,6 +1054,15 @@ IMU samples:    1234567  overflows: 0
 Uptime:         00:04:32
 ```
 
+### imud-signalk
+
+A separate bridge daemon that consumes the AF_UNIX stream (Output Stream C)
+and emits Signal K delta JSON over UDP for every value with a standard Signal
+K path — `navigation.headingMagnetic`/`headingTrue`/`magneticVariation`/
+`rateOfTurn`, `navigation.attitude`, and `environment.heave` — in SI units at
+10 Hz (default). It is not part of the wire protocol; see the manual and
+`imud-signalk(8)`. Configured by `[imud-signalk]` in imud.conf.
+
 -----
 
 ## 13. Error Handling
