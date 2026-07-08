@@ -5,7 +5,6 @@ imud\-mon \- live monitor for imud output streams
 .B imud-mon
 [\fB\-\-config\fR \fIPATH\fR]
 [\fBnmea\fR]
-[\fBjson\fR]
 [\fBbinary\fR]
 .SH DESCRIPTION
 .B imud-mon
@@ -14,7 +13,7 @@ listens on the UDP ports configured for
 and prints a live, updating display of the received data.
 The display refreshes once per second.
 .PP
-By default all three streams are monitored simultaneously.
+By default both streams are monitored simultaneously.
 Pass one or more stream names as arguments to restrict to those streams.
 .PP
 Each stream section shows:
@@ -27,12 +26,6 @@ Heading, pitch, roll, and rate of turn parsed from
 true heading from
 .B $HCHDT
 (when available), and the last received sentence.
-.TP
-.B JSON
-Heading, pitch, roll, rate of turn, quaternion, gyro bias, covariance,
-and true heading (when
-.B true_heading_deg
-is present in the datagram).
 .TP
 .B Binary
 All fields from the high-rate binary packet: heading, pitch, roll,
@@ -64,13 +57,10 @@ Defaults to
 .B nmea
 Monitor only the NMEA stream.
 .TP
-.B json
-Monitor only the NDJSON stream.
-.TP
 .B binary
 Monitor only the high-rate binary stream.
 .SH EXAMPLES
-Monitor all streams:
+Monitor both streams:
 .PP
 .RS 4
 .EX
@@ -78,11 +68,11 @@ imud-mon
 .EE
 .RE
 .PP
-Monitor NMEA and JSON only:
+Monitor NMEA only:
 .PP
 .RS 4
 .EX
-imud-mon nmea json
+imud-mon nmea
 .EE
 .RE
 .PP

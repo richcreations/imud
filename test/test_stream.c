@@ -110,7 +110,6 @@ int main(void)
     config_defaults(&cfg);
     cfg.nmea_enabled     = false;
     cfg.highrate_enabled = false;
-    cfg.json_enabled     = false;
     cfg.stream_enabled   = true;
     cfg.stream_rate_hz   = 200;   /* fast so the test finishes quickly */
     snprintf(cfg.stream_socket, sizeof cfg.stream_socket, TEST_SOCK);

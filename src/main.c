@@ -18,7 +18,7 @@
  *    8. Open AF_UNIX status socket for imud-status
  *    9. Write /run/imud.pid; sd_notify("READY=1")
  *   10. Start threads: ism_reader, mag_reader, fusion, health,
- *       nmea_out (if enabled), hirate_out (if enabled), json_out (if enabled),
+ *       nmea_out (if enabled), hirate_out (if enabled), stream_out (if enabled),
  *       position (if gpsd or signalk enabled)
  *   11. Wait for SIGTERM / SIGINT; hot-reload on SIGHUP
  *   12. Shutdown: send final packet, stop output threads, stop sensor threads
@@ -85,7 +85,6 @@ typedef struct {
     int  skip_bias_cal;
     int  no_nmea;
     int  no_hirate;
-    int  no_json;
     int  version;
 } cli_args_t;
 
@@ -97,7 +96,6 @@ static void usage(const char *prog)
         "  --skip-bias-cal    Skip startup gyro bias estimation\n"
         "  --no-nmea          Disable NMEA output stream\n"
         "  --no-highrate      Disable high-rate binary stream\n"
-        "  --no-json          Disable JSON output stream\n"
         "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
         "  --version          Print version and exit\n",
         prog);
@@ -117,8 +115,6 @@ static int parse_args(int argc, char **argv, cli_args_t *a)
             a->no_nmea = 1;
         } else if (strcmp(argv[i], "--no-highrate") == 0) {
             a->no_hirate = 1;
-        } else if (strcmp(argv[i], "--no-json") == 0) {
-            a->no_json = 1;
         } else if (strcmp(argv[i], "--version") == 0) {
             a->version = 1;
         } else if (strcmp(argv[i], "--foreground") == 0) {
@@ -329,13 +325,6 @@ static void write_status_response(int fd,
         WS("Hi-rate out:    disabled\n");
     }
 
-    if (cfg->json_enabled) {
-        WS("JSON out:       %d Hz  (port %d)\n",
-            cfg->json_rate_hz, cfg->json_dest_port);
-    } else {
-        WS("JSON out:       disabled\n");
-    }
-
     WS("IMU samples:    %llu  overflows: %llu\n",
         (unsigned long long)st.imu_samples,
         (unsigned long long)st.fifo_overflows);
@@ -542,7 +531,6 @@ int main(int argc, char **argv)
     /* Apply CLI overrides */
     if (args.no_nmea)        cfg.nmea_enabled     = false;
     if (args.no_hirate)      cfg.highrate_enabled = false;
-    if (args.no_json)        cfg.json_enabled     = false;
     if (args.skip_bias_cal)  cfg.gyro_bias_sec    = 0.0;
 
     apply_wmm_if_configured(&cfg);
@@ -620,9 +608,8 @@ int main(int argc, char **argv)
 
     /* Reader threads first — must be running before fusion blocks on ring. */
     pthread_t ism_tid, mag_tid, fusion_tid, health_tid;
-    pthread_t nmea_tid = 0, hirate_tid = 0, json_tid = 0, stream_tid = 0,
-              pos_tid = 0;
-    bool nmea_started = false, hirate_started = false, json_started = false;
+    pthread_t nmea_tid = 0, hirate_tid = 0, stream_tid = 0, pos_tid = 0;
+    bool nmea_started = false, hirate_started = false;
     bool stream_started = false, pos_started = false;
 
     if (pthread_create(&ism_tid, NULL, ism_reader_thread, imu) != 0) {
@@ -678,14 +665,6 @@ int main(int argc, char **argv)
             hirate_started = true;
         }
     }
-    if (cfg.json_enabled) {
-        if (pthread_create(&json_tid, NULL, json_out_thread, out) != 0) {
-            LOG_W("[main] warning: cannot create json_out thread: %s\n", strerror(errno));
-            cfg.json_enabled = false;
-        } else {
-            json_started = true;
-        }
-    }
     if (cfg.stream_enabled) {
         if (pthread_create(&stream_tid, NULL, stream_out_thread, out) != 0) {
             LOG_W("[main] warning: cannot create stream_out thread: %s\n", strerror(errno));
@@ -731,7 +710,6 @@ int main(int argc, char **argv)
                 /* Apply hot-reloadable fields atomically (single assignment). */
                 cfg.nmea_rate_hz        = new_cfg.nmea_rate_hz;
                 cfg.highrate_rate_hz    = new_cfg.highrate_rate_hz;
-                cfg.json_rate_hz        = new_cfg.json_rate_hz;
                 cfg.stream_rate_hz      = new_cfg.stream_rate_hz;
                 cfg.log_stats_hz        = new_cfg.log_stats_hz;
                 /* Log level is hot; the log file is reopened so logrotate
@@ -785,7 +763,6 @@ int main(int argc, char **argv)
     out_ctx_stop(out);
     if (nmea_started)   join_thread(nmea_tid,   "nmea_out");
     if (hirate_started) join_thread(hirate_tid, "hirate_out");
-    if (json_started)   join_thread(json_tid,   "json_out");
     if (stream_started) join_thread(stream_tid, "stream_out");
 
     /* Stop sensor and fusion threads. */

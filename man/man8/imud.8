@@ -7,26 +7,25 @@ imud \- IMU daemon for marine and robotics navigation
 [\fB\-\-skip\-bias\-cal\fR]
 [\fB\-\-no\-nmea\fR]
 [\fB\-\-no\-highrate\fR]
-[\fB\-\-no\-json\fR]
 [\fB\-\-foreground\fR]
 [\fB\-\-version\fR]
 .SH DESCRIPTION
 .B imud
 reads from an IMU (gyroscope + accelerometer) and a magnetometer over I2C,
 fuses the sensor data with a Multiplicative Extended Kalman Filter (MEKF),
-and publishes attitude estimates over UDP in three optional formats:
+and publishes attitude estimates in several optional formats:
 .PP
 .RS 4
-\(bu\ \ NMEA 0183 sentences (port 10110) for chartplotters and autopilots
+\(bu\ \ NMEA 0183 sentences (UDP port 10110) for chartplotters and autopilots
 .br
-\(bu\ \ High-rate binary packets (port 10111) for machine-vision and ROS2
+\(bu\ \ High-rate binary packets (UDP port 10111) for machine-vision and ROS2
 .br
-\(bu\ \ NDJSON datagrams (port 10112) for dashboards and scripted consumers
+\(bu\ \ The same binary packets over a local AF_UNIX subscription socket
 .RE
 .PP
 When magnetic declination is configured (via
 .IR imud.conf (5)),
-imud also emits true (geographic) heading in all three streams.
+imud also emits true (geographic) heading in NMEA and the binary packet.
 .PP
 imud is normally run as a systemd service.
 Use
@@ -52,9 +51,6 @@ Disable the NMEA output stream regardless of the config file setting.
 .TP
 .B \-\-no\-highrate
 Disable the high-rate binary output stream regardless of the config file setting.
-.TP
-.B \-\-no\-json
-Disable the NDJSON output stream regardless of the config file setting.
 .TP
 .B \-\-foreground
 (Accepted but currently a no-op; imud does not daemonize.)

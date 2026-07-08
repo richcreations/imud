@@ -7,14 +7,14 @@
 /*
  * mon_main.c — imud-mon: live display of imud UDP output streams
  *
- * Connects to the NMEA, JSON, and/or binary UDP streams exactly as any
- * other consumer would.  Prints a one-line summary per stream once per second.
+ * Connects to the NMEA and/or binary UDP streams exactly as any other
+ * consumer would.  Prints a one-line summary per stream once per second.
  *
- * All three streams show the first packet received in each 1-second window,
- * so NMEA, JSON, and binary headings will agree at normal yaw rates.
+ * Both streams show the first packet received in each 1-second window, so
+ * NMEA and binary headings will agree at normal yaw rates.
  *
- * Usage: imud-mon [--config PATH] [nmea] [json] [binary]
- *   With no stream arguments all three streams are shown.
+ * Usage: imud-mon [--config PATH] [nmea] [binary]
+ *   With no stream arguments both streams are shown.
  */
 
 #include <stdio.h>
@@ -107,7 +107,6 @@ static uint32_t crc32_ieee(const uint8_t *data, size_t len)
 /* ── Snapshot state ──────────────────────────────────────────────────────── */
 
 #define NMEA_MAX 512
-#define JSON_MAX 512
 
 typedef struct {
     /* NMEA — most recent burst, parsed fields */
@@ -116,13 +115,6 @@ typedef struct {
     float nmea_true_hdg;
     bool  have_nmea;
     bool  nmea_has_true_hdg;
-
-    /* JSON — most recent datagram, parsed fields */
-    char  json_raw[JSON_MAX];
-    float json_hdg, json_pitch, json_roll, json_rot;
-    float json_true_hdg;
-    bool  have_json;
-    bool  json_has_true_hdg;
 
     /* Binary — most recent valid packet */
     imu_packet_t bin_pkt;
@@ -188,42 +180,6 @@ static void parse_nmea(mon_state_t *st, const char *buf, size_t len)
     }
 }
 
-/* ── JSON helpers ────────────────────────────────────────────────────────── */
-
-/* Extract a float from a JSON field like "key":value */
-static bool json_get(const char *json, const char *key, float *out)
-{
-    char needle[64];
-    snprintf(needle, sizeof needle, "\"%s\":", key);
-    const char *p = strstr(json, needle);
-    if (!p) return false;
-    p += strlen(needle);
-    while (*p == ' ') p++;
-    if (!*p) return false;
-    *out = strtof(p, NULL);
-    return true;
-}
-
-static void parse_json(mon_state_t *st, const char *buf, size_t len)
-{
-    if (len >= JSON_MAX) len = JSON_MAX - 1;
-    memcpy(st->json_raw, buf, len);
-    st->json_raw[len] = '\0';
-    st->have_json = true;
-    st->json_has_true_hdg = false;   /* cleared each datagram; set below if present */
-
-    json_get(st->json_raw, "heading_deg", &st->json_hdg);
-    json_get(st->json_raw, "pitch_deg",   &st->json_pitch);
-    json_get(st->json_raw, "roll_deg",    &st->json_roll);
-    json_get(st->json_raw, "rot_dpm",     &st->json_rot);
-
-    float tmp;
-    if (json_get(st->json_raw, "true_heading_deg", &tmp)) {
-        st->json_true_hdg    = tmp;
-        st->json_has_true_hdg = true;
-    }
-}
-
 /* ── Display ─────────────────────────────────────────────────────────────── */
 
 static void flag_str(uint16_t flags, char *buf, size_t sz)
@@ -244,7 +200,7 @@ static void flag_str(uint16_t flags, char *buf, size_t sz)
 }
 
 static void print_snapshot(const mon_state_t *st,
-                            bool want_nmea, bool want_json, bool want_binary)
+                            bool want_nmea, bool want_binary)
 {
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
@@ -261,18 +217,6 @@ static void print_snapshot(const mon_state_t *st,
                 printf("        true_hdg=%6.1f°  ($HCHDT)\n", st->nmea_true_hdg);
         } else {
             printf("NMEA    (no data)\n");
-        }
-    }
-
-    if (want_json) {
-        if (st->have_json) {
-            printf("JSON    hdg=%6.1f°  pitch=%+6.1f°  roll=%+6.1f°"
-                   "  rot=%+7.1f dpm\n",
-                   st->json_hdg, st->json_pitch, st->json_roll, st->json_rot);
-            if (st->json_has_true_hdg)
-                printf("        true_hdg=%6.1f°\n", st->json_true_hdg);
-        } else {
-            printf("JSON    (no data)\n");
         }
     }
 
@@ -318,15 +262,14 @@ static void print_snapshot(const mon_state_t *st,
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "Usage: %s [--config PATH] [nmea] [json] [binary]\n"
+        "Usage: %s [--config PATH] [nmea] [binary]\n"
         "\n"
         "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
         "\n"
         "  nmea    Monitor NMEA 0183 stream (UDP port 10110)\n"
-        "  json    Monitor NDJSON stream    (UDP port 10112)\n"
         "  binary  Monitor binary stream    (UDP port 10111)\n"
         "\n"
-        "  With no stream arguments all three streams are shown.\n"
+        "  With no stream arguments both streams are shown.\n"
         "  Port numbers and multicast addresses are read from the config file.\n",
         prog);
 }
@@ -336,7 +279,7 @@ int main(int argc, char **argv)
     char config_path[256];
     snprintf(config_path, sizeof config_path, "/etc/imud/imud.conf");
 
-    bool want_nmea = false, want_json = false, want_binary = false;
+    bool want_nmea = false, want_binary = false;
     bool any_stream = false;
 
     for (int i = 1; i < argc; i++) {
@@ -344,8 +287,6 @@ int main(int argc, char **argv)
             snprintf(config_path, sizeof config_path, "%s", argv[++i]);
         } else if (strcmp(argv[i], "nmea") == 0) {
             want_nmea   = true; any_stream = true;
-        } else if (strcmp(argv[i], "json") == 0) {
-            want_json   = true; any_stream = true;
         } else if (strcmp(argv[i], "binary") == 0) {
             want_binary = true; any_stream = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -357,7 +298,7 @@ int main(int argc, char **argv)
     }
 
     if (!any_stream)
-        want_nmea = want_json = want_binary = true;
+        want_nmea = want_binary = true;
 
     /* Load config — ignore failure, defaults have the right port numbers */
     imud_config_t cfg;
@@ -365,19 +306,13 @@ int main(int argc, char **argv)
     config_load(config_path, &cfg);
 
     /* Open receive sockets */
-    int nmea_fd = -1, json_fd = -1, bin_fd = -1;
+    int nmea_fd = -1, bin_fd = -1;
 
     if (want_nmea) {
         nmea_fd = open_recv_sock(cfg.nmea_dest_port, cfg.nmea_dest_addr);
         if (nmea_fd < 0)
             fprintf(stderr, "mon: NMEA socket (port %d): %s\n",
                     cfg.nmea_dest_port, strerror(errno));
-    }
-    if (want_json) {
-        json_fd = open_recv_sock(cfg.json_dest_port, cfg.json_dest_addr);
-        if (json_fd < 0)
-            fprintf(stderr, "mon: JSON socket (port %d): %s\n",
-                    cfg.json_dest_port, strerror(errno));
     }
     if (want_binary) {
         bin_fd = open_recv_sock(cfg.highrate_dest_port, cfg.highrate_dest_addr);
@@ -387,7 +322,7 @@ int main(int argc, char **argv)
     }
 
     /* At least one socket must be open */
-    if (nmea_fd < 0 && json_fd < 0 && bin_fd < 0) {
+    if (nmea_fd < 0 && bin_fd < 0) {
         fprintf(stderr, "mon: no streams available — exiting\n");
         return 1;
     }
@@ -398,7 +333,6 @@ int main(int argc, char **argv)
     /* Print header */
     printf("imud-mon — listening on:");
     if (nmea_fd   >= 0) printf("  NMEA:%d",   cfg.nmea_dest_port);
-    if (json_fd   >= 0) printf("  JSON:%d",   cfg.json_dest_port);
     if (bin_fd    >= 0) printf("  Binary:%d", cfg.highrate_dest_port);
     printf("  (Ctrl-C to stop)\n\n");
 
@@ -418,7 +352,6 @@ int main(int argc, char **argv)
         FD_ZERO(&rfds);
         int maxfd = -1;
         if (nmea_fd >= 0) { FD_SET(nmea_fd, &rfds); if (nmea_fd > maxfd) maxfd = nmea_fd; }
-        if (json_fd >= 0) { FD_SET(json_fd, &rfds); if (json_fd > maxfd) maxfd = json_fd; }
         if (bin_fd  >= 0) { FD_SET(bin_fd,  &rfds); if (bin_fd  > maxfd) maxfd = bin_fd;  }
 
         /* ── Compute timeout to next 1-second tick ────────────────────── */
@@ -447,10 +380,6 @@ int main(int argc, char **argv)
             while ((n = recv(nmea_fd, dgram, sizeof dgram - 1, MSG_DONTWAIT)) > 0)
                 parse_nmea(&st, dgram, (size_t)n);
         }
-        if (json_fd >= 0 && FD_ISSET(json_fd, &rfds)) {
-            while ((n = recv(json_fd, dgram, sizeof dgram - 1, MSG_DONTWAIT)) > 0)
-                parse_json(&st, dgram, (size_t)n);
-        }
         if (bin_fd >= 0 && FD_ISSET(bin_fd, &rfds)) {
             while ((n = recv(bin_fd, dgram, sizeof dgram, MSG_DONTWAIT)) > 0) {
                 if (!st.have_binary && (size_t)n == sizeof(imu_packet_t)) {
@@ -468,17 +397,15 @@ int main(int argc, char **argv)
         clock_gettime(CLOCK_MONOTONIC, &now);
         if (now.tv_sec > next.tv_sec ||
             (now.tv_sec == next.tv_sec && now.tv_nsec >= next.tv_nsec)) {
-            print_snapshot(&st, want_nmea, want_json, want_binary);
+            print_snapshot(&st, want_nmea, want_binary);
             /* Clear flags: if nothing arrives next second we show "no data" */
             st.have_nmea   = false;
-            st.have_json   = false;
             st.have_binary = false;
             next.tv_sec++;
         }
     }
 
     if (nmea_fd >= 0) close(nmea_fd);
-    if (json_fd >= 0) close(json_fd);
     if (bin_fd  >= 0) close(bin_fd);
 
     printf("\nimud-mon: stopped\n");
