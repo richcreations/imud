@@ -109,7 +109,7 @@ in-situ `imud-cal mag`. See the
 | `imud-cal` | Gyro, accelerometer, and magnetometer calibration. |
 | `imud-status` | Query a running daemon's health. |
 | `imud-mon` | Live monitor of the output streams from any host on the network. |
-| `imud-signalk` | Bridge daemon: pushes Signal K deltas over UDP from the local stream socket. |
+| `imud-signalk` | Bridge daemon (optional install): pushes Signal K deltas over UDP from the local stream socket. |
 
 ## Documentation
 
@@ -121,5 +121,6 @@ in-situ `imud-cal mag`. See the
 - **[Client libraries](lib/README.md)** — C and Python libraries for the
   binary stream.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
-  `imud-mon(1)` (installed by `make install`).
+  `imud-mon(1)` (installed by `make install`); `imud-signalk(8)` by
+  `make install-signalk`.
 - **[ROADMAP](docs/ROADMAP.md)** — deferred and future work.

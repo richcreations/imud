@@ -18,6 +18,11 @@ jobs:
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
 
+      # Bridges are out of `all` (own deps/config/service, per-bridge packaging).
+      # Build them here so they don't bit-rot; imud-signalk is pure C (no new deps).
+      - name: Build bridges
+        run: make bridges
+
       # make test builds and runs all host-side test binaries; it must run
       # from the repo root (test_wmm loads data/WMM.COF by relative path).
       - name: Test

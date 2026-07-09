@@ -76,14 +76,21 @@ typedef struct {
     char  stream_socket[108];     /* [restart] listen path; sized to sun_path */
     int   stream_rate_hz;         /* [hot] per-subscriber packet rate */
 
-    /* [imud-signalk]  Signal K bridge daemon (reads the [stream] socket, emits
-     * Signal K delta JSON over UDP). Consumed only by the imud-signalk binary;
-     * unrelated to the pos_signalk_* input keys in [position]. */
+    /* [imud-signalk]  Signal K bridge daemon — reads its own
+     * /etc/imud/imud-signalk.conf (the [imud-signalk] section, plus the shared
+     * `socket` and `publish_heave` keys below), connects to the stream socket,
+     * and emits Signal K delta JSON over UDP. Consumed only by the imud-signalk
+     * binary; unrelated to the pos_signalk_* input keys in [position]. */
     bool  sk_enabled;             /* [restart] */
     char  sk_dest_addr[64];       /* [hot] Signal K server host */
     int   sk_dest_port;           /* [hot] SK server UDP input port */
     int   sk_rate_hz;             /* [hot] delta emit rate */
     char  sk_source_label[32];    /* [hot] Signal K delta source.label */
+
+    /* Bridge-shared keys — the imud-signalk / imud-mqtt daemons read these from
+     * their own config file (so they never read imud.conf). The `socket` key
+     * reuses stream_socket above; default is the well-known stream path. */
+    bool  publish_heave;          /* [hot] emit heave (env.heave / imud/environment/heave) */
 
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
