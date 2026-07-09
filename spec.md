@@ -1082,6 +1082,15 @@ nanosecond-timestamped — over UDP (default) or HTTP. Pure C, no dependencies; 
 part of the wire protocol. Configured by `[imud-influxdb]` in its own
 `/etc/imud/imud-influxdb.conf`. See the manual and `imud-influxdb(8)`.
 
+### imud-mavlink
+
+A separate optional bridge daemon that consumes the AF_UNIX stream (Output
+Stream C) and emits MAVLink (protocol v1 or v2) — HEARTBEAT at 1 Hz plus
+ATTITUDE (#30) / ATTITUDE_QUATERNION (#31) — over UDP and/or serial, for
+ArduPilot/PX4/GCS consumers. Pure C (hand-rolled encoder), not part of imud's
+own wire protocol. Configured by `[imud-mavlink]` in its own
+`/etc/imud/imud-mavlink.conf`. See the manual and `imud-mavlink(8)`.
+
 -----
 
 ## 13. Error Handling

@@ -10,6 +10,7 @@ imud-mon
 imud-signalk
 imud-mqtt
 imud-influxdb
+imud-mavlink
 
 # Test binaries
 test_fusion
@@ -28,6 +29,7 @@ test_log
 test_signalk
 test_mqtt
 test_influxdb
+test_mavlink
 
 # Editor and OS
 .DS_Store

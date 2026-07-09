@@ -134,6 +134,26 @@ typedef struct {
     char  influx_http_path[192];   /* [restart] write path incl. query (db / org+bucket / precision) */
     char  influx_http_token[128];  /* [restart] InfluxDB 2.x API token ("" = none) */
 
+    /* [imud-mavlink]  MAVLink bridge daemon — reads its own
+     * /etc/imud/imud-mavlink.conf, connects to the stream socket, and emits
+     * MAVLink (v1 or v2) HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or
+     * serial. Pure C, no external deps. Consumed only by the imud-mavlink binary. */
+    bool  mav_enabled;             /* [restart] */
+    int   mav_version;             /* [hot] MAVLink protocol version: 1 or 2 */
+    int   mav_system_id;           /* [restart] MAVLink system id */
+    int   mav_component_id;        /* [restart] MAVLink component id */
+    int   mav_rate_hz;             /* [hot] data-message rate (heartbeat is 1 Hz) */
+    bool  mav_send_attitude;       /* [hot] emit ATTITUDE (#30) */
+    bool  mav_send_attitude_quaternion; /* [hot] emit ATTITUDE_QUATERNION (#31) */
+    /* UDP transport */
+    bool  mav_udp_enabled;         /* [restart] */
+    char  mav_udp_addr[64];        /* [hot] destination host (e.g. a GCS) */
+    int   mav_udp_port;            /* [hot] destination UDP port (QGC default 14550) */
+    /* Serial transport */
+    bool  mav_serial_enabled;      /* [restart] */
+    char  mav_serial_device[64];   /* [restart] e.g. /dev/serial0 */
+    int   mav_serial_baud;         /* [restart] e.g. 57600 */
+
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
     char  log_file[256];

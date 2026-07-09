@@ -1,0 +1,75 @@
+.TH IMUD\-SIGNALK.CONF 5 "July 2026" "imud 1.1" "File Formats Manual"
+.SH NAME
+imud\-signalk.conf \- configuration file for imud-signalk(8)
+.SH SYNOPSIS
+.I /etc/imud/imud-signalk.conf
+.SH DESCRIPTION
+Configuration for the
+.BR imud-signalk (8)
+bridge daemon, which reads imud's binary stream socket and emits Signal K delta
+JSON over UDP.  The bridge reads
+.B only
+this file (never
+.IR imud.conf ).
+The file is one
+.B [imud-signalk]
+section of
+.IR key " = " value
+lines; strings are double-quoted and
+.RB \(oq # \(cq
+begins a comment.  Requires imud's
+.B [stream]
+output enabled.
+.PP
+Keys marked
+.B [hot]
+are reloaded on
+.BR SIGHUP ;
+keys marked
+.B [restart]
+take effect on the next service start.
+.SH KEYS
+.TP
+.B enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable the Signal K bridge.
+.TP
+.B socket
+.RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
+imud stream socket to read (match
+.I imud.conf
+if you changed it there).
+.TP
+.B dest_addr
+.RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
+Signal K server host (numeric IPv4).
+.TP
+.B dest_port
+.RI ( int ,\ default:\ 10113 )\ [hot]
+UDP port; must match the Signal K server's UDP input connection.
+.TP
+.B rate_hz
+.RI ( int ,\ default:\ 10 )\ [hot]
+Delta emit rate in Hz.
+.TP
+.B source_label
+.RI ( string ,\ default:\ \(dqimud\(dq )\ [hot]
+Signal K delta
+.B source.label
+value.
+.TP
+.B publish_heave
+.RI ( bool ,\ default:\ true )\ [hot]
+Emit
+.B environment.heave
+(set false if imud's heave estimator is off).
+.SH FILES
+.TP
+.I /etc/imud/imud-signalk.conf
+This file.
+.SH SEE ALSO
+.BR imud-signalk (8),
+.BR imud.conf (5),
+.BR imud (8)
+.SH AUTHORS
+Richard Simpson

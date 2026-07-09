@@ -70,34 +70,12 @@ parse, the running configuration is kept.
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
 .SH CONFIGURATION
-The bridge reads its own file (default
-.IR /etc/imud/imud-signalk.conf ),
-using only the
+Read from
+.I /etc/imud/imud-signalk.conf
+(the
 .B [imud-signalk]
-section:
-.TP
-.B enabled
-Start the bridge (also gate with the systemd unit).  [restart]
-.TP
-.B socket
-imud stream socket to read (default
-.IR /run/imud/imud-stream.sock ).  [restart]
-.TP
-.BR dest_addr ", " dest_port
-Signal K server host and UDP input port (default 127.0.0.1:10113).  [hot]
-.TP
-.B rate_hz
-Delta emit rate (default 10).  [hot]
-.TP
-.B source_label
-Signal K delta
-.B source.label
-(default "imud").  [hot]
-.TP
-.B publish_heave
-Emit
-.B environment.heave
-(default true; set false if imud's heave estimator is off).  [hot]
+section); the keys are documented in
+.BR imud-signalk.conf (5).
 .SH EXAMPLES
 Run in the foreground against a local config:
 .PP
@@ -124,6 +102,7 @@ sudo systemctl enable --now imud-signalk
 .I /etc/imud/imud-signalk.conf
 Default configuration file.
 .SH SEE ALSO
+.BR imud-signalk.conf (5),
 .BR imud (8),
 .BR imud.conf (5),
 .BR imud-mon (1),

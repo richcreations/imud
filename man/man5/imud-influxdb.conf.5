@@ -1,0 +1,113 @@
+.TH IMUD\-INFLUXDB.CONF 5 "July 2026" "imud 1.1" "File Formats Manual"
+.SH NAME
+imud\-influxdb.conf \- configuration file for imud-influxdb(8)
+.SH SYNOPSIS
+.I /etc/imud/imud-influxdb.conf
+.SH DESCRIPTION
+Configuration for the
+.BR imud-influxdb (8)
+bridge daemon, which reads imud's binary stream socket and writes InfluxDB
+line-protocol points over UDP or HTTP.  The bridge reads
+.B only
+this file (never
+.IR imud.conf ).
+The file is one
+.B [imud-influxdb]
+section of
+.IR key " = " value
+lines; strings are double-quoted and
+.RB \(oq # \(cq
+begins a comment.  Requires imud's
+.B [stream]
+output enabled.
+.PP
+Keys marked
+.B [hot]
+are reloaded on
+.BR SIGHUP ;
+keys marked
+.B [restart]
+take effect on the next service start.
+.SH KEYS
+.TP
+.B enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable the InfluxDB bridge.
+.TP
+.B socket
+.RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
+imud stream socket to read.
+.TP
+.B transport
+.RI ( string ,\ default:\ \(dqudp\(dq )\ [restart]
+.B udp
+or
+.BR http .
+.TP
+.B rate_hz
+.RI ( int ,\ default:\ 10 )\ [hot]
+Point emit rate in Hz.
+.TP
+.B measurement
+.RI ( string ,\ default:\ \(dqimud\(dq )\ [hot]
+Line-protocol measurement name.
+.TP
+.B source_label
+.RI ( string ,\ default:\ \(dqimud\(dq )\ [hot]
+Value of the
+.B source=
+tag.
+.TP
+.B units
+.RI ( string ,\ default:\ \(dqdeg\(dq )\ [hot]
+.B deg
+(degrees, \(de/min) or
+.B rad
+(SI: radians, rad/s).
+.TP
+.B publish_heave
+.RI ( bool ,\ default:\ true )\ [hot]
+Include the
+.B heave
+field.
+.TP
+.B udp_addr
+.RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
+UDP destination host (InfluxDB 1.x listener or Telegraf).
+.TP
+.B udp_port
+.RI ( int ,\ default:\ 8089 )\ [hot]
+UDP destination port.
+.TP
+.B http_host
+.RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [restart]
+HTTP host (when
+.B transport
+= http).
+.TP
+.B http_port
+.RI ( int ,\ default:\ 8086 )\ [restart]
+HTTP port.
+.TP
+.B http_path
+.RI ( string ,\ default:\ \(dq/write?db=imud&precision=ns\(dq )\ [restart]
+Write path: 1.x
+.IR /write?db=<db> ,
+or 2.x
+.IR /api/v2/write?org=<org>&bucket=<bucket> ,
+with
+.BR precision=ns .
+.TP
+.B http_token
+.RI ( string ,\ default:\ \(dq\(dq )\ [restart]
+InfluxDB 2.x API token (plaintext \(em protect the file).
+.SH FILES
+.TP
+.I /etc/imud/imud-influxdb.conf
+This file.
+.SH SEE ALSO
+.BR imud-influxdb (8),
+.BR imud.conf (5),
+.BR imud (8)
+.SH AUTHORS
+Richard Simpson

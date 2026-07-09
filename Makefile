@@ -47,7 +47,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges clean test install install-signalk install-mqtt install-influxdb uninstall
+.PHONY: all bridges clean test install install-signalk install-mqtt install-influxdb install-mavlink uninstall
 
 all: imud imud-cal imud-status imud-mon
 
@@ -83,10 +83,15 @@ imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/mqtt_main.o
 imud-influxdb: src/influx_line.o src/config.o src/log.o src/influx_main.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# imud-mavlink bridges the AF_UNIX stream to MAVLink (v1/v2) over UDP and/or
+# serial.  Pure C — hand-rolled encoder, no external dependencies.
+imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/mavlink_main.o
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 # Optional bridge daemons — each has its own config file, service, and man page,
 # and installs via its own `install-*` target (prep for per-bridge packaging).
 # Kept out of `all` so a core build / CI never needs a bridge's dependencies.
-bridges: imud-signalk imud-mqtt imud-influxdb
+bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
 
@@ -159,9 +164,13 @@ test_mqtt: src/mqtt_publish.c test/test_mqtt.c
 test_influxdb: src/influx_line.c test/test_influxdb.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# MAVLink encoder (pure function; golden frames from a pymavlink cross-check)
+test_mavlink: src/mavlink_encode.c test/test_mavlink.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
       test_cal test_cal_math test_wmm test_position test_client test_stream \
-      test_log test_signalk test_mqtt test_influxdb
+      test_log test_signalk test_mqtt test_influxdb test_mavlink
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -178,6 +187,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_signalk
 	./test_mqtt
 	./test_influxdb
+	./test_mavlink
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -256,7 +266,8 @@ install-signalk: imud-signalk
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man8
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man5/imud-signalk.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz
 	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -279,7 +290,8 @@ install-mqtt: imud-mqtt
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man8
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
 	gzip -9c man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -302,7 +314,8 @@ install-influxdb: imud-influxdb
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-influxdb.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man8
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
 	gzip -9c man/man8/imud-influxdb.8 > $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -310,12 +323,37 @@ install-influxdb: imud-influxdb
 	@echo "Installed imud-influxdb.  Enable with: sudo systemctl enable --now imud-influxdb"
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-influxdb.conf)"
 
+# ── Install the MAVLink bridge (optional) ──────────────────────────────────────
+# Run after `make imud-mavlink`.  Installs the binary, service, man page, and its
+# own config file (non-clobbering).
+install-mavlink: imud-mavlink
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -m 755 imud-mavlink $(DESTDIR)$(PREFIX)/bin/
+	install -m 644 etc/imud-mavlink.service $(DESTDIR)$(SVCDIR)/imud-mavlink.service
+	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-mavlink.conf" ]; then \
+	    install -m 644 config/imud-mavlink.conf $(DESTDIR)$(ETCDIR)/imud-mavlink.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
+	    echo "  NOTE: for serial output, grant the imud user serial access (e.g. dialout group)."; \
+	else \
+	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
+	fi
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man5/imud-mavlink.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
+	gzip -9c man/man8/imud-mavlink.8 > $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz
+	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+	    systemctl daemon-reload; \
+	fi
+	@echo "Installed imud-mavlink.  Enable with: sudo systemctl enable --now imud-mavlink"
+	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-mavlink.conf)"
+
 uninstall:
 	@if command -v systemctl >/dev/null 2>&1; then \
 	    systemctl disable --now imud 2>/dev/null || true; \
 	    systemctl disable --now imud-signalk 2>/dev/null || true; \
 	    systemctl disable --now imud-mqtt 2>/dev/null || true; \
 	    systemctl disable --now imud-influxdb 2>/dev/null || true; \
+	    systemctl disable --now imud-mavlink 2>/dev/null || true; \
 	fi
 	rm -f $(DESTDIR)$(PREFIX)/bin/imud \
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
@@ -324,12 +362,14 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-signalk \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mqtt \
 	      $(DESTDIR)$(PREFIX)/bin/imud-influxdb \
+	      $(DESTDIR)$(PREFIX)/bin/imud-mavlink \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
 	      $(DESTDIR)$(SVCDIR)/imud-influxdb.service \
+	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
@@ -337,7 +377,12 @@ uninstall:
 	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
+	      $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -347,7 +392,7 @@ uninstall:
 
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
-	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb \
+	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
-	      test_log test_signalk test_mqtt test_influxdb
+	      test_log test_signalk test_mqtt test_influxdb test_mavlink

@@ -364,18 +364,29 @@ Listen socket path (mode 0660).
 .B rate_hz
 .RI (int,\ default:\ 100)
 Per-subscriber packet rate in Hz.
-.SS [imud-signalk]
-The Signal K bridge is a separate, optional daemon configured by its own file,
-.IR /etc/imud/imud-signalk.conf ,
-and documented in
-.BR imud-signalk (8).
-It is no longer part of
+.SS Bridge daemons
+The optional bridge daemons \(em
+.BR imud-signalk (8),
+.BR imud-mqtt (8),
+.BR imud-influxdb (8),
+.BR imud-mavlink (8)
+\(em are each configured by their own file,
+.IR /etc/imud/imud-<name>.conf ,
+documented in
+.BR imud-signalk.conf (5),
+.BR imud-mqtt.conf (5),
+.BR imud-influxdb.conf (5),
+and
+.BR imud-mavlink.conf (5).
+They are not part of
 .IR imud.conf .
-Unrelated to the
+(The
 .B signalk_*
 keys under
 .B [position]
-(those are the input side — imud reading position from Signal K).
+are unrelated \(em imud reading position
+.I from
+Signal K.)
 .SS [mount]
 Board-to-body rotation.
 .B [restart]

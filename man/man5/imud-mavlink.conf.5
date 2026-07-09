@@ -1,0 +1,101 @@
+.TH IMUD\-MAVLINK.CONF 5 "July 2026" "imud 1.1" "File Formats Manual"
+.SH NAME
+imud\-mavlink.conf \- configuration file for imud-mavlink(8)
+.SH SYNOPSIS
+.I /etc/imud/imud-mavlink.conf
+.SH DESCRIPTION
+Configuration for the
+.BR imud-mavlink (8)
+bridge daemon, which reads imud's binary stream socket and emits MAVLink (v1 or
+v2) HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.  The bridge
+reads
+.B only
+this file (never
+.IR imud.conf ).
+The file is one
+.B [imud-mavlink]
+section of
+.IR key " = " value
+lines; strings are double-quoted and
+.RB \(oq # \(cq
+begins a comment.  Requires imud's
+.B [stream]
+output enabled.
+.PP
+Keys marked
+.B [hot]
+are reloaded on
+.BR SIGHUP ;
+keys marked
+.B [restart]
+take effect on the next service start.
+.SH KEYS
+.TP
+.B enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable the MAVLink bridge.
+.TP
+.B socket
+.RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
+imud stream socket to read.
+.TP
+.B version
+.RI ( int ,\ default:\ 2 )\ [hot]
+MAVLink protocol version: 1 or 2.
+.TP
+.B system_id
+.RI ( int ,\ default:\ 1 )\ [restart]
+MAVLink system id.
+.TP
+.B component_id
+.RI ( int ,\ default:\ 1 )\ [restart]
+MAVLink component id (raise, e.g. 191, when sharing a bus with a real autopilot).
+.TP
+.B rate_hz
+.RI ( int ,\ default:\ 10 )\ [hot]
+ATTITUDE / ATTITUDE_QUATERNION rate in Hz (HEARTBEAT is fixed at 1 Hz).
+.TP
+.B send_attitude
+.RI ( bool ,\ default:\ true )\ [hot]
+Emit ATTITUDE (#30).
+.TP
+.B send_attitude_quaternion
+.RI ( bool ,\ default:\ true )\ [hot]
+Emit ATTITUDE_QUATERNION (#31).
+.TP
+.B udp_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable UDP output.
+.TP
+.B udp_addr
+.RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
+UDP destination host (e.g. a ground station).
+.TP
+.B udp_port
+.RI ( int ,\ default:\ 14550 )\ [hot]
+UDP destination port (QGroundControl default).
+.TP
+.B serial_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable serial output.
+.TP
+.B serial_device
+.RI ( string ,\ default:\ \(dq/dev/serial0\(dq )\ [restart]
+Serial device (e.g.
+.IR /dev/serial0 ,
+.IR /dev/ttyAMA0 ,
+.IR /dev/ttyUSB0 ).
+.TP
+.B serial_baud
+.RI ( int ,\ default:\ 57600 )\ [restart]
+Serial baud rate (9600\(en921600).
+.SH FILES
+.TP
+.I /etc/imud/imud-mavlink.conf
+This file.
+.SH SEE ALSO
+.BR imud-mavlink (8),
+.BR imud.conf (5),
+.BR imud (8)
+.SH AUTHORS
+Richard Simpson

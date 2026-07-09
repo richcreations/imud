@@ -207,6 +207,21 @@ void config_defaults(imud_config_t *cfg)
              "/write?db=imud&precision=ns");
     cfg->influx_http_token[0] = '\0';
 
+    /* [imud-mavlink] */
+    cfg->mav_enabled     = false;
+    cfg->mav_version     = 2;
+    cfg->mav_system_id   = 1;
+    cfg->mav_component_id = 1;
+    cfg->mav_rate_hz     = 10;
+    cfg->mav_send_attitude = true;
+    cfg->mav_send_attitude_quaternion = true;
+    cfg->mav_udp_enabled = false;
+    snprintf(cfg->mav_udp_addr, sizeof(cfg->mav_udp_addr), "127.0.0.1");
+    cfg->mav_udp_port    = 14550;
+    cfg->mav_serial_enabled = false;
+    snprintf(cfg->mav_serial_device, sizeof(cfg->mav_serial_device), "/dev/serial0");
+    cfg->mav_serial_baud = 57600;
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
     cfg->pos_declination_valid = false;
@@ -276,6 +291,7 @@ typedef enum {
     SEC_SIGNALK,
     SEC_MQTT,
     SEC_INFLUX,
+    SEC_MAVLINK,
     SEC_LOGGING,
     SEC_POSITION
 } section_t;
@@ -294,6 +310,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[imud-signalk]")== 0) return SEC_SIGNALK;
     if (strcmp(s, "[imud-mqtt]")   == 0) return SEC_MQTT;
     if (strcmp(s, "[imud-influxdb]")== 0) return SEC_INFLUX;
+    if (strcmp(s, "[imud-mavlink]")== 0) return SEC_MAVLINK;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
     return SEC_UNKNOWN;
@@ -534,6 +551,24 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "http_port")     == 0) NEED_INT(cfg->influx_http_port);
         else if (strcmp(key, "http_path")     == 0) NEED_STR(cfg->influx_http_path);
         else if (strcmp(key, "http_token")    == 0) NEED_STR(cfg->influx_http_token);
+        else WARN_UNKNOWN();
+        break;
+
+    case SEC_MAVLINK:
+        if      (strcmp(key, "enabled")        == 0) NEED_BOOL(cfg->mav_enabled);
+        else if (strcmp(key, "socket")         == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "version")        == 0) NEED_INT(cfg->mav_version);
+        else if (strcmp(key, "system_id")      == 0) NEED_INT(cfg->mav_system_id);
+        else if (strcmp(key, "component_id")   == 0) NEED_INT(cfg->mav_component_id);
+        else if (strcmp(key, "rate_hz")        == 0) NEED_INT(cfg->mav_rate_hz);
+        else if (strcmp(key, "send_attitude")  == 0) NEED_BOOL(cfg->mav_send_attitude);
+        else if (strcmp(key, "send_attitude_quaternion") == 0) NEED_BOOL(cfg->mav_send_attitude_quaternion);
+        else if (strcmp(key, "udp_enabled")    == 0) NEED_BOOL(cfg->mav_udp_enabled);
+        else if (strcmp(key, "udp_addr")       == 0) NEED_STR(cfg->mav_udp_addr);
+        else if (strcmp(key, "udp_port")       == 0) NEED_INT(cfg->mav_udp_port);
+        else if (strcmp(key, "serial_enabled") == 0) NEED_BOOL(cfg->mav_serial_enabled);
+        else if (strcmp(key, "serial_device")  == 0) NEED_STR(cfg->mav_serial_device);
+        else if (strcmp(key, "serial_baud")    == 0) NEED_INT(cfg->mav_serial_baud);
         else WARN_UNKNOWN();
         break;
 

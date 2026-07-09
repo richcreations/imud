@@ -85,31 +85,12 @@ configuration is kept.
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
 .SH CONFIGURATION
-The bridge reads its own file (default
-.IR /etc/imud/imud-influxdb.conf ),
-using only the
+Read from
+.I /etc/imud/imud-influxdb.conf
+(the
 .B [imud-influxdb]
-section.  Key groups:
-.TP
-.BR enabled ", " socket ", " transport
-Start the bridge; imud stream socket to read;
-.BR udp | http .
-[restart]
-.TP
-.BR rate_hz ", " measurement ", " source_label ", " units ", " publish_heave
-Emit rate, measurement name, value of the
-.B source
-tag, units
-.RB ( deg | rad ),
-and whether to include heave.  [hot]
-.TP
-.BR udp_addr ", " udp_port
-UDP destination (default 127.0.0.1:8089).  [hot]
-.TP
-.BR http_host ", " http_port ", " http_path ", " http_token
-HTTP host/port (default 127.0.0.1:8086), write path (with the db or
-org/bucket and precision query), and an optional InfluxDB 2.x API token (stored
-in plaintext \(em protect the file).  [restart]
+section); the keys are documented in
+.BR imud-influxdb.conf (5).
 .SH FILES
 .TP
 .I /etc/imud/imud-influxdb.conf
@@ -136,6 +117,7 @@ sudo systemctl enable --now imud-influxdb
 .EE
 .RE
 .SH SEE ALSO
+.BR imud-influxdb.conf (5),
 .BR imud (8),
 .BR imud-signalk (8),
 .BR imud-mqtt (8),
