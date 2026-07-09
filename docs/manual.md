@@ -59,6 +59,7 @@ C standard library. Nothing else.
 | `imud-mon` | Live monitor of the UDP output streams from any host on the LAN. |
 | `imud-signalk` | Bridge daemon (optional install): reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
 | `imud-mqtt` | Bridge daemon (optional install): publishes scalar telemetry topics + Home Assistant discovery to an MQTT broker (see [§9b](#9b-mqtt-bridge-imud-mqtt)). |
+| `imud-influxdb` | Bridge daemon (optional install): writes InfluxDB line-protocol points over UDP/HTTP for Grafana (see [§9c](#9c-influxdb-bridge-imud-influxdb)). |
 
 ---
 
@@ -361,6 +362,34 @@ libmosquitto, and requires imud's `[stream]` output enabled.
 | `username` / `password` | string | `""` | Broker auth (plaintext password — protect the file). |
 | `tls` | bool | `false` | Enable TLS (empty `tls_cafile` = system CA store). |
 | `tls_cafile` | string | `""` | CA certificate path for TLS. |
+
+### `[imud-influxdb]` (its own file)
+
+The `imud-influxdb` bridge daemon ([§9c](#9c-influxdb-bridge-imud-influxdb)) is a
+separate, optional install with its **own** config file,
+`/etc/imud/imud-influxdb.conf` — it does **not** read `imud.conf`. It connects to
+imud's stream socket and writes InfluxDB line-protocol points over UDP or HTTP
+(pure C, no dependencies), and requires imud's `[stream]` output enabled.
+**[restart]**: `enabled`, `socket`, `transport`, `http_host`, `http_port`,
+`http_path`, `http_token`. **[hot]**: `rate_hz`, `measurement`, `source_label`,
+`units`, `publish_heave`, `udp_addr`, `udp_port`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the InfluxDB bridge. |
+| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
+| `transport` | string | `"udp"` | `"udp"` or `"http"`. |
+| `rate_hz` | int | `10` | Point emit rate in Hz. |
+| `measurement` | string | `"imud"` | Line-protocol measurement name. |
+| `source_label` | string | `"imud"` | Value of the `source=` tag. |
+| `units` | string | `"deg"` | `"deg"` (degrees, °/min) or `"rad"` (SI). |
+| `publish_heave` | bool | `true` | Include the `heave` field. |
+| `udp_addr` | string | `"127.0.0.1"` | UDP destination host (InfluxDB 1.x / Telegraf). |
+| `udp_port` | int | `8089` | UDP port. |
+| `http_host` | string | `"127.0.0.1"` | HTTP host (when `transport = http`). |
+| `http_port` | int | `8086` | HTTP port. |
+| `http_path` | string | `"/write?db=imud&precision=ns"` | Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`). |
+| `http_token` | string | `""` | InfluxDB 2.x API token (plaintext — protect the file). |
 
 ### `[mount]`
 
@@ -752,6 +781,53 @@ its sensors appear automatically and go *unavailable* when the bridge stops.
 `SIGHUP` reloads `rate_hz`, `qos`, `retain`, `units`, `publish_heave`, and the
 log level live; broker/client/topic changes need a restart. Configuration keys
 are documented in [§4 `[imud-mqtt]`](#imud-mqtt).
+
+---
+
+## 9c. InfluxDB bridge (imud-influxdb)
+
+`imud-influxdb` writes imud's telemetry to InfluxDB as line-protocol points for
+time-series storage and **Grafana** dashboards — ideal for fusion tuning and
+sea-trial logging. It connects to imud's `[stream]` socket and emits one point
+per tick (default 10 Hz) over **UDP** (default) or **HTTP**. It is pure C with no
+external dependencies.
+
+Each point is one measurement (default `imud`) with a `source` tag and fields —
+quaternion, roll/pitch/yaw, heading, heading_true/variation (when declination is
+known), rate_of_turn, heave (when `publish_heave`), temperature, and an integer
+`seq` — timestamped from the packet's wall clock in nanoseconds. Angles are
+degrees by default (`units = deg`) or SI (`units = rad`).
+
+**Transports:**
+
+- **UDP** (`transport = udp`) — datagrams to InfluxDB 1.x's UDP listener or to
+  Telegraf's `socket_listener` (the usual path into InfluxDB 2.x/3.x). Set the
+  listener precision to `ns`.
+- **HTTP** (`transport = http`) — a plaintext POST per point to `/write` (1.x) or
+  `/api/v2/write` (2.x), with an optional `Authorization: Token` header. No TLS —
+  front a cloud/TLS endpoint with a local proxy.
+
+Build and install it separately (it's optional, out of `make all`):
+
+```sh
+make imud-influxdb            # or: make bridges
+sudo make install-influxdb    # binary + service + /etc/imud/imud-influxdb.conf
+```
+
+**Setup (UDP → InfluxDB 1.x example):**
+
+1. In `imud.conf`, set `[stream] enabled = true`.
+2. In `/etc/imud/imud-influxdb.conf`, set `enabled = true` and the `udp_addr` /
+   `udp_port` of your InfluxDB UDP listener (or Telegraf).
+3. Enable the service: `sudo systemctl enable --now imud-influxdb`.
+
+For InfluxDB 2.x/3.x, set `transport = http`, point `http_path` at
+`/api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, and set `http_token`.
+
+`SIGHUP` reloads `rate_hz`, `measurement`, `source_label`, `units`,
+`publish_heave`, and the UDP destination live; the transport and HTTP target need
+a restart. Configuration keys are documented in
+[§4 `[imud-influxdb]`](#imud-influxdb).
 
 ---
 

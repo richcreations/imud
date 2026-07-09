@@ -1,0 +1,144 @@
+.TH IMUD\-INFLUXDB 8 "July 2026" "imud 1.1" "System Manager's Manual"
+.SH NAME
+imud\-influxdb \- bridge imud's binary stream to InfluxDB line protocol
+.SH SYNOPSIS
+.B imud-influxdb
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B imud-influxdb
+connects to the local AF_UNIX binary subscription stream published by
+.BR imud (8)
+and writes one InfluxDB
+.I line-protocol
+point per tick, for time-series storage and Grafana dashboards (fusion tuning,
+sea-trial logging).  Two transports are supported:
+.TP
+.B udp
+Fire-and-forget datagrams to InfluxDB 1.x's UDP listener or Telegraf's
+.I socket_listener
+(the usual path into InfluxDB 2.x/3.x).  Configure the listener precision as ns.
+.TP
+.B http
+A plaintext HTTP POST per point to
+.I /write
+(1.x) or
+.I /api/v2/write
+(2.x), with an optional
+.B Authorization: Token
+header.  No TLS \(em front a cloud/TLS endpoint with a local proxy.
+.PP
+The bridge holds no hardware and is pure C (no external dependencies).  It reads
+the stream socket named by its own
+.B socket
+key (default
+.IR /run/imud/imud-stream.sock ),
+so
+.BR imud (8)
+must have its
+.B [stream]
+output enabled, and it reconnects automatically if imud restarts.
+.PP
+Each point carries the measurement (default
+.IR imud ),
+a
+.B source
+tag, and fields: quaternion
+.RB ( qw , qx , qy , qz ),
+.BR roll / pitch / yaw ,
+.BR heading ,
+.BR heading_true / variation
+(when declination is known),
+.BR rate_of_turn ,
+.B heave
+(when
+.B publish_heave
+is set),
+.BR temp ,
+and an integer
+.BR seq ,
+timestamped with the packet's wall-clock time in nanoseconds.  Angles are degrees
+.RB ( units " = " deg )
+or radians
+.RB ( units " = " rad ).
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Load configuration from
+.I PATH
+instead of
+.IR /etc/imud/imud-influxdb.conf .
+Only the
+.B [imud-influxdb]
+section is read.
+.TP
+.B \-\-version
+Print the version string and exit.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the configuration.  The rate, measurement, source tag, units, heave
+inclusion, UDP destination, and log level are applied live; the transport and
+HTTP target require a restart.  If the reload fails to parse, the running
+configuration is kept.
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown.
+.SH CONFIGURATION
+The bridge reads its own file (default
+.IR /etc/imud/imud-influxdb.conf ),
+using only the
+.B [imud-influxdb]
+section.  Key groups:
+.TP
+.BR enabled ", " socket ", " transport
+Start the bridge; imud stream socket to read;
+.BR udp | http .
+[restart]
+.TP
+.BR rate_hz ", " measurement ", " source_label ", " units ", " publish_heave
+Emit rate, measurement name, value of the
+.B source
+tag, units
+.RB ( deg | rad ),
+and whether to include heave.  [hot]
+.TP
+.BR udp_addr ", " udp_port
+UDP destination (default 127.0.0.1:8089).  [hot]
+.TP
+.BR http_host ", " http_port ", " http_path ", " http_token
+HTTP host/port (default 127.0.0.1:8086), write path (with the db or
+org/bucket and precision query), and an optional InfluxDB 2.x API token (stored
+in plaintext \(em protect the file).  [restart]
+.SH FILES
+.TP
+.I /etc/imud/imud-influxdb.conf
+Default configuration file.
+.SH EXAMPLES
+Run against a local InfluxDB 1.x UDP listener:
+.PP
+.RS 4
+.EX
+imud-influxdb --config /etc/imud/imud-influxdb.conf
+.EE
+.RE
+.PP
+Enable as a service (after enabling imud's
+.B [stream]
+output and
+.B enabled
+in
+.IR imud-influxdb.conf ):
+.PP
+.RS 4
+.EX
+sudo systemctl enable --now imud-influxdb
+.EE
+.RE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-signalk (8),
+.BR imud-mqtt (8),
+.BR imud.conf (5)
+.SH AUTHORS
+Richard Simpson

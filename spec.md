@@ -1073,6 +1073,15 @@ plus Home Assistant MQTT-discovery configs. Uses libmosquitto; not part of the
 wire protocol. Configured by `[imud-mqtt]` in its own `/etc/imud/imud-mqtt.conf`.
 See the manual and `imud-mqtt(8)`.
 
+### imud-influxdb
+
+A separate optional bridge daemon that consumes the AF_UNIX stream (Output
+Stream C) and writes InfluxDB line-protocol points — one measurement (`imud`)
+with a `source` tag and quaternion/euler/heading/rate/heave/temp/seq fields,
+nanosecond-timestamped — over UDP (default) or HTTP. Pure C, no dependencies; not
+part of the wire protocol. Configured by `[imud-influxdb]` in its own
+`/etc/imud/imud-influxdb.conf`. See the manual and `imud-influxdb(8)`.
+
 -----
 
 ## 13. Error Handling
