@@ -1064,6 +1064,15 @@ K path — `navigation.headingMagnetic`/`headingTrue`/`magneticVariation`/
 `imud-signalk(8)`. An optional, separately-installed component, configured by
 `[imud-signalk]` in its own `/etc/imud/imud-signalk.conf`.
 
+### imud-mqtt
+
+A separate optional bridge daemon that consumes the AF_UNIX stream (Output
+Stream C) and publishes scalar telemetry to an MQTT broker — one value per topic
+under a prefix (e.g. `imud/navigation/headingMagnetic`, `imud/attitude/roll`) —
+plus Home Assistant MQTT-discovery configs. Uses libmosquitto; not part of the
+wire protocol. Configured by `[imud-mqtt]` in its own `/etc/imud/imud-mqtt.conf`.
+See the manual and `imud-mqtt(8)`.
+
 -----
 
 ## 13. Error Handling

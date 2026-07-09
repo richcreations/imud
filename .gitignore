@@ -8,6 +8,7 @@ imud-cal
 imud-status
 imud-mon
 imud-signalk
+imud-mqtt
 
 # Test binaries
 test_fusion
@@ -24,6 +25,7 @@ test_client
 test_stream
 test_log
 test_signalk
+test_mqtt
 
 # Editor and OS
 .DS_Store

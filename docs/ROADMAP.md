@@ -68,8 +68,9 @@ project that reuses the client lib rather than something built under this Makefi
   Fits the pure-C imud-signalk mold. *(medium)*
 
 **Telemetry / dashboards**
-- **MQTT** — attitude / heading / heave / health as JSON topics to a broker
-  (Home Assistant discovery, boat/robot telemetry). Small pure-C daemon. *(easy)*
+- **MQTT** — ✅ **shipped** as `imud-mqtt` (2026-07-08): scalar telemetry topics +
+  Home Assistant MQTT discovery, human units (deg/m/°C), via libmosquitto. Own
+  config/service/install target, out of `make all`.
 - **InfluxDB line protocol** — UDP/HTTP straight into a time-series DB for Grafana;
   ideal for fusion tuning and sea-trial logging. Nearly trivial. *(easy)*
 - **Prometheus exporter** — a `/metrics` HTTP endpoint (live values + daemon health)
@@ -83,9 +84,9 @@ project that reuses the client lib rather than something built under this Makefi
 - **OSC** — attitude over Open Sound Control (UDP) for camera rigs, gimbals, and
   AV / interactive installations. *(easy)*
 
-Rough priority if picked up: **MQTT** and **InfluxDB** first (cheap, broadly
-useful), then **MAVLink** (opens the drone/autopilot audience) and **NMEA 2000**
-(completes the marine stack), with **ROS2** proceeding on its own track.
+Rough priority for the rest: **InfluxDB** next (cheap, broadly useful), then
+**MAVLink** (opens the drone/autopilot audience) and **NMEA 2000** (completes the
+marine stack), with **ROS2** proceeding on its own track. (**MQTT** shipped.)
 
 ## 6. Small items
 

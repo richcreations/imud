@@ -47,7 +47,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges clean test install install-signalk uninstall
+.PHONY: all bridges clean test install install-signalk install-mqtt uninstall
 
 all: imud imud-cal imud-status imud-mon
 
@@ -73,10 +73,15 @@ imud-mon: src/config.o src/log.o src/mon_main.o
 imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# imud-mqtt bridges the AF_UNIX stream to MQTT: scalar telemetry topics plus
+# Home Assistant discovery, via libmosquitto.  Needs libmosquitto-dev.
+imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/mqtt_main.o
+	$(CC) $(CFLAGS) -o $@ $^ -lmosquitto -lm
+
 # Optional bridge daemons — each has its own config file, service, and man page,
 # and installs via its own `install-*` target (prep for per-bridge packaging).
 # Kept out of `all` so a core build / CI never needs a bridge's dependencies.
-bridges: imud-signalk
+bridges: imud-signalk imud-mqtt
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
 
@@ -141,9 +146,13 @@ test_log: src/log.c test/test_log.c
 test_signalk: src/sk_delta.c test/test_signalk.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# MQTT message builders (pure functions; no libmosquitto needed)
+test_mqtt: src/mqtt_publish.c test/test_mqtt.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
       test_cal test_cal_math test_wmm test_position test_client test_stream \
-      test_log test_signalk
+      test_log test_signalk test_mqtt
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -158,6 +167,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_stream
 	./test_log
 	./test_signalk
+	./test_mqtt
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
@@ -244,26 +254,53 @@ install-signalk: imud-signalk
 	@echo "Installed imud-signalk.  Enable with: sudo systemctl enable --now imud-signalk"
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-signalk.conf)"
 
+# ── Install the MQTT bridge (optional) ─────────────────────────────────────────
+# Run after `make imud-mqtt` (needs libmosquitto-dev).  Installs the binary,
+# service, man page, and its own config file (non-clobbering).
+install-mqtt: imud-mqtt
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -m 755 imud-mqtt $(DESTDIR)$(PREFIX)/bin/
+	install -m 644 etc/imud-mqtt.service $(DESTDIR)$(SVCDIR)/imud-mqtt.service
+	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-mqtt.conf" ]; then \
+	    install -m 644 config/imud-mqtt.conf $(DESTDIR)$(ETCDIR)/imud-mqtt.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
+	    echo "  NOTE: if you set a broker password, restrict it (chmod 640 + service group)."; \
+	else \
+	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
+	fi
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
+	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+	    systemctl daemon-reload; \
+	fi
+	@echo "Installed imud-mqtt.  Enable with: sudo systemctl enable --now imud-mqtt"
+	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-mqtt.conf)"
+
 uninstall:
 	@if command -v systemctl >/dev/null 2>&1; then \
 	    systemctl disable --now imud 2>/dev/null || true; \
 	    systemctl disable --now imud-signalk 2>/dev/null || true; \
+	    systemctl disable --now imud-mqtt 2>/dev/null || true; \
 	fi
 	rm -f $(DESTDIR)$(PREFIX)/bin/imud \
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mon \
 	      $(DESTDIR)$(PREFIX)/bin/imud-signalk \
+	      $(DESTDIR)$(PREFIX)/bin/imud-mqtt \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
+	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
+	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -273,7 +310,7 @@ uninstall:
 
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
-	      imud imud-cal imud-status imud-mon imud-signalk \
+	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
-	      test_log test_signalk
+	      test_log test_signalk test_mqtt

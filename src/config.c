@@ -174,6 +174,24 @@ void config_defaults(imud_config_t *cfg)
     /* Bridge-shared keys (imud-signalk / imud-mqtt). */
     cfg->publish_heave = true;   /* imud's heave estimator is on by default */
 
+    /* [imud-mqtt] */
+    cfg->mqtt_enabled     = false;
+    snprintf(cfg->mqtt_broker_addr, sizeof(cfg->mqtt_broker_addr), "127.0.0.1");
+    cfg->mqtt_broker_port = 1883;
+    snprintf(cfg->mqtt_client_id,    sizeof(cfg->mqtt_client_id),    "imud");
+    snprintf(cfg->mqtt_topic_prefix, sizeof(cfg->mqtt_topic_prefix), "imud");
+    cfg->mqtt_rate_hz     = 5;
+    cfg->mqtt_qos         = 0;
+    cfg->mqtt_retain      = true;
+    snprintf(cfg->mqtt_units, sizeof(cfg->mqtt_units), "deg");
+    cfg->mqtt_username[0]   = '\0';
+    cfg->mqtt_password[0]   = '\0';
+    cfg->mqtt_tls         = false;
+    cfg->mqtt_tls_cafile[0] = '\0';
+    cfg->mqtt_keepalive_s = 30;
+    cfg->mqtt_ha_discovery = true;
+    snprintf(cfg->mqtt_ha_prefix, sizeof(cfg->mqtt_ha_prefix), "homeassistant");
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
     cfg->pos_declination_valid = false;
@@ -241,6 +259,7 @@ typedef enum {
     SEC_HIGHRATE,
     SEC_STREAM,
     SEC_SIGNALK,
+    SEC_MQTT,
     SEC_LOGGING,
     SEC_POSITION
 } section_t;
@@ -257,6 +276,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[highrate]")    == 0) return SEC_HIGHRATE;
     if (strcmp(s, "[stream]")      == 0) return SEC_STREAM;
     if (strcmp(s, "[imud-signalk]")== 0) return SEC_SIGNALK;
+    if (strcmp(s, "[imud-mqtt]")   == 0) return SEC_MQTT;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
     return SEC_UNKNOWN;
@@ -457,6 +477,28 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "rate_hz")      == 0) NEED_INT(cfg->sk_rate_hz);
         else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
         else if (strcmp(key, "publish_heave")== 0) NEED_BOOL(cfg->publish_heave);
+        else WARN_UNKNOWN();
+        break;
+
+    case SEC_MQTT:
+        if      (strcmp(key, "enabled")       == 0) NEED_BOOL(cfg->mqtt_enabled);
+        else if (strcmp(key, "socket")        == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "broker_addr")   == 0) NEED_STR(cfg->mqtt_broker_addr);
+        else if (strcmp(key, "broker_port")   == 0) NEED_INT(cfg->mqtt_broker_port);
+        else if (strcmp(key, "client_id")     == 0) NEED_STR(cfg->mqtt_client_id);
+        else if (strcmp(key, "topic_prefix")  == 0) NEED_STR(cfg->mqtt_topic_prefix);
+        else if (strcmp(key, "rate_hz")       == 0) NEED_INT(cfg->mqtt_rate_hz);
+        else if (strcmp(key, "qos")           == 0) NEED_INT(cfg->mqtt_qos);
+        else if (strcmp(key, "retain")        == 0) NEED_BOOL(cfg->mqtt_retain);
+        else if (strcmp(key, "units")         == 0) NEED_STR(cfg->mqtt_units);
+        else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
+        else if (strcmp(key, "username")      == 0) NEED_STR(cfg->mqtt_username);
+        else if (strcmp(key, "password")      == 0) NEED_STR(cfg->mqtt_password);
+        else if (strcmp(key, "tls")           == 0) NEED_BOOL(cfg->mqtt_tls);
+        else if (strcmp(key, "tls_cafile")    == 0) NEED_STR(cfg->mqtt_tls_cafile);
+        else if (strcmp(key, "keepalive_s")   == 0) NEED_INT(cfg->mqtt_keepalive_s);
+        else if (strcmp(key, "ha_discovery")  == 0) NEED_BOOL(cfg->mqtt_ha_discovery);
+        else if (strcmp(key, "ha_prefix")     == 0) NEED_STR(cfg->mqtt_ha_prefix);
         else WARN_UNKNOWN();
         break;
 
