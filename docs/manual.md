@@ -60,6 +60,7 @@ C standard library. Nothing else.
 | `imud-signalk` | Bridge daemon (optional install): reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
 | `imud-mqtt` | Bridge daemon (optional install): publishes scalar telemetry topics + Home Assistant discovery to an MQTT broker (see [§9b](#9b-mqtt-bridge-imud-mqtt)). |
 | `imud-influxdb` | Bridge daemon (optional install): writes InfluxDB line-protocol points over UDP/HTTP for Grafana (see [§9c](#9c-influxdb-bridge-imud-influxdb)). |
+| `imud-mavlink` | Bridge daemon (optional install): emits MAVLink (v1/v2) HEARTBEAT/ATTITUDE over UDP/serial (see [§9d](#9d-mavlink-bridge-imud-mavlink)). |
 
 ---
 
@@ -390,6 +391,35 @@ imud's stream socket and writes InfluxDB line-protocol points over UDP or HTTP
 | `http_port` | int | `8086` | HTTP port. |
 | `http_path` | string | `"/write?db=imud&precision=ns"` | Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`). |
 | `http_token` | string | `""` | InfluxDB 2.x API token (plaintext — protect the file). |
+
+### `[imud-mavlink]` (its own file)
+
+The `imud-mavlink` bridge daemon ([§9d](#9d-mavlink-bridge-imud-mavlink)) is a
+separate, optional install with its **own** config file,
+`/etc/imud/imud-mavlink.conf` — it does **not** read `imud.conf`. It connects to
+imud's stream socket and emits MAVLink (v1 or v2) HEARTBEAT + ATTITUDE /
+ATTITUDE_QUATERNION over UDP and/or serial (pure C, no dependencies), and requires
+imud's `[stream]` output enabled.
+**[restart]**: `enabled`, `socket`, `system_id`, `component_id`, `udp_enabled`,
+`serial_enabled`, `serial_device`, `serial_baud`. **[hot]**: `version`, `rate_hz`,
+`send_attitude`, `send_attitude_quaternion`, `udp_addr`, `udp_port`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the MAVLink bridge. |
+| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
+| `version` | int | `2` | MAVLink protocol version (1 or 2). |
+| `system_id` | int | `1` | MAVLink system id. |
+| `component_id` | int | `1` | MAVLink component id (raise, e.g. 191, on a shared autopilot bus). |
+| `rate_hz` | int | `10` | ATTITUDE/quaternion rate (heartbeat is fixed 1 Hz). |
+| `send_attitude` | bool | `true` | Emit ATTITUDE (#30). |
+| `send_attitude_quaternion` | bool | `true` | Emit ATTITUDE_QUATERNION (#31). |
+| `udp_enabled` | bool | `false` | Enable UDP output. |
+| `udp_addr` | string | `"127.0.0.1"` | UDP destination host. |
+| `udp_port` | int | `14550` | UDP destination port (QGC default). |
+| `serial_enabled` | bool | `false` | Enable serial output. |
+| `serial_device` | string | `"/dev/serial0"` | Serial device. |
+| `serial_baud` | int | `57600` | Serial baud (9600–921600). |
 
 ### `[mount]`
 
@@ -828,6 +858,51 @@ For InfluxDB 2.x/3.x, set `transport = http`, point `http_path` at
 `publish_heave`, and the UDP destination live; the transport and HTTP target need
 a restart. Configuration keys are documented in
 [§4 `[imud-influxdb]`](#imud-influxdb).
+
+---
+
+## 9d. MAVLink bridge (imud-mavlink)
+
+`imud-mavlink` streams imud's attitude to the drone/autopilot world — ArduPilot,
+PX4, or a ground station (QGroundControl, Mission Planner) — as MAVLink. It
+connects to imud's `[stream]` socket and sends **HEARTBEAT** at 1 Hz plus
+**ATTITUDE** and/or **ATTITUDE_QUATERNION** at `rate_hz` (default 10 Hz). Pure C
+with a hand-rolled encoder — **no dependencies** — and MAVLink **v1 or v2**.
+
+MAVLink's body frame is FRD/NED, the same as imud, so roll/pitch/yaw, the gyro
+body rates, and the quaternion pass straight through (SI radians / rad/s) — no
+sign flips.
+
+Output goes to **UDP and/or serial simultaneously**:
+
+- **UDP** (`udp_enabled`) — datagrams to `udp_addr:udp_port` (default
+  127.0.0.1:14550, QGroundControl's listen port).
+- **Serial** (`serial_enabled`) — raw 8N1 at `serial_baud` on `serial_device`
+  (e.g. a telemetry radio on `/dev/serial0`). The shipped unit grants the service
+  the `dialout` group and tty-device access.
+
+Build and install it separately (it's optional, out of `make all`):
+
+```sh
+make imud-mavlink            # or: make bridges
+sudo make install-mavlink    # binary + service + /etc/imud/imud-mavlink.conf
+```
+
+**Setup (UDP → QGroundControl example):**
+
+1. In `imud.conf`, set `[stream] enabled = true`.
+2. In `/etc/imud/imud-mavlink.conf`, set `enabled = true`, `udp_enabled = true`,
+   and `udp_addr`/`udp_port` for your GCS.
+3. Enable the service: `sudo systemctl enable --now imud-mavlink`.
+
+On a vehicle bus alongside a real autopilot, raise `component_id` (e.g. 191) to
+avoid an id clash. `SIGHUP` reloads `version`, `rate_hz`, `send_*`, and the UDP
+destination live; ids and transport-enable changes need a restart. Configuration
+keys are documented in [§4 `[imud-mavlink]`](#imud-mavlink).
+
+> **Quaternion sign:** `ATTITUDE_QUATERNION` is passed through from imud's
+> body→NED quaternion; if a GCS shows it conjugated relative to `ATTITUDE`, flip
+> the quaternion sign convention (verify on a live display).
 
 ---
 

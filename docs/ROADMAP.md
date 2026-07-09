@@ -63,9 +63,9 @@ project that reuses the client lib rather than something built under this Makefi
   ENU/FLU. **Tracked as its own project** (needs an ament/colcon package; can't
   build under this Makefile). An `rclpy` node reusing `imud_client.py` is the light
   path; the frame conversion is the substantive work.
-- **MAVLink** — `ATTITUDE` / `ATTITUDE_QUATERNION` / `RAW_IMU` to ArduPilot, PX4,
-  or QGroundControl over UDP/serial. Directly useful for ArduRover boats and drones.
-  Fits the pure-C imud-signalk mold. *(medium)*
+- **MAVLink** — ✅ **shipped** as `imud-mavlink` (2026-07-08): HEARTBEAT +
+  ATTITUDE / ATTITUDE_QUATERNION, MAVLink v1 or v2, over UDP and/or serial.
+  Hand-rolled pure-C encoder (pymavlink-verified), own config/service/install target.
 
 **Telemetry / dashboards**
 - **MQTT** — ✅ **shipped** as `imud-mqtt` (2026-07-08): scalar telemetry topics +
@@ -85,9 +85,9 @@ project that reuses the client lib rather than something built under this Makefi
 - **OSC** — attitude over Open Sound Control (UDP) for camera rigs, gimbals, and
   AV / interactive installations. *(easy)*
 
-Rough priority for the rest: **MAVLink** (opens the drone/autopilot audience) and
-**NMEA 2000** (completes the marine stack), with **ROS2** proceeding on its own
-track. (**MQTT** and **InfluxDB** shipped.)
+Rough priority for the rest: **NMEA 2000** (completes the marine stack), with
+**ROS2** proceeding on its own track. (**MQTT**, **InfluxDB**, and **MAVLink**
+shipped.)
 
 ## 6. Small items
 

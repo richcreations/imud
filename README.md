@@ -54,6 +54,8 @@ imud is output-agnostic; the same daemon serves very different consumers:
   tuned for it.) The `imud-signalk` bridge also feeds Signal K natively over
   UDP when its NMEA parsing falls short.
 - **Robotics / ROS2** — attitude and rate of turn over the binary stream.
+- **Drones & autopilots** — the `imud-mavlink` bridge feeds MAVLink ATTITUDE to
+  ArduPilot, PX4, or QGroundControl over UDP or serial.
 - **IoT / home automation & dashboards** — the `imud-mqtt` bridge publishes
   heading/attitude/heave to an MQTT broker with Home Assistant auto-discovery;
   `imud-influxdb` writes line-protocol points to InfluxDB for Grafana.
@@ -115,6 +117,7 @@ in-situ `imud-cal mag`. See the
 | `imud-signalk` | Bridge daemon (optional install): pushes Signal K deltas over UDP from the local stream socket. |
 | `imud-mqtt` | Bridge daemon (optional install): publishes MQTT topics + Home Assistant discovery from the local stream socket. |
 | `imud-influxdb` | Bridge daemon (optional install): writes InfluxDB line-protocol points (UDP/HTTP) for Grafana. |
+| `imud-mavlink` | Bridge daemon (optional install): emits MAVLink (v1/v2) attitude over UDP/serial to autopilots and GCSs. |
 
 ## Documentation
 
@@ -127,6 +130,7 @@ in-situ `imud-cal mag`. See the
   binary stream.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
   `imud-mon(1)` (installed by `make install`); `imud-signalk(8)` /
-  `imud-mqtt(8)` / `imud-influxdb(8)` by `make install-signalk` /
-  `install-mqtt` / `install-influxdb`.
+  `imud-mqtt(8)` / `imud-influxdb(8)` / `imud-mavlink(8)` (each with an
+  `imud-<name>.conf(5)`) by `make install-signalk` / `install-mqtt` /
+  `install-influxdb` / `install-mavlink`.
 - **[ROADMAP](docs/ROADMAP.md)** — deferred and future work.

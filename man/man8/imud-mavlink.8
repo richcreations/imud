@@ -1,0 +1,106 @@
+.TH IMUD\-MAVLINK 8 "July 2026" "imud 1.1" "System Manager's Manual"
+.SH NAME
+imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial
+.SH SYNOPSIS
+.B imud-mavlink
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B imud-mavlink
+connects to the local AF_UNIX binary subscription stream published by
+.BR imud (8)
+and emits MAVLink for ArduPilot, PX4, or a ground station (QGroundControl,
+Mission Planner).  It sends
+.B HEARTBEAT
+(#0) at 1 Hz and, at
+.IR rate_hz ,
+.B ATTITUDE
+(#30) and/or
+.B ATTITUDE_QUATERNION
+(#31).  MAVLink protocol version 1 or 2 is selectable.
+.PP
+The bridge is pure C (a hand-rolled encoder, no external dependencies).  MAVLink's
+body frame is FRD/NED \(em the same as imud \(em so roll/pitch/yaw, the gyro body
+rates, and the quaternion pass through directly (SI radians / rad/s).  It reads the
+stream socket named by its own
+.B socket
+key (default
+.IR /run/imud/imud-stream.sock ),
+so
+.BR imud (8)
+must have its
+.B [stream]
+output enabled, and it reconnects automatically if imud restarts.
+.PP
+Output goes to
+.B UDP
+and/or
+.B serial
+simultaneously (each independently enabled).  Serial is opened raw, 8N1, at the
+configured baud; the shipped unit grants the service the
+.B dialout
+group and tty-device access.
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Load configuration from
+.I PATH
+instead of
+.IR /etc/imud/imud-mavlink.conf .
+Only the
+.B [imud-mavlink]
+section is read.
+.TP
+.B \-\-version
+Print the version string and exit.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the configuration.  The protocol version, rate, message selection, UDP
+destination, and log level are applied live; the system/component ids and which
+transports are enabled require a restart.  If the reload fails to parse, the
+running configuration is kept.
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown.
+.SH CONFIGURATION
+Read from
+.I /etc/imud/imud-mavlink.conf
+(the
+.B [imud-mavlink]
+section); the keys are documented in
+.BR imud-mavlink.conf (5).
+.SH FILES
+.TP
+.I /etc/imud/imud-mavlink.conf
+Default configuration file.
+.SH EXAMPLES
+Run against a local ground station on UDP:
+.PP
+.RS 4
+.EX
+imud-mavlink --config /etc/imud/imud-mavlink.conf
+.EE
+.RE
+.PP
+Enable as a service (after enabling imud's
+.B [stream]
+output and
+.B enabled
+in
+.IR imud-mavlink.conf ):
+.PP
+.RS 4
+.EX
+sudo systemctl enable --now imud-mavlink
+.EE
+.RE
+.SH SEE ALSO
+.BR imud-mavlink.conf (5),
+.BR imud (8),
+.BR imud-signalk (8),
+.BR imud-mqtt (8),
+.BR imud-influxdb (8),
+.BR imud.conf (5)
+.SH AUTHORS
+Richard Simpson

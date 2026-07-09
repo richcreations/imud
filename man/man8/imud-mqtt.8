@@ -76,33 +76,12 @@ kept.
 .BR SIGTERM ", " SIGINT
 Graceful shutdown (publishes a retained \(dqoffline\(dq availability message).
 .SH CONFIGURATION
-The bridge reads its own file (default
-.IR /etc/imud/imud-mqtt.conf ),
-using only the
+Read from
+.I /etc/imud/imud-mqtt.conf
+(the
 .B [imud-mqtt]
-section.  Key groups:
-.TP
-.B enabled ", " socket
-Start the bridge; imud stream socket to read.  [restart]
-.TP
-.BR broker_addr ", " broker_port ", " client_id ", " keepalive_s
-Broker host/port (default 127.0.0.1:1883), MQTT client id (also the Home
-Assistant node id), and keepalive.  [restart]
-.TP
-.BR topic_prefix ", " rate_hz ", " qos ", " retain ", " units ", " publish_heave
-Topic prefix, publish rate (default 5 Hz), QoS, retain flag, units
-.RB ( deg | rad ),
-and whether to publish heave.  [hot] except topic_prefix.
-.TP
-.BR ha_discovery ", " ha_prefix
-Publish Home Assistant discovery (default true) and its topic prefix
-(default \(dqhomeassistant\(dq).  [restart]
-.TP
-.BR username ", " password ", " tls ", " tls_cafile
-Optional broker authentication and TLS.  A plaintext
-.B password
-in the config file should be protected with restrictive file permissions.
-[restart]
+section); the keys are documented in
+.BR imud-mqtt.conf (5).
 .SH FILES
 .TP
 .I /etc/imud/imud-mqtt.conf
@@ -130,6 +109,7 @@ sudo systemctl enable --now imud-mqtt
 .EE
 .RE
 .SH SEE ALSO
+.BR imud-mqtt.conf (5),
 .BR imud (8),
 .BR imud-signalk (8),
 .BR imud.conf (5),

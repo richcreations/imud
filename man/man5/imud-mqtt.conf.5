@@ -1,0 +1,116 @@
+.TH IMUD\-MQTT.CONF 5 "July 2026" "imud 1.1" "File Formats Manual"
+.SH NAME
+imud\-mqtt.conf \- configuration file for imud-mqtt(8)
+.SH SYNOPSIS
+.I /etc/imud/imud-mqtt.conf
+.SH DESCRIPTION
+Configuration for the
+.BR imud-mqtt (8)
+bridge daemon, which reads imud's binary stream socket and publishes scalar
+telemetry topics (plus Home Assistant discovery) to an MQTT broker.  The bridge
+reads
+.B only
+this file (never
+.IR imud.conf ).
+The file is one
+.B [imud-mqtt]
+section of
+.IR key " = " value
+lines; strings are double-quoted and
+.RB \(oq # \(cq
+begins a comment.  Requires imud's
+.B [stream]
+output enabled.
+.PP
+Keys marked
+.B [hot]
+are reloaded on
+.BR SIGHUP ;
+keys marked
+.B [restart]
+take effect on the next service start.
+.SH KEYS
+.TP
+.B enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable the MQTT bridge.
+.TP
+.B socket
+.RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
+imud stream socket to read.
+.TP
+.B broker_addr
+.RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [restart]
+Broker host (name or IP).
+.TP
+.B broker_port
+.RI ( int ,\ default:\ 1883 )\ [restart]
+Broker TCP port.
+.TP
+.B client_id
+.RI ( string ,\ default:\ \(dqimud\(dq )\ [restart]
+MQTT client id; also the Home Assistant device/node id.
+.TP
+.B topic_prefix
+.RI ( string ,\ default:\ \(dqimud\(dq )\ [restart]
+Prefix for all published topics.
+.TP
+.B rate_hz
+.RI ( int ,\ default:\ 5 )\ [hot]
+Publish rate in Hz.
+.TP
+.B qos
+.RI ( int ,\ default:\ 0 )\ [hot]
+Publish QoS (0, 1, or 2).
+.TP
+.B retain
+.RI ( bool ,\ default:\ true )\ [hot]
+Retain published values so late subscribers / Home Assistant see current state.
+.TP
+.B units
+.RI ( string ,\ default:\ \(dqdeg\(dq )\ [hot]
+.B deg
+(degrees, \(de/min, m, \(deC) or
+.B rad
+(SI: radians, rad/s).
+.TP
+.B publish_heave
+.RI ( bool ,\ default:\ true )\ [hot]
+Publish the
+.B environment/heave
+topic.
+.TP
+.B ha_discovery
+.RI ( bool ,\ default:\ true )\ [restart]
+Publish Home Assistant MQTT-discovery configs.
+.TP
+.B ha_prefix
+.RI ( string ,\ default:\ \(dqhomeassistant\(dq )\ [restart]
+Home Assistant discovery topic prefix.
+.TP
+.BR username ", " password
+.RI ( string ,\ default:\ \(dq\(dq )\ [restart]
+Broker authentication.  A plaintext
+.B password
+here should be protected with restrictive file permissions.
+.TP
+.B tls
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable TLS (with an empty
+.B tls_cafile
+the system CA store is used).
+.TP
+.B tls_cafile
+.RI ( string ,\ default:\ \(dq\(dq )\ [restart]
+CA certificate path for TLS.
+.SH FILES
+.TP
+.I /etc/imud/imud-mqtt.conf
+This file.
+.SH SEE ALSO
+.BR imud-mqtt (8),
+.BR imud.conf (5),
+.BR imud (8),
+.BR mosquitto (8)
+.SH AUTHORS
+Richard Simpson
