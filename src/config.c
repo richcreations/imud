@@ -192,6 +192,21 @@ void config_defaults(imud_config_t *cfg)
     cfg->mqtt_ha_discovery = true;
     snprintf(cfg->mqtt_ha_prefix, sizeof(cfg->mqtt_ha_prefix), "homeassistant");
 
+    /* [imud-influxdb] */
+    cfg->influx_enabled = false;
+    snprintf(cfg->influx_transport,    sizeof(cfg->influx_transport),    "udp");
+    cfg->influx_rate_hz = 10;
+    snprintf(cfg->influx_measurement,  sizeof(cfg->influx_measurement),  "imud");
+    snprintf(cfg->influx_source_label, sizeof(cfg->influx_source_label), "imud");
+    snprintf(cfg->influx_units,        sizeof(cfg->influx_units),        "deg");
+    snprintf(cfg->influx_udp_addr,     sizeof(cfg->influx_udp_addr),     "127.0.0.1");
+    cfg->influx_udp_port = 8089;
+    snprintf(cfg->influx_http_host,    sizeof(cfg->influx_http_host),    "127.0.0.1");
+    cfg->influx_http_port = 8086;
+    snprintf(cfg->influx_http_path,    sizeof(cfg->influx_http_path),
+             "/write?db=imud&precision=ns");
+    cfg->influx_http_token[0] = '\0';
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
     cfg->pos_declination_valid = false;
@@ -260,6 +275,7 @@ typedef enum {
     SEC_STREAM,
     SEC_SIGNALK,
     SEC_MQTT,
+    SEC_INFLUX,
     SEC_LOGGING,
     SEC_POSITION
 } section_t;
@@ -277,6 +293,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[stream]")      == 0) return SEC_STREAM;
     if (strcmp(s, "[imud-signalk]")== 0) return SEC_SIGNALK;
     if (strcmp(s, "[imud-mqtt]")   == 0) return SEC_MQTT;
+    if (strcmp(s, "[imud-influxdb]")== 0) return SEC_INFLUX;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
     return SEC_UNKNOWN;
@@ -499,6 +516,24 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "keepalive_s")   == 0) NEED_INT(cfg->mqtt_keepalive_s);
         else if (strcmp(key, "ha_discovery")  == 0) NEED_BOOL(cfg->mqtt_ha_discovery);
         else if (strcmp(key, "ha_prefix")     == 0) NEED_STR(cfg->mqtt_ha_prefix);
+        else WARN_UNKNOWN();
+        break;
+
+    case SEC_INFLUX:
+        if      (strcmp(key, "enabled")       == 0) NEED_BOOL(cfg->influx_enabled);
+        else if (strcmp(key, "socket")        == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "transport")     == 0) NEED_STR(cfg->influx_transport);
+        else if (strcmp(key, "rate_hz")       == 0) NEED_INT(cfg->influx_rate_hz);
+        else if (strcmp(key, "measurement")   == 0) NEED_STR(cfg->influx_measurement);
+        else if (strcmp(key, "source_label")  == 0) NEED_STR(cfg->influx_source_label);
+        else if (strcmp(key, "units")         == 0) NEED_STR(cfg->influx_units);
+        else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
+        else if (strcmp(key, "udp_addr")      == 0) NEED_STR(cfg->influx_udp_addr);
+        else if (strcmp(key, "udp_port")      == 0) NEED_INT(cfg->influx_udp_port);
+        else if (strcmp(key, "http_host")     == 0) NEED_STR(cfg->influx_http_host);
+        else if (strcmp(key, "http_port")     == 0) NEED_INT(cfg->influx_http_port);
+        else if (strcmp(key, "http_path")     == 0) NEED_STR(cfg->influx_http_path);
+        else if (strcmp(key, "http_token")    == 0) NEED_STR(cfg->influx_http_token);
         else WARN_UNKNOWN();
         break;
 

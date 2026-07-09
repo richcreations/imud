@@ -114,6 +114,26 @@ typedef struct {
     bool  mqtt_ha_discovery;      /* [restart] publish Home Assistant discovery */
     char  mqtt_ha_prefix[64];     /* [restart] HA discovery prefix (e.g. "homeassistant") */
 
+    /* [imud-influxdb]  InfluxDB bridge daemon — reads its own
+     * /etc/imud/imud-influxdb.conf ([imud-influxdb] section, plus the shared
+     * `socket`/`publish_heave` keys), connects to the stream socket, and writes
+     * InfluxDB line-protocol points over UDP (default) or HTTP. Pure C, no
+     * external deps. Consumed only by the imud-influxdb binary. */
+    bool  influx_enabled;          /* [restart] */
+    char  influx_transport[8];     /* [restart] "udp" | "http" */
+    int   influx_rate_hz;          /* [hot] point emit rate */
+    char  influx_measurement[32];  /* [hot] line-protocol measurement name */
+    char  influx_source_label[32]; /* [hot] value of the source= tag */
+    char  influx_units[8];         /* [hot] "deg" | "rad" */
+    /* UDP transport */
+    char  influx_udp_addr[64];     /* [hot] InfluxDB/Telegraf UDP host */
+    int   influx_udp_port;         /* [hot] UDP port (InfluxDB default 8089) */
+    /* HTTP transport */
+    char  influx_http_host[64];    /* [restart] HTTP host */
+    int   influx_http_port;        /* [restart] HTTP port (InfluxDB default 8086) */
+    char  influx_http_path[192];   /* [restart] write path incl. query (db / org+bucket / precision) */
+    char  influx_http_token[128];  /* [restart] InfluxDB 2.x API token ("" = none) */
+
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
     char  log_file[256];
