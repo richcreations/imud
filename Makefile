@@ -47,9 +47,9 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all clean test install uninstall
+.PHONY: all bridges clean test install install-signalk uninstall
 
-all: imud imud-cal imud-status imud-mon imud-signalk
+all: imud imud-cal imud-status imud-mon
 
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +72,11 @@ imud-mon: src/config.o src/log.o src/mon_main.o
 # Reuses the public client header (lib/imud_client.h) for packet validation.
 imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# Optional bridge daemons — each has its own config file, service, and man page,
+# and installs via its own `install-*` target (prep for per-bridge packaging).
+# Kept out of `all` so a core build / CI never needs a bridge's dependencies.
+bridges: imud-signalk
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
 
@@ -161,8 +166,8 @@ ETCDIR  ?= /etc/imud
 SVCDIR  ?= /etc/systemd/system
 MANDIR  ?= $(PREFIX)/share/man
 
-install: imud imud-cal imud-status imud-mon imud-signalk
-	install -m 755 imud imud-cal imud-status imud-mon imud-signalk $(DESTDIR)$(PREFIX)/bin/
+install: imud imud-cal imud-status imud-mon
+	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
 	# ── System user ────────────────────────────────────────────────────────
 	@if ! id -u imud >/dev/null 2>&1; then \
 	    useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
@@ -192,9 +197,8 @@ install: imud imud-cal imud-status imud-mon imud-signalk
 	else \
 	    echo "WMM.COF already present — skipping (preserving operator-installed model)"; \
 	fi
-	# ── Systemd services ───────────────────────────────────────────────────
+	# ── Systemd service ────────────────────────────────────────────────────
 	install -m 644 etc/imud.service         $(DESTDIR)$(SVCDIR)/imud.service
-	install -m 644 etc/imud-signalk.service $(DESTDIR)$(SVCDIR)/imud-signalk.service
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -212,12 +216,33 @@ install: imud imud-cal imud-status imud-mon imud-signalk
 	gzip -9c man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
 	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
 	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
-	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
 	@echo ""
 	@echo "Next steps:"
 	@echo "  sudo systemctl enable --now imud"
 	@echo "  review $(ETCDIR)/imud.conf  (i2c_bus, gpio_chip, rotation_euler_deg)"
+
+# ── Install the Signal K bridge (optional) ─────────────────────────────────────
+# Run after `make bridges`.  Installs the binary, service, man page, and its own
+# config file (non-clobbering).  Prep for a standalone imud-signalk package.
+install-signalk: imud-signalk
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -m 755 imud-signalk $(DESTDIR)$(PREFIX)/bin/
+	install -m 644 etc/imud-signalk.service $(DESTDIR)$(SVCDIR)/imud-signalk.service
+	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-signalk.conf" ]; then \
+	    install -m 644 config/imud-signalk.conf $(DESTDIR)$(ETCDIR)/imud-signalk.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
+	else \
+	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
+	fi
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
+	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+	    systemctl daemon-reload; \
+	fi
+	@echo "Installed imud-signalk.  Enable with: sudo systemctl enable --now imud-signalk"
+	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-signalk.conf)"
 
 uninstall:
 	@if command -v systemctl >/dev/null 2>&1; then \

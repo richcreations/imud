@@ -144,10 +144,10 @@ static void usage(const char *prog)
     fprintf(stderr,
         "Usage: %s [--config PATH]\n"
         "\n"
-        "  Signal K bridge: reads imud's [stream] socket and emits Signal K\n"
-        "  delta JSON over UDP. Configured by the [imud-signalk] section.\n"
+        "  Signal K bridge: reads imud's stream socket and emits Signal K\n"
+        "  delta JSON over UDP. Configured by [imud-signalk] in its own file.\n"
         "\n"
-        "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
+        "  --config PATH   Config file (default: /etc/imud/imud-signalk.conf)\n"
         "  --version       Print version and exit\n",
         prog);
 }
@@ -155,7 +155,7 @@ static void usage(const char *prog)
 int main(int argc, char **argv)
 {
     char config_path[256];
-    snprintf(config_path, sizeof config_path, "/etc/imud/imud.conf");
+    snprintf(config_path, sizeof config_path, "/etc/imud/imud-signalk.conf");
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
@@ -208,7 +208,7 @@ int main(int argc, char **argv)
 
     long period_ns = (cfg.sk_rate_hz > 0) ? 1000000000L / cfg.sk_rate_hz
                                           : 100000000L;
-    bool emit_heave = (cfg.heave_tau_s > 0.0f);
+    bool emit_heave = cfg.publish_heave;
 
     int  stream_fd = -1;
     unsigned char frame[IMUD_PACKET_SIZE];
@@ -227,7 +227,7 @@ int main(int argc, char **argv)
             config_defaults(&nc);
             if (config_load(config_path, &nc) != CONFIG_ERR_PARSE) {
                 log_set_level_str(nc.log_level);
-                emit_heave = (nc.heave_tau_s > 0.0f);
+                emit_heave = nc.publish_heave;
                 period_ns  = (nc.sk_rate_hz > 0) ? 1000000000L / nc.sk_rate_hz
                                                  : 100000000L;
                 if (strcmp(nc.sk_dest_addr, cfg.sk_dest_addr) != 0 ||

@@ -57,7 +57,7 @@ C standard library. Nothing else.
 | `imud-cal` | Calibration tool (gyro bias, accel 6-position, magnetometer swing). |
 | `imud-status` | Query a running daemon's health over its Unix socket. |
 | `imud-mon` | Live monitor of the UDP output streams from any host on the LAN. |
-| `imud-signalk` | Bridge daemon: reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
+| `imud-signalk` | Bridge daemon (optional install): reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
 
 ---
 
@@ -309,21 +309,26 @@ daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
 
-### `[imud-signalk]`
+### `[imud-signalk]` (its own file)
 
-Configuration for the `imud-signalk` bridge daemon ([§9a](#9a-signal-k-bridge-imud-signalk)),
-which reads the `[stream]` socket and pushes Signal K deltas over UDP. **Requires
-`[stream] enabled = true`.** Unrelated to the `signalk_*` keys under `[position]`,
-which are the input side (imud reading position *from* Signal K).
-**[restart]**: `enabled`. **[hot]**: `dest_addr`, `dest_port`, `rate_hz`, `source_label`.
+The `imud-signalk` bridge daemon ([§9a](#9a-signal-k-bridge-imud-signalk)) is a
+separate, optional install with its **own** config file,
+`/etc/imud/imud-signalk.conf` — it does **not** read `imud.conf`. It connects to
+imud's stream socket and pushes Signal K deltas over UDP, and requires imud's
+`[stream]` output to be enabled. Unrelated to the `signalk_*` keys under
+`[position]`, which are the input side (imud reading position *from* Signal K).
+**[restart]**: `enabled`, `socket`. **[hot]**: `dest_addr`, `dest_port`, `rate_hz`,
+`source_label`, `publish_heave`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Enable the Signal K bridge. |
+| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read (match `imud.conf` if you changed it there). |
 | `dest_addr` | string | `"127.0.0.1"` | Signal K server host (numeric IPv4). |
 | `dest_port` | int | `10113` | UDP port — must match the Signal K server's UDP input connection. |
 | `rate_hz` | int | `10` | Delta emit rate in Hz. |
 | `source_label` | string | `"imud"` | Signal K delta `source.label` value. |
+| `publish_heave` | bool | `true` | Emit `environment.heave` (set false if imud's heave estimator is off). |
 
 ### `[mount]`
 
@@ -622,28 +627,36 @@ if imud restarts. It requires `[stream] enabled = true`.
 | declination | `navigation.magneticVariation` | declination known |
 | rate of turn | `navigation.rateOfTurn` | always |
 | roll / pitch / yaw | `navigation.attitude` `{roll,pitch,yaw}` | always |
-| heave | `environment.heave` | heave estimator enabled (`heave_tau_s > 0`) |
+| heave | `environment.heave` | `publish_heave` set (default on) |
+
+The bridge is an **optional** component — it is not built by `make` or installed
+by `sudo make install`. Build and install it separately:
+
+```sh
+make bridges                 # builds imud-signalk
+sudo make install-signalk    # binary + service + /etc/imud/imud-signalk.conf
+```
 
 **Setup:**
 
-1. In `imud.conf`, set `[stream] enabled = true` and configure the
-   `[imud-signalk]` section (at minimum `enabled = true` and the Signal K
-   server's `dest_addr`/`dest_port`).
-2. On the Signal K server, add a **UDP** connection (Server → Connections →
+1. In `imud.conf`, set `[stream] enabled = true` (the bridge reads that socket).
+2. In its own file `/etc/imud/imud-signalk.conf`, set `enabled = true` and the
+   Signal K server's `dest_addr`/`dest_port`. The bridge reads only this file.
+3. On the Signal K server, add a **UDP** connection (Server → Connections →
    Add) listening on that port.
-3. Enable the service:
+4. Enable the service:
    ```sh
    sudo systemctl enable --now imud-signalk
    ```
 
 Run it in the foreground to check output:
 ```sh
-imud-signalk --config /etc/imud/imud.conf
+imud-signalk --config /etc/imud/imud-signalk.conf
 nc -u -l 10113        # watch the raw deltas
 ```
 
-`SIGHUP` reloads `dest_addr`, `dest_port`, `rate_hz`, `source_label`, and the
-log level live. Configuration keys are documented in
+`SIGHUP` reloads `dest_addr`, `dest_port`, `rate_hz`, `source_label`,
+`publish_heave`, and the log level live. Configuration keys are documented in
 [§4 `[imud-signalk]`](#imud-signalk).
 
 ---

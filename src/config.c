@@ -171,6 +171,9 @@ void config_defaults(imud_config_t *cfg)
     cfg->sk_rate_hz   = 10;
     snprintf(cfg->sk_source_label, sizeof(cfg->sk_source_label), "imud");
 
+    /* Bridge-shared keys (imud-signalk / imud-mqtt). */
+    cfg->publish_heave = true;   /* imud's heave estimator is on by default */
+
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
     cfg->pos_declination_valid = false;
@@ -448,10 +451,12 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_SIGNALK:
         if      (strcmp(key, "enabled")      == 0) NEED_BOOL(cfg->sk_enabled);
+        else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "dest_addr")    == 0) NEED_STR(cfg->sk_dest_addr);
         else if (strcmp(key, "dest_port")    == 0) NEED_INT(cfg->sk_dest_port);
         else if (strcmp(key, "rate_hz")      == 0) NEED_INT(cfg->sk_rate_hz);
         else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
+        else if (strcmp(key, "publish_heave")== 0) NEED_BOOL(cfg->publish_heave);
         else WARN_UNKNOWN();
         break;
 

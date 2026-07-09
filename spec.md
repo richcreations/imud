@@ -1061,7 +1061,8 @@ and emits Signal K delta JSON over UDP for every value with a standard Signal
 K path — `navigation.headingMagnetic`/`headingTrue`/`magneticVariation`/
 `rateOfTurn`, `navigation.attitude`, and `environment.heave` — in SI units at
 10 Hz (default). It is not part of the wire protocol; see the manual and
-`imud-signalk(8)`. Configured by `[imud-signalk]` in imud.conf.
+`imud-signalk(8)`. An optional, separately-installed component, configured by
+`[imud-signalk]` in its own `/etc/imud/imud-signalk.conf`.
 
 -----
 

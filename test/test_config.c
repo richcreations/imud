@@ -96,6 +96,7 @@ static void test_defaults_values(void)
     EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
     EXPECT(cfg.log_stats_hz == 1,                     "log_stats_hz default");
+    EXPECT(cfg.publish_heave == true,                 "publish_heave default true");
     end_test(fb);
 }
 
@@ -360,6 +361,41 @@ static void test_stream_section(void)
     end_test(fb);
 }
 
+/* [imud-signalk] bridge keys: the own-config-file convention. The bridge reads
+ * its own socket + publish_heave from this section (never imud.conf). */
+static void test_signalk_section(void)
+{
+    begin_test("test_signalk_section");
+    int fb = g_fail;
+
+    /* The real bridge config file parses with the expected defaults. */
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load("config/imud-signalk.conf", &cfg) == 0,
+           "imud-signalk.conf loads");
+    EXPECT(!cfg.sk_enabled,                         "sk enabled=false in conf");
+    EXPECT(cfg.sk_dest_port == 10113,               "sk dest_port 10113");
+    EXPECT(cfg.sk_rate_hz == 10,                    "sk rate_hz 10");
+    EXPECT_STR(cfg.sk_source_label, "imud",         "sk source_label imud");
+    EXPECT(cfg.publish_heave == true,               "publish_heave true in conf");
+    EXPECT_STR(cfg.stream_socket, "/run/imud/imud-stream.sock",
+               "socket key maps to stream_socket");
+
+    /* socket override + publish_heave=false via the [imud-signalk] section. */
+    const char *path = write_tmpconf(17,
+        "[imud-signalk]\n"
+        "socket        = \"/tmp/sk-stream.sock\"\n"
+        "publish_heave = false\n"
+        "rate_hz       = 4\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,            "signalk override loads");
+    EXPECT_STR(cfg.stream_socket, "/tmp/sk-stream.sock", "socket override applied");
+    EXPECT(cfg.publish_heave == false,              "publish_heave=false loaded");
+    EXPECT(cfg.sk_rate_hz == 4,                      "sk rate_hz override loaded");
+    remove(path);
+    end_test(fb);
+}
+
 /* declination_deg sets the validity flag: non-zero → valid, 0.0 → disabled. */
 static void test_declination_valid_flag(void)
 {
@@ -474,6 +510,7 @@ int main(void)
     test_defaults_position();
     test_fusion_marine_keys();
     test_stream_section();
+    test_signalk_section();
     test_declination_valid_flag();
     test_fix_max_age_h_load();
     test_fix_max_age_h_zero();

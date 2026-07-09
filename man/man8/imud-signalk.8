@@ -18,10 +18,15 @@ unchanged.
 .PP
 The bridge holds no hardware.  It reconnects automatically if
 .BR imud (8)
-restarts, and requires
-.B [stream] enabled = true
-in the configuration (it reads the socket named by
-.BR "[stream] socket" ).
+restarts.  It reads the stream socket named by its own
+.B socket
+key (default
+.IR /run/imud/imud-stream.sock ),
+so
+.BR imud (8)
+must have its
+.B [stream]
+output enabled.
 .PP
 All values use Signal K SI units (radians, rad/s, metres).  The fields emitted
 are:
@@ -34,7 +39,7 @@ navigation.headingTrue	when declination is known
 navigation.magneticVariation	when declination is known
 navigation.rateOfTurn	always
 navigation.attitude	roll, pitch, yaw (always)
-environment.heave	when the heave estimator is enabled
+environment.heave	when publish_heave is set
 .TE
 .RE
 .PP
@@ -48,12 +53,10 @@ listening on the bridge's destination port.
 Load configuration from
 .I PATH
 instead of
-.IR /etc/imud/imud.conf .
-The
+.IR /etc/imud/imud-signalk.conf .
+Only the
 .B [imud-signalk]
-and
-.B [stream]
-sections are used.
+section is read.
 .TP
 .B \-\-version
 Print the version string and exit.
@@ -61,42 +64,65 @@ Print the version string and exit.
 .TP
 .B SIGHUP
 Reload the configuration.  The emit rate, destination address/port, source
-label, and log level are applied live; if the reload fails to parse, the
-running configuration is kept.
+label, heave publishing, and log level are applied live; if the reload fails to
+parse, the running configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
 .SH CONFIGURATION
-See the
+The bridge reads its own file (default
+.IR /etc/imud/imud-signalk.conf ),
+using only the
 .B [imud-signalk]
-section in
-.BR imud.conf (5):
-.BR enabled ,
-.BR dest_addr ,
-.BR dest_port ,
-.BR rate_hz ,
-and
-.BR source_label .
+section:
+.TP
+.B enabled
+Start the bridge (also gate with the systemd unit).  [restart]
+.TP
+.B socket
+imud stream socket to read (default
+.IR /run/imud/imud-stream.sock ).  [restart]
+.TP
+.BR dest_addr ", " dest_port
+Signal K server host and UDP input port (default 127.0.0.1:10113).  [hot]
+.TP
+.B rate_hz
+Delta emit rate (default 10).  [hot]
+.TP
+.B source_label
+Signal K delta
+.B source.label
+(default "imud").  [hot]
+.TP
+.B publish_heave
+Emit
+.B environment.heave
+(default true; set false if imud's heave estimator is off).  [hot]
 .SH EXAMPLES
 Run in the foreground against a local config:
 .PP
 .RS 4
 .EX
-imud-signalk --config /etc/imud/imud.conf
+imud-signalk --config /etc/imud/imud-signalk.conf
 .EE
 .RE
 .PP
-Enable as a service (after enabling
+Enable as a service (after enabling imud's
 .B [stream]
-and
-.B [imud-signalk]
-in the config):
+output and
+.B enabled
+in
+.IR imud-signalk.conf ):
 .PP
 .RS 4
 .EX
 sudo systemctl enable --now imud-signalk
 .EE
 .RE
+.SH FILES
+.TP
+.I /etc/imud/imud-signalk.conf
+Default configuration file.
 .SH SEE ALSO
 .BR imud (8),
 .BR imud.conf (5),

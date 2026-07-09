@@ -42,7 +42,52 @@ noise inflation while active). The ISM330's on-chip Machine Learning Core could
 assert a GPIO on engine-on instead. Only worth it if the software detector proves
 finicky at sea.
 
-## 5. Small items
+## 5. Output bridges  *(new consumers of the existing streams — no core changes)*
+
+A bridge subscribes to imud's loss-free AF_UNIX stream socket (never the lossy
+UDP broadcast), parses the framed packets with `lib/imud_client.{h,py}`,
+translates, and re-emits on another protocol; the core daemon is untouched. `imud-signalk` (shipped) is the
+reference pattern — a small `Type=notify` daemon reading the stream and pushing
+deltas over UDP. Simple text/UDP protocols fit that same pure-C mold; anything
+that drags in a large middleware or toolchain (ROS2, CAN) is better as its own
+project that reuses the client lib rather than something built under this Makefile.
+
+**Marine**
+- **NMEA 2000 / N2K** — highest-value marine target after Signal K: PGN 127250
+  (vessel heading), 127251 (rate of turn), 127257 (attitude), 127252 (heave).
+  Needs SocketCAN + a CAN transceiver (PiCAN / MCP2515) or a USB gateway;
+  fast-packet PGN encoding is the real work. *(medium–high; needs CAN hardware to test)*
+
+**Robotics / autonomy**
+- **ROS2** — `sensor_msgs/Imu` (+ `MagneticField`, `Temperature`), NED → REP-103
+  ENU/FLU. **Tracked as its own project** (needs an ament/colcon package; can't
+  build under this Makefile). An `rclpy` node reusing `imud_client.py` is the light
+  path; the frame conversion is the substantive work.
+- **MAVLink** — `ATTITUDE` / `ATTITUDE_QUATERNION` / `RAW_IMU` to ArduPilot, PX4,
+  or QGroundControl over UDP/serial. Directly useful for ArduRover boats and drones.
+  Fits the pure-C imud-signalk mold. *(medium)*
+
+**Telemetry / dashboards**
+- **MQTT** — attitude / heading / heave / health as JSON topics to a broker
+  (Home Assistant discovery, boat/robot telemetry). Small pure-C daemon. *(easy)*
+- **InfluxDB line protocol** — UDP/HTTP straight into a time-series DB for Grafana;
+  ideal for fusion tuning and sea-trial logging. Nearly trivial. *(easy)*
+- **Prometheus exporter** — a `/metrics` HTTP endpoint (live values + daemon health)
+  for alerting/monitoring stacks. *(easy)*
+
+**Web / visualization**
+- **WebSocket / SSE JSON** — browser dashboards and a live 3-D attitude view with no
+  native client. *(medium — needs a tiny embedded HTTP/WS server)*
+- **Foxglove** — WebSocket + Foxglove protocol (or MCAP capture) for robotics-grade
+  visualization and replay. *(medium)*
+- **OSC** — attitude over Open Sound Control (UDP) for camera rigs, gimbals, and
+  AV / interactive installations. *(easy)*
+
+Rough priority if picked up: **MQTT** and **InfluxDB** first (cheap, broadly
+useful), then **MAVLink** (opens the drone/autopilot audience) and **NMEA 2000**
+(completes the marine stack), with **ROS2** proceeding on its own track.
+
+## 6. Small items
 
 - `ctx->stop` in imu.c stays `volatile int` (not `_Atomic`) because its address feeds
   the `imu_ring_pop()` API; changing it means touching ring.h/ring.c/test_ring.
@@ -53,4 +98,5 @@ finicky at sea.
   estimate could refine it, but the residual is second-order for typical vessels.
 
 ---
-*Compiled 2026-07-06, updated same day after the software roadmap items landed.*
+*Compiled 2026-07-06; software roadmap items landed same day; output-bridges
+section added 2026-07-08.*
