@@ -92,6 +92,28 @@ typedef struct {
      * reuses stream_socket above; default is the well-known stream path. */
     bool  publish_heave;          /* [hot] emit heave (env.heave / imud/environment/heave) */
 
+    /* [imud-mqtt]  MQTT bridge daemon — reads its own /etc/imud/imud-mqtt.conf
+     * ([imud-mqtt] section, plus the shared `socket`/`publish_heave` keys above),
+     * connects to the stream socket, and publishes scalar telemetry topics
+     * (+ Home Assistant discovery) to an MQTT broker via libmosquitto.
+     * Consumed only by the imud-mqtt binary. */
+    bool  mqtt_enabled;           /* [restart] */
+    char  mqtt_broker_addr[64];   /* [restart] broker host (hostname or IP) */
+    int   mqtt_broker_port;       /* [restart] broker TCP port */
+    char  mqtt_client_id[64];     /* [restart] MQTT client id; also HA node id */
+    char  mqtt_topic_prefix[64];  /* [restart] topic prefix, e.g. "imud" */
+    int   mqtt_rate_hz;           /* [hot] publish rate */
+    int   mqtt_qos;               /* [hot] publish QoS (0|1|2) */
+    bool  mqtt_retain;            /* [hot] retain published values */
+    char  mqtt_units[8];          /* [hot] "deg" | "rad" */
+    char  mqtt_username[64];      /* [restart] broker auth username ("" = none) */
+    char  mqtt_password[128];     /* [restart] broker auth password ("" = none) */
+    bool  mqtt_tls;               /* [restart] enable TLS */
+    char  mqtt_tls_cafile[256];   /* [restart] CA cert path ("" = system store) */
+    int   mqtt_keepalive_s;       /* [restart] MQTT keepalive interval, s */
+    bool  mqtt_ha_discovery;      /* [restart] publish Home Assistant discovery */
+    char  mqtt_ha_prefix[64];     /* [restart] HA discovery prefix (e.g. "homeassistant") */
+
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */
     char  log_file[256];

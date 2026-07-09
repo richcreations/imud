@@ -13,13 +13,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgpiod-dev
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev
 
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
 
       # Bridges are out of `all` (own deps/config/service, per-bridge packaging).
-      # Build them here so they don't bit-rot; imud-signalk is pure C (no new deps).
+      # Build them here so they don't bit-rot. imud-mqtt needs libmosquitto-dev
+      # (installed above); imud-signalk is pure C.
       - name: Build bridges
         run: make bridges
 

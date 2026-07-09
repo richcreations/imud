@@ -1,0 +1,138 @@
+.TH IMUD\-MQTT 8 "July 2026" "imud 1.1" "System Manager's Manual"
+.SH NAME
+imud\-mqtt \- bridge imud's binary stream to MQTT (with Home Assistant discovery)
+.SH SYNOPSIS
+.B imud-mqtt
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B imud-mqtt
+connects to the local AF_UNIX binary subscription stream published by
+.BR imud (8)
+and publishes imud's attitude/heading/motion values to an MQTT broker as scalar
+"one value per topic" messages, plus Home Assistant MQTT-discovery configs so
+the sensors self-register as a single
+.I imud
+device.  imud's NMEA and Signal K outputs are unaffected.
+.PP
+The bridge holds no hardware.  It reads the stream socket named by its own
+.B socket
+key (default
+.IR /run/imud/imud-stream.sock ),
+so
+.BR imud (8)
+must have its
+.B [stream]
+output enabled.  libmosquitto's background loop owns the broker connection
+(auto-reconnect and keepalive), so a broker outage never stalls the reader.
+.PP
+Values are published in human-friendly units by default
+.RB ( units " = " deg :
+degrees, °/min, metres, °C) or SI
+.RB ( units " = " rad :
+radians, rad/s).  Topics (default prefix
+.IR imud ):
+.PP
+.RS 4
+.TS
+l l.
+imud/navigation/headingMagnetic	always
+imud/navigation/headingTrue	when declination is known
+imud/navigation/magneticVariation	when declination is known
+imud/navigation/rateOfTurn	always
+imud/attitude/roll , /pitch , /yaw	always (imud NED convention)
+imud/environment/heave	when publish_heave is set
+imud/imu/temperature	always
+imud/status/online	retained; \(dqoffline\(dq via MQTT last-will
+.TE
+.RE
+.PP
+Home Assistant discovery configs are published (retained) to
+.IR <ha_prefix>/sensor/<client_id>_<sensor>/config .
+Raw high-rate accelerometer/gyro/magnetometer/quaternion data is intentionally
+not published over MQTT (wrong transport) \(em consume the binary stream directly
+for that.
+.SH OPTIONS
+.TP
+.BI \-\-config \ PATH
+Load configuration from
+.I PATH
+instead of
+.IR /etc/imud/imud-mqtt.conf .
+Only the
+.B [imud-mqtt]
+section is read.
+.TP
+.B \-\-version
+Print the version string and exit.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the configuration.  The publish rate, QoS, retain flag, units, heave
+publishing, and log level are applied live; broker/client/topic-prefix changes
+require a restart.  If the reload fails to parse, the running configuration is
+kept.
+.TP
+.BR SIGTERM ", " SIGINT
+Graceful shutdown (publishes a retained \(dqoffline\(dq availability message).
+.SH CONFIGURATION
+The bridge reads its own file (default
+.IR /etc/imud/imud-mqtt.conf ),
+using only the
+.B [imud-mqtt]
+section.  Key groups:
+.TP
+.B enabled ", " socket
+Start the bridge; imud stream socket to read.  [restart]
+.TP
+.BR broker_addr ", " broker_port ", " client_id ", " keepalive_s
+Broker host/port (default 127.0.0.1:1883), MQTT client id (also the Home
+Assistant node id), and keepalive.  [restart]
+.TP
+.BR topic_prefix ", " rate_hz ", " qos ", " retain ", " units ", " publish_heave
+Topic prefix, publish rate (default 5 Hz), QoS, retain flag, units
+.RB ( deg | rad ),
+and whether to publish heave.  [hot] except topic_prefix.
+.TP
+.BR ha_discovery ", " ha_prefix
+Publish Home Assistant discovery (default true) and its topic prefix
+(default \(dqhomeassistant\(dq).  [restart]
+.TP
+.BR username ", " password ", " tls ", " tls_cafile
+Optional broker authentication and TLS.  A plaintext
+.B password
+in the config file should be protected with restrictive file permissions.
+[restart]
+.SH FILES
+.TP
+.I /etc/imud/imud-mqtt.conf
+Default configuration file.
+.SH EXAMPLES
+Run in the foreground against a local broker and watch the topics:
+.PP
+.RS 4
+.EX
+imud-mqtt --config /etc/imud/imud-mqtt.conf
+mosquitto_sub -t 'imud/#' -v
+.EE
+.RE
+.PP
+Enable as a service (after enabling imud's
+.B [stream]
+output and
+.B enabled
+in
+.IR imud-mqtt.conf ):
+.PP
+.RS 4
+.EX
+sudo systemctl enable --now imud-mqtt
+.EE
+.RE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-signalk (8),
+.BR imud.conf (5),
+.BR mosquitto (8)
+.SH AUTHORS
+Richard Simpson

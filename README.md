@@ -54,6 +54,8 @@ imud is output-agnostic; the same daemon serves very different consumers:
   tuned for it.) The `imud-signalk` bridge also feeds Signal K natively over
   UDP when its NMEA parsing falls short.
 - **Robotics / ROS2** — attitude and rate of turn over the binary stream.
+- **IoT / home automation & dashboards** — the `imud-mqtt` bridge publishes
+  heading/attitude/heave to an MQTT broker with Home Assistant auto-discovery.
 - **Machine vision & camera stabilization** — high-rate quaternion with
   hardware timestamps for frame-accurate correlation.
 - **Gimbals, pan/tilt rigs, and antenna/dish pointing** — low-latency
@@ -110,6 +112,7 @@ in-situ `imud-cal mag`. See the
 | `imud-status` | Query a running daemon's health. |
 | `imud-mon` | Live monitor of the output streams from any host on the network. |
 | `imud-signalk` | Bridge daemon (optional install): pushes Signal K deltas over UDP from the local stream socket. |
+| `imud-mqtt` | Bridge daemon (optional install): publishes MQTT topics + Home Assistant discovery from the local stream socket. |
 
 ## Documentation
 
@@ -121,6 +124,6 @@ in-situ `imud-cal mag`. See the
 - **[Client libraries](lib/README.md)** — C and Python libraries for the
   binary stream.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
-  `imud-mon(1)` (installed by `make install`); `imud-signalk(8)` by
-  `make install-signalk`.
+  `imud-mon(1)` (installed by `make install`); `imud-signalk(8)` /
+  `imud-mqtt(8)` by `make install-signalk` / `install-mqtt`.
 - **[ROADMAP](docs/ROADMAP.md)** — deferred and future work.
