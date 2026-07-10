@@ -1,3 +1,12 @@
+imud (1.2) unstable; urgency=medium
+
+  * Binary stream packet version 12 (228 bytes): add gyro bias (x/y/z) + variance,
+    heave rate, and an accel-quiescence metric; add a HEAVE_VALID flag. Stream
+    consumers (bridges, imud-mon, custom clients) must be rebuilt against the new
+    packet layout.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 03:00:00 -0700
+
 imud (1.1) unstable; urgency=medium
 
   * Add optional bridge daemons, each its own package: imud-signalk,

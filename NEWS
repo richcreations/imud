@@ -6,6 +6,15 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.2
+---
+* Binary stream packet version 12 (228 bytes): export more of the fusion state
+  imud already computes — estimated gyro bias (x/y/z) and its variance, heave
+  rate (vertical velocity), and an accel-quiescence (platform-disturbance)
+  metric — plus a new HEAVE_VALID flag that signals when the heave estimate has
+  settled. Stream consumers must be rebuilt against the new packet layout.
+
+
 1.1
 ---
 * Optional bridge daemons — each shipped as its own package with its own config

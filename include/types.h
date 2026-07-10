@@ -7,7 +7,7 @@
 /*
  * types.h — core data structures shared across all imud threads
  *
- * Wire packet is little-endian, 196 bytes. All angle units are radians
+ * Wire packet is little-endian, 228 bytes. All angle units are radians
  * unless the field name ends in _deg. Magnetic field in µT. Accel in m/s².
  * Gyro in rad/s.
  */
@@ -22,7 +22,7 @@
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION  11   /* 1.1 — encoded as decimal: major*10 + minor */
+#define IMUD_VERSION  12   /* 1.2 — encoded as decimal: major*10 + minor */
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 
@@ -37,6 +37,7 @@
 #define FLAG_STARTUP          (1u <<  8)  /* gyro bias estimation in progress */
 #define FLAG_SHUTDOWN         (1u <<  9)  /* final packet before clean exit */
 #define FLAG_DECLINATION_VALID (1u << 10) /* WMM/static declination known; true_heading valid */
+#define FLAG_HEAVE_VALID       (1u << 11) /* heave estimator has settled (heave_m/heave_rate valid) */
 
 /* ── IMU sample — one calibrated sample from the configured IMU ────────────── */
 
@@ -71,6 +72,9 @@ typedef struct {
     float    declination_deg; /* °E+; valid only when FLAG_DECLINATION_VALID set */
     float    rate_of_turn;   /* deg/min, derived from yaw rate */
     float    heave_m;        /* vertical displacement, m, + up; 0 when disabled */
+    float    heave_rate;     /* vertical velocity, m/s, + up; 0 when disabled */
+    float    bias_gyro_var[3]; /* gyro-bias variance, (rad/s)², MEKF P diagonal */
+    float    quiescence;     /* accel-quiescence EMA (|a|/g−1)²; disturbance metric */
     uint16_t flags;          /* FLAG_* bitmask */
     uint32_t imu_seq;        /* ISM330 sample counter of last prediction step */
     uint64_t ts_wall_ns;     /* CLOCK_REALTIME of last prediction step (ns) */
@@ -79,7 +83,7 @@ typedef struct {
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
-/* ── Wire packet — §8, 196 bytes fixed, little-endian ─────────────────────── */
+/* ── Wire packet — §8, 228 bytes fixed, little-endian ─────────────────────── */
 
 typedef struct __attribute__((packed)) {
     /* Header — 32 bytes */
@@ -127,13 +131,22 @@ typedef struct __attribute__((packed)) {
     float    declination_deg; /* °E+; 0.0 when FLAG_DECLINATION_VALID not set */
     float    heave_m;        /* vertical displacement, m, + up (v11); 0.0 when
                               * the heave estimator is disabled */
-    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–191 */
+    /* v12 additions — body-frame / frame-neutral (NOT coord_frame-converted) */
+    float    gyro_bias_x;    /* estimated gyro bias, rad/s, IMU body frame */
+    float    gyro_bias_y;
+    float    gyro_bias_z;
+    float    gyro_bias_var_x; /* gyro-bias variance, (rad/s)², MEKF P diagonal */
+    float    gyro_bias_var_y;
+    float    gyro_bias_var_z;
+    float    heave_rate;     /* vertical velocity, m/s, + up (v12); 0.0 when disabled */
+    float    accel_quiescence; /* EMA of (|a|/g − 1)²; platform-disturbance metric */
+    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–223 */
 } imu_packet_t;
 
-_Static_assert(sizeof(imu_packet_t) == 196,
-               "imu_packet_t must be exactly 196 bytes");
-_Static_assert(offsetof(imu_packet_t, crc32) == 192,
-               "crc32 must be at offset 192");
+_Static_assert(sizeof(imu_packet_t) == 228,
+               "imu_packet_t must be exactly 228 bytes");
+_Static_assert(offsetof(imu_packet_t, crc32) == 224,
+               "crc32 must be at offset 224");
 
 /* ── IMU ring buffer — ism_reader → fusion ─────────────────────────────────── */
 

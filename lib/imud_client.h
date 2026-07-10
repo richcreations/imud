@@ -33,8 +33,8 @@
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION      11   /* 1.1 — encode as decimal: major*10 + minor */
-#define IMUD_PACKET_SIZE  196           /* bytes, fixed */
+#define IMUD_VERSION      12   /* 1.2 — encode as decimal: major*10 + minor */
+#define IMUD_PACKET_SIZE  228           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */
 
@@ -49,8 +49,9 @@
 #define IMUD_FLAG_STARTUP              (1u << 8)  /* gyro bias estimation in progress */
 #define IMUD_FLAG_SHUTDOWN             (1u << 9)  /* final packet before clean exit */
 #define IMUD_FLAG_DECLINATION_VALID    (1u << 10) /* declination known; true_heading valid */
+#define IMUD_FLAG_HEAVE_VALID          (1u << 11) /* heave estimator settled (heave_m/heave_rate valid) */
 
-/* ── Wire packet — 196 bytes, little-endian ─────────────────────────────── */
+/* ── Wire packet — 228 bytes, little-endian ─────────────────────────────── */
 
 #if defined(_MSC_VER)
 #  pragma pack(push, 1)
@@ -107,7 +108,16 @@ typedef struct IMUD__PACKED {
     float    declination_deg; /* °E+; 0.0 when IMUD_FLAG_DECLINATION_VALID not set */
     float    heave_m;         /* vertical displacement, m, + up (v1.1); 0.0 when
                                * the daemon's heave estimator is disabled */
-    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–191 */
+    /* v1.2 diagnostics — IMU body frame / frame-neutral (not coord_frame-rotated) */
+    float    gyro_bias_x;     /* estimated gyro bias, rad/s */
+    float    gyro_bias_y;
+    float    gyro_bias_z;
+    float    gyro_bias_var_x; /* gyro-bias variance, (rad/s)² */
+    float    gyro_bias_var_y;
+    float    gyro_bias_var_z;
+    float    heave_rate;      /* vertical velocity, m/s, + up (v1.2); 0.0 when disabled */
+    float    accel_quiescence; /* EMA of (|a|/g − 1)²; platform-disturbance metric */
+    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–223 */
 } imud_packet_t;
 
 #if defined(_MSC_VER)

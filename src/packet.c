@@ -158,6 +158,16 @@ void packet_build(imu_packet_t       *pkt,
                            ? state->declination_deg : 0.0f;
     pkt->heave_m = state->heave_m;
 
+    /* v12 diagnostics — body-frame / frame-neutral (no coord_frame conversion) */
+    pkt->gyro_bias_x      = state->bias_gyro[0];
+    pkt->gyro_bias_y      = state->bias_gyro[1];
+    pkt->gyro_bias_z      = state->bias_gyro[2];
+    pkt->gyro_bias_var_x  = state->bias_gyro_var[0];
+    pkt->gyro_bias_var_y  = state->bias_gyro_var[1];
+    pkt->gyro_bias_var_z  = state->bias_gyro_var[2];
+    pkt->heave_rate       = state->heave_rate;
+    pkt->accel_quiescence = state->quiescence;
+
     /* CRC32 covers all bytes before the crc32 field */
     pkt->crc32 = crc32_ieee((const uint8_t *)pkt, offsetof(imu_packet_t, crc32));
 }

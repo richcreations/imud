@@ -149,13 +149,17 @@ python3 imud_client.py --port 10111 --addr 239.255.0.1
 | `imu_seq` | int | monotonic sample counter |
 | `declination_deg` | float | °E+; 0.0 when DECLINATION_VALID flag not set |
 | `heave_m` | float | vertical displacement, m, + up; 0.0 when heave disabled (v1.1) |
+| `gyro_bias_x/y/z` | float | estimated gyro bias, rad/s (v1.2, body frame) |
+| `gyro_bias_var_x/y/z` | float | gyro-bias variance, (rad/s)² (v1.2) |
+| `heave_rate` | float | vertical velocity, m/s, + up; 0.0 when heave disabled (v1.2) |
+| `accel_quiescence` | float | EMA of (\|a\|/g−1)²; platform-disturbance metric (v1.2) |
 | `true_heading_deg` | float or None | heading + declination, or None when declination unknown |
 
 ---
 
-## Stream B packet layout (v1.1, 196 bytes)
+## Stream B packet layout (v1.2, 228 bytes)
 
 See `spec.md §8` for the complete wire format. The stream is little-endian,
-196 bytes per packet (version field = 11, i.e. v1.1), with an IEEE 802.3
-CRC32 over the first 192 bytes (0–191). Both libraries validate magic,
+228 bytes per packet (version field = 12, i.e. v1.2), with an IEEE 802.3
+CRC32 over the first 224 bytes (0–223). Both libraries validate magic,
 version, and CRC before returning a packet.

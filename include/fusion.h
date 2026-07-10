@@ -131,6 +131,8 @@ typedef struct {
     float disp;      /* leaked vertical displacement, m (down +) */
     float disp_prev; /* previous displacement (high-pass state) */
     float hp_y;      /* high-passed displacement (down +) */
+    float elapsed;   /* seconds since enable (settling ramp) */
+    bool  settled;   /* true once elapsed ≥ ~10·tau — heave trustworthy */
     bool  enabled;
 } heave_t;
 

@@ -287,7 +287,7 @@ details.
 
 High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`, `coord_frame`. **[hot]**: `rate_hz`.
 
-The 196-byte binary packet format is documented in [spec.md §8](../spec.md).
+The 228-byte binary packet format is documented in [spec.md §8](../spec.md).
 Consumer libraries are in `lib/`.
 
 | Key | Type | Default | Description |
@@ -300,7 +300,7 @@ Consumer libraries are in `lib/`.
 
 ### `[stream]`
 
-Local AF_UNIX subscription stream — the same 196-byte binary packets as
+Local AF_UNIX subscription stream — the same 228-byte binary packets as
 `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a
 loss-free stream and subscribe by connecting (up to 8 at once). Slow
 consumers get dropped packets (visible as `imu_seq` gaps), never a stalled
@@ -512,7 +512,7 @@ Broadcast text sentences for chartplotters, autopilots, and marine software
 
 ### High-rate binary — UDP port 10111 (default off)
 
-A fixed 196-byte little-endian packet (protocol v1.1) at up to 500 Hz:
+A fixed 228-byte little-endian packet (protocol v1.2) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 (wall + TAI + chip), declination, and an IEEE-802.3 CRC32. Every packet is
@@ -522,7 +522,7 @@ consumer libraries in [§9](#9-consumer-libraries).
 
 ### Local subscription stream — AF_UNIX socket (default off)
 
-The same 196-byte binary packets over a `SOCK_STREAM` socket at
+The same 228-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
 loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets
