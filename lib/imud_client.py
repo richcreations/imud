@@ -28,8 +28,8 @@ from typing import Iterator, Optional
 # ── Protocol constants ────────────────────────────────────────────────────────
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
-IMUD_VERSION     = 11    # 1.1 — encoded as decimal: major*10 + minor
-IMUD_PACKET_SIZE = 196
+IMUD_VERSION     = 12    # 1.2 — encoded as decimal: major*10 + minor
+IMUD_PACKET_SIZE = 228
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ class Flags:
     STARTUP              = 1 << 8   # gyro bias estimation in progress
     SHUTDOWN             = 1 << 9   # final packet before clean exit
     DECLINATION_VALID    = 1 << 10  # declination known; true_heading valid
+    HEAVE_VALID          = 1 << 11  # heave estimator settled (heave_m/heave_rate valid)
 
     @staticmethod
     def describe(flags: int) -> str:
@@ -56,6 +57,7 @@ class Flags:
             Flags.GYRO_CAL:          'G',
             Flags.MAG_CAL:           'M',
             Flags.DECLINATION_VALID: 'D',
+            Flags.HEAVE_VALID:       'H',
             Flags.STARTUP:           'S',
             Flags.FIFO_OVERFLOW:     '!',
             Flags.SHUTDOWN:          'X',
@@ -65,7 +67,7 @@ class Flags:
 
 # ── Packet struct ─────────────────────────────────────────────────────────────
 #
-# Wire layout (little-endian, 196 bytes):
+# Wire layout (little-endian, 228 bytes):
 #   Offset  Field
 #    0      magic          uint32
 #    4      version        uint16
@@ -91,9 +93,13 @@ class Flags:
 #  180      imu_seq        uint32
 #  184      declination_deg float32     °E+, 0.0 when DECLINATION_VALID not set
 #  188      heave_m        float32     m, + up; 0.0 when heave disabled (v1.1)
-#  192      crc32          uint32
+#  192      gyro_bias[3]     3× float32  estimated gyro bias, rad/s (v1.2)
+#  204      gyro_bias_var[3] 3× float32  gyro-bias variance, (rad/s)² (v1.2)
+#  216      heave_rate       float32     m/s, + up (v1.2)
+#  220      accel_quiescence float32     EMA of (|a|/g−1)² (v1.2)
+#  224      crc32          uint32
 
-_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'IffI')
+_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 10 + 'I')
 
 assert _STRUCT.size == IMUD_PACKET_SIZE, \
     f"struct size mismatch: {_STRUCT.size} != {IMUD_PACKET_SIZE}"
@@ -155,6 +161,17 @@ class ImudPacket:
     imu_seq:          int
     declination_deg:  float   # °E+; 0.0 when DECLINATION_VALID flag not set
     heave_m:          float   # m, + up; 0.0 when the heave estimator is off
+
+    # v1.2 diagnostics — IMU body frame / frame-neutral
+    gyro_bias_x:      float   # rad/s
+    gyro_bias_y:      float
+    gyro_bias_z:      float
+    gyro_bias_var_x:  float   # (rad/s)²
+    gyro_bias_var_y:  float
+    gyro_bias_var_z:  float
+    heave_rate:       float   # m/s, + up; 0.0 when heave disabled
+    accel_quiescence: float   # EMA of (|a|/g−1)²
+
     crc32:            int
 
     # ── Convenience properties ────────────────────────────────────────────

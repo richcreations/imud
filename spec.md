@@ -2,7 +2,7 @@
 
 ## `imud` — a general-purpose IMU daemon ("gpsd for IMUs")
 
-**Version:** 1.1  
+**Version:** 1.2  
 **What:** owns an IMU + magnetometer, fuses to attitude/heading, and publishes
 on NMEA 0183, binary UDP, and a local stream socket for any number of
 consumers (marine nav, robotics, machine vision, gimbals/pointing).  
@@ -171,7 +171,7 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 196-byte binary packets to local AF_UNIX subscribers               |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 228-byte binary packets to local AF_UNIX subscribers               |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
@@ -609,8 +609,8 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 **Port:** 10111  
 **Rate:** 500 Hz  
-**Format:** Binary, little-endian, 196 bytes fixed  
-**Wire load:** ~98 KB/s
+**Format:** Binary, little-endian, 228 bytes fixed  
+**Wire load:** ~114 KB/s
 
 ### Packet Layout
 
@@ -618,7 +618,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
  0      4      uint32    magic             0x494D5544 (“IMUD”)
- 4      2      uint16    version           = 11  (v1.1; encoded as major*10+minor)
+ 4      2      uint16    version           = 12  (v1.2; encoded as major*10+minor)
  6      2      uint16    flags             see below
  8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns
@@ -657,9 +657,17 @@ Offset  Bytes  Type      Field             Notes
 180     4      uint32    imu_seq           monotonic ISM330 sample counter
 184     4      float32   declination_deg   °E+; 0.0 when FLAG_DECLINATION_VALID not set
 188     4      float32   heave_m           m, + up; 0.0 when heave disabled (v1.1)
-192     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–191
+192     4      float32   gyro_bias_x       rad/s, estimated gyro bias (v1.2, body frame)
+196     4      float32   gyro_bias_y
+200     4      float32   gyro_bias_z
+204     4      float32   gyro_bias_var_x   (rad/s)², gyro-bias variance (v1.2)
+208     4      float32   gyro_bias_var_y
+212     4      float32   gyro_bias_var_z
+216     4      float32   heave_rate        m/s, + up; 0.0 when heave disabled (v1.2)
+220     4      float32   accel_quiescence  EMA of (|a|/g−1)²; disturbance metric (v1.2)
+224     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–223
 ────────────────────────────────────────────────────────────────────
-Total: 196 bytes
+Total: 228 bytes
 ```
 
 ### Flags Bitmask
@@ -676,7 +684,8 @@ bit 7   fifo_overflow      ISM330 FIFO overflowed since last packet (gap!)
 bit 8   startup            Gyro bias estimation still in progress
 bit 9   shutdown           Final packet before clean exit
 bit 10  declination_valid  Declination known; true heading = heading_deg + declination_deg
-bits 11–15  reserved
+bit 11  heave_valid        Heave estimator settled (heave_m / heave_rate trustworthy)
+bits 12–15  reserved
 ```
 
 ### Coordinate Frame
@@ -688,6 +697,10 @@ NED (North-East-Down), right-handed:
 - +Z: down
 
 Configurable to ENU via `coord_frame = "ENU"`.
+
+The v1.2 diagnostic fields (`gyro_bias_*`, `gyro_bias_var_*`, `heave_rate`,
+`accel_quiescence`) are body-frame or frame-neutral scalars and are **not**
+affected by `coord_frame`.
 
 -----
 
@@ -778,7 +791,7 @@ coord_frame    = "NED"           # "NED" or "ENU"
 [stream]
 # [restart]: enabled, socket
 # [hot]:     rate_hz
-# Local AF_UNIX subscription stream — 196-byte binary packets (§8 format)
+# Local AF_UNIX subscription stream — 228-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
 enabled        = false
 socket         = "/run/imud/imud-stream.sock"
@@ -858,13 +871,13 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 
 **Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
-**Format:** identical 196-byte binary packets as Stream B (§8)
+**Format:** identical 228-byte binary packets as Stream B (§8)
 **Enabled by:** `stream.enabled = true` (disabled by default)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
-every packet as an exact 196-byte frame — no datagram loss, self-framing via
+every packet as an exact 228-byte frame — no datagram loss, self-framing via
 the fixed size plus magic/CRC, so `lib/imud_client.h` validation works
-unchanged on 196-byte reads. Sends are non-blocking: a slow consumer gets
+unchanged on 228-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead. The daemon never blocks
 on a consumer.

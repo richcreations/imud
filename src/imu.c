@@ -769,7 +769,10 @@ void *fusion_thread(void *arg)
         fused_state_t state;
         mekf_get_state(&f, &state, cal_flags);
 
-        state.heave_m = heave_update(&heave, f.q, s.accel);
+        state.heave_m    = heave_update(&heave, f.q, s.accel);
+        state.heave_rate = -heave.vel;   /* NED down → heave positive up, m/s */
+        if (heave.enabled && heave.settled)
+            state.flags |= FLAG_HEAVE_VALID;
 
         if (mag_healthy)
             state.flags |= FLAG_MAG_VALID;

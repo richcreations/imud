@@ -126,8 +126,12 @@ static void test_packet_size(void)
 {
     begin("test_packet_size");
     int fb = g_fail;
-    EXPECT(sizeof(imu_packet_t) == 196, "imu_packet_t is exactly 196 bytes");
-    EXPECT(offsetof(imu_packet_t, crc32) == 192, "crc32 field at offset 192");
+    EXPECT(sizeof(imu_packet_t) == 228, "imu_packet_t is exactly 228 bytes");
+    EXPECT(offsetof(imu_packet_t, crc32) == 224, "crc32 field at offset 224");
+    EXPECT(offsetof(imu_packet_t, gyro_bias_x)      == 192, "gyro_bias_x at offset 192");
+    EXPECT(offsetof(imu_packet_t, gyro_bias_var_x)  == 204, "gyro_bias_var_x at offset 204");
+    EXPECT(offsetof(imu_packet_t, heave_rate)       == 216, "heave_rate at offset 216");
+    EXPECT(offsetof(imu_packet_t, accel_quiescence) == 220, "accel_quiescence at offset 220");
     end(fb);
 }
 
@@ -141,7 +145,7 @@ static void test_magic_version(void)
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "NED");
     EXPECT(pkt.magic   == IMUD_MAGIC,   "magic == 0x494D5544");
-    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (11 = v1.1)");
+    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (12 = v1.2)");
     end(fb);
 }
 
@@ -156,7 +160,7 @@ static void test_crc_correct(void)
     packet_build(&pkt, &s, &m, &i, &i, "NED");
 
     uint32_t expected = ref_crc32((const uint8_t *)&pkt, offsetof(imu_packet_t, crc32));
-    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-179 matches packet.crc32");
+    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-223 matches packet.crc32");
     EXPECT(pkt.crc32 != 0u,      "CRC32 is non-zero");
     end(fb);
 }
@@ -205,6 +209,33 @@ static void test_timestamps_copied(void)
     EXPECT(pkt.ts_chip_ticks == s.ts_chip_ticks, "ts_chip_ticks");
     EXPECT(pkt.anchor_gen    == s.anchor_gen,     "anchor_gen");
     EXPECT(pkt.imu_seq       == s.imu_seq,        "imu_seq");
+    end(fb);
+}
+
+static void test_v12_fields_copied(void)
+{
+    begin("test_v12_fields_copied");
+    int fb = g_fail;
+    imu_packet_t pkt;
+    fused_state_t s = make_state();
+    mag_sample_t  m = make_mag();
+    imu_sample_t  i = make_imu();
+    s.bias_gyro[0] = 0.001f;  s.bias_gyro[1] = -0.002f;  s.bias_gyro[2] = 0.003f;
+    s.bias_gyro_var[0] = 1e-6f; s.bias_gyro_var[1] = 2e-6f; s.bias_gyro_var[2] = 3e-6f;
+    s.heave_rate = 0.25f;
+    s.quiescence = 0.01f;
+    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    EXPECT_NEAR(pkt.gyro_bias_x,      s.bias_gyro[0],     1e-9f,  "gyro_bias_x copied");
+    EXPECT_NEAR(pkt.gyro_bias_y,      s.bias_gyro[1],     1e-9f,  "gyro_bias_y copied");
+    EXPECT_NEAR(pkt.gyro_bias_z,      s.bias_gyro[2],     1e-9f,  "gyro_bias_z copied");
+    EXPECT_NEAR(pkt.gyro_bias_var_x,  s.bias_gyro_var[0], 1e-12f, "gyro_bias_var_x copied");
+    EXPECT_NEAR(pkt.heave_rate,       s.heave_rate,       1e-9f,  "heave_rate copied");
+    EXPECT_NEAR(pkt.accel_quiescence, s.quiescence,       1e-9f,  "accel_quiescence copied");
+    /* v12 diagnostics are body-frame — identical in ENU (NOT coord_frame-rotated) */
+    imu_packet_t pkt_enu;
+    packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
+    EXPECT_NEAR(pkt_enu.gyro_bias_x, s.bias_gyro[0], 1e-9f, "gyro_bias not ENU-rotated");
+    EXPECT_NEAR(pkt_enu.heave_rate,  s.heave_rate,   1e-9f, "heave_rate not ENU-rotated");
     end(fb);
 }
 
@@ -447,6 +478,7 @@ int main(void)
     test_crc_detects_corruption();
     test_flags_copied();
     test_timestamps_copied();
+    test_v12_fields_copied();
     test_ned_vectors_unchanged();
     test_enu_vectors_permuted();
     test_enu_quat_norm_preserved();

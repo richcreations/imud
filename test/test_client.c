@@ -85,7 +85,7 @@ static void test_client_accepts_daemon_packet(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    EXPECT(sizeof(pkt) == 196, "daemon packet is 196 bytes (v1.1)");
+    EXPECT(sizeof(pkt) == 228, "daemon packet is 228 bytes (v1.2)");
     EXPECT(client_packet_valid(&pkt, sizeof pkt),
            "client accepts daemon-built packet (magic+version+CRC)");
     EXPECT(!client_packet_valid(&pkt, sizeof pkt - 1),
@@ -103,7 +103,7 @@ static void test_client_rejects_corruption(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    unsigned char bytes[196];
+    unsigned char bytes[228];
     memcpy(bytes, &pkt, sizeof bytes);
     bytes[100] ^= 0x01;   /* flip one payload bit */
     EXPECT(!client_packet_valid(bytes, sizeof bytes),

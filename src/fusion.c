@@ -833,6 +833,9 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
  * periods: amplitude error ≈ 2 % at 8 s, ≈ 4 % at 12 s for τ = 12 s.
  * Output is heave in metres, positive UP (PASHR convention).
  */
+/* Heave settles after ~10 time constants (≈2 min at the default τ = 12 s). */
+#define HEAVE_SETTLE_FACTOR 10.0f
+
 void heave_init(heave_t *h, float tau_s, float dt)
 {
     memset(h, 0, sizeof *h);
@@ -844,6 +847,10 @@ void heave_init(heave_t *h, float tau_s, float dt)
 float heave_update(heave_t *h, const float q[4], const float accel[3])
 {
     if (!h->enabled) return 0.0f;
+
+    h->elapsed += h->dt;
+    if (!h->settled && h->elapsed >= HEAVE_SETTLE_FACTOR * h->tau)
+        h->settled = true;
 
     float R[3][3];
     q_to_R(q, R);
@@ -898,6 +905,14 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             out->cov[i*3+j] = f->P[i][j];
+
+    /* Bottom-right 3×3 diagonal of P is the gyro-bias variance ((rad/s)²) */
+    out->bias_gyro_var[0] = f->P[3][3];
+    out->bias_gyro_var[1] = f->P[4][4];
+    out->bias_gyro_var[2] = f->P[5][5];
+
+    /* Platform-quiescence metric (EMA of (|a|/g − 1)²) */
+    out->quiescence = f->acc_quiet_ema;
 
     /* Euler angles from rotation matrix R (NED, 3-2-1 aerospace convention) */
     float R[3][3];

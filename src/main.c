@@ -68,7 +68,7 @@
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
-#define VERSION_STR   "1.1"
+#define VERSION_STR   "1.2"
 #define PID_FILE      "/run/imud/imud.pid"   /* inside RuntimeDirectory=imud */
 #define STATUS_SOCK   "/run/imud/imud.sock"
 #define STATS_BUF     512
