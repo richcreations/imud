@@ -1,5 +1,6 @@
 [Unit]
 Description=imud → MQTT bridge (binary stream → MQTT topics + Home Assistant discovery)
+Documentation=man:imud-mqtt(8) man:imud-mqtt.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
 After=imud.service network-online.target

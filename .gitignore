@@ -1,35 +1,38 @@
-# Build artifacts
+# Build artifacts.
+# Binary names are anchored with a leading "/" so they match only the repo-root
+# executables, NOT same-named directories like docs/imud-signalk/ or
+# packaging/imud/.
 src/*.o
 src/drivers/*.o
 src/*.d
 src/drivers/*.d
-imud
-imud-cal
-imud-status
-imud-mon
-imud-signalk
-imud-mqtt
-imud-influxdb
-imud-mavlink
+/imud
+/imud-cal
+/imud-status
+/imud-mon
+/imud-signalk
+/imud-mqtt
+/imud-influxdb
+/imud-mavlink
 
 # Test binaries
-test_fusion
-test_config
-test_nmea
-test_packet
-test_ring
-test_mount
-test_cal
-test_cal_math
-test_wmm
-test_position
-test_client
-test_stream
-test_log
-test_signalk
-test_mqtt
-test_influxdb
-test_mavlink
+/test_fusion
+/test_config
+/test_nmea
+/test_packet
+/test_ring
+/test_mount
+/test_cal
+/test_cal_math
+/test_wmm
+/test_position
+/test_client
+/test_stream
+/test_log
+/test_signalk
+/test_mqtt
+/test_influxdb
+/test_mavlink
 
 # Editor and OS
 .DS_Store

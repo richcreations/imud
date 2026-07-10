@@ -1,0 +1,31 @@
+imud NEWS — user-visible changes
+================================
+
+Newest first. This file records notable, user-visible changes per release. The
+per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
+packaging-level record, and the git history holds the full detail.
+
+
+1.1
+---
+* Optional bridge daemons — each shipped as its own package with its own config
+  file, systemd service, man pages, and documentation:
+    - imud-signalk   Signal K deltas over UDP
+    - imud-mqtt      MQTT topics + Home Assistant discovery (via libmosquitto)
+    - imud-influxdb  InfluxDB line protocol over UDP or HTTP (pure C)
+    - imud-mavlink   MAVLink v1/v2 (HEARTBEAT/ATTITUDE) over UDP and/or serial
+* Binary stream packet version 11: adds heave and magnetic-declination fields.
+* Heave estimator and a rough-sea fusion revision.
+* Level-gated logging (debug/info/warn/error), journald-aware.
+* Documentation brought to GNU + Debian conventions: AUTHORS/NEWS/INSTALL/
+  CONTRIBUTING, per-package copyright and changelog, and per-package docs
+  installed under /usr/share/doc/.
+
+
+1.0
+---
+* Initial release. Quaternion Multiplicative EKF attitude/heading from an I²C
+  IMU + magnetometer; NMEA 0183, high-rate binary UDP, and a local AF_UNIX
+  subscription stream; World Magnetic Model true heading; gyro / accelerometer /
+  magnetometer calibration tools (imud-cal); status and monitoring tools
+  (imud-status, imud-mon); a hardened systemd service.

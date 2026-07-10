@@ -1,5 +1,6 @@
 [Unit]
 Description=imud → InfluxDB bridge (binary stream → line protocol over UDP/HTTP)
+Documentation=man:imud-influxdb(8) man:imud-influxdb.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
 After=imud.service network-online.target

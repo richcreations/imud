@@ -1,5 +1,6 @@
 [Unit]
 Description=imud → Signal K bridge (binary stream → Signal K delta over UDP)
+Documentation=man:imud-signalk(8) man:imud-signalk.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
 After=imud.service

@@ -57,10 +57,10 @@ C standard library. Nothing else.
 | `imud-cal` | Calibration tool (gyro bias, accel 6-position, magnetometer swing). |
 | `imud-status` | Query a running daemon's health over its Unix socket. |
 | `imud-mon` | Live monitor of the UDP output streams from any host on the LAN. |
-| `imud-signalk` | Bridge daemon (optional install): reads the local stream socket and emits Signal K delta JSON over UDP (see [§9a](#9a-signal-k-bridge-imud-signalk)). |
-| `imud-mqtt` | Bridge daemon (optional install): publishes scalar telemetry topics + Home Assistant discovery to an MQTT broker (see [§9b](#9b-mqtt-bridge-imud-mqtt)). |
-| `imud-influxdb` | Bridge daemon (optional install): writes InfluxDB line-protocol points over UDP/HTTP for Grafana (see [§9c](#9c-influxdb-bridge-imud-influxdb)). |
-| `imud-mavlink` | Bridge daemon (optional install): emits MAVLink (v1/v2) HEARTBEAT/ATTITUDE over UDP/serial (see [§9d](#9d-mavlink-bridge-imud-mavlink)). |
+| `imud-signalk` | Bridge daemon (optional package): emits Signal K delta JSON over UDP (see [§9a Bridges](#9a-bridges)). |
+| `imud-mqtt` | Bridge daemon (optional package): MQTT topics + Home Assistant discovery (see [§9a Bridges](#9a-bridges)). |
+| `imud-influxdb` | Bridge daemon (optional package): InfluxDB line protocol over UDP/HTTP (see [§9a Bridges](#9a-bridges)). |
+| `imud-mavlink` | Bridge daemon (optional package): MAVLink v1/v2 over UDP/serial (see [§9a Bridges](#9a-bridges)). |
 
 ---
 
@@ -312,114 +312,15 @@ daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
 
-### `[imud-signalk]` (its own file)
+### Bridge sections (their own files)
 
-The `imud-signalk` bridge daemon ([§9a](#9a-signal-k-bridge-imud-signalk)) is a
-separate, optional install with its **own** config file,
-`/etc/imud/imud-signalk.conf` — it does **not** read `imud.conf`. It connects to
-imud's stream socket and pushes Signal K deltas over UDP, and requires imud's
-`[stream]` output to be enabled. Unrelated to the `signalk_*` keys under
-`[position]`, which are the input side (imud reading position *from* Signal K).
-**[restart]**: `enabled`, `socket`. **[hot]**: `dest_addr`, `dest_port`, `rate_hz`,
-`source_label`, `publish_heave`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the Signal K bridge. |
-| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read (match `imud.conf` if you changed it there). |
-| `dest_addr` | string | `"127.0.0.1"` | Signal K server host (numeric IPv4). |
-| `dest_port` | int | `10113` | UDP port — must match the Signal K server's UDP input connection. |
-| `rate_hz` | int | `10` | Delta emit rate in Hz. |
-| `source_label` | string | `"imud"` | Signal K delta `source.label` value. |
-| `publish_heave` | bool | `true` | Emit `environment.heave` (set false if imud's heave estimator is off). |
-
-### `[imud-mqtt]` (its own file)
-
-The `imud-mqtt` bridge daemon ([§9b](#9b-mqtt-bridge-imud-mqtt)) is a separate,
-optional install with its **own** config file, `/etc/imud/imud-mqtt.conf` — it
-does **not** read `imud.conf`. It connects to imud's stream socket and publishes
-scalar telemetry topics (plus Home Assistant discovery) to an MQTT broker via
-libmosquitto, and requires imud's `[stream]` output enabled.
-**[restart]**: `enabled`, `socket`, `broker_addr`, `broker_port`, `client_id`,
-`topic_prefix`, `keepalive_s`, `username`, `password`, `tls`, `tls_cafile`,
-`ha_discovery`, `ha_prefix`. **[hot]**: `rate_hz`, `qos`, `retain`, `units`,
-`publish_heave`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the MQTT bridge. |
-| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
-| `broker_addr` | string | `"127.0.0.1"` | Broker host (name or IP). |
-| `broker_port` | int | `1883` | Broker TCP port. |
-| `client_id` | string | `"imud"` | MQTT client id; also the Home Assistant device/node id. |
-| `topic_prefix` | string | `"imud"` | Prefix for all published topics. |
-| `rate_hz` | int | `5` | Publish rate in Hz. |
-| `qos` | int | `0` | Publish QoS (0/1/2). |
-| `retain` | bool | `true` | Retain values so late subscribers / HA see current state. |
-| `units` | string | `"deg"` | `"deg"` (degrees, °/min, m, °C) or `"rad"` (SI). |
-| `publish_heave` | bool | `true` | Publish `environment/heave`. |
-| `ha_discovery` | bool | `true` | Publish Home Assistant discovery configs. |
-| `ha_prefix` | string | `"homeassistant"` | HA discovery topic prefix. |
-| `username` / `password` | string | `""` | Broker auth (plaintext password — protect the file). |
-| `tls` | bool | `false` | Enable TLS (empty `tls_cafile` = system CA store). |
-| `tls_cafile` | string | `""` | CA certificate path for TLS. |
-
-### `[imud-influxdb]` (its own file)
-
-The `imud-influxdb` bridge daemon ([§9c](#9c-influxdb-bridge-imud-influxdb)) is a
-separate, optional install with its **own** config file,
-`/etc/imud/imud-influxdb.conf` — it does **not** read `imud.conf`. It connects to
-imud's stream socket and writes InfluxDB line-protocol points over UDP or HTTP
-(pure C, no dependencies), and requires imud's `[stream]` output enabled.
-**[restart]**: `enabled`, `socket`, `transport`, `http_host`, `http_port`,
-`http_path`, `http_token`. **[hot]**: `rate_hz`, `measurement`, `source_label`,
-`units`, `publish_heave`, `udp_addr`, `udp_port`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the InfluxDB bridge. |
-| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
-| `transport` | string | `"udp"` | `"udp"` or `"http"`. |
-| `rate_hz` | int | `10` | Point emit rate in Hz. |
-| `measurement` | string | `"imud"` | Line-protocol measurement name. |
-| `source_label` | string | `"imud"` | Value of the `source=` tag. |
-| `units` | string | `"deg"` | `"deg"` (degrees, °/min) or `"rad"` (SI). |
-| `publish_heave` | bool | `true` | Include the `heave` field. |
-| `udp_addr` | string | `"127.0.0.1"` | UDP destination host (InfluxDB 1.x / Telegraf). |
-| `udp_port` | int | `8089` | UDP port. |
-| `http_host` | string | `"127.0.0.1"` | HTTP host (when `transport = http`). |
-| `http_port` | int | `8086` | HTTP port. |
-| `http_path` | string | `"/write?db=imud&precision=ns"` | Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`). |
-| `http_token` | string | `""` | InfluxDB 2.x API token (plaintext — protect the file). |
-
-### `[imud-mavlink]` (its own file)
-
-The `imud-mavlink` bridge daemon ([§9d](#9d-mavlink-bridge-imud-mavlink)) is a
-separate, optional install with its **own** config file,
-`/etc/imud/imud-mavlink.conf` — it does **not** read `imud.conf`. It connects to
-imud's stream socket and emits MAVLink (v1 or v2) HEARTBEAT + ATTITUDE /
-ATTITUDE_QUATERNION over UDP and/or serial (pure C, no dependencies), and requires
-imud's `[stream]` output enabled.
-**[restart]**: `enabled`, `socket`, `system_id`, `component_id`, `udp_enabled`,
-`serial_enabled`, `serial_device`, `serial_baud`. **[hot]**: `version`, `rate_hz`,
-`send_attitude`, `send_attitude_quaternion`, `udp_addr`, `udp_port`.
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the MAVLink bridge. |
-| `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
-| `version` | int | `2` | MAVLink protocol version (1 or 2). |
-| `system_id` | int | `1` | MAVLink system id. |
-| `component_id` | int | `1` | MAVLink component id (raise, e.g. 191, on a shared autopilot bus). |
-| `rate_hz` | int | `10` | ATTITUDE/quaternion rate (heartbeat is fixed 1 Hz). |
-| `send_attitude` | bool | `true` | Emit ATTITUDE (#30). |
-| `send_attitude_quaternion` | bool | `true` | Emit ATTITUDE_QUATERNION (#31). |
-| `udp_enabled` | bool | `false` | Enable UDP output. |
-| `udp_addr` | string | `"127.0.0.1"` | UDP destination host. |
-| `udp_port` | int | `14550` | UDP destination port (QGC default). |
-| `serial_enabled` | bool | `false` | Enable serial output. |
-| `serial_device` | string | `"/dev/serial0"` | Serial device. |
-| `serial_baud` | int | `57600` | Serial baud (9600–921600). |
+The optional bridge daemons — `imud-signalk`, `imud-mqtt`, `imud-influxdb`,
+`imud-mavlink` — each read their **own** config file
+(`/etc/imud/imud-<name>.conf`, an `[imud-<name>]` section), never `imud.conf`.
+Their config keys are documented in each bridge's own manual and
+`imud-<name>.conf(5)`; see [§9a Bridges](#9a-bridges). (Unrelated to the
+`signalk_*` keys under `[position]`, which are the input side — imud reading
+position *from* Signal K.)
 
 ### `[mount]`
 
@@ -696,213 +597,25 @@ header to `/usr/local/include` and the Python module to
 
 ---
 
-## 9a. Signal K bridge (imud-signalk)
+## 9a. Bridges
 
-`imud-signalk` is a small standalone daemon that feeds a Signal K server
-natively. It connects to imud's `[stream]` socket (the same 196-byte binary
-packets), and emits Signal K **delta** messages (JSON) over UDP — one per
-datagram at `rate_hz` (default 10 Hz) — for every imud value that has a
-standard Signal K path. imud's NMEA output is unchanged; this is an
-alternative path for Signal K, which does not reliably parse all of imud's
-NMEA fields.
+imud has optional **bridge daemons** that republish its stream into other
+ecosystems. Each is a **separate, optional package** with its own config file,
+systemd service, man pages, and documentation (README + manual + spec) — installed
+under `/usr/share/doc/imud-<name>/`, and in this tree under `docs/imud-<name>/`:
 
-It holds no hardware, runs as a separate process, and reconnects automatically
-if imud restarts. It requires `[stream] enabled = true`.
-
-**Field mapping** (Signal K SI units — radians, rad/s, metres):
-
-| imud value | Signal K path | when |
+| Bridge | Output | Docs |
 |---|---|---|
-| magnetic heading | `navigation.headingMagnetic` | always |
-| true heading | `navigation.headingTrue` | declination known |
-| declination | `navigation.magneticVariation` | declination known |
-| rate of turn | `navigation.rateOfTurn` | always |
-| roll / pitch / yaw | `navigation.attitude` `{roll,pitch,yaw}` | always |
-| heave | `environment.heave` | `publish_heave` set (default on) |
+| `imud-signalk` | Signal K delta JSON over UDP | `docs/imud-signalk/`, `imud-signalk(8)` |
+| `imud-mqtt` | MQTT topics + Home Assistant discovery | `docs/imud-mqtt/`, `imud-mqtt(8)` |
+| `imud-influxdb` | InfluxDB line protocol (UDP / HTTP) | `docs/imud-influxdb/`, `imud-influxdb(8)` |
+| `imud-mavlink` | MAVLink v1/v2 (UDP / serial) | `docs/imud-mavlink/`, `imud-mavlink(8)` |
 
-The bridge is an **optional** component — it is not built by `make` or installed
-by `sudo make install`. Build and install it separately:
-
-```sh
-make bridges                 # builds imud-signalk
-sudo make install-signalk    # binary + service + /etc/imud/imud-signalk.conf
-```
-
-**Setup:**
-
-1. In `imud.conf`, set `[stream] enabled = true` (the bridge reads that socket).
-2. In its own file `/etc/imud/imud-signalk.conf`, set `enabled = true` and the
-   Signal K server's `dest_addr`/`dest_port`. The bridge reads only this file.
-3. On the Signal K server, add a **UDP** connection (Server → Connections →
-   Add) listening on that port.
-4. Enable the service:
-   ```sh
-   sudo systemctl enable --now imud-signalk
-   ```
-
-Run it in the foreground to check output:
-```sh
-imud-signalk --config /etc/imud/imud-signalk.conf
-nc -u -l 10113        # watch the raw deltas
-```
-
-`SIGHUP` reloads `dest_addr`, `dest_port`, `rate_hz`, `source_label`,
-`publish_heave`, and the log level live. Configuration keys are documented in
-[§4 `[imud-signalk]`](#imud-signalk).
-
----
-
-## 9b. MQTT bridge (imud-mqtt)
-
-`imud-mqtt` publishes imud's telemetry to an MQTT broker for IoT/dashboard
-consumers — Home Assistant, Node-RED, Grafana/Telegraf, or anything that speaks
-MQTT. It connects to imud's `[stream]` socket and publishes one value per topic
-at `rate_hz` (default 5 Hz), plus **Home Assistant MQTT discovery** configs so
-the sensors auto-register as a single `imud` device. It uses **libmosquitto** and
-is therefore an optional build (below).
-
-Values are published in dashboard-friendly units by default (`units = deg`:
-degrees, °/min, metres, °C); set `units = rad` for SI. Attitude uses imud's
-native NED convention (roll + = starboard up, pitch + = bow up).
-
-**Topics** (default prefix `imud`):
-
-| Topic | Value | When |
-|---|---|---|
-| `imud/navigation/headingMagnetic` | magnetic heading | always |
-| `imud/navigation/headingTrue` | true heading | declination known |
-| `imud/navigation/magneticVariation` | declination | declination known |
-| `imud/navigation/rateOfTurn` | rate of turn | always |
-| `imud/attitude/roll` · `/pitch` · `/yaw` | attitude | always |
-| `imud/environment/heave` | heave (m) | `publish_heave` |
-| `imud/imu/temperature` | die temperature | always |
-| `imud/status/online` | `online`/`offline` (retained) | availability (MQTT last-will) |
-
-Raw high-rate accel/gyro/mag/quaternion are **not** published over MQTT (wrong
-transport) — consume the binary stream directly for those.
-
-The bridge needs **libmosquitto** and is not built by `make` or installed by
-`sudo make install`. Build and install it separately:
-
-```sh
-sudo apt install libmosquitto-dev     # once
-make imud-mqtt                        # or: make bridges
-sudo make install-mqtt                # binary + service + /etc/imud/imud-mqtt.conf
-```
-
-**Setup:**
-
-1. In `imud.conf`, set `[stream] enabled = true` (the bridge reads that socket).
-2. In `/etc/imud/imud-mqtt.conf`, set `enabled = true` and the broker
-   `broker_addr`/`broker_port` (and `username`/`password`/`tls` if needed).
-3. Enable the service:
-   ```sh
-   sudo systemctl enable --now imud-mqtt
-   ```
-
-Check the topics with any MQTT client:
-```sh
-mosquitto_sub -t 'imud/#' -v
-```
-
-In Home Assistant (with the MQTT integration configured) the `imud` device and
-its sensors appear automatically and go *unavailable* when the bridge stops.
-
-`SIGHUP` reloads `rate_hz`, `qos`, `retain`, `units`, `publish_heave`, and the
-log level live; broker/client/topic changes need a restart. Configuration keys
-are documented in [§4 `[imud-mqtt]`](#imud-mqtt).
-
----
-
-## 9c. InfluxDB bridge (imud-influxdb)
-
-`imud-influxdb` writes imud's telemetry to InfluxDB as line-protocol points for
-time-series storage and **Grafana** dashboards — ideal for fusion tuning and
-sea-trial logging. It connects to imud's `[stream]` socket and emits one point
-per tick (default 10 Hz) over **UDP** (default) or **HTTP**. It is pure C with no
-external dependencies.
-
-Each point is one measurement (default `imud`) with a `source` tag and fields —
-quaternion, roll/pitch/yaw, heading, heading_true/variation (when declination is
-known), rate_of_turn, heave (when `publish_heave`), temperature, and an integer
-`seq` — timestamped from the packet's wall clock in nanoseconds. Angles are
-degrees by default (`units = deg`) or SI (`units = rad`).
-
-**Transports:**
-
-- **UDP** (`transport = udp`) — datagrams to InfluxDB 1.x's UDP listener or to
-  Telegraf's `socket_listener` (the usual path into InfluxDB 2.x/3.x). Set the
-  listener precision to `ns`.
-- **HTTP** (`transport = http`) — a plaintext POST per point to `/write` (1.x) or
-  `/api/v2/write` (2.x), with an optional `Authorization: Token` header. No TLS —
-  front a cloud/TLS endpoint with a local proxy.
-
-Build and install it separately (it's optional, out of `make all`):
-
-```sh
-make imud-influxdb            # or: make bridges
-sudo make install-influxdb    # binary + service + /etc/imud/imud-influxdb.conf
-```
-
-**Setup (UDP → InfluxDB 1.x example):**
-
-1. In `imud.conf`, set `[stream] enabled = true`.
-2. In `/etc/imud/imud-influxdb.conf`, set `enabled = true` and the `udp_addr` /
-   `udp_port` of your InfluxDB UDP listener (or Telegraf).
-3. Enable the service: `sudo systemctl enable --now imud-influxdb`.
-
-For InfluxDB 2.x/3.x, set `transport = http`, point `http_path` at
-`/api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, and set `http_token`.
-
-`SIGHUP` reloads `rate_hz`, `measurement`, `source_label`, `units`,
-`publish_heave`, and the UDP destination live; the transport and HTTP target need
-a restart. Configuration keys are documented in
-[§4 `[imud-influxdb]`](#imud-influxdb).
-
----
-
-## 9d. MAVLink bridge (imud-mavlink)
-
-`imud-mavlink` streams imud's attitude to the drone/autopilot world — ArduPilot,
-PX4, or a ground station (QGroundControl, Mission Planner) — as MAVLink. It
-connects to imud's `[stream]` socket and sends **HEARTBEAT** at 1 Hz plus
-**ATTITUDE** and/or **ATTITUDE_QUATERNION** at `rate_hz` (default 10 Hz). Pure C
-with a hand-rolled encoder — **no dependencies** — and MAVLink **v1 or v2**.
-
-MAVLink's body frame is FRD/NED, the same as imud, so roll/pitch/yaw, the gyro
-body rates, and the quaternion pass straight through (SI radians / rad/s) — no
-sign flips.
-
-Output goes to **UDP and/or serial simultaneously**:
-
-- **UDP** (`udp_enabled`) — datagrams to `udp_addr:udp_port` (default
-  127.0.0.1:14550, QGroundControl's listen port).
-- **Serial** (`serial_enabled`) — raw 8N1 at `serial_baud` on `serial_device`
-  (e.g. a telemetry radio on `/dev/serial0`). The shipped unit grants the service
-  the `dialout` group and tty-device access.
-
-Build and install it separately (it's optional, out of `make all`):
-
-```sh
-make imud-mavlink            # or: make bridges
-sudo make install-mavlink    # binary + service + /etc/imud/imud-mavlink.conf
-```
-
-**Setup (UDP → QGroundControl example):**
-
-1. In `imud.conf`, set `[stream] enabled = true`.
-2. In `/etc/imud/imud-mavlink.conf`, set `enabled = true`, `udp_enabled = true`,
-   and `udp_addr`/`udp_port` for your GCS.
-3. Enable the service: `sudo systemctl enable --now imud-mavlink`.
-
-On a vehicle bus alongside a real autopilot, raise `component_id` (e.g. 191) to
-avoid an id clash. `SIGHUP` reloads `version`, `rate_hz`, `send_*`, and the UDP
-destination live; ids and transport-enable changes need a restart. Configuration
-keys are documented in [§4 `[imud-mavlink]`](#imud-mavlink).
-
-> **Quaternion sign:** `ATTITUDE_QUATERNION` is passed through from imud's
-> body→NED quaternion; if a GCS shows it conjugated relative to `ATTITUDE`, flip
-> the quaternion sign convention (verify on a live display).
+All read imud's local stream, so they require `[stream] enabled = true` in
+`imud.conf`. Build them with `make bridges` and install each with
+`sudo make install-<name>`. See each bridge's **README** for a quick overview, its
+**manual** for configuration and setup, and its **spec** for the exact output
+format.
 
 ---
 

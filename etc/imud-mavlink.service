@@ -1,5 +1,6 @@
 [Unit]
 Description=imud → MAVLink bridge (binary stream → MAVLink over UDP/serial)
+Documentation=man:imud-mavlink(8) man:imud-mavlink.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
 After=imud.service network-online.target

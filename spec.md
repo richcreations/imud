@@ -1054,42 +1054,15 @@ IMU samples:    1234567  overflows: 0
 Uptime:         00:04:32
 ```
 
-### imud-signalk
+### Bridges
 
-A separate bridge daemon that consumes the AF_UNIX stream (Output Stream C)
-and emits Signal K delta JSON over UDP for every value with a standard Signal
-K path — `navigation.headingMagnetic`/`headingTrue`/`magneticVariation`/
-`rateOfTurn`, `navigation.attitude`, and `environment.heave` — in SI units at
-10 Hz (default). It is not part of the wire protocol; see the manual and
-`imud-signalk(8)`. An optional, separately-installed component, configured by
-`[imud-signalk]` in its own `/etc/imud/imud-signalk.conf`.
-
-### imud-mqtt
-
-A separate optional bridge daemon that consumes the AF_UNIX stream (Output
-Stream C) and publishes scalar telemetry to an MQTT broker — one value per topic
-under a prefix (e.g. `imud/navigation/headingMagnetic`, `imud/attitude/roll`) —
-plus Home Assistant MQTT-discovery configs. Uses libmosquitto; not part of the
-wire protocol. Configured by `[imud-mqtt]` in its own `/etc/imud/imud-mqtt.conf`.
-See the manual and `imud-mqtt(8)`.
-
-### imud-influxdb
-
-A separate optional bridge daemon that consumes the AF_UNIX stream (Output
-Stream C) and writes InfluxDB line-protocol points — one measurement (`imud`)
-with a `source` tag and quaternion/euler/heading/rate/heave/temp/seq fields,
-nanosecond-timestamped — over UDP (default) or HTTP. Pure C, no dependencies; not
-part of the wire protocol. Configured by `[imud-influxdb]` in its own
-`/etc/imud/imud-influxdb.conf`. See the manual and `imud-influxdb(8)`.
-
-### imud-mavlink
-
-A separate optional bridge daemon that consumes the AF_UNIX stream (Output
-Stream C) and emits MAVLink (protocol v1 or v2) — HEARTBEAT at 1 Hz plus
-ATTITUDE (#30) / ATTITUDE_QUATERNION (#31) — over UDP and/or serial, for
-ArduPilot/PX4/GCS consumers. Pure C (hand-rolled encoder), not part of imud's
-own wire protocol. Configured by `[imud-mavlink]` in its own
-`/etc/imud/imud-mavlink.conf`. See the manual and `imud-mavlink(8)`.
+The optional bridge daemons — `imud-signalk`, `imud-mqtt`, `imud-influxdb`, and
+`imud-mavlink` — consume the AF_UNIX stream (Output Stream C) and republish it in
+other protocols (Signal K deltas, MQTT topics, InfluxDB line protocol, MAVLink).
+They are **not** part of imud's own wire protocol. Each is a separate optional
+package with its own **output spec**, manual, and man pages
+(`docs/imud-<name>/spec.md` — installed to `/usr/share/doc/imud-<name>/spec.md` —
+plus `imud-<name>(8)`), and its own config file `/etc/imud/imud-<name>.conf`.
 
 -----
 
