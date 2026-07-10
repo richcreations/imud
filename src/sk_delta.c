@@ -95,8 +95,9 @@ int sk_build_delta(char *buf, size_t sz, const imud_packet_t *p,
            "{\"roll\":%.5f,\"pitch\":%.5f,\"yaw\":%.5f}}",
            -p->roll, p->pitch, p->yaw);
 
-    /* environment.heave (metres, +up) when the estimator is running. */
-    if (emit_heave)
+    /* environment.heave (metres, +up) — only once the estimator has settled
+     * (~10·τ), so subscribers never see the startup transient. */
+    if (emit_heave && (p->flags & IMUD_FLAG_HEAVE_VALID))
         APPEND(",{\"path\":\"environment.heave\",\"value\":%.3f}", p->heave_m);
 
     APPEND("]}]}");

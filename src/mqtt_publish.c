@@ -23,7 +23,7 @@
 #define DEG2RAD  0.017453292519943295
 
 typedef enum { GATE_ALWAYS, GATE_DECL, GATE_HEAVE } gate_t;
-typedef enum { U_ANGLE, U_ROT, U_HEAVE, U_TEMP }    unit_t;
+typedef enum { U_ANGLE, U_ROT, U_HEAVE, U_VELOCITY, U_TEMP } unit_t;
 
 /* The published fields, in a fixed order. field_value() below switches on the
  * same index, so keep the two in lockstep. */
@@ -41,8 +41,9 @@ static const struct field {
     { "attitude/roll",                "roll",               "Roll",               U_ANGLE, GATE_ALWAYS },
     { "attitude/pitch",               "pitch",              "Pitch",              U_ANGLE, GATE_ALWAYS },
     { "attitude/yaw",                 "yaw",                "Yaw",                U_ANGLE, GATE_ALWAYS },
-    { "environment/heave",            "heave",              "Heave",              U_HEAVE, GATE_HEAVE  },
-    { "imu/temperature",              "temperature",        "Temperature",        U_TEMP,  GATE_ALWAYS },
+    { "environment/heave",            "heave",              "Heave",              U_HEAVE,    GATE_HEAVE  },
+    { "environment/heaveRate",        "heave_rate",         "Heave rate",         U_VELOCITY, GATE_HEAVE  },
+    { "imu/temperature",              "temperature",        "Temperature",        U_TEMP,     GATE_ALWAYS },
 };
 #define NFIELDS ((int)(sizeof FIELDS / sizeof FIELDS[0]))
 
@@ -61,7 +62,8 @@ static double field_value(int i, const imud_packet_t *p, bool deg, int *prec)
     case 5: *prec = deg ? 2 : 4; return deg ? p->pitch * RAD2DEG : p->pitch;
     case 6: *prec = deg ? 2 : 4; return deg ? p->yaw   * RAD2DEG : p->yaw;
     case 7: *prec = 3; return p->heave_m;
-    case 8: *prec = 1; return p->temp_c;
+    case 8: *prec = 3; return p->heave_rate;   /* m/s, SI — no deg conversion */
+    case 9: *prec = 1; return p->temp_c;
     default: *prec = 2; return 0.0;
     }
 }
@@ -70,7 +72,9 @@ static bool field_on(gate_t g, const imud_packet_t *p, bool emit_heave)
 {
     switch (g) {
     case GATE_DECL:  return (p->flags & IMUD_FLAG_DECLINATION_VALID) != 0;
-    case GATE_HEAVE: return emit_heave;
+    /* Withhold heave/heave-rate state until the estimator has settled (~10·τ);
+     * discovery is still advertised on config alone (see mqtt_build_discovery). */
+    case GATE_HEAVE: return emit_heave && (p->flags & IMUD_FLAG_HEAVE_VALID) != 0;
     default:         return true;
     }
 }
@@ -81,6 +85,7 @@ static const char *unit_str(unit_t u, bool deg)
     case U_ANGLE: return deg ? "°"     : "rad";
     case U_ROT:   return deg ? "°/min" : "rad/s";
     case U_HEAVE: return "m";
+    case U_VELOCITY: return "m/s";
     case U_TEMP:  return "°C";
     default:      return "";
     }

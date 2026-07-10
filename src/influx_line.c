@@ -60,8 +60,22 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
     APPEND(",rate_of_turn=%.6f",
            deg ? p->rate_of_turn : p->rate_of_turn * DEG2RAD / 60.0);
 
-    if (emit_heave)
-        APPEND(",heave=%.4f", p->heave_m);
+    /* heave: this is the diagnostics sink, so — unlike the user-facing bridges —
+     * emit from t=0 regardless of settle, and expose the validity flag as a
+     * boolean field so the pre-settle transient can be filtered out downstream. */
+    if (emit_heave) {
+        APPEND(",heave=%.4f,heave_rate=%.4f", p->heave_m, p->heave_rate);
+        APPEND(",heave_valid=%s",
+               (p->flags & IMUD_FLAG_HEAVE_VALID) ? "t" : "f");
+    }
+
+    /* Gyro-bias estimate, its variance (MEKF P diagonal), and the accel-quiescence
+     * metric: frame-neutral SI diagnostics, never unit-converted, always emitted. */
+    APPEND(",gbias_x=%.6f,gbias_y=%.6f,gbias_z=%.6f",
+           p->gyro_bias_x, p->gyro_bias_y, p->gyro_bias_z);
+    APPEND(",gbias_var_x=%.3e,gbias_var_y=%.3e,gbias_var_z=%.3e",
+           p->gyro_bias_var_x, p->gyro_bias_var_y, p->gyro_bias_var_z);
+    APPEND(",quiescence=%.6f", p->accel_quiescence);
 
     APPEND(",temp=%.2f,seq=%ui", p->temp_c, p->imu_seq);
 

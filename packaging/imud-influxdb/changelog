@@ -1,3 +1,13 @@
+imud-influxdb (1.2) unstable; urgency=medium
+
+  * Rebuild against imud packet v12 (228 bytes).
+  * Export the full v12 diagnostic set: gyro-bias estimate (gbias_x/y/z), its
+    variance (gbias_var_x/y/z), the accel-quiescence metric (quiescence), heave
+    rate (heave_rate), and a heave_valid boolean. As the diagnostics sink, heave
+    is still emitted from t=0 so the pre-settle transient stays visible.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 03:00:00 -0700
+
 imud-influxdb (1.1) unstable; urgency=medium
 
   * Initial release: bridge imud's binary stream to InfluxDB line protocol over

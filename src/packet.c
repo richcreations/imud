@@ -5,9 +5,9 @@
  */
 
 /*
- * packet.c — 196-byte binary packet encoder for imud Stream B (§8)
+ * packet.c — 228-byte binary packet encoder for imud Stream B (§8)
  *
- * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–187.
+ * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–223.
  * Coordinate frame: NED by default; "ENU" rotates vectors and quaternion.
  *
  * NED → ENU transform:
