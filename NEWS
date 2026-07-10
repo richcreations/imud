@@ -13,6 +13,12 @@ packaging-level record, and the git history holds the full detail.
   rate (vertical velocity), and an accel-quiescence (platform-disturbance)
   metric — plus a new HEAVE_VALID flag that signals when the heave estimate has
   settled. Stream consumers must be rebuilt against the new packet layout.
+* Bridges surface the new data where each protocol has a home for it:
+  imud-influxdb logs the full v12 diagnostic set (gyro bias + variance, heave
+  rate, quiescence, and a heave_valid field); imud-mqtt adds a heave-rate topic;
+  and the user-facing bridges (Signal K, MQTT) now withhold heave until the
+  estimator settles, so no startup transient is published. imud-mavlink is
+  unchanged (ATTITUDE already carries attitude + gyro body rates).
 
 
 1.1

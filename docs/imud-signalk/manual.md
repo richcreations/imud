@@ -1,6 +1,6 @@
 # imud-signalk — manual
 
-`imud-signalk` connects to imud's `[stream]` socket (the same 196-byte binary
+`imud-signalk` connects to imud's `[stream]` socket (the same 228-byte binary
 packets) and emits Signal K **delta** messages (JSON) over UDP — one per datagram
 at `rate_hz` (default 10 Hz) — for every imud value that has a standard Signal K
 path. imud's NMEA output is unchanged; this is an alternative path for Signal K,
@@ -54,6 +54,6 @@ section). `SIGHUP` reloads `dest_addr`, `dest_port`, `rate_hz`, `source_label`,
 | `dest_port` | int | `10113` | UDP port — must match the Signal K server's UDP input connection. |
 | `rate_hz` | int | `10` | Delta emit rate in Hz. |
 | `source_label` | string | `"imud"` | Signal K delta `source.label` value. |
-| `publish_heave` | bool | `true` | Emit `environment.heave` (set false if imud's heave estimator is off). |
+| `publish_heave` | bool | `true` | Emit `environment.heave`, withheld until the estimator settles (~10·τ) so no startup transient is sent (set false if imud's heave estimator is off). |
 
 See also `imud-signalk(8)` and `imud-signalk.conf(5)`.

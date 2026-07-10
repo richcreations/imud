@@ -15,12 +15,20 @@ radians / rad/s (`units = rad`).
 | `imud/navigation/magneticVariation` | declination | declination known |
 | `imud/navigation/rateOfTurn` | rate of turn | always |
 | `imud/attitude/roll` · `/pitch` · `/yaw` | attitude | always |
-| `imud/environment/heave` | heave (m) | `publish_heave` |
+| `imud/environment/heave` | heave (m) | `publish_heave` **and** settled |
+| `imud/environment/heaveRate` | vertical velocity (m/s, +up) | `publish_heave` **and** settled |
 | `imud/imu/temperature` | die temperature (°C) | always |
 | `imud/status/online` | `online` / `offline` (retained) | availability |
 
-Raw high-rate accel/gyro/mag/quaternion are **not** published over MQTT (wrong
-transport) — consume the binary stream directly for those.
+`heave` and `heaveRate` are withheld until the heave estimator has settled
+(~10·τ, the packet's `HEAVE_VALID` flag), so subscribers never see the startup
+transient; `heaveRate` is always m/s regardless of `units`. Home Assistant
+discovery for both is still advertised whenever `publish_heave` is set, so the
+entity exists and simply reads *unavailable* until heave settles.
+
+Raw high-rate accel/gyro/mag/quaternion and the gyro-bias / variance / quiescence
+diagnostics are **not** published over MQTT (wrong transport / not HA-relevant) —
+consume the binary stream or the InfluxDB bridge for those.
 
 ## Availability
 

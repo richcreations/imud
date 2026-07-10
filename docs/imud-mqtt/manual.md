@@ -59,7 +59,7 @@ and the log level live; broker/client/topic changes need a restart.
 | `qos` | int | `0` | Publish QoS (0/1/2). |
 | `retain` | bool | `true` | Retain values so late subscribers / HA see current state. |
 | `units` | string | `"deg"` | `"deg"` (degrees, °/min, m, °C) or `"rad"` (SI). |
-| `publish_heave` | bool | `true` | Publish `environment/heave`. |
+| `publish_heave` | bool | `true` | Publish `environment/heave` and `environment/heaveRate` (m/s). Both state topics are withheld until the heave estimator settles (~10·τ); HA discovery is still advertised on this flag alone. |
 | `ha_discovery` | bool | `true` | Publish Home Assistant discovery configs. |
 | `ha_prefix` | string | `"homeassistant"` | HA discovery topic prefix. |
 | `username` / `password` | string | `""` | Broker auth (plaintext password — protect the file). |

@@ -8,7 +8,7 @@
  * influx_main.c — imud-influxdb: InfluxDB bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 196-byte packets, and writes one InfluxDB line-protocol point per
+ * reads the 228-byte packets, and writes one InfluxDB line-protocol point per
  * tick — over UDP (default) or HTTP. Pure C, no external dependencies.
  *
  *   UDP : fire-and-forget datagram to InfluxDB 1.x's UDP listener or Telegraf's
@@ -398,7 +398,7 @@ int main(int argc, char **argv)
         if ((now.tv_sec > next.tv_sec) ||
             (now.tv_sec == next.tv_sec && now.tv_nsec >= next.tv_nsec)) {
             if (have_pkt) {
-                char line[512];
+                char line[768];   /* full field set incl. v12 diagnostics */
                 int n = influx_build_line(line, sizeof line, &latest,
                                           cfg.influx_measurement,
                                           cfg.influx_source_label, emit_heave, deg);

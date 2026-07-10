@@ -8,7 +8,7 @@
  * signalk_main.c — imud-signalk: Signal K bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 196-byte packets, and emits a Signal K delta (JSON) over UDP at
+ * reads the 228-byte packets, and emits a Signal K delta (JSON) over UDP at
  * the configured rate for every imud field that has a standard Signal K path.
  * See sk_delta.c for the field/unit mapping.
  *

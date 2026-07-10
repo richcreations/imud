@@ -1,3 +1,14 @@
+imud-mqtt (1.2) unstable; urgency=medium
+
+  * Rebuild against imud packet v12 (228 bytes).
+  * Add an environment/heaveRate topic (m/s) with Home Assistant discovery.
+  * Gate heave/heaveRate on the new HEAVE_VALID flag: their state is withheld
+    until the heave estimator settles (~10·τ), so subscribers never see the
+    startup transient. HA discovery is still advertised on publish_heave alone,
+    so the entity exists and reads "unavailable" until then.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 03:00:00 -0700
+
 imud-mqtt (1.1) unstable; urgency=medium
 
   * Initial release: bridge imud's binary stream to MQTT — scalar telemetry

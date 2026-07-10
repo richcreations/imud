@@ -8,7 +8,7 @@
  * mavlink_main.c — imud-mavlink: MAVLink bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 196-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
+ * reads the 228-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
  * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP and/or serial simultaneously.
  * Pure C, no external dependencies (hand-rolled encoder in mavlink_encode.c).
  *

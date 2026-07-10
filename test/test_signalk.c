@@ -157,11 +157,20 @@ static void test_heave_gated(void)
     char buf[512];
     double v;
 
+    /* emit_heave=false → never emitted, even once settled. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
     sk_build_delta(buf, sizeof buf, &p, "imud", false);
     EXPECT(!find_value(buf, "environment.heave", &v), "heave absent when emit_heave=false");
 
+    /* emit_heave=true but estimator not yet settled → suppressed (no transient). */
+    p.flags = 0;
     sk_build_delta(buf, sizeof buf, &p, "imud", true);
-    EXPECT(find_value(buf, "environment.heave", &v), "heave present when emit_heave=true");
+    EXPECT(!find_value(buf, "environment.heave", &v), "heave suppressed until HEAVE_VALID");
+
+    /* emit_heave=true and settled → present, in metres. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
+    sk_build_delta(buf, sizeof buf, &p, "imud", true);
+    EXPECT(find_value(buf, "environment.heave", &v), "heave present when settled");
     EXPECT(fabs(v - 0.42) < 1e-3, "heave passed through in metres");
     end(fb);
 }

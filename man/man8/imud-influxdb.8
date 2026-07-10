@@ -51,16 +51,25 @@ tag, and fields: quaternion
 (when declination is known),
 .BR rate_of_turn ,
 .B heave
+with
+.BR heave_rate " and " heave_valid
 (when
 .B publish_heave
-is set),
+is set), the gyro-bias diagnostics
+.RB ( gbias_x/y/z ", " gbias_var_x/y/z )
+and
+.B quiescence
+(always),
 .BR temp ,
 and an integer
 .BR seq ,
 timestamped with the packet's wall-clock time in nanoseconds.  Angles are degrees
 .RB ( units " = " deg )
 or radians
-.RB ( units " = " rad ).
+.RB ( units " = " rad );
+the heave-rate, gyro-bias and quiescence diagnostics are always SI
+(m/s, rad/s, (rad/s)\[u00B2]) regardless of
+.BR units .
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

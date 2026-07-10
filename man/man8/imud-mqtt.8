@@ -41,7 +41,8 @@ imud/navigation/headingTrue	when declination is known
 imud/navigation/magneticVariation	when declination is known
 imud/navigation/rateOfTurn	always
 imud/attitude/roll , /pitch , /yaw	always (imud NED convention)
-imud/environment/heave	when publish_heave is set
+imud/environment/heave	publish_heave, once heave settles
+imud/environment/heaveRate	publish_heave, once heave settles (m/s)
 imud/imu/temperature	always
 imud/status/online	retained; \(dqoffline\(dq via MQTT last-will
 .TE
@@ -49,9 +50,21 @@ imud/status/online	retained; \(dqoffline\(dq via MQTT last-will
 .PP
 Home Assistant discovery configs are published (retained) to
 .IR <ha_prefix>/sensor/<client_id>_<sensor>/config .
-Raw high-rate accelerometer/gyro/magnetometer/quaternion data is intentionally
-not published over MQTT (wrong transport) \(em consume the binary stream directly
-for that.
+The
+.B heave
+and
+.B heaveRate
+topics are withheld until the heave estimator has settled (~10\(mu\(*t), so
+subscribers never see the startup transient; their discovery configs are still
+advertised whenever
+.B publish_heave
+is set, so the Home Assistant entity exists and simply reads
+.I unavailable
+until then.
+Raw high-rate accelerometer/gyro/magnetometer/quaternion data and the gyro-bias /
+variance / quiescence diagnostics are intentionally not published over MQTT (wrong
+transport / not Home-Assistant-relevant) \(em consume the binary stream or the
+InfluxDB bridge for those.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

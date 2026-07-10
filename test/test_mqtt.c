@@ -50,6 +50,7 @@ static imud_packet_t make_pkt(void)
     p.pitch = -0.05f;
     p.yaw   = 1.23f;
     p.heave_m = 0.42f;
+    p.heave_rate = 0.25f;
     p.temp_c  = 31.4f;
     return p;
 }
@@ -135,12 +136,25 @@ static void test_heave_gated(void)
     imud_packet_t p = make_pkt();
     mqtt_msg_t m[16];
 
+    /* Off when emit_heave=false, even if the estimator has settled. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
     int n = mqtt_build_state(m, 16, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave absent when emit_heave=false");
+    EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate absent when emit_heave=false");
 
+    /* Config on but not settled (flag clear) → still suppressed. */
+    p.flags = 0;
+    n = mqtt_build_state(m, 16, &p, "imud", true, true);
+    EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave suppressed until HEAVE_VALID");
+    EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate suppressed until HEAVE_VALID");
+
+    /* Config on AND settled → both published. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
     n = mqtt_build_state(m, 16, &p, "imud", true, true);
     const mqtt_msg_t *hv = find_topic(m, n, "imud/environment/heave");
-    EXPECT(hv && fabs(strtod(hv->payload, NULL) - 0.42) < 1e-3, "heave 0.42 m when emit_heave=true");
+    EXPECT(hv && fabs(strtod(hv->payload, NULL) - 0.42) < 1e-3, "heave 0.42 m when settled");
+    const mqtt_msg_t *hr = find_topic(m, n, "imud/environment/heaveRate");
+    EXPECT(hr && fabs(strtod(hr->payload, NULL) - 0.25) < 1e-3, "heaveRate 0.25 m/s when settled");
     end(fb);
 }
 
@@ -150,11 +164,11 @@ static void test_prefix_and_count_cap(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    p.flags = IMUD_FLAG_DECLINATION_VALID;
+    p.flags = IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
     mqtt_msg_t m[16];
 
     int n = mqtt_build_state(m, 16, &p, "boat", true, true);
-    EXPECT(n == 9, "9 state msgs with declination + heave");
+    EXPECT(n == 10, "10 state msgs with declination + heave + heaveRate");
     EXPECT(find_topic(m, n, "boat/attitude/yaw") != NULL, "custom prefix applied");
 
     /* max caps the count, no overflow */
@@ -170,7 +184,7 @@ static void test_discovery(void)
 
     mqtt_msg_t m[16];
     int n = mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", false, true);
-    EXPECT(n == 8, "8 discovery configs (no heave)");
+    EXPECT(n == 8, "8 discovery configs (no heave/heaveRate)");
 
     const mqtt_msg_t *d = find_topic(m, n, "homeassistant/sensor/imud_roll/config");
     EXPECT(d != NULL, "roll discovery config topic present");
@@ -183,13 +197,20 @@ static void test_discovery(void)
     }
 
     EXPECT(find_topic(m, n, "homeassistant/sensor/imud_heave/config") == NULL, "no heave discovery when off");
+    EXPECT(find_topic(m, n, "homeassistant/sensor/imud_heave_rate/config") == NULL, "no heaveRate discovery when off");
+
+    /* Discovery is config-gated (emit_heave), NOT gated on the runtime valid flag,
+     * so HA keeps the entity and shows it 'unavailable' until heave settles. */
     n = mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", true, true);
-    EXPECT(n == 9, "9 discovery configs with heave");
+    EXPECT(n == 10, "10 discovery configs with heave + heaveRate");
     EXPECT(find_topic(m, n, "homeassistant/sensor/imud_heave/config") != NULL, "heave discovery when on");
+    const mqtt_msg_t *dhr = find_topic(m, n, "homeassistant/sensor/imud_heave_rate/config");
+    EXPECT(dhr != NULL, "heaveRate discovery when on");
+    EXPECT(dhr && strstr(dhr->payload, "\"unit_of_meas\":\"m/s\"") != NULL, "heaveRate unit m/s");
 
     /* rad mode advertises radian units */
     mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", true, false);
-    const mqtt_msg_t *dy = find_topic(m, 9, "homeassistant/sensor/imud_yaw/config");
+    const mqtt_msg_t *dy = find_topic(m, 10, "homeassistant/sensor/imud_yaw/config");
     EXPECT(dy && strstr(dy->payload, "\"unit_of_meas\":\"rad\"") != NULL, "radian unit in rad mode");
     end(fb);
 }

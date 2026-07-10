@@ -61,6 +61,10 @@ static imud_packet_t make_pkt(void)
     p.rate_of_turn = 60.0f;
     p.roll = 0.10f; p.pitch = -0.05f; p.yaw = 1.23f;
     p.heave_m = 0.42f; p.temp_c = 31.4f; p.imu_seq = 7;
+    p.heave_rate = 0.25f;
+    p.gyro_bias_x = 0.001f; p.gyro_bias_y = -0.002f; p.gyro_bias_z = 0.003f;
+    p.gyro_bias_var_x = 1e-6f; p.gyro_bias_var_y = 2e-6f; p.gyro_bias_var_z = 3e-6f;
+    p.accel_quiescence = 0.01f;
     return p;
 }
 
@@ -144,6 +148,44 @@ static void test_heave_gated_and_tags(void)
     end(fb);
 }
 
+static void test_v12_diagnostics(void)
+{
+    begin("test_v12_diagnostics");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    char buf[768];
+    double v;
+
+    /* Gyro-bias / variance / quiescence are always emitted, never unit-converted
+     * (raw SI even in deg mode), and independent of the heave gate. */
+    p.flags = 0;
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    EXPECT(field(buf, "gbias_x", &v) && fabs(v - 0.001) < 1e-6, "gbias_x raw rad/s");
+    EXPECT(field(buf, "gbias_y", &v) && fabs(v + 0.002) < 1e-6, "gbias_y raw rad/s");
+    EXPECT(field(buf, "gbias_z", &v) && fabs(v - 0.003) < 1e-6, "gbias_z raw rad/s");
+    EXPECT(field(buf, "gbias_var_x", &v) && fabs(v - 1e-6) < 1e-9, "gbias_var_x");
+    EXPECT(field(buf, "gbias_var_y", &v) && fabs(v - 2e-6) < 1e-9, "gbias_var_y");
+    EXPECT(field(buf, "quiescence", &v) && fabs(v - 0.01) < 1e-5, "quiescence");
+
+    /* heave_rate + heave_valid gate with heave (emit_heave=false → absent). */
+    EXPECT(!field(buf, "heave_rate", &v), "heave_rate absent when emit_heave=false");
+    EXPECT(strstr(buf, "heave_valid=") == NULL, "heave_valid absent when emit_heave=false");
+
+    /* emit_heave with the valid flag clear → heave still emitted (diagnostics sink),
+     * heave_valid=f so the transient can be filtered downstream. */
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true);
+    EXPECT(field(buf, "heave_rate", &v) && fabs(v - 0.25) < 1e-3, "heave_rate present + value");
+    EXPECT(field(buf, "heave", &v) && fabs(v - 0.42) < 1e-3, "heave emitted from t=0 regardless of validity");
+    EXPECT(strstr(buf, "heave_valid=f") != NULL, "heave_valid=f when flag clear");
+
+    /* Valid flag set → heave_valid=t. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true);
+    EXPECT(strstr(buf, "heave_valid=t") != NULL, "heave_valid=t when flag set");
+    end(fb);
+}
+
 static void test_buffer_too_small(void)
 {
     begin("test_buffer_too_small");
@@ -162,6 +204,7 @@ int main(void)
     test_rad_units();
     test_declination_gated();
     test_heave_gated_and_tags();
+    test_v12_diagnostics();
     test_buffer_too_small();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
