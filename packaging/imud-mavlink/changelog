@@ -1,0 +1,6 @@
+imud-mavlink (1.1) unstable; urgency=medium
+
+  * Initial release: bridge imud's binary stream to MAVLink v1/v2 (HEARTBEAT,
+    ATTITUDE, ATTITUDE_QUATERNION) over UDP and/or serial (pure C).
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 01:32:55 -0700

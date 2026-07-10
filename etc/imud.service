@@ -1,5 +1,6 @@
 [Unit]
 Description=IMU Daemon — 9DoF AHRS bridge (NMEA 0183 + binary UDP)
+Documentation=man:imud(8) man:imud.conf(5)
 After=network.target time-sync.target
 Wants=time-sync.target
 # time-sync.target ensures chrony has stepped the clock before the daemon

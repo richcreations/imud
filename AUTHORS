@@ -1,0 +1,7 @@
+imud — authors and maintainers
+==============================
+
+Richard Simpson <richcreations@gmail.com>
+    Author and maintainer. Design and implementation of the daemon, sensor
+    fusion (MEKF), drivers, output streams, client libraries, the bridge
+    daemons (Signal K, MQTT, InfluxDB, MAVLink), and documentation.

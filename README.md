@@ -128,6 +128,11 @@ in-situ `imud-cal mag`. See the
   sentence formats, and the timestamp design.
 - **[Client libraries](lib/README.md)** — C and Python libraries for the
   binary stream.
+- **Bridges** — each optional bridge has its own docs under `docs/imud-<name>/`
+  (README, manual, spec), installed to `/usr/share/doc/imud-<name>/`; see the
+  [Bridges section](docs/manual.md#9a-bridges) of the manual.
+- **[Contributing](CONTRIBUTING.md)** — build, test, coding conventions, and how
+  to submit a pull request.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
   `imud-mon(1)` (installed by `make install`); `imud-signalk(8)` /
   `imud-mqtt(8)` / `imud-influxdb(8)` / `imud-mavlink(8)` (each with an

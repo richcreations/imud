@@ -1,0 +1,21 @@
+imud (1.1) unstable; urgency=medium
+
+  * Add optional bridge daemons, each its own package: imud-signalk,
+    imud-mqtt, imud-influxdb, imud-mavlink.
+  * Binary stream packet version 11: add heave and magnetic-declination fields.
+  * Add heave estimator and a rough-sea fusion revision.
+  * Add level-gated logging (debug/info/warn/error).
+  * Ship GNU + Debian standard documentation; install per-package docs under
+    /usr/share/doc/.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 01:32:55 -0700
+
+imud (1.0) unstable; urgency=medium
+
+  * Initial release: quaternion MEKF attitude/heading from an I²C IMU +
+    magnetometer; NMEA 0183, high-rate binary UDP, and a local AF_UNIX
+    subscription stream; World Magnetic Model true heading; gyro/accel/mag
+    calibration (imud-cal); status and monitoring (imud-status, imud-mon);
+    a hardened systemd service.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 06 Jul 2026 12:00:00 -0700

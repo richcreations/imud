@@ -1,0 +1,40 @@
+Installing imud
+===============
+
+Prerequisites (Raspberry Pi OS / Debian Bookworm or similar):
+
+    sudo apt install build-essential libgpiod-dev
+
+Build and install the core — the imud daemon plus imud-cal, imud-status,
+imud-mon, the client libraries, the config, the systemd unit, and man pages:
+
+    make
+    sudo make install
+
+Installs to /usr/local by default. Override the prefix, or stage into a
+packaging root, with the standard variables:
+
+    sudo make install PREFIX=/usr
+    make install DESTDIR=/tmp/stage PREFIX=/usr        # staged, no root needed
+
+Optional bridge daemons are built and installed separately — each is its own
+package with its own dependencies, config, and docs:
+
+    make bridges                                       # build all bridges
+    sudo make install-signalk                          # Signal K bridge
+    sudo make install-mqtt                             # MQTT bridge (needs libmosquitto-dev)
+    sudo make install-influxdb                         # InfluxDB bridge
+    sudo make install-mavlink                          # MAVLink bridge
+
+Edit the configuration for your hardware, then enable the service:
+
+    sudo nano /etc/imud/imud.conf
+    sudo systemctl enable --now imud
+
+Other targets:
+
+    make test            # run the test suite (from the repo root)
+    sudo make uninstall  # remove installed files (config in /etc/imud is kept)
+
+The full installation, configuration, and calibration guide is docs/manual.md
+(installed to /usr/share/doc/imud/manual.md).

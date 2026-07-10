@@ -1,0 +1,6 @@
+imud-mqtt (1.1) unstable; urgency=medium
+
+  * Initial release: bridge imud's binary stream to MQTT — scalar telemetry
+    topics plus Home Assistant MQTT discovery, via libmosquitto.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 01:32:55 -0700

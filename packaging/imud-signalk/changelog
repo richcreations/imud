@@ -1,0 +1,6 @@
+imud-signalk (1.1) unstable; urgency=medium
+
+  * Initial release: bridge imud's binary stream to Signal K delta JSON over
+    UDP (navigation.* attitude/heading/rate-of-turn and environment.heave).
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 01:32:55 -0700

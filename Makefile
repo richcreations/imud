@@ -195,8 +195,10 @@ PREFIX  ?= /usr/local
 ETCDIR  ?= /etc/imud
 SVCDIR  ?= /etc/systemd/system
 MANDIR  ?= $(PREFIX)/share/man
+DOCDIR  ?= $(PREFIX)/share/doc
 
 install: imud imud-cal imud-status imud-mon
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
 	# ── System user ────────────────────────────────────────────────────────
 	@if ! id -u imud >/dev/null 2>&1; then \
@@ -247,6 +249,14 @@ install: imud imud-cal imud-status imud-mon
 	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
 	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
+	# ── Documentation (/usr/share/doc/imud) ────────────────────────────────
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud/examples
+	install -m 644 AUTHORS NEWS INSTALL README.md CONTRIBUTING.md spec.md \
+	               docs/manual.md docs/ROADMAP.md $(DESTDIR)$(DOCDIR)/imud/
+	install -m 644 packaging/imud/copyright $(DESTDIR)$(DOCDIR)/imud/copyright
+	gzip -9c packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
+	install -m 644 config/imud.conf $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf
+	@echo "Installed docs to       $(DESTDIR)$(DOCDIR)/imud"
 	@echo ""
 	@echo "Next steps:"
 	@echo "  sudo systemctl enable --now imud"
@@ -256,7 +266,7 @@ install: imud imud-cal imud-status imud-mon
 # Run after `make bridges`.  Installs the binary, service, man page, and its own
 # config file (non-clobbering).  Prep for a standalone imud-signalk package.
 install-signalk: imud-signalk
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-signalk $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-signalk.service $(DESTDIR)$(SVCDIR)/imud-signalk.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
@@ -269,6 +279,12 @@ install-signalk: imud-signalk
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9c man/man5/imud-signalk.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz
 	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-signalk/examples
+	install -m 644 docs/imud-signalk/README.md docs/imud-signalk/manual.md \
+	               docs/imud-signalk/spec.md $(DESTDIR)$(DOCDIR)/imud-signalk/
+	install -m 644 packaging/imud-signalk/copyright $(DESTDIR)$(DOCDIR)/imud-signalk/copyright
+	gzip -9c packaging/imud-signalk/changelog > $(DESTDIR)$(DOCDIR)/imud-signalk/changelog.gz
+	install -m 644 config/imud-signalk.conf $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -279,7 +295,7 @@ install-signalk: imud-signalk
 # Run after `make imud-mqtt` (needs libmosquitto-dev).  Installs the binary,
 # service, man page, and its own config file (non-clobbering).
 install-mqtt: imud-mqtt
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-mqtt $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-mqtt.service $(DESTDIR)$(SVCDIR)/imud-mqtt.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
@@ -293,6 +309,12 @@ install-mqtt: imud-mqtt
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9c man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
 	gzip -9c man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples
+	install -m 644 docs/imud-mqtt/README.md docs/imud-mqtt/manual.md \
+	               docs/imud-mqtt/spec.md $(DESTDIR)$(DOCDIR)/imud-mqtt/
+	install -m 644 packaging/imud-mqtt/copyright $(DESTDIR)$(DOCDIR)/imud-mqtt/copyright
+	gzip -9c packaging/imud-mqtt/changelog > $(DESTDIR)$(DOCDIR)/imud-mqtt/changelog.gz
+	install -m 644 config/imud-mqtt.conf $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -303,7 +325,7 @@ install-mqtt: imud-mqtt
 # Run after `make imud-influxdb`.  Installs the binary, service, man page, and
 # its own config file (non-clobbering).
 install-influxdb: imud-influxdb
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-influxdb $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-influxdb.service $(DESTDIR)$(SVCDIR)/imud-influxdb.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
@@ -317,6 +339,12 @@ install-influxdb: imud-influxdb
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9c man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
 	gzip -9c man/man8/imud-influxdb.8 > $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples
+	install -m 644 docs/imud-influxdb/README.md docs/imud-influxdb/manual.md \
+	               docs/imud-influxdb/spec.md $(DESTDIR)$(DOCDIR)/imud-influxdb/
+	install -m 644 packaging/imud-influxdb/copyright $(DESTDIR)$(DOCDIR)/imud-influxdb/copyright
+	gzip -9c packaging/imud-influxdb/changelog > $(DESTDIR)$(DOCDIR)/imud-influxdb/changelog.gz
+	install -m 644 config/imud-influxdb.conf $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -327,7 +355,7 @@ install-influxdb: imud-influxdb
 # Run after `make imud-mavlink`.  Installs the binary, service, man page, and its
 # own config file (non-clobbering).
 install-mavlink: imud-mavlink
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-mavlink $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-mavlink.service $(DESTDIR)$(SVCDIR)/imud-mavlink.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
@@ -341,6 +369,12 @@ install-mavlink: imud-mavlink
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9c man/man5/imud-mavlink.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
 	gzip -9c man/man8/imud-mavlink.8 > $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples
+	install -m 644 docs/imud-mavlink/README.md docs/imud-mavlink/manual.md \
+	               docs/imud-mavlink/spec.md $(DESTDIR)$(DOCDIR)/imud-mavlink/
+	install -m 644 packaging/imud-mavlink/copyright $(DESTDIR)$(DOCDIR)/imud-mavlink/copyright
+	gzip -9c packaging/imud-mavlink/changelog > $(DESTDIR)$(DOCDIR)/imud-mavlink/changelog.gz
+	install -m 644 config/imud-mavlink.conf $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -383,6 +417,9 @@ uninstall:
 	      $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
+	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
+	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
+	       $(DESTDIR)$(DOCDIR)/imud-mavlink
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
