@@ -1,0 +1,6 @@
+InfluxDB bridge for the imud IMU daemon
+ imud-influxdb connects to imud's local binary stream socket and writes one
+ InfluxDB line-protocol point per tick — quaternion, attitude, heading, rate
+ of turn, heave, and the full fusion diagnostics (gyro bias and variance,
+ quiescence) — over UDP or HTTP, for time-series storage and Grafana
+ dashboards. Pure C, no external dependencies.

@@ -1,11 +1,15 @@
 /*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * wmm.c — World Magnetic Model degree-12 spherical harmonic computation
  *
  * Algorithm: NOAA WMM Technical Note 28, Appendix A (Langel 1987 recursion).
  * Coordinate system: geodetic WGS-84 input, geocentric spherical for field
  * evaluation, geodetic NED for output.
- *
- * SPDX-License-Identifier: MIT
  */
 
 #include "wmm.h"

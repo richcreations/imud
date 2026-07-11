@@ -1,0 +1,6 @@
+Signal K bridge for the imud IMU daemon
+ imud-signalk connects to imud's local binary stream socket and emits Signal K
+ delta messages (JSON) over UDP — attitude, magnetic and true heading,
+ magnetic variation, rate of turn, and heave, on standard Signal K paths in
+ SI units. Runs as its own hardened systemd service and reconnects to imud
+ automatically.

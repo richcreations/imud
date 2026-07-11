@@ -1,0 +1,4 @@
+# Files excluded from `git archive` release tarballs (make dist).
+.github/        export-ignore
+.gitignore      export-ignore
+.gitattributes  export-ignore

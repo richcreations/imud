@@ -51,7 +51,9 @@ behaviour.
   the protocol spec, the client libraries, and tests); update the parallel
   surfaces together. Release-level notes go in `NEWS` and the per-package
   changelogs — the Git history is the detailed changelog, so there is no
-  separate `ChangeLog` file.
+  separate `ChangeLog` file. Cutting a release follows
+  [docs/RELEASING.md](docs/RELEASING.md) (the canonical version is
+  `include/version.h`).
 
 ## Submitting a change
 

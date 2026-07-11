@@ -20,6 +20,7 @@
  *
  * In all other translation units just #include without the #define.
  *
+ * Copyright (c) 2026 Richard Simpson
  * SPDX-License-Identifier: MIT
  */
 
@@ -29,6 +30,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+/* Packets are decoded as an in-memory packed struct with no byte-order
+ * conversion; the wire format is little-endian, so a little-endian host is
+ * required (true of every platform imud targets). */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
+# error "imud's binary wire format requires a little-endian host"
+#endif
 
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 

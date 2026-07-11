@@ -5,6 +5,11 @@ Source: https://github.com/richcreations/imud
 Files: *
 Copyright: 2026 Richard Simpson
 License: MIT
+Comment: The MAVLink message ids, payload layouts, and per-message CRC_EXTRA
+ constants in src/mavlink_encode.c / include/mavlink_encode.h are transcribed
+ by hand from the MAVLink project's "common" dialect message definitions
+ (https://mavlink.io/, MIT-licensed). No MAVLink project code is copied; the
+ encoder is an original implementation of the published wire format.
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

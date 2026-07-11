@@ -13,7 +13,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev devscripts mandoc
 
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
@@ -33,3 +33,48 @@ jobs:
       # wire-format drift in the pure-Python parser too.
       - name: Python client self-check
         run: python3 -c "import sys; sys.path.insert(0, 'lib'); import imud_client; print('imud_client.py OK')"
+
+      # ── Debian-readiness guards ──────────────────────────────────────────
+
+      # dpkg-buildflags injection must reach every compile and link: rebuild
+      # with the Debian hardening flags and verify with hardening-check.
+      - name: Hardening flags respected
+        run: |
+          make clean
+          export DEB_BUILD_MAINT_OPTIONS="hardening=+all"
+          eval "$(dpkg-buildflags --export=sh)"
+          make imud imud-cal imud-status imud-mon && make bridges
+          hardening-check --nocfprotection imud imud-signalk imud-influxdb
+
+      # Staged install must be a pure file copy into the packaging layout:
+      # correct paths, no useradd, no systemctl.
+      - name: Staged install layout
+        run: |
+          make install install-signalk install-mqtt install-influxdb install-mavlink \
+               DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system
+          test -x stage/usr/bin/imud
+          test -x stage/usr/bin/imud-mavlink
+          test -f stage/lib/systemd/system/imud.service
+          grep -q '^ExecStart=/usr/bin/imud ' stage/lib/systemd/system/imud.service
+          test -f stage/usr/share/doc/imud/changelog.gz
+          test -f stage/usr/share/doc/imud-mqtt/copyright
+          test -f stage/usr/share/man/man8/imud.8.gz
+          test -f stage/etc/imud/imud.conf
+          if id -u imud >/dev/null 2>&1; then echo "useradd ran under DESTDIR"; exit 1; fi
+          echo "staged layout OK"
+
+      # The release tarball must contain the release and nothing repo-only:
+      # no .github, no bytecode, no OS litter, no vendor datasheets.
+      - name: Dist tarball content
+        run: |
+          make dist
+          tar tzf imud-*.tar.gz | grep -q 'LICENSE'
+          tar tzf imud-*.tar.gz | grep -q 'include/version.h'
+          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|datasheets/'
+          echo "dist content OK"
+
+      # Man pages must lint clean (warnings fail).
+      - name: Man page lint
+        run: |
+          mandoc -Tlint -Wwarning man/man1/*.1 man/man5/*.5 man/man8/*.8
+          echo "man lint OK"
