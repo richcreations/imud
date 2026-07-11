@@ -532,6 +532,53 @@ loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets
 packet gaps (visible in `imu_seq`), never blocks the daemon.
 
+### NMEA 2000 — via Signal K (recipe, no imud code involved)
+
+imud has no direct N2K output by design: the Signal K server already owns the
+hard device-level work (ISO address claim, product info) and its
+[`signalk-to-nmea2000`](https://github.com/SignalK/signalk-to-nmea2000)
+plugin converts the paths imud-signalk emits into PGNs. The chain is:
+
+```
+imud → imud-signalk (UDP delta) → Signal K server → signalk-to-nmea2000 → CAN bus
+```
+
+**You need:** a CAN interface the server can transmit on — a SocketCAN hat
+(PiCAN2, Waveshare MCP2515, …) using a `canbus (canboatjs)` connection, or an
+Actisense NGT-1 (`actisense-serial` with `toChildProcess: nmea2000out`).
+
+**Steps:**
+
+1. Enable imud's stream + the bridge: `imud.conf` `[stream] enabled = true`;
+   `imud-signalk.conf` `enabled = true`, destination = the Signal K host,
+   port 10113 (default). `sudo systemctl enable --now imud-signalk`.
+2. Signal K server → *Data Connections* → add: data type **SignalK**, source
+   **UDP**, port **10113**. imud's paths now appear under `vessels.self`.
+3. Add the N2K connection (canbus/canboatjs or Actisense) with output
+   enabled, install `signalk-to-nmea2000` from the Appstore, and enable the
+   conversions below in its plugin config.
+
+**Verified conversions** (checked against the plugin source; each is a
+separate toggle):
+
+| PGN | Content | Plugin conversion | Feeds from |
+| --- | --- | --- | --- |
+| 127250 | Vessel heading (magnetic + variation) | `Heading (127250)` | `navigation.headingMagnetic` + `navigation.magneticVariation` |
+| 127250 | Vessel heading (true) | `TrueHeading (127250)` | `navigation.headingTrue` |
+| 127257 | Attitude (roll/pitch/yaw) | `Attitude (127257)` | `navigation.attitude` |
+| 127258 | Magnetic variation | `Magnetic Variation (127258)` | `navigation.magneticVariation` |
+
+Enable imud's declination (WMM via `[position]`, or a static value) — the
+magnetic-heading conversion takes variation as an input, and the
+true-heading and variation conversions have nothing to emit without it.
+
+**Not covered by the official plugin:** rate of turn (PGN 127251) and heave
+(127252) have no conversions there — imud emits `navigation.rateOfTurn`, but
+nothing converts it. If you need 127251 on the backbone, the community fork
+[`signalk-nmea2000-emitter-cannon`](https://github.com/NearlCrews/signalk-nmea2000-emitter-cannon)
+advertises broader PGN coverage (unverified here), and most N2K autopilots
+and displays derive turn rate from the heading PGN themselves.
+
 ---
 
 ## 8. Monitoring and diagnostics
