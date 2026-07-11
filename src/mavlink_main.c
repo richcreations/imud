@@ -36,8 +36,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 
-#define IMUD_CLIENT_IMPLEMENTATION
 #include "../lib/imud_client.h"
+#include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "mavlink_encode.h"
 #include "config.h"
 #include "log.h"
@@ -86,33 +86,6 @@ static void sd_notify_msg(const char *msg)
     if (fd < 0) return;
     sendto(fd, msg, strlen(msg), MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof addr);
     close(fd);
-}
-
-/* ── AF_UNIX stream connect + framed read (mirrors src/signalk_main.c) ────── */
-
-static int connect_stream(const char *path)
-{
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return -1;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    return fd;
-}
-
-static int read_frame(int fd, unsigned char *frame)
-{
-    size_t got = 0;
-    while (got < IMUD_PACKET_SIZE) {
-        ssize_t n = read(fd, frame + got, IMUD_PACKET_SIZE - got);
-        if (n <= 0) return -1;
-        got += (size_t)n;
-    }
-    return 0;
 }
 
 static void interruptible_sleep(int secs)
@@ -308,8 +281,7 @@ int main(int argc, char **argv)
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    int  stream_fd = -1;
-    unsigned char frame[IMUD_PACKET_SIZE];
+    imud_t       *stream = NULL;
     imud_packet_t latest;
     bool have_pkt = false;
 
@@ -350,9 +322,9 @@ int main(int argc, char **argv)
             }
         }
 
-        if (stream_fd < 0) {
-            stream_fd = connect_stream(cfg.stream_socket);
-            if (stream_fd < 0) {
+        if (!stream) {
+            stream = imud_connect_stream(cfg.stream_socket);
+            if (!stream) {
                 LOG_W("[mavlink] stream socket %s unavailable: %s — retrying\n",
                       cfg.stream_socket, strerror(errno));
                 have_pkt = false;
@@ -362,7 +334,8 @@ int main(int argc, char **argv)
             LOG_I("[mavlink] connected to %s\n", cfg.stream_socket);
         }
 
-        /* Wait until the nearer of the two deadlines, draining stream frames. */
+        /* Wait until the nearer of the two deadlines, draining stream frames.
+         * Round up so a sub-millisecond remainder can't busy-spin. */
         clock_gettime(CLOCK_MONOTONIC, &now);
         const struct timespec *earliest =
             ((next_hb.tv_sec < next_data.tv_sec) ||
@@ -372,29 +345,17 @@ int main(int argc, char **argv)
                      + (earliest->tv_nsec - now.tv_nsec);
         if (wait_ns < 0) wait_ns = 0;
 
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(stream_fd, &rfds);
-        struct timeval tv = { .tv_sec  = wait_ns / 1000000000L,
-                              .tv_usec = (wait_ns % 1000000000L) / 1000 };
-        int s = select(stream_fd + 1, &rfds, NULL, NULL, &tv);
-        if (s < 0) {
-            if (errno == EINTR) continue;
-            LOG_W("[mavlink] select: %s\n", strerror(errno));
-            close(stream_fd); stream_fd = -1; have_pkt = false;
+        int r = imud_read(stream, (int)((wait_ns + 999999L) / 1000000L));
+        if (r < 0) {
+            LOG_I("[mavlink] stream disconnected\n");
+            imud_free(stream); stream = NULL; have_pkt = false;
             continue;
         }
-        if (s > 0 && FD_ISSET(stream_fd, &rfds)) {
-            if (read_frame(stream_fd, frame) != 0) {
-                LOG_I("[mavlink] stream disconnected\n");
-                close(stream_fd); stream_fd = -1; have_pkt = false;
-                continue;
-            }
-            if (imud_packet_valid(frame, sizeof frame)) {
-                memcpy(&latest, frame, sizeof latest);
-                have_pkt = true;
-            }
+        if (r == 0) {
+            latest   = *imud_wire(stream);
+            have_pkt = true;
         }
+        /* r == 1: deadline reached (or a signal) — fall through to senders. */
 
         uint8_t sid = (uint8_t)cfg.mav_system_id;
         uint8_t cid = (uint8_t)cfg.mav_component_id;
@@ -445,7 +406,7 @@ int main(int argc, char **argv)
     }
 
     LOG_I("[mavlink] shutting down\n");
-    if (stream_fd >= 0) close(stream_fd);
+    imud_free(stream);
     for (int k = 0; k < nsinks; k++) close(sinks[k].fd);
     return 0;
 }

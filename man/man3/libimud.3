@@ -1,0 +1,103 @@
+.TH LIBIMUD 3 "2026-07-10" "imud 1.3" "Library Functions Manual"
+.SH NAME
+libimud \- ABI-stable client library for the imud IMU daemon
+.SH SYNOPSIS
+.nf
+.B #include <imud.h>
+.PP
+.BI "imud_t *imud_connect_stream(const char *" path );
+.BI "imud_t *imud_connect_udp(int " port ", const char *" group );
+.BI "int     imud_read(imud_t *" h ", int " timeout_ms );
+.BI "int     imud_reconnect(imud_t *" h );
+.BI "const imud_data_t *imud_data(const imud_t *" h );
+.BI "int     imud_fd(const imud_t *" h );
+.BI "void    imud_free(imud_t *" h );
+.BI "const char *imud_lib_version(void);"
+.BI "unsigned imud_wire_version(const imud_t *" h );
+.fi
+.PP
+Link with
+.I \-limud
+(pkg-config:
+.IR libimud ).
+.SH DESCRIPTION
+.B libimud
+receives, validates, and decodes imud's binary telemetry so applications
+do not have to know the wire format. Unlike the single-header
+.I imud_client.h
+(which pins the wire version and must be recompiled per packet revision),
+libimud's interface is
+.B ABI-stable
+\(em applications compiled against it keep working across imud upgrades
+without recompilation. The library is built and shipped with the daemon;
+keep the two installed together.
+.PP
+.B imud_connect_stream
+connects to the daemon's local AF_UNIX stream socket (lossless, the
+recommended same-host path);
+.I path
+NULL or empty uses
+.IR /run/imud/imud\-stream.sock .
+.B imud_connect_udp
+receives the high-rate binary UDP stream;
+.I port
+0 uses the default 10111, and a multicast
+.I group
+(224.0.0.0/4) is joined when given. Both return NULL on error with
+.I errno
+set.
+.PP
+.B imud_read
+waits up to
+.I timeout_ms
+milliseconds (negative blocks indefinitely) and returns
+.B 0
+when a new valid packet is available,
+.B 1
+on timeout, or
+.B \-1
+when the connection is lost \(em after which call
+.B imud_reconnect
+(retryable with backoff) or
+.BR imud_free .
+Malformed packets are discarded silently.
+.PP
+.B imud_data
+returns the latest packet decoded into the
+.B append-only
+.I imud_data_t
+view (attitude, heading \(em magnetic and true \(em rate of turn, heave and
+heave rate, sensor triplets, covariance, fusion diagnostics, timestamps,
+flags; see
+.IR <imud.h> ).
+The pointer is owned by the handle and updated in place by each successful
+read.
+.B imud_fd
+exposes the descriptor for external select/poll loops: when readable, call
+.BR imud_read (h,
+0).
+.SH ABI CONTRACT
+.I imud_data_t
+only ever grows: new members are appended, existing members never move,
+change type, or disappear. Always access it through the pointer
+.B imud_data
+returns \(em do not copy the struct by value or persist
+.IR sizeof(imud_data_t) .
+Under those rules, binaries built against an older
+.I imud.h
+read their fields correctly from any newer
+.IR libimud.so.0 .
+A breaking change (none planned) would bump the SONAME.
+.SH FILES
+.TP
+.I /run/imud/imud-stream.sock
+default daemon stream socket
+.TP
+.I /usr/include/imud.h
+the public header, including the full imud_data_t field reference
+.SH SEE ALSO
+.BR imud (8),
+.BR imud.conf (5)
+.PP
+The wire-format spec and the version-pinned single-header alternative are in
+.IR /usr/share/doc/imud/ .

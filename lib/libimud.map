@@ -1,0 +1,16 @@
+/* libimud symbol version script — only the public imud_* API is exported. */
+IMUD_0 {
+    global:
+        imud_connect_stream;
+        imud_connect_udp;
+        imud_read;
+        imud_reconnect;
+        imud_data;
+        imud_wire;
+        imud_fd;
+        imud_free;
+        imud_lib_version;
+        imud_wire_version;
+    local:
+        *;
+};

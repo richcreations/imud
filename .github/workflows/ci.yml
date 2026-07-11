@@ -37,7 +37,8 @@ jobs:
       # ── Debian-readiness guards ──────────────────────────────────────────
 
       # dpkg-buildflags injection must reach every compile and link: rebuild
-      # with the Debian hardening flags and verify with hardening-check.
+      # with the Debian hardening flags and verify with hardening-check
+      # (the shared library too; PIE does not apply to a .so).
       - name: Hardening flags respected
         run: |
           make clean
@@ -45,6 +46,18 @@ jobs:
           eval "$(dpkg-buildflags --export=sh)"
           make imud imud-cal imud-status imud-mon && make bridges
           hardening-check --nocfprotection imud imud-signalk imud-influxdb
+          hardening-check --nocfprotection --nopie libimud.so.0.0
+
+      # libimud must export exactly the public API (version script honored)
+      # and the bridges must actually link it.
+      - name: libimud ABI surface
+        run: |
+          nm -D --defined-only libimud.so.0.0 | awk '{print $3}' | grep -v '^$' > syms.txt
+          if grep -v '^imud_' syms.txt; then echo "unexpected exported symbols"; exit 1; fi
+          grep -q '^imud_connect_stream$' syms.txt
+          grep -q '^imud_data$' syms.txt
+          LD_LIBRARY_PATH=. ldd imud-signalk | grep -q 'libimud.so.0'
+          echo "ABI surface OK"
 
       # Staged install must be a pure file copy into the packaging layout:
       # correct paths, no useradd, no systemctl.
@@ -60,8 +73,38 @@ jobs:
           test -f stage/usr/share/doc/imud-mqtt/copyright
           test -f stage/usr/share/man/man8/imud.8.gz
           test -f stage/etc/imud/imud.conf
+          test -f stage/usr/lib/libimud.so.0.0
+          test -L stage/usr/lib/libimud.so.0
+          test -L stage/usr/lib/libimud.so
+          test -f stage/usr/include/imud.h
+          test -f stage/usr/lib/pkgconfig/libimud.pc
           if id -u imud >/dev/null 2>&1; then echo "useradd ran under DESTDIR"; exit 1; fi
           echo "staged layout OK"
+
+      # A third-party consumer must build against the staged tree using only
+      # pkg-config — proves header, .pc, and link path end to end.
+      - name: pkg-config consumer compile
+        run: |
+          cat > consumer.c <<'EOF'
+          #include <imud.h>
+          #include <stdio.h>
+          int main(void)
+          {
+              printf("libimud %s\n", imud_lib_version());
+              imud_t *h = imud_connect_udp(0, NULL);
+              if (!h) return 1;
+              const imud_data_t *d = imud_data(h);
+              (void)d;
+              imud_free(h);
+              return 0;
+          }
+          EOF
+          export PKG_CONFIG_PATH="$PWD/stage/usr/lib/pkgconfig"
+          FLAGS=$(pkg-config --cflags libimud | sed "s|-I/usr/include|-I$PWD/stage/usr/include|")
+          gcc -Wall -Wextra $FLAGS -I"$PWD/stage/usr/include" consumer.c \
+              -L"$PWD/stage/usr/lib" -limud -o consumer
+          LD_LIBRARY_PATH="$PWD/stage/usr/lib" ./consumer
+          echo "consumer OK"
 
       # The release tarball must contain the release and nothing repo-only:
       # no .github, no bytecode, no OS litter, no vendor datasheets.

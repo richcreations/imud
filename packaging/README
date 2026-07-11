@@ -7,10 +7,14 @@ packaging (a self-hosted apt repository first, Debian inclusion eventually)
 is mechanical when it starts. One subdirectory per binary package:
 
   imud/            the core daemon + tools (imud, imud-cal, imud-status, imud-mon)
+  libimud/         client shared library (future split: libimud0 + libimud-dev)
   imud-signalk/    Signal K bridge
   imud-mqtt/       MQTT bridge (links libmosquitto)
   imud-influxdb/   InfluxDB bridge
   imud-mavlink/    MAVLink bridge
+
+The four bridges link libimud at runtime, so as .debs they will
+Depend: libimud0 (built from this same source).
 
 Each contains:
 
@@ -44,4 +48,7 @@ Notes for the future packager
 * CFLAGS/CPPFLAGS/LDFLAGS from the environment (dpkg-buildflags) are
   respected; mandatory flags are appended with `override +=` so hardening
   injection works on every binary.
+* libimud's SONAME is libimud.so.0 and its data struct is append-only; only a
+  (never planned lightly) breaking ABI change bumps the SONAME and the
+  runtime package name (libimud0 → libimud1). See docs/RELEASING.md.
 * The upstream release tag convention is vX.Y (see docs/RELEASING.md).

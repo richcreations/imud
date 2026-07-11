@@ -33,6 +33,14 @@ src/drivers/*.d
 /test_mqtt
 /test_influxdb
 /test_mavlink
+/test_libimud
+
+# libimud build products
+/libimud.so
+/libimud.so.*
+/libimud.pc
+lib/*.o
+lib/*.d
 
 # Python bytecode
 __pycache__/

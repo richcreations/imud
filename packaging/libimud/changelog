@@ -1,0 +1,9 @@
+libimud (1.3) unstable; urgency=medium
+
+  * Initial release: ABI-stable client shared library (libimud.so.0) for
+    imud's binary telemetry — AF_UNIX stream and UDP transports, packet
+    validation, and an append-only imud_data_t view so applications survive
+    imud upgrades without recompiling. Ships imud.h and pkg-config metadata;
+    the imud bridges are its first consumers.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 12:00:00 -0700
