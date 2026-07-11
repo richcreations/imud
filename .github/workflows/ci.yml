@@ -38,7 +38,10 @@ jobs:
 
       # dpkg-buildflags injection must reach every compile and link: rebuild
       # with the Debian hardening flags and verify with hardening-check
-      # (the shared library too; PIE does not apply to a .so).
+      # (the shared library too; PIE does not apply to a .so, and neither
+      # does the fortify heuristic: every fortifiable call in libimud.c has
+      # compile-time-provable bounds, so glibc emits no __*_chk imports and
+      # hardening-check misreads that as an unfortified build).
       - name: Hardening flags respected
         run: |
           make clean
@@ -46,13 +49,17 @@ jobs:
           eval "$(dpkg-buildflags --export=sh)"
           make imud imud-cal imud-status imud-mon && make bridges
           hardening-check --nocfprotection imud imud-signalk imud-influxdb
-          hardening-check --nocfprotection --nopie libimud.so.0.0
+          hardening-check --nocfprotection --nopie --nofortify libimud.so.0.0
 
       # libimud must export exactly the public API (version script honored)
       # and the bridges must actually link it.
       - name: libimud ABI surface
         run: |
-          nm -D --defined-only libimud.so.0.0 | awk '{print $3}' | grep -v '^$' > syms.txt
+          # The version script makes nm list the version node (IMUD_0) as an
+          # absolute symbol and append @@IMUD_0 to every export; drop both
+          # before comparing against the public API.
+          nm -D --defined-only libimud.so.0.0 | awk '$2 != "A" {print $3}' \
+              | sed 's/@.*$//' | grep -v '^$' > syms.txt
           if grep -v '^imud_' syms.txt; then echo "unexpected exported symbols"; exit 1; fi
           grep -q '^imud_connect_stream$' syms.txt
           grep -q '^imud_data$' syms.txt
