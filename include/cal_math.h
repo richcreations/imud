@@ -39,6 +39,21 @@ void sphere_add(sphere_accum_t *a, float x, float y, float z);
 int sphere_fit(const sphere_accum_t *a, double center[3], double *radius);
 
 /*
+ * Heading-circle coverage tracking for the guided swing calibration.
+ * The circle is split into nsec angular sectors around the (running)
+ * hard-iron center estimate; each raw horizontal sample marks its sector.
+ * A full swing fills every sector regardless of iron distortion.
+ */
+
+/* Mark the sector containing (x,y) relative to center (cx,cy); returns the
+ * sector index [0, nsec). */
+int cal_cov_mark(int *sectors, int nsec, double x, double y,
+                 double cx, double cy);
+
+/* Number of sectors marked so far. */
+int cal_cov_count(const int *sectors, int nsec);
+
+/*
  * Solve a 4×4 linear system Ax = b via Gaussian elimination with partial
  * pivoting.  A and b are overwritten.  Returns 0 on success, -1 if singular.
  */

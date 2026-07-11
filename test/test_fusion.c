@@ -1079,6 +1079,116 @@ TEST(test_heave_disabled_and_settle)
     EXPECT(fabsf(final) < 0.05f, "bias step fully absorbed after 300 s");
 }
 
+/* ── Sea-state estimator ────────────────────────────────────────────────────── */
+
+TEST(test_seastate_sine)
+{
+    const float fs = 200.0f, dt = 1.0f/fs;
+    const float A = 0.9f;        /* heave amplitude, m */
+    const float Tw = 6.0f;       /* wave period, s */
+    const float B = 12.0f*(float)M_PI/180.0f;  /* roll amplitude, rad */
+    const float Tr = 4.5f;       /* roll period, s */
+    const float C = 8.0f*(float)M_PI/180.0f;   /* pitch amplitude, rad */
+    const float Tp = 5.0f;       /* pitch period, s */
+    const float heel = 5.0f*(float)M_PI/180.0f; /* steady heel offset */
+    const float trim = 2.0f*(float)M_PI/180.0f; /* steady trim offset */
+    const float ww = 2.0f*(float)M_PI/Tw, wr = 2.0f*(float)M_PI/Tr,
+                wp = 2.0f*(float)M_PI/Tp;
+
+    seastate_t w;
+    seastate_init(&w, 30.0f, dt);
+    EXPECT(w.enabled, "tau>0 enables");
+    EXPECT(seastate_wave_height(&w) == 0.0f, "no output before settle");
+
+    for (int i = 0; i < (int)(120.0f*fs); i++) {
+        float t = (float)i*dt;
+        seastate_update(&w, A*sinf(ww*t), A*ww*cosf(ww*t),
+                        heel + B*sinf(wr*t), B*wr*cosf(wr*t),
+                        trim + C*sinf(wp*t), C*wp*cosf(wp*t));
+    }
+    EXPECT(w.settled, "settled after 2 tau");
+    /* Pure sine: σ = A/√2 → Hs = 4σ = 2.828·A, significant single
+     * amplitude = 2σ = 1.414·A; all periods exact. */
+    EXPECT_NEAR(seastate_wave_height(&w), 2.828f*A, 0.10f*2.828f*A,
+                "Hs = 2.83·A within 10%");
+    EXPECT_NEAR(seastate_wave_period(&w), Tw, 0.05f*Tw,
+                "wave period within 5%");
+    EXPECT_NEAR(seastate_roll_period(&w), Tr, 0.05f*Tr,
+                "roll period within 5% despite steady heel");
+    EXPECT_NEAR(seastate_roll_amplitude(&w), 1.414f*B, 0.10f*1.414f*B,
+                "roll amplitude = 1.41·B within 10%");
+    EXPECT_NEAR(seastate_pitch_period(&w), Tp, 0.05f*Tp,
+                "pitch period within 5% despite steady trim");
+    EXPECT_NEAR(seastate_pitch_amplitude(&w), 1.414f*C, 0.10f*1.414f*C,
+                "pitch amplitude = 1.41·C within 10%");
+}
+
+TEST(test_seastate_gates)
+{
+    const float fs = 200.0f, dt = 1.0f/fs;
+
+    /* tau = 0 disables. */
+    seastate_t off;
+    seastate_init(&off, 0.0f, dt);
+    seastate_update(&off, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    EXPECT(!off.enabled && seastate_wave_height(&off) == 0.0f, "tau=0 → off");
+
+    /* Becalmed: mm-scale heave and 0.05° roll ripple → periods report 0,
+     * Hs reports the (tiny) truth. */
+    seastate_t calm;
+    seastate_init(&calm, 20.0f, dt);
+    const float a = 0.004f, b = 0.05f*(float)M_PI/180.0f, wq = 2.0f*(float)M_PI/3.0f;
+    for (int i = 0; i < (int)(80.0f*fs); i++) {
+        float t = (float)i*dt;
+        seastate_update(&calm, a*sinf(wq*t), a*wq*cosf(wq*t),
+                        b*sinf(wq*t), b*wq*cosf(wq*t),
+                        b*sinf(wq*t), b*wq*cosf(wq*t));
+    }
+    EXPECT(calm.settled, "calm run settled");
+    EXPECT(seastate_wave_period(&calm) == 0.0f, "becalmed → wave period 0");
+    EXPECT(seastate_roll_period(&calm) == 0.0f, "not rolling → roll period 0");
+    EXPECT(seastate_pitch_period(&calm) == 0.0f, "not pitching → pitch period 0");
+    EXPECT(seastate_wave_height(&calm) < 0.05f, "becalmed Hs is small");
+}
+
+TEST(test_mag_health)
+{
+    imud_config_t cfg = make_cfg();
+    float bias[3] = {0};
+
+    /* Clean field: both metrics stay ~0. */
+    mekf_t f;
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    mag_sample_t m = make_mag(0.20f, 0.0f, 0.05f);   /* Gauss (make_mag scales) */
+    for (int i = 0; i < 2000; i++) mekf_update_mag(&f, &m);
+    EXPECT(f.mag_anom_ema  < 0.01f, "clean field: anomaly ~0");
+    EXPECT(f.mag_resid_ema < 0.01f, "clean field: residual ~0");
+
+    /* Magnitude anomaly: same direction, 1.5x strength (inside the hard
+     * 0.5-2.0 gate). EMA (alpha=1/3000) reaches 63% of the 0.5 step. */
+    mekf_t fa;
+    mekf_init(&fa, &cfg, 833.0f, bias);
+    mekf_align(&fa, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    mag_sample_t ma = make_mag(0.30f, 0.0f, 0.075f);
+    for (int i = 0; i < 3000; i++) mekf_update_mag(&fa, &ma);
+    EXPECT(fa.mag_anom_ema  > 0.2f,  "1.5x magnitude: anomaly rises");
+    EXPECT(fa.mag_resid_ema < 0.05f, "direction unchanged: residual low");
+
+    /* Heading anomaly with updates REJECTED (converged + tight gate): the
+     * metric must rise precisely while the filter refuses the data. */
+    mekf_t fr;
+    mekf_init(&fr, &cfg, 833.0f, bias);
+    mekf_align(&fr, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    fr.converged = true;   /* arm the tight anomaly gate */
+    float q_before[4]; memcpy(q_before, fr.q, sizeof fr.q);
+    mag_sample_t mr = make_mag(0.1732f, 0.10f, 0.05f);   /* horizontal +30 deg */
+    for (int i = 0; i < 3000; i++) mekf_update_mag(&fr, &mr);
+    EXPECT_NEAR(fr.q[3], q_before[3], 1e-4f, "rejected: attitude unmoved");
+    EXPECT(fr.mag_resid_ema > 0.2f,  "30 deg offset: residual rises while rejected");
+    EXPECT(fr.mag_anom_ema  < 0.05f, "magnitude unchanged: anomaly stays low");
+}
+
 /* ── Rough-sea wave benchmark ───────────────────────────────────────────────── */
 
 /*
@@ -1314,6 +1424,9 @@ int main(void)
     RUN(test_centripetal_correction);
     RUN(test_heave_sine_amplitude);
     RUN(test_heave_disabled_and_settle);
+    RUN(test_seastate_sine);
+    RUN(test_seastate_gates);
+    RUN(test_mag_health);
     RUN(test_wave_benchmark);
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

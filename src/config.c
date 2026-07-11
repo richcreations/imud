@@ -128,6 +128,7 @@ void config_defaults(imud_config_t *cfg)
     /* [fusion] */
     cfg->mag_yaw_only      = true;   /* marine default: mag corrects heading only */
     cfg->heave_tau_s       = 12.0f;
+    cfg->wave_tau_s        = 120.0f;
     cfg->mekf_gyro_noise   = 0.007;
     cfg->mekf_gyro_bias    = 0.00015;
     cfg->mekf_accel_noise  = 0.0022;
@@ -206,6 +207,11 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->influx_http_path,    sizeof(cfg->influx_http_path),
              "/write?db=imud&precision=ns");
     cfg->influx_http_token[0] = '\0';
+
+    /* [imud-prometheus] */
+    cfg->prom_enabled = false;
+    snprintf(cfg->prom_listen_addr, sizeof(cfg->prom_listen_addr), "127.0.0.1");
+    cfg->prom_listen_port = 9815;
 
     /* [imud-mavlink] */
     cfg->mav_enabled     = false;
@@ -291,6 +297,7 @@ typedef enum {
     SEC_SIGNALK,
     SEC_MQTT,
     SEC_INFLUX,
+    SEC_PROM,
     SEC_MAVLINK,
     SEC_LOGGING,
     SEC_POSITION
@@ -310,6 +317,7 @@ static section_t parse_section(const char *s)
     if (strcmp(s, "[imud-signalk]")== 0) return SEC_SIGNALK;
     if (strcmp(s, "[imud-mqtt]")   == 0) return SEC_MQTT;
     if (strcmp(s, "[imud-influxdb]")== 0) return SEC_INFLUX;
+    if (strcmp(s, "[imud-prometheus]") == 0) return SEC_PROM;
     if (strcmp(s, "[imud-mavlink]")== 0) return SEC_MAVLINK;
     if (strcmp(s, "[logging]")     == 0) return SEC_LOGGING;
     if (strcmp(s, "[position]")    == 0) return SEC_POSITION;
@@ -461,6 +469,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
     case SEC_FUSION:
         if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
         else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
+        else if (strcmp(key, "wave_tau_s")        == 0) NEED_FLT(cfg->wave_tau_s);
         else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);
         else if (strcmp(key, "mekf_gyro_bias")    == 0) NEED_DBL(cfg->mekf_gyro_bias);
         else if (strcmp(key, "mekf_accel_noise")  == 0) NEED_DBL(cfg->mekf_accel_noise);
@@ -551,6 +560,14 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "http_port")     == 0) NEED_INT(cfg->influx_http_port);
         else if (strcmp(key, "http_path")     == 0) NEED_STR(cfg->influx_http_path);
         else if (strcmp(key, "http_token")    == 0) NEED_STR(cfg->influx_http_token);
+        else WARN_UNKNOWN();
+        break;
+
+    case SEC_PROM:
+        if      (strcmp(key, "enabled")     == 0) NEED_BOOL(cfg->prom_enabled);
+        else if (strcmp(key, "socket")      == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "listen_addr") == 0) NEED_STR(cfg->prom_listen_addr);
+        else if (strcmp(key, "listen_port") == 0) NEED_INT(cfg->prom_listen_port);
         else WARN_UNKNOWN();
         break;
 

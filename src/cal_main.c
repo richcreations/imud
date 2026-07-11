@@ -90,33 +90,33 @@ static bool settle_imu(int fd, const imu_ops_t *ops, const imud_config_t *cfg)
     return g_stop != 0;
 }
 
-/* ── Coverage tracking ──────────────────────────────────────────────────── */
+/* ── Terminal progress line (guided swing feedback) ─────────────────────── */
 
-static void sector_mark(int sectors[N_SECTORS], float x, float y,
-                        double cx, double cy)
+/*
+ * One live line, rewritten in place:
+ *
+ *   Samples:  1234  [#####o##....##..........] 12/24 (50%)  r=48.3 µT rms=0.81
+ *
+ * '#' = sector covered, '.' = not yet, 'o' = the direction you are pointing
+ * NOW — so gaps in the bar are literally "keep turning until the o has
+ * visited every dot". Once a running sphere fit exists, live radius and RMS
+ * show the fit converging; at full coverage the line says so (with a bell)
+ * and invites one more circle before Ctrl-C.
+ */
+static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
+                               bool have_fit, double radius, double rms)
 {
-    double angle = atan2((double)y - cy, (double)x - cx);
-    if (angle < 0) angle += 2.0 * M_PI;
-    int s = (int)(angle / (2.0 * M_PI / N_SECTORS)) % N_SECTORS;
-    sectors[s] = 1;
-}
-
-static int sector_count(const int sectors[N_SECTORS])
-{
-    int n = 0;
-    for (int i = 0; i < N_SECTORS; i++) n += sectors[i];
-    return n;
-}
-
-/* ── Terminal progress line ─────────────────────────────────────────────── */
-
-static void print_mag_progress(int n, const int sectors[N_SECTORS])
-{
-    int filled = sector_count(sectors);
+    int filled = cal_cov_count(sectors, N_SECTORS);
     printf("\r  Samples: %5d  [", n);
     for (int i = 0; i < N_SECTORS; i++)
-        putchar(sectors[i] ? '#' : '.');
-    printf("] %2d/%d sectors\033[K", filled, N_SECTORS);
+        putchar(i == cur ? 'o' : (sectors[i] ? '#' : '.'));
+    printf("] %2d/%d (%3.0f%%)", filled, N_SECTORS,
+           100.0 * filled / N_SECTORS);
+    if (have_fit)
+        printf("  r=%.1f µT rms=%.2f", radius, rms);
+    if (filled == N_SECTORS)
+        printf("  FULL CIRCLE — one more improves the fit; Ctrl-C to finish");
+    printf("\033[K");
     fflush(stdout);
 }
 
@@ -218,7 +218,9 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     printf("imud-cal: magnetometer calibration\n");
     printf("Drive the vessel slowly through at least two full 360 deg circles.\n");
-    printf("Press Ctrl-C when done.\n\n");
+    printf("The bar below is the heading circle: '#' covered, '.' still needed,\n");
+    printf("'o' where you are pointing now. Turn until every '.' becomes '#';\n");
+    printf("it will tell you when the circle is complete. Ctrl-C when done.\n\n");
 
     /* Storage for all raw samples (for residual and soft-iron computation) */
     float (*samps)[3] = malloc(MAX_MAG_SAMPLES * sizeof(*samps));
@@ -231,6 +233,11 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     /* Running center estimate used for coverage display once we have > 50 pts */
     double cx = 0, cy = 0;
     bool   have_center = false;
+
+    /* Live fit-quality feedback, refreshed every 50 samples */
+    bool   have_fit = false;
+    double live_r = 0.0, live_rms = 0.0;
+    bool   full_announced = false;
 
     while (!g_stop && n < MAX_MAG_SAMPLES) {
         mag_sample_t s;
@@ -245,19 +252,34 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         sphere_add(&acc, s.field[0], s.field[1], s.field[2]);
         n++;
 
-        /* Update center estimate every 50 samples for coverage display */
+        /* Update center estimate + live fit quality every 50 samples */
         if (n % 50 == 0 && n >= 50) {
             double r;
             double ctr[3];
             if (sphere_fit(&acc, ctr, &r) == 0) {
                 cx = ctr[0]; cy = ctr[1];
                 have_center = true;
+                double ss = 0.0;
+                for (int i = 0; i < n; i++) {
+                    double dx = samps[i][0] - ctr[0];
+                    double dy = samps[i][1] - ctr[1];
+                    double dz = samps[i][2] - ctr[2];
+                    double res = sqrt(dx*dx + dy*dy + dz*dz) - r;
+                    ss += res * res;
+                }
+                live_r   = r;
+                live_rms = sqrt(ss / n);
+                have_fit = true;
             }
         }
 
-        sector_mark(sectors, s.field[0], s.field[1],
-                    have_center ? cx : 0.0, have_center ? cy : 0.0);
-        print_mag_progress(n, sectors);
+        int cur = cal_cov_mark(sectors, N_SECTORS, s.field[0], s.field[1],
+                               have_center ? cx : 0.0, have_center ? cy : 0.0);
+        if (!full_announced && cal_cov_count(sectors, N_SECTORS) == N_SECTORS) {
+            full_announced = true;
+            putchar('\a');   /* audible cue: eyes are on the helm, not the screen */
+        }
+        print_mag_progress(n, sectors, cur, have_fit, live_r, live_rms);
     }
 
     signal(SIGINT, SIG_DFL);
@@ -320,7 +342,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* ── Results ─────────────────────────────────────────────────────── */
 
-    int covered = sector_count(sectors);
+    int covered = cal_cov_count(sectors, N_SECTORS);
     printf("Results:\n");
     printf("  Hard iron (µT):   [%7.2f, %7.2f, %7.2f]\n",
            center[0], center[1], center[2]);

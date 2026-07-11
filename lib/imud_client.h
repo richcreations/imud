@@ -1,6 +1,19 @@
 /*
  * imud_client.h — single-header C client library for imud Stream B
  *
+ * ── DEPRECATED ────────────────────────────────────────────────────────────
+ * New applications should link libimud instead (#include <imud.h>, -limud,
+ * pkg-config: libimud): it is ABI-stable across imud releases, while this
+ * header pins the wire format and forces a recompile on every wire revision.
+ *
+ * The header remains in the imud source tree — it is the deliberate
+ * wire-pinning mechanism behind libimud's imud_wire() opt-in and the bridge
+ * daemons, and existing vendored copies keep working — but it is no longer
+ * installed by `make install`, and it gains no new API; only wire-format
+ * sync. Define IMUD_CLIENT_ALLOW_DEPRECATED before including to silence the
+ * compile-time notice.
+ * ──────────────────────────────────────────────────────────────────────────
+ *
  * Drop this file into any C project.  No other dependencies beyond POSIX.
  *
  * QUICK START
@@ -27,6 +40,10 @@
 #ifndef IMUD_CLIENT_H
 #define IMUD_CLIENT_H
 
+#ifndef IMUD_CLIENT_ALLOW_DEPRECATED
+# pragma message("imud_client.h is deprecated: link libimud instead (<imud.h>, -limud); define IMUD_CLIENT_ALLOW_DEPRECATED to silence")
+#endif
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -41,8 +58,8 @@
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION      12   /* 1.2 — encode as decimal: major*10 + minor */
-#define IMUD_PACKET_SIZE  228           /* bytes, fixed */
+#define IMUD_VERSION      14   /* 1.4 — encoded as decimal: major*10 + minor */
+#define IMUD_PACKET_SIZE  260           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */
 
@@ -58,8 +75,10 @@
 #define IMUD_FLAG_SHUTDOWN             (1u << 9)  /* final packet before clean exit */
 #define IMUD_FLAG_DECLINATION_VALID    (1u << 10) /* declination known; true_heading valid */
 #define IMUD_FLAG_HEAVE_VALID          (1u << 11) /* heave estimator settled (heave_m/heave_rate valid) */
+#define IMUD_FLAG_WAVE_VALID           (1u << 12) /* sea-state stats settled (wave/roll/pitch fields valid) */
+#define IMUD_FLAG_ENGINE_ON            (1u << 13) /* engine-vibration detector asserting */
 
-/* ── Wire packet — 228 bytes, little-endian ─────────────────────────────── */
+/* ── Wire packet — 260 bytes, little-endian ─────────────────────────────── */
 
 #if defined(_MSC_VER)
 #  pragma pack(push, 1)
@@ -125,7 +144,16 @@ typedef struct IMUD__PACKED {
     float    gyro_bias_var_z;
     float    heave_rate;      /* vertical velocity, m/s, + up (v1.2); 0.0 when disabled */
     float    accel_quiescence; /* EMA of (|a|/g − 1)²; platform-disturbance metric */
-    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–223 */
+    /* v14 additions — sea state + compass health */
+    float    wave_height_m;   /* significant wave height Hs, m; 0.0 until WAVE_VALID */
+    float    wave_period_s;   /* mean zero-crossing wave period Tz, s; 0.0 = n/a */
+    float    roll_period_s;   /* vessel roll period, s; 0.0 = not rolling / n/a */
+    float    roll_amplitude;  /* significant single amplitude 2σ(roll), rad */
+    float    pitch_period_s;  /* vessel pitch period, s; 0.0 = not pitching / n/a */
+    float    pitch_amplitude; /* significant single amplitude 2σ(pitch), rad */
+    float    mag_anomaly;     /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
+    float    mag_residual;    /* EMA of |heading innovation|, rad; compass health */
+    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–255 */
 } imud_packet_t;
 
 #if defined(_MSC_VER)

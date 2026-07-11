@@ -5,8 +5,13 @@ on:
   pull_request:
 
 jobs:
+  # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
+  # packed wire struct and the full test suite must prove out on arm.
   build-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,7 +53,7 @@ jobs:
           export DEB_BUILD_MAINT_OPTIONS="hardening=+all"
           eval "$(dpkg-buildflags --export=sh)"
           make imud imud-cal imud-status imud-mon && make bridges
-          hardening-check --nocfprotection imud imud-signalk imud-influxdb
+          hardening-check --nocfprotection imud imud-signalk imud-influxdb imud-prometheus
           hardening-check --nocfprotection --nopie --nofortify libimud.so.0.0
 
       # libimud must export exactly the public API (version script honored)
@@ -71,9 +76,13 @@ jobs:
       - name: Staged install layout
         run: |
           make install install-signalk install-mqtt install-influxdb install-mavlink \
+               install-prometheus \
                DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system
           test -x stage/usr/bin/imud
           test -x stage/usr/bin/imud-mavlink
+          test -x stage/usr/bin/imud-prometheus
+          test -f stage/lib/systemd/system/imud-prometheus.service
+          test -f stage/usr/share/man/man8/imud-prometheus.8.gz
           test -f stage/lib/systemd/system/imud.service
           grep -q '^ExecStart=/usr/bin/imud ' stage/lib/systemd/system/imud.service
           test -f stage/usr/share/doc/imud/changelog.gz
@@ -84,6 +93,7 @@ jobs:
           test -L stage/usr/lib/libimud.so.0
           test -L stage/usr/lib/libimud.so
           test -f stage/usr/include/imud.h
+          test ! -e stage/usr/include/imud_client.h
           test -f stage/usr/lib/pkgconfig/libimud.pc
           if id -u imud >/dev/null 2>&1; then echo "useradd ran under DESTDIR"; exit 1; fi
           echo "staged layout OK"
@@ -126,5 +136,28 @@ jobs:
       # Man pages must lint clean (warnings fail).
       - name: Man page lint
         run: |
-          mandoc -Tlint -Wwarning man/man1/*.1 man/man5/*.5 man/man8/*.8
+          mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3 man/man5/*.5 man/man8/*.8
           echo "man lint OK"
+
+  # The full test suite under AddressSanitizer + UBSan: memory errors and
+  # undefined behavior fail the build. The Makefile respects external
+  # CFLAGS/LDFLAGS by design, so the flags flow through every test binary.
+  # (TSan and fuzzers are future work — see docs/ROADMAP.md.)
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+
+      - name: Test under ASan + UBSan
+        env:
+          ASAN_OPTIONS: strict_string_checks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          make test \
+            CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra" \
+            LDFLAGS="-fsanitize=address,undefined"

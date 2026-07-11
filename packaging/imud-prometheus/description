@@ -1,0 +1,7 @@
+Prometheus exporter for the imud IMU daemon
+ imud-prometheus connects to imud's local binary stream socket and serves the
+ latest fused state — attitude, heading, rate of turn, heave, the sea-state
+ statistics, and the fusion/compass-health diagnostics — as Prometheus
+ text-format gauges on a local /metrics endpoint, for alerting and Grafana
+ dashboards. Pure C, no external dependencies; built on the ABI-stable
+ libimud client library.

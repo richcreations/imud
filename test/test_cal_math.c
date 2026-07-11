@@ -317,6 +317,56 @@ static void test_ellipse_fit_degenerate(void)
 
 /* ── main ────────────────────────────────────────────────────────────────── */
 
+/* ── Heading-circle coverage (guided swing cal) ─────────────────────────── */
+
+static void test_cov_full_circle(void)
+{
+    begin("test_cov_full_circle");
+    int fb = g_fail;
+    int sec[24] = {0};
+    /* Full circle around an offset center, iron-distorted (elliptical):
+       coverage must still fill every sector. */
+    for (int i = 0; i < 360; i++) {
+        double a = i * M_PI / 180.0;
+        double x = 30.0 + 40.0 * cos(a);       /* hard iron +30 */
+        double y = -10.0 + 25.0 * sin(a);      /* squashed ellipse */
+        int idx = cal_cov_mark(sec, 24, x, y, 30.0, -10.0);
+        EXPECT(idx >= 0 && idx < 24, "sector index in range");
+    }
+    EXPECT(cal_cov_count(sec, 24) == 24, "full distorted circle fills 24/24");
+    end(fb);
+}
+
+static void test_cov_half_circle(void)
+{
+    begin("test_cov_half_circle");
+    int fb = g_fail;
+    int sec[24] = {0};
+    for (int i = 0; i <= 180; i++) {
+        double a = i * M_PI / 180.0;
+        cal_cov_mark(sec, 24, cos(a), sin(a), 0.0, 0.0);
+    }
+    int c = cal_cov_count(sec, 24);
+    EXPECT(c == 13, "half circle fills 13/24 (inclusive endpoints)");
+    end(fb);
+}
+
+static void test_cov_wrong_center(void)
+{
+    begin("test_cov_wrong_center");
+    int fb = g_fail;
+    /* With the center estimate far outside the data circle, all samples
+       land in a narrow angular band — coverage must NOT report full. This
+       is why the tool refines the center estimate as it fits. */
+    int sec[24] = {0};
+    for (int i = 0; i < 360; i++) {
+        double a = i * M_PI / 180.0;
+        cal_cov_mark(sec, 24, cos(a), sin(a), 100.0, 0.0);
+    }
+    EXPECT(cal_cov_count(sec, 24) < 6, "distant center collapses coverage");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud cal_math tests ===");
@@ -333,6 +383,9 @@ int main(void)
     test_ellipse_fit_noise();
     test_ellipse_fit_circle_identity();
     test_ellipse_fit_degenerate();
+    test_cov_full_circle();
+    test_cov_half_circle();
+    test_cov_wrong_center();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

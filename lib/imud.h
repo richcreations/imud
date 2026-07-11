@@ -60,6 +60,12 @@ extern "C" {
 #define IMUD_FLAG_DECLINATION_VALID    (1u << 10) /* declination known */
 #define IMUD_FLAG_HEAVE_VALID          (1u << 11) /* heave estimator settled */
 #endif
+#ifndef IMUD_FLAG_WAVE_VALID
+#define IMUD_FLAG_WAVE_VALID           (1u << 12) /* sea-state stats settled */
+#endif
+#ifndef IMUD_FLAG_ENGINE_ON
+#define IMUD_FLAG_ENGINE_ON            (1u << 13) /* engine-vibration detector asserting */
+#endif
 
 /* ── The data view — APPEND-ONLY (see ABI contract above) ────────────────── */
 
@@ -96,6 +102,16 @@ typedef struct imud_data {
     float gyro_bias[3];        /* estimated gyro bias, rad/s */
     float gyro_bias_var[3];    /* gyro-bias variance, (rad/s)² */
     float accel_quiescence;    /* EMA of (|a|/g − 1)²; disturbance metric */
+    /* Sea state (wire v14) — 0.0 until IMUD_FLAG_WAVE_VALID */
+    float wave_height_m;       /* significant wave height Hs, m */
+    float wave_period_s;       /* mean zero-crossing wave period Tz, s; 0 = n/a */
+    float roll_period_s;       /* vessel roll period, s; 0 = not rolling */
+    float roll_amplitude;      /* significant single amplitude 2σ(roll), rad */
+    float pitch_period_s;      /* vessel pitch period, s; 0 = not pitching */
+    float pitch_amplitude;     /* significant single amplitude 2σ(pitch), rad */
+    /* Compass health (wire v14) — diagnostics, 0.0 until mag updates flow */
+    float mag_anomaly;         /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
+    float mag_residual;        /* EMA of |heading innovation|, rad */
     /* ── new members are appended here; never reorder the above ── */
 } imud_data_t;
 

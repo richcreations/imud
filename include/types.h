@@ -7,7 +7,7 @@
 /*
  * types.h — core data structures shared across all imud threads
  *
- * Wire packet is little-endian, 228 bytes. All angle units are radians
+ * Wire packet is little-endian, 260 bytes. All angle units are radians
  * unless the field name ends in _deg. Magnetic field in µT. Accel in m/s².
  * Gyro in rad/s.
  */
@@ -29,7 +29,7 @@
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION  12   /* 1.2 — encoded as decimal: major*10 + minor */
+#define IMUD_VERSION  14   /* 1.4 — encoded as decimal: major*10 + minor */
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 
@@ -45,6 +45,8 @@
 #define FLAG_SHUTDOWN         (1u <<  9)  /* final packet before clean exit */
 #define FLAG_DECLINATION_VALID (1u << 10) /* WMM/static declination known; true_heading valid */
 #define FLAG_HEAVE_VALID       (1u << 11) /* heave estimator has settled (heave_m/heave_rate valid) */
+#define FLAG_WAVE_VALID        (1u << 12) /* sea-state stats settled (wave/roll/pitch fields valid) */
+#define FLAG_ENGINE_ON         (1u << 13) /* engine-vibration detector currently asserting */
 
 /* ── IMU sample — one calibrated sample from the configured IMU ────────────── */
 
@@ -82,6 +84,14 @@ typedef struct {
     float    heave_rate;     /* vertical velocity, m/s, + up; 0 when disabled */
     float    bias_gyro_var[3]; /* gyro-bias variance, (rad/s)², MEKF P diagonal */
     float    quiescence;     /* accel-quiescence EMA (|a|/g−1)²; disturbance metric */
+    float    wave_height_m;  /* significant wave height Hs, m; 0 when not settled */
+    float    wave_period_s;  /* mean zero-crossing wave period Tz, s; 0 = n/a */
+    float    roll_period_s;  /* vessel roll period, s; 0 = not rolling / n/a */
+    float    roll_amplitude; /* significant single amplitude 2σ(roll), rad */
+    float    pitch_period_s; /* vessel pitch period, s; 0 = not pitching / n/a */
+    float    pitch_amplitude;/* significant single amplitude 2σ(pitch), rad */
+    float    mag_anomaly;    /* EMA of ||B|−|B_ref||/|B_ref|; interference metric */
+    float    mag_residual;   /* EMA of |heading innovation|, rad; compass cal health */
     uint16_t flags;          /* FLAG_* bitmask */
     uint32_t imu_seq;        /* ISM330 sample counter of last prediction step */
     uint64_t ts_wall_ns;     /* CLOCK_REALTIME of last prediction step (ns) */
@@ -90,7 +100,7 @@ typedef struct {
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
-/* ── Wire packet — §8, 228 bytes fixed, little-endian ─────────────────────── */
+/* ── Wire packet — §8, 260 bytes fixed, little-endian ─────────────────────── */
 
 typedef struct __attribute__((packed)) {
     /* Header — 32 bytes */
@@ -147,13 +157,24 @@ typedef struct __attribute__((packed)) {
     float    gyro_bias_var_z;
     float    heave_rate;     /* vertical velocity, m/s, + up (v12); 0.0 when disabled */
     float    accel_quiescence; /* EMA of (|a|/g − 1)²; platform-disturbance metric */
-    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–223 */
+    /* v14 additions — sea state + compass health, all frame-neutral scalars */
+    float    wave_height_m;  /* significant wave height Hs = 4σ(heave), m;
+                              * 0.0 until FLAG_WAVE_VALID */
+    float    wave_period_s;  /* mean zero-crossing wave period Tz, s;
+                              * 0.0 when becalmed or not settled */
+    float    roll_period_s;  /* vessel roll period, s; 0.0 when not rolling */
+    float    roll_amplitude; /* significant single amplitude 2σ(roll), rad */
+    float    pitch_period_s; /* vessel pitch period, s; 0.0 when not pitching */
+    float    pitch_amplitude;/* significant single amplitude 2σ(pitch), rad */
+    float    mag_anomaly;    /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
+    float    mag_residual;   /* EMA of |heading innovation|, rad */
+    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–255 */
 } imu_packet_t;
 
-_Static_assert(sizeof(imu_packet_t) == 228,
-               "imu_packet_t must be exactly 228 bytes");
-_Static_assert(offsetof(imu_packet_t, crc32) == 224,
-               "crc32 must be at offset 224");
+_Static_assert(sizeof(imu_packet_t) == 260,
+               "imu_packet_t must be exactly 260 bytes");
+_Static_assert(offsetof(imu_packet_t, crc32) == 256,
+               "crc32 must be at offset 256");
 
 /* ── IMU ring buffer — ism_reader → fusion ─────────────────────────────────── */
 

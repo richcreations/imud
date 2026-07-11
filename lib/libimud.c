@@ -126,6 +126,14 @@ static void fill_data(imud_data_t *d, const imud_packet_t *p)
     d->gyro_bias_var[1] = p->gyro_bias_var_y;
     d->gyro_bias_var[2] = p->gyro_bias_var_z;
     d->accel_quiescence = p->accel_quiescence;
+    d->wave_height_m    = p->wave_height_m;
+    d->wave_period_s    = p->wave_period_s;
+    d->roll_period_s    = p->roll_period_s;
+    d->roll_amplitude   = p->roll_amplitude;
+    d->pitch_period_s   = p->pitch_period_s;
+    d->pitch_amplitude  = p->pitch_amplitude;
+    d->mag_anomaly      = p->mag_anomaly;
+    d->mag_residual     = p->mag_residual;
 }
 
 /* ── Transport dialing ───────────────────────────────────────────────────── */

@@ -16,6 +16,10 @@
 #include <math.h>
 #include "cal_math.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 int gauss4(double A[4][4], double b[4], double x[4])
 {
     double M[4][5];
@@ -139,4 +143,23 @@ int sphere_fit(const sphere_accum_t *a, double center[3], double *radius)
     if (r2 <= 0) return -1;
     *radius = sqrt(r2);
     return 0;
+}
+
+/* ── Heading-circle coverage (guided swing cal) ──────────────────────────── */
+
+int cal_cov_mark(int *sectors, int nsec, double x, double y,
+                 double cx, double cy)
+{
+    double angle = atan2(y - cy, x - cx);
+    if (angle < 0) angle += 2.0 * M_PI;
+    int s = (int)(angle / (2.0 * M_PI / nsec)) % nsec;
+    sectors[s] = 1;
+    return s;
+}
+
+int cal_cov_count(const int *sectors, int nsec)
+{
+    int n = 0;
+    for (int i = 0; i < nsec; i++) n += sectors[i];
+    return n;
 }

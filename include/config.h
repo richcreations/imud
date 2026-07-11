@@ -44,6 +44,8 @@ typedef struct {
     /* [fusion]  [hot]: gains and thresholds */
     bool   mag_yaw_only;          /* [hot] heading-only mag fusion (marine default) */
     float  heave_tau_s;           /* [hot] heave filter time constant, s; 0 = off */
+    float  wave_tau_s;            /* [hot] sea-state averaging window, s; 0 = off;
+                                   * needs heave_tau_s > 0 */
     double mekf_gyro_noise;      /* rad/s/√Hz — from datasheet */
     double mekf_gyro_bias;       /* rad/s — in-run bias instability */
     double mekf_accel_noise;     /* m/s²/√Hz — from datasheet */
@@ -133,6 +135,15 @@ typedef struct {
     int   influx_http_port;        /* [restart] HTTP port (InfluxDB default 8086) */
     char  influx_http_path[192];   /* [restart] write path incl. query (db / org+bucket / precision) */
     char  influx_http_token[128];  /* [restart] InfluxDB 2.x API token ("" = none) */
+
+    /*
+     * [imud-prometheus] — Prometheus exporter bridge (imud-prometheus daemon;
+     * shared `socket` key above). Serves the latest fused state as Prometheus
+     * text-format gauges on GET /metrics. Base SI units only (no deg/rad key).
+     */
+    bool  prom_enabled;            /* [restart] */
+    char  prom_listen_addr[64];    /* [restart] HTTP bind address */
+    int   prom_listen_port;        /* [restart] HTTP port (default 9815) */
 
     /* [imud-mavlink]  MAVLink bridge daemon — reads its own
      * /etc/imud/imud-mavlink.conf, connects to the stream socket, and emits

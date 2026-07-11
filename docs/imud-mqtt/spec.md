@@ -17,7 +17,14 @@ radians / rad/s (`units = rad`).
 | `imud/attitude/roll` · `/pitch` · `/yaw` | attitude | always |
 | `imud/environment/heave` | heave (m) | `publish_heave` **and** settled |
 | `imud/environment/heaveRate` | vertical velocity (m/s, +up) | `publish_heave` **and** settled |
+| `imud/environment/waveHeight` | significant wave height Hs (m) | `publish_heave` **and** sea state settled |
+| `imud/environment/wavePeriod` | mean zero-crossing wave period Tz (s) | `publish_heave` **and** sea state settled |
+| `imud/environment/rollPeriod` | vessel roll period (s) | `publish_heave` **and** sea state settled |
+| `imud/environment/rollAmplitude` | significant single roll amplitude (deg/rad per `units`) | `publish_heave` **and** sea state settled |
+| `imud/environment/pitchPeriod` | vessel pitch period (s) | `publish_heave` **and** sea state settled |
+| `imud/environment/pitchAmplitude` | significant single pitch amplitude (deg/rad per `units`) | `publish_heave` **and** sea state settled |
 | `imud/imu/temperature` | die temperature (°C) | always |
+| `imud/engine/running` | `ON`/`OFF` from the engine-vibration detector | always (HA binary_sensor, device_class `running`) |
 | `imud/status/online` | `online` / `offline` (retained) | availability |
 
 `heave` and `heaveRate` are withheld until the heave estimator has settled
@@ -25,6 +32,17 @@ radians / rad/s (`units = rad`).
 transient; `heaveRate` is always m/s regardless of `units`. Home Assistant
 discovery for both is still advertised whenever `publish_heave` is set, so the
 entity exists and simply reads *unavailable* until heave settles.
+
+The sea-state topics (`waveHeight`, `wavePeriod`, `rollPeriod`,
+`rollAmplitude`, `pitchPeriod`, `pitchAmplitude`, wire v14) ride the same
+`publish_heave` key (they derive from heave) and are gated on the packet's
+`WAVE_VALID` flag — withheld until the wave statistics settle
+(~2·`wave_tau_s` after heave settles). Periods publish `0.0` when becalmed /
+not rolling; that is the measurement, not an error. Heights and periods are
+SI (m, s) regardless of `units`; the amplitude topics are angles and follow
+`units` like roll/pitch. `engine/running` mirrors the daemon's
+engine-vibration detector (`FLAG_ENGINE_ON`) and is advertised to Home
+Assistant as a binary_sensor — `OFF` whenever detection is disabled.
 
 Raw high-rate accel/gyro/mag/quaternion and the gyro-bias / variance / quiescence
 diagnostics are **not** published over MQTT (wrong transport / not HA-relevant) —

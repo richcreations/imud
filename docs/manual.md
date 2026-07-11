@@ -102,7 +102,7 @@ This installs:
 | Calibration file | `/etc/imud/cal.json` (if `config/cal.json` is present) |
 | WMM coefficients | `/etc/imud/WMM.COF` (skipped if already present) |
 | systemd unit | `/etc/systemd/system/imud.service` |
-| Client libraries | `/usr/local/include/imud_client.h`, `/usr/local/share/imud/imud_client.py` |
+| Client libraries | `libimud.so` + `/usr/local/include/imud.h` (see `man 3 libimud`), `/usr/local/share/imud/imud_client.py` |
 | Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `imud-mon.1` |
 
 `make install` also creates a dedicated system user `imud` (in the `gpio`
@@ -244,7 +244,7 @@ MEKF noise parameters and tuning knobs. **[hot]**
 Applied live on SIGHUP. The noise densities come from the sensor datasheets —
 they are physical constants, not tuning knobs. The knobs most worth touching
 for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
-`mag_yaw_only`, and `heave_tau_s`.
+`mag_yaw_only`, `heave_tau_s`, and `wave_tau_s`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -256,6 +256,7 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
 | `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration. |
 | `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and the binary packet's `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). |
+| `wave_tau_s` | float | `120.0` | Sea-state averaging window in seconds. Significant wave height (Hs = 4·σ(heave)), mean zero-crossing wave period, and the vessel's roll/pitch periods and significant single amplitudes (2σ) are exponentially weighted statistics of the heave/roll/pitch oscillations over this window (packet fields `wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`, `pitch_period_s`, `pitch_amplitude`, gated by the `wave_valid` flag). Stats settle ~2 windows after heave settles. Requires `heave_tau_s` > 0; `0` disables. |
 | `engine_vibration_g2` | double | `0.0` | EMA threshold (m²/s⁴) for engine-vibration detection. The filter tracks an exponential moving average of `(|a| − g)²`; when it exceeds this value the engine is considered on. Set `0` to disable (default). |
 | `engine_accel_skip_thresh` | double | `0.20` | Accelerometer skip threshold applied while engine vibration is detected: wider than `accel_skip_thresh` so the filter isn't starved, while the accel noise is inflated ×4 so the vibration-contaminated samples that pass are trusted proportionally less. Only active when `engine_vibration_g2 > 0`. |
 
@@ -287,7 +288,7 @@ details.
 
 High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`, `coord_frame`. **[hot]**: `rate_hz`.
 
-The 228-byte binary packet format is documented in [spec.md §8](../spec.md).
+The 260-byte binary packet format is documented in [spec.md §8](../spec.md).
 Consumer libraries are in `lib/`.
 
 | Key | Type | Default | Description |
@@ -300,7 +301,7 @@ Consumer libraries are in `lib/`.
 
 ### `[stream]`
 
-Local AF_UNIX subscription stream — the same 228-byte binary packets as
+Local AF_UNIX subscription stream — the same 260-byte binary packets as
 `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a
 loss-free stream and subscribe by connecting (up to 8 at once). Slow
 consumers get dropped packets (visible as `imu_seq` gaps), never a stalled
@@ -475,13 +476,16 @@ partial run updates only the section it calibrated, preserving the others.
 |---|---|
 | `gyro` | Hold the board completely still. Captures gyro bias over a short window. |
 | `accel` | Bench 6-position calibration; follow the on-screen prompts to orient each face in turn. Do this before final mounting. |
-| `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Must be done after final mounting, with the engine and typical electronics running. |
+| `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Guided: a live bar shows heading-circle coverage (`#` covered, `.` needed, `o` = where you're pointing), running coverage %, and live radius/RMS; a bell + "FULL CIRCLE" message tells you when coverage is complete. Must be done after final mounting, with the engine and typical electronics running. |
 
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are
 rotated relative to the sensor is corrected — a per-axis scale cannot do
 this). It reports the field radius, a fit residual, and swing coverage; a
-residual under ~1 µT and coverage above ~75% indicate a good fit.
+residual under ~1 µT and coverage above ~75% indicate a good fit. Afterward,
+watch the wire's `mag_residual` / `mag_anomaly` compass-health metrics (v14,
+also on the InfluxDB and Prometheus bridges): a rising residual means the
+calibration is degrading and the swing should be repeated.
 
 Restart when done:
 
@@ -512,7 +516,7 @@ Broadcast text sentences for chartplotters, autopilots, and marine software
 
 ### High-rate binary — UDP port 10111 (default off)
 
-A fixed 228-byte little-endian packet (protocol v1.2) at up to 500 Hz:
+A fixed 260-byte little-endian packet (wire v14) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 (wall + TAI + chip), declination, and an IEEE-802.3 CRC32. Every packet is
@@ -522,7 +526,7 @@ consumer libraries in [§9](#9-consumer-libraries).
 
 ### Local subscription stream — AF_UNIX socket (default off)
 
-The same 228-byte binary packets over a `SOCK_STREAM` socket at
+The same 260-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
 loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets
@@ -584,15 +588,19 @@ reload imud` (the file is reopened on SIGHUP). See the
 
 The `lib/` directory has ready-to-use clients for the binary stream:
 
-- **C** — `lib/imud_client.h`: a single-header, drop-in library (no build
-  system). Includes `imud_true_heading(pkt)`, returning the true heading in
-  [0°, 360°) when `IMUD_FLAG_DECLINATION_VALID` is set, or `-1.0f` otherwise.
+- **C** — **libimud** (`#include <imud.h>`, link `-limud`, `pkg-config
+  libimud`): the ABI-stable shared library — applications keep working
+  across imud upgrades without recompiling. See `man 3 libimud`.
 - **Python** — `lib/imud_client.py`: Python 3.8+, standard library only. The
   `ImudPacket.true_heading_deg` property returns `None` when declination is
   unavailable.
+- **C single-header** — `lib/imud_client.h` is **deprecated**: it pins the
+  wire version (recompile per revision). Kept in the source tree for
+  existing vendored copies and imud's own wire-pinned internals; no longer
+  installed by `make install`.
 
-Both validate CRC32 and support multicast. `make install` installs the C
-header to `/usr/local/include` and the Python module to
+All validate CRC32 and support multicast. `make install` installs libimud
+(library, header, pkg-config) and the Python module to
 `/usr/local/share/imud`. See `lib/README.md` for full usage and examples.
 
 ---

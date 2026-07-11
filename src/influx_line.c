@@ -77,6 +77,19 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
            p->gyro_bias_var_x, p->gyro_bias_var_y, p->gyro_bias_var_z);
     APPEND(",quiescence=%.6f", p->accel_quiescence);
 
+    /* Compass health (v14): always-on diagnostics, unitless / rad. */
+    APPEND(",mag_anomaly=%.5f,mag_residual=%.5f",
+           p->mag_anomaly, p->mag_residual);
+
+    /* Sea state (v14): same diagnostics-sink policy as heave — always emitted
+     * (values are 0.0 until the estimator settles) with the validity flag as
+     * a boolean field. Frame-neutral SI (m, s, rad), never unit-converted. */
+    APPEND(",wave_height=%.3f,wave_period=%.2f,roll_period=%.2f",
+           p->wave_height_m, p->wave_period_s, p->roll_period_s);
+    APPEND(",roll_amplitude=%.4f,pitch_period=%.2f,pitch_amplitude=%.4f",
+           p->roll_amplitude, p->pitch_period_s, p->pitch_amplitude);
+    APPEND(",wave_valid=%s", (p->flags & IMUD_FLAG_WAVE_VALID) ? "t" : "f");
+
     APPEND(",temp=%.2f,seq=%ui", p->temp_c, p->imu_seq);
 
     /* space, then the nanosecond timestamp */

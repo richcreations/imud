@@ -6,12 +6,33 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
-1.3.1
------
-* No functional changes. Fixes the release-verification (CI) checks added in
-  1.3 so they gate correctly: the hardening check no longer misreports
-  libimud.so as unfortified, and the exported-symbol check understands the
-  library's versioned symbols.
+1.4
+---
+* Sea state: significant wave height (Hs = 4σ(heave)), mean zero-crossing
+  wave period, and the vessel's roll and pitch periods and significant
+  single amplitudes (2σ), computed from the heave/attitude oscillations
+  over a configurable window ([fusion] wave_tau_s, default 120 s). New
+  WAVE_VALID flag gates the outputs until the statistics settle.
+* Compass health: two always-on diagnostics — mag_anomaly (fractional field-
+  magnitude deviation; detects magnetic interference and iron-cal drift) and
+  mag_residual (mean absolute heading innovation; calibration health) —
+  computed inside the filter, including from rejected measurements.
+* New ENGINE_ON flag exports the engine-vibration detector's state; the MQTT
+  bridge publishes it as a Home Assistant binary_sensor (engine-hours
+  automations).
+* Binary stream packet version 14 (260 bytes): the eight fields above are
+  appended before the CRC. Wire-pinned consumers must be rebuilt; libimud
+  applications keep working without recompiling.
+* New bridge: imud-prometheus — serves the fused state as Prometheus
+  /metrics gauges (base SI units, flag bits as 0/1 gauges, alerting-ready).
+  The first bridge built purely on libimud's ABI-stable interface.
+* imud_client.h (the single-header C client) is deprecated: use libimud.
+  It remains in the source tree for vendoring and wire-pinned internals but
+  is no longer installed by `make install`.
+* CI: builds and tests now also run on arm64 (the Pi's architecture) and
+  under AddressSanitizer/UBSan; fixed the 1.3 release-verification checks
+  (hardening-check fortify false positive on libimud.so, versioned-symbol
+  handling in the ABI check).
 
 
 1.3

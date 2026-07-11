@@ -1,0 +1,9 @@
+imud-prometheus (1.4) unstable; urgency=medium
+
+  * Initial release: Prometheus /metrics exporter over imud's stream socket.
+    Gauges in base SI units (attitude, heading, heave, sea state, fusion and
+    compass-health diagnostics, flag bits), imud_up + imud_packets_total.
+    First bridge built purely on libimud's ABI-stable imud_data_t — no wire
+    pinning. Runtime dependency: libimud.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 11:36:06 -0700

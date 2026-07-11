@@ -30,6 +30,10 @@ float    client_declination(const void *buf);
 float    client_quat_w(const void *buf);
 float    client_mag_x(const void *buf);
 float    client_heave(const void *buf);
+float    client_wave_height(const void *buf);
+float    client_roll_period(const void *buf);
+float    client_pitch_period(const void *buf);
+float    client_mag_residual(const void *buf);
 float    client_true_heading(const void *buf);
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
@@ -66,6 +70,10 @@ static void make_inputs(fused_state_t *st, mag_sample_t *mag,
                           FLAG_DECLINATION_VALID;
     st->ts_wall_ns      = 0x0123456789ABCDEFULL;
     st->heave_m         = 0.87f;
+    st->wave_height_m   = 1.75f;
+    st->roll_period_s   = 5.6f;
+    st->pitch_period_s  = 4.8f;
+    st->mag_residual    = 0.02f;
     st->ts_tai_ns       = st->ts_wall_ns + 37000000000ULL;
 
     mag->field[0] = 21.5f; mag->field[1] = -3.2f; mag->field[2] = 44.1f;
@@ -85,7 +93,7 @@ static void test_client_accepts_daemon_packet(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    EXPECT(sizeof(pkt) == 228, "daemon packet is 228 bytes (v1.2)");
+    EXPECT(sizeof(pkt) == 260, "daemon packet is 260 bytes (v14)");
     EXPECT(client_packet_valid(&pkt, sizeof pkt),
            "client accepts daemon-built packet (magic+version+CRC)");
     EXPECT(!client_packet_valid(&pkt, sizeof pkt - 1),
@@ -103,7 +111,7 @@ static void test_client_rejects_corruption(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    unsigned char bytes[228];
+    unsigned char bytes[260];
     memcpy(bytes, &pkt, sizeof bytes);
     bytes[100] ^= 0x01;   /* flip one payload bit */
     EXPECT(!client_packet_valid(bytes, sizeof bytes),
@@ -133,6 +141,10 @@ static void test_client_field_offsets(void)
     EXPECT_NEAR(client_quat_w(&pkt), 0.998f, 1e-4f,   "quat_w roundtrip");
     EXPECT_NEAR(client_mag_x(&pkt), 21.5f, 1e-4f,     "mag_x roundtrip");
     EXPECT_NEAR(client_heave(&pkt), 0.87f, 1e-4f,     "heave_m roundtrip (v1.1)");
+    EXPECT_NEAR(client_wave_height(&pkt), 1.75f, 1e-4f, "wave_height_m roundtrip (v14)");
+    EXPECT_NEAR(client_roll_period(&pkt), 5.6f, 1e-4f, "roll_period_s roundtrip (v14)");
+    EXPECT_NEAR(client_pitch_period(&pkt), 4.8f, 1e-4f, "pitch_period_s roundtrip (v14)");
+    EXPECT_NEAR(client_mag_residual(&pkt), 0.02f, 1e-5f, "mag_residual roundtrip (v14)");
     end(fb);
 }
 

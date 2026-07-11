@@ -171,7 +171,7 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 228-byte binary packets to local AF_UNIX subscribers               |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 260-byte binary packets to local AF_UNIX subscribers               |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
@@ -609,8 +609,8 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 **Port:** 10111  
 **Rate:** 500 Hz  
-**Format:** Binary, little-endian, 228 bytes fixed  
-**Wire load:** ~114 KB/s
+**Format:** Binary, little-endian, 260 bytes fixed  
+**Wire load:** ~120 KB/s
 
 ### Packet Layout
 
@@ -618,7 +618,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
  0      4      uint32    magic             0x494D5544 (“IMUD”)
- 4      2      uint16    version           = 12  (v1.2; encoded as major*10+minor)
+ 4      2      uint16    version           = 14  (1.4; encoded as major*10+minor)
  6      2      uint16    flags             see below
  8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns
@@ -665,9 +665,21 @@ Offset  Bytes  Type      Field             Notes
 212     4      float32   gyro_bias_var_z
 216     4      float32   heave_rate        m/s, + up; 0.0 when heave disabled (v1.2)
 220     4      float32   accel_quiescence  EMA of (|a|/g−1)²; disturbance metric (v1.2)
-224     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–223
+224     4      float32   wave_height_m     significant wave height Hs = 4σ(heave), m;
+                                          0.0 until FLAG_WAVE_VALID (v14)
+228     4      float32   wave_period_s     mean zero-crossing wave period Tz, s;
+                                          0.0 when becalmed or not settled (v14)
+232     4      float32   roll_period_s     vessel roll period, s; 0.0 = not rolling (v14)
+236     4      float32   roll_amplitude    significant single amplitude 2σ(roll), rad (v14)
+240     4      float32   pitch_period_s    vessel pitch period, s; 0.0 = not pitching (v14)
+244     4      float32   pitch_amplitude   significant single amplitude 2σ(pitch), rad (v14)
+248     4      float32   mag_anomaly       EMA of ||B|−|B_ref||/|B_ref| — magnetic
+                                          interference / iron-cal drift metric (v14)
+252     4      float32   mag_residual      EMA of |heading innovation|, rad — compass
+                                          calibration health (v14)
+256     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–255
 ────────────────────────────────────────────────────────────────────
-Total: 228 bytes
+Total: 260 bytes
 ```
 
 ### Flags Bitmask
@@ -685,7 +697,10 @@ bit 8   startup            Gyro bias estimation still in progress
 bit 9   shutdown           Final packet before clean exit
 bit 10  declination_valid  Declination known; true heading = heading_deg + declination_deg
 bit 11  heave_valid        Heave estimator settled (heave_m / heave_rate trustworthy)
-bits 12–15  reserved
+bit 12  wave_valid         Sea-state statistics settled (wave/roll/pitch
+                           height, period, and amplitude fields trustworthy)
+bit 13  engine_on          Engine-vibration detector currently asserting
+bits 14–15  reserved (a flags_ext field can be appended in a future revision)
 ```
 
 ### Coordinate Frame
@@ -699,8 +714,10 @@ NED (North-East-Down), right-handed:
 Configurable to ENU via `coord_frame = "ENU"`.
 
 The v1.2 diagnostic fields (`gyro_bias_*`, `gyro_bias_var_*`, `heave_rate`,
-`accel_quiescence`) are body-frame or frame-neutral scalars and are **not**
-affected by `coord_frame`.
+`accel_quiescence`) and the v14 sea-state / compass-health fields
+(`wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`,
+`pitch_period_s`, `pitch_amplitude`, `mag_anomaly`, `mag_residual`) are
+body-frame or frame-neutral scalars and are **not** affected by `coord_frame`.
 
 -----
 
@@ -758,6 +775,7 @@ mag_yaw_only        = true
 
 # Heave estimator time constant; feeds $PASHR heave + binary heave_m. 0 = off.
 heave_tau_s         = 12.0
+wave_tau_s          = 120.0
 
 # Engine-vibration detection: when the EMA of (|a|-g)² exceeds
 # engine_vibration_g2, the accel-update skip window widens to
@@ -791,7 +809,7 @@ coord_frame    = "NED"           # "NED" or "ENU"
 [stream]
 # [restart]: enabled, socket
 # [hot]:     rate_hz
-# Local AF_UNIX subscription stream — 228-byte binary packets (§8 format)
+# Local AF_UNIX subscription stream — 260-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
 enabled        = false
 socket         = "/run/imud/imud-stream.sock"
@@ -871,13 +889,13 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 
 **Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
-**Format:** identical 228-byte binary packets as Stream B (§8)
+**Format:** identical 260-byte binary packets as Stream B (§8)
 **Enabled by:** `stream.enabled = true` (disabled by default)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
-every packet as an exact 228-byte frame — no datagram loss, self-framing via
-the fixed size plus magic/CRC, so `lib/imud_client.h` validation works
-unchanged on 228-byte reads. Sends are non-blocking: a slow consumer gets
+every packet as an exact 260-byte frame — no datagram loss, self-framing via
+the fixed size plus magic/CRC, so client-library validation (libimud, or
+the deprecated `lib/imud_client.h`) works unchanged on 260-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead. The daemon never blocks
 on a consumer.
@@ -920,7 +938,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 
 | Section     | Fields                                                                 |
 |-------------|------------------------------------------------------------------------|
-| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s` — applied next predict |
+| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s`, `wave_tau_s` — applied next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |

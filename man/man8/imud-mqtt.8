@@ -1,4 +1,4 @@
-.TH IMUD\-MQTT 8 "2026-07-10" "imud 1.3.1" "System Manager's Manual"
+.TH IMUD\-MQTT 8 "2026-07-11" "imud 1.4" "System Manager's Manual"
 .SH NAME
 imud\-mqtt \- bridge imud's binary stream to MQTT with Home Assistant
 discovery
@@ -44,7 +44,14 @@ imud/navigation/rateOfTurn	always
 imud/attitude/roll , /pitch , /yaw	always (imud NED convention)
 imud/environment/heave	publish_heave, once heave settles
 imud/environment/heaveRate	publish_heave, once heave settles (m/s)
+imud/environment/waveHeight	publish_heave, once sea state settles (m, Hs)
+imud/environment/wavePeriod	publish_heave, once sea state settles (s)
+imud/environment/rollPeriod	publish_heave, once sea state settles (s)
+imud/environment/rollAmplitude	publish_heave, once sea state settles (angle)
+imud/environment/pitchPeriod	publish_heave, once sea state settles (s)
+imud/environment/pitchAmplitude	publish_heave, once sea state settles (angle)
 imud/imu/temperature	always
+imud/engine/running	always; ON/OFF binary_sensor (engine detector)
 imud/status/online	retained; \(dqoffline\(dq via MQTT last-will
 .TE
 .RE
@@ -55,9 +62,11 @@ The
 .B heave
 and
 .B heaveRate
-topics are withheld until the heave estimator has settled (~10\(mu\(*t), so
-subscribers never see the startup transient; their discovery configs are still
-advertised whenever
+topics are withheld until the heave estimator has settled (~10\(mu\(*t), and
+the sea-state topics
+.RB ( waveHeight ", " wavePeriod ", " rollPeriod ", " rollAmplitude ", " pitchPeriod ", " pitchAmplitude )
+until the wave statistics settle on top of that, so subscribers never see the
+startup transient; their discovery configs are still advertised whenever
 .B publish_heave
 is set, so the Home Assistant entity exists and simply reads
 .I unavailable

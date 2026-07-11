@@ -733,6 +733,39 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
     float res_sq = v3_dot(innov, innov);
 
     /*
+     * Compass health diagnostics — updated BEFORE the rejection gates below:
+     * the gated-out samples are precisely the anomalies these metrics exist
+     * to surface (averaging only accepted innovations would hide a hard
+     * fault behind a small residual). Fixed EMA, τ ≈ 30 s at the 100 Hz mag
+     * ODR (τ scales with a nonstandard mag rate; diagnostics only).
+     *
+     * mag_anom_ema:  fractional field-magnitude deviation — attitude-
+     *                independent (|h_raw| = |m_ref|), catches interference
+     *                and gross iron-cal drift.
+     * mag_resid_ema: |heading innovation| in rad, mode-independent (computed
+     *                here even under 3D fusion) — "the compass disagrees
+     *                with the filter by X rad" = calibration health.
+     */
+    {
+        const float alpha = 1.0f / 3000.0f;
+        float anom = fabsf(z_mag - h_mag) / h_mag;
+        f->mag_anom_ema += alpha * (anom - f->mag_anom_ema);
+
+        float m_ned[3];
+        for (int i = 0; i < 3; i++)
+            m_ned[i] = R[i][0]*mx + R[i][1]*my + R[i][2]*mz;
+        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+        float mh_mea = sqrtf(m_ned[0]*m_ned[0] + m_ned[1]*m_ned[1]);
+        if (mh_ref > 0.2f * h_mag && mh_mea > 0.2f * h_mag) {
+            float y = atan2f(m_ned[1], m_ned[0])
+                    - atan2f(f->m_ref[1], f->m_ref[0]);
+            while (y >  (float)M_PI) y -= 2.0f*(float)M_PI;
+            while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
+            f->mag_resid_ema += alpha * (fabsf(y) - f->mag_resid_ema);
+        }
+    }
+
+    /*
      * Magnitude gate (always): if the measured field magnitude differs from
      * the expected Earth-field magnitude by more than 50 %, it is a sensor
      * fault or a strong nearby magnet — never pass to the filter.
@@ -871,6 +904,104 @@ float heave_update(heave_t *h, const float q[4], const float accel[3])
     return -h->hp_y;   /* NED down → heave positive up */
 }
 
+/* ── Sea-state estimator ───────────────────────────────────────────────────── */
+
+/*
+ * Exponentially weighted mean/variance pairs over heave, heave rate, roll,
+ * and roll rate; spectral moments give the sea-state outputs directly:
+ *
+ *   m0 = var(x), m2 = var(ẋ)  ⇒  Tz = 2π·√(m0/m2)  (exact for a pure sine:
+ *   var = A²/2, var-rate = A²ω²/2 ⇒ ratio = 1/ω²), and Hs = 4·√m0 — the
+ *   standard significant-height estimate for a Gaussian sea.
+ *
+ * The EW window (τ = wave_tau_s) trades responsiveness against stability:
+ * oceanographic practice is 10–20 min records, but a live display wants
+ * minutes, so the default is 120 s and the key is hot-reloadable. Stats are
+ * fed only while the heave estimator is settled — its settling ramp is a
+ * huge low-frequency transient that would dominate both variances.
+ */
+#define SEASTATE_SETTLE_FACTOR 2.0f
+/* Below these oscillation floors the period ratio times only sensor noise. */
+#define SEASTATE_MIN_HEAVE_SIG 0.02f              /* σ(heave) ≥ 2 cm  */
+#define SEASTATE_MIN_ANGLE_SIG (0.3f*(float)M_PI/180.0f) /* σ(angle) ≥ 0.3° */
+
+void seastate_init(seastate_t *w, float tau_s, float dt)
+{
+    memset(w, 0, sizeof *w);
+    w->tau     = tau_s;
+    w->dt      = dt;
+    w->enabled = (tau_s > 0.0f && dt > 0.0f);
+}
+
+/* One EW mean/variance step: var converges to the variance about the EW mean. */
+static void ew_stat(float *mean, float *var, float x, float alpha)
+{
+    float d = x - *mean;
+    *mean += alpha * d;
+    *var  += alpha * ((1.0f - alpha) * d * d - *var);
+}
+
+void seastate_update(seastate_t *w, float heave_m, float heave_rate,
+                     float roll, float roll_rate,
+                     float pitch, float pitch_rate)
+{
+    if (!w->enabled) return;
+
+    float alpha = w->dt / w->tau;
+    ew_stat(&w->h_mean,  &w->h_var,  heave_m,    alpha);
+    ew_stat(&w->hr_mean, &w->hr_var, heave_rate, alpha);
+    ew_stat(&w->r_mean,  &w->r_var,  roll,       alpha);
+    ew_stat(&w->rr_mean, &w->rr_var, roll_rate,  alpha);
+    ew_stat(&w->p_mean,  &w->p_var,  pitch,      alpha);
+    ew_stat(&w->pr_mean, &w->pr_var, pitch_rate, alpha);
+
+    w->elapsed += w->dt;
+    if (!w->settled && w->elapsed >= SEASTATE_SETTLE_FACTOR * w->tau)
+        w->settled = true;
+}
+
+float seastate_wave_height(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    return 4.0f * sqrtf(w->h_var);
+}
+
+float seastate_wave_period(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    if (sqrtf(w->h_var) < SEASTATE_MIN_HEAVE_SIG || w->hr_var <= 0.0f)
+        return 0.0f;
+    return 2.0f * (float)M_PI * sqrtf(w->h_var / w->hr_var);
+}
+
+float seastate_roll_period(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    if (sqrtf(w->r_var) < SEASTATE_MIN_ANGLE_SIG || w->rr_var <= 0.0f)
+        return 0.0f;
+    return 2.0f * (float)M_PI * sqrtf(w->r_var / w->rr_var);
+}
+
+float seastate_roll_amplitude(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    return 2.0f * sqrtf(w->r_var);
+}
+
+float seastate_pitch_period(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    if (sqrtf(w->p_var) < SEASTATE_MIN_ANGLE_SIG || w->pr_var <= 0.0f)
+        return 0.0f;
+    return 2.0f * (float)M_PI * sqrtf(w->p_var / w->pr_var);
+}
+
+float seastate_pitch_amplitude(const seastate_t *w)
+{
+    if (!w->enabled || !w->settled) return 0.0f;
+    return 2.0f * sqrtf(w->p_var);
+}
+
 void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
 {
     float dt     = f->dt;
@@ -913,6 +1044,10 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
 
     /* Platform-quiescence metric (EMA of (|a|/g − 1)²) */
     out->quiescence = f->acc_quiet_ema;
+
+    /* Compass health diagnostics (see mekf_update_mag) */
+    out->mag_anomaly  = f->mag_anom_ema;
+    out->mag_residual = f->mag_resid_ema;
 
     /* Euler angles from rotation matrix R (NED, 3-2-1 aerospace convention) */
     float R[3][3];

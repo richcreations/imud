@@ -61,10 +61,10 @@ static void test_state_deg(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    mqtt_msg_t m[16];
-    int n = mqtt_build_state(m, 16, &p, "imud", false, true);
+    mqtt_msg_t m[24];
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
     /* always-on set, no declination, no heave = 6 */
-    EXPECT(n == 6, "6 state msgs (no declination, no heave)");
+    EXPECT(n == 7, "7 state msgs (no declination, no heave; engine always)");
 
     const mqtt_msg_t *h = find_topic(m, n, "imud/navigation/headingMagnetic");
     EXPECT(h != NULL, "headingMagnetic topic present");
@@ -91,8 +91,8 @@ static void test_state_rad(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    mqtt_msg_t m[16];
-    int n = mqtt_build_state(m, 16, &p, "imud", false, false);   /* deg=false → SI */
+    mqtt_msg_t m[24];
+    int n = mqtt_build_state(m, 24, &p, "imud", false, false);   /* deg=false → SI */
 
     const mqtt_msg_t *h = find_topic(m, n, "imud/navigation/headingMagnetic");
     EXPECT(h && fabs(strtod(h->payload, NULL) - M_PI/2.0) < 1e-3, "heading 90° → π/2 rad");
@@ -111,16 +111,16 @@ static void test_declination_gated(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    mqtt_msg_t m[16];
+    mqtt_msg_t m[24];
 
     p.flags = 0;
     p.declination_deg = 13.2f;
-    int n = mqtt_build_state(m, 16, &p, "imud", false, true);
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/navigation/headingTrue") == NULL, "headingTrue absent without flag");
     EXPECT(find_topic(m, n, "imud/navigation/magneticVariation") == NULL, "variation absent without flag");
 
     p.flags = IMUD_FLAG_DECLINATION_VALID;
-    n = mqtt_build_state(m, 16, &p, "imud", false, true);
+    n = mqtt_build_state(m, 24, &p, "imud", false, true);
     const mqtt_msg_t *var = find_topic(m, n, "imud/navigation/magneticVariation");
     EXPECT(var && fabs(strtod(var->payload, NULL) - 13.2) < 1e-2, "variation 13.2° present with flag");
     const mqtt_msg_t *ht = find_topic(m, n, "imud/navigation/headingTrue");
@@ -134,27 +134,98 @@ static void test_heave_gated(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    mqtt_msg_t m[16];
+    mqtt_msg_t m[24];
 
     /* Off when emit_heave=false, even if the estimator has settled. */
     p.flags = IMUD_FLAG_HEAVE_VALID;
-    int n = mqtt_build_state(m, 16, &p, "imud", false, true);
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave absent when emit_heave=false");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate absent when emit_heave=false");
 
     /* Config on but not settled (flag clear) → still suppressed. */
     p.flags = 0;
-    n = mqtt_build_state(m, 16, &p, "imud", true, true);
+    n = mqtt_build_state(m, 24, &p, "imud", true, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave suppressed until HEAVE_VALID");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate suppressed until HEAVE_VALID");
 
     /* Config on AND settled → both published. */
     p.flags = IMUD_FLAG_HEAVE_VALID;
-    n = mqtt_build_state(m, 16, &p, "imud", true, true);
+    n = mqtt_build_state(m, 24, &p, "imud", true, true);
     const mqtt_msg_t *hv = find_topic(m, n, "imud/environment/heave");
     EXPECT(hv && fabs(strtod(hv->payload, NULL) - 0.42) < 1e-3, "heave 0.42 m when settled");
     const mqtt_msg_t *hr = find_topic(m, n, "imud/environment/heaveRate");
     EXPECT(hr && fabs(strtod(hr->payload, NULL) - 0.25) < 1e-3, "heaveRate 0.25 m/s when settled");
+    end(fb);
+}
+
+static void test_wave_gated(void)
+{
+    begin("test_wave_gated");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    p.wave_height_m = 1.2f;
+    p.wave_period_s = 5.5f;
+    p.roll_period_s = 4.0f;
+    p.roll_amplitude = 0.1f;
+    p.pitch_period_s = 5.0f;
+    p.pitch_amplitude = 0.05f;
+    mqtt_msg_t m[24];
+
+    /* Suppressed until WAVE_VALID even with heave settled and publishing. */
+    p.flags = IMUD_FLAG_HEAVE_VALID;
+    int n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
+           "waveHeight suppressed until WAVE_VALID");
+
+    /* Off when emit_heave=false even if valid (rides publish_heave). */
+    p.flags = IMUD_FLAG_HEAVE_VALID | IMUD_FLAG_WAVE_VALID;
+    n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
+           "waveHeight absent when emit_heave=false");
+
+    /* On when valid: values in SI, period precision 0.1 s. */
+    n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    const mqtt_msg_t *wh = find_topic(m, n, "imud/environment/waveHeight");
+    EXPECT(wh && fabs(strtod(wh->payload, NULL) - 1.2) < 1e-2, "waveHeight 1.2 m");
+    const mqtt_msg_t *wp = find_topic(m, n, "imud/environment/wavePeriod");
+    EXPECT(wp && fabs(strtod(wp->payload, NULL) - 5.5) < 1e-2, "wavePeriod 5.5 s");
+    const mqtt_msg_t *rp = find_topic(m, n, "imud/environment/rollPeriod");
+    EXPECT(rp && fabs(strtod(rp->payload, NULL) - 4.0) < 1e-2, "rollPeriod 4.0 s");
+    /* amplitudes are angles: deg mode converts (0.1 rad = 5.73 deg) */
+    const mqtt_msg_t *ra = find_topic(m, n, "imud/environment/rollAmplitude");
+    EXPECT(ra && fabs(strtod(ra->payload, NULL) - 5.73) < 1e-2, "rollAmplitude 0.1 rad -> 5.73 deg");
+    const mqtt_msg_t *pp = find_topic(m, n, "imud/environment/pitchPeriod");
+    EXPECT(pp && fabs(strtod(pp->payload, NULL) - 5.0) < 1e-2, "pitchPeriod 5.0 s");
+    EXPECT(n == 15, "15 state msgs with heave family (6 wave), no declination");
+    end(fb);
+}
+
+static void test_engine_binary(void)
+{
+    begin("test_engine_binary");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    mqtt_msg_t m[24];
+
+    /* Always published; OFF without the flag, ON with it. */
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    const mqtt_msg_t *e = find_topic(m, n, "imud/engine/running");
+    EXPECT(e && strcmp(e->payload, "OFF") == 0, "engine OFF without flag");
+
+    p.flags = IMUD_FLAG_ENGINE_ON;
+    n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    e = find_topic(m, n, "imud/engine/running");
+    EXPECT(e && strcmp(e->payload, "ON") == 0, "engine ON with flag");
+
+    /* Discovery: binary_sensor config with payload map + device class. */
+    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true);
+    const mqtt_msg_t *d = find_topic(m, n, "homeassistant/binary_sensor/imud_engine/config");
+    EXPECT(d != NULL, "engine binary_sensor discovery present");
+    EXPECT(d && strstr(d->payload, "\"pl_on\":\"ON\"") != NULL, "pl_on present");
+    EXPECT(d && strstr(d->payload, "\"dev_cla\":\"running\"") != NULL, "device_class running");
+    EXPECT(d && strstr(d->payload, "\"stat_t\":\"imud/engine/running\"") != NULL, "state topic wired");
     end(fb);
 }
 
@@ -165,10 +236,10 @@ static void test_prefix_and_count_cap(void)
 
     imud_packet_t p = make_pkt();
     p.flags = IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
-    mqtt_msg_t m[16];
+    mqtt_msg_t m[24];
 
-    int n = mqtt_build_state(m, 16, &p, "boat", true, true);
-    EXPECT(n == 10, "10 state msgs with declination + heave + heaveRate");
+    int n = mqtt_build_state(m, 24, &p, "boat", true, true);
+    EXPECT(n == 11, "11 state msgs with declination + heave family (no WAVE_VALID)");
     EXPECT(find_topic(m, n, "boat/attitude/yaw") != NULL, "custom prefix applied");
 
     /* max caps the count, no overflow */
@@ -182,9 +253,9 @@ static void test_discovery(void)
     begin("test_discovery");
     int fb = g_fail;
 
-    mqtt_msg_t m[16];
-    int n = mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", false, true);
-    EXPECT(n == 8, "8 discovery configs (no heave/heaveRate)");
+    mqtt_msg_t m[24];
+    int n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true);
+    EXPECT(n == 9, "9 discovery configs (no heave family; engine binary_sensor always)");
 
     const mqtt_msg_t *d = find_topic(m, n, "homeassistant/sensor/imud_roll/config");
     EXPECT(d != NULL, "roll discovery config topic present");
@@ -201,16 +272,16 @@ static void test_discovery(void)
 
     /* Discovery is config-gated (emit_heave), NOT gated on the runtime valid flag,
      * so HA keeps the entity and shows it 'unavailable' until heave settles. */
-    n = mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", true, true);
-    EXPECT(n == 10, "10 discovery configs with heave + heaveRate");
+    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, true);
+    EXPECT(n == 17, "17 discovery configs (16 sensors + engine binary_sensor)");
     EXPECT(find_topic(m, n, "homeassistant/sensor/imud_heave/config") != NULL, "heave discovery when on");
     const mqtt_msg_t *dhr = find_topic(m, n, "homeassistant/sensor/imud_heave_rate/config");
     EXPECT(dhr != NULL, "heaveRate discovery when on");
     EXPECT(dhr && strstr(dhr->payload, "\"unit_of_meas\":\"m/s\"") != NULL, "heaveRate unit m/s");
 
     /* rad mode advertises radian units */
-    mqtt_build_discovery(m, 16, "imud", "homeassistant", "imud", true, false);
-    const mqtt_msg_t *dy = find_topic(m, 10, "homeassistant/sensor/imud_yaw/config");
+    mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, false);
+    const mqtt_msg_t *dy = find_topic(m, 17, "homeassistant/sensor/imud_yaw/config");
     EXPECT(dy && strstr(dy->payload, "\"unit_of_meas\":\"rad\"") != NULL, "radian unit in rad mode");
     end(fb);
 }
@@ -222,6 +293,8 @@ int main(void)
     test_state_rad();
     test_declination_gated();
     test_heave_gated();
+    test_wave_gated();
+    test_engine_binary();
     test_prefix_and_count_cap();
     test_discovery();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

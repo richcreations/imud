@@ -1,0 +1,59 @@
+.TH IMUD\-PROMETHEUS 8 "2026-07-11" "imud 1.4" "System Manager's Manual"
+.SH NAME
+imud\-prometheus \- Prometheus exporter for the imud IMU daemon
+.SH SYNOPSIS
+.B imud\-prometheus
+.RB [ \-\-config
+.IR PATH ]
+.SH DESCRIPTION
+.B imud\-prometheus
+connects to
+.BR imud (8)'s
+local binary stream socket and serves the latest fused state as Prometheus
+text-format gauges on
+.B GET /metrics
+\(em attitude, heading (magnetic and, when declination is known, true), rate
+of turn, heave and heave rate, the sea-state statistics (significant wave
+height, wave/roll/pitch periods and amplitudes), the compass-health metrics
+.RB ( imud_mag_anomaly_ratio ", " imud_mag_residual_radians ),
+gyro bias, quiescence, temperature, and the packet flag bits as 0/1 gauges
+.RB ( imud_mag_valid ", " imud_converged ", " imud_heave_valid ", "
+.BR imud_wave_valid ", " imud_engine_on ).
+.B imud_up
+reports whether a live packet is held and
+.B imud_packets_total
+counts frames received.
+.PP
+All gauges are base SI units (radians, metres, seconds, \(deC); heading is
+additionally exported in conventional degrees. Sea-state gauges read 0.0
+until the statistics settle; periods also read 0.0 when becalmed or not
+rolling \(em that is the measurement, not an error.
+.PP
+The exporter is pull-based: scrapes are answered from the cached newest
+sample, so a slow scraper never wedges the stream reader. It reconnects to
+imud automatically and answers scrapes with
+.B imud_up 0
+while imud is away. Built on the ABI-stable
+.BR libimud (3)
+\(em no rebuild needed across imud wire revisions.
+.SH OPTIONS
+.TP
+.BI \-\-config " PATH"
+Config file (default:
+.IR /etc/imud/imud\-prometheus.conf ).
+.TP
+.B \-\-version
+Print version and exit.
+.SH FILES
+.TP
+.I /etc/imud/imud\-prometheus.conf
+Configuration; see
+.BR imud\-prometheus.conf (5).
+.SH SIGNALS
+.TP
+.B SIGHUP
+Reload the config (log level; the listen address needs a restart).
+.SH SEE ALSO
+.BR imud (8),
+.BR imud\-prometheus.conf (5),
+.BR libimud (3)

@@ -68,7 +68,15 @@ _Static_assert(OFF(heave_rate)       == 192, "ABI: heave_rate moved");
 _Static_assert(OFF(gyro_bias)        == 196, "ABI: gyro_bias moved");
 _Static_assert(OFF(gyro_bias_var)    == 208, "ABI: gyro_bias_var moved");
 _Static_assert(OFF(accel_quiescence) == 220, "ABI: accel_quiescence moved");
-/* New members append AFTER accel_quiescence; update the assert list when
+_Static_assert(OFF(wave_height_m)    == 224, "ABI: wave_height_m moved");
+_Static_assert(OFF(wave_period_s)    == 228, "ABI: wave_period_s moved");
+_Static_assert(OFF(roll_period_s)    == 232, "ABI: roll_period_s moved");
+_Static_assert(OFF(roll_amplitude)   == 236, "ABI: roll_amplitude moved");
+_Static_assert(OFF(pitch_period_s)   == 240, "ABI: pitch_period_s moved");
+_Static_assert(OFF(pitch_amplitude)  == 244, "ABI: pitch_amplitude moved");
+_Static_assert(OFF(mag_anomaly)      == 248, "ABI: mag_anomaly moved");
+_Static_assert(OFF(mag_residual)     == 252, "ABI: mag_residual moved");
+/* New members append AFTER mag_residual; update the assert list when
  * they do (their offsets then become part of the contract too). */
 
 static int g_pass, g_fail;

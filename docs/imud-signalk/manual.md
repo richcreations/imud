@@ -1,6 +1,6 @@
 # imud-signalk — manual
 
-`imud-signalk` connects to imud's `[stream]` socket (the same 228-byte binary
+`imud-signalk` connects to imud's `[stream]` socket (the same 260-byte binary
 packets) and emits Signal K **delta** messages (JSON) over UDP — one per datagram
 at `rate_hz` (default 10 Hz) — for every imud value that has a standard Signal K
 path. imud's NMEA output is unchanged; this is an alternative path for Signal K,

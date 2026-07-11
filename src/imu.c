@@ -585,6 +585,15 @@ void *fusion_thread(void *arg)
         LOG_I("[fusion] heave estimator on (tau=%.0f s)\n",
                 (double)ctx->cfg.heave_tau_s);
 
+    /* Sea state rides on heave: wave_tau_s > 0 needs a running heave estimator. */
+    seastate_t wave;
+    seastate_init(&wave, heave.enabled ? ctx->cfg.wave_tau_s : 0.0f, f.dt);
+    if (wave.enabled)
+        LOG_I("[fusion] sea-state estimator on (tau=%.0f s)\n",
+                (double)ctx->cfg.wave_tau_s);
+    else if (ctx->cfg.wave_tau_s > 0.0f)
+        LOG_W("[fusion] wave_tau_s set but heave_tau_s = 0 — sea state disabled\n");
+
     /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ─────
      *
      * Average ~1 s of accel and every mag sample seen in that window rather
@@ -694,6 +703,14 @@ void *fusion_thread(void *arg)
                 heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
             else
                 heave.tau = ctx->cfg.heave_tau_s;
+            /* wave_tau_s is [hot] too; sea state needs heave running. */
+            {
+                float wtau = heave.enabled ? ctx->cfg.wave_tau_s : 0.0f;
+                if ((wtau > 0.0f) != wave.enabled)
+                    seastate_init(&wave, wtau, f.dt);
+                else
+                    wave.tau = wtau > 0.0f ? wtau : wave.tau;
+            }
             ctx->reconfigure = 0;
         }
 
@@ -773,6 +790,36 @@ void *fusion_thread(void *arg)
         state.heave_rate = -heave.vel;   /* NED down → heave positive up, m/s */
         if (heave.enabled && heave.settled)
             state.flags |= FLAG_HEAVE_VALID;
+
+        /* Sea state: feed only settled heave (the settling ramp is a huge
+         * low-frequency transient that would poison the variances). Roll
+         * rate is the Euler rate φ̇ = ω_x + tanθ·(ω_y·sinφ + ω_z·cosφ),
+         * clamped back to body ω_x near ±90° pitch like rate_of_turn;
+         * pitch rate θ̇ = ω_y·cosφ − ω_z·sinφ has no singularity. */
+        if (wave.enabled && heave.settled) {
+            float wx = s.gyro[0] - f.bias[0];
+            float wy = s.gyro[1] - f.bias[1];
+            float wz = s.gyro[2] - f.bias[2];
+            float sf = sinf(state.roll), cf = cosf(state.roll);
+            float ct = cosf(state.pitch);
+            float phi_dot = (fabsf(ct) > 0.2f)
+                ? wx + (sinf(state.pitch)/ct) * (wy * sf + wz * cf)
+                : wx;
+            float theta_dot = wy * cf - wz * sf;
+            seastate_update(&wave, state.heave_m, state.heave_rate,
+                            state.roll, phi_dot, state.pitch, theta_dot);
+        }
+        state.wave_height_m   = seastate_wave_height(&wave);
+        state.wave_period_s   = seastate_wave_period(&wave);
+        state.roll_period_s   = seastate_roll_period(&wave);
+        state.roll_amplitude  = seastate_roll_amplitude(&wave);
+        state.pitch_period_s  = seastate_pitch_period(&wave);
+        state.pitch_amplitude = seastate_pitch_amplitude(&wave);
+        if (wave.enabled && wave.settled)
+            state.flags |= FLAG_WAVE_VALID;
+
+        if (ctx->engine_on)
+            state.flags |= FLAG_ENGINE_ON;
 
         if (mag_healthy)
             state.flags |= FLAG_MAG_VALID;
