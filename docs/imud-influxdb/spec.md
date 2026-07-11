@@ -28,14 +28,27 @@ NED convention (no sign flip).
 | `gbias_x` `gbias_y` `gbias_z` | gyro-bias estimate (MEKF) | rad·s⁻¹ | always |
 | `gbias_var_x` `gbias_var_y` `gbias_var_z` | gyro-bias variance (MEKF `P` diagonal) | (rad·s⁻¹)² | always |
 | `quiescence` | accel-quiescence / platform-disturbance metric | unitless | always |
+| `wave_height` | significant wave height Hs = 4σ(heave) | m | always |
+| `wave_period` | mean zero-crossing wave period Tz | s | always |
+| `roll_period` | vessel roll period | s | always |
+| `roll_amplitude` | significant single roll amplitude | rad | always |
+| `pitch_period` | vessel pitch period | s | always |
+| `pitch_amplitude` | significant single pitch amplitude | rad | always |
+| `mag_anomaly` | EMA of \|\|B\|−\|B_ref\|\|/\|B_ref\| — interference / iron-cal drift | unitless | always |
+| `mag_residual` | EMA of \|heading innovation\| — compass cal health | rad | always |
+| `wave_valid` | sea-state statistics settled | boolean (`t`/`f`) | always |
 | `temp` | die temperature | °C | always |
 | `seq` | imu sample counter | integer (`i` suffix) | always |
 
 Being the diagnostics sink, `imud-influxdb` emits `heave`/`heave_rate` from t=0
 (unlike the user-facing bridges, which withhold heave until settled) and exposes
 `heave_valid` so the pre-settle transient can be filtered downstream. The
-diagnostic fields (`heave_rate`, `gbias_*`, `gbias_var_*`, `quiescence`) are
-frame-neutral SI and are **not** affected by the `units` (deg/rad) setting.
+diagnostic fields (`heave_rate`, `gbias_*`, `gbias_var_*`, `quiescence`) and
+the sea-state fields (`wave_height`, `wave_period`, `roll_period`,
+`roll_amplitude`, `pitch_period`, `pitch_amplitude`, wire v14; 0.0 with
+`wave_valid=f` until settled) and the compass-health metrics (`mag_anomaly`,
+`mag_residual`) are frame-neutral SI and are **not** affected by the `units`
+(deg/rad) setting.
 
 ## Example point
 

@@ -1,6 +1,6 @@
 # imud-signalk — output spec
 
-`imud-signalk` consumes imud's AF_UNIX stream (the 228-byte binary packet) and
+`imud-signalk` consumes imud's AF_UNIX stream (the 260-byte binary packet) and
 emits one Signal K **delta** JSON message per UDP datagram at the configured rate.
 Values use Signal K SI units (radians, rad/s, metres). `context` is omitted, so
 the server applies the delta to `vessels.self`; `source.label` is the configured
@@ -21,9 +21,14 @@ packet's wall-clock time.
 `navigation.headingTrue` and `navigation.magneticVariation` are emitted only when
 imud has a valid magnetic declination (a configured value or a WMM computation).
 `environment.heave` is withheld until the heave estimator has settled (the packet's
-`HEAVE_VALID` flag), so subscribers never see the startup transient. Heave rate and
-the gyro-bias / variance / quiescence diagnostics have no standard Signal K path and
-are not emitted (consume the binary stream or the InfluxDB bridge for those).
+`HEAVE_VALID` flag), so subscribers never see the startup transient. Heave rate,
+the gyro-bias / variance / quiescence / compass-health diagnostics, and the
+wire-v14 sea-state fields (wave height/period, roll/pitch period and
+amplitude) have no standard Signal K path — the spec's `environment` group
+defines no `wave` object — and are not emitted (consume the binary stream,
+the MQTT bridge, or the InfluxDB bridge for those). The v14 `engine_on` flag
+is likewise not mapped; Signal K's `propulsion.<id>.state` is a plausible
+future home but requires an engine identity imud does not have.
 
 ## Conventions
 

@@ -53,10 +53,15 @@ that drags in a large middleware or toolchain (ROS2, CAN) is better as its own
 project that reuses the client lib rather than something built under this Makefile.
 
 **Marine**
-- **NMEA 2000 / N2K** — highest-value marine target after Signal K: PGN 127250
-  (vessel heading), 127251 (rate of turn), 127257 (attitude), 127252 (heave).
-  Needs SocketCAN + a CAN transceiver (PiCAN / MCP2515) or a USB gateway;
-  fast-packet PGN encoding is the real work. *(medium–high; needs CAN hardware to test)*
+- **NMEA 2000 / N2K** — DEMOTED 2026-07-11: covered via Signal K. The path
+  imud → imud-signalk → Signal K server → `signalk-to-nmea2000` plugin already
+  emits the target PGNs (127250 heading, 127251 ROT, 127257 attitude), and the
+  server owns the hard N2K device-level work (ISO address claim, product info,
+  heartbeat) that a direct C bridge would have to reimplement. CAN hardware is
+  needed either way, so the only user a direct bridge serves is the
+  no-Signal-K "appliance" install — revisit only if that demand materializes.
+  **Action instead: document the recipe** (imud-signalk config → SK connection →
+  plugin → verified PGN list) in docs/manual.md. *(easy, docs only)*
 
 **Robotics / autonomy**
 - **ROS2** — `sensor_msgs/Imu` (+ `MagneticField`, `Temperature`), NED → REP-103
@@ -74,8 +79,9 @@ project that reuses the client lib rather than something built under this Makefi
 - **InfluxDB line protocol** — ✅ **shipped** as `imud-influxdb` (2026-07-08):
   line-protocol points over UDP or HTTP, deg/rad units, own config/service/install
   target, out of `make all`. Pure C, no deps.
-- **Prometheus exporter** — a `/metrics` HTTP endpoint (live values + daemon health)
-  for alerting/monitoring stacks. *(easy)*
+- **Prometheus exporter** — ✅ **shipped** as `imud-prometheus` (2026-07-11, v1.4):
+  /metrics gauges in base SI units, flag bits as 0/1 gauges, imud_up/packets_total.
+  First bridge built purely on libimud's ABI-stable `imud_data_t` (no wire pinning).
 
 **Web / visualization**
 - **WebSocket / SSE JSON** — browser dashboards and a live 3-D attitude view with no
@@ -85,11 +91,51 @@ project that reuses the client lib rather than something built under this Makefi
 - **OSC** — attitude over Open Sound Control (UDP) for camera rigs, gimbals, and
   AV / interactive installations. *(easy)*
 
-Rough priority for the rest: **NMEA 2000** (completes the marine stack), with
-**ROS2** proceeding on its own track. (**MQTT**, **InfluxDB**, and **MAVLink**
+Rough priority for the rest: N2K is covered via Signal K (docs recipe pending);
+**ROS2** proceeds on its own track. (**MQTT**, **InfluxDB**, and **MAVLink**
 shipped.)
 
-## 6. Small items
+## 6. Ideas beyond the audit roadmap  *(brainstorm 2026-07-11, roughly by leverage)*
+
+- **Raw capture & replay (the keystone).** Black-box logging of raw pre-filter
+  samples (timestamps + temps) plus a replay driver that feeds captures back
+  through the fusion offline — gpsd's `gpsfake` equivalent. Every boat session
+  becomes a permanent regression corpus; filter changes get validated against
+  real seaways; bug reports become "send me your capture". Also the data source
+  items below feed on. **Build before/during the first Pi validation trip.**
+- **Sensor self-characterization (Allan variance) in imud-cal.** An overnight
+  `--characterize` run computing per-axis noise density / bias instability,
+  written to cal.json — every install runs a filter tuned to its own silicon
+  instead of universal defaults. Purely software; rare among IMU daemons.
+- **Calibration UX + health.** ✅ landed 2026-07-11 (v1.4): guided swing cal
+  (live 24-sector coverage bar with current-direction marker, live radius/RMS,
+  bell + "FULL CIRCLE" cue) + cal-health monitoring (`mag_anomaly` +
+  `mag_residual` EMAs on the wire, from pre-gate innovations — they tell you
+  WHEN to re-swing). **Online iron refinement deliberately deferred**: the
+  heading reference must never be fed from the filter's own attitude (gauge
+  feedback — the same reason m_ref healing only touches magnitude/dip), so an
+  online fit buys little over "health metric says re-run the 10-minute guided
+  swing" while carrying real risk. Revisit only with hardware evidence that
+  iron drifts faster than re-swinging is practical.
+- **Sea state** — ✅ shipped 2026-07-11 (v1.4, wire v14): Hs, wave period,
+  roll/pitch periods + significant amplitudes; WAVE_VALID flag.
+- **Hardened-to-a-fault CI.** ✅ ASan/UBSan job shipped 2026-07-11 (v1.4).
+  Remaining: TSan (real thread model → earned), fuzzers on the three parsers
+  (config, packet, NMEA/JSON). systemd unit sandboxing already ships in every
+  service file.
+- **arm64 CI.** ✅ shipped 2026-07-11 (v1.4): build-and-test runs on a
+  [ubuntu-latest, ubuntu-24.04-arm] matrix. Still the natural place to build
+  arm64 debs later.
+- **Multi-IMU.** Two sensor pairs fused, or at minimum hot-failover with
+  cross-checking — the vessel-grade redundancy story (gpsd's multi-receiver
+  support is the precedent the name invokes).
+- **Ecosystem gravity on libimud.** The ABI-stable .so makes bindings nearly
+  free: Rust -sys crate, Go package, Python cffi → crates.io/PyPI. Plus the
+  shareable browser demo: live 3-D horizon over the WebSocket bridge.
+- **SPI transport.** Unlocks high-ODR modes (6.6 kHz ISM330) and lower jitter;
+  pairs with the Pi 5 latency profiling item.
+
+## 7. Small items
 
 - `ctx->stop` in imu.c stays `volatile int` (not `_Atomic`) because its address feeds
   the `imu_ring_pop()` API; changing it means touching ring.h/ring.c/test_ring.
@@ -101,4 +147,4 @@ shipped.)
 
 ---
 *Compiled 2026-07-06; software roadmap items landed same day; output-bridges
-section added 2026-07-08.*
+section added 2026-07-08; ideas section + N2K demotion added 2026-07-11.*

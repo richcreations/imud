@@ -1,3 +1,14 @@
+imud-mqtt (1.4) unstable; urgency=medium
+
+  * New sea-state topics under environment/ (waveHeight, wavePeriod,
+    rollPeriod, rollAmplitude, pitchPeriod, pitchAmplitude), riding
+    publish_heave and gated on the packet's WAVE_VALID flag.
+  * New engine/running ON/OFF topic with Home Assistant binary_sensor
+    discovery (device_class: running).
+  * Rebuilt against wire v14.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 11:35:35 -0700
+
 imud-mqtt (1.3) unstable; urgency=medium
 
   * Link libimud for stream access and packet validation (drops the local

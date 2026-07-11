@@ -1,4 +1,4 @@
-.TH IMUD\-CAL 8 "2026-07-10" "imud 1.3.1" "System Manager's Manual"
+.TH IMUD\-CAL 8 "2026-07-11" "imud 1.4" "System Manager's Manual"
 .SH NAME
 imud\-cal \- IMU calibration tool for imud
 .SH SYNOPSIS
@@ -46,6 +46,13 @@ magnetic environment (away from large metal objects).
 Fits an ellipsoid model that corrects for hard-iron offsets and soft-iron
 distortion.
 Takes approximately 3\(en10 minutes.
+.IP
+The collection is guided: a live bar shows the heading circle split into
+24 sectors (\(oq#\(cq covered, \(oq.\(cq still needed, \(oqo\(cq the
+direction currently pointed), with a running coverage percentage and, once
+enough samples exist, the live field radius and RMS fit residual. When
+every sector is covered the tool sounds a bell and says so \(em one more
+circle then improves the fit; press Ctrl-C to finish.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

@@ -5,9 +5,9 @@
  */
 
 /*
- * packet.c — 228-byte binary packet encoder for imud Stream B (§8)
+ * packet.c — 260-byte binary packet encoder for imud Stream B (§8)
  *
- * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–223.
+ * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–255.
  * Coordinate frame: NED by default; "ENU" rotates vectors and quaternion.
  *
  * NED → ENU transform:
@@ -167,6 +167,16 @@ void packet_build(imu_packet_t       *pkt,
     pkt->gyro_bias_var_z  = state->bias_gyro_var[2];
     pkt->heave_rate       = state->heave_rate;
     pkt->accel_quiescence = state->quiescence;
+
+    /* v14 sea state + compass health — frame-neutral scalars */
+    pkt->wave_height_m   = state->wave_height_m;
+    pkt->wave_period_s   = state->wave_period_s;
+    pkt->roll_period_s   = state->roll_period_s;
+    pkt->roll_amplitude  = state->roll_amplitude;
+    pkt->pitch_period_s  = state->pitch_period_s;
+    pkt->pitch_amplitude = state->pitch_amplitude;
+    pkt->mag_anomaly     = state->mag_anomaly;
+    pkt->mag_residual    = state->mag_residual;
 
     /* CRC32 covers all bytes before the crc32 field */
     pkt->crc32 = crc32_ieee((const uint8_t *)pkt, offsetof(imu_packet_t, crc32));

@@ -1,4 +1,4 @@
-.TH IMUD\-INFLUXDB 8 "2026-07-10" "imud 1.3.1" "System Manager's Manual"
+.TH IMUD\-INFLUXDB 8 "2026-07-11" "imud 1.4" "System Manager's Manual"
 .SH NAME
 imud\-influxdb \- bridge imud's binary stream to InfluxDB line protocol
 .SH SYNOPSIS
@@ -59,7 +59,12 @@ is set), the gyro-bias diagnostics
 .RB ( gbias_x/y/z ", " gbias_var_x/y/z )
 and
 .B quiescence
-(always),
+(always), the compass-health metrics
+.RB ( mag_anomaly ", " mag_residual )
+(always), the sea-state fields
+.RB ( wave_height ", " wave_period ", " roll_period ", " roll_amplitude ", "\
+ pitch_period ", " pitch_amplitude " with " wave_valid )
+(always; 0.0 until settled),
 .BR temp ,
 and an integer
 .BR seq ,
@@ -68,8 +73,9 @@ degrees
 .RB ( units " = " deg )
 or radians
 .RB ( units " = " rad );
-the heave-rate, gyro-bias and quiescence diagnostics are always SI
-(m/s, rad/s, (rad/s)\[u00B2]) regardless of
+the heave-rate, gyro-bias, quiescence, compass-health and sea-state
+diagnostics are always SI (m/s, rad/s, (rad/s)\[u00B2], m, s, rad)
+regardless of
 .BR units .
 .SH OPTIONS
 .TP

@@ -1,0 +1,48 @@
+[Unit]
+Description=imud → Prometheus exporter (binary stream → /metrics gauges)
+Documentation=man:imud-prometheus(8) man:imud-prometheus.conf(5)
+# Starts after imud and prefers it running, but survives imud restarts on its
+# own (it reconnects to the stream socket automatically and answers scrapes
+# with imud_up 0 meanwhile).
+After=imud.service network-online.target
+Wants=imud.service network-online.target
+
+[Service]
+Type=notify
+ExecStart=@BINDIR@/imud-prometheus --config /etc/imud/imud-prometheus.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=15
+# Main loop pets the watchdog every tick; a hung exporter is restarted.
+WatchdogSec=10
+
+# Runs as the imud user so it can read the 0660 imud:gpio stream socket in
+# /run/imud/.  No hardware access is needed.
+User=imud
+Group=gpio
+
+# ── Security hardening ────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+MemoryDenyWriteExecute=true
+# The HTTP listener (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No device access — the exporter touches no hardware.
+DevicePolicy=closed
+
+MemoryMax=16M
+OOMScoreAdjust=-400
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=imud-prometheus
+
+[Install]
+WantedBy=multi-user.target

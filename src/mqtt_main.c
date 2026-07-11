@@ -8,7 +8,7 @@
  * mqtt_main.c — imud-mqtt: MQTT bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 228-byte packets, and publishes scalar telemetry topics to an MQTT
+ * reads the 260-byte packets, and publishes scalar telemetry topics to an MQTT
  * broker (via libmosquitto) at the configured rate — one value per topic under
  * a prefix — plus Home Assistant MQTT-discovery configs so the sensors self-
  * register. See mqtt_publish.c for the topic/unit mapping.
@@ -47,7 +47,7 @@
 
 #include "version.h"                 /* IMUD_VERSION_STR — canonical version */
 #define VERSION_STR IMUD_VERSION_STR
-#define MAX_MSGS    16           /* upper bound on state/discovery message counts */
+#define MAX_MSGS    24           /* upper bound on state/discovery message counts */
 
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_reload;

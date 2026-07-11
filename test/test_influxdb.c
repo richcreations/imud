@@ -65,6 +65,9 @@ static imud_packet_t make_pkt(void)
     p.gyro_bias_x = 0.001f; p.gyro_bias_y = -0.002f; p.gyro_bias_z = 0.003f;
     p.gyro_bias_var_x = 1e-6f; p.gyro_bias_var_y = 2e-6f; p.gyro_bias_var_z = 3e-6f;
     p.accel_quiescence = 0.01f;
+    p.wave_height_m = 1.6f; p.wave_period_s = 6.2f; p.roll_period_s = 4.4f;
+    p.roll_amplitude = 0.12f; p.pitch_period_s = 5.1f; p.pitch_amplitude = 0.06f;
+    p.mag_anomaly = 0.03f; p.mag_residual = 0.02f;
     return p;
 }
 
@@ -186,6 +189,35 @@ static void test_v12_diagnostics(void)
     end(fb);
 }
 
+static void test_v14_seastate(void)
+{
+    begin("test_v14_seastate");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    char buf[768];
+    double v;
+
+    /* Sea state is always emitted (diagnostics sink), raw SI even in deg
+     * mode, independent of the heave gate, with wave_valid as the filter. */
+    p.flags = 0;
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    EXPECT(field(buf, "wave_height", &v) && fabs(v - 1.6) < 1e-3, "wave_height m, always on");
+    EXPECT(field(buf, "wave_period", &v) && fabs(v - 6.2) < 1e-2, "wave_period s");
+    EXPECT(field(buf, "roll_period", &v) && fabs(v - 4.4) < 1e-2, "roll_period s");
+    EXPECT(field(buf, "roll_amplitude", &v) && fabs(v - 0.12) < 1e-3, "roll_amplitude rad, SI");
+    EXPECT(field(buf, "pitch_period", &v) && fabs(v - 5.1) < 1e-2, "pitch_period s");
+    EXPECT(field(buf, "pitch_amplitude", &v) && fabs(v - 0.06) < 1e-3, "pitch_amplitude rad, SI");
+    EXPECT(field(buf, "mag_anomaly", &v) && fabs(v - 0.03) < 1e-4, "mag_anomaly always on");
+    EXPECT(field(buf, "mag_residual", &v) && fabs(v - 0.02) < 1e-4, "mag_residual always on");
+    EXPECT(strstr(buf, "wave_valid=f") != NULL, "wave_valid=f when flag clear");
+
+    p.flags = IMUD_FLAG_WAVE_VALID;
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    EXPECT(strstr(buf, "wave_valid=t") != NULL, "wave_valid=t when flag set");
+    end(fb);
+}
+
 static void test_buffer_too_small(void)
 {
     begin("test_buffer_too_small");
@@ -205,6 +237,7 @@ int main(void)
     test_declination_gated();
     test_heave_gated_and_tags();
     test_v12_diagnostics();
+    test_v14_seastate();
     test_buffer_too_small();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -1,0 +1,40 @@
+.TH IMUD\-PROMETHEUS.CONF 5 "2026-07-11" "imud 1.4" "File Formats Manual"
+.SH NAME
+imud\-prometheus.conf \- configuration for the imud Prometheus exporter
+.SH SYNOPSIS
+.I /etc/imud/imud\-prometheus.conf
+.SH DESCRIPTION
+TOML-style key/value file read by
+.BR imud\-prometheus (8)
+at startup and on SIGHUP. The exporter reads only this file, never
+.IR imud.conf .
+Keys marked [restart] require a service restart to take effect.
+.SH "SECTION [imud-prometheus]"
+.TP
+.B enabled
+.RI (bool,\ default:\ false)
+Start the exporter. [restart]
+.TP
+.B socket
+.RI (string,\ default:\ /run/imud/imud\-stream.sock)
+Path of imud's [stream] AF_UNIX socket to read. [restart]
+.TP
+.B listen_addr
+.RI (string,\ default:\ 127.0.0.1)
+HTTP bind address. Set
+.B 0.0.0.0
+to allow scrapes from another host. [restart]
+.TP
+.B listen_port
+.RI (int,\ default:\ 9815)
+HTTP port for
+.BR GET\ /metrics .
+[restart]
+.SH "SECTION [logging]"
+.TP
+.B level
+.RI (string,\ default:\ info)
+error | warn | info | debug. Reloaded on SIGHUP.
+.SH SEE ALSO
+.BR imud\-prometheus (8),
+.BR imud (8)

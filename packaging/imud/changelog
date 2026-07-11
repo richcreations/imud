@@ -1,11 +1,19 @@
-imud (1.3.1) unstable; urgency=medium
+imud (1.4) unstable; urgency=medium
 
-  * No functional changes. Fix the CI verification steps added in 1.3:
-    hardening-check on libimud.so no longer trips on its fortify heuristic
-    (all fortifiable calls have compile-time-provable bounds), and the ABI
-    surface check handles versioned symbols (IMUD_0 node, @@ suffixes).
+  * Sea state: significant wave height, wave period, roll/pitch periods and
+    significant amplitudes from the heave/attitude oscillations ([fusion]
+    wave_tau_s, WAVE_VALID flag). Compass-health diagnostics (mag_anomaly,
+    mag_residual) computed in the filter. ENGINE_ON flag exports the
+    engine-vibration detector.
+  * Binary stream packet v14 (260 bytes; fields appended before the CRC).
+    Wire-pinned consumers must be rebuilt together with the daemon; libimud
+    applications are unaffected.
+  * imud_client.h is deprecated (use libimud) and no longer installed.
+  * Fix the CI verification steps added in 1.3 (hardening-check fortify
+    false positive on libimud.so; versioned-symbol handling in the ABI
+    surface check); CI now also covers arm64 and ASan/UBSan.
 
- -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 23:46:11 -0700
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 11:35:35 -0700
 
 imud (1.3) unstable; urgency=medium
 

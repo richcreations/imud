@@ -126,12 +126,20 @@ static void test_packet_size(void)
 {
     begin("test_packet_size");
     int fb = g_fail;
-    EXPECT(sizeof(imu_packet_t) == 228, "imu_packet_t is exactly 228 bytes");
-    EXPECT(offsetof(imu_packet_t, crc32) == 224, "crc32 field at offset 224");
+    EXPECT(sizeof(imu_packet_t) == 260, "imu_packet_t is exactly 260 bytes");
+    EXPECT(offsetof(imu_packet_t, crc32) == 256, "crc32 field at offset 256");
     EXPECT(offsetof(imu_packet_t, gyro_bias_x)      == 192, "gyro_bias_x at offset 192");
     EXPECT(offsetof(imu_packet_t, gyro_bias_var_x)  == 204, "gyro_bias_var_x at offset 204");
     EXPECT(offsetof(imu_packet_t, heave_rate)       == 216, "heave_rate at offset 216");
     EXPECT(offsetof(imu_packet_t, accel_quiescence) == 220, "accel_quiescence at offset 220");
+    EXPECT(offsetof(imu_packet_t, wave_height_m)    == 224, "wave_height_m at offset 224");
+    EXPECT(offsetof(imu_packet_t, wave_period_s)    == 228, "wave_period_s at offset 228");
+    EXPECT(offsetof(imu_packet_t, roll_period_s)    == 232, "roll_period_s at offset 232");
+    EXPECT(offsetof(imu_packet_t, roll_amplitude)   == 236, "roll_amplitude at offset 236");
+    EXPECT(offsetof(imu_packet_t, pitch_period_s)   == 240, "pitch_period_s at offset 240");
+    EXPECT(offsetof(imu_packet_t, pitch_amplitude)  == 244, "pitch_amplitude at offset 244");
+    EXPECT(offsetof(imu_packet_t, mag_anomaly)      == 248, "mag_anomaly at offset 248");
+    EXPECT(offsetof(imu_packet_t, mag_residual)     == 252, "mag_residual at offset 252");
     end(fb);
 }
 
@@ -145,7 +153,7 @@ static void test_magic_version(void)
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "NED");
     EXPECT(pkt.magic   == IMUD_MAGIC,   "magic == 0x494D5544");
-    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (12 = v1.2)");
+    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (14 = v1.4)");
     end(fb);
 }
 
@@ -160,7 +168,7 @@ static void test_crc_correct(void)
     packet_build(&pkt, &s, &m, &i, &i, "NED");
 
     uint32_t expected = ref_crc32((const uint8_t *)&pkt, offsetof(imu_packet_t, crc32));
-    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-223 matches packet.crc32");
+    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-255 matches packet.crc32");
     EXPECT(pkt.crc32 != 0u,      "CRC32 is non-zero");
     end(fb);
 }
@@ -236,6 +244,38 @@ static void test_v12_fields_copied(void)
     packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
     EXPECT_NEAR(pkt_enu.gyro_bias_x, s.bias_gyro[0], 1e-9f, "gyro_bias not ENU-rotated");
     EXPECT_NEAR(pkt_enu.heave_rate,  s.heave_rate,   1e-9f, "heave_rate not ENU-rotated");
+    end(fb);
+}
+
+static void test_v14_fields_copied(void)
+{
+    begin("test_v14_fields_copied");
+    int fb = g_fail;
+    imu_packet_t pkt;
+    fused_state_t s = make_state();
+    mag_sample_t  m = make_mag();
+    imu_sample_t  i = make_imu();
+    s.wave_height_m = 1.8f;
+    s.wave_period_s = 6.5f;
+    s.roll_period_s = 4.2f;
+    s.roll_amplitude = 0.15f;
+    s.pitch_period_s = 5.3f;
+    s.pitch_amplitude = 0.07f;
+    s.mag_anomaly = 0.04f;
+    s.mag_residual = 0.025f;
+    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    EXPECT_NEAR(pkt.wave_height_m, s.wave_height_m, 1e-9f, "wave_height_m copied");
+    EXPECT_NEAR(pkt.wave_period_s, s.wave_period_s, 1e-9f, "wave_period_s copied");
+    EXPECT_NEAR(pkt.roll_period_s, s.roll_period_s, 1e-9f, "roll_period_s copied");
+    EXPECT_NEAR(pkt.roll_amplitude,  s.roll_amplitude,  1e-9f, "roll_amplitude copied");
+    EXPECT_NEAR(pkt.pitch_period_s,  s.pitch_period_s,  1e-9f, "pitch_period_s copied");
+    EXPECT_NEAR(pkt.pitch_amplitude, s.pitch_amplitude, 1e-9f, "pitch_amplitude copied");
+    EXPECT_NEAR(pkt.mag_anomaly,     s.mag_anomaly,     1e-9f, "mag_anomaly copied");
+    EXPECT_NEAR(pkt.mag_residual,    s.mag_residual,    1e-9f, "mag_residual copied");
+    /* frame-neutral scalars — identical in ENU */
+    imu_packet_t pkt_enu;
+    packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
+    EXPECT_NEAR(pkt_enu.wave_height_m, s.wave_height_m, 1e-9f, "wave_height not ENU-rotated");
     end(fb);
 }
 
@@ -479,6 +519,7 @@ int main(void)
     test_flags_copied();
     test_timestamps_copied();
     test_v12_fields_copied();
+    test_v14_fields_copied();
     test_ned_vectors_unchanged();
     test_enu_vectors_permuted();
     test_enu_quat_norm_preserved();

@@ -29,8 +29,8 @@ from typing import Iterator, Optional
 # ── Protocol constants ────────────────────────────────────────────────────────
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
-IMUD_VERSION     = 12    # 1.2 — encoded as decimal: major*10 + minor
-IMUD_PACKET_SIZE = 228
+IMUD_VERSION     = 14    # 1.4 — encoded as decimal: major*10 + minor
+IMUD_PACKET_SIZE = 260
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +47,8 @@ class Flags:
     SHUTDOWN             = 1 << 9   # final packet before clean exit
     DECLINATION_VALID    = 1 << 10  # declination known; true_heading valid
     HEAVE_VALID          = 1 << 11  # heave estimator settled (heave_m/heave_rate valid)
+    WAVE_VALID           = 1 << 12  # sea-state stats settled (wave/roll/pitch fields valid)
+    ENGINE_ON            = 1 << 13  # engine-vibration detector asserting
 
     @staticmethod
     def describe(flags: int) -> str:
@@ -68,7 +70,7 @@ class Flags:
 
 # ── Packet struct ─────────────────────────────────────────────────────────────
 #
-# Wire layout (little-endian, 228 bytes):
+# Wire layout (little-endian, 260 bytes):
 #   Offset  Field
 #    0      magic          uint32
 #    4      version        uint16
@@ -98,9 +100,17 @@ class Flags:
 #  204      gyro_bias_var[3] 3× float32  gyro-bias variance, (rad/s)² (v1.2)
 #  216      heave_rate       float32     m/s, + up (v1.2)
 #  220      accel_quiescence float32     EMA of (|a|/g−1)² (v1.2)
-#  224      crc32          uint32
+#  224      wave_height_m    float32     significant wave height Hs, m (v14)
+#  228      wave_period_s    float32     mean zero-crossing period Tz, s (v14)
+#  232      roll_period_s    float32     vessel roll period, s (v14)
+#  236      roll_amplitude   float32     significant single amplitude 2σ(roll), rad (v14)
+#  240      pitch_period_s   float32     vessel pitch period, s (v14)
+#  244      pitch_amplitude  float32     significant single amplitude 2σ(pitch), rad (v14)
+#  248      mag_anomaly      float32     EMA of ||B|−|B_ref||/|B_ref| (v14)
+#  252      mag_residual     float32     EMA of |heading innovation|, rad (v14)
+#  256      crc32          uint32
 
-_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 10 + 'I')
+_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 18 + 'I')
 
 assert _STRUCT.size == IMUD_PACKET_SIZE, \
     f"struct size mismatch: {_STRUCT.size} != {IMUD_PACKET_SIZE}"
@@ -172,6 +182,18 @@ class ImudPacket:
     gyro_bias_var_z:  float
     heave_rate:       float   # m/s, + up; 0.0 when heave disabled
     accel_quiescence: float   # EMA of (|a|/g−1)²
+
+    # v14 sea state — 0.0 until WAVE_VALID flag set
+    wave_height_m:    float   # significant wave height Hs, m
+    wave_period_s:    float   # mean zero-crossing wave period Tz, s; 0.0 = n/a
+    roll_period_s:    float   # vessel roll period, s; 0.0 = not rolling
+    roll_amplitude:   float   # significant single amplitude 2σ(roll), rad
+    pitch_period_s:   float   # vessel pitch period, s; 0.0 = not pitching
+    pitch_amplitude:  float   # significant single amplitude 2σ(pitch), rad
+
+    # v14 compass health (see man 5 imud.conf)
+    mag_anomaly:      float   # EMA of ||B|−|B_ref||/|B_ref| (unitless)
+    mag_residual:     float   # EMA of |heading innovation|, rad
 
     crc32:            int
 

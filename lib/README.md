@@ -1,15 +1,16 @@
 # imud client libraries
 
-Three ways to consume imud's binary telemetry — pick by how you deploy:
+Two supported ways to consume imud's binary telemetry:
 
 | Library | File(s) | Pick it when |
 | --- | --- | --- |
-| **libimud** (shared library) | `imud.h` + `libimud.so`, `pkg-config libimud` | You install imud from packages / `make install`. **ABI-stable**: your binary survives imud upgrades without recompiling. |
-| **C single-header** | `imud_client.h` | You vendor one file into an embedded/static project and *want* to pin the wire version (recompile per wire revision). |
-| **Python** | `imud_client.py` | Python 3.8+, standard library only (wire-pinned, like the single-header). |
+| **libimud** (shared library) | `imud.h` + `libimud.so`, `pkg-config libimud` | The C client. **ABI-stable**: your binary survives imud upgrades without recompiling. |
+| **Python** | `imud_client.py` | Python 3.8+, standard library only (wire-pinned: revalidate per wire revision). |
 
-All three validate the CRC32 on every packet and silently discard anything
-malformed. `sudo make install` installs all of them; the daemon's own bridges
+(A third, `imud_client.h`, is **deprecated** — see below.)
+
+Both validate the CRC32 on every packet and silently discard anything
+malformed. `sudo make install` installs them; the daemon's own bridges
 link `libimud.so`, and `make test` cross-checks every packet definition
 against the daemon's encoder on each run.
 
@@ -42,12 +43,20 @@ API and the ABI contract). For select/poll event loops use `imud_fd()`.
 
 ---
 
-## C — `imud_client.h`, the vendoring path
+## C — `imud_client.h`, the vendoring path (DEPRECATED)
 
-Single-header library. No build system required — drop the file into your
-project. Note it is **wire-version-pinned**: it validates against the exact
-packet version it was compiled with, so rebuild your app when you upgrade
-imud across a wire revision (use libimud above to avoid that).
+**Deprecated since the libimud release — use libimud above for all new C
+code.** The header stays in the source tree because it is the deliberate
+wire-pinning mechanism behind libimud's `imud_wire()` opt-in and imud's own
+bridges, and existing vendored copies keep working (it still tracks every
+wire revision), but it is no longer installed by `make install` and gains no
+new API. Including it prints a compile-time notice; define
+`IMUD_CLIENT_ALLOW_DEPRECATED` before the include to silence it.
+
+Single-header library. No build system required — vendor the file from the
+source tree. Note it is **wire-version-pinned**: it validates against the
+exact packet version it was compiled with, so rebuild your app when you
+upgrade imud across a wire revision (libimud avoids that).
 
 **In exactly one `.c` file:**
 
@@ -180,13 +189,16 @@ python3 imud_client.py --port 10111 --addr 239.255.0.1
 | `gyro_bias_var_x/y/z` | float | gyro-bias variance, (rad/s)² (v1.2) |
 | `heave_rate` | float | vertical velocity, m/s, + up; 0.0 when heave disabled (v1.2) |
 | `accel_quiescence` | float | EMA of (\|a\|/g−1)²; platform-disturbance metric (v1.2) |
+| `wave_height_m` | float | Significant wave height Hs, m; 0.0 until `WAVE_VALID` (v14) |
+| `wave_period_s` | float | Mean zero-crossing wave period Tz, s; 0.0 = n/a (v14) |
+| `roll_period_s` | float | Vessel roll period, s; 0.0 = not rolling (v14) |
 | `true_heading_deg` | float or None | heading + declination, or None when declination unknown |
 
 ---
 
-## Stream B packet layout (v1.2, 228 bytes)
+## Stream B packet layout (wire v14, 260 bytes)
 
 See `spec.md §8` for the complete wire format. The stream is little-endian,
-228 bytes per packet (version field = 12, i.e. v1.2), with an IEEE 802.3
+260 bytes per packet (version field = 13), with an IEEE 802.3
 CRC32 over the first 224 bytes (0–223). Both libraries validate magic,
 version, and CRC before returning a packet.

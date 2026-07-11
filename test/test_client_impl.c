@@ -40,6 +40,10 @@ float    client_declination(const void *buf) { return client_copy(buf).declinati
 float    client_quat_w(const void *buf)      { return client_copy(buf).quat_w; }
 float    client_mag_x(const void *buf)       { return client_copy(buf).mag_x; }
 float    client_heave(const void *buf)       { return client_copy(buf).heave_m; }
+float    client_wave_height(const void *buf) { return client_copy(buf).wave_height_m; }
+float    client_roll_period(const void *buf) { return client_copy(buf).roll_period_s; }
+float    client_pitch_period(const void *buf) { return client_copy(buf).pitch_period_s; }
+float    client_mag_residual(const void *buf) { return client_copy(buf).mag_residual; }
 
 float client_true_heading(const void *buf)
 {

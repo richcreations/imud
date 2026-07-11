@@ -61,6 +61,12 @@ typedef struct {
     bool  g_body_valid;  /* true once an accel update has stashed g_body */
     float acc_quiet_ema; /* EMA of (|a|/g−1)², τ≈2 s — platform quiescence */
     float speed_mps;     /* speed over ground for centripetal correction; 0 = off */
+
+    /* ── Compass health diagnostics (τ ≈ 30 s at 100 Hz mag ODR) ──────────
+     * Fed BEFORE the rejection gates in mekf_update_mag — rejected samples
+     * are evidence of anomaly, not noise to hide. Exported on the wire. */
+    float mag_anom_ema;  /* EMA of ||B|−|B_ref||/|B_ref| — interference / iron-cal drift */
+    float mag_resid_ema; /* EMA of |heading innovation|, rad — compass-vs-filter disagreement */
 } mekf_t;
 
 /*
@@ -141,6 +147,54 @@ void  heave_init(heave_t *h, float tau_s, float dt);
 /* Returns heave in metres, positive up. q = current attitude (body→NED),
  * accel = calibrated specific force in body frame (m/s²). */
 float heave_update(heave_t *h, const float q[4], const float accel[3]);
+
+/* ── Sea-state estimator ──────────────────────────────────────────────────── */
+
+/*
+ * Windowed statistics over the heave, roll, and pitch oscillations, via
+ * exponentially weighted mean/variance pairs (time constant wave_tau_s).
+ * Spectral-moment identities give the outputs without any FFT or storage:
+ *   Hs      = 4·σ(heave)                    — significant wave height, m
+ *   Tz      = 2π·√(var(heave)/var(ḣeave))   — mean zero-crossing period, s
+ *   T_roll  = 2π·√(var(roll)/var(ṙoll))     — natural roll period, s
+ *   A_roll  = 2·σ(roll)                     — significant single amplitude, rad
+ *   (pitch: same pair as roll)
+ * Feed only while the heave estimator is settled; τ = 0 disables.
+ */
+typedef struct {
+    float tau;       /* averaging time constant, s */
+    float dt;        /* sample period, s */
+    float h_mean,  h_var;    /* heave, m / m² */
+    float hr_mean, hr_var;   /* heave rate, m/s / (m/s)² */
+    float r_mean,  r_var;    /* roll, rad / rad² (mean = steady heel) */
+    float rr_mean, rr_var;   /* roll rate, rad/s / (rad/s)² */
+    float p_mean,  p_var;    /* pitch, rad / rad² (mean = steady trim) */
+    float pr_mean, pr_var;   /* pitch rate, rad/s / (rad/s)² */
+    float elapsed;   /* seconds of accumulated (heave-valid) input */
+    bool  settled;   /* true once elapsed ≥ ~2·tau — stats trustworthy */
+    bool  enabled;
+} seastate_t;
+
+void seastate_init(seastate_t *w, float tau_s, float dt);
+
+/* Accumulate one sample. Call ONLY while heave is settled (its output is a
+ * ramp during settling and would poison the variances). Angles/rates in rad,
+ * rad/s (Euler rates, not body ω). */
+void seastate_update(seastate_t *w, float heave_m, float heave_rate,
+                     float roll, float roll_rate,
+                     float pitch, float pitch_rate);
+
+/* Output getters; all return 0.0 when disabled or not yet settled. Periods
+ * additionally return 0.0 when the respective oscillation is too small to
+ * time (becalmed / not rolling). Amplitudes are significant SINGLE
+ * amplitudes (2σ, the seakeeping convention); wave height is the significant
+ * DOUBLE amplitude (4σ, crest-to-trough). */
+float seastate_wave_height(const seastate_t *w);     /* Hs, m */
+float seastate_wave_period(const seastate_t *w);     /* Tz, s */
+float seastate_roll_period(const seastate_t *w);     /* s */
+float seastate_roll_amplitude(const seastate_t *w);  /* 2σ(roll), rad */
+float seastate_pitch_period(const seastate_t *w);    /* s */
+float seastate_pitch_amplitude(const seastate_t *w); /* 2σ(pitch), rad */
 
 /*
  * mekf_reconfigure — update filter noise parameters from a new config.

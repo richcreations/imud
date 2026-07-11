@@ -1,3 +1,13 @@
+libimud (1.4) unstable; urgency=medium
+
+  * imud_data_t gains the wire-v14 fields (append-only, ABI preserved):
+    wave_height_m, wave_period_s, roll_period_s, roll_amplitude,
+    pitch_period_s, pitch_amplitude, mag_anomaly, mag_residual; new
+    IMUD_FLAG_WAVE_VALID / IMUD_FLAG_ENGINE_ON. Existing binaries keep
+    working without recompilation.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 11:35:35 -0700
+
 libimud (1.3) unstable; urgency=medium
 
   * Initial release: ABI-stable client shared library (libimud.so.0) for

@@ -311,6 +311,14 @@ static void write_status_response(int fd,
     if (cfg->heave_tau_s > 0.0f)
         WS("Heave:          %+.2f m\n", state.heave_m);
 
+    if (cfg->heave_tau_s > 0.0f && cfg->wave_tau_s > 0.0f) {
+        if (state.flags & FLAG_WAVE_VALID)
+            WS("Sea state:      Hs %.2f m  Tz %.1f s  roll period %.1f s\n",
+                state.wave_height_m, state.wave_period_s, state.roll_period_s);
+        else
+            WS("Sea state:      settling\n");
+    }
+
     if (cfg->nmea_enabled) {
         WS("NMEA out:       %d Hz  (port %d)\n",
             cfg->nmea_rate_hz, cfg->nmea_dest_port);
@@ -729,6 +737,7 @@ int main(int argc, char **argv)
                 /* Fusion noise params + declination — push into running filter */
                 cfg.mag_yaw_only        = new_cfg.mag_yaw_only;
                 cfg.heave_tau_s         = new_cfg.heave_tau_s;
+                cfg.wave_tau_s          = new_cfg.wave_tau_s;
                 cfg.mekf_gyro_noise     = new_cfg.mekf_gyro_noise;
                 cfg.mekf_gyro_bias      = new_cfg.mekf_gyro_bias;
                 cfg.mekf_accel_noise    = new_cfg.mekf_accel_noise;

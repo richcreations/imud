@@ -7,6 +7,9 @@ endif
 CFLAGS   ?= -O2 -Wall -Wextra
 override CFLAGS   += -std=c11 -pthread -Iinclude
 override CPPFLAGS += -D_GNU_SOURCE
+# imud_client.h is deprecated for third parties but is imud's own wire-pinning
+# header (bridges, libimud, tests); silence its deprecation notice in-tree.
+override CPPFLAGS += -DIMUD_CLIENT_ALLOW_DEPRECATED
 # LDFLAGS carries linker flags only (relro/PIE/...); libraries are per-target.
 
 # Canonical release version — single source is include/version.h.
@@ -72,7 +75,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check dist install install-signalk install-mqtt install-influxdb install-mavlink uninstall .FORCE
+.PHONY: all bridges libimud clean test check dist install install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-status imud-mon
 
@@ -118,7 +121,13 @@ imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/mavlink_main.o $(L
 # Optional bridge daemons — each has its own config file, service, and man page,
 # and installs via its own `install-*` target (prep for per-bridge packaging).
 # Kept out of `all` so a core build / CI never needs a bridge's dependencies.
-bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink
+# imud-prometheus serves the fused state as Prometheus /metrics gauges. Pure
+# C — no external dependencies beyond libimud; the first bridge built purely
+# on the ABI-stable imud_data_t (no wire pinning).
+imud-prometheus: src/prom_metrics.o src/config.o src/log.o src/prom_main.o $(LIBIMUD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
 
 # ── libimud shared library ────────────────────────────────────────────────────
 
@@ -203,6 +212,9 @@ test_mqtt: src/mqtt_publish.c test/test_mqtt.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # InfluxDB line-protocol encoder (pure function)
+test_prometheus: src/prom_metrics.c test/test_prometheus.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 test_influxdb: src/influx_line.c test/test_influxdb.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
@@ -217,7 +229,8 @@ test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
       test_cal test_cal_math test_wmm test_position test_client test_stream \
-      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud
+      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
+      test_prometheus
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -234,6 +247,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_signalk
 	./test_mqtt
 	./test_influxdb
+	./test_prometheus
 	./test_mavlink
 	./test_libimud
 
@@ -310,10 +324,11 @@ install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 	    systemctl daemon-reload; \
 	fi
 	# ── Client libraries ───────────────────────────────────────────────────
+	# imud_client.h is DEPRECATED and no longer installed (vendor from the
+	# source tree if you must); the C client is libimud below.
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/share/imud
-	install -m 644 lib/imud_client.h  $(DESTDIR)$(PREFIX)/include/imud_client.h
 	install -m 644 lib/imud_client.py $(DESTDIR)$(PREFIX)/share/imud/imud_client.py
-	@echo "Installed client libs:  $(DESTDIR)$(PREFIX)/include/imud_client.h, $(DESTDIR)$(PREFIX)/share/imud/imud_client.py"
+	@echo "Installed client libs:  $(DESTDIR)$(PREFIX)/share/imud/imud_client.py"
 	# ── libimud shared library + public header + pkg-config ────────────────
 	install -d -m 0755 $(DESTDIR)$(LIBDIR)/pkgconfig
 	install -m 644 $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SHLIB)
@@ -442,6 +457,35 @@ install-influxdb: imud-influxdb etc/imud-influxdb.service
 	@echo "Installed imud-influxdb.  Enable with: sudo systemctl enable --now imud-influxdb"
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-influxdb.conf)"
 
+# ── Install the Prometheus exporter (optional) ─────────────────────────────────
+# Run after `make imud-prometheus`.  Installs the binary, service, man pages,
+# and its own config file (non-clobbering).
+install-prometheus: imud-prometheus etc/imud-prometheus.service
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -m 755 imud-prometheus $(DESTDIR)$(PREFIX)/bin/
+	install -m 644 etc/imud-prometheus.service $(DESTDIR)$(SVCDIR)/imud-prometheus.service
+	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-prometheus.conf" ]; then \
+	    install -m 644 config/imud-prometheus.conf $(DESTDIR)$(ETCDIR)/imud-prometheus.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
+	else \
+	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
+	fi
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
+	gzip -9c man/man5/imud-prometheus.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz
+	gzip -9c man/man8/imud-prometheus.8 > $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples
+	install -m 644 docs/imud-prometheus/README.md docs/imud-prometheus/manual.md \
+	               docs/imud-prometheus/spec.md $(DESTDIR)$(DOCDIR)/imud-prometheus/
+	install -m 644 packaging/imud-prometheus/copyright $(DESTDIR)$(DOCDIR)/imud-prometheus/copyright
+	gzip -9c packaging/imud-prometheus/changelog > $(DESTDIR)$(DOCDIR)/imud-prometheus/changelog.gz
+	install -m 644 config/imud-prometheus.conf $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf
+	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+	    systemctl daemon-reload; \
+	fi
+	@echo "Installed imud-prometheus.  Enable with: sudo systemctl enable --now imud-prometheus"
+	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-prometheus.conf)"
+
 # ── Install the MAVLink bridge (optional) ──────────────────────────────────────
 # Run after `make imud-mavlink`.  Installs the binary, service, man page, and its
 # own config file (non-clobbering).
@@ -478,6 +522,7 @@ uninstall:
 	    systemctl disable --now imud-signalk 2>/dev/null || true; \
 	    systemctl disable --now imud-mqtt 2>/dev/null || true; \
 	    systemctl disable --now imud-influxdb 2>/dev/null || true; \
+	    systemctl disable --now imud-prometheus 2>/dev/null || true; \
 	    systemctl disable --now imud-mavlink 2>/dev/null || true; \
 	fi
 	rm -f $(DESTDIR)$(PREFIX)/bin/imud \
@@ -487,6 +532,7 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-signalk \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mqtt \
 	      $(DESTDIR)$(PREFIX)/bin/imud-influxdb \
+	      $(DESTDIR)$(PREFIX)/bin/imud-prometheus \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mavlink \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
 	      $(DESTDIR)$(PREFIX)/include/imud.h \
@@ -499,6 +545,7 @@ uninstall:
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
 	      $(DESTDIR)$(SVCDIR)/imud-influxdb.service \
+	      $(DESTDIR)$(SVCDIR)/imud-prometheus.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service \
 	      $(DESTDIR)$(MANDIR)/man3/libimud.3.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
@@ -509,14 +556,17 @@ uninstall:
 	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz \
+	      $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
 	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
 	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
-	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/libimud
+	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/imud-prometheus \
+	       $(DESTDIR)$(DOCDIR)/libimud
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -527,8 +577,10 @@ uninstall:
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d lib/*.o lib/*.d \
 	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
+      imud-prometheus \
 	      libimud.so libimud.so.* libimud.pc \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
+      test_prometheus \
 	      etc/*.service imud-*.tar.gz
