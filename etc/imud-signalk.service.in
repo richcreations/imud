@@ -1,14 +1,14 @@
 [Unit]
-Description=imud → MQTT bridge (binary stream → MQTT topics + Home Assistant discovery)
-Documentation=man:imud-mqtt(8) man:imud-mqtt.conf(5)
+Description=imud → Signal K bridge (binary stream → Signal K delta over UDP)
+Documentation=man:imud-signalk(8) man:imud-signalk.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
-After=imud.service network-online.target
-Wants=imud.service network-online.target
+After=imud.service
+Wants=imud.service
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/imud-mqtt --config /etc/imud/imud-mqtt.conf
+ExecStart=@BINDIR@/imud-signalk --config /etc/imud/imud-signalk.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
@@ -31,18 +31,17 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
-# MQTT/TLS out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# UDP out (AF_INET) + the imud stream socket (AF_UNIX) only.
+RestrictAddressFamilies=AF_INET AF_UNIX
 # No device access — the bridge touches no hardware.
 DevicePolicy=closed
 
-# A little more headroom than imud-signalk: libmosquitto + optional TLS.
-MemoryMax=32M
+MemoryMax=16M
 OOMScoreAdjust=-400
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=imud-mqtt
+SyslogIdentifier=imud-signalk
 
 [Install]
 WantedBy=multi-user.target

@@ -8,7 +8,7 @@ Wants=time-sync.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/imud --config /etc/imud/imud.conf
+ExecStart=@BINDIR@/imud --config /etc/imud/imud.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
@@ -18,7 +18,7 @@ TimeoutStartSec=30
 WatchdogSec=10
 
 # Dedicated system user; I2C and GPIO access via group membership.
-# Create with: useradd -r -s /sbin/nologin -G i2c,gpio imud
+# Created by `make install` (or the package's maintainer scripts).
 User=imud
 Group=gpio
 SupplementaryGroups=i2c

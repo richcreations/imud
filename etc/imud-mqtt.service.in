@@ -1,6 +1,6 @@
 [Unit]
-Description=imud → InfluxDB bridge (binary stream → line protocol over UDP/HTTP)
-Documentation=man:imud-influxdb(8) man:imud-influxdb.conf(5)
+Description=imud → MQTT bridge (binary stream → MQTT topics + Home Assistant discovery)
+Documentation=man:imud-mqtt(8) man:imud-mqtt.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
 After=imud.service network-online.target
@@ -8,7 +8,7 @@ Wants=imud.service network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/imud-influxdb --config /etc/imud/imud-influxdb.conf
+ExecStart=@BINDIR@/imud-mqtt --config /etc/imud/imud-mqtt.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
@@ -31,17 +31,18 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
-# UDP/HTTP out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
+# MQTT/TLS out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # No device access — the bridge touches no hardware.
 DevicePolicy=closed
 
-MemoryMax=16M
+# A little more headroom than imud-signalk: libmosquitto + optional TLS.
+MemoryMax=32M
 OOMScoreAdjust=-400
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=imud-influxdb
+SyslogIdentifier=imud-mqtt
 
 [Install]
 WantedBy=multi-user.target

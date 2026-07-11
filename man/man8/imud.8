@@ -1,4 +1,4 @@
-.TH IMUD 8 "July 2026" "imud 1.2" "System Manager's Manual"
+.TH IMUD 8 "2026-07-10" "imud 1.2" "System Manager's Manual"
 .SH NAME
 imud \- IMU daemon for marine and robotics navigation
 .SH SYNOPSIS
@@ -44,13 +44,15 @@ then
 .TP
 .B \-\-skip\-bias\-cal
 Skip the stationary gyro-bias estimation window at startup.
-Useful when restarting quickly and the sensor has not moved since the previous run.
+Useful when restarting quickly and the sensor has not moved since the
+previous run.
 .TP
 .B \-\-no\-nmea
 Disable the NMEA output stream regardless of the config file setting.
 .TP
 .B \-\-no\-highrate
-Disable the high-rate binary output stream regardless of the config file setting.
+Disable the high-rate binary output stream regardless of the config file
+setting.
 .TP
 .B \-\-foreground
 (Accepted but currently a no-op; imud does not daemonize.)

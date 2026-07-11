@@ -5,6 +5,9 @@ Source: https://github.com/richcreations/imud
 Files: *
 Copyright: 2026 Richard Simpson
 License: MIT
+Comment: imud-mqtt links dynamically against libmosquitto (dual EPL-2.0 /
+ EDL-1.0), which is a build/runtime dependency and is not shipped in this
+ source; no libmosquitto code is copied here.
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

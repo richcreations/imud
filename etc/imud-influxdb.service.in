@@ -1,14 +1,14 @@
 [Unit]
-Description=imud → Signal K bridge (binary stream → Signal K delta over UDP)
-Documentation=man:imud-signalk(8) man:imud-signalk.conf(5)
+Description=imud → InfluxDB bridge (binary stream → line protocol over UDP/HTTP)
+Documentation=man:imud-influxdb(8) man:imud-influxdb.conf(5)
 # Starts after imud and prefers it running, but survives imud restarts on its
 # own (it reconnects to the stream socket automatically).
-After=imud.service
-Wants=imud.service
+After=imud.service network-online.target
+Wants=imud.service network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/imud-signalk --config /etc/imud/imud-signalk.conf
+ExecStart=@BINDIR@/imud-influxdb --config /etc/imud/imud-influxdb.conf
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
@@ -31,8 +31,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
-# UDP out (AF_INET) + the imud stream socket (AF_UNIX) only.
-RestrictAddressFamilies=AF_INET AF_UNIX
+# UDP/HTTP out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # No device access — the bridge touches no hardware.
 DevicePolicy=closed
 
@@ -41,7 +41,7 @@ OOMScoreAdjust=-400
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=imud-signalk
+SyslogIdentifier=imud-influxdb
 
 [Install]
 WantedBy=multi-user.target

@@ -16,6 +16,7 @@ For multicast (default hi-rate address 239.255.0.1):
 
 Requirements: Python 3.8+, standard library only.
 
+Copyright (c) 2026 Richard Simpson
 SPDX-License-Identifier: MIT
 """
 

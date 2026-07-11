@@ -19,6 +19,13 @@
 #include <stddef.h>
 #include <pthread.h>
 
+/* The wire packet below is transmitted as an in-memory packed struct with no
+ * byte-order conversion, so the host must be little-endian (true of every
+ * platform imud targets: amd64, arm64, armhf). */
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
+# error "imud's binary wire format requires a little-endian host"
+#endif
+
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */

@@ -7,12 +7,14 @@ Copyright: 2026 Richard Simpson
 License: MIT
 
 Files: data/WMM.COF
+       docs/WMM2025COF/*
 Copyright: NOAA National Centers for Environmental Information (NCEI)
 License: public-domain
- The World Magnetic Model (WMM) coefficient file is a joint product of the
- United States' National Geospatial-Intelligence Agency (NGA) and the United
- Kingdom's Defence Geographic Centre (DGC), distributed by NOAA/NCEI. As a work
- of the U.S. Government it is in the public domain and carries no copyright.
+ The World Magnetic Model (WMM) coefficient file, its accompanying readme, and
+ the official test values are a joint product of the United States' National
+ Geospatial-Intelligence Agency (NGA) and the United Kingdom's Defence
+ Geographic Centre (DGC), distributed by NOAA/NCEI. As works of the U.S.
+ Government they are in the public domain and carry no copyright.
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

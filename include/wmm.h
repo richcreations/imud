@@ -1,3 +1,9 @@
+/*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
 #ifndef IMUD_WMM_H
 #define IMUD_WMM_H
 
@@ -7,8 +13,6 @@
  * Implements the NOAA WMM Technical Note 28 algorithm.
  * Coefficient file: WMM.COF (standard NOAA ASCII format).
  * Current model: WMM2025, valid 2025.0 – 2030.0.
- *
- * SPDX-License-Identifier: MIT
  */
 
 /* WMM degree-12 Gauss coefficients + secular variation */

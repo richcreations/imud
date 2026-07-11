@@ -1,0 +1,47 @@
+packaging/ — upstream packaging seeds
+=====================================
+
+This directory is NOT a debian/ directory and the tree builds no .deb packages.
+It holds the per-package metadata that imud maintains upstream so that real
+packaging (a self-hosted apt repository first, Debian inclusion eventually)
+is mechanical when it starts. One subdirectory per binary package:
+
+  imud/            the core daemon + tools (imud, imud-cal, imud-status, imud-mon)
+  imud-signalk/    Signal K bridge
+  imud-mqtt/       MQTT bridge (links libmosquitto)
+  imud-influxdb/   InfluxDB bridge
+  imud-mavlink/    MAVLink bridge
+
+Each contains:
+
+  copyright     DEP-5 machine-readable copyright (becomes debian/copyright)
+  changelog     release history in Debian changelog format (see note below)
+  description   synopsis + long description (seeds debian/control Description:)
+
+`make install` / `make install-<bridge>` install copyright and changelog.gz
+into /usr/share/doc/<pkg>/ so even a plain `make install` follows Debian doc
+conventions.
+
+Notes for the future packager
+-----------------------------
+
+* Versions in the changelogs are currently NATIVE format ("1.2"). When real
+  Debian packaging starts, the package should be NON-native: version "1.2-1",
+  built from the upstream tarball `make dist` produces
+  (imud-1.2.tar.gz -> imud_1.2.orig.tar.gz). The changelogs here then continue
+  as the upstream release notes, and debian/changelog tracks packaging
+  revisions separately.
+* Build with the packaging paths:
+      make PREFIX=/usr SVCDIR=/lib/systemd/system DESTDIR=<stage> install
+  When DESTDIR is set, the install is a pure file copy: no useradd and no
+  systemctl calls — user creation and daemon-reload belong in the package's
+  maintainer scripts (the `imud` system user needs the gpio and i2c groups;
+  imud-mavlink's serial output additionally wants dialout).
+* systemd units are generated from etc/*.service.in with the real bin dir
+  substituted for @BINDIR@; they land in $(SVCDIR).
+* Configs in /etc/imud/ are installed non-clobbering by make; as .debs they
+  should be conffiles (shipped verbatim from config/*.conf).
+* CFLAGS/CPPFLAGS/LDFLAGS from the environment (dpkg-buildflags) are
+  respected; mandatory flags are appended with `override +=` so hardening
+  injection works on every binary.
+* The upstream release tag convention is vX.Y (see docs/RELEASING.md).

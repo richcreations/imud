@@ -1,4 +1,4 @@
-.TH IMUD\-MAVLINK 8 "July 2026" "imud 1.2" "System Manager's Manual"
+.TH IMUD\-MAVLINK 8 "2026-07-10" "imud 1.2" "System Manager's Manual"
 .SH NAME
 imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial
 .SH SYNOPSIS
@@ -19,10 +19,10 @@ Mission Planner).  It sends
 .B ATTITUDE_QUATERNION
 (#31).  MAVLink protocol version 1 or 2 is selectable.
 .PP
-The bridge is pure C (a hand-rolled encoder, no external dependencies).  MAVLink's
-body frame is FRD/NED \(em the same as imud \(em so roll/pitch/yaw, the gyro body
-rates, and the quaternion pass through directly (SI radians / rad/s).  It reads the
-stream socket named by its own
+The bridge is pure C (a hand-rolled encoder, no external dependencies).
+MAVLink's body frame is FRD/NED \(em the same as imud \(em so roll/pitch/yaw,
+the gyro body rates, and the quaternion pass through directly
+(SI radians / rad/s).  It reads the stream socket named by its own
 .B socket
 key (default
 .IR /run/imud/imud-stream.sock ),

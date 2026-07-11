@@ -45,7 +45,8 @@
 # define SOCK_CLOEXEC 0
 #endif
 
-#define VERSION_STR "1.1"
+#include "version.h"                 /* IMUD_VERSION_STR — canonical version */
+#define VERSION_STR IMUD_VERSION_STR
 #define MAX_MSGS    16           /* upper bound on state/discovery message counts */
 
 static volatile sig_atomic_t g_stop;

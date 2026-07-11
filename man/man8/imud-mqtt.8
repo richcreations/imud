@@ -1,6 +1,7 @@
-.TH IMUD\-MQTT 8 "July 2026" "imud 1.2" "System Manager's Manual"
+.TH IMUD\-MQTT 8 "2026-07-10" "imud 1.2" "System Manager's Manual"
 .SH NAME
-imud\-mqtt \- bridge imud's binary stream to MQTT (with Home Assistant discovery)
+imud\-mqtt \- bridge imud's binary stream to MQTT with Home Assistant
+discovery
 .SH SYNOPSIS
 .B imud-mqtt
 [\fB\-\-config\fR \fIPATH\fR]
@@ -61,10 +62,10 @@ advertised whenever
 is set, so the Home Assistant entity exists and simply reads
 .I unavailable
 until then.
-Raw high-rate accelerometer/gyro/magnetometer/quaternion data and the gyro-bias /
-variance / quiescence diagnostics are intentionally not published over MQTT (wrong
-transport / not Home-Assistant-relevant) \(em consume the binary stream or the
-InfluxDB bridge for those.
+Raw high-rate accelerometer/gyro/magnetometer/quaternion data and the
+gyro-bias / variance / quiescence diagnostics are intentionally not published
+over MQTT (wrong transport / not Home-Assistant-relevant) \(em consume the
+binary stream or the InfluxDB bridge for those.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

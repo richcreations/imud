@@ -1,4 +1,10 @@
 /*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
  * test_wmm.c — unit tests for src/wmm.c
  *
  * Validates wmm_load() and wmm_declination() against official NOAA

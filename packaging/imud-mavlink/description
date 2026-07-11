@@ -1,0 +1,5 @@
+MAVLink bridge for the imud IMU daemon
+ imud-mavlink connects to imud's local binary stream socket and emits MAVLink
+ v1 or v2 HEARTBEAT, ATTITUDE, and ATTITUDE_QUATERNION messages over UDP
+ and/or a serial port, for autopilot ecosystems (ArduPilot, PX4, QGroundControl).
+ Pure C with a hand-rolled encoder — no MAVLink library dependency.

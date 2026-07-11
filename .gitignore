@@ -34,6 +34,16 @@ src/drivers/*.d
 /test_influxdb
 /test_mavlink
 
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Generated systemd units (from etc/*.service.in; see Makefile)
+/etc/*.service
+
+# Release tarballs (make dist)
+/imud-*.tar.gz
+
 # Editor and OS
 .DS_Store
 *.swp

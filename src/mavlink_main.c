@@ -46,7 +46,8 @@
 # define SOCK_CLOEXEC 0
 #endif
 
-#define VERSION_STR "1.1"
+#include "version.h"                 /* IMUD_VERSION_STR — canonical version */
+#define VERSION_STR IMUD_VERSION_STR
 
 static volatile sig_atomic_t g_stop;
 static volatile sig_atomic_t g_reload;

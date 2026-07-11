@@ -1,0 +1,7 @@
+MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
+ imud-mqtt connects to imud's local binary stream socket and publishes scalar
+ telemetry topics (heading, attitude, rate of turn, heave, heave rate,
+ temperature) to an MQTT broker via libmosquitto, plus Home Assistant
+ MQTT-discovery configs so the sensors self-register as one device. Supports
+ QoS, retained values, TLS, and an availability topic backed by an MQTT
+ last-will.
