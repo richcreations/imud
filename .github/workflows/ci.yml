@@ -130,7 +130,7 @@ jobs:
           make dist
           tar tzf imud-*.tar.gz | grep -q 'LICENSE'
           tar tzf imud-*.tar.gz | grep -q 'include/version.h'
-          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|datasheets/'
+          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/'
           echo "dist content OK"
 
       # Man pages must lint clean (warnings fail).
