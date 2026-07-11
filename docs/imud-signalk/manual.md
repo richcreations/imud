@@ -1,5 +1,8 @@
 # imud-signalk — manual
 
+> Getting imud's data onto an **NMEA 2000** backbone? This bridge is step one —
+> see the recipe in the main manual (§7, "NMEA 2000 — via Signal K").
+
 `imud-signalk` connects to imud's `[stream]` socket (the same 260-byte binary
 packets) and emits Signal K **delta** messages (JSON) over UDP — one per datagram
 at `rate_hz` (default 10 Hz) — for every imud value that has a standard Signal K

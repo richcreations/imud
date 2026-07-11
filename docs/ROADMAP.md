@@ -53,15 +53,18 @@ that drags in a large middleware or toolchain (ROS2, CAN) is better as its own
 project that reuses the client lib rather than something built under this Makefile.
 
 **Marine**
-- **NMEA 2000 / N2K** — DEMOTED 2026-07-11: covered via Signal K. The path
-  imud → imud-signalk → Signal K server → `signalk-to-nmea2000` plugin already
-  emits the target PGNs (127250 heading, 127251 ROT, 127257 attitude), and the
-  server owns the hard N2K device-level work (ISO address claim, product info,
-  heartbeat) that a direct C bridge would have to reimplement. CAN hardware is
-  needed either way, so the only user a direct bridge serves is the
-  no-Signal-K "appliance" install — revisit only if that demand materializes.
-  **Action instead: document the recipe** (imud-signalk config → SK connection →
-  plugin → verified PGN list) in docs/manual.md. *(easy, docs only)*
+- **NMEA 2000 / N2K** — DEMOTED 2026-07-11: covered via Signal K; ✅ recipe
+  documented in docs/manual.md §7 (2026-07-11, v1.4). The path imud →
+  imud-signalk → Signal K server → `signalk-to-nmea2000` emits, VERIFIED
+  against the plugin source: 127250 heading (magnetic + true), 127257
+  attitude, 127258 variation. NOT in the official plugin: 127251 rate of
+  turn and 127252 heave (an earlier note here claimed 127251 — wrong; a
+  community fork advertises it, and displays derive ROT from heading). The
+  server owns the hard N2K device-level work (ISO address claim, product
+  info) that a direct C bridge would have to reimplement; CAN hardware is
+  needed either way. A direct bridge only serves the no-Signal-K "appliance"
+  install — revisit if that demand materializes, or if 127251/127252 on the
+  backbone become must-haves.
 
 **Robotics / autonomy**
 - **ROS2** — `sensor_msgs/Imu` (+ `MagneticField`, `Temperature`), NED → REP-103
