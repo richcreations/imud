@@ -1,3 +1,10 @@
+imud-mqtt (1.3) unstable; urgency=medium
+
+  * Link libimud for stream access and packet validation (drops the local
+    copy of the socket code). Runtime dependency: libimud.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 12:00:00 -0700
+
 imud-mqtt (1.2) unstable; urgency=medium
 
   * Rebuild against imud packet v12 (228 bytes).

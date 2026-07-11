@@ -1,26 +1,53 @@
 # imud client libraries
 
-Two libraries for consuming the imud high-rate binary stream (Stream B, UDP port 10111):
+Three ways to consume imud's binary telemetry — pick by how you deploy:
 
-| Library | File | Requirements |
+| Library | File(s) | Pick it when |
 | --- | --- | --- |
-| **C** | `imud_client.h` | Single-header drop-in, POSIX sockets, no build system needed |
-| **Python** | `imud_client.py` | Python 3.8+, standard library only |
+| **libimud** (shared library) | `imud.h` + `libimud.so`, `pkg-config libimud` | You install imud from packages / `make install`. **ABI-stable**: your binary survives imud upgrades without recompiling. |
+| **C single-header** | `imud_client.h` | You vendor one file into an embedded/static project and *want* to pin the wire version (recompile per wire revision). |
+| **Python** | `imud_client.py` | Python 3.8+, standard library only (wire-pinned, like the single-header). |
 
-Both libraries validate the CRC32 on every packet and silently discard any
-datagram that is the wrong size, has the wrong magic/version, or fails CRC.
-
-`sudo make install` installs them system-wide: the C header to
-`/usr/local/include/imud_client.h` and the Python module to
-`/usr/local/share/imud/imud_client.py`. The `test_client` binary in
-`make test` cross-checks both packet definitions against the daemon's
-encoder on every run.
+All three validate the CRC32 on every packet and silently discard anything
+malformed. `sudo make install` installs all of them; the daemon's own bridges
+link `libimud.so`, and `make test` cross-checks every packet definition
+against the daemon's encoder on each run.
 
 ---
 
-## C — `imud_client.h`
+## C — libimud (`-limud`), the system path
 
-Single-header library. No build system required — drop the file into your project.
+```c
+#include <imud.h>
+#include <stdio.h>
+
+int main(void) {
+    imud_t *h = imud_connect_stream(NULL);   /* local socket (recommended) */
+    /* or: imud_connect_udp(10111, "239.255.0.1") for the UDP stream */
+    if (!h) { perror("imud_connect_stream"); return 1; }
+
+    while (imud_read(h, 1000) >= 0) {        /* 0 = data, 1 = timeout */
+        const imud_data_t *d = imud_data(h);
+        printf("hdg=%.1f  heave=%.2f\n", d->heading_deg, d->heave_m);
+    }
+    imud_free(h);
+    return 0;
+}
+```
+
+Build: `cc app.c $(pkg-config --cflags --libs libimud)`. The `imud_data_t`
+struct is **append-only** — access it through the returned pointer and your
+binary keeps working across imud updates (see `man 3 libimud` for the full
+API and the ABI contract). For select/poll event loops use `imud_fd()`.
+
+---
+
+## C — `imud_client.h`, the vendoring path
+
+Single-header library. No build system required — drop the file into your
+project. Note it is **wire-version-pinned**: it validates against the exact
+packet version it was compiled with, so rebuild your app when you upgrade
+imud across a wire revision (use libimud above to avoid that).
 
 **In exactly one `.c` file:**
 

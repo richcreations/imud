@@ -24,3 +24,18 @@ Checklist for cutting release X.Y. The canonical version lives in ONE place —
 
 Deployment reminder: the daemon, all bridges, and imud-mon validate the wire
 version and must be rebuilt/deployed together when `IMUD_VERSION` changes.
+Third-party libimud consumers do NOT need rebuilding — that is the point of
+the library — but the installed libimud.so must be upgraded with the daemon.
+
+## libimud ABI / soname discipline
+
+The public ABI is `imud.h`: the `imud_*` functions (kept complete in
+`lib/libimud.map`) and the **append-only** `imud_data_t`.
+
+- Adding a wire field = append a member to `imud_data_t` (after the last one),
+  fill it in `fill_data()` (lib/libimud.c), and extend the offset asserts in
+  test/test_libimud.c. SONAME stays `libimud.so.0`.
+- New functions are appended to `lib/libimud.map`. SONAME stays.
+- NEVER reorder, retype, or remove existing `imud_data_t` members or exported
+  functions. If that is ever unavoidable (it shouldn't be), bump the SONAME
+  (`libimud.so.1`) and the future runtime package name (libimud0 → libimud1).

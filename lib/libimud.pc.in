@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=@LIBDIR@
+includedir=${prefix}/include
+
+Name: libimud
+Description: Client library for imud, the IMU daemon (attitude, heading, heave)
+URL: https://github.com/richcreations/imud
+Version: @VERSION@
+Libs: -L${libdir} -limud
+Cflags: -I${includedir}

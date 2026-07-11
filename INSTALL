@@ -18,12 +18,22 @@ packaging root, with the standard variables:
     make install DESTDIR=/tmp/stage PREFIX=/usr        # staged, no root needed
 
 Packaging notes: when DESTDIR is set the install is a pure file copy — no
-system user is created and systemctl is never invoked (those belong to a
-package's maintainer scripts). Packagers should also set
+system user is created and systemctl/ldconfig are never invoked (those belong
+to a package's maintainer scripts). Packagers should also set
 SVCDIR=/lib/systemd/system (systemd units are generated from
 etc/*.service.in with the chosen bin dir), and CC/CFLAGS/CPPFLAGS/LDFLAGS
 from the environment (e.g. dpkg-buildflags) are respected. `make dist`
 produces the upstream release tarball from git HEAD. See packaging/README.
+
+Client development: `make install` ships libimud (libimud.so.0 + imud.h +
+pkg-config metadata). Third-party apps build with
+
+    cc app.c $(pkg-config --cflags --libs libimud)
+
+and stay binary-compatible across imud upgrades (see man 3 libimud). The
+bridges link libimud themselves; when running them from the build tree on
+Linux (not installed), prefix LD_LIBRARY_PATH=. so they find the freshly
+built library.
 
 Optional bridge daemons are built and installed separately — each is its own
 package with its own dependencies, config, and docs:

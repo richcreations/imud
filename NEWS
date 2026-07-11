@@ -6,6 +6,18 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.3
+---
+* New: libimud, an ABI-stable client shared library (libimud.so.0) with a
+  public imud.h and pkg-config metadata. Applications link -limud and keep
+  working across imud upgrades without recompiling — data is exposed through
+  an append-only struct behind an opaque handle, over the local stream socket
+  or the UDP stream. See man 3 libimud.
+* The four bridges now link libimud (their duplicated stream-socket code is
+  gone). No wire-format change: packet version stays 12, and existing
+  imud_client.h / imud_client.py consumers are unaffected.
+
+
 1.2
 ---
 * Binary stream packet version 12 (228 bytes): export more of the fusion state

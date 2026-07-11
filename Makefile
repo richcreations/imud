@@ -19,6 +19,21 @@ ifeq ($(GPIOD_MAJ),2)
     override CPPFLAGS += -DGPIOD_V2
 endif
 
+# ── libimud — the public client shared library ───────────────────────────────
+# Linux builds the versioned .so (SONAME libimud.so.0) and the bridges link it
+# (they are its first consumers). Darwin has no .so here: bridges link the
+# object directly so the macOS dev/test workflow keeps working. In-tree bridge
+# runs on Linux need LD_LIBRARY_PATH=. (the installed copy is found via
+# ldconfig).
+UNAME_S := $(shell uname -s)
+SONAME   = libimud.so.0
+SHLIB    = libimud.so.0.0
+ifeq ($(UNAME_S),Linux)
+    LIBIMUD = $(SHLIB)
+else
+    LIBIMUD = lib/libimud.o
+endif
+
 # ── Source lists (no main() in any of these) ─────────────────────────────────
 
 DRIVER_SRCS = src/drivers/ism330dhcx.c \
@@ -57,7 +72,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges clean test check dist install install-signalk install-mqtt install-influxdb install-mavlink uninstall .FORCE
+.PHONY: all bridges libimud clean test check dist install install-signalk install-mqtt install-influxdb install-mavlink uninstall .FORCE
 
 all: imud imud-cal imud-status imud-mon
 
@@ -79,29 +94,46 @@ imud-mon: src/config.o src/log.o src/mon_main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.
-# Reuses the public client header (lib/imud_client.h) for packet validation.
-imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o
+# Stream access + validation come from libimud ($(LIBIMUD) in $^ is either the
+# versioned .so — linked directly, embedding its SONAME — or, on Darwin, the
+# plain object).
+imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-mqtt bridges the AF_UNIX stream to MQTT: scalar telemetry topics plus
 # Home Assistant discovery, via libmosquitto.  Needs libmosquitto-dev.
-imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/mqtt_main.o
+imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/mqtt_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
 
 # imud-influxdb bridges the AF_UNIX stream to InfluxDB line protocol over UDP or
-# HTTP.  Pure C — no external dependencies.
-imud-influxdb: src/influx_line.o src/config.o src/log.o src/influx_main.o
+# HTTP.  Pure C — no external dependencies beyond libimud.
+imud-influxdb: src/influx_line.o src/config.o src/log.o src/influx_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-mavlink bridges the AF_UNIX stream to MAVLink (v1/v2) over UDP and/or
-# serial.  Pure C — hand-rolled encoder, no external dependencies.
-imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/mavlink_main.o
+# serial.  Pure C — hand-rolled encoder, no external dependencies beyond libimud.
+imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/mavlink_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Optional bridge daemons — each has its own config file, service, and man page,
 # and installs via its own `install-*` target (prep for per-bridge packaging).
 # Kept out of `all` so a core build / CI never needs a bridge's dependencies.
 bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink
+
+# ── libimud shared library ────────────────────────────────────────────────────
+
+# PIC object (also linked directly into the bridges on Darwin).
+lib/libimud.o: lib/libimud.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -fPIC -c -o $@ $<
+
+# Versioned shared library (Linux): SONAME libimud.so.0; only imud_* exported.
+$(SHLIB): lib/libimud.o lib/libimud.map
+	$(CC) $(CFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(SONAME) \
+	      -Wl,--version-script=lib/libimud.map -o $@ lib/libimud.o
+	ln -sf $(SHLIB) $(SONAME)
+	ln -sf $(SONAME) libimud.so
+
+libimud: $(LIBIMUD)
 
 # ── Compilation rules ─────────────────────────────────────────────────────────
 
@@ -115,7 +147,7 @@ src/%.o: src/%.c
 src/drivers/%.o: src/drivers/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
--include $(wildcard src/*.d src/drivers/*.d)
+-include $(wildcard src/*.d src/drivers/*.d lib/*.d)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -178,9 +210,14 @@ test_influxdb: src/influx_line.c test/test_influxdb.c
 test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# libimud public API: end-to-end over a local AF_UNIX server + UDP loopback,
+# packets built by the daemon's real encoder (src/packet.c).
+test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_ring test_mount \
       test_cal test_cal_math test_wmm test_position test_client test_stream \
-      test_log test_signalk test_mqtt test_influxdb test_mavlink
+      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -198,6 +235,7 @@ test: test_fusion test_config test_nmea test_packet test_ring test_mount \
 	./test_mqtt
 	./test_influxdb
 	./test_mavlink
+	./test_libimud
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -220,8 +258,14 @@ check: test
 PREFIX  ?= /usr/local
 ETCDIR  ?= /etc/imud
 SVCDIR  ?= /etc/systemd/system
+LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc
+
+# pkg-config metadata, generated with the configured paths/version.
+libimud.pc: lib/libimud.pc.in .FORCE
+	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@LIBDIR@|$(LIBDIR)|g' \
+	    -e 's|@VERSION@|$(VERSION)|g' $< > $@
 
 # systemd units are generated from etc/*.service.in with the real bin dir.
 # .FORCE regenerates on every make so a changed PREFIX can't leave stale units.
@@ -230,7 +274,7 @@ etc/%.service: etc/%.service.in .FORCE
 
 .FORCE:
 
-install: imud imud-cal imud-status imud-mon etc/imud.service
+install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
 	# ── System user (skipped for staged/packaged installs: DESTDIR set) ────
@@ -270,6 +314,22 @@ install: imud imud-cal imud-status imud-mon etc/imud.service
 	install -m 644 lib/imud_client.h  $(DESTDIR)$(PREFIX)/include/imud_client.h
 	install -m 644 lib/imud_client.py $(DESTDIR)$(PREFIX)/share/imud/imud_client.py
 	@echo "Installed client libs:  $(DESTDIR)$(PREFIX)/include/imud_client.h, $(DESTDIR)$(PREFIX)/share/imud/imud_client.py"
+	# ── libimud shared library + public header + pkg-config ────────────────
+	install -d -m 0755 $(DESTDIR)$(LIBDIR)/pkgconfig
+	install -m 644 $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SHLIB)
+	ln -sf $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SONAME)
+	ln -sf $(SONAME) $(DESTDIR)$(LIBDIR)/libimud.so
+	install -m 644 lib/imud.h $(DESTDIR)$(PREFIX)/include/imud.h
+	install -m 644 libimud.pc $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc
+	install -d -m 0755 $(DESTDIR)$(MANDIR)/man3
+	gzip -9c man/man3/libimud.3 > $(DESTDIR)$(MANDIR)/man3/libimud.3.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/libimud
+	install -m 644 packaging/libimud/copyright $(DESTDIR)$(DOCDIR)/libimud/copyright
+	gzip -9c packaging/libimud/changelog > $(DESTDIR)$(DOCDIR)/libimud/changelog.gz
+	@if [ -z "$(DESTDIR)" ] && command -v ldconfig >/dev/null 2>&1; then \
+	    ldconfig; \
+	fi
+	@echo "Installed libimud:      $(DESTDIR)$(LIBDIR)/$(SHLIB) (+ imud.h, libimud.pc, libimud.3)"
 	# ── Man pages ──────────────────────────────────────────────────────────
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man1 \
 	                   $(DESTDIR)$(MANDIR)/man5 \
@@ -429,12 +489,18 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-influxdb \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mavlink \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
+	      $(DESTDIR)$(PREFIX)/include/imud.h \
+	      $(DESTDIR)$(LIBDIR)/$(SHLIB) \
+	      $(DESTDIR)$(LIBDIR)/$(SONAME) \
+	      $(DESTDIR)$(LIBDIR)/libimud.so \
+	      $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
 	      $(DESTDIR)$(SVCDIR)/imud-influxdb.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service \
+	      $(DESTDIR)$(MANDIR)/man3/libimud.3.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
 	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
 	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
@@ -450,7 +516,7 @@ uninstall:
 	      $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
 	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
 	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
-	       $(DESTDIR)$(DOCDIR)/imud-mavlink
+	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/libimud
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -459,9 +525,10 @@ uninstall:
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d \
+	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d lib/*.o lib/*.d \
 	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
+	      libimud.so libimud.so.* libimud.pc \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
-	      test_log test_signalk test_mqtt test_influxdb test_mavlink \
+	      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
 	      etc/*.service imud-*.tar.gz
