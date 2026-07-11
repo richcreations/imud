@@ -6,6 +6,14 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.3.1
+-----
+* No functional changes. Fixes the release-verification (CI) checks added in
+  1.3 so they gate correctly: the hardening check no longer misreports
+  libimud.so as unfortified, and the exported-symbol check understands the
+  library's versioned symbols.
+
+
 1.3
 ---
 * New: libimud, an ABI-stable client shared library (libimud.so.0) with a

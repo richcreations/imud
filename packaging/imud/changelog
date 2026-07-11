@@ -1,3 +1,12 @@
+imud (1.3.1) unstable; urgency=medium
+
+  * No functional changes. Fix the CI verification steps added in 1.3:
+    hardening-check on libimud.so no longer trips on its fortify heuristic
+    (all fortifiable calls have compile-time-provable bounds), and the ABI
+    surface check handles versioned symbols (IMUD_0 node, @@ suffixes).
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 10 Jul 2026 23:46:11 -0700
+
 imud (1.3) unstable; urgency=medium
 
   * Ship libimud, an ABI-stable client shared library (own package: libimud),
