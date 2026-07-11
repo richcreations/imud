@@ -14,6 +14,7 @@ src/drivers/*.d
 /imud-mqtt
 /imud-influxdb
 /imud-mavlink
+/imud-prometheus
 
 # Test binaries
 /test_fusion
@@ -34,6 +35,7 @@ src/drivers/*.d
 /test_influxdb
 /test_mavlink
 /test_libimud
+/test_prometheus
 
 # libimud build products
 /libimud.so
@@ -65,3 +67,6 @@ AGENTS.md
 
 # Cal file (machine-specific, not for version control)
 cal.json
+
+# macOS debug-symbol bundles from -g builds (never commit build artifacts)
+*.dSYM/
