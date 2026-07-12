@@ -76,6 +76,8 @@ cal.json
 # macOS debug-symbol bundles from -g builds (never commit build artifacts)
 *.dSYM/
 *.imucap
+# ...but fuzz corpus seeds are tracked test data, not build products
+!test/fuzz/corpus/**/*.imucap
 
 # debian build artifacts (dpkg-buildpackage)
 /debian/tmp/
