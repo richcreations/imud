@@ -1,0 +1,5 @@
+diagnostics for the imud IMU daemon
+ Tools for watching an imud daemon from any machine on the network.
+ Currently imud-mon, a terminal monitor that decodes the daemon's NMEA
+ and binary UDP output streams live. Wire-pinned to the daemon's packet
+ version: keep imud-utils and imud at the same release.

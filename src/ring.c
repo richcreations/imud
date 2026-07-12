@@ -56,7 +56,7 @@ int imu_ring_push(imu_ring_t *r, const imu_sample_t *s, int n)
     return dropped;
 }
 
-int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, volatile int *stop)
+int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, _Atomic int *stop)
 {
     struct timespec abs;
     clock_gettime(CLOCK_MONOTONIC, &abs);

@@ -15,6 +15,8 @@
 #ifndef IMUD_CAL_MATH_H
 #define IMUD_CAL_MATH_H
 
+#include <stddef.h>
+
 /*
  * Incremental accumulator for the linearised sphere-fit normal equations.
  * Accumulates Σx, Σx², Σxy, Σxr² etc. so sphere_fit can be called at any
@@ -85,5 +87,43 @@ void ellipse_add(ellipse_accum_t *a, float x, float y);
  * Returns 0 on success (fills S[2][2]), -1 otherwise.
  */
 int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2]);
+
+/* ── Allan-variance sensor characterization (imud-cal characterize) ─────── */
+
+typedef struct {
+    double tau_s;     /* cluster time, s */
+    double adev;      /* overlapping Allan deviation at tau (signal units) */
+} avar_pt_t;
+
+/*
+ * Overlapping Allan deviation of a uniformly sampled signal x[0..n) at
+ * octave-spaced cluster times (tau = m/fs, m = 1,2,4,... while 2m < n).
+ * Fills pts[0..max_pts); returns the number of points computed (0 when the
+ * record is too short or allocation fails).
+ */
+int allan_deviation(const double *x, size_t n, double fs,
+                    avar_pt_t *pts, int max_pts);
+
+/*
+ * Extract sensor characteristics from an Allan-deviation curve:
+ *   noise_density    N (units/√Hz)  = σ(τ₀)·√τ₀, evaluated at the shortest
+ *                    cluster time where white noise dominates
+ *   bias_instability B (units)      = 0.664 × the curve minimum; when the
+ *                    minimum sits on the LAST point the record was too short
+ *                    to see the floor and B is only an upper bound
+ * Returns the index of the curve minimum, or -1 when npts < 3.
+ */
+int allan_characterize(const avar_pt_t *pts, int npts,
+                       double *noise_density, double *bias_instability);
+
+/* ── Gyro-bias / temperature linear fit (imud-cal fit-temp) ─────────────── */
+
+/*
+ * Least-squares fit  y ≈ bias_ref + coeff·(T − ref_c)  over n paired
+ * samples.  Returns 0, or -1 when n < 2 or the temperature span is too
+ * small (< 1 °C) to support a fit.
+ */
+int gyro_temp_fit(const double *temp_c, const double *gyro, size_t n,
+                  double ref_c, double *coeff, double *bias_ref);
 
 #endif /* IMUD_CAL_MATH_H */

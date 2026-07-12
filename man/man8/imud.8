@@ -42,6 +42,14 @@ The daemon searches in order:
 then
 .IR ~/.config/imud/imud.conf .
 .TP
+.BI \-\-replay \ FILE
+Replay an .imucap capture (recorded by the [capture] black box, or a
+synthetic scenario) through the full pipeline: both sensors are forced onto
+the sim driver in playback mode.
+Pacing and looping come from the [device] sim_* keys; see
+.BR imud.conf (5)
+and docs/capture.md.
+.TP
 .B \-\-skip\-bias\-cal
 Skip the stationary gyro-bias estimation window at startup.
 Useful when restarting quickly and the sensor has not moved since the
@@ -88,6 +96,10 @@ Per-user configuration override.
 Calibration data (hard/soft-iron offsets, gyro bias, accelerometer corrections).
 Written by
 .BR imud-cal (8).
+.TP
+.I /var/lib/imud/
+Black-box capture files when [capture] is enabled; also the daemon's state
+directory.
 .TP
 .I /usr/share/imud/WMM.COF
 World Magnetic Model 2025 coefficient file (imud-wmm-data package).

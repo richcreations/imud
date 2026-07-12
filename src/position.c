@@ -149,7 +149,7 @@ static int tcp_connect_host(const char *host, int port)
 }
 
 /* Sleep for `secs` seconds in 1-second increments, checking *stop each tick. */
-static void interruptible_sleep(int secs, volatile sig_atomic_t *stop)
+static void interruptible_sleep(int secs, _Atomic sig_atomic_t *stop)
 {
     for (int i = 0; i < secs && !*stop; i++) sleep(1);
 }
@@ -177,7 +177,7 @@ static void line_reader_init(line_reader_t *r, int fd)
  * stays up.
  */
 static int read_line(line_reader_t *r, char *out, int outsz,
-                     volatile sig_atomic_t *stop)
+                     _Atomic sig_atomic_t *stop)
 {
     int n = 0;
     while (!*stop) {

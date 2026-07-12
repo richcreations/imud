@@ -109,6 +109,16 @@ void config_defaults(imud_config_t *cfg)
     /* [device] */
     snprintf(cfg->i2c_bus,   sizeof(cfg->i2c_bus),   "/dev/i2c-1");
     snprintf(cfg->gpio_chip, sizeof(cfg->gpio_chip), "gpiochip0");
+    cfg->sim_file[0] = '\0';
+    cfg->sim_loop    = false;
+    cfg->sim_speed   = 1.0f;
+
+    /* [capture] */
+    cfg->capture_enabled   = false;
+    snprintf(cfg->capture_dir, sizeof(cfg->capture_dir), "/var/lib/imud");
+    cfg->capture_max_mb    = 256;
+    cfg->capture_max_files = 8;
+    cfg->capture_flush_s   = 5;
 
     /* [imu] */
     snprintf(cfg->imu_driver, sizeof(cfg->imu_driver), "ism330dhcx");
@@ -128,6 +138,7 @@ void config_defaults(imud_config_t *cfg)
 
     /* [fusion] */
     cfg->mag_yaw_only      = true;   /* marine default: mag corrects heading only */
+    cfg->use_measured_noise = true;
     cfg->heave_tau_s       = 12.0f;
     cfg->wave_tau_s        = 120.0f;
     cfg->mekf_gyro_noise   = 0.007;
@@ -288,6 +299,7 @@ typedef enum {
     SEC_UNKNOWN,
     SEC_MOUNT,
     SEC_DEVICE,
+    SEC_CAPTURE,
     SEC_IMU,
     SEC_MAG,
     SEC_FUSION,
@@ -308,6 +320,7 @@ static section_t parse_section(const char *s)
 {
     if (strcmp(s, "[mount]")       == 0) return SEC_MOUNT;
     if (strcmp(s, "[device]")      == 0) return SEC_DEVICE;
+    if (strcmp(s, "[capture]")     == 0) return SEC_CAPTURE;
     if (strcmp(s, "[imu]")         == 0) return SEC_IMU;
     if (strcmp(s, "[mag]")         == 0) return SEC_MAG;
     if (strcmp(s, "[fusion]")      == 0) return SEC_FUSION;
@@ -444,6 +457,17 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
     case SEC_DEVICE:
         if      (strcmp(key, "i2c_bus")   == 0) NEED_STR(cfg->i2c_bus);
         else if (strcmp(key, "gpio_chip") == 0) NEED_STR(cfg->gpio_chip);
+        else if (strcmp(key, "sim_file")  == 0) NEED_STR(cfg->sim_file);
+        else if (strcmp(key, "sim_loop")  == 0) NEED_BOOL(cfg->sim_loop);
+        else if (strcmp(key, "sim_speed") == 0) NEED_FLT(cfg->sim_speed);
+        else WARN_UNKNOWN();
+        break;
+    case SEC_CAPTURE:
+        if      (strcmp(key, "enabled")   == 0) NEED_BOOL(cfg->capture_enabled);
+        else if (strcmp(key, "dir")       == 0) NEED_STR(cfg->capture_dir);
+        else if (strcmp(key, "max_mb")    == 0) NEED_INT(cfg->capture_max_mb);
+        else if (strcmp(key, "max_files") == 0) NEED_INT(cfg->capture_max_files);
+        else if (strcmp(key, "flush_s")   == 0) NEED_INT(cfg->capture_flush_s);
         else WARN_UNKNOWN();
         break;
 
@@ -469,6 +493,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_FUSION:
         if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
+        else if (strcmp(key, "use_measured_noise") == 0) NEED_BOOL(cfg->use_measured_noise);
         else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
         else if (strcmp(key, "wave_tau_s")        == 0) NEED_FLT(cfg->wave_tau_s);
         else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);

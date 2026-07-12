@@ -1,0 +1,4 @@
+usr/lib/libimud.so
+usr/lib/pkgconfig/libimud.pc
+usr/include/imud.h
+usr/share/man/man3/libimud.3.gz

@@ -276,6 +276,14 @@ coupling between roll/pitch/yaw is modelled correctly. The accelerometer output
 includes both gravity tilt and heave. The magnetometer output rotates the NED
 Earth field into body frame using the full attitude matrix.
 
+**Playback mode.** When `[device] sim_file` names an `.imucap` capture file
+(recorded by the `[capture]` black box), both sim ops replay the recorded raw
+samples instead of synthesizing — identical pacing model, timing anchored to
+the capture header, `sim_loop`/`sim_speed` control repetition and rate.
+`imud --replay FILE` is the shortcut form. The capture file format is
+specified in docs/capture.md and include/capture.h; it is a separate,
+append-only format — NOT the wire packet.
+
 Expected fusion output: heading increases ~6°/s, roll tracks ±4°, pitch tracks ±2°,
 rate_of_turn ~360 deg/min with small wave-induced oscillation.
 

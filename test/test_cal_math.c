@@ -13,6 +13,8 @@
  */
 
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include <math.h>
 #include <string.h>
 #include "cal_math.h"
@@ -367,6 +369,158 @@ static void test_cov_wrong_center(void)
     end(fb);
 }
 
+/* ── Allan deviation tests ───────────────────────────────────────────────── */
+
+/* Deterministic xorshift so results are reproducible across platforms. */
+static uint64_t rng_state = 0x9E3779B97F4A7C15ULL;
+static double rng_gauss(void)
+{
+    /* sum of 12 uniforms − 6 ≈ N(0,1); plenty for statistical tests */
+    double acc = 0.0;
+    for (int i = 0; i < 12; i++) {
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 7;
+        rng_state ^= rng_state << 17;
+        acc += (double)(rng_state >> 11) / 9007199254740992.0;   /* [0,1) */
+    }
+    return acc - 6.0;
+}
+
+/* Constant signal: θ is a perfect line, every second difference is zero. */
+static void test_allan_constant_signal(void)
+{
+    begin("test_allan_constant_signal");
+    int fb = g_fail;
+
+    enum { N = 4096 };
+    static double x[N];
+    for (int i = 0; i < N; i++) x[i] = 0.123;
+
+    avar_pt_t pts[32];
+    int np = allan_deviation(x, N, 100.0, pts, 32);
+    EXPECT(np >= 8, "octave points computed");
+    bool zero = true;
+    for (int i = 0; i < np; i++)
+        if (pts[i].adev > 1e-12) zero = false;
+    EXPECT(zero, "constant signal has zero Allan deviation");
+    EXPECT_NEAR_D(pts[0].tau_s, 0.01, 1e-12, "first tau = 1/fs");
+    end(fb);
+}
+
+/*
+ * White noise σ_w per sample at fs: σ(τ) = N/√τ with noise density
+ * N = σ_w/√fs.  Checks the −1/2 slope and the extracted density.
+ */
+static void test_allan_white_noise(void)
+{
+    begin("test_allan_white_noise");
+    int fb = g_fail;
+
+    enum { N = 1 << 17 };                     /* 131072 samples */
+    static double x[N];
+    const double fs = 100.0, sw = 0.01;
+    for (int i = 0; i < N; i++) x[i] = sw * rng_gauss();
+
+    avar_pt_t pts[32];
+    int np = allan_deviation(x, N, fs, pts, 32);
+    EXPECT(np >= 10, "enough octaves");
+
+    /* slope between the first two octaves ≈ −1/2 */
+    double slope = log(pts[2].adev / pts[0].adev)
+                 / log(pts[2].tau_s / pts[0].tau_s);
+    EXPECT(fabs(slope + 0.5) < 0.05, "white-noise slope is -1/2");
+
+    double nd, bi;
+    int imin = allan_characterize(pts, np, &nd, &bi);
+    EXPECT(imin >= 0, "characterize succeeds");
+    double nd_true = sw / sqrt(fs);
+    EXPECT(fabs(nd - nd_true) / nd_true < 0.10,
+           "noise density within 10% of truth");
+    /* pure white noise keeps descending — min sits at the last octave */
+    EXPECT(imin == np - 1, "no bias floor in pure white noise");
+    end(fb);
+}
+
+/* Random walk (integrated white noise): σ(τ) grows with +1/2 slope. */
+static void test_allan_random_walk(void)
+{
+    begin("test_allan_random_walk");
+    int fb = g_fail;
+
+    enum { N = 1 << 16 };
+    static double x[N];
+    double b = 0.0;
+    for (int i = 0; i < N; i++) {
+        b += 1e-4 * rng_gauss();
+        x[i] = b;
+    }
+
+    avar_pt_t pts[32];
+    int np = allan_deviation(x, N, 100.0, pts, 32);
+    EXPECT(np >= 10, "enough octaves");
+    /* mid-curve slope: the last octaves have too few clusters to be stable */
+    double slope = log(pts[np - 5].adev / pts[np - 8].adev)
+                 / log(pts[np - 5].tau_s / pts[np - 8].tau_s);
+    EXPECT(fabs(slope - 0.5) < 0.15, "random-walk slope is +1/2 at long tau");
+    end(fb);
+}
+
+/* Synthetic curve N/√τ + flat floor: both parameters recovered exactly. */
+static void test_allan_characterize_floor(void)
+{
+    begin("test_allan_characterize_floor");
+    int fb = g_fail;
+
+    avar_pt_t pts[16];
+    const double N_true = 2e-3, floor_adev = 5e-4;
+    int np = 16;   /* white crosses the floor at ~16 s = octave 11; the flat
+                    * floor then spans several octaves before the end */
+    for (int i = 0; i < np; i++) {
+        double tau = 0.01 * (double)(1 << i);
+        double white = N_true / sqrt(tau);
+        pts[i].tau_s = tau;
+        pts[i].adev  = white > floor_adev ? white : floor_adev;
+    }
+
+    double nd, bi;
+    int imin = allan_characterize(pts, np, &nd, &bi);
+    EXPECT(imin >= 0 && imin < np - 1, "floor minimum found before the end");
+    EXPECT_NEAR_D(nd, N_true, 1e-9, "noise density exact on synthetic curve");
+    EXPECT_NEAR_D(bi, 0.664 * floor_adev, 1e-9, "bias instability 0.664*floor");
+    EXPECT(allan_characterize(pts, 2, &nd, &bi) == -1, "npts<3 rejected");
+    end(fb);
+}
+
+/* ── Gyro temp-fit tests ─────────────────────────────────────────────────── */
+
+static void test_gyro_temp_fit(void)
+{
+    begin("test_gyro_temp_fit");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static double t[N], y[N];
+    const double ref = 25.0, coeff_true = 3e-5, bias_true = -2e-4;
+    for (int i = 0; i < N; i++) {
+        t[i] = 15.0 + 25.0 * (double)i / N;             /* 15→40 °C ramp */
+        y[i] = bias_true + coeff_true * (t[i] - ref)
+               + 1e-5 * rng_gauss();                     /* sensor noise */
+    }
+
+    double coeff, bias;
+    EXPECT(gyro_temp_fit(t, y, N, ref, &coeff, &bias) == 0, "fit succeeds");
+    EXPECT(fabs(coeff - coeff_true) / coeff_true < 0.05,
+           "coeff within 5% of truth");
+    EXPECT(fabs(bias - bias_true) < 5e-6, "bias at ref recovered");
+
+    /* tiny temperature span is rejected */
+    for (int i = 0; i < N; i++) t[i] = 25.0 + 0.001 * (i % 2);
+    EXPECT(gyro_temp_fit(t, y, N, ref, &coeff, &bias) == -1,
+           "sub-degree span rejected");
+    EXPECT(gyro_temp_fit(t, y, 1, ref, &coeff, &bias) == -1, "n<2 rejected");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud cal_math tests ===");
@@ -386,6 +540,11 @@ int main(void)
     test_cov_full_circle();
     test_cov_half_circle();
     test_cov_wrong_center();
+    test_allan_constant_signal();
+    test_allan_white_noise();
+    test_allan_random_walk();
+    test_allan_characterize_floor();
+    test_gyro_temp_fit();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

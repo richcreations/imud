@@ -24,6 +24,16 @@ typedef struct {
     /* [device] */
     char  i2c_bus[64];          /* e.g. "/dev/i2c-1" */
     char  gpio_chip[32];        /* gpiochip name: "gpiochip0" Pi 4, "gpiochip4" Pi 5 */
+    char  sim_file[256];        /* .imucap for sim-driver playback; "" = synthesis */
+    bool  sim_loop;             /* repeat the capture (seq/time rebased) */
+    float sim_speed;            /* playback pacing; 1.0 real time, 0 = fastest */
+
+    /* [capture]  [restart]: raw-sample black box (.imucap files) */
+    bool  capture_enabled;      /* record every raw sample from both sensors */
+    char  capture_dir[256];     /* where imud-YYYYMMDD-HHMMSS.imucap files go */
+    int   capture_max_mb;       /* rotate file at this size; 0 = unlimited */
+    int   capture_max_files;    /* keep at most N files (ring); 0 = unlimited */
+    int   capture_flush_s;      /* flush interval, seconds */
 
     /* [imu]  [restart] */
     char  imu_driver[32];       /* "ism330dhcx" */
@@ -43,6 +53,8 @@ typedef struct {
 
     /* [fusion]  [hot]: gains and thresholds */
     bool   mag_yaw_only;          /* [hot] heading-only mag fusion (marine default) */
+    bool   use_measured_noise;    /* [restart] prefer cal.json "noise" (imud-cal
+                                   * characterize) over the mekf_* keys below */
     float  heave_tau_s;           /* [hot] heave filter time constant, s; 0 = off */
     float  wave_tau_s;            /* [hot] sea-state averaging window, s; 0 = off;
                                    * needs heave_tau_s > 0 */

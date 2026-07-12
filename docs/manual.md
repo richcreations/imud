@@ -102,7 +102,14 @@ This installs:
 | Calibration file | `/etc/imud/cal.json` (if `config/cal.json` is present) |
 | systemd unit | `/etc/systemd/system/imud.service` |
 | Client libraries | `libimud.so` + `/usr/local/include/imud.h` (see `man 3 libimud`), `/usr/local/share/imud/imud_client.py` |
-| Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `imud-mon.1` |
+| Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `libimud.3` |
+
+`imud-mon` (the network stream monitor) is its own install target — it can
+live on machines that don't run the daemon:
+
+```sh
+sudo make install-utils
+```
 
 WMM coefficient data is installed separately — it is versioned by model epoch
 (WMM2025), not by imud release, so it ships as its own package
@@ -159,6 +166,8 @@ Raspberry Pi 5, uncomment the `gpiochip4` `DeviceAllow` line in
 ```
 imud [OPTIONS]
   --config PATH      Config file (default: /etc/imud/imud.conf)
+  --replay FILE      Replay an .imucap capture through the full pipeline
+                     (forces both sensors onto the sim driver; docs/capture.md)
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
@@ -221,6 +230,9 @@ Hardware bus and GPIO controller. **[restart]**
 |-----|------|---------|-------------|
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. `"gpiochip0"` on Pi 4; `"gpiochip4"` on Pi 5 (RP1 GPIO controller). |
+| `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
+| `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. |
+| `sim_speed` | float | `1.0` | Playback pacing: `2.0` = double speed, `0` = as fast as the pipeline accepts. |
 
 ### `[imu]`
 
@@ -252,8 +264,10 @@ Magnetometer driver settings. **[restart]**
 
 MEKF noise parameters and tuning knobs. **[hot]**
 
-Applied live on SIGHUP. The noise densities come from the sensor datasheets —
-they are physical constants, not tuning knobs. The knobs most worth touching
+Applied live on SIGHUP (except `use_measured_noise`, **[restart]**). The
+noise densities come from the sensor datasheets — physical constants, not
+tuning knobs — and are superseded by per-unit measured values once
+`imud-cal characterize` has run (see [capture.md](capture.md)). The knobs most worth touching
 for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 `mag_yaw_only`, `heave_tau_s`, and `wave_tau_s`.
 
@@ -265,6 +279,7 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 | `mekf_mag_noise` | double | `0.0004` | Magnetometer noise density in Gauss/√Hz. MMC5983MA: 0.4 mGauss RMS. |
 | `mag_reject_gauss` | double | `0.05` | Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field). |
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
+| `use_measured_noise` | bool | `true` | **[restart]** Prefer the per-unit noise values measured by `imud-cal characterize` (cal.json `noise` section) over the four `mekf_*` keys below. |
 | `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration. |
 | `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and the binary packet's `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). |
 | `wave_tau_s` | float | `120.0` | Sea-state averaging window in seconds. Significant wave height (Hs = 4·σ(heave)), mean zero-crossing wave period, and the vessel's roll/pitch periods and significant single amplitudes (2σ) are exponentially weighted statistics of the heave/roll/pitch oscillations over this window (packet fields `wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`, `pitch_period_s`, `pitch_amplitude`, gated by the `wave_valid` flag). Stats settle ~2 windows after heave settles. Requires `heave_tau_s` > 0; `0` disables. |
@@ -323,6 +338,25 @@ daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
 | `enabled` | bool | `false` | Enable the subscription stream. |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
+
+### `[capture]`
+
+The black box: records every raw sensor sample (pre-mount, pre-calibration —
+exactly as the driver delivered it) to rotating `.imucap` files. Replay with
+`imud --replay`; analyze with `imud-cal characterize` / `fit-temp`. Roughly
+25 MB/hour at 104 Hz. See [capture & replay](capture.md). **[restart]**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Record raw samples from both sensors. |
+| `dir` | string | `"/var/lib/imud"` | Destination; files are `imud-YYYYMMDD-HHMMSS.imucap` (UTC). |
+| `max_mb` | int | `256` | Rotate the file at this size. `0` = unlimited. |
+| `max_files` | int | `8` | Keep the newest N files, deleting the oldest. `0` = keep all. |
+| `flush_s` | int | `5` | Flush-to-storage interval, seconds. |
+
+Reader threads never block on storage — a stalled SD card drops capture
+records (counted; `imud-status` shows a `Capture:` line), never sensor
+samples. A power cut leaves a valid file with a truncated tail.
 
 ### Bridge sections (their own files)
 
@@ -488,6 +522,8 @@ partial run updates only the section it calibrated, preserving the others.
 | `gyro` | Hold the board completely still. Captures gyro bias over a short window. |
 | `accel` | Bench 6-position calibration; follow the on-screen prompts to orient each face in turn. Do this before final mounting. |
 | `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Guided: a live bar shows heading-circle coverage (`#` covered, `.` needed, `o` = where you're pointing), running coverage %, and live radius/RMS; a bell + "FULL CIRCLE" message tells you when coverage is complete. Must be done after final mounting, with the engine and typical electronics running. |
+| `characterize` | Offline Allan-variance noise analysis of a **stationary** capture (`--from FILE`, recorded with `[capture]` enabled — overnight for a trustworthy bias-instability floor). Writes per-axis gyro/accel noise characteristics to cal.json; the daemon then tunes the filter to your silicon (`use_measured_noise`). Never touches the sensors. |
+| `fit-temp` | Offline linear gyro-bias/temperature fit from a warm-up capture (`--from FILE`, cold boot → warm, several °C of span). The daemon subtracts the fitted term from the gyro before fusion. Never touches the sensors. |
 
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are

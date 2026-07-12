@@ -1,0 +1,11 @@
+usr/bin/imud
+usr/bin/imud-cal
+usr/bin/imud-status
+etc/imud/imud.conf
+lib/systemd/system/imud.service
+usr/share/man/man8/imud.8.gz
+usr/share/man/man8/imud-cal.8.gz
+usr/share/man/man5/imud.conf.5.gz
+usr/share/man/man1/imud-status.1.gz
+usr/share/imud/imud_client.py
+usr/share/doc/imud

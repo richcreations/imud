@@ -244,6 +244,49 @@ static void test_partial_section_defaults(void)
 
 /* ── main ────────────────────────────────────────────────────────────────── */
 
+/* noise + gyro_temp sections round-trip alongside the classic three. */
+static void test_round_trip_noise_temp(void)
+{
+    begin("test_round_trip_noise_temp");
+    int fb = g_fail;
+    const char *path = tmppath(9);
+
+    imud_cal_t w;
+    memset(&w, 0, sizeof(w));
+    w.gyro_bias[0] = 0.001f;
+    w.has_gyro = true;
+    w.gyro_noise_density[0]    = 6.1e-5f;
+    w.gyro_noise_density[1]    = 6.5e-5f;
+    w.gyro_noise_density[2]    = 7.2e-5f;
+    w.gyro_bias_instability[0] = 2.0e-6f;
+    w.gyro_bias_instability[1] = 2.2e-6f;
+    w.gyro_bias_instability[2] = 1.8e-6f;
+    w.accel_noise_density[0]   = 1.9e-3f;
+    w.accel_noise_density[1]   = 2.1e-3f;
+    w.accel_noise_density[2]   = 2.4e-3f;
+    w.has_noise = true;
+    w.gyro_temp_coeff[0] =  3.0e-5f;
+    w.gyro_temp_coeff[1] = -1.5e-5f;
+    w.gyro_temp_coeff[2] =  8.0e-6f;
+    w.gyro_temp_ref_c    = 25.0f;
+    w.has_gyro_temp = true;
+    EXPECT(cal_write(path, &w) == 0, "cal_write returns 0");
+
+    imud_cal_t r;
+    EXPECT(cal_load(path, &r) == 0, "cal_load returns 0");
+    EXPECT(r.has_gyro && r.has_noise && r.has_gyro_temp,
+           "all three flags set");
+    EXPECT(!r.has_mag && !r.has_accel, "absent sections stay absent");
+    EXPECT_NEAR(r.gyro_noise_density[2],    6.9e-5f, 1e-5f,  "gyro density z (loose)");
+    EXPECT_NEAR(r.gyro_noise_density[0],    w.gyro_noise_density[0],    1e-9f, "gyro density x");
+    EXPECT_NEAR(r.gyro_bias_instability[1], w.gyro_bias_instability[1], 1e-9f, "instability y");
+    EXPECT_NEAR(r.accel_noise_density[2],   w.accel_noise_density[2],   1e-7f, "accel density z");
+    EXPECT_NEAR(r.gyro_temp_coeff[1],       w.gyro_temp_coeff[1],       1e-9f, "temp coeff y");
+    EXPECT_NEAR(r.gyro_temp_ref_c,          25.0f,                      1e-3f, "ref_c scalar");
+    remove(path);
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud cal tests ===");
@@ -254,6 +297,7 @@ int main(void)
     test_round_trip_mag_full_soft_iron();
     test_round_trip_all_sections();
     test_partial_section_defaults();
+    test_round_trip_noise_temp();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+# imud — multi-binary Debian build on top of the upstream Makefile's
+# install targets (pure file copies when DESTDIR is set; user creation and
+# systemd handling live in maintainer scripts / debhelper).
+#
+# dh_auto_* is used (not bare $(MAKE)) so dpkg-buildflags hardening flags
+# reach every compile and link — the Makefile respects external CFLAGS /
+# CPPFLAGS / LDFLAGS by design.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build -- PREFIX=/usr
+	dh_auto_build -- bridges PREFIX=/usr
+
+override_dh_auto_install:
+	dh_auto_install -- install-utils install-wmm-data \
+	        install-signalk install-mqtt install-influxdb \
+	        install-mavlink install-prometheus \
+	        PREFIX=/usr SVCDIR=/lib/systemd/system
+
+# The upstream install targets already lay out /usr/share/doc/<pkg>/
+# (DEP-5 copyright + upstream changelog.gz) per package; keep those and
+# skip debhelper's defaults.  Proper changelog.Debian.gz naming is a
+# Debian-archive-submission refinement, not needed for release .debs.
+override_dh_installchangelogs:
+override_dh_installdocs:

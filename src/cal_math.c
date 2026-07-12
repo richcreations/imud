@@ -14,6 +14,7 @@
  */
 
 #include <math.h>
+#include <stdlib.h>
 #include "cal_math.h"
 
 #ifndef M_PI
@@ -162,4 +163,91 @@ int cal_cov_count(const int *sectors, int nsec)
     int n = 0;
     for (int i = 0; i < nsec; i++) n += sectors[i];
     return n;
+}
+
+/* ── Allan-variance sensor characterization ──────────────────────────────── */
+
+int allan_deviation(const double *x, size_t n, double fs,
+                    avar_pt_t *pts, int max_pts)
+{
+    if (n < 8 || fs <= 0.0 || max_pts <= 0) return 0;
+
+    /* θ(t): integral of the signal; the overlapping Allan variance is
+     *   σ²(τ) = Σ (θ[k+2m] − 2θ[k+m] + θ[k])² / (2 τ² (n − 2m + 1))     */
+    double *theta = malloc((n + 1) * sizeof(*theta));
+    if (!theta) return 0;
+
+    double dt = 1.0 / fs;
+    theta[0] = 0.0;
+    for (size_t k = 0; k < n; k++)
+        theta[k + 1] = theta[k] + x[k] * dt;
+
+    int np = 0;
+    for (size_t m = 1; 2 * m < n && np < max_pts; m *= 2) {
+        double tau   = (double)m * dt;
+        double sum   = 0.0;
+        size_t terms = n - 2 * m + 1;
+        for (size_t k = 0; k <= n - 2 * m; k++) {
+            double d = theta[k + 2 * m] - 2.0 * theta[k + m] + theta[k];
+            sum += d * d;
+        }
+        pts[np].tau_s = tau;
+        pts[np].adev  = sqrt(sum / (2.0 * tau * tau * (double)terms));
+        np++;
+    }
+
+    free(theta);
+    return np;
+}
+
+int allan_characterize(const avar_pt_t *pts, int npts,
+                       double *noise_density, double *bias_instability)
+{
+    if (npts < 3) return -1;
+
+    /* White-noise (angle/velocity random walk) region: σ(τ) = N/√τ, so
+     * N = σ(τ)·√τ — most accurate at the shortest cluster time, where the
+     * white component dominates everything slower. */
+    if (noise_density)
+        *noise_density = pts[0].adev * sqrt(pts[0].tau_s);
+
+    int imin = 0;
+    for (int i = 1; i < npts; i++)
+        if (pts[i].adev < pts[imin].adev) imin = i;
+
+    /* Standard IEEE 952 scale factor for the 1/f floor. */
+    if (bias_instability)
+        *bias_instability = 0.664 * pts[imin].adev;
+
+    return imin;
+}
+
+/* ── Gyro-bias / temperature linear fit ──────────────────────────────────── */
+
+int gyro_temp_fit(const double *temp_c, const double *gyro, size_t n,
+                  double ref_c, double *coeff, double *bias_ref)
+{
+    if (n < 2) return -1;
+
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    double tmin = temp_c[0], tmax = temp_c[0];
+    for (size_t i = 0; i < n; i++) {
+        double t = temp_c[i] - ref_c;
+        sx  += t;
+        sy  += gyro[i];
+        sxx += t * t;
+        sxy += t * gyro[i];
+        if (temp_c[i] < tmin) tmin = temp_c[i];
+        if (temp_c[i] > tmax) tmax = temp_c[i];
+    }
+    if (tmax - tmin < 1.0) return -1;   /* span too small for a stable slope */
+
+    double det = (double)n * sxx - sx * sx;
+    if (det <= 0.0) return -1;
+
+    double b = ((double)n * sxy - sx * sy) / det;
+    double a = (sy - b * sx) / (double)n;
+    if (coeff)    *coeff    = b;
+    if (bias_ref) *bias_ref = a;
+    return 0;
 }

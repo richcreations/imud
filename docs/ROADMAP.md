@@ -23,12 +23,13 @@ declination / iron cal), with the boot-heading-dependent component gone. Then a
 swing-circle recal with the new ellipse fit, and set lat/lon (or gpsd) so WMM
 declination is active.
 
-## 2. Gyro bias temperature compensation  *(warm-up + engine-room drift, medium)*
+## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
-Die temperature is already in every IMU sample (`temp_c`). Learning a per-axis linear
-bias/temperature coefficient (persisted in cal.json across runs) would cut warm-up
-drift and day/night / engine-heat bias walk. Needs real thermal data to fit — pair it
-with the first hardware sessions.
+✅ Code landed 2026-07-12 (1.5): cal.json `gyro_temp` section (per-axis linear
+coefficients + reference temp), applied per-sample before fusion; fitted
+offline with `imud-cal fit-temp --from <warm-up capture>`. **Remaining: record
+a real cold-boot→warm capture on the Pi and fit actual coefficients** —
+pair with the first hardware sessions.
 
 ## 3. Pi 5 interrupt latency re-profiling  *(pre-existing spec §16 item, bench)*
 
@@ -100,16 +101,19 @@ shipped.)
 
 ## 6. Ideas beyond the audit roadmap  *(brainstorm 2026-07-11, roughly by leverage)*
 
-- **Raw capture & replay (the keystone).** Black-box logging of raw pre-filter
-  samples (timestamps + temps) plus a replay driver that feeds captures back
-  through the fusion offline — gpsd's `gpsfake` equivalent. Every boat session
-  becomes a permanent regression corpus; filter changes get validated against
-  real seaways; bug reports become "send me your capture". Also the data source
-  items below feed on. **Build before/during the first Pi validation trip.**
-- **Sensor self-characterization (Allan variance) in imud-cal.** An overnight
-  `--characterize` run computing per-axis noise density / bias instability,
-  written to cal.json — every install runs a filter tuned to its own silicon
-  instead of universal defaults. Purely software; rare among IMU daemons.
+- **Raw capture & replay (the keystone).** ✅ shipped 2026-07-12 (1.5): the
+  `[capture]` black box records raw pre-mount/pre-cal samples to rotating
+  .imucap files; the sim driver replays them (`imud --replay`, `[device]
+  sim_file/sim_loop/sim_speed`); docs/capture.md specifies the format. The
+  end-to-end regression test (sim scenario → file → offline MEKF) caught a
+  real sim pitch-axis sign bug on day one. **First real captures + replay
+  validation happen on the Pi trip.**
+- **Sensor self-characterization (Allan variance) in imud-cal.** ✅ shipped
+  2026-07-12 (1.5): `imud-cal characterize --from <capture>` computes per-axis
+  noise density + bias instability into cal.json's `noise` section; the daemon
+  prefers measured values over the datasheet `mekf_*` keys
+  (`use_measured_noise`, default true). Overnight capture on the Pi still
+  wanted for real numbers.
 - **Calibration UX + health.** ✅ landed 2026-07-11 (v1.4): guided swing cal
   (live 24-sector coverage bar with current-direction marker, live radius/RMS,
   bell + "FULL CIRCLE" cue) + cal-health monitoring (`mag_anomaly` +
@@ -122,13 +126,15 @@ shipped.)
   iron drifts faster than re-swinging is practical.
 - **Sea state** — ✅ shipped 2026-07-11 (v1.4, wire v14): Hs, wave period,
   roll/pitch periods + significant amplitudes; WAVE_VALID flag.
-- **Hardened-to-a-fault CI.** ✅ ASan/UBSan job shipped 2026-07-11 (v1.4).
-  Remaining: TSan (real thread model → earned), fuzzers on the three parsers
-  (config, packet, NMEA/JSON). systemd unit sandboxing already ships in every
-  service file.
-- **arm64 CI.** ✅ shipped 2026-07-11 (v1.4): build-and-test runs on a
-  [ubuntu-latest, ubuntu-24.04-arm] matrix. Still the natural place to build
-  arm64 debs later.
+- **Hardened-to-a-fault CI.** ✅ ASan/UBSan (1.4) + TSan and libFuzzer jobs
+  (1.5): four fuzz harnesses (config, gpsd/SK JSON, wire packet, .imucap
+  reader) with seed corpora in test/fuzz/; all cross-thread stop flags became
+  `_Atomic` to make the tree TSan-clean. systemd unit sandboxing already
+  ships in every service file.
+- **arm64 CI.** ✅ shipped 2026-07-11 (v1.4); 1.5 added the `debs` job on the
+  same matrix — dpkg-buildpackage builds all ten packages on amd64 + arm64,
+  and the Release workflow drafts a GitHub release with the .debs + tarball
+  on every version tag.
 - **Multi-IMU.** Two sensor pairs fused, or at minimum hot-failover with
   cross-checking — the vessel-grade redundancy story (gpsd's multi-receiver
   support is the precedent the name invokes).

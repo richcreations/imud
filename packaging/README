@@ -1,54 +1,63 @@
 packaging/ — upstream packaging seeds
 =====================================
 
-This directory is NOT a debian/ directory and the tree builds no .deb packages.
-It holds the per-package metadata that imud maintains upstream so that real
-packaging (a self-hosted apt repository first, Debian inclusion eventually)
-is mechanical when it starts. One subdirectory per binary package:
+This directory holds the per-package metadata that imud maintains upstream.
+Since 1.5 a real debian/ directory exists in the repository root and builds
+ten binary packages with debhelper (dpkg-buildpackage -us -uc -b; CI does
+this on amd64 + arm64 and the release workflow attaches the .debs to GitHub
+releases). One subdirectory here per binary package:
 
-  imud/            the core daemon + tools (imud, imud-cal, imud-status, imud-mon)
-  libimud/         client shared library (future split: libimud0 + libimud-dev)
+  imud/            the daemon + imud-cal + imud-status (+ Python client)
+  imud-utils/      network diagnostics: imud-mon (wire-pinned to the daemon)
+  libimud/         client shared library (debian/ splits: libimud0 + libimud-dev)
   imud-signalk/    Signal K bridge
   imud-mqtt/       MQTT bridge (links libmosquitto)
   imud-influxdb/   InfluxDB bridge
   imud-mavlink/    MAVLink bridge
+  imud-prometheus/ Prometheus exporter bridge
+  imud-wmm-data/   World Magnetic Model coefficients (Architecture: all,
+                   versioned by model epoch — the tzdata pattern)
 
-The four bridges link libimud at runtime, so as .debs they will
+The five bridges link libimud at runtime, so as .debs they
 Depend: libimud0 (built from this same source).
 
-Each contains:
+Each subdirectory contains:
 
-  copyright     DEP-5 machine-readable copyright (becomes debian/copyright)
-  changelog     release history in Debian changelog format (see note below)
-  description   synopsis + long description (seeds debian/control Description:)
+  copyright     DEP-5 machine-readable copyright
+  changelog     release history in Debian changelog format
+  description   synopsis + long description (mirrored in debian/control —
+                keep the two in sync when editing)
 
-`make install` / `make install-<bridge>` install copyright and changelog.gz
-into /usr/share/doc/<pkg>/ so even a plain `make install` follows Debian doc
-conventions.
+`make install` / `make install-<name>` install copyright and changelog.gz
+into /usr/share/doc/<pkg>/ so even a plain make install follows Debian doc
+conventions; the debian/ build reuses exactly those files.
 
-Notes for the future packager
------------------------------
+Notes for the future packager (Debian-archive submission)
+----------------------------------------------------------
 
-* Versions in the changelogs are currently NATIVE format ("1.2"). When real
-  Debian packaging starts, the package should be NON-native: version "1.2-1",
-  built from the upstream tarball `make dist` produces
-  (imud-1.2.tar.gz -> imud_1.2.orig.tar.gz). The changelogs here then continue
-  as the upstream release notes, and debian/changelog tracks packaging
-  revisions separately.
+* The debian/ build is currently BINARY-ONLY (-b) for GitHub releases.
+  Archive submission needs the source package: `make dist` produces the
+  upstream tarball (imud-X.Y.tar.gz -> imud_X.Y.orig.tar.gz), format
+  "3.0 (quilt)" is already set, and include/version.h must match
+  debian/changelog at release time (see docs/RELEASING.md).
+* Known lintian refinements deliberately deferred: /usr/lib multiarch
+  triplet paths, changelog.Debian.gz naming (upstream changelogs are
+  installed as changelog.gz by the Makefile).
 * Build with the packaging paths:
       make PREFIX=/usr SVCDIR=/lib/systemd/system DESTDIR=<stage> install
   When DESTDIR is set, the install is a pure file copy: no useradd and no
-  systemctl calls — user creation and daemon-reload belong in the package's
-  maintainer scripts (the `imud` system user needs the gpio and i2c groups;
-  imud-mavlink's serial output additionally wants dialout).
+  systemctl calls — user creation lives in debian/imud.postinst (the imud
+  system user joins gpio and i2c; imud-mavlink's serial output additionally
+  wants dialout) and unit handling in debhelper.
 * systemd units are generated from etc/*.service.in with the real bin dir
   substituted for @BINDIR@; they land in $(SVCDIR).
 * Configs in /etc/imud/ are installed non-clobbering by make; as .debs they
-  should be conffiles (shipped verbatim from config/*.conf).
+  are conffiles (dh handles /etc automatically).
 * CFLAGS/CPPFLAGS/LDFLAGS from the environment (dpkg-buildflags) are
-  respected; mandatory flags are appended with `override +=` so hardening
-  injection works on every binary.
-* libimud's SONAME is libimud.so.0 and its data struct is append-only; only a
-  (never planned lightly) breaking ABI change bumps the SONAME and the
-  runtime package name (libimud0 → libimud1). See docs/RELEASING.md.
-* The upstream release tag convention is vX.Y (see docs/RELEASING.md).
+  respected; debian/rules uses dh_auto_* so hardening flags flow through.
+* libimud's SONAME is libimud.so.0 and its data struct is append-only; only
+  a (never planned lightly) breaking ABI change bumps the SONAME and the
+  runtime package name (libimud0 -> libimud1). See docs/RELEASING.md.
+* The upstream release tag convention is vX.Y (see docs/RELEASING.md); the
+  Release workflow (.github/workflows/release.yml) drafts the GitHub
+  release with .debs + tarball on tag push.

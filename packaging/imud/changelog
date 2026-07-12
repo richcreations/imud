@@ -1,3 +1,16 @@
+imud (1.5) UNRELEASED; urgency=medium
+
+  * Black-box capture ([capture] -> rotating .imucap files) and sim-driver
+    replay (imud --replay); imud-cal gains offline characterize (Allan
+    variance -> cal.json noise, used by the filter via use_measured_noise)
+    and fit-temp (gyro bias/temperature compensation) modes.
+  * Fix sim-driver pitch-axis mirror between accel/mag and gyro outputs;
+    fix mag reader fusing a stale sample when DRDY was not ready.
+  * imud-mon moved to the new imud-utils package.
+  * Cross-thread stop flags are now C11 _Atomic (ThreadSanitizer-clean).
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 12 Jul 2026 00:00:00 -0700
+
 imud (1.4.1) unstable; urgency=medium
 
   * WMM.COF moved to the new model-versioned imud-wmm-data package

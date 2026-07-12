@@ -6,10 +6,12 @@ Prerequisites (Raspberry Pi OS / Debian Bookworm or similar):
     sudo apt install build-essential libgpiod-dev
 
 Build and install the core — the imud daemon plus imud-cal, imud-status,
-imud-mon, the client libraries, the config, the systemd unit, and man pages:
+the client libraries, the config, the systemd unit, and man pages — and the
+World Magnetic Model data (needed for true-heading output):
 
     make
     sudo make install
+    sudo make install-wmm-data
 
 Installs to /usr/local by default. Override the prefix, or stage into a
 packaging root, with the standard variables:
@@ -43,6 +45,12 @@ package with its own dependencies, config, and docs:
     sudo make install-mqtt                             # MQTT bridge (needs libmosquitto-dev)
     sudo make install-influxdb                         # InfluxDB bridge
     sudo make install-mavlink                          # MAVLink bridge
+    sudo make install-prometheus                       # Prometheus exporter
+    sudo make install-utils                            # imud-mon network monitor
+
+Prebuilt .debs for amd64 and arm64 are attached to GitHub releases
+(https://github.com/richcreations/imud/releases): imud, imud-utils,
+libimud0, libimud-dev, the five bridges, and imud-wmm-data.
 
 Edit the configuration for your hardware, then enable the service:
 

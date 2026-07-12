@@ -53,6 +53,30 @@ direction currently pointed), with a running coverage percentage and, once
 enough samples exist, the live field radius and RMS fit residual. When
 every sector is covered the tool sounds a bell and says so \(em one more
 circle then improves the fit; press Ctrl-C to finish.
+.TP
+.B characterize
+Allan-variance noise analysis of a stationary capture (requires
+.BI \-\-from \ FILE\c
+).
+Computes per-axis gyro noise density, gyro bias instability, and
+accelerometer noise density, and writes them to cal.json's
+\(dqnoise\(dq section \(em the daemon then tunes the filter to the
+measured silicon instead of generic datasheet numbers (see
+.B use_measured_noise
+in
+.BR imud.conf (5)).
+Record overnight with [capture] enabled for a trustworthy bias-instability
+floor; shorter records yield upper bounds and say so.
+Offline: never touches the sensors.
+.TP
+.B fit-temp
+Linear gyro-bias/temperature fit from a warm-up capture (requires
+.BI \-\-from \ FILE\c
+).
+Record from cold boot until the die temperature levels out (a span of
+several \(deC is required); the daemon then subtracts the fitted
+temperature term from the gyro before fusion.
+Offline: never touches the sensors.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH
@@ -69,6 +93,12 @@ Write calibration output to
 instead of the path set by
 .B calibration.file
 in the config.
+.TP
+.BI \-\-from \ FILE
+The .imucap capture to analyze (required by
+.B characterize
+and
+.BR fit-temp ).
 .SH FILES
 .TP
 .I /etc/imud/cal.json

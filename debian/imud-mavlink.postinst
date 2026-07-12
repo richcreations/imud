@@ -1,0 +1,16 @@
+#!/bin/sh
+# postinst for imud-mavlink — the serial output mode needs the imud user
+# (created by the imud package this depends on at runtime) in dialout.
+set -e
+
+case "$1" in
+    configure)
+        if getent passwd imud >/dev/null && getent group dialout >/dev/null; then
+            adduser --quiet imud dialout || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

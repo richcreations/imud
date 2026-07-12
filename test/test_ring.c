@@ -82,7 +82,7 @@ static void test_imu_ring_fifo_order(void)
     imu_sample_t samples[3] = { make_imu(10), make_imu(20), make_imu(30) };
     imu_ring_push(&r, samples, 3);
 
-    volatile int stop = 0;
+    _Atomic int stop = 0;
     imu_sample_t out;
     EXPECT(imu_ring_pop(&r, &out, &stop) == 0 && out.seq == 10, "pop 1 → seq 10");
     EXPECT(imu_ring_pop(&r, &out, &stop) == 0 && out.seq == 20, "pop 2 → seq 20");
@@ -107,7 +107,7 @@ static void test_imu_ring_count_accurate(void)
     imu_ring_push(&r, &s, 1);
     EXPECT(r.count == 2, "count == 2 after second push");
 
-    volatile int stop = 0;
+    _Atomic int stop = 0;
     imu_sample_t out;
     imu_ring_pop(&r, &out, &stop);
     EXPECT(r.count == 1, "count == 1 after one pop");
@@ -125,7 +125,7 @@ static void test_imu_ring_pop_empty_with_stop(void)
     imu_ring_t r;
     imu_ring_init(&r);
 
-    volatile int stop = 1;  /* already stopped — should return immediately */
+    _Atomic int stop = 1;  /* already stopped — should return immediately */
     imu_sample_t out;
     EXPECT(imu_ring_pop(&r, &out, &stop) == -1, "pop from empty with stop=1 returns -1");
     end(fb);
@@ -157,7 +157,7 @@ static void test_imu_ring_overflow_drops_oldest(void)
     EXPECT(r.count == IMU_RING_LEN, "count stays at IMU_RING_LEN after overflow");
 
     /* Oldest remaining should be seq 3 */
-    volatile int stop = 0;
+    _Atomic int stop = 0;
     imu_sample_t out;
     imu_ring_pop(&r, &out, &stop);
     EXPECT(out.seq == 3, "oldest remaining is seq 3 (0,1,2 were dropped)");
@@ -220,7 +220,7 @@ static void test_imu_ring_circular_wraparound(void)
 
     imu_ring_t r;
     imu_ring_init(&r);
-    volatile int stop = 0;
+    _Atomic int stop = 0;
     imu_sample_t out;
 
     /* Advance head and tail into the middle of the array */

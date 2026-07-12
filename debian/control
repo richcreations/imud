@@ -1,0 +1,125 @@
+Source: imud
+Section: misc
+Priority: optional
+Maintainer: Richard Simpson <richcreations@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               libgpiod-dev,
+               libmosquitto-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/richcreations/imud
+Rules-Requires-Root: no
+
+Package: imud
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Recommends: imud-wmm-data
+Suggests: imud-utils
+Description: IMU daemon — attitude, heading, and heave for boats ("gpsd for IMUs")
+ imud reads an I2C IMU and magnetometer, fuses them with a quaternion
+ Multiplicative EKF, and serves attitude, heading (magnetic and WMM true),
+ rate of turn, heave, and sea-state statistics to the network: NMEA 0183
+ over UDP, a high-rate binary UDP stream, and a local AF_UNIX subscription
+ socket. A built-in black box can record every raw sensor sample to
+ .imucap capture files, and the sim driver replays them (or a synthetic
+ scenario) through the full pipeline.
+ .
+ Includes calibration and self-characterization (imud-cal), a status tool
+ (imud-status), the Python client, and a hardened systemd service. The
+ network monitor ships as imud-utils; protocol bridges are packaged
+ separately: imud-signalk, imud-mqtt, imud-influxdb, imud-mavlink,
+ imud-prometheus.
+
+Package: imud-utils
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: diagnostics for the imud IMU daemon
+ Tools for watching an imud daemon from any machine on the network.
+ Currently imud-mon, a terminal monitor that decodes the daemon's NMEA
+ and binary UDP output streams live. Wire-pinned to the daemon's packet
+ version: keep imud-utils and imud at the same release.
+
+Package: libimud0
+Architecture: any
+Section: libs
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: ABI-stable client library for the imud IMU daemon
+ libimud receives, validates, and decodes imud's binary telemetry (attitude,
+ heading, rate of turn, heave, sensor data, fusion diagnostics) over the
+ daemon's local AF_UNIX stream socket or the high-rate UDP stream. The API is
+ ABI-stable: data is exposed through an append-only struct behind an opaque
+ handle, so applications keep working across imud upgrades without
+ recompilation. Ships the imud.h development header and pkg-config metadata
+ (a future packaging split: libimud0 runtime + libimud-dev).
+
+Package: libimud-dev
+Architecture: any
+Section: libdevel
+Depends: libimud0 (= ${binary:Version}), ${misc:Depends}
+Description: ABI-stable client library for the imud IMU daemon (development)
+ Header (imud.h), unversioned shared-library symlink, pkg-config metadata,
+ and the libimud(3) manual for building applications against libimud, the
+ ABI-stable client library for imud's binary telemetry stream.
+
+Package: imud-signalk
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Signal K bridge for the imud IMU daemon
+ imud-signalk connects to imud's local binary stream socket and emits Signal K
+ delta messages (JSON) over UDP — attitude, magnetic and true heading,
+ magnetic variation, rate of turn, and heave, on standard Signal K paths in
+ SI units. Runs as its own hardened systemd service and reconnects to imud
+ automatically.
+
+Package: imud-mqtt
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
+ imud-mqtt connects to imud's local binary stream socket and publishes scalar
+ telemetry topics (heading, attitude, rate of turn, heave, heave rate,
+ temperature) to an MQTT broker via libmosquitto, plus Home Assistant
+ MQTT-discovery configs so the sensors self-register as one device. Supports
+ QoS, retained values, TLS, and an availability topic backed by an MQTT
+ last-will.
+
+Package: imud-influxdb
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: InfluxDB bridge for the imud IMU daemon
+ imud-influxdb connects to imud's local binary stream socket and writes one
+ InfluxDB line-protocol point per tick — quaternion, attitude, heading, rate
+ of turn, heave, and the full fusion diagnostics (gyro bias and variance,
+ quiescence) — over UDP or HTTP, for time-series storage and Grafana
+ dashboards. Pure C, no external dependencies.
+
+Package: imud-mavlink
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: MAVLink bridge for the imud IMU daemon
+ imud-mavlink connects to imud's local binary stream socket and emits MAVLink
+ v1 or v2 HEARTBEAT, ATTITUDE, and ATTITUDE_QUATERNION messages over UDP
+ and/or a serial port, for autopilot ecosystems (ArduPilot, PX4, QGroundControl).
+ Pure C with a hand-rolled encoder — no MAVLink library dependency.
+
+Package: imud-prometheus
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Prometheus exporter for the imud IMU daemon
+ imud-prometheus connects to imud's local binary stream socket and serves the
+ latest fused state — attitude, heading, rate of turn, heave, the sea-state
+ statistics, and the fusion/compass-health diagnostics — as Prometheus
+ text-format gauges on a local /metrics endpoint, for alerting and Grafana
+ dashboards. Pure C, no external dependencies; built on the ABI-stable
+ libimud client library.
+
+Package: imud-wmm-data
+Architecture: all
+Depends: ${misc:Depends}
+Multi-Arch: foreign
+Description: World Magnetic Model coefficient data for imud
+ Coefficient file (WMM.COF) for the World Magnetic Model, a joint product of
+ the United States' National Geospatial-Intelligence Agency (NGA) and the
+ United Kingdom's Defence Geographic Centre (DGC), distributed by NOAA/NCEI.
+ imud uses it to compute magnetic declination from a position fix, giving
+ true heading with no network access. Packaged separately (like tzdata) so a
+ new five-year model epoch can be shipped without touching the daemon.
+ Architecture-independent data.

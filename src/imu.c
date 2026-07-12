@@ -41,7 +41,9 @@ typedef struct gpiod_line         imu_gpio_line_t;
 #define CLOCK_TAI CLOCK_REALTIME
 #endif
 
+#include "capture.h"
 #include "imu.h"
+#include "version.h"
 #include "ring.h"
 #include "drivers.h"
 #include "fusion.h"
@@ -79,6 +81,16 @@ struct imu_ctx {
     shared_state_t   shared;
     ts_anchor_t      anchor;
 
+    /* Black-box capture ([capture] enabled): reader threads tap raw samples
+     * into cap_ring right after the driver read() (pre-mount, pre-cal);
+     * capture_thread drains it into rotating .imucap files.  Status fields
+     * are the writer's snapshot for imud-status, under shared.lock. */
+    cap_ring_t       cap_ring;
+    char             cap_path[320];    /* shared.lock */
+    uint64_t         cap_bytes;        /* shared.lock */
+    uint64_t         cap_drops;        /* shared.lock */
+    bool             cap_active;       /* shared.lock */
+
     /* IMU samples for the binary output packet, written by fusion_thread.
      * latest_imu: calibrated accel + bias-corrected gyro (fused output).
      * raw_imu:    pre-calibration accel (accel_raw[]) + pre-bias gyro[].
@@ -100,9 +112,9 @@ struct imu_ctx {
     /* Cross-thread signal flags: _Atomic int rather than volatile so the
      * single-writer/single-reader handshakes are C11-clean, not just
      * "works on ARM". Syntax of all existing reads/writes is unchanged.
-     * `stop` stays volatile int because its address is passed to
-     * imu_ring_pop(..., volatile int *stop) — same effective semantics. */
-    volatile int     stop;
+     * `stop` became _Atomic with the 1.5 TSan job (the ring API takes
+     * _Atomic int * now) — plain volatile is a C11 data race. */
+    _Atomic int      stop;
     _Atomic int      settled;      /* release-written by fusion_thread at Phase 4 entry;
                                     * acquire-read by output/health threads to suppress
                                     * output until settle + bias estimation + alignment done */
@@ -120,6 +132,16 @@ struct imu_ctx {
  */
 static void apply_imu_cal(const imud_cal_t *cal, imu_sample_t *s)
 {
+    /* Gyro bias/temperature compensation (imud-cal fit-temp): remove the
+     * temperature-tracking bias component here so the MEKF's random-walk
+     * estimator only has to follow the residual. */
+    if (cal->has_gyro_temp) {
+        float dT = s->temp_c - cal->gyro_temp_ref_c;
+        s->gyro[0] -= cal->gyro_temp_coeff[0] * dT;
+        s->gyro[1] -= cal->gyro_temp_coeff[1] * dT;
+        s->gyro[2] -= cal->gyro_temp_coeff[2] * dT;
+    }
+
     if (!cal->has_accel) return;
     for (int i = 0; i < 3; i++)
         s->accel[i] = (s->accel[i] - cal->accel_offset[i]) * cal->accel_scale[i];
@@ -338,6 +360,17 @@ void *ism_reader_thread(void *arg)
         consec_errors = 0;
         if (n == 0) continue;
 
+        /* Black-box tap: raw samples exactly as the driver delivered them
+         * (pre-mount, pre-cal) so replay traverses the identical pipeline.
+         * One delivery timestamp per burst; per-sample time is chip_ts. */
+        if (ctx->cfg.capture_enabled) {
+            struct timespec tm;
+            clock_gettime(CLOCK_MONOTONIC, &tm);
+            uint64_t mono = ts_ns(&tm);
+            for (int i = 0; i < n; i++)
+                cap_ring_push_imu(&ctx->cap_ring, &buf[i], mono);
+        }
+
         /* Apply mount rotation (board->body), then accel calibration */
         for (int i = 0; i < n; i++) {
             apply_mount_rot_if_set(&ctx->cfg, buf[i].accel);
@@ -440,7 +473,10 @@ void *mag_reader_thread(void *arg)
             }
         }
 
-        if (ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr, &s) < 0) {
+        int mrc = ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr, &s);
+        if (mrc > 0) continue;   /* no data yet (DRDY not set / playback idle) —
+                                  * pushing here would re-fuse a stale sample */
+        if (mrc < 0) {
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[mag_reader] 10 consecutive errors — resetting chip\n");
@@ -464,6 +500,14 @@ void *mag_reader_thread(void *arg)
         }
         consec_errors = 0;
 
+        /* Black-box tap: raw field as the driver delivered it (pre-mount,
+         * pre-cal). */
+        if (ctx->cfg.capture_enabled) {
+            struct timespec tm;
+            clock_gettime(CLOCK_MONOTONIC, &tm);
+            cap_ring_push_mag(&ctx->cap_ring, &s, ts_ns(&tm));
+        }
+
         /* Rotate mag into body frame, then apply mag calibration */
         apply_mount_rot_if_set(&ctx->cfg, s.field);
         s.field_raw[0] = s.field[0];
@@ -477,6 +521,115 @@ void *mag_reader_thread(void *arg)
     }
 
     return NULL;
+}
+
+/* ── capture_thread ──────────────────────────────────────────────────────── */
+
+/*
+ * Black-box writer: drains the tap ring into rotating .imucap files under
+ * cfg.capture_dir.  Never in the reader threads' path — they push into the
+ * ring and move on; a slow SD card costs dropped capture records (counted),
+ * never sensor latency.  A write error stops capture with an error log but
+ * leaves the daemon running.
+ */
+void *capture_thread(void *arg)
+{
+    imu_ctx_t *ctx = arg;
+
+    cap_rotator_t rot;
+    if (cap_rot_open(&rot, ctx->cfg.capture_dir,
+                     (uint32_t)(ctx->cfg.capture_max_mb    > 0 ? ctx->cfg.capture_max_mb    : 0),
+                     (uint32_t)(ctx->cfg.capture_max_files > 0 ? ctx->cfg.capture_max_files : 0),
+                     (uint32_t)ctx->actual_odr_hz,
+                     ctx->imu_ops->name, ctx->mag_ops->name,
+                     IMUD_VERSION_STR) != 0) {
+        LOG_E("[capture] cannot open capture file in %s: %s\n",
+              ctx->cfg.capture_dir, strerror(errno));
+        return NULL;
+    }
+    LOG_I("[capture] recording to %s\n", cap_rot_path(&rot));
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t last_flush   = ts_ns(&now);
+    uint64_t last_drops   = 0;
+    uint64_t flush_ns     = (uint64_t)(ctx->cfg.capture_flush_s > 0
+                                       ? ctx->cfg.capture_flush_s : 5)
+                            * 1000000000ULL;
+    char     prev_path[320];
+    snprintf(prev_path, sizeof(prev_path), "%s", cap_rot_path(&rot));
+    bool     failed = false;
+
+    while (!ctx->stop && !failed) {
+        cap_ring_rec_t recs[64];
+        int n = cap_ring_pop(&ctx->cap_ring, recs, 64);
+        if (n == 0) {
+            struct timespec t = { .tv_sec = 0, .tv_nsec = 20 * 1000000L };
+            nanosleep(&t, NULL);
+        }
+        for (int i = 0; i < n; i++) {
+            if (cap_rot_write(&rot, &recs[i]) != 0) {
+                LOG_E("[capture] write failed (%s) — capture stopped\n",
+                      strerror(errno));
+                failed = true;
+                break;
+            }
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t tnow = ts_ns(&now);
+        if (!failed && tnow - last_flush >= flush_ns) {
+            cap_rot_flush(&rot);
+            last_flush = tnow;
+        }
+
+        if (strcmp(prev_path, cap_rot_path(&rot)) != 0) {
+            snprintf(prev_path, sizeof(prev_path), "%s", cap_rot_path(&rot));
+            LOG_I("[capture] rotated to %s\n", prev_path);
+        }
+
+        uint64_t drops = cap_ring_dropped(&ctx->cap_ring);
+        if (drops != last_drops) {
+            LOG_W("[capture] %llu records dropped (slow storage?)\n",
+                  (unsigned long long)(drops - last_drops));
+            last_drops = drops;
+        }
+
+        pthread_mutex_lock(&ctx->shared.lock);
+        snprintf(ctx->cap_path, sizeof(ctx->cap_path), "%s", cap_rot_path(&rot));
+        ctx->cap_bytes  = cap_rot_bytes(&rot);
+        ctx->cap_drops  = drops;
+        ctx->cap_active = !failed;
+        pthread_mutex_unlock(&ctx->shared.lock);
+    }
+
+    /* Drain what the readers pushed before stop, then close cleanly. */
+    if (!failed) {
+        cap_ring_rec_t recs[64];
+        int n;
+        while ((n = cap_ring_pop(&ctx->cap_ring, recs, 64)) > 0)
+            for (int i = 0; i < n; i++)
+                if (cap_rot_write(&rot, &recs[i]) != 0) { failed = true; break; }
+    }
+    cap_rot_close(&rot);
+
+    pthread_mutex_lock(&ctx->shared.lock);
+    ctx->cap_active = false;
+    pthread_mutex_unlock(&ctx->shared.lock);
+
+    LOG_I("[capture] stopped\n");
+    return NULL;
+}
+
+void imu_get_capture_status(imu_ctx_t *ctx, char *path, size_t path_sz,
+                            uint64_t *bytes, uint64_t *drops, bool *active)
+{
+    pthread_mutex_lock(&ctx->shared.lock);
+    if (path && path_sz) snprintf(path, path_sz, "%s", ctx->cap_path);
+    if (bytes)  *bytes  = ctx->cap_bytes;
+    if (drops)  *drops  = ctx->cap_drops;
+    if (active) *active = ctx->cap_active;
+    pthread_mutex_unlock(&ctx->shared.lock);
 }
 
 /* ── fusion_thread ───────────────────────────────────────────────────────── */
@@ -896,10 +1049,14 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     imu_ring_init(&ctx->imu_ring);
     mag_ring_init(&ctx->mag_ring);
+    cap_ring_init(&ctx->cap_ring);
     pthread_mutex_init(&ctx->shared.lock, NULL);
     pthread_mutex_init(&ctx->anchor.mtx, NULL);
 
     /* ── Locate drivers ──────────────────────────────────────────────────── */
+
+    /* Arm sim-driver playback before init ([device] sim_file / --replay). */
+    sim_set_playback(cfg->sim_file, cfg->sim_loop, cfg->sim_speed);
 
     ctx->imu_ops = imu_driver_find(cfg->imu_driver);
     if (!ctx->imu_ops) {
