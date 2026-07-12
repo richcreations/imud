@@ -318,6 +318,11 @@ class ImudClient:
     def open(self) -> 'ImudClient':
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Wildcard bind is deliberate: this is a receive-only listener for
+        # imud's UDP broadcast/multicast telemetry, and a socket bound to a
+        # specific unicast address does not receive broadcast datagrams.
+        # Nothing is served; every packet is validated (magic/version/CRC)
+        # before use.  Restrict exposure with a firewall if required.
         sock.bind(('', self._port))
 
         if self._addr:
