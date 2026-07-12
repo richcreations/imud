@@ -19,6 +19,7 @@
 #define IMUD_IMU_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "types.h"
 #include "config.h"
@@ -103,6 +104,18 @@ void imu_ctx_free(imu_ctx_t *ctx);
 void *ism_reader_thread(void *arg);
 void *mag_reader_thread(void *arg);
 void *fusion_thread(void *arg);
+
+/* Black-box capture writer ([capture] enabled) — drains the tap ring into
+ * rotating .imucap files.  Start only when cfg.capture_enabled. */
+void *capture_thread(void *arg);
+
+/*
+ * Snapshot of the capture writer for status reporting.  active=false means
+ * capture is disabled or the writer stopped (e.g. disk error); path may be
+ * "" before the first file opens.
+ */
+void imu_get_capture_status(imu_ctx_t *ctx, char *path, size_t path_sz,
+                            uint64_t *bytes, uint64_t *drops, bool *active);
 
 /*
  * Snapshot the latest fused state (thread-safe).

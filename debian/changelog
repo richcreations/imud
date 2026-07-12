@@ -1,0 +1,7 @@
+imud (1.5-1) UNRELEASED; urgency=medium
+
+  * Initial multi-binary Debian packaging: imud, imud-utils, libimud0,
+    libimud-dev, the five bridge daemons, and imud-wmm-data, built from
+    the upstream Makefile install targets.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 12 Jul 2026 00:00:00 -0700

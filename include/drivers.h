@@ -86,4 +86,23 @@ typedef struct {
 const imu_ops_t *imu_driver_find(const char *name);
 const mag_ops_t *mag_driver_find(const char *name);
 
+/* ── Sim driver synthesis hooks (src/drivers/sim.c) ────────────────────────── */
+
+/*
+ * The sim driver's closed-form motion model at scenario time t (seconds),
+ * exposed so tests and capture-scenario generation can evaluate it directly
+ * at any t instead of waiting on the driver's real-time pacing.
+ * sim_synth_imu fills accel/gyro/temp_c (not chip_ts/seq);
+ * sim_synth_mag fills field/valid (not wall_ns).
+ */
+void sim_synth_imu(double t, imu_sample_t *out);
+void sim_synth_mag(double t, mag_sample_t *out);
+
+/*
+ * Switch both sim ops into .imucap playback mode (file != NULL/"" enables;
+ * NULL/"" returns to built-in synthesis).  Call before imu_ctx_open —
+ * driven by [device] sim_file / sim_loop / sim_speed or `imud --replay`.
+ */
+void sim_set_playback(const char *file, bool loop, float speed);
+
 #endif /* IMUD_DRIVERS_H */

@@ -39,7 +39,7 @@ int imu_ring_push(imu_ring_t *r, const imu_sample_t *s, int n);
  * on the cond var to unblock cleanly).
  * Returns 0 on success, -1 on timeout or stop.
  */
-int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, volatile int *stop);
+int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, _Atomic int *stop);
 
 /* ── Mag ring ────────────────────────────────────────────────────────────── */
 

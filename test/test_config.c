@@ -73,6 +73,9 @@ static void test_defaults_values(void)
     config_defaults(&cfg);
 
     EXPECT_STR(cfg.i2c_bus,          "/dev/i2c-1",    "i2c_bus default");
+    EXPECT_STR(cfg.sim_file,         "",              "sim_file default (synthesis)");
+    EXPECT(cfg.sim_loop == false,                     "sim_loop default false");
+    EXPECT_NEAR_D(cfg.sim_speed, 1.0, 1e-6,           "sim_speed default 1.0");
     EXPECT_STR(cfg.imu_driver,       "ism330dhcx",    "imu_driver default");
     EXPECT(cfg.imu_addr     == 0x6B,                  "imu_addr default");
     EXPECT(cfg.imu_odr_hz   == 833,                   "imu_odr_hz default");
@@ -92,6 +95,7 @@ static void test_defaults_values(void)
     EXPECT_NEAR_D(cfg.mag_reject_gauss, 0.05,   1e-9, "mag_reject default (0.05 G anomaly)");
     EXPECT_NEAR_D(cfg.accel_skip_thresh,0.05,   1e-9, "accel_skip default");
     EXPECT(cfg.mag_yaw_only == true,                  "mag_yaw_only default true (marine)");
+    EXPECT(cfg.use_measured_noise == true,            "use_measured_noise default true");
     EXPECT_NEAR_D(cfg.heave_tau_s, 12.0, 1e-5,        "heave_tau_s default 12 s");
     EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
@@ -370,6 +374,60 @@ static void test_stream_section(void)
 
 /* [imud-signalk] bridge keys: the own-config-file convention. The bridge reads
  * its own socket + publish_heave from this section (never imud.conf). */
+/* [capture] keys: black box disabled by default; all keys load. */
+static void test_capture_section(void)
+{
+    begin_test("test_capture_section");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(!cfg.capture_enabled,                       "capture disabled by default");
+    EXPECT_STR(cfg.capture_dir, "/var/lib/imud",       "capture dir default");
+    EXPECT(cfg.capture_max_mb == 256,                  "capture max_mb default 256");
+    EXPECT(cfg.capture_max_files == 8,                 "capture max_files default 8");
+    EXPECT(cfg.capture_flush_s == 5,                   "capture flush_s default 5");
+
+    const char *path = write_tmpconf(22,
+        "[capture]\n"
+        "enabled   = true\n"
+        "dir       = \"/tmp/blackbox\"\n"
+        "max_mb    = 64\n"
+        "max_files = 4\n"
+        "flush_s   = 1\n");
+    EXPECT(config_load(path, &cfg) == 0,               "capture section loads");
+    EXPECT(cfg.capture_enabled,                        "capture enabled loaded");
+    EXPECT_STR(cfg.capture_dir, "/tmp/blackbox",       "capture dir loaded");
+    EXPECT(cfg.capture_max_mb == 64,                   "capture max_mb loaded");
+    EXPECT(cfg.capture_max_files == 4,                 "capture max_files loaded");
+    EXPECT(cfg.capture_flush_s == 1,                   "capture flush_s loaded");
+    remove(path);
+    end_test(fb);
+}
+
+/* [device] sim playback keys load and override the synthesis defaults. */
+static void test_sim_playback_keys(void)
+{
+    begin_test("test_sim_playback_keys");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    const char *path = write_tmpconf(21,
+        "[device]\n"
+        "sim_file  = \"/var/lib/imud/imud-20260711-120000.imucap\"\n"
+        "sim_loop  = true\n"
+        "sim_speed = 0.0\n");
+    EXPECT(config_load(path, &cfg) == 0,               "sim keys load");
+    EXPECT_STR(cfg.sim_file, "/var/lib/imud/imud-20260711-120000.imucap",
+               "sim_file loaded");
+    EXPECT(cfg.sim_loop == true,                       "sim_loop loaded");
+    EXPECT_NEAR_D(cfg.sim_speed, 0.0, 1e-9,            "sim_speed 0 (fast) loaded");
+    remove(path);
+    end_test(fb);
+}
+
 static void test_signalk_section(void)
 {
     begin_test("test_signalk_section");
@@ -517,6 +575,8 @@ int main(void)
     test_defaults_position();
     test_fusion_marine_keys();
     test_stream_section();
+    test_sim_playback_keys();
+    test_capture_section();
     test_signalk_section();
     test_declination_valid_flag();
     test_fix_max_age_h_load();

@@ -1,0 +1,23 @@
+#!/bin/sh
+# postinst for imud — create the system user the service runs as and grant
+# the hardware groups.  User removal is deliberately NOT done in postrm
+# (Debian convention: system users stay so file ownership never dangles).
+set -e
+
+case "$1" in
+    configure)
+        if ! getent passwd imud >/dev/null; then
+            adduser --system --group --no-create-home \
+                    --home /var/lib/imud --quiet imud
+        fi
+        for grp in gpio i2c; do
+            if getent group "$grp" >/dev/null; then
+                adduser --quiet imud "$grp" || true
+            fi
+        done
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

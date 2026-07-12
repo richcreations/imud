@@ -48,6 +48,18 @@ static int parse_float_array(const char *s, float *out, int n)
     return count;
 }
 
+/* Parse the scalar after the next ':' at or after *s. */
+static int parse_scalar(const char *s, float *out)
+{
+    const char *p = strchr(s, ':');
+    if (!p) return 0;
+    char *end;
+    float v = strtof(p + 1, &end);
+    if (end == p + 1) return 0;
+    *out = v;
+    return 1;
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 int cal_load(const char *path, imud_cal_t *cal)
@@ -108,10 +120,33 @@ int cal_load(const char *path, imud_cal_t *cal)
             cal->has_gyro = true;
     }
 
-    LOG_I("[cal] loaded %s  accel:%s  gyro:%s  mag:%s\n", path,
-            cal->has_accel ? "yes" : "no",
-            cal->has_gyro  ? "yes" : "no",
-            cal->has_mag   ? "yes" : "no");
+    sec = strstr(buf, "\"noise\"");
+    if (sec) {
+        const char *gd = strstr(sec, "\"gyro_density\"");
+        const char *gi = strstr(sec, "\"gyro_instability\"");
+        const char *ad = strstr(sec, "\"accel_density\"");
+        if (gd && parse_float_array(gd, cal->gyro_noise_density, 3) == 3)
+            cal->has_noise = true;
+        if (gi) parse_float_array(gi, cal->gyro_bias_instability, 3);
+        if (ad) parse_float_array(ad, cal->accel_noise_density, 3);
+    }
+
+    sec = strstr(buf, "\"gyro_temp\"");
+    if (sec) {
+        const char *co = strstr(sec, "\"coeff\"");
+        const char *rc = strstr(sec, "\"ref_c\"");
+        if (co && parse_float_array(co, cal->gyro_temp_coeff, 3) == 3 &&
+            rc && parse_scalar(rc, &cal->gyro_temp_ref_c))
+            cal->has_gyro_temp = true;
+    }
+
+    LOG_I("[cal] loaded %s  accel:%s  gyro:%s  mag:%s  noise:%s  temp:%s\n",
+            path,
+            cal->has_accel     ? "yes" : "no",
+            cal->has_gyro      ? "yes" : "no",
+            cal->has_mag       ? "yes" : "no",
+            cal->has_noise     ? "yes" : "no",
+            cal->has_gyro_temp ? "yes" : "no");
     return 0;
 }
 
@@ -139,14 +174,16 @@ int cal_write(const char *path, const imud_cal_t *cal)
                     i < 2 ? "," : "");
         }
         fprintf(f, "    ]\n");
-        fprintf(f, "  }%s\n", (cal->has_gyro || cal->has_accel) ? "," : "");
+        fprintf(f, "  }%s\n", (cal->has_gyro || cal->has_accel ||
+                               cal->has_noise || cal->has_gyro_temp) ? "," : "");
     }
 
     if (cal->has_gyro) {
         fprintf(f, "  \"gyro\": {\n");
         fprintf(f, "    \"bias\": [ %.8f, %.8f, %.8f ]\n",
                 cal->gyro_bias[0], cal->gyro_bias[1], cal->gyro_bias[2]);
-        fprintf(f, "  }%s\n", cal->has_accel ? "," : "");
+        fprintf(f, "  }%s\n", (cal->has_accel || cal->has_noise ||
+                               cal->has_gyro_temp) ? "," : "");
     }
 
     if (cal->has_accel) {
@@ -157,6 +194,29 @@ int cal_write(const char *path, const imud_cal_t *cal)
         fprintf(f, "    \"scale\":  [ %.8f, %.8f, %.8f ]\n",
                 cal->accel_scale[0], cal->accel_scale[1],
                 cal->accel_scale[2]);
+        fprintf(f, "  }%s\n", (cal->has_noise || cal->has_gyro_temp) ? "," : "");
+    }
+
+    if (cal->has_noise) {
+        fprintf(f, "  \"noise\": {\n");
+        fprintf(f, "    \"gyro_density\":     [ %.6e, %.6e, %.6e ],\n",
+                cal->gyro_noise_density[0], cal->gyro_noise_density[1],
+                cal->gyro_noise_density[2]);
+        fprintf(f, "    \"gyro_instability\": [ %.6e, %.6e, %.6e ],\n",
+                cal->gyro_bias_instability[0], cal->gyro_bias_instability[1],
+                cal->gyro_bias_instability[2]);
+        fprintf(f, "    \"accel_density\":    [ %.6e, %.6e, %.6e ]\n",
+                cal->accel_noise_density[0], cal->accel_noise_density[1],
+                cal->accel_noise_density[2]);
+        fprintf(f, "  }%s\n", cal->has_gyro_temp ? "," : "");
+    }
+
+    if (cal->has_gyro_temp) {
+        fprintf(f, "  \"gyro_temp\": {\n");
+        fprintf(f, "    \"coeff\": [ %.6e, %.6e, %.6e ],\n",
+                cal->gyro_temp_coeff[0], cal->gyro_temp_coeff[1],
+                cal->gyro_temp_coeff[2]);
+        fprintf(f, "    \"ref_c\": %.2f\n", cal->gyro_temp_ref_c);
         fprintf(f, "  }\n");
     }
 

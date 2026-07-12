@@ -75,7 +75,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check dist install install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test check dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-status imud-mon
 
@@ -169,6 +169,9 @@ test_config: src/config.c src/log.c test/test_config.c
 test_nmea: src/nmea.c test/test_nmea.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c test/test_capture.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 test_packet: src/packet.c test/test_packet.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
@@ -227,14 +230,15 @@ test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-test: test_fusion test_config test_nmea test_packet test_ring test_mount \
-      test_cal test_cal_math test_wmm test_position test_client test_stream \
-      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
-      test_prometheus
+test: test_fusion test_config test_nmea test_packet test_capture test_ring \
+      test_mount test_cal test_cal_math test_wmm test_position test_client \
+      test_stream test_log test_signalk test_mqtt test_influxdb test_mavlink \
+      test_libimud test_prometheus
 	./test_fusion
 	./test_config
 	./test_nmea
 	./test_packet
+	./test_capture
 	./test_ring
 	./test_mount
 	./test_cal
@@ -288,9 +292,9 @@ etc/%.service: etc/%.service.in .FORCE
 
 .FORCE:
 
-install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
+install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
-	install -m 755 imud imud-cal imud-status imud-mon $(DESTDIR)$(PREFIX)/bin/
+	install -m 755 imud imud-cal imud-status $(DESTDIR)$(PREFIX)/bin/
 	# ── System user (skipped for staged/packaged installs: DESTDIR set) ────
 	@if [ -z "$(DESTDIR)" ] && ! id -u imud >/dev/null 2>&1; then \
 	    useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
@@ -344,7 +348,6 @@ install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 	                   $(DESTDIR)$(MANDIR)/man5 \
 	                   $(DESTDIR)$(MANDIR)/man8
 	gzip -9c man/man1/imud-status.1 > $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz
-	gzip -9c man/man1/imud-mon.1    > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
 	gzip -9c man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
 	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
 	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
@@ -365,6 +368,17 @@ install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 # ── Install the Signal K bridge (optional) ─────────────────────────────────────
 # Run after `make bridges`.  Installs the binary, service, man page, and its own
 # config file (non-clobbering).  Prep for a standalone imud-signalk package.
+# Diagnostics that need not live on the daemon box (imud-mon listens to the
+# UDP broadcast from anywhere) — the imud-utils package.
+install-utils: imud-mon
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANDIR)/man1
+	install -m 755 imud-mon $(DESTDIR)$(PREFIX)/bin/
+	gzip -9c man/man1/imud-mon.1 > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-utils
+	install -m 644 packaging/imud-utils/copyright $(DESTDIR)$(DOCDIR)/imud-utils/copyright
+	gzip -9c packaging/imud-utils/changelog > $(DESTDIR)$(DOCDIR)/imud-utils/changelog.gz
+	@echo "Installed imud-utils (imud-mon)."
+
 # WMM coefficient data — separate target so it can be packaged on its own
 # (tzdata pattern: imud-wmm-data updates independently of the daemon).
 # imud auto-resolves /etc/imud/WMM.COF (operator override) then this path.
@@ -573,7 +587,8 @@ uninstall:
 	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
 	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
 	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/imud-prometheus \
-	       $(DESTDIR)$(DOCDIR)/imud-wmm-data $(DESTDIR)$(DOCDIR)/libimud
+	       $(DESTDIR)$(DOCDIR)/imud-wmm-data $(DESTDIR)$(DOCDIR)/imud-utils \
+	       $(DESTDIR)$(DOCDIR)/libimud
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi

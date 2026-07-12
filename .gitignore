@@ -21,6 +21,11 @@ src/drivers/*.d
 /test_config
 /test_nmea
 /test_packet
+/test_capture
+/fuzz_config
+/fuzz_json
+/fuzz_packet
+/fuzz_capture
 /test_ring
 /test_mount
 /test_cal
@@ -70,3 +75,22 @@ cal.json
 
 # macOS debug-symbol bundles from -g builds (never commit build artifacts)
 *.dSYM/
+*.imucap
+
+# debian build artifacts (dpkg-buildpackage)
+/debian/tmp/
+/debian/.debhelper/
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper
+/debian/debhelper-build-stamp
+/debian/imud/
+/debian/imud-utils/
+/debian/libimud0/
+/debian/libimud-dev/
+/debian/imud-signalk/
+/debian/imud-mqtt/
+/debian/imud-influxdb/
+/debian/imud-mavlink/
+/debian/imud-prometheus/
+/debian/imud-wmm-data/

@@ -26,9 +26,22 @@ typedef struct {
     float gyro_bias[3];        /* from cal.gyro.bias, rad/s */
     float mag_hard_iron[3];    /* from cal.mag.hard_iron, µT */
     float mag_soft_iron[3][3]; /* from cal.mag.soft_iron, 3×3 */
+
+    /* measured sensor noise (imud-cal characterize); overrides the generic
+     * [fusion] mekf_* datasheet numbers when use_measured_noise is set */
+    float gyro_noise_density[3];    /* rad/s/√Hz */
+    float gyro_bias_instability[3]; /* rad/s */
+    float accel_noise_density[3];   /* m/s²/√Hz */
+
+    /* gyro bias/temperature compensation (imud-cal fit-temp) */
+    float gyro_temp_coeff[3];  /* rad/s per °C */
+    float gyro_temp_ref_c;     /* die temp the coefficients are anchored to */
+
     bool  has_accel;
     bool  has_gyro;
     bool  has_mag;
+    bool  has_noise;
+    bool  has_gyro_temp;
 } imud_cal_t;
 
 /* ── API ─────────────────────────────────────────────────────────────────── */

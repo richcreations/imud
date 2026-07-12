@@ -6,6 +6,34 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.5 (unreleased)
+----------------
+* Capture & replay — the black box: [capture] records every raw sensor
+  sample (pre-mount, pre-calibration) to rotating .imucap files; the sim
+  driver replays them through the full pipeline (`imud --replay FILE`, or
+  [device] sim_file/sim_loop/sim_speed), and imud-status reports the
+  recording. Crash-safe, bounded-disk, and documented in docs/capture.md.
+  Fixed along the way (found by the new end-to-end replay test): the sim
+  driver's pitch axis was mirrored between its accel/mag and gyro outputs,
+  and the mag reader treated "data not ready" as data (re-fusing a stale
+  sample).
+* Per-unit sensor characterization: `imud-cal characterize --from <capture>`
+  measures gyro/accel noise density and gyro bias instability (Allan
+  variance) into cal.json; the filter uses the measured values instead of
+  generic datasheet numbers ([fusion] use_measured_noise, default true).
+* Gyro temperature compensation: `imud-cal fit-temp --from <capture>` fits
+  per-axis bias/temperature coefficients; the daemon subtracts the thermal
+  term before fusion.
+* Debian packages: a debian/ build producing ten .debs (imud, imud-utils,
+  libimud0, libimud-dev, the five bridges, imud-wmm-data), built for amd64
+  and arm64 in CI; version tags now draft a GitHub release with the .debs
+  and source tarball attached. imud-mon moved to the new imud-utils package
+  (`make install-utils`).
+* CI: ThreadSanitizer job (all cross-thread stop flags are now C11 _Atomic)
+  and libFuzzer harnesses over the four untrusted-input parsers (config,
+  gpsd/Signal K JSON, wire packet, capture reader).
+
+
 1.4.1
 -----
 * World Magnetic Model data split out of the imud package: WMM.COF now

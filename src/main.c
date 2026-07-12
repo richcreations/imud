@@ -83,6 +83,7 @@ static time_t g_start_time;
 
 typedef struct {
     char config_path[256];
+    char replay_path[256];
     int  skip_bias_cal;
     int  no_nmea;
     int  no_hirate;
@@ -95,6 +96,7 @@ static void usage(const char *prog)
     fprintf(stderr, "Usage: %s [OPTIONS]\n"
         "  --config PATH      Config file (default: /etc/imud/imud.conf)\n"
         "  --skip-bias-cal    Skip startup gyro bias estimation\n"
+        "  --replay FILE      Replay an .imucap capture through the sim driver\n"
         "  --no-nmea          Disable NMEA output stream\n"
         "  --no-highrate      Disable high-rate binary stream\n"
         "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
@@ -110,6 +112,8 @@ static int parse_args(int argc, char **argv, cli_args_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
+            snprintf(a->replay_path, sizeof(a->replay_path), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--skip-bias-cal") == 0) {
             a->skip_bias_cal = 1;
         } else if (strcmp(argv[i], "--no-nmea") == 0) {
@@ -237,7 +241,7 @@ static int status_sock_open(const char *path)
 typedef struct {
     const imud_config_t *cfg;
     imu_ctx_t           *imu;
-    volatile int        *stop;
+    _Atomic int         *stop;
     int                  status_fd;   /* listening AF_UNIX fd */
 } health_ctx_t;
 
@@ -317,6 +321,20 @@ static void write_status_response(int fd,
                 state.wave_height_m, state.wave_period_s, state.roll_period_s);
         else
             WS("Sea state:      settling\n");
+    }
+
+    if (cfg->capture_enabled) {
+        char     cpath[320];
+        uint64_t cbytes, cdrops;
+        bool     cactive;
+        imu_get_capture_status(imu, cpath, sizeof(cpath),
+                               &cbytes, &cdrops, &cactive);
+        if (cactive)
+            WS("Capture:        %s  (%.1f MB, %llu dropped)\n",
+                cpath, (double)cbytes / (1024.0 * 1024.0),
+                (unsigned long long)cdrops);
+        else
+            WS("Capture:        stopped (see log)\n");
     }
 
     if (cfg->nmea_enabled) {
@@ -541,6 +559,16 @@ int main(int argc, char **argv)
     if (args.no_nmea)        cfg.nmea_enabled     = false;
     if (args.no_hirate)      cfg.highrate_enabled = false;
     if (args.skip_bias_cal)  cfg.gyro_bias_sec    = 0.0;
+    if (args.replay_path[0]) {
+        /* gpsfake-style: force both sensors onto the sim driver playing the
+         * capture, polling path (no GPIO lines on replayed data). */
+        snprintf(cfg.imu_driver, sizeof(cfg.imu_driver), "sim");
+        snprintf(cfg.mag_driver, sizeof(cfg.mag_driver), "sim");
+        snprintf(cfg.sim_file,   sizeof(cfg.sim_file),   "%s", args.replay_path);
+        cfg.imu_int_gpio = 0;
+        cfg.mag_int_gpio = 0;
+        LOG_I("[main] replay mode: %s\n", cfg.sim_file);
+    }
 
     apply_wmm_if_configured(&cfg);
 
@@ -548,6 +576,25 @@ int main(int argc, char **argv)
 
     imud_cal_t cal;
     if (cal_load(cfg.cal_file, &cal) < 0) return 1;
+
+    /* Per-unit measured noise (imud-cal characterize) beats the generic
+     * datasheet numbers.  The MEKF takes one scalar per sensor, so use the
+     * worst (largest) axis — conservative. */
+    if (cfg.use_measured_noise && cal.has_noise) {
+        float gn = cal.gyro_noise_density[0], gb = cal.gyro_bias_instability[0],
+              an = cal.accel_noise_density[0];
+        for (int i = 1; i < 3; i++) {
+            if (cal.gyro_noise_density[i]    > gn) gn = cal.gyro_noise_density[i];
+            if (cal.gyro_bias_instability[i] > gb) gb = cal.gyro_bias_instability[i];
+            if (cal.accel_noise_density[i]   > an) an = cal.accel_noise_density[i];
+        }
+        if (gn > 0.0f && isfinite(gn)) cfg.mekf_gyro_noise  = gn;
+        if (gb > 0.0f && isfinite(gb)) cfg.mekf_gyro_bias   = gb;
+        if (an > 0.0f && isfinite(an)) cfg.mekf_accel_noise = an;
+        LOG_I("[main] fusion noise from cal.json (measured): "
+              "gyro %.3g rad/s/sqrtHz  bias %.3g rad/s  accel %.3g m/s2/sqrtHz\n",
+              cfg.mekf_gyro_noise, cfg.mekf_gyro_bias, cfg.mekf_accel_noise);
+    }
 
     /* ── 3. Log destination, style, and level ───────────────────────────── */
 
@@ -613,13 +660,15 @@ int main(int argc, char **argv)
 
     /* ── 10. Start threads ───────────────────────────────────────────────── */
 
-    volatile int stop = 0;
+    _Atomic int stop = 0;
 
     /* Reader threads first — must be running before fusion blocks on ring. */
     pthread_t ism_tid, mag_tid, fusion_tid, health_tid;
     pthread_t nmea_tid = 0, hirate_tid = 0, stream_tid = 0, pos_tid = 0;
     bool nmea_started = false, hirate_started = false;
     bool stream_started = false, pos_started = false;
+    pthread_t capture_tid;
+    bool capture_started = false;
 
     if (pthread_create(&ism_tid, NULL, ism_reader_thread, imu) != 0) {
         LOG_E("[main] fatal: cannot create ism_reader thread: %s\n", strerror(errno));
@@ -640,6 +689,14 @@ int main(int argc, char **argv)
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
         pid_remove(PID_FILE); return 1;
+    }
+
+    if (cfg.capture_enabled) {
+        if (pthread_create(&capture_tid, NULL, capture_thread, imu) != 0)
+            LOG_E("[main] cannot create capture thread: %s — "
+                  "black box disabled\n", strerror(errno));
+        else
+            capture_started = true;
     }
 
     health_ctx_t hctx = {
@@ -783,6 +840,7 @@ int main(int argc, char **argv)
     join_thread(fusion_tid, "fusion");
     join_thread(mag_tid,    "mag_reader");
     join_thread(ism_tid,    "ism_reader");
+    if (capture_started) join_thread(capture_tid, "capture");
 
     /* ── 13. Cleanup ─────────────────────────────────────────────────────── */
 

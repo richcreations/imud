@@ -34,7 +34,7 @@ typedef struct imu_ctx imu_ctx_t;
 typedef struct {
     const imud_config_t  *cfg;   /* daemon config (read-only after start) */
     imu_ctx_t            *imu;   /* target for imu_ctx_set_declination() */
-    volatile sig_atomic_t stop;  /* set to 1 to request thread exit */
+    _Atomic sig_atomic_t stop;   /* set to 1 to request thread exit */
 } pos_ctx_t;
 
 /*

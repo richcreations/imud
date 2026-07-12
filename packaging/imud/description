@@ -1,10 +1,14 @@
 IMU daemon — attitude, heading, and heave for boats ("gpsd for IMUs")
  imud reads an I2C IMU and magnetometer, fuses them with a quaternion
  Multiplicative EKF, and serves attitude, heading (magnetic and WMM true),
- rate of turn, and heave to the network: NMEA 0183 over UDP, a high-rate
- binary UDP stream, and a local AF_UNIX subscription socket.
+ rate of turn, heave, and sea-state statistics to the network: NMEA 0183
+ over UDP, a high-rate binary UDP stream, and a local AF_UNIX subscription
+ socket. A built-in black box can record every raw sensor sample to
+ .imucap capture files, and the sim driver replays them (or a synthetic
+ scenario) through the full pipeline.
  .
- Includes calibration (imud-cal), status and monitoring tools (imud-status,
- imud-mon), C and Python client libraries, and a hardened systemd service.
- Optional protocol bridges are packaged separately: imud-signalk, imud-mqtt,
- imud-influxdb, imud-mavlink.
+ Includes calibration and self-characterization (imud-cal), a status tool
+ (imud-status), the Python client, and a hardened systemd service. The
+ network monitor ships as imud-utils; protocol bridges are packaged
+ separately: imud-signalk, imud-mqtt, imud-influxdb, imud-mavlink,
+ imud-prometheus.

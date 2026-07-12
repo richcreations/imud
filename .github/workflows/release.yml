@@ -1,0 +1,60 @@
+# Release pipeline: on a version tag, build the .debs for amd64 + arm64 and
+# the dist tarball, then open a DRAFT GitHub release with everything
+# attached — the maintainer reviews and publishes it by hand.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  debs:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debhelper devscripts lintian \
+                                  libgpiod-dev libmosquitto-dev
+
+      - name: Build packages
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: Collect packages
+        run: mkdir -p dist-debs && mv ../*.deb dist-debs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ runner.arch }}
+          path: dist-debs/*.deb
+
+  release:
+    needs: debs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dist tarball
+        run: make dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+             --title "imud $GITHUB_REF_NAME" \
+             --notes "Draft — see the NEWS file for user-visible changes." \
+             imud-*.tar.gz artifacts/*.deb

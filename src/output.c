@@ -102,7 +102,7 @@ struct out_ctx {
     uint64_t             nmea_errors;
     uint64_t             hirate_errors;
 
-    volatile int         stop;
+    _Atomic int          stop;   /* C11-clean cross-thread stop (TSan) */
 };
 
 /* ── Socket helpers ──────────────────────────────────────────────────────── */
