@@ -3,9 +3,10 @@ packaging/ — upstream packaging seeds
 
 This directory holds the per-package metadata that imud maintains upstream.
 Since 1.5 a real debian/ directory exists in the repository root and builds
-ten binary packages with debhelper (dpkg-buildpackage -us -uc -b; CI does
-this on amd64 + arm64 and the release workflow attaches the .debs to GitHub
-releases). One subdirectory here per binary package:
+ten binary packages with debhelper (dpkg-buildpackage -us -uc -b; CI builds
+arm64 packages for bookworm + trixie in debian containers, and the release
+workflow attaches the .debs to GitHub releases — amd64 users build from
+source). One subdirectory here per binary package:
 
   imud/            the daemon + imud-cal + imud-status (+ Python client)
   imud-utils/      network diagnostics: imud-mon (wire-pinned to the daemon)
