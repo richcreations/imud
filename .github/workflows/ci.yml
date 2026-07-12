@@ -1,5 +1,10 @@
 name: CI
 
+# Least-privilege token: every job only reads the repo (artifact upload
+# does not need contents:write).
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
