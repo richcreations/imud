@@ -244,9 +244,12 @@ jobs:
   debs:
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
         dist: [bookworm, trixie]
-    runs-on: ${{ matrix.os }}
+    # arm64 only: the daemon needs I2C hardware and the bridges live on the
+    # daemon's machine, so amd64 debs have no real audience (an x86 imud-mon
+    # user builds from source).  amd64 COMPILATION is still covered by
+    # build-and-test + the sanitizer/fuzz jobs.
+    runs-on: ubuntu-24.04-arm
     container: debian:${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
