@@ -6,6 +6,17 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.4.1
+-----
+* World Magnetic Model data split out of the imud package: WMM.COF now
+  installs to /usr/share/imud/ via its own target (`make install-wmm-data`,
+  packaged as imud-wmm-data, versioned by model epoch — 2025.0) so a new
+  five-year model can ship without a daemon release. The [position]
+  wmm_file default is now empty = auto-resolve: an operator-supplied
+  /etc/imud/WMM.COF (where 1.4-and-earlier installs put it) is preferred,
+  then the packaged /usr/share/imud/WMM.COF.
+
+
 1.4
 ---
 * Sea state: significant wave height (Hs = 4σ(heave)), mean zero-crossing

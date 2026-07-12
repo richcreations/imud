@@ -299,7 +299,7 @@ static void test_load_partial_override(void)
     end_test(fb);
 }
 
-/* [position] defaults: all zero / disabled, wmm_file = /etc/imud/WMM.COF. */
+/* [position] defaults: all zero / disabled, wmm_file = "" (auto-resolve). */
 static void test_defaults_position(void)
 {
     begin_test("test_defaults_position");
@@ -311,8 +311,15 @@ static void test_defaults_position(void)
     EXPECT(!cfg.pos_declination_valid,                 "pos_declination_valid default false");
     EXPECT_NEAR_D(cfg.pos_lat_deg,         0.0, 1e-9, "pos_lat_deg default 0");
     EXPECT_NEAR_D(cfg.pos_lon_deg,         0.0, 1e-9, "pos_lon_deg default 0");
-    EXPECT_STR(cfg.pos_wmm_file, "/etc/imud/WMM.COF", "pos_wmm_file default");
+    EXPECT_STR(cfg.pos_wmm_file, "", "pos_wmm_file default is the auto sentinel");
     EXPECT_NEAR_D(cfg.pos_fix_max_age_h,  24.0, 1e-5, "pos_fix_max_age_h default 24 h");
+
+    /* config_load resolves the auto sentinel: the /etc override when that
+     * file exists on this machine, else the /usr/share package data path. */
+    config_load("/tmp/imud_no_such_file_xyz.conf", &cfg);
+    EXPECT(strcmp(cfg.pos_wmm_file, "/etc/imud/WMM.COF") == 0 ||
+           strcmp(cfg.pos_wmm_file, "/usr/share/imud/WMM.COF") == 0,
+           "auto wmm_file resolves to /etc override or /usr/share data");
     end_test(fb);
 }
 

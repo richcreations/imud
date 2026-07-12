@@ -100,10 +100,21 @@ This installs:
 | Binaries | `/usr/local/bin/` |
 | Reference config | `/etc/imud/imud.conf` (skipped if it already exists) |
 | Calibration file | `/etc/imud/cal.json` (if `config/cal.json` is present) |
-| WMM coefficients | `/etc/imud/WMM.COF` (skipped if already present) |
 | systemd unit | `/etc/systemd/system/imud.service` |
 | Client libraries | `libimud.so` + `/usr/local/include/imud.h` (see `man 3 libimud`), `/usr/local/share/imud/imud_client.py` |
 | Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `imud-mon.1` |
+
+WMM coefficient data is installed separately — it is versioned by model epoch
+(WMM2025), not by imud release, so it ships as its own package
+(`imud-wmm-data`) that can be updated independently:
+
+```sh
+sudo make install-wmm-data
+```
+
+This installs `WMM.COF` → `/usr/share/imud/WMM.COF`. To use a newer model
+before the package updates, drop it at `/etc/imud/WMM.COF` — imud prefers
+that path when it exists.
 
 `make install` also creates a dedicated system user `imud` (in the `gpio`
 and `i2c` groups) that the service runs as. `sudo make uninstall` reverses
@@ -390,7 +401,7 @@ sustained turns.
 | `declination_deg` | float | `0.0` | Static declination in degrees. East positive (+), west negative (−). Ignored when `lat_deg` and `lon_deg` are both non-zero. |
 | `lat_deg` | double | `0.0` | Geodetic latitude in decimal degrees (+N / −S). Set with `lon_deg` to enable WMM auto-compute. |
 | `lon_deg` | double | `0.0` | Geodetic longitude in decimal degrees (+E / −W). Set with `lat_deg` to enable WMM auto-compute. |
-| `wmm_file` | string | `"/etc/imud/WMM.COF"` | Path to the WMM coefficient file, installed by `make install`. Valid 2025.0–2030.0; replace with WMM2030 around late 2029. |
+| `wmm_file` | string | `""` (auto) | Path to the WMM coefficient file. Empty = auto-resolve: `/etc/imud/WMM.COF` if present (operator override), else `/usr/share/imud/WMM.COF` (`imud-wmm-data` package / `make install-wmm-data`). Bundled model WMM2025, valid 2025.0–2030.0. |
 
 **Live position sources**
 

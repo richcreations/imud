@@ -1,3 +1,11 @@
+imud (1.4.1) unstable; urgency=medium
+
+  * WMM.COF moved to the new model-versioned imud-wmm-data package
+    (/usr/share/imud/WMM.COF); imud no longer ships it. wmm_file default
+    is now "" = auto-resolve, preferring an operator /etc/imud/WMM.COF.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 15:30:00 -0700
+
 imud (1.4) unstable; urgency=medium
 
   * Sea state: significant wave height, wave period, roll/pitch periods and

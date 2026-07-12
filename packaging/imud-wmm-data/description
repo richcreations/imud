@@ -1,0 +1,8 @@
+World Magnetic Model coefficient data for imud
+ Coefficient file (WMM.COF) for the World Magnetic Model, a joint product of
+ the United States' National Geospatial-Intelligence Agency (NGA) and the
+ United Kingdom's Defence Geographic Centre (DGC), distributed by NOAA/NCEI.
+ imud uses it to compute magnetic declination from a position fix, giving
+ true heading with no network access. Packaged separately (like tzdata) so a
+ new five-year model epoch can be shipped without touching the daemon.
+ Architecture-independent data.

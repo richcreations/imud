@@ -1,4 +1,4 @@
-.TH IMUD 8 "2026-07-11" "imud 1.4" "System Manager's Manual"
+.TH IMUD 8 "2026-07-11" "imud 1.4.1" "System Manager's Manual"
 .SH NAME
 imud \- IMU daemon for marine and robotics navigation
 .SH SYNOPSIS
@@ -89,14 +89,17 @@ Calibration data (hard/soft-iron offsets, gyro bias, accelerometer corrections).
 Written by
 .BR imud-cal (8).
 .TP
-.I /etc/imud/WMM.COF
-World Magnetic Model 2025 coefficient file.
+.I /usr/share/imud/WMM.COF
+World Magnetic Model 2025 coefficient file (imud-wmm-data package).
 Used for automatic magnetic-declination computation when
 .B position.lat_deg
 and
 .B position.lon_deg
 are set.
-Valid 2025.0\(en2030.0; replace with WMM2030 around late 2029.
+Valid 2025.0\(en2030.0.
+An operator-supplied
+.I /etc/imud/WMM.COF
+overrides the packaged data when present.
 .TP
 .I /run/imud/imud.sock
 Unix domain socket used by

@@ -75,8 +75,8 @@ jobs:
       # correct paths, no useradd, no systemctl.
       - name: Staged install layout
         run: |
-          make install install-signalk install-mqtt install-influxdb install-mavlink \
-               install-prometheus \
+          make install install-wmm-data install-signalk install-mqtt install-influxdb \
+               install-mavlink install-prometheus \
                DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system
           test -x stage/usr/bin/imud
           test -x stage/usr/bin/imud-mavlink
@@ -95,6 +95,10 @@ jobs:
           test -f stage/usr/include/imud.h
           test ! -e stage/usr/include/imud_client.h
           test -f stage/usr/lib/pkgconfig/libimud.pc
+          # WMM data is its own package: /usr/share only, never /etc
+          test -f stage/usr/share/imud/WMM.COF
+          test -f stage/usr/share/doc/imud-wmm-data/copyright
+          test ! -e stage/etc/imud/WMM.COF
           if id -u imud >/dev/null 2>&1; then echo "useradd ran under DESTDIR"; exit 1; fi
           echo "staged layout OK"
 

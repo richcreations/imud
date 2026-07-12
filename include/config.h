@@ -183,7 +183,8 @@ typedef struct {
     bool   pos_speed_valid;       /* derived: cleared when the GPS fix expires */
     double pos_lat_deg;           /* geodetic latitude  (+N / -S); 0 = WMM disabled */
     double pos_lon_deg;           /* geodetic longitude (+E / -W); 0 = WMM disabled */
-    char   pos_wmm_file[256];     /* path to WMM.COF; default /etc/imud/WMM.COF */
+    char   pos_wmm_file[256];     /* path to WMM.COF; "" (default) auto-resolves:
+                                   * /etc/imud (override) then /usr/share/imud (data) */
 
     /* Live position sources — gpsd (preferred) and/or SignalK HTTP poll */
     bool  pos_gpsd_enabled;       /* connect to gpsd for live lat/lon */

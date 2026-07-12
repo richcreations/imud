@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
+#include <unistd.h>
 #include <math.h>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -233,7 +234,7 @@ void config_defaults(imud_config_t *cfg)
     cfg->pos_declination_valid = false;
     cfg->pos_lat_deg  = 0.0;
     cfg->pos_lon_deg  = 0.0;
-    snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file), "/etc/imud/WMM.COF");
+    cfg->pos_wmm_file[0] = '\0';   /* "" = auto-resolve, see resolve_wmm_file() */
 
     cfg->pos_gpsd_enabled = false;
     snprintf(cfg->pos_gpsd_host, sizeof(cfg->pos_gpsd_host), "localhost");
@@ -628,11 +629,32 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 #undef NEED_STR
 }
 
+/*
+ * WMM coefficient file resolution. An explicit [position] wmm_file is used
+ * as-is; the empty default auto-resolves so the packaging split works:
+ *   1. /etc/imud/WMM.COF        — operator override (newer model drop-in;
+ *                                 also where ≤1.4 installs put the file)
+ *   2. /usr/share/imud/WMM.COF  — package data (imud-wmm-data / the
+ *                                 install-wmm-data target)
+ * Re-run on every load, so a dropped-in override is picked up by SIGHUP.
+ */
+static void resolve_wmm_file(imud_config_t *cfg)
+{
+    if (cfg->pos_wmm_file[0] != '\0') return;
+    if (access("/etc/imud/WMM.COF", R_OK) == 0)
+        snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file),
+                 "/etc/imud/WMM.COF");
+    else
+        snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file),
+                 "/usr/share/imud/WMM.COF");
+}
+
 int config_load(const char *path, imud_config_t *cfg)
 {
     FILE *f = fopen(path, "r");
     if (!f) {
         LOG_E("config: cannot open '%s': %s\n", path, strerror(errno));
+        resolve_wmm_file(cfg);   /* daemon proceeds on defaults */
         return CONFIG_ERR_OPEN;
     }
 
@@ -696,5 +718,6 @@ int config_load(const char *path, imud_config_t *cfg)
     }
 
     fclose(f);
+    resolve_wmm_file(cfg);
     return rc;
 }
