@@ -218,21 +218,26 @@ jobs:
           done
 
   # Build the real .debs (binary-only — the source-package/orig dance is a
-  # Debian-archive concern, not a GitHub-release one) on both architectures.
-  # Lintian runs advisory: its findings gate archive submission, not CI.
+  # Debian-archive concern, not a GitHub-release one) on both architectures,
+  # INSIDE a debian:trixie container so the packages depend on Debian's
+  # library names/versions (the deploy target is Raspberry Pi OS / Debian
+  # trixie, not the runner's Ubuntu; trixie also ships libgpiod 2.x, which
+  # the Makefile auto-detects).  Lintian runs advisory: its findings gate
+  # archive submission, not CI.
   debs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y debhelper devscripts lintian \
-                                  libgpiod-dev libmosquitto-dev
+          apt-get update
+          apt-get install -y build-essential debhelper devscripts lintian \
+                             pkgconf libgpiod-dev libmosquitto-dev
 
       - name: Build packages
         run: dpkg-buildpackage -us -uc -b

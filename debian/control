@@ -3,6 +3,7 @@ Section: misc
 Priority: optional
 Maintainer: Richard Simpson <richcreations@gmail.com>
 Build-Depends: debhelper-compat (= 13),
+               pkgconf,
                libgpiod-dev,
                libmosquitto-dev
 Standards-Version: 4.6.2
