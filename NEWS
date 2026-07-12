@@ -31,7 +31,12 @@ packaging-level record, and the git history holds the full detail.
   (`make install-utils`).
 * CI: ThreadSanitizer job (all cross-thread stop flags are now C11 _Atomic)
   and libFuzzer harnesses over the four untrusted-input parsers (config,
-  gpsd/Signal K JSON, wire packet, capture reader).
+  gpsd/Signal K JSON, wire packet, capture reader). The packet fuzzer
+  immediately found — and this release fixes — a client-side hang:
+  imud_true_heading()'s degree normalization looped effectively forever on
+  a crafted packet carrying Inf or huge floats, so a hostile UDP datagram
+  could wedge any libimud/imud_client.h consumer. Out-of-range values now
+  return the -1.0 sentinel.
 
 
 1.4.1

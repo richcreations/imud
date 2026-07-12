@@ -168,6 +168,33 @@ static void test_client_true_heading_helper(void)
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
     EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
                 "helper returns -1.0 without FLAG_DECLINATION_VALID");
+
+    /* Hostile wire values must not hang or leak garbage (a CRC-valid
+     * packet can carry any float — the fuzzer hung the old while-loop
+     * normalization with Inf/1e38 for 20 minutes). */
+    make_inputs(&st, &mag, &imu, &raw);
+    st.heading_deg = 3.4e38f;                     /* huge finite */
+    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
+                "huge heading returns the sentinel, promptly");
+
+    st.heading_deg = 1.0f / 0.0f;                 /* +Inf */
+    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
+                "Inf heading returns the sentinel");
+
+    st.heading_deg = 0.0f / 0.0f;                 /* NaN */
+    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
+                "NaN heading returns the sentinel");
+
+    /* wrap case the loop exists for: 359 mag + 5 E = 4 true */
+    make_inputs(&st, &mag, &imu, &raw);
+    st.heading_deg = 359.0f;
+    st.declination_deg = 5.0f;
+    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    EXPECT_NEAR(client_true_heading(&pkt), 4.0f, 0.01f,
+                "wraparound 359+5 -> 4 still works");
     end(fb);
 }
 

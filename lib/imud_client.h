@@ -169,7 +169,9 @@ typedef char imud__size_check[sizeof(imud_packet_t) == IMUD_PACKET_SIZE ? 1 : -1
  * imud_true_heading — compute true (geographic) heading from a packet.
  *
  * Returns the true heading in [0, 360) when IMUD_FLAG_DECLINATION_VALID is
- * set, or -1.0f if the declination is not yet known.
+ * set, or -1.0f if the declination is not yet known — or if the packet
+ * carries out-of-range values (wire data is untrusted: a crafted packet
+ * with Inf/NaN/1e38 here must not hang the caller; found by fuzzing).
  *
  * No <math.h> required.
  */
@@ -177,10 +179,13 @@ static inline float imud_true_heading(const imud_packet_t *pkt)
 {
     if (!(pkt->flags & IMUD_FLAG_DECLINATION_VALID))
         return -1.0f;
-    /* heading_deg ∈ [0,360) + declination ∈ (-360,360) + 360 → h > 0 always;
-     * the while handles the h ≥ 360 case (e.g. heading=359° + decl=+5°). */
-    float h = pkt->heading_deg + pkt->declination_deg + 360.0f;
-    while (h >= 360.0f) h -= 360.0f;
+    float h = pkt->heading_deg + pkt->declination_deg;
+    /* Legit range is (-360, 720); the comparison is written so NaN fails
+     * it too.  Anything outside gets the same "not available" sentinel. */
+    if (!(h > -720.0f && h < 720.0f))
+        return -1.0f;
+    h += 720.0f;                       /* → (0, 1440) */
+    while (h >= 360.0f) h -= 360.0f;   /* at most 3 iterations */
     return h;
 }
 
