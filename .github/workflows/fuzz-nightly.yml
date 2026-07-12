@@ -1,0 +1,65 @@
+# Deep fuzzing on a schedule: one hour per harness (vs. 60 s on push),
+# 4-way fork mode to use the whole runner, and the evolved corpus cached
+# between nights so coverage compounds instead of restarting from the
+# seeds.  Push CI keeps its fast smoke run; this is the one that digs.
+#
+# Note: GitHub pauses scheduled workflows after ~60 days without repo
+# activity; the workflow_dispatch trigger allows manual runs any time.
+name: Fuzz (nightly)
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # 06:17 UTC daily (off the top-of-hour rush)
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [config, json, packet, capture]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Resume from the previous night's evolved corpus; fall back to the
+      # committed seeds on first run or cache eviction.
+      - name: Restore corpus
+        uses: actions/cache@v4
+        with:
+          path: corpus-${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Build harness
+        run: |
+          case "${{ matrix.target }}" in
+            config)  DEPS="src/config.c src/log.c" ;;
+            json)    DEPS="src/position.c src/wmm.c src/log.c" ;;
+            packet)  DEPS="" ;;
+            capture) DEPS="src/capture.c" ;;
+          esac
+          clang -g -O1 -fsanitize=fuzzer,address,undefined \
+                -D_GNU_SOURCE -DIMUD_CLIENT_ALLOW_DEPRECATED -Iinclude \
+                fuzz/fuzz_${{ matrix.target }}.c $DEPS \
+                -o fuzz_${{ matrix.target }} -lm
+
+      - name: Fuzz (1 h, 4-way fork)
+        run: |
+          mkdir -p "corpus-${{ matrix.target }}"
+          ./fuzz_${{ matrix.target }} \
+              -fork=4 -max_total_time=3600 -timeout=10 -rss_limit_mb=1024 \
+              -close_fd_mask=3 \
+              "corpus-${{ matrix.target }}" "test/fuzz/corpus/${{ matrix.target }}"
+
+      - name: Save reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-nightly-reproducers-${{ matrix.target }}
+          path: |
+            crash-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore

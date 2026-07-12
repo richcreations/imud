@@ -128,9 +128,10 @@ shipped.)
   roll/pitch periods + significant amplitudes; WAVE_VALID flag.
 - **Hardened-to-a-fault CI.** ✅ ASan/UBSan (1.4) + TSan and libFuzzer jobs
   (1.5): four fuzz harnesses (config, gpsd/SK JSON, wire packet, .imucap
-  reader) with seed corpora in test/fuzz/; all cross-thread stop flags became
-  `_Atomic` to make the tree TSan-clean. systemd unit sandboxing already
-  ships in every service file.
+  reader) with seed corpora in test/fuzz/, a 60 s smoke on every push plus a
+  nightly deep run (1 h/harness, 4-way fork, cached corpus that compounds
+  coverage); all cross-thread stop flags became `_Atomic` to make the tree
+  TSan-clean. systemd unit sandboxing already ships in every service file.
 - **arm64 CI.** ✅ shipped 2026-07-11 (v1.4); 1.5 added the `debs` job on the
   same matrix — dpkg-buildpackage builds all ten packages on amd64 + arm64,
   and the Release workflow drafts a GitHub release with the .debs + tarball
