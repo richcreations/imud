@@ -75,7 +75,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check dist install install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test check dist install install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-status imud-mon
 
@@ -312,12 +312,6 @@ install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 	else \
 	    echo "No config/cal.json found — run 'imud-cal' after install to calibrate."; \
 	fi
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/WMM.COF" ]; then \
-	    install -m 644 data/WMM.COF $(DESTDIR)$(ETCDIR)/WMM.COF; \
-	    echo "Installed WMM2025 coefficients: $(DESTDIR)$(ETCDIR)/WMM.COF"; \
-	else \
-	    echo "WMM.COF already present — skipping (preserving operator-installed model)"; \
-	fi
 	# ── Systemd service ────────────────────────────────────────────────────
 	install -m 644 etc/imud.service         $(DESTDIR)$(SVCDIR)/imud.service
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
@@ -371,6 +365,18 @@ install: imud imud-cal imud-status imud-mon etc/imud.service $(SHLIB) libimud.pc
 # ── Install the Signal K bridge (optional) ─────────────────────────────────────
 # Run after `make bridges`.  Installs the binary, service, man page, and its own
 # config file (non-clobbering).  Prep for a standalone imud-signalk package.
+# WMM coefficient data — separate target so it can be packaged on its own
+# (tzdata pattern: imud-wmm-data updates independently of the daemon).
+# imud auto-resolves /etc/imud/WMM.COF (operator override) then this path.
+install-wmm-data:
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/share/imud
+	install -m 644 data/WMM.COF $(DESTDIR)$(PREFIX)/share/imud/WMM.COF
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-wmm-data
+	install -m 644 packaging/imud-wmm-data/copyright $(DESTDIR)$(DOCDIR)/imud-wmm-data/copyright
+	gzip -9c packaging/imud-wmm-data/changelog > $(DESTDIR)$(DOCDIR)/imud-wmm-data/changelog.gz
+	@echo "Installed WMM2025 coefficients: $(DESTDIR)$(PREFIX)/share/imud/WMM.COF"
+	@echo "  (drop a newer model at $(ETCDIR)/WMM.COF to override; imud prefers it)"
+
 install-signalk: imud-signalk etc/imud-signalk.service
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-signalk $(DESTDIR)$(PREFIX)/bin/
@@ -541,6 +547,7 @@ uninstall:
 	      $(DESTDIR)$(LIBDIR)/libimud.so \
 	      $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
+	      $(DESTDIR)$(PREFIX)/share/imud/WMM.COF \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
@@ -566,7 +573,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
 	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
 	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/imud-prometheus \
-	       $(DESTDIR)$(DOCDIR)/libimud
+	       $(DESTDIR)$(DOCDIR)/imud-wmm-data $(DESTDIR)$(DOCDIR)/libimud
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi

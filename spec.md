@@ -851,7 +851,8 @@ stats_hz       = 1               # interval for periodic stats line to log
 declination_deg  = 0.0           # static °E+; ignored when lat/lon set
 lat_deg          = 0.0           # geodetic latitude  (+N / -S); 0 = WMM disabled
 lon_deg          = 0.0           # geodetic longitude (+E / -W); 0 = WMM disabled
-wmm_file         = "/etc/imud/WMM.COF"  # WMM2025, valid 2025–2030; replace every ~5 yrs
+wmm_file         = ""            # "" = auto: /etc/imud/WMM.COF override, else
+                                 # /usr/share/imud/WMM.COF (imud-wmm-data package)
 
 # Live position sources (Step 3).  Enable one to receive automatic GPS-driven
 # WMM declination updates as the vessel moves.
@@ -1184,7 +1185,10 @@ imud-mon:    src/config.o src/mon_main.c
 ```
 
 `make install` also installs the five man pages (imud.8, imud-cal.8,
-imud.conf.5, imud-status.1, imud-mon.1) and `data/WMM.COF` → `/etc/imud/`.
+imud.conf.5, imud-status.1, imud-mon.1). WMM coefficient data is a separate
+target — `make install-wmm-data` puts `data/WMM.COF` → `/usr/share/imud/` so
+it can be packaged (imud-wmm-data) and updated independently of the daemon;
+an operator-supplied `/etc/imud/WMM.COF` overrides it.
 
 Cross-compile for Pi from x86 host:
 

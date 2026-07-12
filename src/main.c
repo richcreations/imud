@@ -746,6 +746,8 @@ int main(int argc, char **argv)
                 cfg.accel_skip_thresh          = new_cfg.accel_skip_thresh;
                 cfg.engine_vibration_g2        = new_cfg.engine_vibration_g2;
                 cfg.engine_accel_skip_thresh   = new_cfg.engine_accel_skip_thresh;
+                snprintf(cfg.pos_wmm_file, sizeof cfg.pos_wmm_file,
+                         "%s", new_cfg.pos_wmm_file);
                 cfg.pos_declination_deg        = new_cfg.pos_declination_deg;
                 cfg.pos_declination_valid      = new_cfg.pos_declination_valid;
                 imu_ctx_update_config(imu, &cfg);

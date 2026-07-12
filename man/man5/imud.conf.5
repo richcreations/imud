@@ -1,4 +1,4 @@
-.TH IMUD.CONF 5 "2026-07-11" "imud 1.4" "File Formats Manual"
+.TH IMUD.CONF 5 "2026-07-11" "imud 1.4.1" "File Formats Manual"
 .SH NAME
 imud.conf \- configuration file for the imud IMU daemon
 .SH SYNOPSIS
@@ -527,10 +527,17 @@ to enable WMM auto-compute.
 Geodetic longitude in decimal degrees (+E / \-W).
 .TP
 .B wmm_file
-.RI (string,\ default:\ \(dq/etc/imud/WMM.COF\(dq)
-Path to the WMM2025 coefficient file.
-Valid 2025.0\(en2030.0.
-Replace with WMM2030 around late 2029:
+.RI (string,\ default:\ \(dq\(dq\ =\ auto)
+Path to the WMM coefficient file.
+When empty (the default), imud uses
+.I /etc/imud/WMM.COF
+if it exists (operator override), otherwise
+.I /usr/share/imud/WMM.COF
+(installed by the imud-wmm-data package /
+.BR "make install-wmm-data" ).
+The bundled model is WMM2025, valid 2025.0\(en2030.0.
+When WMM2030 is published (expected late 2029), update the data package \(em
+or drop the new file in as an override:
 .EX
     sudo cp WMM2030.COF /etc/imud/WMM.COF
     sudo systemctl reload imud
@@ -584,8 +591,11 @@ Per-user override.
 Calibration data written by
 .BR imud-cal (8).
 .TP
+.I /usr/share/imud/WMM.COF
+World Magnetic Model 2025 coefficients (imud-wmm-data package).
+.TP
 .I /etc/imud/WMM.COF
-World Magnetic Model 2025 coefficients.
+Operator override; preferred over the packaged data when present.
 .SH SEE ALSO
 .BR imud (8),
 .BR imud-cal (8),

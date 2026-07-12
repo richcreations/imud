@@ -138,7 +138,20 @@ shipped.)
 - **SPI transport.** Unlocks high-ODR modes (6.6 kHz ISM330) and lower jitter;
   pairs with the Pi 5 latency profiling item.
 
-## 7. Small items
+## 7. Calendar item: WMM2030 refresh  *(due ~December 2029)*
+
+data/WMM.COF is WMM2025, valid 2025.0–2030.0. When NOAA/NCEI publishes
+WMM2030 (expected December 2029), release a new imud-wmm-data package
+(model-versioned, `2030.0` — the tzdata pattern; independent of imud
+releases): replace the COF, re-verify against the official test values
+(test_wmm), bump packaging/imud-wmm-data/changelog. Existing installs can
+also drop the new file into /etc/imud/WMM.COF, which imud prefers over the
+packaged /usr/share/imud/WMM.COF. Vendoring decision reviewed 2026-07-11: no
+Debian package provides the official NOAA COF format (geographiclib-tools
+only offers a *downloader* for its own binary format), and a marine daemon
+must work offline — keep vendoring.
+
+## 8. Small items
 
 - `ctx->stop` in imu.c stays `volatile int` (not `_Atomic`) because its address feeds
   the `imu_ring_pop()` API; changing it means touching ring.h/ring.c/test_ring.

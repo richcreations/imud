@@ -1,0 +1,9 @@
+imud-wmm-data (2025.0) unstable; urgency=medium
+
+  * Initial release: WMM2025 coefficients (model epoch 2025.0, valid
+    2025.0-2030.0), split out of the imud package so the data can be
+    updated independently of the daemon. Installs to
+    /usr/share/imud/WMM.COF; imud prefers an operator-supplied
+    /etc/imud/WMM.COF when present.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 11 Jul 2026 12:00:00 -0700
