@@ -11,14 +11,16 @@ permissions:
   contents: write
 
 jobs:
-  # Same trixie-container build as ci.yml's debs job: the packages must
-  # depend on Debian's library names, not the runner's Ubuntu.
+  # Same container build as ci.yml's debs job: bookworm + trixie on both
+  # architectures, so the release carries installable packages for stock
+  # Raspberry Pi OS (bookworm) and current Debian (trixie).
   debs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
+        dist: [bookworm, trixie]
     runs-on: ${{ matrix.os }}
-    container: debian:trixie
+    container: debian:${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +30,18 @@ jobs:
           apt-get install -y build-essential debhelper devscripts lintian \
                              pkgconf libgpiod-dev libmosquitto-dev
 
+      # Suffix the version per distribution (1.5-1~bookworm1) so packages
+      # for different dists never collide as filenames/release assets, and
+      # dpkg orders upgrades correctly (~ sorts before the bare revision;
+      # bookworm < trixie alphabetically matches the upgrade path).
+      - name: Stamp distribution into the version
+        env:
+          DEBEMAIL: richcreations@gmail.com
+          DEBFULLNAME: Richard Simpson
+        run: |
+          dch --local "~${{ matrix.dist }}" \
+              "Automated CI build for Debian ${{ matrix.dist }}."
+
       - name: Build packages
         run: dpkg-buildpackage -us -uc -b
 
@@ -36,7 +50,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ runner.arch }}
+          name: debs-${{ matrix.dist }}-${{ runner.arch }}
           path: dist-debs/*.deb
 
   release:

@@ -51,6 +51,7 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
 
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \
+              src/capture.c \
               src/log.c \
               src/config.c \
               src/ring.c \
@@ -66,6 +67,7 @@ IMUD_SRCS   = src/cal.c \
 
 # Calibration tool: hardware access + config; no threads or output
 CAL_SRCS    = src/cal.c \
+              src/capture.c \
               src/log.c \
               src/cal_math.c \
               src/config.c \

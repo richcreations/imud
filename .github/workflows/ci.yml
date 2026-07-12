@@ -197,6 +197,7 @@ jobs:
   # the parsers' own error logging so the runs stay fast.
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -209,27 +210,44 @@ jobs:
           $FZ fuzz/fuzz_packet.c                                      -o fuzz_packet  -lm
           $FZ fuzz/fuzz_capture.c src/capture.c                       -o fuzz_capture -lm
 
+      # -max_total_time is only checked BETWEEN inputs; -timeout caps a
+      # single input (default is 1200 s!) so a hang-inducing input fails
+      # the run in seconds and gets dumped as a timeout-* reproducer.
       - name: Run fuzzers (60 s each)
         run: |
           for t in config json packet capture; do
             echo "=== fuzz_$t ==="
-            ./fuzz_$t -max_total_time=60 -close_fd_mask=3 \
-                      "test/fuzz/corpus/$t"
+            ./fuzz_$t -max_total_time=60 -timeout=10 -rss_limit_mb=1024 \
+                      -close_fd_mask=3 "test/fuzz/corpus/$t"
           done
 
+      # crash-* / timeout-* / oom-* files are the reproducers — keep them.
+      - name: Save reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-reproducers
+          path: |
+            crash-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore
+
   # Build the real .debs (binary-only — the source-package/orig dance is a
-  # Debian-archive concern, not a GitHub-release one) on both architectures,
-  # INSIDE a debian:trixie container so the packages depend on Debian's
-  # library names/versions (the deploy target is Raspberry Pi OS / Debian
-  # trixie, not the runner's Ubuntu; trixie also ships libgpiod 2.x, which
-  # the Makefile auto-detects).  Lintian runs advisory: its findings gate
-  # archive submission, not CI.
+  # Debian-archive concern, not a GitHub-release one) on both architectures
+  # × both supported Debian releases, INSIDE debian:<dist> containers so
+  # the packages depend on Debian's library names/versions (the deploy
+  # target is Raspberry Pi OS, not the runner's Ubuntu).  The bookworm
+  # build doubles as continuous coverage of the libgpiod v1 API path
+  # (bookworm ships 1.6; trixie ships 2.x — the Makefile auto-detects).
+  # Lintian runs advisory: its findings gate archive submission, not CI.
   debs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
+        dist: [bookworm, trixie]
     runs-on: ${{ matrix.os }}
-    container: debian:trixie
+    container: debian:${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
 
@@ -238,6 +256,18 @@ jobs:
           apt-get update
           apt-get install -y build-essential debhelper devscripts lintian \
                              pkgconf libgpiod-dev libmosquitto-dev
+
+      # Suffix the version per distribution (1.5-1~bookworm1) so packages
+      # for different dists never collide as filenames/release assets, and
+      # dpkg orders upgrades correctly (~ sorts before the bare revision;
+      # bookworm < trixie alphabetically matches the upgrade path).
+      - name: Stamp distribution into the version
+        env:
+          DEBEMAIL: richcreations@gmail.com
+          DEBFULLNAME: Richard Simpson
+        run: |
+          dch --local "~${{ matrix.dist }}" \
+              "Automated CI build for Debian ${{ matrix.dist }}."
 
       - name: Build packages
         run: dpkg-buildpackage -us -uc -b
@@ -250,5 +280,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ runner.arch }}
+          name: debs-${{ matrix.dist }}-${{ runner.arch }}
           path: dist-debs/*.deb
