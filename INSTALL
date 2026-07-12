@@ -1,7 +1,7 @@
 Installing imud
 ===============
 
-Prerequisites (Raspberry Pi OS / Debian Bookworm or similar):
+Prerequisites (Raspberry Pi OS / Debian trixie, Bookworm, or similar):
 
     sudo apt install build-essential libgpiod-dev
 
