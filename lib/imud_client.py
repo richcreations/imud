@@ -41,7 +41,7 @@ class Flags:
     ACCEL_CAL        = 1 << 3   # accel calibration applied
     GYRO_CAL         = 1 << 4   # gyro bias applied
     MAG_CAL          = 1 << 5   # mag hard/soft-iron cal applied
-    MOTION           = 1 << 6   # significant motion detected
+    MOTION           = 1 << 6   # reserved — never set as of wire v14
     FIFO_OVERFLOW    = 1 << 7   # sample gap (FIFO overflow)
     STARTUP              = 1 << 8   # gyro bias estimation in progress
     SHUTDOWN             = 1 << 9   # final packet before clean exit
@@ -276,7 +276,7 @@ def _parse(buf: bytes) -> Optional[ImudPacket]:
     if len(buf) != IMUD_PACKET_SIZE:
         return None
 
-    # Validate CRC before full unpack (covers bytes 0..187)
+    # Validate CRC before full unpack (covers bytes 0..255)
     crc_offset = IMUD_PACKET_SIZE - 4
     computed = zlib.crc32(buf[:crc_offset]) & 0xFFFFFFFF
     stored   = struct.unpack_from('<I', buf, crc_offset)[0]

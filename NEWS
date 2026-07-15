@@ -15,8 +15,9 @@ packaging-level record, and the git history holds the full detail.
   recording. Crash-safe, bounded-disk, and documented in docs/capture.md.
   Fixed along the way (found by the new end-to-end replay test): the sim
   driver's pitch axis was mirrored between its accel/mag and gyro outputs,
-  and the mag reader treated "data not ready" as data (re-fusing a stale
-  sample).
+  the mag reader treated "data not ready" as data (re-fusing a stale
+  sample), and two rotations within the same second could reuse a capture
+  filename and clobber the earlier file (names are now kept monotonic).
 * Per-unit sensor characterization: `imud-cal characterize --from <capture>`
   measures gyro/accel noise density and gyro bias instability (Allan
   variance) into cal.json's "noise" section — a record of what your silicon
@@ -48,6 +49,19 @@ packaging-level record, and the git history holds the full detail.
   and arm64 in CI; version tags now draft a GitHub release with the .debs
   and source tarball attached. imud-mon moved to the new imud-utils package
   (`make install-utils`).
+* The shipped reference config now enables only the local AF_UNIX stream
+  socket (the input the bridges and libimud consumers read); enable [nmea]
+  there for chartplotters. The built-in defaults with no config file are
+  unchanged (NMEA on). Fresh installs no longer broadcast UDP out of the box.
+* SIGHUP now also refreshes the filter's WMM magnetic-field reference when
+  lat/lon or wmm_file change; previously only the declination updated and
+  the field-magnitude invariants kept their startup values until restart.
+* Experimental-driver fixes (still unvalidated on real silicon): ak09916 no
+  longer counts "data not ready"/magnetic overflow as I2C errors, which
+  could trigger spurious chip resets after 10 slow reads in a row; the
+  icm42688p's hardware timestamps were scaled 25x too coarse and wrapped
+  every ~1 s (20-bit counter) — per-driver tick rates and counter
+  unwrapping fix the emitted ts_wall_ns/ts_tai_ns for that chip.
 * CI: ThreadSanitizer job (all cross-thread stop flags are now C11 _Atomic)
   and libFuzzer harnesses over the four untrusted-input parsers (config,
   gpsd/Signal K JSON, wire packet, capture reader). The packet fuzzer

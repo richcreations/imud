@@ -1,3 +1,11 @@
+libimud (1.5) unstable; urgency=medium
+
+  * imud_data_t.temp_c now carries the real IMU die temperature — the daemon
+    never enabled FIFO temperature batching before 1.5, so the field was a
+    25.0 degC placeholder in every prior release. No API/ABI change.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 15 Jul 2026 00:00:00 -0700
+
 libimud (1.4) unstable; urgency=medium
 
   * imud_data_t gains the wire-v14 fields (append-only, ABI preserved):

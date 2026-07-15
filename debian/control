@@ -63,7 +63,7 @@ Description: ABI-stable client library for the imud IMU daemon (development)
 
 Package: imud-signalk
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: Signal K bridge for the imud IMU daemon
  imud-signalk connects to imud's local binary stream socket and emits Signal K
  delta messages (JSON) over UDP — attitude, magnetic and true heading,
@@ -73,7 +73,7 @@ Description: Signal K bridge for the imud IMU daemon
 
 Package: imud-mqtt
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
  imud-mqtt connects to imud's local binary stream socket and publishes scalar
  telemetry topics (heading, attitude, rate of turn, heave, heave rate,
@@ -84,7 +84,7 @@ Description: MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
 
 Package: imud-influxdb
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: InfluxDB bridge for the imud IMU daemon
  imud-influxdb connects to imud's local binary stream socket and writes one
  InfluxDB line-protocol point per tick — quaternion, attitude, heading, rate
@@ -94,7 +94,7 @@ Description: InfluxDB bridge for the imud IMU daemon
 
 Package: imud-mavlink
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: MAVLink bridge for the imud IMU daemon
  imud-mavlink connects to imud's local binary stream socket and emits MAVLink
  v1 or v2 HEARTBEAT, ATTITUDE, and ATTITUDE_QUATERNION messages over UDP
@@ -104,7 +104,7 @@ Description: MAVLink bridge for the imud IMU daemon
 
 Package: imud-prometheus
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: Prometheus exporter for the imud IMU daemon
  imud-prometheus connects to imud's local binary stream socket and serves the
  latest fused state — attitude, heading, rate of turn, heave, the sea-state

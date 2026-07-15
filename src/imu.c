@@ -180,14 +180,18 @@ static void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
 
 /*
  * Convert a chip counter value to wall + TAI timestamps.
- * Uses 32-bit wrapping arithmetic — safe up to ~29.8 h between anchors.
+ * Uses 32-bit wrapping arithmetic — safe up to 2^32 ticks between anchors
+ * (~29.8 h at the ST parts' 25 µs/tick, ~71.6 min at the ICM-42688-P's
+ * 1 µs/tick); the 60 s anchor refresh keeps deltas far below either bound.
+ * tick_ns comes from imu_ops_t.ts_tick_ns (0 when !has_hw_timestamp, where
+ * chip_ts is always 0 and the offset degenerates to 0 as intended).
  */
-static void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts,
+static void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                          uint64_t *wall_out, uint64_t *tai_out,
                          uint32_t *gen_out)
 {
     pthread_mutex_lock(&a->mtx);
-    uint64_t offset = (uint64_t)(chip_ts - a->chip_ticks) * 25000ULL; /* 25 µs → ns */
+    uint64_t offset = (uint64_t)(chip_ts - a->chip_ticks) * tick_ns;
     if (wall_out) *wall_out = a->wall_ns + offset;
     if (tai_out)  *tai_out  = a->tai_ns  + offset;
     if (gen_out)  *gen_out  = a->gen;
@@ -901,7 +905,8 @@ void *fusion_thread(void *arg)
         bool have_ts  = (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp);
         float dt      = f.dt;
         if (have_ts) {
-            chip_to_wall(&ctx->anchor, s.chip_ts, &wall, &tai, &gen);
+            chip_to_wall(&ctx->anchor, s.chip_ts, ctx->imu_ops->ts_tick_ns,
+                         &wall, &tai, &gen);
             if (ctx->imu_ops->has_hw_timestamp && s.chip_ts != 0 &&
                 prev_wall_ns != 0 && gen == prev_gen && wall > prev_wall_ns) {
                 float d = (float)((double)(wall - prev_wall_ns) * 1e-9);
@@ -1047,7 +1052,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
                  const imud_cal_t *cal)
 {
     imu_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) { perror("calloc"); return -1; }
+    if (!ctx) { LOG_E("[imu] calloc: %s\n", strerror(errno)); return -1; }
     ctx->i2c_fd = -1;   /* calloc zeros to 0; must be -1 so fail: doesn't close stdin */
 
     ctx->cfg = *cfg;
@@ -1079,6 +1084,9 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (ctx->imu_ops->experimental)
         LOG_W("[imu] WARNING: driver '%s' is EXPERIMENTAL — "
                 "not yet validated on hardware\n", cfg->imu_driver);
+    if (ctx->imu_ops->has_hw_timestamp && ctx->imu_ops->ts_tick_ns == 0)
+        LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
+                "hardware timestamps will not advance\n", cfg->imu_driver);
 
     ctx->mag_ops = mag_driver_find(cfg->mag_driver);
     if (!ctx->mag_ops) {
@@ -1195,6 +1203,7 @@ fail:
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);
     pthread_cond_destroy(&ctx->mag_ring.ready);
+    cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
     return -1;
 }
@@ -1285,6 +1294,7 @@ void imu_ctx_free(imu_ctx_t *ctx)
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);
     pthread_cond_destroy(&ctx->mag_ring.ready);
+    cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
 }
 

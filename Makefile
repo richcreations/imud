@@ -216,7 +216,7 @@ test_signalk: src/sk_delta.c test/test_signalk.c
 test_mqtt: src/mqtt_publish.c test/test_mqtt.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-# InfluxDB line-protocol encoder (pure function)
+# Prometheus metrics encoder (pure function)
 test_prometheus: src/prom_metrics.c test/test_prometheus.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
@@ -612,5 +612,6 @@ clean:
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
-      test_prometheus \
+      test_prometheus test_capture \
+	      fuzz_config fuzz_json fuzz_packet fuzz_capture \
 	      etc/*.service imud-*.tar.gz

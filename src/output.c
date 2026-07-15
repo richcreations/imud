@@ -291,10 +291,10 @@ void *hirate_out_thread(void *arg)
 /*
  * Local AF_UNIX subscription stream (Stream D) — the "third tier".
  *
- * Same 192-byte binary packets as the UDP high-rate stream, but over a
+ * Same 260-byte binary packets as the UDP high-rate stream, but over a
  * SOCK_STREAM socket: no datagram loss for same-host consumers, and clients
  * subscribe by connecting instead of listening on a port.  The fixed packet
- * size plus magic/CRC make the stream self-framing — read 192 bytes at a
+ * size plus magic/CRC make the stream self-framing — read 260 bytes at a
  * time and validate exactly as with UDP (lib/imud_client.h works unchanged
  * on chunks read from this socket).
  *
@@ -435,7 +435,7 @@ int out_ctx_open(out_ctx_t **ctx_out,
                  imu_ctx_t           *imu)
 {
     out_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) { perror("calloc"); return -1; }
+    if (!ctx) { LOG_E("[output] calloc: %s\n", strerror(errno)); return -1; }
 
     ctx->cfg  = cfg;
     ctx->imu  = imu;

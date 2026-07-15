@@ -78,6 +78,8 @@ static struct {
     float    gyro_scale;        /* LSB → rad/s */
     uint32_t seq;
     uint32_t ticks_per_sample;  /* µs between adjacent samples */
+    uint32_t ts_last_raw;       /* last raw 20-bit TMSTVAL read */
+    uint32_t ts_hi;             /* accumulated wrap carry (multiples of 2^20) */
 } ic;
 
 /* ── Low-level I2C helpers ─────────────────────────────────────────────────── */
@@ -239,6 +241,8 @@ static int icm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     ic.seq              = 0;
     /* 1 µs/tick timestamp; ticks between adjacent samples at the actual ODR. */
     ic.ticks_per_sample = (uint32_t)(1000000u / (unsigned)odr_actual(cfg->odr_hz));
+    ic.ts_last_raw      = 0;    /* counter restarts with the chip */
+    ic.ts_hi            = 0;
 
     return 0;
 }
@@ -312,9 +316,18 @@ static int icm_read(int fd, uint8_t addr,
             uint8_t ts[3];
             if (burst_read(fd, addr, REG_TMSTVAL0, ts, 3) == 0) {
                 /* TMSTVAL: 20-bit, 1 µs/tick.  ts[2][3:0] = bits [19:16]. */
-                uint32_t burst_ts = ((uint32_t)(ts[2] & 0x0F) << 16)
-                                  | ((uint32_t)ts[1] << 8)
-                                  | ts[0];
+                uint32_t raw = ((uint32_t)(ts[2] & 0x0F) << 16)
+                             | ((uint32_t)ts[1] << 8)
+                             | ts[0];
+                /* Unwrap the 20-bit counter into 32 bits.  It wraps every
+                 * 2^20 µs ≈ 1.05 s; the FIFO watermark makes read() run many
+                 * times per second at every supported ODR, so at most one
+                 * wrap occurs between drains.  (A >1 s stall would lose
+                 * wraps; the dt clamp in imu.c bounds the damage.) */
+                if (raw < ic.ts_last_raw)
+                    ic.ts_hi += 1u << 20;
+                ic.ts_last_raw = raw;
+                uint32_t burst_ts = ic.ts_hi + raw;
                 for (int i = 0; i < produced; i++) {
                     uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;
@@ -339,6 +352,7 @@ const imu_ops_t icm42688p_ops = {
     .read             = icm_read,
     .has_fifo         = true,
     .has_hw_timestamp = true,
+    .ts_tick_ns       = 1000,    /* TMSTVAL: 1 µs/tick (unwrapped to 32 bits) */
     .supported_odr_hz   = { 12, 25, 50, 100, 200, 1000, 2000, 4000, 8000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 0 },

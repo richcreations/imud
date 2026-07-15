@@ -801,6 +801,14 @@ int main(int argc, char **argv)
                          "%s", new_cfg.pos_wmm_file);
                 cfg.pos_declination_deg        = new_cfg.pos_declination_deg;
                 cfg.pos_declination_valid      = new_cfg.pos_declination_valid;
+                /* WMM field-magnitude invariants recomputed by
+                 * apply_wmm_if_configured above — without this copy the
+                 * MEKF would keep the startup m_ref after a lat/lon or
+                 * wmm_file reload (imu_ctx_update_config applies them only
+                 * when pos_mref_valid and no live position source). */
+                cfg.pos_mref_h_gauss           = new_cfg.pos_mref_h_gauss;
+                cfg.pos_mref_z_gauss           = new_cfg.pos_mref_z_gauss;
+                cfg.pos_mref_valid             = new_cfg.pos_mref_valid;
                 imu_ctx_update_config(imu, &cfg);
                 LOG_I("[main] config reloaded\n");
             } else {

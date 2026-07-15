@@ -12,7 +12,7 @@ libimud. Keep `imud-utils` and `imud` at the same release.
 
 | Section | Source | Shows |
 | --- | --- | --- |
-| **NMEA** | UDP, `[nmea] dest_port` (default 10110) | Heading, pitch, roll and rate of turn parsed from `$PASHR`; true heading from `$HCHDT` when present; and the last received sentence verbatim. |
+| **NMEA** | UDP, `[nmea] dest_port` (default 10110) | Heading, pitch and roll parsed from `$PASHR`; rate of turn from `$TIROT`; true heading from `$HCHDT` when present; and the last received sentence verbatim. |
 | **Binary** | UDP, `[highrate] dest_port` (default 10111) | Every field of the high-rate packet: heading, pitch, roll, rate of turn, quaternion, calibrated and raw gyro/accel/mag vectors, covariance, declination, die temperature, sequence number, and the status flags. |
 
 A section reads `(no data)` while no packet has arrived — expected during the
@@ -33,6 +33,7 @@ Flags are shown as a compact string, one character per asserted flag:
 | `M` | `MAG_CAL` | magnetometer calibration loaded |
 | `D` | `DECLINATION_VALID` | declination known; true heading available |
 | `S` | `STARTUP` | startup / settling period active |
+| `!` | `FIFO_OVERFLOW` | IMU FIFO overflow since the last packet |
 
 So `CVM` means converged, mag valid, mag calibrated. The wire carries more
 flags than `imud-mon` renders (see `spec.md §8` in the source root for the

@@ -141,7 +141,8 @@ static int ak_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
  * ak_read — read one magnetometer sample.
  *
  * Polls ST1 DRDY up to 15 ms (the longest inter-measurement gap at 100 Hz
- * is 10 ms).  If DRDY does not assert within that window, returns -1.
+ * is 10 ms).  If DRDY does not assert within that window, returns 1
+ * (no data yet — not an I2C error).
  *
  * ST2 is always read at the end of each burst to complete the AK09916
  * measurement transaction and allow the next measurement to proceed.
@@ -156,8 +157,10 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
         usleep(1000);
     }
     if (!(st1 & 0x01)) {
-        /* DRDY never asserted — sensor may be in power-down or not ready. */
-        return -1;
+        /* DRDY never asserted — sensor may be in power-down or not ready.
+         * No data yet, not an I2C fault: return 1 so the reader retries
+         * instead of counting toward the error-reset threshold. */
+        return 1;
     }
 
     /* Burst read HXL through HZH (6 bytes, little-endian 16-bit signed). */
@@ -169,8 +172,9 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
     if (reg_read(fd, addr, REG_ST2, &st2) < 0) return -1;
 
     if (st2 & 0x08) {
-        /* HOFL: measurement data is not reliable during magnetic overflow. */
-        return -1;
+        /* HOFL: measurement data is not reliable during magnetic overflow.
+         * Transient condition, not an I2C fault — skip this sample. */
+        return 1;
     }
 
     int16_t hx = (int16_t)(((uint16_t)raw[1] << 8) | raw[0]);

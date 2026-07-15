@@ -1,3 +1,12 @@
+imud-mqtt (1.5) unstable; urgency=medium
+
+  * The temperature topic now reports the real IMU die temperature (the
+    daemon previously always published a 25.0 degC placeholder).
+  * SIGHUP-reloadable fields shared with the mosquitto network thread are
+    now C11 _Atomic.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 15 Jul 2026 00:00:00 -0700
+
 imud-mqtt (1.4) unstable; urgency=medium
 
   * New sea-state topics under environment/ (waveHeight, wavePeriod,

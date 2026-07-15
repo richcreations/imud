@@ -22,8 +22,10 @@ Each stream section shows:
 .RS 4
 .TP
 .B NMEA
-Heading, pitch, roll, and rate of turn parsed from
+Heading, pitch, and roll parsed from
 .BR $PASHR ,
+rate of turn from
+.BR $TIROT ,
 true heading from
 .B $HCHDT
 (when available), and the last received sentence.
@@ -45,6 +47,7 @@ G	Gyroscope calibration loaded
 M	Magnetometer calibration loaded
 D	Declination valid; true heading available
 S	Startup / settling period active
+!	IMU FIFO overflow since the last packet
 .TE
 .SH OPTIONS
 .TP

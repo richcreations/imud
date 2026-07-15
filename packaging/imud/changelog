@@ -1,4 +1,4 @@
-imud (1.5) UNRELEASED; urgency=medium
+imud (1.5) unstable; urgency=medium
 
   * Black-box recording ([capture] -> rotating .imucap files) and sim-driver
     replay (imud --replay); imud-cal gains offline characterize (Allan

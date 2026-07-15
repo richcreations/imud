@@ -190,6 +190,7 @@ typedef struct {
 } cap_ring_t;
 
 void cap_ring_init(cap_ring_t *r);
+void cap_ring_destroy(cap_ring_t *r);
 /* Return 0 stored, 1 dropped (ring full). */
 int  cap_ring_push_imu(cap_ring_t *r, const imu_sample_t *s, uint64_t mono_ns);
 int  cap_ring_push_mag(cap_ring_t *r, const mag_sample_t *m, uint64_t mono_ns);

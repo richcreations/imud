@@ -53,7 +53,7 @@ extern "C" {
 #define IMUD_FLAG_ACCEL_CAL        (1u << 3)  /* accel calibration applied */
 #define IMUD_FLAG_GYRO_CAL         (1u << 4)  /* gyro bias applied */
 #define IMUD_FLAG_MAG_CAL          (1u << 5)  /* mag hard/soft-iron cal applied */
-#define IMUD_FLAG_MOTION           (1u << 6)  /* significant motion detected */
+#define IMUD_FLAG_MOTION           (1u << 6)  /* reserved — never set as of wire v14 */
 #define IMUD_FLAG_FIFO_OVERFLOW    (1u << 7)  /* sample gap (FIFO overflow) */
 #define IMUD_FLAG_STARTUP              (1u << 8)  /* gyro bias estimation in progress */
 #define IMUD_FLAG_SHUTDOWN             (1u << 9)  /* final packet before clean exit */
@@ -172,7 +172,7 @@ void imud_free(imud_t *h);
 
 /* ── Introspection ───────────────────────────────────────────────────────── */
 
-/* Library release version string, e.g. "1.3". */
+/* Library release version string, e.g. "1.5". */
 const char *imud_lib_version(void);
 
 /* Wire-protocol version of the most recently received packet (0 before the

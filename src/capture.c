@@ -246,6 +246,11 @@ void cap_ring_init(cap_ring_t *r)
     pthread_mutex_init(&r->mtx, NULL);
 }
 
+void cap_ring_destroy(cap_ring_t *r)
+{
+    pthread_mutex_destroy(&r->mtx);
+}
+
 static int ring_push(cap_ring_t *r, const cap_ring_rec_t *rec)
 {
     int dropped = 0;

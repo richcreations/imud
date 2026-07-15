@@ -1,4 +1,4 @@
-imud (1.5-1) UNRELEASED; urgency=medium
+imud (1.5-1) unstable; urgency=medium
 
   * Initial multi-binary Debian packaging: imud, imud-utils, libimud0,
     libimud-dev, the five bridge daemons, and imud-wmm-data, built from

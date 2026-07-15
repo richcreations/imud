@@ -180,7 +180,9 @@ typedef struct {
     char  log_file[256];
     int   log_stats_hz;
 
-    /* [position]  [restart] */
+    /* [position]  [hot]: declination_deg, lat_deg, lon_deg, wmm_file
+     * (recomputed on SIGHUP unless a live position source owns declination);
+     * [restart]: the gpsd_* and signalk_* source keys, fix_max_age_h */
     float  pos_declination_deg;   /* static magnetic declination °E+; 0 = disabled */
     bool   pos_declination_valid; /* derived, not a config key: true when declination
                                    * came from an explicit non-zero declination_deg or
