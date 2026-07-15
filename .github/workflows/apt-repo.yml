@@ -1,0 +1,121 @@
+# Publish the self-hosted apt repository to GitHub Pages.
+#
+# Richard curates which packages go live by committing .deb files into
+# apt/pool/<suite>/ and pushing; this workflow regenerates the signed apt
+# index and redeploys the Pages site.  It is deliberately SEPARATE from
+# release.yml (which builds debs and attaches them to a GitHub Release) —
+# that is the build step; this is the manual publish gate.
+#
+# Served layout (https://richcreations.github.io/imud/):
+#   /            ← web/            (root site, reserved for a future page)
+#   /apt/        ← apt/ + generated dists/   (the apt repository)
+#
+# One-time setup: Settings → Pages → Source = GitHub Actions, and add the
+# ASCII-armored private signing key as the secret APT_GPG_PRIVATE_KEY
+# (its public half is committed at apt/KEY.gpg and served for users).
+name: apt repo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apt/**'
+      - 'web/**'
+      - '.github/workflows/apt-repo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two Pages deploys race; let an in-flight one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install apt-ftparchive + gpg
+        run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
+
+      - name: Import signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::error::secret APT_GPG_PRIVATE_KEY is not set — see apt/README" >&2
+            exit 1
+          fi
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
+          echo "Signing fingerprint: $FPR"
+          echo "FPR=$FPR" >> "$GITHUB_ENV"
+
+      - name: Build signed repository into site/
+        run: |
+          set -euo pipefail
+
+          # --- assemble the served tree -------------------------------------
+          rm -rf site
+          mkdir -p site
+          cp -a web/. site/                 # root site
+          mkdir -p site/apt
+          cp -a apt/pool site/apt/pool
+          cp    apt/KEY.gpg apt/index.html site/apt/
+
+          cd site/apt
+
+          # --- per-suite index (arm64 index carries arch:all too) -----------
+          for suite in bookworm trixie; do
+            if ! ls pool/"$suite"/*.deb >/dev/null 2>&1; then
+              echo "no debs for $suite — skipping"
+              continue
+            fi
+            echo "==> indexing $suite"
+            mkdir -p "dists/$suite/main/binary-arm64"
+
+            apt-ftparchive packages "pool/$suite" \
+              > "dists/$suite/main/binary-arm64/Packages"
+            gzip -9kf "dists/$suite/main/binary-arm64/Packages"
+
+            apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin="imud" \
+              -o APT::FTPArchive::Release::Label="imud" \
+              -o APT::FTPArchive::Release::Suite="$suite" \
+              -o APT::FTPArchive::Release::Codename="$suite" \
+              -o APT::FTPArchive::Release::Components="main" \
+              -o APT::FTPArchive::Release::Architectures="arm64" \
+              release "dists/$suite" > "dists/$suite/Release"
+
+            gpg --batch --yes --local-user "$FPR" \
+                --clearsign -o "dists/$suite/InRelease" "dists/$suite/Release"
+            gpg --batch --yes --local-user "$FPR" \
+                -abs -o "dists/$suite/Release.gpg" "dists/$suite/Release"
+
+            # fail loudly if the signature we just wrote does not verify
+            gpg --verify "dists/$suite/InRelease" >/dev/null 2>&1 \
+              || { echo "::error::InRelease failed to verify for $suite" >&2; exit 1; }
+            echo "    signed + verified $suite"
+          done
+
+          echo "==> site tree:"
+          find . -maxdepth 6 -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

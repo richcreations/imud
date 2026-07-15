@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>imud apt repository</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #5a5a5a;
+    --code-bg: #f4f4f5; --border: #e2e2e4; --accent: #0b6bcb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --fg: #e6e6e6; --muted: #9a9a9a;
+      --code-bg: #1f2023; --border: #303237; --accent: #5ba7f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 4rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.25rem 0 .75rem; }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  p { margin: .75rem 0; }
+  a { color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .875rem; line-height: 1.5;
+  }
+  pre code { font-size: inherit; }
+  .note {
+    border-left: 3px solid var(--accent); padding: .1rem 0 .1rem 1rem;
+    color: var(--muted); margin: 1.25rem 0;
+  }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>imud apt repository</h1>
+  <p class="sub">Debian packages for <strong>imud</strong> — the marine IMU daemon
+     (&ldquo;gpsd for IMUs&rdquo;).</p>
+
+  <p>Signed <code>.deb</code> packages for <strong>arm64</strong> Raspberry&nbsp;Pi&nbsp;OS
+     and Debian, suites <strong>bookworm</strong> and <strong>trixie</strong>.</p>
+
+  <h2>Add the repository</h2>
+  <p>Import the signing key, add the source, and update — substitute
+     <code>bookworm</code> for <code>trixie</code> if that is your release:</p>
+<pre><code>curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
+
+echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] \
+  https://richcreations.github.io/imud/apt trixie main' \
+  | sudo tee /etc/apt/sources.list.d/imud.list
+
+sudo apt update</code></pre>
+
+  <h2>Install</h2>
+<pre><code># the daemon, calibration, status tool + the World Magnetic Model data
+sudo apt install imud imud-wmm-data
+
+# optional: network monitor, protocol bridges
+sudo apt install imud-utils
+sudo apt install imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus</code></pre>
+
+  <p>Then edit <code>/etc/imud/imud.conf</code> for your hardware and
+     <code>sudo systemctl enable --now imud</code>.</p>
+
+  <div class="note">
+    arm64 only. imud drives an I²C IMU on a Raspberry Pi, so the packages target the
+    Pi's architecture. On other platforms, build from source — see the
+    <a href="https://github.com/richcreations/imud">repository</a>.
+  </div>
+
+  <h2>Packages</h2>
+  <table>
+    <tr><th>Package</th><th>Contents</th></tr>
+    <tr><td><code>imud</code></td><td>daemon, imud-cal, imud-status, Python client</td></tr>
+    <tr><td><code>imud-wmm-data</code></td><td>World Magnetic Model coefficients (true heading)</td></tr>
+    <tr><td><code>imud-utils</code></td><td>imud-mon network monitor</td></tr>
+    <tr><td><code>libimud0</code> / <code>libimud-dev</code></td><td>ABI-stable client library + headers</td></tr>
+    <tr><td><code>imud-signalk</code> … <code>-prometheus</code></td><td>protocol bridges (5)</td></tr>
+  </table>
+
+  <footer>
+    <a href="../">imud home</a> &middot;
+    <a href="https://github.com/richcreations/imud">source on GitHub</a> &middot;
+    <a href="https://github.com/richcreations/imud/releases">releases</a>
+  </footer>
+</main>
+</body>
+</html>
