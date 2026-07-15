@@ -447,15 +447,17 @@ The optional bridge daemons \(em
 .BR imud-signalk (8),
 .BR imud-mqtt (8),
 .BR imud-influxdb (8),
-.BR imud-mavlink (8)
+.BR imud-mavlink (8),
+.BR imud-prometheus (8)
 \(em are each configured by their own file,
 .IR /etc/imud/imud-<name>.conf ,
 documented in
 .BR imud-signalk.conf (5),
 .BR imud-mqtt.conf (5),
 .BR imud-influxdb.conf (5),
+.BR imud-mavlink.conf (5),
 and
-.BR imud-mavlink.conf (5).
+.BR imud-prometheus.conf (5).
 They are not part of
 .IR imud.conf .
 (The
@@ -537,7 +539,12 @@ or
 level.
 .SS [position]
 Magnetic declination and true heading.
-.B [restart]
+.B [hot]:
+declination_deg, lat_deg, lon_deg, wmm_file (declination and the WMM field
+reference are recomputed on SIGHUP; a live position source \(em gpsd or
+SignalK \(em owns declination while enabled).
+.B [restart]:
+the gpsd_* and signalk_* source keys and fix_max_age_h.
 .PP
 When declination is active, imud emits
 .B $HCHDT
@@ -597,9 +604,6 @@ Path to the WMM coefficient file.
 When empty (the default), imud uses
 .I /etc/imud/WMM.COF
 if it exists (operator override), otherwise
-.I /var/lib/imud/
-Black-box capture files ([capture] enabled).
-.TP
 .I /usr/share/imud/WMM.COF
 (installed by the imud-wmm-data package /
 .BR "make install-wmm-data" ).

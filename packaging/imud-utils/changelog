@@ -1,4 +1,4 @@
-imud-utils (1.5) UNRELEASED; urgency=medium
+imud-utils (1.5) unstable; urgency=medium
 
   * Initial release: imud-mon split out of the imud package so network
     diagnostics can be installed on machines that do not run the daemon.

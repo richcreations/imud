@@ -120,7 +120,8 @@ static void test_defaults_cal_file(void)
  * Load the real config/imud.conf and check a spread of types:
  *   - hex int  (imu_addr = 0x6B)
  *   - decimal int (highrate_dest_port = 10111)
- *   - bool (nmea_enabled = true)
+ *   - bool (stream_enabled = true, nmea_enabled = false — the reference
+ *     config enables only the local stream socket)
  *   - float (mag_set_period_s = 5.0)
  *   - double (mekf_gyro_noise = 0.007)
  *   - quoted string (nmea_dest_addr = "255.255.255.255")
@@ -139,9 +140,10 @@ static void test_load_real_conf(void)
     EXPECT(cfg.imu_addr == 0x6B,                      "hex int 0x6B");
     EXPECT(cfg.imu_addr == 107,                        "0x6B == 107");
     EXPECT(cfg.imu_odr_hz == 833,                      "decimal int odr_hz");
-    EXPECT(cfg.imu_fifo_wm == 32,                      "decimal int fifo_wm");
-    EXPECT(cfg.nmea_enabled == true,                   "bool true");
-    EXPECT(cfg.highrate_enabled == true,               "highrate enabled in conf");
+    EXPECT(cfg.imu_fifo_wm == 64,                      "decimal int fifo_wm");
+    EXPECT(cfg.nmea_enabled == false,                  "bool false (stream-only conf)");
+    EXPECT(cfg.highrate_enabled == false,              "highrate disabled in conf");
+    EXPECT(cfg.stream_enabled == true,                 "bool true (stream socket on)");
     EXPECT(cfg.highrate_dest_port == 10111,            "decimal int port");
     EXPECT_NEAR_D(cfg.mag_set_period_s, 5.0, 1e-5,    "float set_period_s");
     EXPECT_NEAR_D(cfg.mekf_gyro_noise,  0.007, 1e-9,  "double gyro_noise");

@@ -681,6 +681,8 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
  */
 #define CAP_ANALYZE_MAX (1u << 22)
 
+static void free_capture(double *gyro[3], double *accel[3], double *temp);
+
 static long load_capture(const char *path, double settle_sec, double *fs_out,
                          double *gyro[3], double *accel[3], double **temp)
 {
@@ -723,6 +725,8 @@ static long load_capture(const char *path, double settle_sec, double *fs_out,
     if (!gyro[0] || !gyro[1] || !gyro[2] ||
         !accel[0] || !accel[1] || !accel[2] || !*temp) {
         fprintf(stderr, "cal: out of memory (%zu samples)\n", n);
+        free_capture(gyro, accel, *temp);
+        *temp = NULL;
         cap_reader_close(&r);
         return -1;
     }

@@ -2,7 +2,7 @@
 
 ## `imud` — a general-purpose IMU daemon ("gpsd for IMUs")
 
-**Version:** 1.2  
+**Version:** 1.5  
 **What:** owns an IMU + magnetometer, fuses to attitude/heading, and publishes
 on NMEA 0183, binary UDP, and a local stream socket for any number of
 consumers (marine nav, robotics, machine vision, gimbals/pointing).  
@@ -377,10 +377,16 @@ gyro bias estimate b — 6 states total. The full quaternion q is maintained
 separately on the SO(3) manifold and updated multiplicatively, avoiding the
 rank-deficiency problem of naively applying EKF to a 4-component quaternion.
 
-Noise parameters map directly to the sensor datasheets and are **not tuning
-knobs** — they are physical constants. The only genuine tuning decision is
-`mag_reject_gauss`, which controls how aggressively to reject magnetometer
-samples that deviate from the expected field magnitude after calibration.
+The `mekf_*` noise parameters are **tuning knobs**, seeded from the sensor
+datasheets but not bound to them. In particular `mekf_gyro_noise` (default
+0.007) is a process-noise Q deliberately held **above** the datasheet noise
+floor: it buys robustness to unmodeled disturbances (vibration, thermal
+transients) at the cost of a little extra measurement weighting. This is why
+`imud-cal characterize` reports measured Allan noise as **informational
+only** — measured values are never fed into the filter automatically.
+`mag_reject_gauss` is a further tuning decision, controlling how aggressively
+to reject magnetometer samples that deviate from the expected field magnitude
+after calibration.
 
 ### Predict / Update Cycle
 
@@ -457,9 +463,25 @@ file is not fatal — the daemon runs uncalibrated with appropriate flags clear.
   },
   "gyro": {
     "bias": [bx, by, bz]
+  },
+  "noise": {
+    "gyro_density":     [nx, ny, nz],
+    "gyro_instability": [ix, iy, iz],
+    "accel_density":    [ax, ay, az]
+  },
+  "gyro_temp": {
+    "coeff": [cx, cy, cz],
+    "ref_c": t_ref
   }
 }
 ```
+
+The `noise` section (written by `imud-cal characterize`, §12) records
+measured Allan noise densities and bias instability — **informational
+only**, never fed into the MEKF (see the noise-model note in this section).
+The `gyro_temp` section (written by `imud-cal fit-temp`) is a linear
+gyro-bias/temperature fit that **is** applied at runtime: the daemon
+subtracts `coeff × (temp − ref_c)` from each gyro sample.
 
 Applied corrections:
 
@@ -954,7 +976,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 | `[highrate]`| `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |
 | `[logging]` | `level`, `stats_hz`; the log file is also reopened (logrotate)         |
-| `[position]`| `declination_deg`, `lat_deg`/`lon_deg` (WMM recomputed) — applied only when no live position source (gpsd/SignalK) is enabled; a live source owns declination |
+| `[position]`| `declination_deg`, `lat_deg`/`lon_deg`, `wmm_file` (WMM recomputed) — applied only when no live position source (gpsd/SignalK) is enabled; a live source owns declination |
 
 Fields not listed require a full daemon restart (chip reinit / socket rebind).
 If the reloaded file fails to parse, the previously loaded config is kept and
@@ -1005,6 +1027,7 @@ Setup: `sudo useradd -r -s /sbin/nologin -G i2c,gpio imud`
 ```text
 imud [OPTIONS]
   --config PATH      Config file (default: /etc/imud/imud.conf)
+  --replay FILE      Replay an .imucap capture through the sim driver
   --skip-bias-cal    Skip startup gyro bias estimation
   --no-nmea          Disable NMEA output stream
   --no-highrate      Disable high-rate binary stream
@@ -1030,9 +1053,18 @@ Modes:
   accel  Accelerometer 6-position calibration (bench, before mounting).
          Follow prompts to orient the sensor on each face in turn.
 
+  characterize Allan-variance noise analysis of a stationary capture
+         (offline; requires --from FILE; record with [capture] enabled).
+         Writes the informational "noise" section of cal.json.
+
+  fit-temp Gyro bias/temperature fit from a warm-up capture (offline;
+         requires --from FILE). Writes the "gyro_temp" section of
+         cal.json, applied by the daemon at runtime.
+
 Options:
   --config PATH   Config file (default: /etc/imud/imud.conf)
   --output PATH   Override cal.json output path from config
+  --from FILE     .imucap capture to analyze (offline modes)
 
 Output: written to cal_file from config (or --output path). If a cal.json
 already exists, only the sections just calibrated are updated; other sections
@@ -1058,7 +1090,8 @@ Results:
 
 ### imud-mon
 
-Live monitor for the three UDP output streams — a receive-side sanity check
+Live monitor for the two UDP output streams (NMEA and high-rate binary; the
+AF_UNIX stream is not monitored) — a receive-side sanity check
 run on any machine on the vessel LAN (no daemon socket needed). Reads port
 numbers and multicast addresses from the config file, joins multicast groups
 where needed, and prints a once-per-second snapshot line per stream.
@@ -1083,7 +1116,7 @@ daemon's current state. Accepts `--socket PATH` to use an alternate socket.
 
 ```text
 Chip IDs:       ism330dhcx 0x6B   mmc5983ma 0x30
-ISM ODR:        833 Hz  (FIFO watermark: 64 sample-sets)
+IMU ODR:        833 Hz  (FIFO watermark: 64 sample-sets)
 Mag ODR:        100 Hz  (SET every 5 s)
 Fusion:         MEKF converged  cov_trace=4.2e-06 rad2
 Calibration:    accel yes  gyro yes  mag yes
@@ -1195,7 +1228,8 @@ imud-mon:    src/config.o src/mon_main.c
 ```
 
 `make install` also installs the five man pages (imud.8, imud-cal.8,
-imud.conf.5, imud-status.1, imud-mon.1). WMM coefficient data is a separate
+imud.conf.5, imud-status.1, libimud.3); imud-mon.1 ships with `make
+install-utils` (the imud-utils package). WMM coefficient data is a separate
 target — `make install-wmm-data` puts `data/WMM.COF` → `/usr/share/imud/` so
 it can be packaged (imud-wmm-data) and updated independently of the daemon;
 an operator-supplied `/etc/imud/WMM.COF` overrides it.

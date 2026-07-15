@@ -57,6 +57,9 @@ typedef struct {
 
     bool has_fifo;           /* false → single-sample DRDY read per wakeup */
     bool has_hw_timestamp;   /* chip has internal sample timer */
+    uint32_t ts_tick_ns;     /* ns per chip-timer tick (e.g. 25000 for the ST
+                              * 25 µs counter, 1000 for the ICM-42688-P);
+                              * required when has_hw_timestamp */
     int  supported_odr_hz[16];   /* ascending, 0-terminated */
     int  supported_accel_g[8];   /* ascending, 0-terminated */
     int  supported_gyro_dps[8];  /* ascending, 0-terminated */

@@ -471,6 +471,7 @@ const imu_ops_t sim_imu_ops = {
     .read               = sim_imu_read,
     .has_fifo           = true,
     .has_hw_timestamp   = true,
+    .ts_tick_ns         = 25000,  /* mimics the ISM330DHCX 25 µs timer */
     .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },

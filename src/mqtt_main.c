@@ -28,6 +28,7 @@
 # endif
 #endif
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,17 +64,18 @@ static void on_signal(int sig)
 }
 
 /* Discovery/availability context handed to libmosquitto callbacks. Its [restart]
- * fields are fixed at startup; the [hot] ones (deg/emit_heave/qos/retain) are
- * word-sized and only refreshed on SIGHUP — a benign race with the net thread. */
+ * fields are fixed at startup; the [hot] ones (deg/emit_heave/qos) are written
+ * by the main thread on SIGHUP and read by the mosquitto network thread in
+ * on_connect() — _Atomic so the cross-thread access is well-defined. */
 typedef struct {
     char prefix[64];
     char ha_prefix[64];
     char node_id[64];
     char avail_topic[128];   /* "<prefix>/status/online" */
     bool ha_discovery;
-    bool deg;
-    bool emit_heave;
-    int  qos;
+    _Atomic bool deg;
+    _Atomic bool emit_heave;
+    _Atomic int  qos;
 } mqtt_ctx_t;
 
 /* ── sd_notify (mirrors src/signalk_main.c) ──────────────────────────────── */

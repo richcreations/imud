@@ -1,3 +1,10 @@
+imud-influxdb (1.5) unstable; urgency=medium
+
+  * The temp field now reports the real IMU die temperature (the daemon
+    previously always published a 25.0 degC placeholder).
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 15 Jul 2026 00:00:00 -0700
+
 imud-influxdb (1.4) unstable; urgency=medium
 
   * New always-on fields: wave_height, wave_period, roll_period,

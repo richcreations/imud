@@ -139,7 +139,7 @@ static bool nmea_get_field(const char *sentence, int field, float *out)
 }
 
 /*
- * Parse a received NMEA buffer that may contain up to 4 sentences.
+ * Parse a received NMEA buffer that may contain up to 6 sentences.
  * Extracts heading/roll/pitch from $PASHR and rate-of-turn from $TIROT.
  *
  * PASHR layout: $PASHR,hdg,M,roll,pitch,...

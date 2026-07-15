@@ -48,7 +48,7 @@ package with its own dependencies, config, and docs:
     sudo make install-prometheus                       # Prometheus exporter
     sudo make install-utils                            # imud-mon network monitor
 
-Prebuilt arm64 .debs for Debian/Raspberry Pi OS bookworm and trixie are
+Prebuilt amd64 and arm64 .debs for Debian/Raspberry Pi OS bookworm and trixie are
 attached to GitHub releases (https://github.com/richcreations/imud/releases):
 imud, imud-utils, libimud0, libimud-dev, the five bridges, and imud-wmm-data.
 

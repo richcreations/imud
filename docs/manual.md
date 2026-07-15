@@ -61,6 +61,7 @@ C standard library. Nothing else.
 | `imud-mqtt` | Bridge daemon (optional package): MQTT topics + Home Assistant discovery (see [§9a Bridges](#9a-bridges)). |
 | `imud-influxdb` | Bridge daemon (optional package): InfluxDB line protocol over UDP/HTTP (see [§9a Bridges](#9a-bridges)). |
 | `imud-mavlink` | Bridge daemon (optional package): MAVLink v1/v2 over UDP/serial (see [§9a Bridges](#9a-bridges)). |
+| `imud-prometheus` | Bridge daemon (optional package): Prometheus `/metrics` exporter (see [§9a Bridges](#9a-bridges)). |
 
 ---
 
@@ -363,7 +364,7 @@ samples. A power cut leaves a valid file with a truncated tail.
 ### Bridge sections (their own files)
 
 The optional bridge daemons — `imud-signalk`, `imud-mqtt`, `imud-influxdb`,
-`imud-mavlink` — each read their **own** config file
+`imud-mavlink`, `imud-prometheus` — each read their **own** config file
 (`/etc/imud/imud-<name>.conf`, an `[imud-<name>]` section), never `imud.conf`.
 Their config keys are documented in each bridge's own manual and
 `imud-<name>.conf(5)`; see [§9a Bridges](#9a-bridges). (Unrelated to the
@@ -408,7 +409,11 @@ repeated N times` count. The most recent warnings/errors are also shown by
 
 ### `[position]`
 
-Magnetic declination and true heading. **[restart]**
+Magnetic declination and true heading. **[hot]:** `declination_deg`,
+`lat_deg`, `lon_deg`, `wmm_file` — declination and the WMM field reference
+are recomputed on SIGHUP (a live position source owns declination while
+gpsd/Signal K is enabled). **[restart]:** the `gpsd_*` / `signalk_*` source
+keys and `fix_max_age_h`.
 
 When declination is known, imud adds `$HCHDT` to the NMEA stream and sets
 `FLAG_DECLINATION_VALID` (with the `declination_deg` field) in the binary
@@ -481,6 +486,8 @@ _Stale-fix TTL:_
 
 The names below are the values for `imu.driver` and `mag.driver` in the
 config. Drivers live in `src/drivers/` and are registered in `src/drivers.c`.
+Links to the manufacturers' datasheets are collected in
+[datasheets.md](datasheets.md).
 
 | Driver name | Chip | Type | I²C address | GPIO interrupt | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -549,7 +556,12 @@ sudo systemctl start imud
 imud publishes on up to three streams simultaneously. Full wire formats are in
 [spec.md §7–8, §10](../spec.md).
 
-### NMEA 0183 — UDP port 10110 (default on)
+### NMEA 0183 — UDP port 10110 (built-in default on)
+
+> The shipped reference `config/imud.conf` enables only the local AF_UNIX
+> stream socket (below) — set `[nmea] enabled = true` there for
+> chartplotters and marine software. With **no** config file at all, the
+> built-in default is NMEA on.
 
 Broadcast text sentences for chartplotters, autopilots, and marine software
 (Signal K, OpenCPN). Per burst at `nmea.rate_hz`:
@@ -573,7 +585,10 @@ self-describing (magic + version + CRC), so consumers can validate each one
 independently. See [spec.md §8](../spec.md) for the exact layout and the
 consumer libraries in [§9](#9-consumer-libraries).
 
-### Local subscription stream — AF_UNIX socket (default off)
+### Local subscription stream — AF_UNIX socket (built-in default off)
+
+> This is the one output the shipped reference `config/imud.conf` enables —
+> the bridges and libimud consumers read it.
 
 The same 260-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
@@ -716,6 +731,7 @@ under `/usr/share/doc/imud-<name>/`, and in this tree under `docs/imud-<name>/`:
 | `imud-mqtt` | MQTT topics + Home Assistant discovery | `docs/imud-mqtt/`, `imud-mqtt(8)` |
 | `imud-influxdb` | InfluxDB line protocol (UDP / HTTP) | `docs/imud-influxdb/`, `imud-influxdb(8)` |
 | `imud-mavlink` | MAVLink v1/v2 (UDP / serial) | `docs/imud-mavlink/`, `imud-mavlink(8)` |
+| `imud-prometheus` | Prometheus `/metrics` HTTP exporter | `docs/imud-prometheus/`, `imud-prometheus(8)` |
 
 All read imud's local stream, so they require `[stream] enabled = true` in
 `imud.conf`. Build them with `make bridges` and install each with

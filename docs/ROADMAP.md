@@ -9,7 +9,11 @@ Seven drivers are implemented but marked `experimental = true` and have never ru
 real hardware: `icm20948`, `ak09916`, `icm42688p`, `lsm6dso`, `lsm6dsox`, `lis3mdl`,
 `lis2mdl`. Each needs a bench pass (probe/WHO_AM_I, init, ODR verification, FIFO/DRDY
 behavior, sane values in all orientations) before clearing its flag. The driver
-contract in the driver guide in `docs/manual.md` makes this mechanical. The reference pair
+contract in the driver guide in `docs/manual.md` makes this mechanical. Two of
+them carry unverified pre-1.5-tag fixes to confirm on the bench: `ak09916`
+(DRDY-timeout/overflow now return "no data" instead of counting toward the
+error-reset threshold) and `icm42688p` (1 µs timestamp tick + 20-bit counter
+unwrap — check `ts_wall_ns` monotonicity across the ~1 s TMSTVAL wrap). The reference pair
 (`ism330dhcx`, `mmc5983ma`) has run on the boat and worked; the chip is confirmed
 stern-facing, so the 180° mount yaw is genuine. The modest heading offset seen in
 that testing likely mixes the since-fixed mekf_align mirror bug (small when booting
@@ -175,7 +179,41 @@ Debian package provides the official NOAA COF format (geographiclib-tools
 only offers a *downloader* for its own binary format), and a marine daemon
 must work offline — keep vendoring.
 
-## 8. Small items
+## 8. Code consolidation  *(1.6 candidates — deferred from the 2026-07-15 pre-1.5 audit)*
+
+Duplication clusters found by the pre-tag full-repo audit. All deferred
+deliberately: refactoring just before the release tag would invalidate the
+testing 1.5 had already had. None blocks anything; each is a mechanical
+extraction plus a re-test.
+
+- **`sd_notify_msg()` ×6** — byte-identical copies in `main.c` and all five
+  bridge mains (the copies even say "mirrors src/signalk_main.c"). Extract a
+  shared `src/sd_notify.c`.
+- **Driver I2C register wrappers ×7** — `burst_read`/`reg_write`/`reg_read`
+  are near-identical `I2C_RDWR` ioctl wrappers in seven drivers. A shared
+  helper needs an auto-increment flag (`lis3mdl` sets `0x80|reg`).
+- **`ism330dhcx.c` ↔ `lsm6dso.c` near-twin drivers** — FIFO-tag drain loop,
+  axis remap, and timestamp back-calculation are copy-paste; only WHO_AM_I
+  and a CTRL9_XL write differ by design. No drift observed yet, but a bug
+  fixed in one silently won't propagate to the other.
+- **Bridge stream-loop skeleton ×4–5** — the `while(!g_stop)` body
+  (watchdog ping → SIGHUP reload → reconnect → read → deadline-advance) is
+  structurally duplicated across the bridge mains; the deadline-advance
+  block is verbatim in three of them.
+- **UDP-open drift (user-visible symptom)** — `signalk_main.c` `open_udp_dest()`
+  uses `inet_pton` (numeric IPv4 only) while influxdb/mavlink use
+  `getaddrinfo`: the Signal K UDP destination rejects hostnames the other
+  bridges accept. Unifying on a shared `getaddrinfo` helper fixes it.
+- **`crc32_ieee` ×3 in-tree C copies** — packet.c, libimud.c, mon_main.c
+  could share one internal helper. The copies in `lib/imud_client.h`
+  (self-contained header) and the Python client (zlib) stay by design.
+- Minor notes from the same audit: `imud.service` `RestrictAddressFamilies`
+  omits `AF_INET6` while the gpsd/Signal K position clients target
+  `localhost` (may resolve `::1`); `FLAG_MOTION` (bit 6) is defined but
+  never set — decide to wire it up or retire it at the next wire-version
+  bump (marked "reserved" in all headers as of 1.5).
+
+## 9. Small items
 
 - `ctx->stop` in imu.c stays `volatile int` (not `_Atomic`) because its address feeds
   the `imu_ring_pop()` API; changing it means touching ring.h/ring.c/test_ring.

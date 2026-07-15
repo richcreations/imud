@@ -53,7 +53,7 @@ the sea-state fields (`wave_height`, `wave_period`, `roll_period`,
 ## Example point
 
 ```
-imud,source=imud qw=1.000000,qx=0.000000,qy=0.000000,qz=0.000000,roll=5.72958,pitch=-2.86479,yaw=70.47381,heading=90.00000,heading_true=103.20001,variation=13.20000,rate_of_turn=60.000000,heave=0.4200,heave_rate=0.2500,heave_valid=t,gbias_x=0.001000,gbias_y=-0.002000,gbias_z=0.003000,gbias_var_x=1.000e-06,gbias_var_y=2.000e-06,gbias_var_z=3.000e-06,quiescence=0.010000,temp=31.40,seq=7i 1620307999123000000
+imud,source=imud qw=1.000000,qx=0.000000,qy=0.000000,qz=0.000000,roll=5.72958,pitch=-2.86479,yaw=70.47381,heading=90.00000,heading_true=103.20001,variation=13.20000,rate_of_turn=60.000000,heave=0.4200,heave_rate=0.2500,heave_valid=t,gbias_x=0.001000,gbias_y=-0.002000,gbias_z=0.003000,gbias_var_x=1.000e-06,gbias_var_y=2.000e-06,gbias_var_z=3.000e-06,quiescence=0.010000,mag_anomaly=0.01200,mag_residual=0.00480,wave_height=0.310,wave_period=4.20,roll_period=6.10,roll_amplitude=0.0700,pitch_period=8.00,pitch_amplitude=0.0350,wave_valid=t,temp=31.40,seq=7i 1620307999123000000
 ```
 
 ## Transports

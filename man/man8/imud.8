@@ -4,6 +4,7 @@ imud \- IMU daemon for marine and robotics navigation
 .SH SYNOPSIS
 .B imud
 [\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-replay\fR \fIFILE\fR]
 [\fB\-\-skip\-bias\-cal\fR]
 [\fB\-\-no\-nmea\fR]
 [\fB\-\-no\-highrate\fR]
@@ -72,8 +73,11 @@ Print the version string and exit.
 .B SIGHUP
 Reload hot-reloadable configuration fields without restarting.
 Hot fields include MEKF noise parameters, output rates, the stats heartbeat
-rate, the log level, and static declination (unless a live position source
-owns it).
+rate, the log level, and the
+.B [position]
+declination inputs (declination_deg, lat_deg/lon_deg, wmm_file \(em the WMM
+declination and field reference are recomputed, unless a live position
+source owns them).
 The log file, if configured, is reopened on reload so logrotate can rotate it.
 If the reloaded file fails to parse, the current configuration is kept.
 Fields marked

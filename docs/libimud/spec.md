@@ -88,7 +88,7 @@ Values are fixed by the wire protocol.
 | `IMUD_FLAG_ACCEL_CAL` | 3 | accel calibration applied |
 | `IMUD_FLAG_GYRO_CAL` | 4 | gyro bias applied |
 | `IMUD_FLAG_MAG_CAL` | 5 | mag hard/soft-iron cal applied |
-| `IMUD_FLAG_MOTION` | 6 | significant motion detected |
+| `IMUD_FLAG_MOTION` | 6 | reserved — never set as of wire v14 |
 | `IMUD_FLAG_FIFO_OVERFLOW` | 7 | sample gap (FIFO overflow) |
 | `IMUD_FLAG_STARTUP` | 8 | gyro bias estimation in progress |
 | `IMUD_FLAG_SHUTDOWN` | 9 | final packet before clean exit |

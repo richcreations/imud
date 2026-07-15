@@ -43,7 +43,7 @@
 #define FLAG_ACCEL_CAL        (1u <<  3)  /* accel calibration applied */
 #define FLAG_GYRO_CAL         (1u <<  4)  /* gyro bias applied */
 #define FLAG_MAG_CAL          (1u <<  5)  /* mag hard/soft-iron cal applied */
-#define FLAG_MOTION           (1u <<  6)  /* significant motion detected */
+#define FLAG_MOTION           (1u <<  6)  /* reserved — never set as of wire v14 */
 #define FLAG_FIFO_OVERFLOW    (1u <<  7)  /* ISM330 FIFO overflowed (gap!) */
 #define FLAG_STARTUP          (1u <<  8)  /* gyro bias estimation in progress */
 #define FLAG_SHUTDOWN         (1u <<  9)  /* final packet before clean exit */

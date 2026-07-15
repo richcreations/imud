@@ -1,7 +1,7 @@
 /*
  * nmea.h — NMEA 0183 sentence encoder (§7)
  *
- * nmea_encode() builds one complete burst (4 or 5 sentences) into a flat
+ * nmea_encode() builds one complete burst (5 or 6 sentences) into a flat
  * buffer ready for a single sendto() call.  All sentences use <CR><LF>
  * termination and correct XOR checksums.
  */
@@ -25,6 +25,7 @@
  * Sentences emitted (in order):
  *   $PASHR   — attitude (magnetic heading, roll, pitch, accuracy)
  *   $HCHDM   — magnetic heading
+ *   $HCHDG   — heading + variation (variation filled when declination known)
  *   $HCHDT   — true heading (only when FLAG_DECLINATION_VALID is set)
  *   $TIROT   — rate of turn
  *   $IIXDR   — pitch and roll transducer
