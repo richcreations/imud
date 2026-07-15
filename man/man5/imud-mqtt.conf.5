@@ -1,4 +1,4 @@
-.TH IMUD\-MQTT.CONF 5 "2026-07-11" "imud 1.4.1" "File Formats Manual"
+.TH IMUD\-MQTT.CONF 5 "2026-07-13" "imud 1.5" "File Formats Manual"
 .SH NAME
 imud\-mqtt.conf \- configuration file for imud-mqtt(8)
 .SH SYNOPSIS
@@ -50,6 +50,10 @@ Broker TCP port.
 .B client_id
 .RI ( string ,\ default:\ \(dqimud\(dq )\ [restart]
 MQTT client id; also the Home Assistant device/node id.
+.TP
+.B keepalive_s
+.RI ( int ,\ default:\ 30 )\ [restart]
+MQTT keepalive interval in seconds.
 .TP
 .B topic_prefix
 .RI ( string ,\ default:\ \(dqimud\(dq )\ [restart]

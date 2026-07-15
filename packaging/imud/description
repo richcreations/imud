@@ -3,9 +3,9 @@ IMU daemon — attitude, heading, and heave for boats ("gpsd for IMUs")
  Multiplicative EKF, and serves attitude, heading (magnetic and WMM true),
  rate of turn, heave, and sea-state statistics to the network: NMEA 0183
  over UDP, a high-rate binary UDP stream, and a local AF_UNIX subscription
- socket. A built-in black box can record every raw sensor sample to
- .imucap capture files, and the sim driver replays them (or a synthetic
- scenario) through the full pipeline.
+ socket. A built-in black box can record every raw sensor sample to .imucap
+ capture files, and the sim driver replays them (or a synthetic scenario)
+ through the full pipeline.
  .
  Includes calibration and self-characterization (imud-cal), a status tool
  (imud-status), the Python client, and a hardened systemd service. The

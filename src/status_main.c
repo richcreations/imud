@@ -47,9 +47,16 @@ int main(int argc, char **argv)
     }
 
     struct sockaddr_un addr;
+    size_t plen = strlen(sockpath);
+    if (plen >= sizeof(addr.sun_path)) {
+        fprintf(stderr, "socket path too long (%zu bytes, max %zu): %s\n",
+                plen, sizeof(addr.sun_path) - 1, sockpath);
+        close(fd);
+        return 2;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, sockpath, sizeof(addr.sun_path) - 1);
+    memcpy(addr.sun_path, sockpath, plen);   /* addr is zeroed → NUL-terminated */
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         fprintf(stderr, "connect(%s): %s\n", sockpath, strerror(errno));

@@ -141,8 +141,9 @@ in-situ `imud-cal mag`. See the
   guide to writing new drivers.
 - **[Protocol spec](spec.md)** — architecture, the binary packet layout, NMEA
   sentence formats, and the timestamp design.
-- **[Client libraries](lib/README.md)** — libimud (ABI-stable C) and the
-  Python client for the binary stream.
+- **[libimud](docs/libimud/)** — the ABI-stable C client library and the Python
+  client for the binary stream: [README](docs/libimud/README.md),
+  [manual](docs/libimud/manual.md), [spec](docs/libimud/spec.md).
 - **[Capture & replay](docs/capture.md)** — the black box, playback, and
   offline noise/temperature analysis.
 - **Bridges** — each optional bridge has its own docs under `docs/imud-<name>/`

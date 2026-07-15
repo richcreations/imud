@@ -271,7 +271,7 @@ dist:
 check: test
 
 # ── Install ───────────────────────────────────────────────────────────────────
-# Packagers: pass PREFIX=/usr SVCDIR=/lib/systemd/system DESTDIR=<stage>.
+# Packagers: pass PREFIX=/usr SVCDIR=/usr/lib/systemd/system DESTDIR=<stage>.
 # When DESTDIR is set the install is a pure file copy: no useradd, no
 # systemctl — those belong to the package's maintainer scripts.
 
@@ -337,10 +337,12 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -m 644 lib/imud.h $(DESTDIR)$(PREFIX)/include/imud.h
 	install -m 644 libimud.pc $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man3
-	gzip -9c man/man3/libimud.3 > $(DESTDIR)$(MANDIR)/man3/libimud.3.gz
+	gzip -9nc man/man3/libimud.3 > $(DESTDIR)$(MANDIR)/man3/libimud.3.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/libimud
+	install -m 644 docs/libimud/README.md docs/libimud/manual.md \
+	               docs/libimud/spec.md $(DESTDIR)$(DOCDIR)/libimud/
 	install -m 644 packaging/libimud/copyright $(DESTDIR)$(DOCDIR)/libimud/copyright
-	gzip -9c packaging/libimud/changelog > $(DESTDIR)$(DOCDIR)/libimud/changelog.gz
+	gzip -9nc packaging/libimud/changelog > $(DESTDIR)$(DOCDIR)/libimud/changelog.gz
 	@if [ -z "$(DESTDIR)" ] && command -v ldconfig >/dev/null 2>&1; then \
 	    ldconfig; \
 	fi
@@ -349,17 +351,19 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man1 \
 	                   $(DESTDIR)$(MANDIR)/man5 \
 	                   $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man1/imud-status.1 > $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz
-	gzip -9c man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
-	gzip -9c man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
-	gzip -9c man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
+	gzip -9nc man/man1/imud-status.1 > $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz
+	gzip -9nc man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
+	gzip -9nc man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
+	gzip -9nc man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
 	# ── Documentation (/usr/share/doc/imud) ────────────────────────────────
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud/examples
-	install -m 644 AUTHORS NEWS INSTALL README.md CONTRIBUTING.md spec.md \
+	# INSTALL is build-from-source guidance: it ships in the tarball, not in
+	# the installed docs (Debian: package-contains-upstream-installation-documentation).
+	install -m 644 AUTHORS NEWS README.md CONTRIBUTING.md spec.md \
 	               docs/manual.md docs/ROADMAP.md $(DESTDIR)$(DOCDIR)/imud/
 	install -m 644 packaging/imud/copyright $(DESTDIR)$(DOCDIR)/imud/copyright
-	gzip -9c packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
+	gzip -9nc packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
 	install -m 644 config/imud.conf $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf
 	@echo "Installed docs to       $(DESTDIR)$(DOCDIR)/imud"
 	@echo ""
@@ -375,10 +379,12 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 install-utils: imud-mon
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANDIR)/man1
 	install -m 755 imud-mon $(DESTDIR)$(PREFIX)/bin/
-	gzip -9c man/man1/imud-mon.1 > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
+	gzip -9nc man/man1/imud-mon.1 > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-utils
+	install -m 644 docs/imud-utils/README.md docs/imud-utils/manual.md \
+	               docs/imud-utils/spec.md $(DESTDIR)$(DOCDIR)/imud-utils/
 	install -m 644 packaging/imud-utils/copyright $(DESTDIR)$(DOCDIR)/imud-utils/copyright
-	gzip -9c packaging/imud-utils/changelog > $(DESTDIR)$(DOCDIR)/imud-utils/changelog.gz
+	gzip -9nc packaging/imud-utils/changelog > $(DESTDIR)$(DOCDIR)/imud-utils/changelog.gz
 	@echo "Installed imud-utils (imud-mon)."
 
 # WMM coefficient data — separate target so it can be packaged on its own
@@ -389,7 +395,7 @@ install-wmm-data:
 	install -m 644 data/WMM.COF $(DESTDIR)$(PREFIX)/share/imud/WMM.COF
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-wmm-data
 	install -m 644 packaging/imud-wmm-data/copyright $(DESTDIR)$(DOCDIR)/imud-wmm-data/copyright
-	gzip -9c packaging/imud-wmm-data/changelog > $(DESTDIR)$(DOCDIR)/imud-wmm-data/changelog.gz
+	gzip -9nc packaging/imud-wmm-data/changelog > $(DESTDIR)$(DOCDIR)/imud-wmm-data/changelog.gz
 	@echo "Installed WMM2025 coefficients: $(DESTDIR)$(PREFIX)/share/imud/WMM.COF"
 	@echo "  (drop a newer model at $(ETCDIR)/WMM.COF to override; imud prefers it)"
 
@@ -405,13 +411,13 @@ install-signalk: imud-signalk etc/imud-signalk.service
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man5/imud-signalk.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz
-	gzip -9c man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
+	gzip -9nc man/man5/imud-signalk.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz
+	gzip -9nc man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-signalk/examples
 	install -m 644 docs/imud-signalk/README.md docs/imud-signalk/manual.md \
 	               docs/imud-signalk/spec.md $(DESTDIR)$(DOCDIR)/imud-signalk/
 	install -m 644 packaging/imud-signalk/copyright $(DESTDIR)$(DOCDIR)/imud-signalk/copyright
-	gzip -9c packaging/imud-signalk/changelog > $(DESTDIR)$(DOCDIR)/imud-signalk/changelog.gz
+	gzip -9nc packaging/imud-signalk/changelog > $(DESTDIR)$(DOCDIR)/imud-signalk/changelog.gz
 	install -m 644 config/imud-signalk.conf $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -435,13 +441,13 @@ install-mqtt: imud-mqtt etc/imud-mqtt.service
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
-	gzip -9c man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
+	gzip -9nc man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
+	gzip -9nc man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples
 	install -m 644 docs/imud-mqtt/README.md docs/imud-mqtt/manual.md \
 	               docs/imud-mqtt/spec.md $(DESTDIR)$(DOCDIR)/imud-mqtt/
 	install -m 644 packaging/imud-mqtt/copyright $(DESTDIR)$(DOCDIR)/imud-mqtt/copyright
-	gzip -9c packaging/imud-mqtt/changelog > $(DESTDIR)$(DOCDIR)/imud-mqtt/changelog.gz
+	gzip -9nc packaging/imud-mqtt/changelog > $(DESTDIR)$(DOCDIR)/imud-mqtt/changelog.gz
 	install -m 644 config/imud-mqtt.conf $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -465,13 +471,13 @@ install-influxdb: imud-influxdb etc/imud-influxdb.service
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-influxdb.conf"; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
-	gzip -9c man/man8/imud-influxdb.8 > $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
+	gzip -9nc man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
+	gzip -9nc man/man8/imud-influxdb.8 > $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples
 	install -m 644 docs/imud-influxdb/README.md docs/imud-influxdb/manual.md \
 	               docs/imud-influxdb/spec.md $(DESTDIR)$(DOCDIR)/imud-influxdb/
 	install -m 644 packaging/imud-influxdb/copyright $(DESTDIR)$(DOCDIR)/imud-influxdb/copyright
-	gzip -9c packaging/imud-influxdb/changelog > $(DESTDIR)$(DOCDIR)/imud-influxdb/changelog.gz
+	gzip -9nc packaging/imud-influxdb/changelog > $(DESTDIR)$(DOCDIR)/imud-influxdb/changelog.gz
 	install -m 644 config/imud-influxdb.conf $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -494,13 +500,13 @@ install-prometheus: imud-prometheus etc/imud-prometheus.service
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man5/imud-prometheus.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz
-	gzip -9c man/man8/imud-prometheus.8 > $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz
+	gzip -9nc man/man5/imud-prometheus.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz
+	gzip -9nc man/man8/imud-prometheus.8 > $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples
 	install -m 644 docs/imud-prometheus/README.md docs/imud-prometheus/manual.md \
 	               docs/imud-prometheus/spec.md $(DESTDIR)$(DOCDIR)/imud-prometheus/
 	install -m 644 packaging/imud-prometheus/copyright $(DESTDIR)$(DOCDIR)/imud-prometheus/copyright
-	gzip -9c packaging/imud-prometheus/changelog > $(DESTDIR)$(DOCDIR)/imud-prometheus/changelog.gz
+	gzip -9nc packaging/imud-prometheus/changelog > $(DESTDIR)$(DOCDIR)/imud-prometheus/changelog.gz
 	install -m 644 config/imud-prometheus.conf $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
@@ -524,13 +530,13 @@ install-mavlink: imud-mavlink etc/imud-mavlink.service
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9c man/man5/imud-mavlink.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
-	gzip -9c man/man8/imud-mavlink.8 > $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz
+	gzip -9nc man/man5/imud-mavlink.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
+	gzip -9nc man/man8/imud-mavlink.8 > $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples
 	install -m 644 docs/imud-mavlink/README.md docs/imud-mavlink/manual.md \
 	               docs/imud-mavlink/spec.md $(DESTDIR)$(DOCDIR)/imud-mavlink/
 	install -m 644 packaging/imud-mavlink/copyright $(DESTDIR)$(DOCDIR)/imud-mavlink/copyright
-	gzip -9c packaging/imud-mavlink/changelog > $(DESTDIR)$(DOCDIR)/imud-mavlink/changelog.gz
+	gzip -9nc packaging/imud-mavlink/changelog > $(DESTDIR)$(DOCDIR)/imud-mavlink/changelog.gz
 	install -m 644 config/imud-mavlink.conf $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \

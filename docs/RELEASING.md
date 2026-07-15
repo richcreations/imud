@@ -4,7 +4,7 @@ Checklist for cutting release X.Y. The canonical version lives in ONE place —
 `include/version.h` — everything else follows it.
 
 1. **Bump the version**: `include/version.h` → `#define IMUD_VERSION_STR "X.Y"`.
-   (All five daemons — imud + the four bridges — report this via `--version`.
+   (All six daemons — imud + the five bridges — report this via `--version`.
    The *wire* version `IMUD_VERSION` in `include/types.h` / `lib/imud_client.h`
    is separate and changes only when the packet layout changes.)
 2. **NEWS**: add an `X.Y` section at the top — user-visible changes only.
@@ -30,12 +30,12 @@ the library — but the installed libimud.so must be upgraded with the daemon.
 ## libimud ABI / soname discipline
 
 The public ABI is `imud.h`: the `imud_*` functions (kept complete in
-`lib/libimud.map`) and the **append-only** `imud_data_t`.
+`lib/libimud.map`) and the **append-only** `imud_data_t`. The rules — how to
+add a wire field, when the SONAME may move, and what must never change — are
+specified once in **[libimud/spec.md](libimud/spec.md)** ("ABI contract" and
+"Maintainer discipline"); follow them there rather than duplicating them here.
 
-- Adding a wire field = append a member to `imud_data_t` (after the last one),
-  fill it in `fill_data()` (lib/libimud.c), and extend the offset asserts in
-  test/test_libimud.c. SONAME stays `libimud.so.0`.
-- New functions are appended to `lib/libimud.map`. SONAME stays.
-- NEVER reorder, retype, or remove existing `imud_data_t` members or exported
-  functions. If that is ever unavoidable (it shouldn't be), bump the SONAME
-  (`libimud.so.1`) and the future runtime package name (libimud0 → libimud1).
+Release-relevant summary: appending a member to `imud_data_t` or a function to
+`lib/libimud.map` keeps SONAME `libimud.so.0`, so a normal release never
+touches it. Only a reorder/retype/removal would force `libimud.so.1` and a
+runtime package rename (libimud0 → libimud1) — that should not happen.

@@ -3,4 +3,4 @@ imud-utils (1.5) UNRELEASED; urgency=medium
   * Initial release: imud-mon split out of the imud package so network
     diagnostics can be installed on machines that do not run the daemon.
 
- -- Richard Simpson <richcreations@gmail.com>  Sat, 12 Jul 2026 00:00:00 -0700
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 12 Jul 2026 00:00:00 -0700

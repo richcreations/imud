@@ -27,8 +27,10 @@ typedef struct {
     float mag_hard_iron[3];    /* from cal.mag.hard_iron, µT */
     float mag_soft_iron[3][3]; /* from cal.mag.soft_iron, 3×3 */
 
-    /* measured sensor noise (imud-cal characterize); overrides the generic
-     * [fusion] mekf_* datasheet numbers when use_measured_noise is set */
+    /* measured sensor noise (imud-cal characterize) — informational only.
+     * NEVER feeds the filter: the MEKF uses the tuned [fusion] mekf_* values,
+     * which are deliberately held above the raw sensor floor (driving the
+     * process noise Q from the floor makes the filter too stiff). */
     float gyro_noise_density[3];    /* rad/s/√Hz */
     float gyro_bias_instability[3]; /* rad/s */
     float accel_noise_density[3];   /* m/s²/√Hz */

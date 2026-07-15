@@ -25,8 +25,12 @@
  *   13. Cleanup: free contexts, remove PID file and status socket
  */
 
+/* The Makefile also passes -D_GNU_SOURCE; guard so a standalone compile
+ * still works without redefining it. */
 #ifdef __linux__
-# define _GNU_SOURCE
+# ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+# endif
 #endif
 
 #include <stdio.h>
@@ -577,24 +581,14 @@ int main(int argc, char **argv)
     imud_cal_t cal;
     if (cal_load(cfg.cal_file, &cal) < 0) return 1;
 
-    /* Per-unit measured noise (imud-cal characterize) beats the generic
-     * datasheet numbers.  The MEKF takes one scalar per sensor, so use the
-     * worst (largest) axis — conservative. */
-    if (cfg.use_measured_noise && cal.has_noise) {
-        float gn = cal.gyro_noise_density[0], gb = cal.gyro_bias_instability[0],
-              an = cal.accel_noise_density[0];
-        for (int i = 1; i < 3; i++) {
-            if (cal.gyro_noise_density[i]    > gn) gn = cal.gyro_noise_density[i];
-            if (cal.gyro_bias_instability[i] > gb) gb = cal.gyro_bias_instability[i];
-            if (cal.accel_noise_density[i]   > an) an = cal.accel_noise_density[i];
-        }
-        if (gn > 0.0f && isfinite(gn)) cfg.mekf_gyro_noise  = gn;
-        if (gb > 0.0f && isfinite(gb)) cfg.mekf_gyro_bias   = gb;
-        if (an > 0.0f && isfinite(an)) cfg.mekf_accel_noise = an;
-        LOG_I("[main] fusion noise from cal.json (measured): "
-              "gyro %.3g rad/s/sqrtHz  bias %.3g rad/s  accel %.3g m/s2/sqrtHz\n",
-              cfg.mekf_gyro_noise, cfg.mekf_gyro_bias, cfg.mekf_accel_noise);
-    }
+    /* cal.json's "noise" section (imud-cal characterize) is per-unit sensor
+     * characterization for the record ONLY — it never feeds the filter.  The
+     * mekf_* values are tuned constants: mekf_gyro_noise/mekf_gyro_bias build
+     * the process noise Q (fusion.c), deliberately held above the raw sensor
+     * floor so the filter stays responsive and the gyro bias observable.
+     * Driving Q from the measured floor makes the filter too stiff (verified:
+     * the test_fusion wave benchmark fails, attitude RMS roughly doubles), so
+     * there is deliberately no configuration path that does it. */
 
     /* ── 3. Log destination, style, and level ───────────────────────────── */
 

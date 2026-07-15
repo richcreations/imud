@@ -53,8 +53,6 @@ typedef struct {
 
     /* [fusion]  [hot]: gains and thresholds */
     bool   mag_yaw_only;          /* [hot] heading-only mag fusion (marine default) */
-    bool   use_measured_noise;    /* [restart] prefer cal.json "noise" (imud-cal
-                                   * characterize) over the mekf_* keys below */
     float  heave_tau_s;           /* [hot] heave filter time constant, s; 0 = off */
     float  wave_tau_s;            /* [hot] sea-state averaging window, s; 0 = off;
                                    * needs heave_tau_s > 0 */

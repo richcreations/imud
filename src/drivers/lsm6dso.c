@@ -46,6 +46,7 @@
 #define REG_CTRL2_G           0x11
 #define REG_CTRL3_C           0x12
 #define REG_CTRL10_C          0x19
+#define REG_OUT_TEMP_L        0x20  /* temperature output L; H at 0x21 (256 LSB/°C, 0=25°C) */
 #define REG_FIFO_STATUS1      0x3A
 #define REG_FIFO_STATUS2      0x3B
 #define REG_TIMESTAMP0        0x40
@@ -67,6 +68,8 @@
 static struct {
     float    accel_scale;
     float    gyro_scale;
+    float    last_temp;         /* °C; persists across drains (temp batched
+                                 * slower than the FIFO is drained) */
     uint32_t seq;
     uint32_t ticks_per_sample;
 } ls;
@@ -199,9 +202,21 @@ static int lsm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     if (reg_write(fd, addr, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
     if (reg_write(fd, addr, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
     if (reg_write(fd, addr, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
-    if (reg_write(fd, addr, REG_FIFO_CTRL4, 0x06)                        < 0) return -1;
+    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10),
+     * matching ism330dhcx.c — temp feeds thermal comp and imud-cal fit-temp. */
+    if (reg_write(fd, addr, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
     if (reg_write(fd, addr, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
+    /* Seed last_temp from the live temperature register (see ism330dhcx.c). */
+    {
+        uint8_t tb[2];
+        if (burst_read(fd, addr, REG_OUT_TEMP_L, tb, 2) == 0) {
+            int16_t rt = (int16_t)(((uint16_t)tb[1] << 8) | tb[0]);
+            ls.last_temp = (float)rt / 256.0f + 25.0f;
+        } else {
+            ls.last_temp = 25.0f;
+        }
+    }
     ls.accel_scale      = accel_scale;
     ls.gyro_scale       = gyro_scale;
     ls.seq              = 0;
@@ -226,7 +241,6 @@ static int lsm_read(int fd, uint8_t addr,
 
     float p_accel[3] = {0.0f, 0.0f, 0.0f};
     float p_gyro[3]  = {0.0f, 0.0f, 0.0f};
-    float p_temp     = 25.0f;
     int   have_accel = 0;
     int   have_gyro  = 0;
     int   produced   = 0;
@@ -256,7 +270,7 @@ static int lsm_read(int fd, uint8_t addr,
             break;
 
         case TAG_TEMP:
-            p_temp = (float)raw_x / 256.0f + 25.0f;
+            ls.last_temp = (float)raw_x / 256.0f + 25.0f;   /* persist across drains */
             break;
 
         default:
@@ -270,7 +284,7 @@ static int lsm_read(int fd, uint8_t addr,
             buf[produced].gyro[0]  =  p_gyro[0];
             buf[produced].gyro[1]  = -p_gyro[1];
             buf[produced].gyro[2]  = -p_gyro[2];
-            buf[produced].temp_c   = p_temp;
+            buf[produced].temp_c   = ls.last_temp;
             buf[produced].seq      = ls.seq++;
             buf[produced].chip_ts  = 0;
             produced++;

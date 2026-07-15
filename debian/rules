@@ -9,6 +9,11 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+# Multiarch library path: the .so and libimud.pc must live under the triplet
+# dir, or pkg-config's cross-compilation wrapper cannot find the .pc.
+# libimud.pc is generated from @LIBDIR@, so it follows automatically.
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
 %:
 	dh $@
 
@@ -20,11 +25,27 @@ override_dh_auto_install:
 	dh_auto_install -- install-utils install-wmm-data \
 	        install-signalk install-mqtt install-influxdb \
 	        install-mavlink install-prometheus \
-	        PREFIX=/usr SVCDIR=/lib/systemd/system
+	        PREFIX=/usr SVCDIR=/usr/lib/systemd/system \
+	        LIBDIR=/usr/lib/$(DEB_HOST_MULTIARCH)
+	# This is a non-native package (3.0 (quilt), version X.Y-N), so the
+	# per-package Debian changelog belongs at changelog.Debian.gz — Policy
+	# 12.7; changelog.gz is the NATIVE name.  The upstream install target
+	# stages it under the native name (correct for a source install), so
+	# rename it here rather than teach the Makefile about Debian revisions.
+	for d in debian/tmp/usr/share/doc/*/; do \
+	    if [ -f "$$d/changelog.gz" ]; then \
+	        mv "$$d/changelog.gz" "$$d/changelog.Debian.gz"; \
+	    fi; \
+	done
 
 # The upstream install targets already lay out /usr/share/doc/<pkg>/
-# (DEP-5 copyright + upstream changelog.gz) per package; keep those and
-# skip debhelper's defaults.  Proper changelog.Debian.gz naming is a
-# Debian-archive-submission refinement, not needed for release .debs.
+# (DEP-5 copyright + the per-package changelog, renamed above) per package;
+# keep those and skip debhelper's defaults.
+#
+# Exception: the library's docs are staged under its own name
+# (usr/share/doc/libimud), not the binary package names — libimud0.install
+# remaps them, and libimud-dev.links symlinks to libimud0's (permitted: it
+# already Depends on libimud0 (= ${binary:Version})).  Since dh_installdocs
+# is skipped, nothing else would create those directories.
 override_dh_installchangelogs:
 override_dh_installdocs:

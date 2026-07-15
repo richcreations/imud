@@ -1,4 +1,4 @@
-.TH IMUD.CONF 5 "2026-07-11" "imud 1.4.1" "File Formats Manual"
+.TH IMUD.CONF 5 "2026-07-13" "imud 1.5" "File Formats Manual"
 .SH NAME
 imud.conf \- configuration file for the imud IMU daemon
 .SH SYNOPSIS
@@ -211,13 +211,14 @@ to disable.
 .SS [fusion]
 MEKF noise parameters and rejection thresholds.
 .B [hot]
-.TP
-.B use_measured_noise
-.RI (bool,\ default:\ true)
-.B [restart]
-Prefer the per-unit noise values measured by
+.PP
+The mekf_* values are tuned constants, not raw sensor readouts:
+mekf_gyro_noise and mekf_gyro_bias build the filter's process noise Q,
+held deliberately above the measured sensor floor.
+The per-unit noise recorded by
 .B imud-cal characterize
-(cal.json \(dqnoise\(dq section) over the generic mekf_* numbers below.
+(cal.json \(dqnoise\(dq section) is informational only and never feeds
+the filter.
 .TP
 .B mekf_gyro_noise
 .RI (double,\ default:\ 0.007)
@@ -288,8 +289,8 @@ to disable.
 Accelerometer skip threshold override applied while engine vibration is
 detected (wider gate; accel noise is additionally inflated 4x).
 .SS [capture]
-Black-box recording of every raw sensor sample to rotating .imucap files —
-replayable with
+Black-box recording of every raw sensor sample to rotating .imucap
+files \(em replayable with
 .B imud --replay
 and analyzable with
 .BR imud-cal (8)

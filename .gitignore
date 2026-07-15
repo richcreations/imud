@@ -96,3 +96,6 @@ cal.json
 /debian/imud-mavlink/
 /debian/imud-prometheus/
 /debian/imud-wmm-data/
+
+# Temporary per-unit calibration data captured during bench work (not source).
+/temp-fit.json

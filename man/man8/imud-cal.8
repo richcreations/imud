@@ -1,4 +1,4 @@
-.TH IMUD\-CAL 8 "2026-07-11" "imud 1.4.1" "System Manager's Manual"
+.TH IMUD\-CAL 8 "2026-07-13" "imud 1.5" "System Manager's Manual"
 .SH NAME
 imud\-cal \- IMU calibration tool for imud
 .SH SYNOPSIS
@@ -60,11 +60,12 @@ Allan-variance noise analysis of a stationary capture (requires
 ).
 Computes per-axis gyro noise density, gyro bias instability, and
 accelerometer noise density, and writes them to cal.json's
-\(dqnoise\(dq section \(em the daemon then tunes the filter to the
-measured silicon instead of generic datasheet numbers (see
-.B use_measured_noise
-in
-.BR imud.conf (5)).
+\(dqnoise\(dq section as informational per-unit characterization \(em a record
+of what the silicon actually does.
+These numbers never feed the filter: the MEKF always uses the tuned
+mekf_* values in
+.BR imud.conf (5),
+which are held deliberately above the measured sensor floor.
 Record overnight with [capture] enabled for a trustworthy bias-instability
 floor; shorter records yield upper bounds and say so.
 Offline: never touches the sensors.

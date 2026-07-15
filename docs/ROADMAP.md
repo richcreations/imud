@@ -27,9 +27,20 @@ declination is active.
 
 ✅ Code landed 2026-07-12 (1.5): cal.json `gyro_temp` section (per-axis linear
 coefficients + reference temp), applied per-sample before fusion; fitted
-offline with `imud-cal fit-temp --from <warm-up capture>`. **Remaining: record
-a real cold-boot→warm capture on the Pi and fit actual coefficients** —
-pair with the first hardware sessions.
+offline with `imud-cal fit-temp --from <warm-up capture>`.
+
+⚠️ Was non-functional until fixed 2026-07-12 (pre-tag): the ISM330DHCX /
+LSM6DSO drivers never batched temperature into the FIFO (`FIFO_CTRL4`
+ODR_T_BATCH = 0), so `temp_c` stayed frozen at the 25 °C placeholder — the
+offline fit had nothing to fit and the per-sample comp was a silent no-op.
+Fixed by enabling 12.5 Hz temp batching, persisting `last_temp` across FIFO
+drains (temp batches slower than the FIFO is drained), and seeding it from the
+OUT_TEMP register at init; validated live on the bench.
+
+**Remaining: record a real cold-boot→warm capture on the Pi and fit actual
+coefficients** — pair with the first hardware sessions. Note the ISM330
+self-heats only ~1 °C, so a usable fit needs a real ambient swing of several °C
+(leave it across a garage day/night cycle, or warm it gently mid-capture).
 
 ## 3. Pi 5 interrupt latency re-profiling  *(pre-existing spec §16 item, bench)*
 
@@ -110,10 +121,16 @@ shipped.)
   validation happen on the Pi trip.**
 - **Sensor self-characterization (Allan variance) in imud-cal.** ✅ shipped
   2026-07-12 (1.5): `imud-cal characterize --from <capture>` computes per-axis
-  noise density + bias instability into cal.json's `noise` section; the daemon
-  prefers measured values over the datasheet `mekf_*` keys
-  (`use_measured_noise`, default true). Overnight capture on the Pi still
-  wanted for real numbers.
+  noise density + bias instability into cal.json's `noise` section. The numbers
+  are **informational** sensor characterization only and never feed the filter.
+  The `use_measured_noise` key was **removed entirely** (2026-07-13, pre-tag): it
+  had overwritten the tuned `mekf_*` with the measured floor, but the tuned
+  values — especially the gyro process-noise terms feeding Q — are deliberately
+  held above that floor, and driving Q from it degrades wave tracking (verified:
+  the test_fusion wave benchmark fails, attitude RMS ~doubles). Defaulting it off
+  was not enough; there is now no configuration path that can reach the flawed
+  behaviour. Overnight bench characterize done 2026-07-13 (bias-instability floor
+  reached: gyro noise ~6-8e-5 rad/s/√Hz, bias instability ~1-1.7 °/h).
 - **Calibration UX + health.** ✅ landed 2026-07-11 (v1.4): guided swing cal
   (live 24-sector coverage bar with current-direction marker, live radius/RMS,
   bell + "FULL CIRCLE" cue) + cal-health monitoring (`mag_anomaly` +

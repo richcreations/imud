@@ -681,7 +681,7 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
  */
 #define CAP_ANALYZE_MAX (1u << 22)
 
-static long load_capture(const char *path, double *fs_out,
+static long load_capture(const char *path, double settle_sec, double *fs_out,
                          double *gyro[3], double *accel[3], double **temp)
 {
     cap_reader_t r;
@@ -727,12 +727,17 @@ static long load_capture(const char *path, double *fs_out,
         return -1;
     }
 
-    /* Pass 2: block-average into the arrays. */
+    /* Pass 2: block-average into the arrays.  Skip the first settle_sec of
+     * data, exactly as the daemon's fusion discards startup_settle_sec: the
+     * gyro needs ~5 s to settle after power-on, and those transient samples
+     * both trip the motion gate and inflate the Allan noise floor. */
     cap_reader_rewind(&r);
-    size_t in_block = 0, out = 0;
+    uint64_t settle_ns = (uint64_t)(settle_sec > 0.0 ? settle_sec * 1e9 : 0.0);
+    size_t in_block = 0, out = 0, n_skip = 0;
     double acc_g[3] = {0}, acc_a[3] = {0}, acc_t = 0;
     while (cap_reader_next(&r, &rec) == 1 && out < n) {
         if (rec.type != CAP_REC_IMU) continue;
+        if (rec.mono_ns - first_mono < settle_ns) { n_skip++; continue; }
         for (int a = 0; a < 3; a++) {
             acc_g[a] += rec.imu.gyro[a];
             acc_a[a] += rec.imu.accel[a];
@@ -758,6 +763,9 @@ static long load_capture(const char *path, double *fs_out,
     if (decim > 1)
         printf(", analyzed at %.1f Hz after %zux averaging", *fs_out, decim);
     printf(")\n");
+    if (n_skip)
+        printf("Skipped first %.1f s startup settle (%zu samples)\n",
+               settle_sec, n_skip);
     return (long)out;
 }
 
@@ -790,11 +798,11 @@ static void motion_gate(double *gyro[3], double *accel[3], size_t n)
                "results will be pessimistic\n", gmax - gmin, astd);
 }
 
-static int do_characterize(imud_cal_t *cal, const char *from)
+static int do_characterize(imud_cal_t *cal, const char *from, double settle_sec)
 {
     double  fs;
     double *gyro[3], *accel[3], *temp;
-    long    n = load_capture(from, &fs, gyro, accel, &temp);
+    long    n = load_capture(from, settle_sec, &fs, gyro, accel, &temp);
     if (n <= 0) return -1;
 
     motion_gate(gyro, accel, (size_t)n);
@@ -839,8 +847,9 @@ static int do_characterize(imud_cal_t *cal, const char *from)
         printf("\nNote: the bias-instability floor was not reached — the\n"
                "values above are upper bounds; a longer (overnight) capture\n"
                "pins them down.\n");
-    printf("\nThe daemon uses these instead of the generic [fusion] mekf_*\n"
-           "numbers while use_measured_noise = true (the default).\n");
+    printf("\nSaved as informational per-unit sensor characterization. These numbers\n"
+           "never feed the filter: the MEKF always uses its tuned [fusion] mekf_*\n"
+           "values, which are held above the raw sensor floor on purpose.\n");
 
     cal->has_noise = true;
     free_capture(gyro, accel, temp);
@@ -849,11 +858,11 @@ static int do_characterize(imud_cal_t *cal, const char *from)
 
 #define GYRO_TEMP_REF_C 25.0
 
-static int do_fit_temp(imud_cal_t *cal, const char *from)
+static int do_fit_temp(imud_cal_t *cal, const char *from, double settle_sec)
 {
     double  fs;
     double *gyro[3], *accel[3], *temp;
-    long    n = load_capture(from, &fs, gyro, accel, &temp);
+    long    n = load_capture(from, settle_sec, &fs, gyro, accel, &temp);
     if (n <= 0) return -1;
 
     motion_gate(gyro, accel, (size_t)n);
@@ -976,8 +985,8 @@ int main(int argc, char **argv)
     if      (strcmp(mode, "mag")          == 0) rc = do_mag  (&cfg, &cal);
     else if (strcmp(mode, "gyro")         == 0) rc = do_gyro (&cfg, &cal);
     else if (strcmp(mode, "accel")        == 0) rc = do_accel(&cfg, &cal);
-    else if (strcmp(mode, "characterize") == 0) rc = do_characterize(&cal, from_path);
-    else if (strcmp(mode, "fit-temp")     == 0) rc = do_fit_temp(&cal, from_path);
+    else if (strcmp(mode, "characterize") == 0) rc = do_characterize(&cal, from_path, cfg.startup_settle_sec);
+    else if (strcmp(mode, "fit-temp")     == 0) rc = do_fit_temp(&cal, from_path, cfg.startup_settle_sec);
 
     if (rc < 0) return 1;
 

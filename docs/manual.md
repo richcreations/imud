@@ -264,10 +264,13 @@ Magnetometer driver settings. **[restart]**
 
 MEKF noise parameters and tuning knobs. **[hot]**
 
-Applied live on SIGHUP (except `use_measured_noise`, **[restart]**). The
-noise densities come from the sensor datasheets — physical constants, not
-tuning knobs — and are superseded by per-unit measured values once
-`imud-cal characterize` has run (see [capture.md](capture.md)). The knobs most worth touching
+Applied live on SIGHUP. The `mekf_*` noise densities are **tuned constants**, not
+raw sensor readouts: `mekf_gyro_noise` and `mekf_gyro_bias` build the filter's
+process noise Q, held deliberately above the measured sensor floor so the filter
+stays responsive and the gyro bias observable. The per-unit noise that
+`imud-cal characterize` measures (cal.json `noise` section, see
+[capture.md](capture.md)) is informational only and never supersedes them — driving
+Q from the raw floor makes the filter too stiff. The knobs most worth touching
 for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 `mag_yaw_only`, `heave_tau_s`, and `wave_tau_s`.
 
@@ -279,7 +282,6 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 | `mekf_mag_noise` | double | `0.0004` | Magnetometer noise density in Gauss/√Hz. MMC5983MA: 0.4 mGauss RMS. |
 | `mag_reject_gauss` | double | `0.05` | Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field). |
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
-| `use_measured_noise` | bool | `true` | **[restart]** Prefer the per-unit noise values measured by `imud-cal characterize` (cal.json `noise` section) over the four `mekf_*` keys below. |
 | `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration. |
 | `heave_tau_s` | float | `12.0` | Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and the binary packet's `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). |
 | `wave_tau_s` | float | `120.0` | Sea-state averaging window in seconds. Significant wave height (Hs = 4·σ(heave)), mean zero-crossing wave period, and the vessel's roll/pitch periods and significant single amplitudes (2σ) are exponentially weighted statistics of the heave/roll/pitch oscillations over this window (packet fields `wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`, `pitch_period_s`, `pitch_amplitude`, gated by the `wave_valid` flag). Stats settle ~2 windows after heave settles. Requires `heave_tau_s` > 0; `0` disables. |
@@ -522,7 +524,7 @@ partial run updates only the section it calibrated, preserving the others.
 | `gyro` | Hold the board completely still. Captures gyro bias over a short window. |
 | `accel` | Bench 6-position calibration; follow the on-screen prompts to orient each face in turn. Do this before final mounting. |
 | `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Guided: a live bar shows heading-circle coverage (`#` covered, `.` needed, `o` = where you're pointing), running coverage %, and live radius/RMS; a bell + "FULL CIRCLE" message tells you when coverage is complete. Must be done after final mounting, with the engine and typical electronics running. |
-| `characterize` | Offline Allan-variance noise analysis of a **stationary** capture (`--from FILE`, recorded with `[capture]` enabled — overnight for a trustworthy bias-instability floor). Writes per-axis gyro/accel noise characteristics to cal.json; the daemon then tunes the filter to your silicon (`use_measured_noise`). Never touches the sensors. |
+| `characterize` | Offline Allan-variance noise analysis of a **stationary** capture (`--from FILE`, recorded with `[capture]` enabled — overnight for a trustworthy bias-instability floor). Writes per-axis gyro/accel noise characteristics to cal.json's `noise` section as **informational** sensor characterization — the filter always keeps its tuned `mekf_*`; these numbers never feed it. Never touches the sensors. |
 | `fit-temp` | Offline linear gyro-bias/temperature fit from a warm-up capture (`--from FILE`, cold boot → warm, several °C of span). The daemon subtracts the fitted term from the gyro before fusion. Never touches the sensors. |
 
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
@@ -695,7 +697,9 @@ The `lib/` directory has ready-to-use clients for the binary stream:
 
 All validate CRC32 and support multicast. `make install` installs libimud
 (library, header, pkg-config) and the Python module to
-`/usr/local/share/imud`. See `lib/README.md` for full usage and examples.
+`/usr/local/share/imud`. See [libimud/manual.md](libimud/manual.md) for full
+usage and examples, and [libimud/spec.md](libimud/spec.md) for the API,
+`imud_data_t` fields, and the ABI contract.
 
 ---
 

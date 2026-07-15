@@ -425,7 +425,9 @@ void *position_thread(void *arg)
     /* Compose the banner first: log lines must be single emissions so the
      * per-line timestamp/priority prefixes can't split them. */
     {
-        char banner[192];
+        /* Sized for the worst case: the literal + gpsd host[64] + signalk
+         * host[64] and path[128] with their labels (~316 bytes). */
+        char banner[384];
         int  bn = snprintf(banner, sizeof banner, "[pos] position thread started");
         if (ctx->cfg->pos_gpsd_enabled && bn > 0 && bn < (int)sizeof banner)
             bn += snprintf(banner + bn, sizeof banner - (size_t)bn,

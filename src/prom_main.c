@@ -23,8 +23,12 @@
  * revisions, only across imud_data_t appends it wants to surface.
  */
 
+/* The Makefile also passes -D_GNU_SOURCE; guard so a standalone compile
+ * still works without redefining it. */
 #ifdef __linux__
-# define _GNU_SOURCE
+# ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+# endif
 #endif
 
 #include <stdio.h>

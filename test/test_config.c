@@ -95,7 +95,6 @@ static void test_defaults_values(void)
     EXPECT_NEAR_D(cfg.mag_reject_gauss, 0.05,   1e-9, "mag_reject default (0.05 G anomaly)");
     EXPECT_NEAR_D(cfg.accel_skip_thresh,0.05,   1e-9, "accel_skip default");
     EXPECT(cfg.mag_yaw_only == true,                  "mag_yaw_only default true (marine)");
-    EXPECT(cfg.use_measured_noise == true,            "use_measured_noise default true");
     EXPECT_NEAR_D(cfg.heave_tau_s, 12.0, 1e-5,        "heave_tau_s default 12 s");
     EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");

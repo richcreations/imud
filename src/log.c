@@ -117,8 +117,13 @@ void log_emit(int lvl, const char *fmt, ...)
         struct tm tm;
         localtime_r(&now, &tm);
         strftime(ts, sizeof ts, "%H:%M:%S", &tm);
-        snprintf(slot, RECENT_LEN, "%s %c %s",
-                 ts, (lvl >= LOG_ERROR) ? 'E' : 'W', line);
+        /* Deliberately truncating: g_recent is a small ring backing
+         * imud-status's "Recent warnings" view, not a full log.  Bound both
+         * fields ("HH:MM:SS" + ' ' + level + ' ' = 11 chars, +NUL = 12) so the
+         * result provably fits RECENT_LEN. */
+        snprintf(slot, RECENT_LEN, "%.8s %c %.*s",
+                 ts, (lvl >= LOG_ERROR) ? 'E' : 'W',
+                 (int)(RECENT_LEN - 12), line);
         size_t n = strlen(slot);
         if (n > 0 && slot[n-1] == '\n') slot[n-1] = '\0';
         g_recent_head = (g_recent_head + 1) % RECENT_N;

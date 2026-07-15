@@ -767,9 +767,11 @@ set_period_s   = 5.0             # degauss pulse interval, seconds (0 = disable)
 # set_period_s = 0.0
 
 [fusion]
-# Noise parameters from ISM330DHCX and MMC5983MA datasheets — not tuning knobs.
+# MEKF noise densities. accel/mag/gyro-bias are datasheet-derived; mekf_gyro_noise
+# is a tuned process noise (Q) held ABOVE the raw gyro spec — do NOT "correct" it to
+# the datasheet number (degrades wave tracking; the test_fusion benchmark guards it).
 # [hot]: all fields below take effect on SIGHUP without restarting the daemon.
-mekf_gyro_noise     = 0.007      # rad/s/√Hz  (ISM330DHCX: 7 mdps/√Hz)
+mekf_gyro_noise     = 0.007      # rad/s/√Hz — tuned Q (raw sensor ≈ 1.2e-4 = 7 mdps/√Hz)
 mekf_gyro_bias      = 0.00015   # rad/s      (in-run bias instability)
 mekf_accel_noise    = 0.0022    # m/s²/√Hz  (ISM330DHCX: ~186 µg/√Hz × 9.81)
 mekf_mag_noise      = 0.0004    # Gauss/√Hz (MMC5983MA: 0.4 mGauss RMS)

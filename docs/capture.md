@@ -80,11 +80,14 @@ imud-cal characterize --from imud-20260712-031500.imucap
 
 computes per-axis Allan-deviation noise characteristics — gyro noise density
 (rad/s/√Hz), gyro bias instability (rad/s), accelerometer noise density
-(m/s²/√Hz) — and writes them to cal.json's `noise` section. The daemon then
-tunes the MEKF to *your* silicon instead of generic datasheet numbers
-(`[fusion] use_measured_noise = true`, the default; the four `mekf_*` config
-keys remain as the fallback and override). An overnight capture pins down the
-bias-instability floor; short captures yield upper bounds and say so.
+(m/s²/√Hz) — and writes them to cal.json's `noise` section as informational
+per-unit sensor characterization: a record of what your silicon actually does.
+They never feed the filter. The MEKF always uses its tuned `[fusion] mekf_*`
+values, which are tuning constants — the gyro terms build the filter's process
+noise Q, deliberately held above the raw sensor floor so the filter stays
+responsive and the gyro bias observable. Driving Q from the measured floor makes
+it too stiff, so no configuration path does it. An overnight capture pins down
+the bias-instability floor; short captures yield upper bounds and say so.
 
 ```sh
 imud-cal fit-temp --from warmup.imucap
