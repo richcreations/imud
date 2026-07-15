@@ -1,6 +1,25 @@
 Installing imud
 ===============
 
+From the apt repository (Raspberry Pi OS / Debian, arm64 — recommended)
+-----------------------------------------------------------------------
+
+    curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
+      | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
+    echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] \
+      https://richcreations.github.io/imud/apt trixie main' \
+      | sudo tee /etc/apt/sources.list.d/imud.list
+    sudo apt update && sudo apt install imud imud-wmm-data
+
+Substitute "bookworm" for "trixie" to match your release. Optional packages:
+imud-utils (imud-mon), and the bridges imud-signalk / imud-mqtt /
+imud-influxdb / imud-mavlink / imud-prometheus. Repository landing page:
+https://richcreations.github.io/imud/apt/
+
+
+From source
+-----------
+
 Prerequisites (Raspberry Pi OS / Debian trixie, Bookworm, or similar):
 
     sudo apt install build-essential libgpiod-dev

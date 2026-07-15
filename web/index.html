@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>imud — IMU daemon</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #5a5a5a;
+    --border: #e2e2e4; --accent: #0b6bcb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181a; --fg: #e6e6e6; --muted: #9a9a9a;
+      --border: #303237; --accent: #5ba7f0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--fg); padding: 2rem 1.25rem;
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 34rem; }
+  h1 { font-size: 2.2rem; margin: 0 0 .3rem; }
+  .tag { color: var(--muted); margin: 0 0 1.75rem; font-size: 1.05rem; }
+  p { margin: .9rem 0; }
+  a { color: var(--accent); }
+  .links { margin-top: 1.75rem; display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: .95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>imud</h1>
+  <p class="tag">A general-purpose IMU daemon for Linux &mdash; &ldquo;gpsd for IMUs&rdquo;.</p>
+
+  <p>imud owns an I²C inertial sensor, fuses it with a quaternion MEKF, and publishes
+     attitude, heading, rate of turn, heave, and sea-state to NMEA&nbsp;0183, a binary
+     UDP stream, and a local socket &mdash; for chartplotters, robotics, gimbals, and
+     dashboards alike.</p>
+
+  <p>Prebuilt packages for Raspberry&nbsp;Pi&nbsp;OS and Debian are in the
+     <a href="apt/">apt repository</a>.</p>
+
+  <div class="links">
+    <a href="apt/">apt repository</a>
+    <a href="https://github.com/richcreations/imud">source on GitHub</a>
+    <a href="https://github.com/richcreations/imud/releases">releases</a>
+  </div>
+</main>
+</body>
+</html>

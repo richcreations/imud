@@ -82,21 +82,36 @@ high-rate quaternion for vision or control, enable the binary stream on port
 
 ## Quick start
 
-On a Raspberry Pi (or any Linux host with I²C):
+**Raspberry Pi OS / Debian (arm64) — install from the apt repository:**
 
 ```sh
-# 1. Dependencies
-sudo apt update && sudo apt install -y build-essential libgpiod-dev
+# 1. Trust the signing key and add the repo (use bookworm or trixie)
+curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
+echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] \
+  https://richcreations.github.io/imud/apt trixie main' \
+  | sudo tee /etc/apt/sources.list.d/imud.list
 
-# 2. Build and install (binaries, config, systemd service, man pages)
+# 2. Install the daemon + World Magnetic Model data
+sudo apt update && sudo apt install imud imud-wmm-data
+
+# 3. Edit for your hardware, then start on boot
+sudo nano /etc/imud/imud.conf
+sudo systemctl enable --now imud
+```
+
+Optional bridges and the network monitor are separate packages:
+`imud-signalk`, `imud-mqtt`, `imud-influxdb`, `imud-mavlink`, `imud-prometheus`,
+`imud-utils`. See <https://richcreations.github.io/imud/apt/>.
+
+**Or build from source** (any Linux host with I²C):
+
+```sh
+sudo apt update && sudo apt install -y build-essential libgpiod-dev
 make
 sudo make install
 sudo make install-wmm-data   # World Magnetic Model data (for true heading)
-
-# 3. Edit for your hardware (I2C bus, GPIO pins, driver names)
 sudo nano /etc/imud/imud.conf
-
-# 4. Start now and on boot
 sudo systemctl enable --now imud
 ```
 

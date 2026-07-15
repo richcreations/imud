@@ -62,3 +62,13 @@ Notes for the future packager (Debian-archive submission)
 * The upstream release tag convention is vX.Y (see docs/RELEASING.md); the
   Release workflow (.github/workflows/release.yml) drafts the GitHub
   release with .debs + tarball on tag push.
+
+Distribution channel
+--------------------
+
+Built .debs are published through a signed, self-hosted apt repository on
+GitHub Pages (https://richcreations.github.io/imud/apt). The source lives in
+`apt/` at the repo root: drop debs into `apt/pool/<suite>/`, push, and the
+`apt-repo` workflow regenerates the signed index and redeploys. See
+`apt/README.md` for the routine and the one-time signing-key setup. This is
+the interim channel; Debian-archive submission remains the longer-term goal.

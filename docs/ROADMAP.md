@@ -153,10 +153,21 @@ shipped.)
   nightly deep run (1 h/harness, 4-way fork, cached corpus that compounds
   coverage); all cross-thread stop flags became `_Atomic` to make the tree
   TSan-clean. systemd unit sandboxing already ships in every service file.
-- **arm64 CI.** ✅ shipped 2026-07-11 (v1.4); 1.5 added the `debs` job on the
-  same matrix — dpkg-buildpackage builds all ten packages on amd64 + arm64,
-  and the Release workflow drafts a GitHub release with the .debs + tarball
-  on every version tag.
+- **arm64 CI.** ✅ shipped 2026-07-11 (v1.4); 1.5 added the `debs` job —
+  dpkg-buildpackage builds all ten packages in debian:bookworm and
+  debian:trixie containers on arm64 (the Pi's arch; amd64 debs have no
+  audience and are not built), and the Release workflow drafts a GitHub
+  release with the .debs + tarball on every version tag.
+- **Self-hosted apt repository.** ✅ shipped (v1.5 follow-on): a signed apt
+  repo served from GitHub Pages at richcreations.github.io/imud/apt (arm64,
+  bookworm + trixie). Richard curates it by committing debs into
+  `apt/pool/<suite>/`; the `apt-repo` workflow regenerates the
+  apt-ftparchive index, GPG-signs the Release (key in the
+  `APT_GPG_PRIVATE_KEY` secret, public half at apt/KEY.gpg), and redeploys
+  Pages. The Pages root is reserved (via `web/`) for a future project site.
+  Next step toward the original goal: submission to the Debian archive
+  proper (source package + orig tarball; lintian refinements in
+  packaging/README).
 - **Multi-IMU.** Two sensor pairs fused, or at minimum hot-failover with
   cross-checking — the vessel-grade redundancy story (gpsd's multi-receiver
   support is the precedent the name invokes).
