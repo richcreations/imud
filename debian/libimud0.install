@@ -1,2 +1,5 @@
-usr/lib/libimud.so.0*
-usr/share/doc/libimud
+usr/lib/*/libimud.so.0*
+# The upstream install target lays these out under the library's own name
+# (usr/share/doc/libimud), but Debian requires them under the BINARY package
+# name — remap rather than shipping an unusable usr/share/doc/libimud.
+usr/share/doc/libimud/* usr/share/doc/libimud0/

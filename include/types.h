@@ -29,7 +29,11 @@
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION  14   /* 1.4 — encoded as decimal: major*10 + minor */
+/* Wire-layout revision, NOT the release version (that is IMUD_VERSION_STR in
+ * version.h).  Encoded as major*10 + minor of the release that last CHANGED the
+ * packet layout — 14 = the layout introduced in 1.4, which 1.5 ships unchanged.
+ * Bump only when the layout changes; see docs/RELEASING.md. */
+#define IMUD_VERSION  14
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 

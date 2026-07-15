@@ -58,7 +58,10 @@
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
-#define IMUD_VERSION      14   /* 1.4 — encoded as decimal: major*10 + minor */
+/* Wire-layout revision, NOT the release version.  Encoded as major*10 + minor
+ * of the release that last CHANGED the packet layout — 14 = the layout
+ * introduced in 1.4, which 1.5 ships unchanged.  Bump only on layout change. */
+#define IMUD_VERSION      14
 #define IMUD_PACKET_SIZE  260           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */

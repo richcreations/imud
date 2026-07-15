@@ -768,6 +768,13 @@ void *fusion_thread(void *arg)
         imu_sample_t isample;
         mag_sample_t msample;
 
+        /* Uncalibrated mag: the reader marks every sample invalid so the
+         * hard-iron error never steers the filter, but for the one-shot
+         * initial alignment a raw field is still a far better heading
+         * reference than the forward-is-North fallback.  Accept invalid
+         * samples here only; Phase 4 fusion stays gated on msample.valid. */
+        bool mag_uncal = !ctx->cal.has_mag;
+
         while (acc_n < n_avg && !ctx->stop) {
             if (imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0) {
                 acc_sum[0] += isample.accel[0];
@@ -776,7 +783,7 @@ void *fusion_thread(void *arg)
                 acc_n++;
             }
             while (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid) {
+                if (msample.valid || mag_uncal) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
                     mag_sum[2] += msample.field[2];
@@ -785,7 +792,10 @@ void *fusion_thread(void *arg)
             }
         }
 
-        /* Keep waiting (up to 5 s total) for at least one mag sample. */
+        /* Keep waiting (up to 5 s total) for at least one mag sample.
+         * Drain the IMU ring while waiting: it holds only ~0.3 s at 833 Hz,
+         * and an undrained wait counts thousands of ring drops as FIFO
+         * overflows. */
         while (mag_n == 0 && !ctx->stop) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
@@ -793,14 +803,15 @@ void *fusion_thread(void *arg)
                            + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
             if (elapsed > 5.0) break;
             if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid) {
+                if (msample.valid || mag_uncal) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
                     mag_sum[2] += msample.field[2];
                     mag_n++;
                 }
             } else {
-                usleep(1000);
+                /* Discard; the pop's 100 ms timeout paces the loop. */
+                imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop);
             }
         }
 
@@ -823,8 +834,10 @@ void *fusion_thread(void *arg)
             if (ctx->cfg.pos_mref_valid)
                 mekf_set_mref_invariants(&f, ctx->cfg.pos_mref_h_gauss,
                                          ctx->cfg.pos_mref_z_gauss);
-            LOG_I("[fusion] aligned from %d accel + %d mag samples%s\n",
+            LOG_I("[fusion] aligned from %d accel + %d mag samples%s%s\n",
                     acc_n, mag_n,
+                    (mag_n > 0 && mag_uncal)
+                        ? " (uncalibrated mag — heading approximate)" : "",
                     ctx->cfg.pos_mref_valid ? " (m_ref invariants from WMM)" : "");
         }
     }

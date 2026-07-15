@@ -144,9 +144,16 @@ static int dial_stream(const char *path)
     if (fd < 0)
         return -1;
     struct sockaddr_un addr;
+    size_t plen = strlen(path);
+    if (plen >= sizeof addr.sun_path) {   /* imud_connect_stream already bounds
+                                           * h->path; belt-and-braces */
+        close(fd);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    memcpy(addr.sun_path, path, plen);   /* addr is zeroed → NUL-terminated */
     if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
         int e = errno;
         close(fd);
@@ -213,8 +220,16 @@ imud_t *imud_connect_stream(const char *path)
         return NULL;
     h->kind = IMUD_KIND_STREAM;
     h->data.heading_true_deg = -1.0f;
-    snprintf(h->path, sizeof h->path, "%s",
-             (path && path[0]) ? path : IMUD_DEFAULT_STREAM_SOCK);
+    /* Reject an over-long path rather than silently truncating it and then
+     * failing to connect to a path the caller never asked for.  h->path is
+     * sun_path-sized, so anything that doesn't fit here can't be bound either. */
+    int pn = snprintf(h->path, sizeof h->path, "%s",
+                      (path && path[0]) ? path : IMUD_DEFAULT_STREAM_SOCK);
+    if (pn < 0 || (size_t)pn >= sizeof h->path) {
+        free(h);
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
     if (dial(h) < 0) {
         int e = errno;
         free(h);

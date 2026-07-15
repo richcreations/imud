@@ -20,9 +20,9 @@ Description: IMU daemon — attitude, heading, and heave for boats ("gpsd for IM
  Multiplicative EKF, and serves attitude, heading (magnetic and WMM true),
  rate of turn, heave, and sea-state statistics to the network: NMEA 0183
  over UDP, a high-rate binary UDP stream, and a local AF_UNIX subscription
- socket. A built-in black box can record every raw sensor sample to
- .imucap capture files, and the sim driver replays them (or a synthetic
- scenario) through the full pipeline.
+ socket. A built-in black box can record every raw sensor sample to .imucap
+ capture files, and the sim driver replays them (or a synthetic scenario)
+ through the full pipeline.
  .
  Includes calibration and self-characterization (imud-cal), a status tool
  (imud-status), the Python client, and a hardened systemd service. The
@@ -49,8 +49,8 @@ Description: ABI-stable client library for the imud IMU daemon
  daemon's local AF_UNIX stream socket or the high-rate UDP stream. The API is
  ABI-stable: data is exposed through an append-only struct behind an opaque
  handle, so applications keep working across imud upgrades without
- recompilation. Ships the imud.h development header and pkg-config metadata
- (a future packaging split: libimud0 runtime + libimud-dev).
+ recompilation. This package ships the runtime library; install libimud-dev
+ to build against it (imud.h, pkg-config metadata, and libimud(3)).
 
 Package: libimud-dev
 Architecture: any
@@ -98,7 +98,8 @@ Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: MAVLink bridge for the imud IMU daemon
  imud-mavlink connects to imud's local binary stream socket and emits MAVLink
  v1 or v2 HEARTBEAT, ATTITUDE, and ATTITUDE_QUATERNION messages over UDP
- and/or a serial port, for autopilot ecosystems (ArduPilot, PX4, QGroundControl).
+ and/or a serial port, for autopilot ecosystems (ArduPilot, PX4,
+ QGroundControl).
  Pure C with a hand-rolled encoder — no MAVLink library dependency.
 
 Package: imud-prometheus

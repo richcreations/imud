@@ -4,5 +4,5 @@ ABI-stable client library for the imud IMU daemon
  daemon's local AF_UNIX stream socket or the high-rate UDP stream. The API is
  ABI-stable: data is exposed through an append-only struct behind an opaque
  handle, so applications keep working across imud upgrades without
- recompilation. Ships the imud.h development header and pkg-config metadata
- (a future packaging split: libimud0 runtime + libimud-dev).
+ recompilation. This package ships the runtime library; install libimud-dev
+ to build against it (imud.h, pkg-config metadata, and libimud(3)).

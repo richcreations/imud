@@ -45,7 +45,9 @@ static void iso8601_ms(uint64_t wall_ns, char *out, size_t sz)
     gmtime_r(&secs, &tm);
     char base[24];
     strftime(base, sizeof base, "%Y-%m-%dT%H:%M:%S", &tm);
-    snprintf(out, sz, "%s.%03uZ", base, ms);
+    /* strftime writes exactly 19 chars for this format; bound it so the
+     * trailing ".mmmZ" provably fits the caller's buffer. */
+    snprintf(out, sz, "%.19s.%03uZ", base, ms);
 }
 
 /*

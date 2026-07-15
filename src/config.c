@@ -63,18 +63,25 @@ static void expand_tilde(char *buf, size_t bufsz)
     memcpy(buf, home, hlen);                 /* write $HOME at front */
 }
 
-/* Copy TOML string value into out: strip surrounding quotes, expand tilde. */
-static void copy_str(const char *val, char *out, size_t outsz)
+/*
+ * Copy TOML string value into out: strip surrounding quotes, expand tilde.
+ * Returns false if the value did not fit and was truncated — callers surface
+ * that, because a silently shortened path (a socket, a cal file) binds or
+ * opens something the user never asked for.
+ */
+static bool copy_str(const char *val, char *out, size_t outsz)
 {
+    int n;
     if (*val == '"') {
         val++;
         size_t len = strlen(val);
         if (len > 0 && val[len - 1] == '"') len--;
-        snprintf(out, outsz, "%.*s", (int)len, val);
+        n = snprintf(out, outsz, "%.*s", (int)len, val);
     } else {
-        snprintf(out, outsz, "%s", val);
+        n = snprintf(out, outsz, "%s", val);
     }
     expand_tilde(out, outsz);
+    return n >= 0 && (size_t)n < outsz;
 }
 
 static bool parse_bool(const char *val, bool *out)
@@ -138,10 +145,9 @@ void config_defaults(imud_config_t *cfg)
 
     /* [fusion] */
     cfg->mag_yaw_only      = true;   /* marine default: mag corrects heading only */
-    cfg->use_measured_noise = true;
     cfg->heave_tau_s       = 12.0f;
     cfg->wave_tau_s        = 120.0f;
-    cfg->mekf_gyro_noise   = 0.007;
+    cfg->mekf_gyro_noise   = 0.007;   /* tuned Kalman Q, intentionally above the datasheet gyro floor; see imud.conf */
     cfg->mekf_gyro_bias    = 0.00015;
     cfg->mekf_accel_noise  = 0.0022;
     cfg->mekf_mag_noise    = 0.0004;
@@ -379,7 +385,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         (field) = bv; } while (0)
 
 #define NEED_STR(field) \
-    copy_str(val, (field), sizeof(field))
+    do { if (!copy_str(val, (field), sizeof(field))) \
+        LOG_W("%s:%d: '%s': value too long (max %zu chars) — truncated\n", \
+              path, lineno, key, sizeof(field) - 1); } while (0)
 
     switch (sec) {
 
@@ -493,7 +501,6 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_FUSION:
         if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
-        else if (strcmp(key, "use_measured_noise") == 0) NEED_BOOL(cfg->use_measured_noise);
         else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
         else if (strcmp(key, "wave_tau_s")        == 0) NEED_FLT(cfg->wave_tau_s);
         else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);

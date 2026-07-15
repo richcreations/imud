@@ -19,11 +19,30 @@ packaging-level record, and the git history holds the full detail.
   sample).
 * Per-unit sensor characterization: `imud-cal characterize --from <capture>`
   measures gyro/accel noise density and gyro bias instability (Allan
-  variance) into cal.json; the filter uses the measured values instead of
-  generic datasheet numbers ([fusion] use_measured_noise, default true).
+  variance) into cal.json's "noise" section — a record of what your silicon
+  actually does. The numbers are informational: the filter keeps its tuned
+  [fusion] mekf_* values, which are held above the raw sensor floor on
+  purpose (the gyro terms are the filter's process noise, not a sensor
+  readout), so nothing is auto-tuned from them.
 * Gyro temperature compensation: `imud-cal fit-temp --from <capture>` fits
   per-axis bias/temperature coefficients; the daemon subtracts the thermal
   term before fusion.
+* Fixed: the IMU die temperature was always reported as 25.0 degC. The
+  ISM330DHCX and LSM6DSO drivers never enabled FIFO temperature batching, so
+  the temperature never updated from its placeholder — in every release to
+  date. This affected everything that surfaces it: the binary packet's temp_c,
+  imud-mon, the MQTT/InfluxDB/Prometheus telemetry (imud_temperature_celsius
+  and friends), and libimud's imud_data_t.temp_c. Temperature now reads real
+  values; this is also what makes the new fit-temp mode usable at all, and it
+  means the daemon's gyro thermal compensation was previously a no-op.
+* Uncalibrated startup (no cal.json): the filter now takes its initial heading
+  from the uncalibrated magnetometer — rough, but a real bearing — instead of
+  assuming the bow points north. It also no longer counts thousands of phantom
+  FIFO overflows (visible in imud-status) while waiting for the first
+  magnetometer sample.
+* Config values too long for their field are now reported ("value too long —
+  truncated") instead of being silently shortened, so an over-long socket path
+  can no longer bind somewhere you did not ask for.
 * Debian packages: a debian/ build producing ten .debs (imud, imud-utils,
   libimud0, libimud-dev, the five bridges, imud-wmm-data), built for amd64
   and arm64 in CI; version tags now draft a GitHub release with the .debs

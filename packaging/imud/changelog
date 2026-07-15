@@ -1,15 +1,24 @@
 imud (1.5) UNRELEASED; urgency=medium
 
-  * Black-box capture ([capture] -> rotating .imucap files) and sim-driver
+  * Black-box recording ([capture] -> rotating .imucap files) and sim-driver
     replay (imud --replay); imud-cal gains offline characterize (Allan
-    variance -> cal.json noise, used by the filter via use_measured_noise)
-    and fit-temp (gyro bias/temperature compensation) modes.
+    variance -> cal.json "noise" section, informational only: the filter
+    keeps its tuned mekf_* values) and fit-temp (gyro bias/temperature
+    compensation) modes.
   * Fix sim-driver pitch-axis mirror between accel/mag and gyro outputs;
     fix mag reader fusing a stale sample when DRDY was not ready.
+  * Fix IMU die temperature always reading 25.0 degC (ISM330DHCX/LSM6DSO
+    never enabled FIFO temperature batching) — affected packet temp_c,
+    imud-mon, the MQTT/InfluxDB/Prometheus telemetry and libimud's
+    imud_data_t.temp_c, and made gyro thermal compensation a no-op.
+  * Uncalibrated startup: align heading from the uncalibrated magnetometer
+    rather than assuming forward = north, and stop counting phantom FIFO
+    overflows while awaiting the first mag sample.
+  * Report over-long config values instead of silently truncating them.
   * imud-mon moved to the new imud-utils package.
   * Cross-thread stop flags are now C11 _Atomic (ThreadSanitizer-clean).
 
- -- Richard Simpson <richcreations@gmail.com>  Sat, 12 Jul 2026 00:00:00 -0700
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 12 Jul 2026 00:00:00 -0700
 
 imud (1.4.1) unstable; urgency=medium
 

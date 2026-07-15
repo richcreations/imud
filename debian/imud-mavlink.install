@@ -1,6 +1,6 @@
 usr/bin/imud-mavlink
 etc/imud/imud-mavlink.conf
-lib/systemd/system/imud-mavlink.service
+usr/lib/systemd/system/imud-mavlink.service
 usr/share/man/man8/imud-mavlink.8.gz
 usr/share/man/man5/imud-mavlink.conf.5.gz
 usr/share/doc/imud-mavlink

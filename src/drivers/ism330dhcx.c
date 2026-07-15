@@ -41,6 +41,7 @@
 #define REG_CTRL3_C           0x12  /* BOOT | BDU | H_LACTIVE | PP_OD | SIM | IF_INC | 0 | SW_RESET */
 #define REG_CTRL9_XL          0x18  /* DEN_* | DEVICE_CONF | 0 */
 #define REG_CTRL10_C          0x19  /* 0[7:6] | TIMESTAMP_EN | 0[4:0] */
+#define REG_OUT_TEMP_L        0x20  /* temperature output L; H at 0x21 (256 LSB/°C, 0=25°C) */
 #define REG_FIFO_STATUS1      0x3A  /* DIFF_FIFO[7:0] */
 #define REG_FIFO_STATUS2      0x3B  /* FIFO_WTM_IA | FIFO_OVR_IA | FIFO_FULL_IA | ... | DIFF_FIFO[9:8] */
 #define REG_TIMESTAMP0        0x40  /* 32-bit chip counter [7:0],  25 µs/tick */
@@ -61,6 +62,8 @@
 static struct {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
+    float    last_temp;         /* °C; persists across drains (temp batched at
+                                 * 12.5 Hz, slower than we drain the FIFO) */
     uint32_t seq;               /* monotonic sample counter across all bursts */
     uint32_t ticks_per_sample;  /* chip timer ticks between adjacent samples */
 } s;
@@ -222,13 +225,27 @@ static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     if (reg_write(fd, addr, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
     /* Batch accel and gyro at the same rate as ODR (BDR code == ODR code) */
     if (reg_write(fd, addr, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
-    /* Continuous mode; no timestamp or temperature batching in FIFO */
-    if (reg_write(fd, addr, REG_FIFO_CTRL4, 0x06)                        < 0) return -1;
+    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10).
+     * Temp words feed gyro thermal compensation and imud-cal fit-temp; at
+     * 12.5 Hz they add ~1.5% FIFO traffic next to 833 Hz accel+gyro. */
+    if (reg_write(fd, addr, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
     /* Assert INT1 on FIFO watermark threshold (INT1_FIFO_TH = bit 3) */
     if (reg_write(fd, addr, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
     s.accel_scale      = accel_scale;
     s.gyro_scale       = gyro_scale;
+    /* Seed last_temp from the live temperature register so samples emitted
+     * before the first batched FIFO temp word carry a real reading, not a
+     * 25 °C placeholder. Falls back to 25 °C only if the read fails. */
+    {
+        uint8_t tb[2];
+        if (burst_read(fd, addr, REG_OUT_TEMP_L, tb, 2) == 0) {
+            int16_t rt = (int16_t)(((uint16_t)tb[1] << 8) | tb[0]);
+            s.last_temp = (float)rt / 256.0f + 25.0f;
+        } else {
+            s.last_temp = 25.0f;
+        }
+    }
     s.seq              = 0;
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz */
     s.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
@@ -267,7 +284,6 @@ static int ism_read(int fd, uint8_t addr,
 
     float    p_accel[3] = {0.0f, 0.0f, 0.0f};
     float    p_gyro[3]  = {0.0f, 0.0f, 0.0f};
-    float    p_temp     = 25.0f;
     int      have_accel = 0;
     int      have_gyro  = 0;
     int      produced   = 0;
@@ -297,8 +313,10 @@ static int ism_read(int fd, uint8_t addr,
             break;
 
         case TAG_TEMP:
-            /* 16-bit signed, 256 LSB/°C, 0 LSB = 25 °C (Table 4) */
-            p_temp = (float)raw_x / 256.0f + 25.0f;
+            /* 16-bit signed, 256 LSB/°C, 0 LSB = 25 °C (Table 4).
+             * Persist: batched slower than we drain, so most drains carry no
+             * temp word and must reuse the last reading (not reset to 25). */
+            s.last_temp = (float)raw_x / 256.0f + 25.0f;
             break;
 
         default:
@@ -321,7 +339,7 @@ static int ism_read(int fd, uint8_t addr,
             buf[produced].gyro[0]  =  p_gyro[0];
             buf[produced].gyro[1]  = -p_gyro[1];
             buf[produced].gyro[2]  = -p_gyro[2];
-            buf[produced].temp_c   = p_temp;
+            buf[produced].temp_c   = s.last_temp;
             buf[produced].seq      = s.seq++;
             buf[produced].chip_ts  = 0;  /* filled below */
             produced++;

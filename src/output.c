@@ -17,9 +17,13 @@
  *   - Fixed stack buffers only; no malloc in the hot path
  */
 
-/* Linux enables SOCK_CLOEXEC and clock_nanosleep via _GNU_SOURCE. */
+/* Linux enables SOCK_CLOEXEC and clock_nanosleep via _GNU_SOURCE.
+ * The Makefile also passes -D_GNU_SOURCE; guard so a standalone compile
+ * still works without redefining it. */
 #ifdef __linux__
-# define _GNU_SOURCE
+# ifndef _GNU_SOURCE
+#  define _GNU_SOURCE
+# endif
 #endif
 
 #include <stdio.h>
@@ -53,7 +57,9 @@
 # include <fcntl.h>
 # define APPLY_CLOEXEC(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
 #else
-# define APPLY_CLOEXEC(fd) (0)
+/* Linux: SOCK_CLOEXEC is passed to socket() directly, so this is a no-op.
+ * ((void)0) rather than (0) so the call sites aren't bare no-effect statements. */
+# define APPLY_CLOEXEC(fd) ((void)0)
 #endif
 
 #ifndef TIMER_ABSTIME
@@ -393,10 +399,18 @@ static int open_stream_listener(const char *path)
     }
     APPLY_CLOEXEC(fd);
 
+    /* Fail loudly rather than silently binding a truncated path. */
+    size_t plen = strlen(path);
+    if (plen >= sizeof(addr.sun_path)) {
+        LOG_E("[output] stream socket path too long (%zu bytes, max %zu): %s\n",
+              plen, sizeof(addr.sun_path) - 1, path);
+        close(fd); return -1;
+    }
+
     unlink(path);   /* remove stale socket from a previous run */
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    memcpy(addr.sun_path, path, plen);   /* addr is zeroed → NUL-terminated */
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_E("[output] stream bind(%s): %s\n", path, strerror(errno));
