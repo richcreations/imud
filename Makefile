@@ -177,6 +177,9 @@ test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c test/test_c
 test_packet: src/packet.c test/test_packet.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+
 test_ring: src/ring.c test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
@@ -233,6 +236,7 @@ test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test: test_fusion test_config test_nmea test_packet test_capture test_ring \
+      test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_prometheus
@@ -242,6 +246,7 @@ test: test_fusion test_config test_nmea test_packet test_capture test_ring \
 	./test_packet
 	./test_capture
 	./test_ring
+	./test_concurrency
 	./test_mount
 	./test_cal
 	./test_cal_math

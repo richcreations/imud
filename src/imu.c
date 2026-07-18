@@ -81,6 +81,14 @@ struct imu_ctx {
     shared_state_t   shared;
     ts_anchor_t      anchor;
 
+    /* Guards every post-open write to `cfg` (hot-reload params + live
+     * position values from imu_ctx_update_config / set_declination /
+     * set_mag_ref / set_speed). Reader/fusion threads take a snapshot copy
+     * under this lock (cfg_snapshot) rather than reading cfg fields
+     * directly — plain shared reads/writes are C11 data races even where a
+     * single word is "naturally atomic" on the target CPU. */
+    pthread_mutex_t  live_lock;
+
     /* Black-box capture ([capture] enabled): reader threads tap raw samples
      * into cap_ring right after the driver read() (pre-mount, pre-cal);
      * capture_thread drains it into rotating .imucap files.  Status fields
@@ -300,6 +308,22 @@ static void release_gpio_line(imu_gpio_line_t *line)
 #endif
 }
 
+/* ── Config snapshot ─────────────────────────────────────────────────────── */
+
+/*
+ * Copy the live config under live_lock.  All worker threads read config
+ * through a local snapshot taken by this helper — never ctx->cfg directly —
+ * so a concurrent imu_ctx_update_config / set_* write is never a data race.
+ * The struct is ~4 KB; the copy is well under a microsecond and writers are
+ * rare (SIGHUP, GPS fixes), so there is no contention on the hot path.
+ */
+static void cfg_snapshot(imu_ctx_t *ctx, imud_config_t *out)
+{
+    pthread_mutex_lock(&ctx->live_lock);
+    *out = ctx->cfg;
+    pthread_mutex_unlock(&ctx->live_lock);
+}
+
 /* ── ism_reader_thread ───────────────────────────────────────────────────── */
 
 void *ism_reader_thread(void *arg)
@@ -311,6 +335,7 @@ void *ism_reader_thread(void *arg)
     int reset_failures = 0;
     bool anchor_valid = false;
     struct timespec anchor_last = {0, 0};
+    imud_config_t cfg;
     while (!ctx->stop) {
         if (ctx->imu_line) {
             int gr = wait_gpio_edge(ctx->imu_line, 10);
@@ -329,10 +354,12 @@ void *ism_reader_thread(void *arg)
         }
 
 
+        cfg_snapshot(ctx, &cfg);
+
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
 
-        int rc = ctx->imu_ops->read(ctx->i2c_fd, (uint8_t)ctx->cfg.imu_addr,
+        int rc = ctx->imu_ops->read(ctx->i2c_fd, (uint8_t)cfg.imu_addr,
                                     buf, 128, &n);
 
         clock_gettime(CLOCK_REALTIME, &t_after);
@@ -342,8 +369,8 @@ void *ism_reader_thread(void *arg)
             ctx->imu_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[ism_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)ctx->cfg.imu_addr) == 0)
-                       && (ctx->imu_ops->init (ctx->i2c_fd, (uint8_t)ctx->cfg.imu_addr,
+                int rok = (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)cfg.imu_addr) == 0)
+                       && (ctx->imu_ops->init (ctx->i2c_fd, (uint8_t)cfg.imu_addr,
                                                &ctx->imu_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
@@ -367,7 +394,7 @@ void *ism_reader_thread(void *arg)
         /* Black-box tap: raw samples exactly as the driver delivered them
          * (pre-mount, pre-cal) so replay traverses the identical pipeline.
          * One delivery timestamp per burst; per-sample time is chip_ts. */
-        if (ctx->cfg.capture_enabled) {
+        if (cfg.capture_enabled) {
             struct timespec tm;
             clock_gettime(CLOCK_MONOTONIC, &tm);
             uint64_t mono = ts_ns(&tm);
@@ -377,8 +404,8 @@ void *ism_reader_thread(void *arg)
 
         /* Apply mount rotation (board->body), then accel calibration */
         for (int i = 0; i < n; i++) {
-            apply_mount_rot_if_set(&ctx->cfg, buf[i].accel);
-            apply_mount_rot_if_set(&ctx->cfg, buf[i].gyro);
+            apply_mount_rot_if_set(&cfg, buf[i].accel);
+            apply_mount_rot_if_set(&cfg, buf[i].gyro);
             buf[i].accel_raw[0] = buf[i].accel[0];
             buf[i].accel_raw[1] = buf[i].accel[1];
             buf[i].accel_raw[2] = buf[i].accel[2];
@@ -411,7 +438,7 @@ void *ism_reader_thread(void *arg)
 
         /* Engine vibration detection: exponential moving average of (|a|-g)².
          * Alpha = 0.01 gives a ~1 s time constant at 100 Hz burst rate. */
-        if (ctx->cfg.engine_vibration_g2 > 0.0 && n > 0) {
+        if (cfg.engine_vibration_g2 > 0.0 && n > 0) {
             const float alpha = 0.01f;
             const float g = 9.80665f;
             for (int i = 0; i < n; i++) {
@@ -421,7 +448,7 @@ void *ism_reader_thread(void *arg)
                 float dev = a - g;
                 ctx->vib_ema += alpha * (dev*dev - ctx->vib_ema);
             }
-            ctx->engine_on = (ctx->vib_ema > (float)ctx->cfg.engine_vibration_g2);
+            ctx->engine_on = (ctx->vib_ema > (float)cfg.engine_vibration_g2);
         }
 
         /* Track hardware FIFO overflow (rc == 1) and software ring overflow. */
@@ -443,6 +470,7 @@ void *mag_reader_thread(void *arg)
     int consec_errors = 0;
     int reset_failures = 0;
     struct timespec last_set;
+    imud_config_t cfg;
     clock_gettime(CLOCK_MONOTONIC, &last_set);
     while (!ctx->stop) {
         if (ctx->mag_line) {
@@ -462,14 +490,16 @@ void *mag_reader_thread(void *arg)
             if (ctx->stop) break;
         }
 
-        /* Periodic SET/RESET (degauss) — skip this read cycle; wait for next edge. */
-        if (ctx->cfg.mag_set_period_s > 0.0f && ctx->mag_ops->set_reset) {
+        cfg_snapshot(ctx, &cfg);
+
+    /* Periodic SET/RESET (degauss) — skip this read cycle; wait for next edge. */
+        if (cfg.mag_set_period_s > 0.0f && ctx->mag_ops->set_reset) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec  - last_set.tv_sec)
                            + (double)(now.tv_nsec - last_set.tv_nsec) * 1e-9;
-            if (elapsed >= (double)ctx->cfg.mag_set_period_s) {
-                ctx->mag_ops->set_reset(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr);
+            if (elapsed >= (double)cfg.mag_set_period_s) {
+                ctx->mag_ops->set_reset(ctx->i2c_fd, (uint8_t)cfg.mag_addr);
                 ctx->mag_set_flag = 1;
                 last_set = now;
                 usleep(1000); /* 1 ms settling — no read this cycle */
@@ -477,15 +507,15 @@ void *mag_reader_thread(void *arg)
             }
         }
 
-        int mrc = ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr, &s);
+        int mrc = ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)cfg.mag_addr, &s);
         if (mrc > 0) continue;   /* no data yet (DRDY not set / playback idle) —
                                   * pushing here would re-fuse a stale sample */
         if (mrc < 0) {
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[mag_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr) == 0)
-                       && (ctx->mag_ops->init (ctx->i2c_fd, (uint8_t)ctx->cfg.mag_addr,
+                int rok = (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)cfg.mag_addr) == 0)
+                       && (ctx->mag_ops->init (ctx->i2c_fd, (uint8_t)cfg.mag_addr,
                                                &ctx->mag_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
@@ -506,14 +536,14 @@ void *mag_reader_thread(void *arg)
 
         /* Black-box tap: raw field as the driver delivered it (pre-mount,
          * pre-cal). */
-        if (ctx->cfg.capture_enabled) {
+        if (cfg.capture_enabled) {
             struct timespec tm;
             clock_gettime(CLOCK_MONOTONIC, &tm);
             cap_ring_push_mag(&ctx->cap_ring, &s, ts_ns(&tm));
         }
 
         /* Rotate mag into body frame, then apply mag calibration */
-        apply_mount_rot_if_set(&ctx->cfg, s.field);
+        apply_mount_rot_if_set(&cfg, s.field);
         s.field_raw[0] = s.field[0];
         s.field_raw[1] = s.field[1];
         s.field_raw[2] = s.field[2];
@@ -539,16 +569,19 @@ void *mag_reader_thread(void *arg)
 void *capture_thread(void *arg)
 {
     imu_ctx_t *ctx = arg;
+    imud_config_t cfg;
+
+    cfg_snapshot(ctx, &cfg);
 
     cap_rotator_t rot;
-    if (cap_rot_open(&rot, ctx->cfg.capture_dir,
-                     (uint32_t)(ctx->cfg.capture_max_mb    > 0 ? ctx->cfg.capture_max_mb    : 0),
-                     (uint32_t)(ctx->cfg.capture_max_files > 0 ? ctx->cfg.capture_max_files : 0),
+    if (cap_rot_open(&rot, cfg.capture_dir,
+                     (uint32_t)(cfg.capture_max_mb    > 0 ? cfg.capture_max_mb    : 0),
+                     (uint32_t)(cfg.capture_max_files > 0 ? cfg.capture_max_files : 0),
                      (uint32_t)ctx->actual_odr_hz,
                      ctx->imu_ops->name, ctx->mag_ops->name,
                      IMUD_VERSION_STR) != 0) {
         LOG_E("[capture] cannot open capture file in %s: %s\n",
-              ctx->cfg.capture_dir, strerror(errno));
+              cfg.capture_dir, strerror(errno));
         return NULL;
     }
     LOG_I("[capture] recording to %s\n", cap_rot_path(&rot));
@@ -557,8 +590,8 @@ void *capture_thread(void *arg)
     clock_gettime(CLOCK_MONOTONIC, &now);
     uint64_t last_flush   = ts_ns(&now);
     uint64_t last_drops   = 0;
-    uint64_t flush_ns     = (uint64_t)(ctx->cfg.capture_flush_s > 0
-                                       ? ctx->cfg.capture_flush_s : 5)
+    uint64_t flush_ns     = (uint64_t)(cfg.capture_flush_s > 0
+                                       ? cfg.capture_flush_s : 5)
                             * 1000000000ULL;
     char     prev_path[320];
     snprintf(prev_path, sizeof(prev_path), "%s", cap_rot_path(&rot));
@@ -642,14 +675,16 @@ void *fusion_thread(void *arg)
 {
     imu_ctx_t *ctx = arg;
     float odr_hz = (float)ctx->actual_odr_hz;
+    imud_config_t cfg;
+    cfg_snapshot(ctx, &cfg);   /* startup phase reads this snapshot */
 
     /* ── Phase 0: startup settle — drain stale samples ─────────────────── */
 
-    if (ctx->cfg.startup_settle_sec > 0.0) {
-        int n_settle = (int)(ctx->cfg.startup_settle_sec * odr_hz);
+    if (cfg.startup_settle_sec > 0.0) {
+        int n_settle = (int)(cfg.startup_settle_sec * odr_hz);
         if (n_settle < 1) n_settle = 1;
         LOG_I("[fusion] settling %g s — discarding %d samples\n",
-                ctx->cfg.startup_settle_sec, n_settle);
+                cfg.startup_settle_sec, n_settle);
         imu_sample_t tmp;
         int discarded = 0;
         while (discarded < n_settle && !ctx->stop) {
@@ -674,8 +709,8 @@ void *fusion_thread(void *arg)
     if (ctx->cal.has_gyro) {
         memcpy(init_bias, ctx->cal.gyro_bias, sizeof(init_bias));
         cal_flags |= FLAG_GYRO_CAL;
-    } else if (ctx->cfg.gyro_bias_sec > 0.0) {
-        int n_needed = (int)(ctx->cfg.gyro_bias_sec * odr_hz);
+    } else if (cfg.gyro_bias_sec > 0.0) {
+        int n_needed = (int)(cfg.gyro_bias_sec * odr_hz);
         if (n_needed < 1) n_needed = 1;
 
         double sum[3] = {0}, sumsq[3] = {0};
@@ -714,7 +749,7 @@ void *fusion_thread(void *arg)
                     LOG_W("[fusion] gyro std %.2f °/s during bias "
                             "window — vessel moving; extending capture to "
                             "%.1f s\n", std_max * (float)(180.0 / M_PI),
-                            2.0 * ctx->cfg.gyro_bias_sec);
+                            2.0 * cfg.gyro_bias_sec);
                 }
             }
         }
@@ -734,21 +769,21 @@ void *fusion_thread(void *arg)
     /* ── Phase 2: MEKF init ───────────────────────────────────────────────── */
 
     mekf_t f;
-    mekf_init(&f, &ctx->cfg, odr_hz, init_bias);
+    mekf_init(&f, &cfg, odr_hz, init_bias);
 
     heave_t heave;
-    heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
+    heave_init(&heave, cfg.heave_tau_s, f.dt);
     if (heave.enabled)
         LOG_I("[fusion] heave estimator on (tau=%.0f s)\n",
-                (double)ctx->cfg.heave_tau_s);
+                (double)cfg.heave_tau_s);
 
     /* Sea state rides on heave: wave_tau_s > 0 needs a running heave estimator. */
     seastate_t wave;
-    seastate_init(&wave, heave.enabled ? ctx->cfg.wave_tau_s : 0.0f, f.dt);
+    seastate_init(&wave, heave.enabled ? cfg.wave_tau_s : 0.0f, f.dt);
     if (wave.enabled)
         LOG_I("[fusion] sea-state estimator on (tau=%.0f s)\n",
-                (double)ctx->cfg.wave_tau_s);
-    else if (ctx->cfg.wave_tau_s > 0.0f)
+                (double)cfg.wave_tau_s);
+    else if (cfg.wave_tau_s > 0.0f)
         LOG_W("[fusion] wave_tau_s set but heave_tau_s = 0 — sea state disabled\n");
 
     /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ─────
@@ -835,14 +870,14 @@ void *fusion_thread(void *arg)
             mekf_align(&f, acc_avg, mag_avg);
             /* WMM-known field invariants remove the residual alignment-tilt
              * error from the magnetic reference at the source. */
-            if (ctx->cfg.pos_mref_valid)
-                mekf_set_mref_invariants(&f, ctx->cfg.pos_mref_h_gauss,
-                                         ctx->cfg.pos_mref_z_gauss);
+            if (cfg.pos_mref_valid)
+                mekf_set_mref_invariants(&f, cfg.pos_mref_h_gauss,
+                                         cfg.pos_mref_z_gauss);
             LOG_I("[fusion] aligned from %d accel + %d mag samples%s%s\n",
                     acc_n, mag_n,
                     (mag_n > 0 && mag_uncal)
                         ? " (uncalibrated mag — heading approximate)" : "",
-                    ctx->cfg.pos_mref_valid ? " (m_ref invariants from WMM)" : "");
+                    cfg.pos_mref_valid ? " (m_ref invariants from WMM)" : "");
         }
     }
 
@@ -865,17 +900,19 @@ void *fusion_thread(void *arg)
         if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
             continue;
 
+        cfg_snapshot(ctx, &cfg);   /* fresh live config for this sample */
+
         if (ctx->reconfigure) {
-            mekf_reconfigure(&f, &ctx->cfg);
+            mekf_reconfigure(&f, &cfg);
             /* heave_tau_s is [hot]: re-derive constants, keep filter state
              * unless toggling between enabled/disabled. */
-            if ((ctx->cfg.heave_tau_s > 0.0f) != heave.enabled)
-                heave_init(&heave, ctx->cfg.heave_tau_s, f.dt);
+            if ((cfg.heave_tau_s > 0.0f) != heave.enabled)
+                heave_init(&heave, cfg.heave_tau_s, f.dt);
             else
-                heave.tau = ctx->cfg.heave_tau_s;
+                heave.tau = cfg.heave_tau_s;
             /* wave_tau_s is [hot] too; sea state needs heave running. */
             {
-                float wtau = heave.enabled ? ctx->cfg.wave_tau_s : 0.0f;
+                float wtau = heave.enabled ? cfg.wave_tau_s : 0.0f;
                 if ((wtau > 0.0f) != wave.enabled)
                     seastate_init(&wave, wtau, f.dt);
                 else
@@ -886,13 +923,13 @@ void *fusion_thread(void *arg)
 
         /* Live WMM field invariants pushed by the position thread. */
         if (ctx->mref_update) {
-            mekf_set_mref_invariants(&f, ctx->cfg.pos_mref_h_gauss,
-                                     ctx->cfg.pos_mref_z_gauss);
+            mekf_set_mref_invariants(&f, cfg.pos_mref_h_gauss,
+                                     cfg.pos_mref_z_gauss);
             ctx->mref_update = 0;
         }
 
         /* Speed over ground for the centripetal correction (0 = off). */
-        f.speed_mps = ctx->cfg.pos_speed_valid ? ctx->cfg.pos_speed_mps : 0.0f;
+        f.speed_mps = cfg.pos_speed_valid ? cfg.pos_speed_mps : 0.0f;
 
         /* Timestamps + per-sample dt. For hw-timestamp chips, chip_ts
          * encodes the exact sample time; feeding the measured interval to
@@ -936,12 +973,12 @@ void *fusion_thread(void *arg)
          * skip window so the filter isn't starved, but also inflate the
          * accel noise ×4 so the vibration-contaminated samples that do pass
          * are trusted proportionally less. */
-        if (ctx->cfg.engine_vibration_g2 > 0.0 &&
+        if (cfg.engine_vibration_g2 > 0.0 &&
             ctx->engine_on != prev_engine_on) {
             prev_engine_on = ctx->engine_on;
             float sk = ctx->engine_on
-                       ? (float)ctx->cfg.engine_accel_skip_thresh
-                       : (float)ctx->cfg.accel_skip_thresh;
+                       ? (float)cfg.engine_accel_skip_thresh
+                       : (float)cfg.accel_skip_thresh;
             f.accel_skip_lo = 1.0f - sk;
             f.accel_skip_hi = 1.0f + sk;
             f.Ra_scale      = ctx->engine_on ? 4.0f : 1.0f;
@@ -1025,8 +1062,8 @@ void *fusion_thread(void *arg)
 
         /* Declination validity is an explicit flag, not a 0.0 sentinel, so a
          * WMM-computed 0.0° on the agonic line still yields true heading. */
-        if (ctx->cfg.pos_declination_valid) {
-            state.declination_deg = ctx->cfg.pos_declination_deg;
+        if (cfg.pos_declination_valid) {
+            state.declination_deg = cfg.pos_declination_deg;
             state.flags |= FLAG_DECLINATION_VALID;
         }
 
@@ -1070,6 +1107,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     cap_ring_init(&ctx->cap_ring);
     pthread_mutex_init(&ctx->shared.lock, NULL);
     pthread_mutex_init(&ctx->anchor.mtx, NULL);
+    pthread_mutex_init(&ctx->live_lock, NULL);
 
     /* ── Locate drivers ──────────────────────────────────────────────────── */
 
@@ -1199,6 +1237,7 @@ fail:
     if (ctx->gpio_chip)    gpiod_chip_close(ctx->gpio_chip);
     pthread_mutex_destroy(&ctx->shared.lock);
     pthread_mutex_destroy(&ctx->anchor.mtx);
+    pthread_mutex_destroy(&ctx->live_lock);
     pthread_mutex_destroy(&ctx->imu_ring.lock);
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);
@@ -1210,8 +1249,16 @@ fail:
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
+/*
+ * All four setters below write ctx->cfg under live_lock; the worker threads
+ * read a snapshot under the same lock (cfg_snapshot), so there is no data
+ * race. The _Atomic reconfigure/mref_update flags are set last, after the
+ * data is committed, telling the fusion loop that expensive re-derivation
+ * (mekf_reconfigure, heave/wave re-init, m_ref invariants) is due.
+ */
 void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
 {
+    pthread_mutex_lock(&ctx->live_lock);
     ctx->cfg.mekf_gyro_noise           = new_cfg->mekf_gyro_noise;
     ctx->cfg.mekf_gyro_bias            = new_cfg->mekf_gyro_bias;
     ctx->cfg.mekf_accel_noise          = new_cfg->mekf_accel_noise;
@@ -1220,6 +1267,13 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
     ctx->cfg.accel_skip_thresh         = new_cfg->accel_skip_thresh;
     ctx->cfg.engine_vibration_g2       = new_cfg->engine_vibration_g2;
     ctx->cfg.engine_accel_skip_thresh  = new_cfg->engine_accel_skip_thresh;
+    /* [hot] fusion params the reconfigure path re-derives — these must be
+     * published here too or a SIGHUP change to them never reaches the
+     * running filter (mekf_reconfigure reads mag_yaw_only; the fusion loop
+     * reads heave_tau_s/wave_tau_s). */
+    ctx->cfg.mag_yaw_only              = new_cfg->mag_yaw_only;
+    ctx->cfg.heave_tau_s               = new_cfg->heave_tau_s;
+    ctx->cfg.wave_tau_s                = new_cfg->wave_tau_s;
     /* Static declination applies only when no live position source is
      * configured. With gpsd/SignalK enabled the position thread owns this
      * field via imu_ctx_set_declination(); copying main's static value
@@ -1237,41 +1291,36 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
         }
     }
     ctx->reconfigure = 1;
+    pthread_mutex_unlock(&ctx->live_lock);
 }
 
 void imu_ctx_set_mag_ref(imu_ctx_t *ctx, float h_gauss, float z_gauss)
 {
-    /* Same single-word lockless pattern as imu_ctx_set_declination:
-     * values first, then the flag the fusion loop polls. */
+    pthread_mutex_lock(&ctx->live_lock);
     ctx->cfg.pos_mref_h_gauss = h_gauss;
     ctx->cfg.pos_mref_z_gauss = z_gauss;
     ctx->cfg.pos_mref_valid   = true;
     ctx->mref_update = 1;
+    pthread_mutex_unlock(&ctx->live_lock);
 }
 
 void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid)
 {
+    pthread_mutex_lock(&ctx->live_lock);
     ctx->cfg.pos_speed_mps   = speed_mps;
     ctx->cfg.pos_speed_valid = valid;
+    pthread_mutex_unlock(&ctx->live_lock);
 }
 
 void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
 {
-    /*
-     * Two single-word writes — each naturally atomic on ARM and x86.
-     * The fusion thread reads them each predict step; the new value takes
-     * effect within one IMU sample period (~1.2 ms at 833 Hz).  Value is
-     * written before the flag when validating (and the flag first when
-     * clearing) so a torn pair can at worst apply one stale-but-sane sample.
-     * Follows the same lockless pattern as imu_ctx_update_config().
-     */
-    if (valid) {
-        ctx->cfg.pos_declination_deg   = decl_deg;
-        ctx->cfg.pos_declination_valid = true;
-    } else {
-        ctx->cfg.pos_declination_valid = false;
-        ctx->cfg.pos_declination_deg   = decl_deg;
-    }
+    /* The fusion thread reads these each predict step (via its snapshot);
+     * a new value takes effect within one IMU sample period (~1.2 ms at
+     * 833 Hz). */
+    pthread_mutex_lock(&ctx->live_lock);
+    ctx->cfg.pos_declination_deg   = decl_deg;
+    ctx->cfg.pos_declination_valid = valid;
+    pthread_mutex_unlock(&ctx->live_lock);
 }
 
 void imu_ctx_stop(imu_ctx_t *ctx)
@@ -1290,6 +1339,7 @@ void imu_ctx_free(imu_ctx_t *ctx)
     if (ctx->gpio_chip) gpiod_chip_close(ctx->gpio_chip);
     pthread_mutex_destroy(&ctx->shared.lock);
     pthread_mutex_destroy(&ctx->anchor.mtx);
+    pthread_mutex_destroy(&ctx->live_lock);
     pthread_mutex_destroy(&ctx->imu_ring.lock);
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);

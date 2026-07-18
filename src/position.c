@@ -83,8 +83,25 @@ bool pos_json_double(const char *json, const char *key, double *out)
     char *end;
     double v = strtod(p, &end);
     if (end == p) return false;   /* not a number (e.g. null, "string") */
+    /* strtod also parses "nan"/"inf(inity)" — not valid JSON numbers, and a
+     * NaN/Inf here would poison the WMM/atan2 path and the MEKF. Reject. */
+    if (!isfinite(v)) return false;
+    /* The value must be terminated by a JSON delimiter, not stray text —
+     * rejects a numeric prefix like "lat":12abc. */
+    if (*end != '\0' && !strchr(" \t\r\n,}]", *end)) return false;
     *out = v;
     return true;
+}
+
+/*
+ * Range/finiteness gate for a position fix before it feeds declination and
+ * the magnetic reference. Both the gpsd and SignalK paths pass through here.
+ */
+bool pos_fix_valid(double lat, double lon, double alt)
+{
+    return isfinite(lat) && lat >= -90.0  && lat <= 90.0
+        && isfinite(lon) && lon >= -180.0 && lon <= 180.0
+        && isfinite(alt);
 }
 
 /* ── TCP helpers ─────────────────────────────────────────────────────────── */
@@ -335,8 +352,9 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
         /* Speed over ground feeds the centripetal correction; refresh it on
          * every fix (not just threshold crossings). */
         double spd;
-        if (pos_json_double(line, "speed", &spd) && spd >= 0.0)
+        if (pos_json_double(line, "speed", &spd) && isfinite(spd) && spd >= 0.0)
             imu_ctx_set_speed(ctx->imu, (float)spd, true);
+        if (!pos_fix_valid(lat, lon, alt)) continue;
         maybe_update_decl(ctx, wmm, lat, lon, alt,
                           last_lat, last_lon, last_fix_time);
     }
@@ -398,6 +416,7 @@ static void poll_signalk(pos_ctx_t *ctx, const wmm_t *wmm,
     if (!pos_json_double(body, "latitude",  &lat)) return;
     if (!pos_json_double(body, "longitude", &lon)) return;
     pos_json_double(body, "altitude", &alt);   /* optional in SignalK */
+    if (!pos_fix_valid(lat, lon, alt)) return;
     maybe_update_decl(ctx, wmm, lat, lon, alt,
                       last_lat, last_lon, last_fix_time);
 }
@@ -416,11 +435,11 @@ void *position_thread(void *arg)
      * this struct; it is never shared with the main thread.
      */
     wmm_t wmm;
-    bool wmm_ok = (wmm_load(ctx->cfg->pos_wmm_file, &wmm) == 0);
+    bool wmm_ok = (wmm_load(ctx->wmm_file, &wmm) == 0);
     if (!wmm_ok)
         LOG_W("[pos] WMM file '%s' unavailable — "
                 "position fixes will not update declination\n",
-                ctx->cfg->pos_wmm_file);
+                ctx->wmm_file);
 
     /* Compose the banner first: log lines must be single emissions so the
      * per-line timestamp/priority prefixes can't split them. */
