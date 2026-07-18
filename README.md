@@ -88,8 +88,7 @@ high-rate quaternion for vision or control, enable the binary stream on port
 # 1. Trust the signing key and add the repo (use bookworm or trixie)
 curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
   | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
-echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] \
-  https://richcreations.github.io/imud/apt trixie main' \
+echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] https://richcreations.github.io/imud/apt trixie main' \
   | sudo tee /etc/apt/sources.list.d/imud.list
 
 # 2. Install the daemon + World Magnetic Model data
