@@ -83,6 +83,12 @@
 
 static time_t g_start_time;
 
+/* Serializes SIGHUP writes to the shared top-level `cfg` against the health
+ * thread's reads (stats period + status-response snapshot). The output
+ * threads instead read their own _Atomic rate copies (out_ctx_reload); the
+ * fusion/reader threads have their own live_lock snapshot (imu_ctx). */
+static pthread_mutex_t g_cfg_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* ── CLI args ────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -388,8 +394,11 @@ static void *health_thread(void *arg)
 {
     health_ctx_t *ctx = arg;
 
-    long stats_period_ns = (ctx->cfg->log_stats_hz > 0)
-        ? 1000000000L / ctx->cfg->log_stats_hz
+    pthread_mutex_lock(&g_cfg_lock);
+    int log_stats_hz = ctx->cfg->log_stats_hz;
+    pthread_mutex_unlock(&g_cfg_lock);
+    long stats_period_ns = (log_stats_hz > 0)
+        ? 1000000000L / log_stats_hz
         : 1000000000L;
 
     struct timespec next_stats;
@@ -420,7 +429,11 @@ static void *health_thread(void *arg)
                 struct timeval rto = { .tv_sec = 1, .tv_usec = 0 };
                 setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                            &rto, sizeof(rto));
-                write_status_response(client, ctx->cfg, ctx->imu);
+                imud_config_t cfg_snap;
+                pthread_mutex_lock(&g_cfg_lock);
+                cfg_snap = *ctx->cfg;
+                pthread_mutex_unlock(&g_cfg_lock);
+                write_status_response(client, &cfg_snap, ctx->imu);
                 close(client);
             }
         }
@@ -463,8 +476,9 @@ static void *health_thread(void *arg)
 
 static void join_thread(pthread_t tid, const char *name)
 {
-    if (pthread_join(tid, NULL) != 0)
-        LOG_E("[main] join %s failed\n", name);
+    int rc = pthread_join(tid, NULL);
+    if (rc != 0)
+        LOG_E("[main] join %s failed: %s\n", name, strerror(rc));
 }
 
 /* ── WMM declination ─────────────────────────────────────────────────────── */
@@ -664,21 +678,25 @@ int main(int argc, char **argv)
     pthread_t capture_tid;
     bool capture_started = false;
 
-    if (pthread_create(&ism_tid, NULL, ism_reader_thread, imu) != 0) {
-        LOG_E("[main] fatal: cannot create ism_reader thread: %s\n", strerror(errno));
+    int prc;
+    prc = pthread_create(&ism_tid, NULL, ism_reader_thread, imu);
+    if (prc != 0) {
+        LOG_E("[main] fatal: cannot create ism_reader thread: %s\n", strerror(prc));
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
         pid_remove(PID_FILE); return 1;
     }
-    if (pthread_create(&mag_tid, NULL, mag_reader_thread, imu) != 0) {
-        LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(errno));
+    prc = pthread_create(&mag_tid, NULL, mag_reader_thread, imu);
+        if (prc != 0) {
+        LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(prc));
         imu_ctx_stop(imu); join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
         pid_remove(PID_FILE); return 1;
     }
-    if (pthread_create(&fusion_tid, NULL, fusion_thread, imu) != 0) {
-        LOG_E("[main] fatal: cannot create fusion thread: %s\n", strerror(errno));
+    prc = pthread_create(&fusion_tid, NULL, fusion_thread, imu);
+        if (prc != 0) {
+        LOG_E("[main] fatal: cannot create fusion thread: %s\n", strerror(prc));
         imu_ctx_stop(imu); join_thread(mag_tid, "mag_reader"); join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
@@ -686,9 +704,10 @@ int main(int argc, char **argv)
     }
 
     if (cfg.capture_enabled) {
-        if (pthread_create(&capture_tid, NULL, capture_thread, imu) != 0)
+        prc = pthread_create(&capture_tid, NULL, capture_thread, imu);
+        if (prc != 0)
             LOG_E("[main] cannot create capture thread: %s — "
-                  "black box disabled\n", strerror(errno));
+                  "black box disabled\n", strerror(prc));
         else
             capture_started = true;
     }
@@ -699,8 +718,9 @@ int main(int argc, char **argv)
         .stop      = &stop,
         .status_fd = status_fd,
     };
-    if (pthread_create(&health_tid, NULL, health_thread, &hctx) != 0) {
-        LOG_E("[main] fatal: cannot create health thread: %s\n", strerror(errno));
+    prc = pthread_create(&health_tid, NULL, health_thread, &hctx);
+        if (prc != 0) {
+        LOG_E("[main] fatal: cannot create health thread: %s\n", strerror(prc));
         imu_ctx_stop(imu);
         join_thread(fusion_tid, "fusion"); join_thread(mag_tid, "mag_reader");
         join_thread(ism_tid, "ism_reader");
@@ -710,24 +730,27 @@ int main(int argc, char **argv)
     }
 
     if (cfg.nmea_enabled) {
-        if (pthread_create(&nmea_tid, NULL, nmea_out_thread, out) != 0) {
-            LOG_W("[main] warning: cannot create nmea_out thread: %s\n", strerror(errno));
+        prc = pthread_create(&nmea_tid, NULL, nmea_out_thread, out);
+        if (prc != 0) {
+            LOG_W("[main] warning: cannot create nmea_out thread: %s\n", strerror(prc));
             cfg.nmea_enabled = false;
         } else {
             nmea_started = true;
         }
     }
     if (cfg.highrate_enabled) {
-        if (pthread_create(&hirate_tid, NULL, hirate_out_thread, out) != 0) {
-            LOG_W("[main] warning: cannot create hirate_out thread: %s\n", strerror(errno));
+        prc = pthread_create(&hirate_tid, NULL, hirate_out_thread, out);
+        if (prc != 0) {
+            LOG_W("[main] warning: cannot create hirate_out thread: %s\n", strerror(prc));
             cfg.highrate_enabled = false;
         } else {
             hirate_started = true;
         }
     }
     if (cfg.stream_enabled) {
-        if (pthread_create(&stream_tid, NULL, stream_out_thread, out) != 0) {
-            LOG_W("[main] warning: cannot create stream_out thread: %s\n", strerror(errno));
+        prc = pthread_create(&stream_tid, NULL, stream_out_thread, out);
+        if (prc != 0) {
+            LOG_W("[main] warning: cannot create stream_out thread: %s\n", strerror(prc));
             cfg.stream_enabled = false;
         } else {
             stream_started = true;
@@ -739,10 +762,12 @@ int main(int argc, char **argv)
     pos_ctx.cfg  = &cfg;
     pos_ctx.imu  = imu;
     pos_ctx.stop = 0;
+    snprintf(pos_ctx.wmm_file, sizeof pos_ctx.wmm_file, "%s", cfg.pos_wmm_file);
     if (cfg.pos_gpsd_enabled || cfg.pos_signalk_enabled) {
-        if (pthread_create(&pos_tid, NULL, position_thread, &pos_ctx) != 0) {
+        prc = pthread_create(&pos_tid, NULL, position_thread, &pos_ctx);
+        if (prc != 0) {
             LOG_W("[main] warning: cannot create position thread: %s\n",
-                    strerror(errno));
+                    strerror(prc));
         } else {
             pos_started = true;
         }
@@ -767,7 +792,11 @@ int main(int argc, char **argv)
             imud_config_t new_cfg = cfg;
             if (config_load(args.config_path, &new_cfg) == 0) {
                 apply_wmm_if_configured(&new_cfg);
-                /* Apply hot-reloadable fields atomically (single assignment). */
+                /* Publish hot-reloadable fields to the shared cfg under the
+                 * lock (the health thread reads cfg concurrently); the
+                 * per-consumer setters below push them to the threads that
+                 * keep their own copies. */
+                pthread_mutex_lock(&g_cfg_lock);
                 cfg.nmea_rate_hz        = new_cfg.nmea_rate_hz;
                 cfg.highrate_rate_hz    = new_cfg.highrate_rate_hz;
                 cfg.stream_rate_hz      = new_cfg.stream_rate_hz;
@@ -809,7 +838,10 @@ int main(int argc, char **argv)
                 cfg.pos_mref_h_gauss           = new_cfg.pos_mref_h_gauss;
                 cfg.pos_mref_z_gauss           = new_cfg.pos_mref_z_gauss;
                 cfg.pos_mref_valid             = new_cfg.pos_mref_valid;
+                pthread_mutex_unlock(&g_cfg_lock);
+                /* Push to the threads that hold private copies. */
                 imu_ctx_update_config(imu, &cfg);
+                out_ctx_reload(out, &cfg);
                 LOG_I("[main] config reloaded\n");
             } else {
                 LOG_W("[main] config reload failed — "

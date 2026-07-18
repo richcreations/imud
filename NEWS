@@ -6,6 +6,31 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.5.1
+-----
+* Fix two C11 data races in the 1.5 release (neither is caught by the
+  normal or ASan/UBSan test runs):
+  - Hot-reload / live navigation values: the fusion and reader threads now
+    read the daemon config through a mutex-guarded snapshot, and SIGHUP
+    republishes hot fields to each consumer (atomic output rates, a locked
+    snapshot for the status thread) instead of mutating a shared struct
+    that other threads read concurrently. As a side effect, [fusion]
+    heave_tau_s / wave_tau_s / mag_yaw_only now actually take effect on
+    SIGHUP (previously they were dropped by the reload).
+  - Stream shutdown: the final packet to stream subscribers is now sent by
+    the stream thread itself as it exits, so the subscriber list has a
+    single owner and is never traversed by the main thread concurrently.
+* Reject non-finite and malformed numbers in gpsd / Signal K position input
+  (NaN, Inf, truncated/garbage values, out-of-range latitude/longitude) so
+  hostile or buggy upstream data can no longer poison declination, the
+  magnetic reference, or the centripetal correction.
+* Log pthread errors using the function's return code (strerror(rc)) rather
+  than errno, which POSIX threads calls do not set.
+* New test_concurrency suite drives the reader/fusion/output threads under a
+  config-reload storm and stream-shutdown churn; CI runs it under
+  ThreadSanitizer.
+
+
 1.5 (unreleased)
 ----------------
 * Capture & replay — the black box: [capture] records every raw sensor

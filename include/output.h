@@ -47,6 +47,9 @@ void out_ctx_send_shutdown(out_ctx_t *ctx);
 /* Signal output threads to stop. */
 void out_ctx_stop(out_ctx_t *ctx);
 
+/* Republish hot-reloadable output rates after a SIGHUP config reload. */
+void out_ctx_reload(out_ctx_t *ctx, const imud_config_t *cfg);
+
 /* Release sockets and context.  Call after threads have joined. */
 void out_ctx_free(out_ctx_t *ctx);
 

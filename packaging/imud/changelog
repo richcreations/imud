@@ -1,3 +1,17 @@
+imud (1.5.1) unstable; urgency=medium
+
+  * Fix two C11 data races: the hot-reload/live
+    navigation values are now published under a lock and read via snapshot
+    (fusion/reader threads) or atomics (output rates); the stream shutdown
+    packet is sent by the stream thread itself (single-owner client list).
+  * Validate gpsd/Signal K numeric input: reject NaN/Inf, truncated numbers,
+    and out-of-range lat/lon before they reach the filter.
+  * Log pthread failures via the returned error code, not errno.
+  * SIGHUP now applies heave_tau_s/wave_tau_s/mag_yaw_only (previously
+    dropped). New ThreadSanitizer concurrency test in CI.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 15 Jul 2026 12:00:00 -0700
+
 imud (1.5) unstable; urgency=medium
 
   * Black-box recording ([capture] -> rotating .imucap files) and sim-driver

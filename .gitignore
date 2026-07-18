@@ -27,6 +27,7 @@ src/drivers/*.d
 /fuzz_packet
 /fuzz_capture
 /test_ring
+/test_concurrency
 /test_mount
 /test_cal
 /test_cal_math

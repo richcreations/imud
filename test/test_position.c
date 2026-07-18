@@ -72,6 +72,51 @@ static void end(int fb) { puts(g_fail == fb ? "OK" : "FAIL"); }
 
 /* ── pos_json_double tests ───────────────────────────────────────────────── */
 
+/* Hostile numeric inputs must be rejected (finding 3, 1.5.1): a NaN/Inf or
+ * a truncated/garbage number reaching the WMM/atan2 path poisons the MEKF. */
+static void test_json_double_nan_inf_rejected(void)
+{
+    begin("test_json_double_nan_inf_rejected");
+    int fb = g_fail;
+    double v = 999.0;
+    EXPECT(!pos_json_double("{\"lat\":nan}",       "lat", &v), "nan rejected");
+    EXPECT(!pos_json_double("{\"lat\":inf}",       "lat", &v), "inf rejected");
+    EXPECT(!pos_json_double("{\"lat\":-inf}",      "lat", &v), "-inf rejected");
+    EXPECT(!pos_json_double("{\"lat\":infinity}",  "lat", &v), "infinity rejected");
+    EXPECT(!pos_json_double("{\"lat\":1e400}",     "lat", &v), "overflow→inf rejected");
+    end(fb);
+}
+
+/* A number must be followed by a JSON delimiter, not stray text. */
+static void test_json_double_delimiter(void)
+{
+    begin("test_json_double_delimiter");
+    int fb = g_fail;
+    double v = 0.0;
+    EXPECT(!pos_json_double("{\"lat\":12abc}", "lat", &v), "numeric prefix rejected");
+    EXPECT(pos_json_double("{\"lat\":12.5,\"lon\":3}", "lat", &v) && v == 12.5,
+           "comma-terminated accepted");
+    EXPECT(pos_json_double("{\"lat\":12.5}", "lat", &v) && v == 12.5,
+           "brace-terminated accepted");
+    end(fb);
+}
+
+static void test_pos_fix_valid_ranges(void)
+{
+    begin("test_pos_fix_valid_ranges");
+    int fb = g_fail;
+    EXPECT(pos_fix_valid(37.8, -122.3, 12.0),   "in-range fix valid");
+    EXPECT(pos_fix_valid(-90.0, 180.0, 0.0),    "boundary valid");
+    EXPECT(!pos_fix_valid(90.1, 0.0, 0.0),      "lat > 90 rejected");
+    EXPECT(!pos_fix_valid(0.0, 180.1, 0.0),     "lon > 180 rejected");
+    EXPECT(!pos_fix_valid(-91.0, 0.0, 0.0),     "lat < -90 rejected");
+    double inf = 1.0/0.0, nan = 0.0/0.0;
+    EXPECT(!pos_fix_valid(inf, 0.0, 0.0),       "inf lat rejected");
+    EXPECT(!pos_fix_valid(0.0, nan, 0.0),       "nan lon rejected");
+    EXPECT(!pos_fix_valid(37.0, -122.0, inf),   "inf alt rejected");
+    end(fb);
+}
+
 static void test_json_double_basic(void)
 {
     begin("test_json_double_basic");
@@ -334,6 +379,9 @@ int main(void)
     test_json_double_string_value();
     test_json_double_spaces();
     test_json_double_scientific();
+    test_json_double_nan_inf_rejected();
+    test_json_double_delimiter();
+    test_pos_fix_valid_ranges();
     test_gpsd_tpv_full();
     test_signalk_response();
     test_gpsd_no_fix();

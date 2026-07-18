@@ -1,3 +1,11 @@
+imud (1.5.1-1) unstable; urgency=medium
+
+  * Fix C11 data races in config hot-reload and stream shutdown; validate
+    gpsd/Signal K numeric input; log pthread errors via the return code.
+    (ThreadSanitizer coverage added.)
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 15 Jul 2026 12:00:00 -0700
+
 imud (1.5-1) unstable; urgency=medium
 
   * Initial multi-binary Debian packaging: imud, imud-utils, libimud0,

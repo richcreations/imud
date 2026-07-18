@@ -108,6 +108,14 @@ struct out_ctx {
     uint64_t             nmea_errors;
     uint64_t             hirate_errors;
 
+    /* [hot] output rates: main mutates the shared config on SIGHUP, so the
+     * output threads read their own _Atomic copies (via out_ctx_reload)
+     * instead of cfg->*_rate_hz — a plain shared int read/write is a C11
+     * data race. Immutable fields (addresses, coord_frame) stay on ->cfg. */
+    _Atomic int          nmea_rate_hz;
+    _Atomic int          highrate_rate_hz;
+    _Atomic int          stream_rate_hz;
+
     _Atomic int          stop;   /* C11-clean cross-thread stop (TSan) */
 };
 
@@ -193,8 +201,8 @@ void *nmea_out_thread(void *arg)
     char        buf[NMEA_BUF_MIN];
     fused_state_t state;
 
-    long period_ns = (ctx->cfg->nmea_rate_hz > 0)
-        ? 1000000000L / ctx->cfg->nmea_rate_hz
+    long period_ns = (ctx->nmea_rate_hz > 0)
+        ? 1000000000L / ctx->nmea_rate_hz
         : 100000000L;  /* 10 Hz fallback if misconfigured */
 
     /* Align first deadline to the next whole period boundary. */
@@ -211,8 +219,8 @@ void *nmea_out_thread(void *arg)
         /* Re-derive each tick so a SIGHUP rate_hz change takes effect
          * immediately ([hot] in imud.conf(5)); single-word load, same
          * lockless pattern as the fusion params. */
-        period_ns = (ctx->cfg->nmea_rate_hz > 0)
-            ? 1000000000L / ctx->cfg->nmea_rate_hz
+        period_ns = (ctx->nmea_rate_hz > 0)
+            ? 1000000000L / ctx->nmea_rate_hz
             : 100000000L;
         ts_add_ns(&next, period_ns);
 
@@ -246,8 +254,8 @@ void *hirate_out_thread(void *arg)
     mag_sample_t  mag;
     imu_sample_t  imu;
 
-    long period_ns = (ctx->cfg->highrate_rate_hz > 0)
-        ? 1000000000L / ctx->cfg->highrate_rate_hz
+    long period_ns = (ctx->highrate_rate_hz > 0)
+        ? 1000000000L / ctx->highrate_rate_hz
         : 2000000L;   /* 500 Hz fallback if misconfigured */
 
     struct timespec next;
@@ -261,8 +269,8 @@ void *hirate_out_thread(void *arg)
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
         /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
-        period_ns = (ctx->cfg->highrate_rate_hz > 0)
-            ? 1000000000L / ctx->cfg->highrate_rate_hz
+        period_ns = (ctx->highrate_rate_hz > 0)
+            ? 1000000000L / ctx->highrate_rate_hz
             : 2000000L;
         ts_add_ns(&next, period_ns);
 
@@ -312,8 +320,8 @@ void *stream_out_thread(void *arg)
     mag_sample_t  mag;
     imu_sample_t  imu;
 
-    long period_ns = (ctx->cfg->stream_rate_hz > 0)
-        ? 1000000000L / ctx->cfg->stream_rate_hz
+    long period_ns = (ctx->stream_rate_hz > 0)
+        ? 1000000000L / ctx->stream_rate_hz
         : 10000000L;   /* 100 Hz fallback if misconfigured */
 
     struct timespec next;
@@ -327,8 +335,8 @@ void *stream_out_thread(void *arg)
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
         /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
-        period_ns = (ctx->cfg->stream_rate_hz > 0)
-            ? 1000000000L / ctx->cfg->stream_rate_hz
+        period_ns = (ctx->stream_rate_hz > 0)
+            ? 1000000000L / ctx->stream_rate_hz
             : 10000000L;
         ts_add_ns(&next, period_ns);
 
@@ -372,6 +380,25 @@ void *stream_out_thread(void *arg)
             LOG_I("[stream_out] subscriber disconnected (%d/%d)\n",
                     ctx->stream_nclients, STREAM_MAX_CLIENTS);
         }
+    }
+
+    /* Final shutdown packet to subscribers is sent HERE, by the thread that
+     * owns the client array — never from out_ctx_send_shutdown on the main
+     * thread, which would traverse stream_clients[] concurrently with this
+     * thread's accept/disconnect mutations. On loop exit the daemon is
+     * stopping (fusion is still alive; it is joined after the output
+     * threads), so imu_get_state is valid. */
+    if (ctx->stream_nclients > 0) {
+        fused_state_t state;
+        mag_sample_t  mag;
+        imu_sample_t  imu_s, raw_imu_s;
+        imu_get_state(ctx->imu, &state, &mag, &imu_s, &raw_imu_s);
+        state.flags |= FLAG_SHUTDOWN;
+        imu_packet_t pkt;
+        packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s,
+                     ctx->cfg->highrate_coord_frame);
+        for (int i = 0; i < ctx->stream_nclients; i++)
+            send(ctx->stream_clients[i], &pkt, sizeof(pkt), MSG_NOSIGNAL);
     }
 
     for (int i = 0; i < ctx->stream_nclients; i++)
@@ -439,6 +466,9 @@ int out_ctx_open(out_ctx_t **ctx_out,
 
     ctx->cfg  = cfg;
     ctx->imu  = imu;
+    ctx->nmea_rate_hz     = cfg->nmea_rate_hz;
+    ctx->highrate_rate_hz = cfg->highrate_rate_hz;
+    ctx->stream_rate_hz   = cfg->stream_rate_hz;
     ctx->nmea_fd   = -1;
     ctx->hirate_fd = -1;
     ctx->stream_fd = -1;
@@ -482,10 +512,17 @@ fail:
     return -1;
 }
 
+/*
+ * Emit the final FLAG_SHUTDOWN packet on the connectionless hirate UDP
+ * output only. The stream subscribers' copy is sent by stream_out_thread
+ * itself on exit (single-owner of the client array) — see stream_out_thread.
+ * Called from main before out_ctx_stop, while hirate_out_thread may also be
+ * sending; both are plain sendto() on the same fd (kernel-serialized, no
+ * shared user state), so that is safe.
+ */
 void out_ctx_send_shutdown(out_ctx_t *ctx)
 {
-    if (!ctx) return;
-    if (ctx->hirate_fd < 0 && ctx->stream_nclients == 0) return;
+    if (!ctx || ctx->hirate_fd < 0) return;
 
     fused_state_t state;
     mag_sample_t  mag;
@@ -496,21 +533,24 @@ void out_ctx_send_shutdown(out_ctx_t *ctx)
 
     imu_packet_t pkt;
     packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s, ctx->cfg->highrate_coord_frame);
-    if (ctx->hirate_fd >= 0)
-        sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
-               (struct sockaddr *)&ctx->hirate_dest,
-               sizeof(ctx->hirate_dest));
-
-    /* Best-effort final packet to stream subscribers; stream_out_thread is
-     * still parked in clock_nanosleep at this point, so the client list is
-     * stable (it's joined after out_ctx_stop). */
-    for (int i = 0; i < ctx->stream_nclients; i++)
-        send(ctx->stream_clients[i], &pkt, sizeof(pkt), MSG_NOSIGNAL);
+    sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
+           (struct sockaddr *)&ctx->hirate_dest,
+           sizeof(ctx->hirate_dest));
 }
 
 void out_ctx_stop(out_ctx_t *ctx)
 {
     if (ctx) ctx->stop = 1;
+}
+
+/* Publish hot-reloaded output rates (SIGHUP). The threads read these
+ * atomics each tick; the immutable fields stay on the shared ->cfg. */
+void out_ctx_reload(out_ctx_t *ctx, const imud_config_t *cfg)
+{
+    if (!ctx) return;
+    ctx->nmea_rate_hz     = cfg->nmea_rate_hz;
+    ctx->highrate_rate_hz = cfg->highrate_rate_hz;
+    ctx->stream_rate_hz   = cfg->stream_rate_hz;
 }
 
 void out_ctx_free(out_ctx_t *ctx)

@@ -34,6 +34,9 @@ typedef struct imu_ctx imu_ctx_t;
 typedef struct {
     const imud_config_t  *cfg;   /* daemon config (read-only after start) */
     imu_ctx_t            *imu;   /* target for imu_ctx_set_declination() */
+    char                 wmm_file[256]; /* private copy: the shared cfg's
+                                  * pos_wmm_file is [hot] (SIGHUP writer), and
+                                  * this thread reads it only once at start */
     _Atomic sig_atomic_t stop;   /* set to 1 to request thread exit */
 } pos_ctx_t;
 
@@ -56,6 +59,12 @@ void *position_thread(void *arg);
  * or the value is not a number (e.g. null, string).
  */
 bool pos_json_double(const char *json, const char *key, double *out);
+
+/*
+ * pos_fix_valid — finiteness + range gate for a position fix
+ * (lat ∈ [-90,90], lon ∈ [-180,180], alt finite).  Exposed for unit tests.
+ */
+bool pos_fix_valid(double lat, double lon, double alt);
 
 /*
  * check_fix_ttl — clear declination when the last GPS fix is older than
