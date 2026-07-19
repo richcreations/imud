@@ -178,7 +178,7 @@ test_packet: src/packet.c test/test_packet.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
 
 test_ring: src/ring.c test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
