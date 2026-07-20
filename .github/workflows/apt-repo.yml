@@ -70,18 +70,23 @@ jobs:
 
           cd site/apt
 
-          # --- per-suite index (arm64 index carries arch:all too) -----------
+          # --- per-suite, per-arch index --------------------------------
+          # The pool mixes arm64/armhf/all debs in one directory;
+          # `apt-ftparchive --arch X` picks out *_X.deb + *_all.deb by
+          # filename, so every arch index carries the arch:all packages.
           for suite in bookworm trixie; do
             if ! ls pool/"$suite"/*.deb >/dev/null 2>&1; then
               echo "no debs for $suite — skipping"
               continue
             fi
             echo "==> indexing $suite"
-            mkdir -p "dists/$suite/main/binary-arm64"
+            for arch in arm64 armhf; do
+              mkdir -p "dists/$suite/main/binary-$arch"
 
-            apt-ftparchive packages "pool/$suite" \
-              > "dists/$suite/main/binary-arm64/Packages"
-            gzip -9kf "dists/$suite/main/binary-arm64/Packages"
+              apt-ftparchive --arch "$arch" packages "pool/$suite" \
+                > "dists/$suite/main/binary-$arch/Packages"
+              gzip -9kf "dists/$suite/main/binary-$arch/Packages"
+            done
 
             apt-ftparchive \
               -o APT::FTPArchive::Release::Origin="imud" \
@@ -89,7 +94,7 @@ jobs:
               -o APT::FTPArchive::Release::Suite="$suite" \
               -o APT::FTPArchive::Release::Codename="$suite" \
               -o APT::FTPArchive::Release::Components="main" \
-              -o APT::FTPArchive::Release::Architectures="arm64" \
+              -o APT::FTPArchive::Release::Architectures="arm64 armhf" \
               release "dists/$suite" > "dists/$suite/Release"
 
             gpg --batch --yes --local-user "$FPR" \

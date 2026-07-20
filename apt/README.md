@@ -21,6 +21,7 @@ repo is namespaced under `/apt/` so a future project page can own the root.
 2. Copy the ones you want live into the matching suite folder:
    ```sh
    cp imud_1.5-1~trixie1_arm64.deb        apt/pool/trixie/
+   cp imud_1.5-1~trixie1_armhf.deb        apt/pool/trixie/
    cp imud-wmm-data_1.5-1~trixie1_all.deb apt/pool/trixie/
    # …and the ~bookworm1 debs into apt/pool/bookworm/
    ```
@@ -28,7 +29,10 @@ repo is namespaced under `/apt/` so a future project page can own the root.
    Multiple versions may coexist in a pool (apt serves the newest); delete old
    `.deb`s when you want to retire them.
 
-Only arm64 + arch-`all` debs belong here — the packages target the Pi.
+Only arm64/armhf + arch-`all` debs belong here — the packages target the Pi
+(64- and 32-bit Raspberry Pi OS). Both arches share one pool directory; CI
+splits the per-arch indexes by filename, and each arch index carries the
+arch-`all` debs.
 
 ## One-time setup (do this once to bring the repo live)
 
