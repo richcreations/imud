@@ -53,7 +53,7 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
 - **An ABI-stable client library.** `libimud` decodes the binary stream for C
   programs and keeps working across daemon upgrades without recompiling;
   a single-file Python client ships too, and an Arduino/ESP32 client
-  ([imud-arduino](https://github.com/richcreations/imud-arduino)) lives in
+  ([imud-arduino](https://github.com/richcreations/imud-arduino)) that lives in
   its own repository.
 - **Built to run unattended.** A hardened systemd unit with a watchdog,
   calibration tools, level-gated logging, and a status socket.
