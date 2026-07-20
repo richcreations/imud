@@ -43,6 +43,15 @@ src/drivers/*.d
 /test_mavlink
 /test_libimud
 /test_prometheus
+/test_drivers_registry
+/test_imu_math
+/test_drivers
+
+# Coverage artifacts (make coverage)
+*.gcno
+*.gcda
+/coverage.info
+/coverage-html/
 
 # libimud build products
 /libimud.so
