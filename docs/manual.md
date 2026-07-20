@@ -301,17 +301,24 @@ Calibration file and startup behaviour. **[restart]**
 
 ### `[nmea]`
 
-NMEA 0183 UDP output. **[restart]**: `enabled`, `dest_addr`, `dest_port`. **[hot]**: `rate_hz`.
+NMEA 0183 output — UDP broadcast and/or a TCP listener, independently
+enabled (both off by default; since 1.6 a stock daemon emits only on the
+local `[stream]` socket). **[restart]**: `enabled`, `dest_addr`,
+`dest_port`, `tcp_enabled`, `tcp_bind_addr`, `tcp_port`. **[hot]**:
+`rate_hz`.
 
 Sentences emitted per burst — see [§7 Output streams](#7-output-streams) for
 details.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable the NMEA output stream. |
-| `rate_hz` | int | `10` | Output rate in Hz. Hot-reloadable. |
+| `enabled` | bool | `false` | Enable the NMEA UDP output stream. |
+| `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP). Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host. |
 | `dest_port` | int | `10110` | Destination UDP port. Standard NMEA-over-UDP port is 10110. |
+| `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon. |
+| `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
+| `tcp_port` | int | `10110` | Listener TCP port (the de-facto NMEA-over-TCP port). |
 
 ### `[highrate]`
 
@@ -334,13 +341,20 @@ Local AF_UNIX subscription stream — the same 260-byte binary packets as
 `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a
 loss-free stream and subscribe by connecting (up to 8 at once). Slow
 consumers get dropped packets (visible as `imu_seq` gaps), never a stalled
-daemon. **[restart]**: `enabled`, `socket`. **[hot]**: `rate_hz`.
+daemon. An optional TCP listener serves the same framed packets to remote
+consumers — a laptop's `imud-mon`/Python client or a bridge on another
+machine (`imud_connect_tcp` / `ImudClient.connect_tcp`). **[restart]**:
+`enabled`, `socket`, `tcp_enabled`, `tcp_bind_addr`, `tcp_port`. **[hot]**:
+`rate_hz`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the subscription stream. |
+| `enabled` | bool | `true` | Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
-| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz. Hot-reloadable. |
+| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP). Hot-reloadable. |
+| `tcp_enabled` | bool | `false` | TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket. |
+| `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
+| `tcp_port` | int | `10112` | Listener TCP port. |
 
 ### `[capture]`
 
@@ -556,15 +570,23 @@ sudo systemctl start imud
 imud publishes on up to three streams simultaneously. Full wire formats are in
 [spec.md §7–8, §10](../spec.md).
 
-### NMEA 0183 — UDP port 10110 (built-in default on)
+> **Default posture (since 1.6):** a stock daemon enables only the local
+> AF_UNIX stream socket. Every network output — NMEA (UDP *and* TCP),
+> high-rate UDP, the stream TCP listener — is off until explicitly enabled
+> in `imud.conf`. Nothing touches the network out of the box.
 
-> The shipped reference `config/imud.conf` enables only the local AF_UNIX
-> stream socket (below) — set `[nmea] enabled = true` there for
-> chartplotters and marine software. With **no** config file at all, the
-> built-in default is NMEA on.
+### NMEA 0183 — UDP broadcast and/or TCP listener, port 10110 (default off)
 
-Broadcast text sentences for chartplotters, autopilots, and marine software
-(Signal K, OpenCPN). Per burst at `nmea.rate_hz`:
+Text sentences for chartplotters, autopilots, and marine software (Signal K,
+OpenCPN). Two transports, independently enabled:
+
+- **UDP broadcast** (`enabled`) — for listen-only consumers on the LAN.
+- **TCP listener** (`tcp_enabled`) — most plotter apps (OpenCPN, Navionics,
+  iOS/Android nav apps) connect as TCP clients; point them at
+  `tcp://<host>:10110`. Up to 8 clients; a slow client skips bursts, never
+  stalls the daemon.
+
+Per burst at `nmea.rate_hz`:
 
 | Sentence | Contents |
 |---|---|
@@ -585,16 +607,23 @@ self-describing (magic + version + CRC), so consumers can validate each one
 independently. See [spec.md §8](../spec.md) for the exact layout and the
 consumer libraries in [§9](#9-consumer-libraries).
 
-### Local subscription stream — AF_UNIX socket (built-in default off)
+### Local subscription stream — AF_UNIX socket (default on) + TCP listener (default off)
 
-> This is the one output the shipped reference `config/imud.conf` enables —
-> the bridges and libimud consumers read it.
+> This is the one output a stock daemon enables — the bridges and libimud
+> consumers read it.
 
 The same 260-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
 loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets
 packet gaps (visible in `imu_seq`), never blocks the daemon.
+
+With `[stream] tcp_enabled = true` the same framed packets are also served
+on a TCP listener (default port 10112) — the payoff is **remote consumers**:
+run `imud-mon`, the Python client (`ImudClient.connect_tcp("boat.local")`),
+or any libimud program (`imud_connect_tcp`, see `libimud(3)`) on a laptop
+against a daemon elsewhere on the network, with the same lossless framing as
+the local socket. Both listeners are fed by one thread at `rate_hz`.
 
 ### NMEA 2000 — via Signal K (recipe, no imud code involved)
 
@@ -679,8 +708,11 @@ validates each binary packet (magic + CRC) before display.
 ### Raw capture with netcat
 
 ```sh
-nc -u -l 10110                    # watch NMEA sentences
+nc -u -l 10110                    # watch NMEA sentences (UDP broadcast)
 nc -u -l 10111 > raw_packets.bin  # capture raw binary packets
+nc HOST 10110                     # NMEA over TCP ([nmea] tcp_enabled)
+nc HOST 10112 | xxd | head        # framed binary stream over TCP
+                                  #   ([stream] tcp_enabled)
 ```
 
 ### Logging
@@ -697,14 +729,27 @@ reload imud` (the file is reopened on SIGHUP). See the
 
 ## 9. Consumer libraries
 
-The `lib/` directory has ready-to-use clients for the binary stream:
+The `lib/` directory has ready-to-use clients for the binary stream, and a
+microcontroller client lives in its own repository:
 
 - **C** — **libimud** (`#include <imud.h>`, link `-limud`, `pkg-config
   libimud`): the ABI-stable shared library — applications keep working
-  across imud upgrades without recompiling. See `man 3 libimud`.
-- **Python** — `lib/imud_client.py`: Python 3.8+, standard library only. The
+  across imud upgrades without recompiling. Connects to the local socket
+  (`imud_connect_stream`), the UDP stream (`imud_connect_udp`), or a remote
+  daemon's `[stream]` TCP listener (`imud_connect_tcp`, 1.6). See
+  `man 3 libimud`.
+- **Python** — `lib/imud_client.py`: Python 3.8+, standard library only.
+  Receives UDP or connects to the TCP stream listener
+  (`ImudClient.connect_tcp(host, port)`). The
   `ImudPacket.true_heading_deg` property returns `None` when declination is
   unavailable.
+- **Arduino/ESP32** —
+  [imud-arduino](https://github.com/richcreations/imud-arduino) (library
+  name `ImudClient`), maintained in its own repository. Header-only Arduino
+  library (Arduino IDE and PlatformIO) that receives the stream over the
+  `[stream]` TCP listener (port 10112) or high-rate UDP (port 10111,
+  multicast included) through any Arduino `Client`/`UDP` transport.
+  Wire-pinned: it is updated alongside wire revisions.
 - **C single-header** — `lib/imud_client.h` is **deprecated**: it pins the
   wire version (recompile per revision). Kept in the source tree for
   existing vendored copies and imud's own wire-pinned internals; no longer
@@ -727,10 +772,10 @@ under `/usr/share/doc/imud-<name>/`, and in this tree under `docs/imud-<name>/`:
 
 | Bridge | Output | Docs |
 |---|---|---|
-| `imud-signalk` | Signal K delta JSON over UDP | `docs/imud-signalk/`, `imud-signalk(8)` |
+| `imud-signalk` | Signal K delta JSON over UDP / TCP | `docs/imud-signalk/`, `imud-signalk(8)` |
 | `imud-mqtt` | MQTT topics + Home Assistant discovery | `docs/imud-mqtt/`, `imud-mqtt(8)` |
 | `imud-influxdb` | InfluxDB line protocol (UDP / HTTP) | `docs/imud-influxdb/`, `imud-influxdb(8)` |
-| `imud-mavlink` | MAVLink v1/v2 (UDP / serial) | `docs/imud-mavlink/`, `imud-mavlink(8)` |
+| `imud-mavlink` | MAVLink v1/v2 (UDP / serial / TCP) | `docs/imud-mavlink/`, `imud-mavlink(8)` |
 | `imud-prometheus` | Prometheus `/metrics` HTTP exporter | `docs/imud-prometheus/`, `imud-prometheus(8)` |
 
 All read imud's local stream, so they require `[stream] enabled = true` in
@@ -751,7 +796,7 @@ format.
 | Fusion never converges | Magnetometer uncalibrated, or a strong local magnetic disturbance. Run `imud-cal mag`; check the fit residual. |
 | Heading is off by a constant | Mount rotation. Set `mount.rotation_euler_deg` yaw to the chip-X-to-bow angle. |
 | No true heading output | Declination not configured. Set `position.lat_deg`/`lon_deg`, or `declination_deg`, or enable gpsd/SignalK. |
-| No NMEA received | `nmea.enabled = true`? Consumer listening on the right port? Broadcast reachable on the subnet? |
+| No NMEA received | `nmea.enabled = true` (UDP) or `nmea.tcp_enabled = true` (TCP)? Both default **off** since 1.6. Consumer listening on / connecting to the right port? Broadcast reachable on the subnet? |
 | Config change ignored | `[restart]` keys need a full restart, not a `reload`. Check the log for a parse error (a bad value keeps the old config on reload, and prevents startup on boot). |
 
 `imud-status` and the daemon log (`journalctl -u imud`) are the first place to

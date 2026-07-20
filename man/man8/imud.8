@@ -1,4 +1,4 @@
-.TH IMUD 8 "2026-07-15" "imud 1.5.1" "System Manager's Manual"
+.TH IMUD 8 "2026-07-19" "imud 1.6" "System Manager's Manual"
 .SH NAME
 imud \- IMU daemon for marine and robotics navigation
 .SH SYNOPSIS
@@ -17,13 +17,18 @@ fuses the sensor data with a Multiplicative Extended Kalman Filter (MEKF),
 and publishes attitude estimates in several optional formats:
 .PP
 .RS 4
-\(bu\ \ NMEA 0183 sentences (UDP port 10110) for chartplotters and autopilots
+\(bu\ \ NMEA 0183 sentences (UDP broadcast and/or a TCP listener, port 10110)
+for chartplotters and autopilots
 .br
 \(bu\ \ High-rate binary packets (UDP port 10111) for machine-vision and ROS2
 .br
-\(bu\ \ The same binary packets over a local AF_UNIX subscription socket
+\(bu\ \ The same binary packets over a local AF_UNIX subscription socket,
+plus an optional TCP listener (port 10112) for remote consumers
 .RE
 .PP
+By default only the local AF_UNIX stream socket is enabled; every network
+output (NMEA UDP/TCP, high-rate UDP, stream TCP) is an explicit opt-in in
+.IR imud.conf (5).
 When magnetic declination is configured (via
 .IR imud.conf (5)),
 imud also emits true (geographic) heading in NMEA and the binary packet.

@@ -2,7 +2,10 @@
 
 `imud-signalk` consumes imud's AF_UNIX stream (the 260-byte binary packet) and
 emits one Signal K **delta** JSON message per UDP datagram at the configured rate.
-Values use Signal K SI units (radians, rad/s, metres). `context` is omitted, so
+With `tcp_enabled` the identical deltas are also served on a TCP listener,
+newline-framed (one JSON delta per `\n`-terminated line — the Signal K TCP
+data-connection format). Values use Signal K SI units (radians, rad/s, metres).
+`context` is omitted, so
 the server applies the delta to `vessels.self`; `source.label` is the configured
 `source_label`; the delta `timestamp` is ISO-8601 UTC with milliseconds, from the
 packet's wall-clock time.

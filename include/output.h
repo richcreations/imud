@@ -10,12 +10,15 @@
  * output.h — output threads for imud (§7, §8)
  *
  * Three threads:
- *   nmea_out_thread   — NMEA 0183 UDP (port 10110, default 10 Hz)
+ *   nmea_out_thread   — NMEA 0183 UDP (port 10110, default 10 Hz), plus an
+ *                       optional TCP listener serving the same bursts
  *   hirate_out_thread — binary packet UDP (port 10111, default 500 Hz)
  *   stream_out_thread — binary packets over a local AF_UNIX SOCK_STREAM
- *                       subscription socket (default 100 Hz per subscriber)
+ *                       subscription socket (default 100 Hz per subscriber),
+ *                       plus an optional TCP listener (same framed packets)
  *
- * Each thread is only started when its stream is enabled in config.
+ * Each thread is only started when its stream is enabled in config (for
+ * nmea/stream: when the UDP/AF_UNIX side or its TCP listener is enabled).
  * Pass the same out_ctx_t * as the void * argument to pthread_create.
  */
 

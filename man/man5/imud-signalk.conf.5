@@ -1,4 +1,4 @@
-.TH IMUD\-SIGNALK.CONF 5 "2026-07-15" "imud 1.5.1" "File Formats Manual"
+.TH IMUD\-SIGNALK.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
 .SH NAME
 imud\-signalk.conf \- configuration file for imud-signalk(8)
 .SH SYNOPSIS
@@ -7,7 +7,8 @@ imud\-signalk.conf \- configuration file for imud-signalk(8)
 Configuration for the
 .BR imud-signalk (8)
 bridge daemon, which reads imud's binary stream socket and emits Signal K delta
-JSON over UDP.  The bridge reads
+JSON over UDP, plus an optional TCP listener serving the same deltas
+newline-framed to connecting clients.  The bridge reads
 .B only
 this file (never
 .IR imud.conf ).
@@ -63,6 +64,22 @@ value.
 Emit
 .B environment.heave
 (set false if imud's heave estimator is off).
+.TP
+.B tcp_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Serve the same deltas (newline-framed JSON, one delta per line) on a TCP
+listener; the Signal K server consumes it as a TCP client data connection.
+Up to 8 clients; UDP keeps sending regardless.
+.TP
+.B tcp_bind_addr
+.RI ( string ,\ default:\ \(dq0.0.0.0\(dq )\ [restart]
+Listener bind address (numeric IPv4);
+.B 127.0.0.1
+keeps it host-local.
+.TP
+.B tcp_port
+.RI ( int ,\ default:\ 10113 )\ [restart]
+Listener TCP port (TCP namespace of the UDP default).
 .SH FILES
 .TP
 .I /etc/imud/imud-signalk.conf

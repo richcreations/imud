@@ -1,4 +1,6 @@
-/* libimud symbol version script — only the public imud_* API is exported. */
+/* libimud symbol version script — only the public imud_* API is exported.
+ * Additive releases append a new version node (SONAME stays libimud.so.0);
+ * existing nodes are frozen — never move a symbol between them. */
 IMUD_0 {
     global:
         imud_connect_stream;
@@ -14,3 +16,9 @@ IMUD_0 {
     local:
         *;
 };
+
+/* 1.6: TCP connect to a daemon [stream] tcp_port. */
+IMUD_1 {
+    global:
+        imud_connect_tcp;
+} IMUD_0;

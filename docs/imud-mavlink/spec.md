@@ -29,8 +29,13 @@ convention (verify on a live display).
 - **UDP** — datagrams to `udp_addr:udp_port` (default 127.0.0.1:14550,
   QGroundControl's listen port).
 - **Serial** — raw 8N1 at `serial_baud` on `serial_device`.
+- **TCP listener** — GCS clients connect to `tcp_bind_addr:tcp_port`
+  (default 0.0.0.0:5760, the de-facto MAVLink TCP port); all connected
+  clients (≤ 8) receive the same frames, and a slow client drops frames
+  rather than stalling the bridge.
 
-Both can run at once; each link keeps its own MAVLink sequence counter.
+All can run at once; each transport keeps its own MAVLink sequence counter
+(the TCP listener's clients share one — they see the identical stream).
 
 ## Wire format
 

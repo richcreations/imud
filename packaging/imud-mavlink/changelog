@@ -1,3 +1,12 @@
+imud-mavlink (1.6) unstable; urgency=medium
+
+  * New tcp_enabled/tcp_bind_addr/tcp_port keys: a TCP listener (default
+    port 5760, the de-facto MAVLink TCP port) that ground stations connect
+    to directly (QGroundControl / Mission Planner tcp://HOST:5760), running
+    alongside the UDP and serial transports.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 19 Jul 2026 12:00:00 -0700
+
 imud-mavlink (1.4) unstable; urgency=medium
 
   * Rebuilt against wire v14; no functional change.

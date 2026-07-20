@@ -1,3 +1,18 @@
+imud (1.6) unstable; urgency=medium
+
+  * TCP outputs: optional TCP listeners for NMEA ([nmea] tcp_enabled, port
+    10110 — chartplotter apps connect directly) and the framed binary
+    stream ([stream] tcp_enabled, port 10112 — remote imud-mon/bridge/
+    libimud consumers), alongside the existing UDP/AF_UNIX transports.
+  * BEHAVIOR CHANGE: built-in defaults now enable only the local AF_UNIX
+    stream socket (nmea.enabled true -> false, stream.enabled false ->
+    true). Installs relying on the old NMEA-on default must set
+    [nmea] enabled = true; the shipped imud.conf already carried this
+    posture since 1.5.
+  * The Python client gains a TCP mode (ImudClient.connect_tcp / --tcp).
+
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 19 Jul 2026 12:00:00 -0700
+
 imud (1.5.1) unstable; urgency=medium
 
   * Fix two C11 data races: the hot-reload/live

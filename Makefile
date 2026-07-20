@@ -58,6 +58,7 @@ IMUD_SRCS   = src/cal.c \
               src/fusion.c \
               src/imu.c \
               src/nmea.c \
+              src/netserv.c \
               src/output.c \
               src/packet.c \
               src/position.c \
@@ -102,7 +103,7 @@ imud-mon: src/config.o src/log.o src/mon_main.o
 # Stream access + validation come from libimud ($(LIBIMUD) in $^ is either the
 # versioned .so — linked directly, embedding its SONAME — or, on Darwin, the
 # plain object).
-imud-signalk: src/sk_delta.o src/config.o src/log.o src/signalk_main.o $(LIBIMUD)
+imud-signalk: src/sk_delta.o src/config.o src/log.o src/netserv.o src/signalk_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-mqtt bridges the AF_UNIX stream to MQTT: scalar telemetry topics plus
@@ -117,7 +118,7 @@ imud-influxdb: src/influx_line.o src/config.o src/log.o src/influx_main.o $(LIBI
 
 # imud-mavlink bridges the AF_UNIX stream to MAVLink (v1/v2) over UDP and/or
 # serial.  Pure C — hand-rolled encoder, no external dependencies beyond libimud.
-imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/mavlink_main.o $(LIBIMUD)
+imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/mavlink_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Optional bridge daemons — each has its own config file, service, and man page,
@@ -204,8 +205,12 @@ test_position: src/position.c src/wmm.c src/log.c test/test_position.c
 test_client: src/packet.c test/test_client.c test/test_client_impl.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-# End-to-end AF_UNIX subscription stream: real output.c, stubbed imu accessors
-test_stream: src/output.c src/nmea.c src/packet.c src/config.c src/log.c test/test_stream.c
+# End-to-end AF_UNIX + TCP subscription stream: real output.c, stubbed imu accessors
+test_stream: src/output.c src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+# netserv TCP broadcast server (pure sockets; macOS-buildable)
+test_netserv: src/netserv.c src/log.c test/test_netserv.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_log: src/log.c test/test_log.c
@@ -238,8 +243,8 @@ test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 test: test_fusion test_config test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
-      test_stream test_log test_signalk test_mqtt test_influxdb test_mavlink \
-      test_libimud test_prometheus
+      test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
+      test_mavlink test_libimud test_prometheus
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -254,6 +259,7 @@ test: test_fusion test_config test_nmea test_packet test_capture test_ring \
 	./test_position
 	./test_client
 	./test_stream
+	./test_netserv
 	./test_log
 	./test_signalk
 	./test_mqtt
@@ -616,7 +622,7 @@ clean:
 	      libimud.so libimud.so.* libimud.pc \
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
-	      test_log test_signalk test_mqtt test_influxdb test_mavlink test_libimud \
-      test_prometheus test_capture \
+	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
+      test_libimud test_prometheus test_capture \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture \
 	      etc/*.service imud-*.tar.gz

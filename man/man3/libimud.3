@@ -1,4 +1,4 @@
-.TH LIBIMUD 3 "2026-07-15" "imud 1.5.1" "Library Functions Manual"
+.TH LIBIMUD 3 "2026-07-19" "imud 1.6" "Library Functions Manual"
 .SH NAME
 libimud \- ABI-stable client library for the imud IMU daemon
 .SH SYNOPSIS
@@ -7,6 +7,7 @@ libimud \- ABI-stable client library for the imud IMU daemon
 .PP
 .BI "imud_t *imud_connect_stream(const char *" path );
 .BI "imud_t *imud_connect_udp(int " port ", const char *" group );
+.BI "imud_t *imud_connect_tcp(const char *" host ", int " port );
 .BI "int     imud_read(imud_t *" h ", int " timeout_ms );
 .BI "int     imud_reconnect(imud_t *" h );
 .BI "const imud_data_t *imud_data(const imud_t *" h );
@@ -43,7 +44,21 @@ receives the high-rate binary UDP stream;
 .I port
 0 uses the default 10111, and a multicast
 .I group
-(224.0.0.0/4) is joined when given. Both return NULL on error with
+(224.0.0.0/4) is joined when given.
+.B imud_connect_tcp
+(added in 1.6) connects to a daemon's
+.B [stream]
+TCP listener
+.RB ( tcp_enabled
+in
+.BR imud.conf (5))
+\(em the remote equivalent of
+.BR imud_connect_stream :
+the same lossless framed packets, over the network.
+.I host
+NULL or empty uses 127.0.0.1 (hostnames are resolved, IPv4);
+.I port
+0 uses the default 10112. All three return NULL on error with
 .I errno
 set.
 .PP

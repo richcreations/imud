@@ -5,15 +5,16 @@
  */
 
 /*
- * output.c — UDP output threads for imud (§7, §8)
+ * output.c — output threads for imud (§7, §8)
  *
  * Security posture:
  *   - inet_pton() for all address parsing — no getaddrinfo(), no DNS
- *   - SOCK_DGRAM | SOCK_CLOEXEC on every socket
+ *   - SOCK_CLOEXEC on every socket
  *   - SO_BROADCAST set (harmless for unicast; required for .255 destinations)
- *   - No bind() on output sockets — kernel assigns ephemeral source port
- *   - No recv() / recvfrom() on output sockets
- *   - sendto() failures are logged and counted but never abort the daemon
+ *   - No bind() on UDP output sockets — kernel assigns ephemeral source port
+ *   - No recv() / recvfrom() anywhere: the optional TCP listeners
+ *     (netserv.c) are broadcast-only, clients are never read from
+ *   - send failures are logged and counted but never abort the daemon
  *   - Fixed stack buffers only; no malloc in the hot path
  */
 
@@ -47,6 +48,7 @@
 #include "output.h"
 #include "nmea.h"
 #include "packet.h"
+#include "netserv.h"
 #include "log.h"
 
 /* ── Portability stubs (Linux-only features used at runtime on Pi) ───────── */
@@ -103,6 +105,12 @@ struct out_ctx {
     int                  stream_fd;
     int                  stream_clients[STREAM_MAX_CLIENTS];
     int                  stream_nclients;
+
+    /* Optional TCP listeners (1.6). Single-owner: after the threads start,
+     * nmea_tcp is touched only by nmea_out_thread and bin_tcp only by
+     * stream_out_thread — out_ctx_free's netserv_close runs post-join. */
+    netserv_t            nmea_tcp;   /* [nmea] tcp_* — sentence bursts */
+    netserv_t            bin_tcp;    /* [stream] tcp_* — framed packets */
 
     /* Send-error counts (stats only; best-effort, no lock). */
     uint64_t             nmea_errors;
@@ -224,6 +232,9 @@ void *nmea_out_thread(void *arg)
             : 100000000L;
         ts_add_ns(&next, period_ns);
 
+        /* Accept TCP subscribers even while settling (no-op if disabled). */
+        netserv_accept(&ctx->nmea_tcp);
+
         if (!imu_ctx_is_settled(ctx->imu)) continue;
 
         imu_get_state(ctx->imu, &state, NULL, NULL, NULL);
@@ -231,14 +242,19 @@ void *nmea_out_thread(void *arg)
         int n = nmea_encode(buf, sizeof(buf), &state);
         if (n <= 0) continue;
 
-        ssize_t sent = sendto(ctx->nmea_fd, buf, (size_t)n, 0,
-                              (struct sockaddr *)&ctx->nmea_dest,
-                              sizeof(ctx->nmea_dest));
-        if (sent < 0) {
-            ctx->nmea_errors++;
-            /* log.c's repeat suppression handles flooding */
-            LOG_W("[nmea_out] sendto: %s\n", strerror(errno));
+        if (ctx->nmea_fd >= 0) {
+            ssize_t sent = sendto(ctx->nmea_fd, buf, (size_t)n, 0,
+                                  (struct sockaddr *)&ctx->nmea_dest,
+                                  sizeof(ctx->nmea_dest));
+            if (sent < 0) {
+                ctx->nmea_errors++;
+                /* log.c's repeat suppression handles flooding */
+                LOG_W("[nmea_out] sendto: %s\n", strerror(errno));
+            }
         }
+
+        /* Same sentence burst to connected TCP clients (plotters). */
+        netserv_broadcast(&ctx->nmea_tcp, buf, (size_t)n);
     }
 
     return NULL;
@@ -340,8 +356,9 @@ void *stream_out_thread(void *arg)
             : 10000000L;
         ts_add_ns(&next, period_ns);
 
-        /* Accept pending subscribers (listen fd is non-blocking). */
-        for (;;) {
+        /* Accept pending subscribers (listen fds are non-blocking).
+         * stream_fd is -1 when only the TCP listener is enabled. */
+        if (ctx->stream_fd >= 0) for (;;) {
             int c = accept(ctx->stream_fd, NULL, NULL);
             if (c < 0) break;
             APPLY_CLOEXEC(c);
@@ -356,9 +373,11 @@ void *stream_out_thread(void *arg)
                         ctx->stream_nclients, STREAM_MAX_CLIENTS);
             }
         }
+        netserv_accept(&ctx->bin_tcp);
 
         if (!imu_ctx_is_settled(ctx->imu)) continue;
-        if (ctx->stream_nclients == 0)     continue;
+        if (ctx->stream_nclients == 0 &&
+            netserv_nclients(&ctx->bin_tcp) == 0) continue;
 
         imu_sample_t raw_imu;
         imu_get_state(ctx->imu, &state, &mag, &imu, &raw_imu);
@@ -380,15 +399,19 @@ void *stream_out_thread(void *arg)
             LOG_I("[stream_out] subscriber disconnected (%d/%d)\n",
                     ctx->stream_nclients, STREAM_MAX_CLIENTS);
         }
+
+        /* Same framed packet to TCP subscribers (same slow-client policy). */
+        netserv_broadcast(&ctx->bin_tcp, &pkt, sizeof(pkt));
     }
 
     /* Final shutdown packet to subscribers is sent HERE, by the thread that
-     * owns the client array — never from out_ctx_send_shutdown on the main
-     * thread, which would traverse stream_clients[] concurrently with this
-     * thread's accept/disconnect mutations. On loop exit the daemon is
-     * stopping (fusion is still alive; it is joined after the output
-     * threads), so imu_get_state is valid. */
-    if (ctx->stream_nclients > 0) {
+     * owns the client arrays (AF_UNIX and TCP both) — never from
+     * out_ctx_send_shutdown on the main thread, which would traverse
+     * stream_clients[]/bin_tcp concurrently with this thread's
+     * accept/disconnect mutations. On loop exit the daemon is stopping
+     * (fusion is still alive; it is joined after the output threads), so
+     * imu_get_state is valid. */
+    if (ctx->stream_nclients > 0 || netserv_nclients(&ctx->bin_tcp) > 0) {
         fused_state_t state;
         mag_sample_t  mag;
         imu_sample_t  imu_s, raw_imu_s;
@@ -399,11 +422,13 @@ void *stream_out_thread(void *arg)
                      ctx->cfg->highrate_coord_frame);
         for (int i = 0; i < ctx->stream_nclients; i++)
             send(ctx->stream_clients[i], &pkt, sizeof(pkt), MSG_NOSIGNAL);
+        netserv_broadcast(&ctx->bin_tcp, &pkt, sizeof(pkt));
     }
 
     for (int i = 0; i < ctx->stream_nclients; i++)
         close(ctx->stream_clients[i]);
     ctx->stream_nclients = 0;
+    netserv_close(&ctx->bin_tcp);
     return NULL;
 }
 
@@ -472,6 +497,8 @@ int out_ctx_open(out_ctx_t **ctx_out,
     ctx->nmea_fd   = -1;
     ctx->hirate_fd = -1;
     ctx->stream_fd = -1;
+    netserv_init(&ctx->nmea_tcp);
+    netserv_init(&ctx->bin_tcp);
 
     if (cfg->nmea_enabled) {
         ctx->nmea_fd = open_udp_out(cfg->nmea_dest_addr, cfg->nmea_dest_port,
@@ -480,6 +507,14 @@ int out_ctx_open(out_ctx_t **ctx_out,
         LOG_I("[output] NMEA UDP → %s:%d (%.0f Hz)\n",
                 cfg->nmea_dest_addr, cfg->nmea_dest_port,
                 (double)cfg->nmea_rate_hz);
+    }
+
+    if (cfg->nmea_tcp_enabled) {
+        if (netserv_open(&ctx->nmea_tcp, cfg->nmea_tcp_bind_addr,
+                         cfg->nmea_tcp_port, "nmea_tcp") < 0) goto fail;
+        LOG_I("[output] NMEA TCP listener %s:%d (%.0f Hz, max %d clients)\n",
+                cfg->nmea_tcp_bind_addr, ctx->nmea_tcp.port,
+                (double)cfg->nmea_rate_hz, NETSRV_MAX_CLIENTS);
     }
 
     if (cfg->highrate_enabled) {
@@ -501,6 +536,14 @@ int out_ctx_open(out_ctx_t **ctx_out,
                 cfg->stream_socket, cfg->stream_rate_hz, STREAM_MAX_CLIENTS);
     }
 
+    if (cfg->stream_tcp_enabled) {
+        if (netserv_open(&ctx->bin_tcp, cfg->stream_tcp_bind_addr,
+                         cfg->stream_tcp_port, "stream_tcp") < 0) goto fail;
+        LOG_I("[output] stream TCP listener %s:%d (%d Hz, max %d clients)\n",
+                cfg->stream_tcp_bind_addr, ctx->bin_tcp.port,
+                cfg->stream_rate_hz, NETSRV_MAX_CLIENTS);
+    }
+
     *ctx_out = ctx;
     return 0;
 
@@ -508,6 +551,8 @@ fail:
     if (ctx->nmea_fd   >= 0) close(ctx->nmea_fd);
     if (ctx->hirate_fd >= 0) close(ctx->hirate_fd);
     if (ctx->stream_fd >= 0) { close(ctx->stream_fd); unlink(cfg->stream_socket); }
+    netserv_close(&ctx->nmea_tcp);
+    netserv_close(&ctx->bin_tcp);
     free(ctx);
     return -1;
 }
@@ -562,5 +607,10 @@ void out_ctx_free(out_ctx_t *ctx)
         close(ctx->stream_fd);
         unlink(ctx->cfg->stream_socket);
     }
+    /* Runs after the output threads have joined; bin_tcp is usually already
+     * closed by stream_out_thread on exit (netserv_close is idempotent).
+     * This also covers listeners whose thread never started. */
+    netserv_close(&ctx->nmea_tcp);
+    netserv_close(&ctx->bin_tcp);
     free(ctx);
 }

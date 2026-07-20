@@ -1,3 +1,12 @@
+imud-signalk (1.6) unstable; urgency=medium
+
+  * New tcp_enabled/tcp_bind_addr/tcp_port keys: serve the same deltas
+    newline-framed on a TCP listener (default port 10113) so a Signal K
+    server can consume them as a TCP client data connection; UDP output is
+    unchanged and keeps sending alongside.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 19 Jul 2026 12:00:00 -0700
+
 imud-signalk (1.4) unstable; urgency=medium
 
   * Rebuilt against wire v14; no functional change (the new sea-state and

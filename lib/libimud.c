@@ -27,6 +27,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -36,16 +37,19 @@
 
 #define IMUD_DEFAULT_STREAM_SOCK "/run/imud/imud-stream.sock"
 #define IMUD_DEFAULT_UDP_PORT    10111
+#define IMUD_DEFAULT_TCP_PORT    10112
+#define IMUD_DEFAULT_TCP_HOST    "127.0.0.1"
 
 /* ── Handle ──────────────────────────────────────────────────────────────── */
 
-enum imud_kind { IMUD_KIND_STREAM, IMUD_KIND_UDP };
+enum imud_kind { IMUD_KIND_STREAM, IMUD_KIND_UDP, IMUD_KIND_TCP };
 
 struct imud {
     enum imud_kind kind;
     int            fd;                     /* -1 when disconnected */
     /* endpoint (kept for imud_reconnect) */
-    char           path[108];              /* AF_UNIX path (sun_path-sized) */
+    char           path[108];              /* AF_UNIX path or TCP host
+                                            * (sun_path-sized) */
     int            port;
     char           group[64];              /* multicast group or "" */
     /* stream reassembly: a frame may span multiple reads */
@@ -202,12 +206,43 @@ static int dial_udp(int port, const char *group)
     return fd;
 }
 
+static int dial_tcp(const char *host, int port)
+{
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family   = AF_INET;      /* the daemon's listener is IPv4 */
+    hints.ai_socktype = SOCK_STREAM;
+    int gai = getaddrinfo(host, portstr, &hints, &res);
+    if (gai != 0 || !res) {
+        errno = (gai == EAI_SYSTEM) ? errno : EHOSTUNREACH;
+        return -1;
+    }
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, 0);
+        if (fd < 0)
+            continue;
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
+            break;
+        int e = errno;
+        close(fd);
+        fd = -1;
+        errno = e;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
 static int dial(imud_t *h)
 {
     h->rx_got = 0;
-    h->fd = (h->kind == IMUD_KIND_STREAM)
-                ? dial_stream(h->path)
-                : dial_udp(h->port, h->group);
+    switch (h->kind) {
+    case IMUD_KIND_STREAM: h->fd = dial_stream(h->path);         break;
+    case IMUD_KIND_TCP:    h->fd = dial_tcp(h->path, h->port);   break;
+    default:               h->fd = dial_udp(h->port, h->group);  break;
+    }
     return h->fd < 0 ? -1 : 0;
 }
 
@@ -226,6 +261,32 @@ imud_t *imud_connect_stream(const char *path)
     int pn = snprintf(h->path, sizeof h->path, "%s",
                       (path && path[0]) ? path : IMUD_DEFAULT_STREAM_SOCK);
     if (pn < 0 || (size_t)pn >= sizeof h->path) {
+        free(h);
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    if (dial(h) < 0) {
+        int e = errno;
+        free(h);
+        errno = e;
+        return NULL;
+    }
+    return h;
+}
+
+imud_t *imud_connect_tcp(const char *host, int port)
+{
+    imud_t *h = calloc(1, sizeof *h);
+    if (!h)
+        return NULL;
+    h->kind = IMUD_KIND_TCP;
+    h->data.heading_true_deg = -1.0f;
+    h->port = port > 0 ? port : IMUD_DEFAULT_TCP_PORT;
+    /* Reject an over-long host rather than silently truncating it and then
+     * connecting somewhere the caller never asked for. */
+    int hn = snprintf(h->path, sizeof h->path, "%s",
+                      (host && host[0]) ? host : IMUD_DEFAULT_TCP_HOST);
+    if (hn < 0 || (size_t)hn >= sizeof h->path) {
         free(h);
         errno = ENAMETOOLONG;
         return NULL;

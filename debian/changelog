@@ -1,3 +1,14 @@
+imud (1.6-1) unstable; urgency=medium
+
+  * TCP outputs for NMEA, the framed binary stream, Signal K, and MAVLink
+    (per-output tcp_enabled/tcp_bind_addr/tcp_port keys); libimud gains
+    imud_connect_tcp (additive, SONAME unchanged).
+  * BEHAVIOR CHANGE: built-in defaults now enable only the local AF_UNIX
+    stream socket (NMEA UDP default flipped to off); set [nmea]
+    enabled = true to restore the old posture.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 19 Jul 2026 12:00:00 -0700
+
 imud (1.5.1-1) unstable; urgency=medium
 
   * Fix C11 data races in config hot-reload and stream shutdown; validate

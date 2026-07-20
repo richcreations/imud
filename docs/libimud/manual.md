@@ -4,16 +4,17 @@ Install, build against, and use the imud client libraries. For the API and ABI
 reference see [spec.md](spec.md); for the wire format itself see `spec.md §8`
 in the source root.
 
-Two supported ways to consume imud's binary telemetry:
+Three supported ways to consume imud's binary telemetry:
 
 | Library | File(s) | Pick it when |
 | --- | --- | --- |
 | **libimud** (shared library) | `imud.h` + `libimud.so`, `pkg-config libimud` | The C client. **ABI-stable**: your binary survives imud upgrades without recompiling. |
 | **Python** | `imud_client.py` | Python 3.8+, standard library only (wire-pinned: revalidate per wire revision). |
+| **Arduino/ESP32** | [imud-arduino](https://github.com/richcreations/imud-arduino) (separate repository) | Microcontroller sketches: header-only, TCP (`:10112`) or UDP (`:10111`) through any Arduino `Client`/`UDP` transport (wire-pinned). |
 
-(A third, `imud_client.h`, is **deprecated** — see the last section.)
+(One more, `imud_client.h`, is **deprecated** — see the last section.)
 
-Both validate the CRC32 on every packet and silently discard anything
+All three validate the CRC32 on every packet and silently discard anything
 malformed. `make test` cross-checks every packet definition against the
 daemon's encoder on each run.
 
@@ -52,7 +53,9 @@ available, 1 on timeout, and -1 when the connection is lost:
 
 int main(void) {
     imud_t *h = imud_connect_stream(NULL);   /* local socket (recommended) */
-    /* or: imud_connect_udp(10111, "239.255.0.1") for the UDP stream */
+    /* or: imud_connect_udp(10111, "239.255.0.1") for the UDP stream,
+     * or: imud_connect_tcp("boat.local", 10112) for a remote daemon's
+     *     [stream] TCP listener (1.6) */
     if (!h) { perror("imud_connect_stream"); return 1; }
 
     while (imud_read(h, 1000) >= 0) {        /* 0 = data, 1 = timeout */
@@ -65,7 +68,10 @@ int main(void) {
 ```
 
 Prefer `imud_connect_stream()` on the same host: it is the lossless AF_UNIX
-path. `imud_connect_udp()` is for remote consumers of the high-rate stream.
+path. For remote consumers, `imud_connect_tcp()` (added in 1.6) gives the
+same lossless framed stream over the network when the daemon's
+`[stream] tcp_enabled = true`; `imud_connect_udp()` receives the fire-and-
+forget high-rate multicast/broadcast stream.
 
 After `imud_read()` returns -1 the connection is gone — call
 `imud_reconnect()` (safe to retry with backoff) or `imud_free()`.
@@ -98,6 +104,16 @@ with ImudClient(port=10111, addr="239.255.0.1") as client:
         ...
 ```
 
+TCP — connect to a daemon's `[stream]` TCP listener (`tcp_enabled = true`,
+default port 10112) for the lossless framed stream over the network:
+
+```python
+with ImudClient.connect_tcp("boat.local") as client:
+    for pkt in client:
+        ...
+# equivalently: ImudClient(tcp=("boat.local", 10112))
+```
+
 With a timeout (returns `None` when no packet arrives within `timeout`
 seconds):
 
@@ -113,6 +129,7 @@ As a command-line monitor:
 ```sh
 python3 imud_client.py --port 10111
 python3 imud_client.py --port 10111 --addr 239.255.0.1
+python3 imud_client.py --tcp boat.local:10112
 ```
 
 The Python client is **wire-pinned** — revalidate it against each wire
