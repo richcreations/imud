@@ -57,6 +57,7 @@ IMUD_SRCS   = src/cal.c \
               src/ring.c \
               src/fusion.c \
               src/imu.c \
+              src/imu_math.c \
               src/nmea.c \
               src/netserv.c \
               src/output.c \
@@ -78,7 +79,7 @@ CAL_SRCS    = src/cal.c \
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
 CAL_OBJS    = $(CAL_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test check coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-status imud-mon
 
@@ -240,11 +241,32 @@ test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# Driver registry + ops-table sanity for every registered chip (no hardware).
+# Links every driver: sim.c pulls in capture.c for its .imucap playback path,
+# and the drivers reference log_emit (LOG_E) on their error branches.
+# Linux-only (the drivers include <linux/i2c.h>), like the rest of `test`.
+test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c test/test_drivers_registry.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+# imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
+# calibration application — the helpers factored into src/imu_math.c.  Pure
+# (no <linux/*> or CLOCK_MONOTONIC), so it also builds on the macOS dev box.
+test_imu_math: src/imu_math.c test/test_imu_math.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+# Per-driver register decode/encode over a mock I2C bus (test/i2c_mock.c wraps
+# ioctl with --wrap — GNU ld only).  Reference coverage: the two hardware-
+# validated drivers (ism330dhcx IMU, mmc5983ma mag).
+test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c src/log.c \
+              test/i2c_mock.c test/test_drivers.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=ioctl -o $@ $^ -lm
+
 test: test_fusion test_config test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
-      test_mavlink test_libimud test_prometheus
+      test_mavlink test_libimud test_prometheus \
+      test_drivers_registry test_imu_math test_drivers
 	./test_fusion
 	./test_config
 	./test_nmea
@@ -267,6 +289,9 @@ test: test_fusion test_config test_nmea test_packet test_capture test_ring \
 	./test_prometheus
 	./test_mavlink
 	./test_libimud
+	./test_drivers_registry
+	./test_imu_math
+	./test_drivers
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -280,6 +305,37 @@ dist:
 
 # GNU-convention alias
 check: test
+
+# ── Coverage ──────────────────────────────────────────────────────────────────
+# Rebuild and run the whole host test suite instrumented with gcov, then
+# summarise with lcov.  A measuring tool for finding residual line/branch gaps
+# in the already-tested modules — not part of `test` or CI's required jobs.
+# Linux only (like `test`: the daemon-linking tests need <linux/*> + gpiod).
+#
+# Caveat: the per-test targets compile each source directly, so a module built
+# into several tests (log.c, config.c, packet.c) gets a fresh .gcno per build
+# and lcov skips the stamp-mismatched runs — hence --ignore-errors.  Every
+# single-consumer module (all drivers, fusion, imu_math, position, output, the
+# bridge encoders, …) reports accurately, which is where the gaps were.
+coverage:
+	$(MAKE) clean
+	$(MAKE) test CFLAGS="-O0 -g --coverage" LDFLAGS="--coverage"
+	@if command -v lcov >/dev/null 2>&1; then \
+	    lcov --capture --directory . --output-file coverage.info \
+	         --ignore-errors mismatch,source,graph,empty,unused \
+	         --exclude '*/test/*' --exclude '*/fuzz/*' --exclude '/usr/*'; \
+	    lcov --list coverage.info; \
+	    if command -v genhtml >/dev/null 2>&1; then \
+	        genhtml coverage.info --output-directory coverage-html \
+	            --ignore-errors source >/dev/null 2>&1 && \
+	        echo "HTML report: coverage-html/index.html"; \
+	    fi; \
+	else \
+	    echo "lcov not installed; raw gcov summary for src/:"; \
+	    gcov -n -o . src/*.c src/drivers/*.c 2>/dev/null | \
+	        grep -E "File '(src|lib)/|Lines executed" || true; \
+	    echo "(install lcov for an aggregated, HTML report)"; \
+	fi
 
 # ── Install ───────────────────────────────────────────────────────────────────
 # Packagers: pass PREFIX=/usr SVCDIR=/usr/lib/systemd/system DESTDIR=<stage>.
@@ -623,6 +679,9 @@ clean:
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
-      test_libimud test_prometheus test_capture \
+      test_libimud test_prometheus test_capture test_concurrency \
+	      test_drivers_registry test_imu_math test_drivers \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture \
+	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
+	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info coverage-html \
 	      etc/*.service imud-*.tar.gz
