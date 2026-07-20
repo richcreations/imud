@@ -30,10 +30,6 @@ static int     g_fifo_tail[NADDR];   /* next free slot */
 static int     g_fifo_reg[NADDR];    /* declared FIFO register, or -1 */
 static int     g_fail_next;          /* one-shot ioctl failure */
 
-/* The real ioctl, provided by the linker's --wrap machinery.  Unused here (the
- * mock never delegates to the kernel) but declared so the symbol resolves. */
-int __real_ioctl(int fd, unsigned long request, ...);
-
 /* ── Public harness API ──────────────────────────────────────────────────── */
 
 void i2cmock_reset(void)
@@ -91,14 +87,9 @@ static uint8_t fifo_pop(int a)
 
 /* ── Wrapped ioctl ───────────────────────────────────────────────────────── */
 
-int __wrap_ioctl(int fd, unsigned long request, ...)
+/* Shared dispatch for the wrappers below. */
+static int mock_dispatch(unsigned long request, void *arg)
 {
-    va_list ap;
-    va_start(ap, request);
-    void *arg = va_arg(ap, void *);
-    va_end(ap);
-    (void)fd;
-
     if (g_fail_next) {
         g_fail_next = 0;
         errno = EIO;
@@ -143,4 +134,30 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
     }
 
     return 0;
+}
+
+/* The drivers call ioctl(fd, I2C_RDWR, &xfer).  On a 32-bit glibc built with
+ * -D_TIME_BITS=64 (Debian armhf), <sys/ioctl.h> redirects every ioctl() call to
+ * the symbol __ioctl_time64, so --wrap=ioctl alone would miss them and the real
+ * syscall would run against the test's dummy fd (EBADF).  Wrap both symbols so
+ * the mock intercepts on every architecture; the time64 wrapper is dead code on
+ * 64-bit builds, where nothing references __ioctl_time64. */
+int __wrap_ioctl(int fd, unsigned long request, ...)
+{
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    (void)fd;
+    return mock_dispatch(request, arg);
+}
+
+int __wrap___ioctl_time64(int fd, unsigned long request, ...)
+{
+    va_list ap;
+    va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    (void)fd;
+    return mock_dispatch(request, arg);
 }
