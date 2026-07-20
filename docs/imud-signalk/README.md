@@ -13,7 +13,8 @@ the rough edges of NMEA. It holds no hardware, runs as its own service, and
 reconnects on its own if imud restarts. Deltas go out over UDP, a TCP
 listener the server connects to, or both.
 
-Once imud's stream output is enabled, turn it on with one command:
+Once imud's stream output is enabled and you've turned on a bridge output
+(`udp_enabled` and/or `tcp_enabled` in the config), start it with one command:
 
 ```sh
 sudo systemctl enable --now imud-signalk

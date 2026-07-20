@@ -1,4 +1,4 @@
-.TH IMUD\-INFLUXDB 8 "2026-07-19" "imud 1.6" "System Manager's Manual"
+.TH IMUD\-INFLUXDB 8 "2026-07-20" "imud 1.6.1" "System Manager's Manual"
 .SH NAME
 imud\-influxdb \- bridge imud's binary stream to InfluxDB line protocol
 .SH SYNOPSIS
@@ -122,10 +122,13 @@ imud-influxdb --config /etc/imud/imud-influxdb.conf
 .PP
 Enable as a service (after enabling imud's
 .B [stream]
-output and
-.B enabled
-in
-.IR imud-influxdb.conf ):
+output and at least one bridge output \(em
+.B udp_enabled
+and/or
+.B http_enabled
+\(em in
+.IR imud-influxdb.conf ;
+the daemon itself is enabled by default):
 .PP
 .RS 4
 .EX

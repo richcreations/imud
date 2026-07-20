@@ -246,6 +246,7 @@ int main(int argc, char **argv)
 
     if (!cfg.mav_enabled) {
         LOG_I("[mavlink] disabled in config ([imud-mavlink] enabled = false) — exiting\n");
+        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
         return 0;
     }
 

@@ -1,4 +1,4 @@
-.TH IMUD\-MQTT.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
+.TH IMUD\-MQTT.CONF 5 "2026-07-20" "imud 1.6.1" "File Formats Manual"
 .SH NAME
 imud\-mqtt.conf \- configuration file for imud-mqtt(8)
 .SH SYNOPSIS
@@ -7,7 +7,13 @@ imud\-mqtt.conf \- configuration file for imud-mqtt(8)
 Configuration for the
 .BR imud-mqtt (8)
 bridge daemon, which reads imud's binary stream socket and publishes scalar
-telemetry topics (plus Home Assistant discovery) to an MQTT broker.  The bridge
+telemetry topics (plus Home Assistant discovery) to an MQTT broker.  The daemon
+runs whenever
+.B enabled
+is true and stays healthy under systemd; it does not connect to a broker or
+publish until
+.B broker_enabled
+is set (off by default).  The bridge
 reads
 .B only
 this file (never
@@ -32,8 +38,16 @@ take effect on the next service start.
 .SH KEYS
 .TP
 .B enabled
+.RI ( bool ,\ default:\ true )\ [restart]
+Run the MQTT bridge daemon.  With it true and
+.B broker_enabled
+false the daemon runs but publishes nothing; set it false to not run the bridge
+at all (it exits cleanly, so systemd does not restart it).
+.TP
+.B broker_enabled
 .RI ( bool ,\ default:\ false )\ [restart]
-Enable the MQTT bridge.
+Connect to the broker and publish (the bridge's only output).  This keeps a
+fresh install from repeatedly dialing a broker that is not configured yet.
 .TP
 .B socket
 .RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]

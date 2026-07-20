@@ -11,7 +11,7 @@ It's for anyone who already runs an MQTT broker: home-automation setups, boat or
 robot telemetry, and dashboards. It holds no hardware, runs as its own service,
 and reconnects to both imud and the broker on its own.
 
-Once imud's stream is on and the broker details are set:
+Once imud's stream is on and `broker_enabled = true` with the broker details set:
 
 ```sh
 sudo systemctl enable --now imud-mqtt

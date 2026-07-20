@@ -1,3 +1,22 @@
+imud (1.6.1-1) unstable; urgency=medium
+
+  * Bridges: separate the daemon-level `enabled` from per-output enables.
+    Stock configs now ship the daemon enabled but every output off
+    (imud-signalk udp_enabled; imud-influxdb udp_enabled/http_enabled;
+    imud-mqtt broker_enabled; imud-prometheus http_enabled; imud-mavlink
+    unchanged). The daemon runs and stays healthy under systemd until an
+    output is turned on.
+  * BEHAVIOR CHANGE: imud-signalk UDP output is now gated by udp_enabled
+    (previously always on when the bridge ran); add udp_enabled = true to
+    existing configs to keep sending UDP.
+  * imud-influxdb: `transport = "udp"|"http"` is deprecated in favour of
+    udp_enabled/http_enabled (both may run at once); the old key is still
+    honoured with a warning.
+  * Fix: a bridge with enabled = false no longer crash-loops under systemd
+    (Type=notify) — it signals readiness before exiting cleanly.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud (1.6-1) unstable; urgency=medium
 
   * TCP outputs for NMEA, the framed binary stream, Signal K, and MAVLink

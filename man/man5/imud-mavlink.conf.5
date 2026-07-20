@@ -1,4 +1,4 @@
-.TH IMUD\-MAVLINK.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
+.TH IMUD\-MAVLINK.CONF 5 "2026-07-20" "imud 1.6.1" "File Formats Manual"
 .SH NAME
 imud\-mavlink.conf \- configuration file for imud-mavlink(8)
 .SH SYNOPSIS
@@ -33,8 +33,10 @@ take effect on the next service start.
 .SH KEYS
 .TP
 .B enabled
-.RI ( bool ,\ default:\ false )\ [restart]
-Enable the MAVLink bridge.
+.RI ( bool ,\ default:\ true )\ [restart]
+Run the MAVLink bridge daemon.  With it true and every transport off the daemon
+runs but sends nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).
 .TP
 .B socket
 .RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]

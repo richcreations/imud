@@ -161,6 +161,7 @@ int main(int argc, char **argv)
 
     if (!cfg.sk_enabled) {
         LOG_I("[signalk] disabled in config ([imud-signalk] enabled = false) — exiting\n");
+        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
         return 0;
     }
 
@@ -171,23 +172,32 @@ int main(int argc, char **argv)
     sigaction(SIGHUP,  &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
+    /* UDP delta output ([restart]). */
     struct sockaddr_in dest;
-    int udp_fd = open_udp_dest(cfg.sk_dest_addr, cfg.sk_dest_port, &dest);
-    if (udp_fd < 0) return 1;
+    int udp_fd = -1;
+    if (cfg.sk_udp_enabled) {
+        udp_fd = open_udp_dest(cfg.sk_dest_addr, cfg.sk_dest_port, &dest);
+        if (udp_fd < 0) return 1;
+    }
 
     /* Optional TCP listener — same deltas, newline-framed ([restart]). */
     netserv_t tcp;
     netserv_init(&tcp);
     if (cfg.sk_tcp_enabled) {
         if (netserv_open(&tcp, cfg.sk_tcp_bind_addr, cfg.sk_tcp_port,
-                         "signalk_tcp") < 0) { close(udp_fd); return 1; }
+                         "signalk_tcp") < 0) { if (udp_fd >= 0) close(udp_fd); return 1; }
         LOG_I("[signalk] TCP listener %s:%d (max %d clients)\n",
               cfg.sk_tcp_bind_addr, tcp.port, NETSRV_MAX_CLIENTS);
     }
 
-    LOG_I("[signalk] bridge → %s:%d @ %d Hz (source '%s'), reading %s\n",
-          cfg.sk_dest_addr, cfg.sk_dest_port, cfg.sk_rate_hz,
-          cfg.sk_source_label, cfg.stream_socket);
+    if (!cfg.sk_udp_enabled && !cfg.sk_tcp_enabled)
+        LOG_W("[signalk] no output enabled (udp_enabled/tcp_enabled both false) "
+              "— nothing will be sent\n");
+
+    LOG_I("[signalk] bridge → %s:%d @ %d Hz (source '%s')%s%s, reading %s\n",
+          cfg.sk_dest_addr, cfg.sk_dest_port, cfg.sk_rate_hz, cfg.sk_source_label,
+          cfg.sk_udp_enabled ? " +udp" : "", cfg.sk_tcp_enabled ? " +tcp" : "",
+          cfg.stream_socket);
     sd_notify_msg("READY=1");
 
     long period_ns = (cfg.sk_rate_hz > 0) ? 1000000000L / cfg.sk_rate_hz
@@ -216,12 +226,15 @@ int main(int argc, char **argv)
                 emit_heave = nc.publish_heave;
                 period_ns  = (nc.sk_rate_hz > 0) ? 1000000000L / nc.sk_rate_hz
                                                  : 100000000L;
-                if (strcmp(nc.sk_dest_addr, cfg.sk_dest_addr) != 0 ||
-                    nc.sk_dest_port != cfg.sk_dest_port) {
+                if (cfg.sk_udp_enabled &&
+                    (strcmp(nc.sk_dest_addr, cfg.sk_dest_addr) != 0 ||
+                     nc.sk_dest_port != cfg.sk_dest_port)) {
                     close(udp_fd);
                     udp_fd = open_udp_dest(nc.sk_dest_addr, nc.sk_dest_port, &dest);
                     if (udp_fd < 0) { LOG_E("[signalk] reload: bad dest — exiting\n"); break; }
                 }
+                if (nc.sk_udp_enabled != cfg.sk_udp_enabled)
+                    LOG_W("[signalk] udp_enabled change needs a restart\n");
                 if (nc.sk_tcp_enabled != cfg.sk_tcp_enabled ||
                     nc.sk_tcp_port != cfg.sk_tcp_port ||
                     strcmp(nc.sk_tcp_bind_addr, cfg.sk_tcp_bind_addr) != 0)
@@ -275,7 +288,8 @@ int main(int argc, char **argv)
                 int n = sk_build_delta(delta, sizeof delta, &latest,
                                        cfg.sk_source_label, emit_heave);
                 if (n > 0) {
-                    if (sendto(udp_fd, delta, (size_t)n, 0,
+                    if (udp_fd >= 0 &&
+                        sendto(udp_fd, delta, (size_t)n, 0,
                                (struct sockaddr *)&dest, sizeof dest) < 0)
                         LOG_W("[signalk] sendto: %s\n", strerror(errno));
                     /* Same delta to TCP clients, newline-framed (one JSON
@@ -300,6 +314,6 @@ int main(int argc, char **argv)
     LOG_I("[signalk] shutting down\n");
     imud_free(stream);
     netserv_close(&tcp);
-    close(udp_fd);
+    if (udp_fd >= 0) close(udp_fd);
     return 0;
 }

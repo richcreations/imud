@@ -25,8 +25,9 @@ sudo make install-mqtt                # binary + service + /etc/imud/imud-mqtt.c
 ## Setup
 
 1. In `imud.conf`, set `[stream] enabled = true` (the bridge reads that socket).
-2. In `/etc/imud/imud-mqtt.conf`, set `enabled = true` and the broker
-   `broker_addr`/`broker_port` (and `username`/`password`/`tls` if needed).
+2. In `/etc/imud/imud-mqtt.conf` the daemon is enabled by default; set
+   `broker_enabled = true` and the broker `broker_addr`/`broker_port` (and
+   `username`/`password`/`tls` if needed).
 3. Enable the service:
    ```sh
    sudo systemctl enable --now imud-mqtt
@@ -44,12 +45,16 @@ its sensors appear automatically and go *unavailable* when the bridge stops.
 ## Configuration
 
 The bridge reads its own file, `/etc/imud/imud-mqtt.conf` (the `[imud-mqtt]`
-section). `SIGHUP` reloads `rate_hz`, `qos`, `retain`, `units`, `publish_heave`,
-and the log level live; broker/client/topic changes need a restart.
+section). The daemon runs whenever `enabled = true` (the default) and stays
+healthy under systemd; it does not connect to a broker or publish until
+`broker_enabled = true` (off by default). `SIGHUP` reloads `rate_hz`, `qos`,
+`retain`, `units`, `publish_heave`, and the log level live; `broker_enabled` and
+broker/client/topic changes need a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the MQTT bridge. |
+| `enabled` | bool | `true` | Run the bridge daemon. With it true and `broker_enabled` false the daemon runs but publishes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
+| `broker_enabled` | bool | `false` | Connect to the broker and publish (the bridge's only output). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `broker_addr` | string | `"127.0.0.1"` | Broker host (name or IP). |
 | `broker_port` | int | `1883` | Broker TCP port. |

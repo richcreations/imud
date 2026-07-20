@@ -185,6 +185,7 @@ int main(int argc, char **argv)
 
     if (!cfg.mqtt_enabled) {
         LOG_I("[mqtt] disabled in config ([imud-mqtt] enabled = false) — exiting\n");
+        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
         return 0;
     }
 
@@ -212,40 +213,45 @@ int main(int argc, char **argv)
     ctx.emit_heave   = emit_heave;
     ctx.qos          = cfg.mqtt_qos;
 
-    /* ── libmosquitto setup ─────────────────────────────────────────────── */
-    mosquitto_lib_init();
-    struct mosquitto *mosq = mosquitto_new(cfg.mqtt_client_id, true, &ctx);
-    if (!mosq) {
-        LOG_E("[mqtt] mosquitto_new failed: %s\n", strerror(errno));
-        mosquitto_lib_cleanup();
-        return 1;
-    }
-    if (cfg.mqtt_username[0])
-        mosquitto_username_pw_set(mosq, cfg.mqtt_username,
-                                  cfg.mqtt_password[0] ? cfg.mqtt_password : NULL);
-    if (cfg.mqtt_tls) {
-        const char *ca     = cfg.mqtt_tls_cafile[0] ? cfg.mqtt_tls_cafile : NULL;
-        const char *capath = ca ? NULL : "/etc/ssl/certs";   /* system store */
-        if (mosquitto_tls_set(mosq, ca, capath, NULL, NULL, NULL) != MOSQ_ERR_SUCCESS)
-            LOG_W("[mqtt] tls_set failed — continuing without TLS verification\n");
-    }
-    /* Last will: if the bridge dies, the broker marks us offline (retained). */
-    mosquitto_will_set(mosq, ctx.avail_topic, 7, "offline", cfg.mqtt_qos, true);
-    mosquitto_connect_callback_set(mosq, on_connect);
-    mosquitto_disconnect_callback_set(mosq, on_disconnect);
-    mosquitto_reconnect_delay_set(mosq, 2, 30, true);
+    /* ── libmosquitto setup (only when the broker output is enabled) ─────── */
+    struct mosquitto *mosq = NULL;
+    if (cfg.mqtt_broker_enabled) {
+        mosquitto_lib_init();
+        mosq = mosquitto_new(cfg.mqtt_client_id, true, &ctx);
+        if (!mosq) {
+            LOG_E("[mqtt] mosquitto_new failed: %s\n", strerror(errno));
+            mosquitto_lib_cleanup();
+            return 1;
+        }
+        if (cfg.mqtt_username[0])
+            mosquitto_username_pw_set(mosq, cfg.mqtt_username,
+                                      cfg.mqtt_password[0] ? cfg.mqtt_password : NULL);
+        if (cfg.mqtt_tls) {
+            const char *ca     = cfg.mqtt_tls_cafile[0] ? cfg.mqtt_tls_cafile : NULL;
+            const char *capath = ca ? NULL : "/etc/ssl/certs";   /* system store */
+            if (mosquitto_tls_set(mosq, ca, capath, NULL, NULL, NULL) != MOSQ_ERR_SUCCESS)
+                LOG_W("[mqtt] tls_set failed — continuing without TLS verification\n");
+        }
+        /* Last will: if the bridge dies, the broker marks us offline (retained). */
+        mosquitto_will_set(mosq, ctx.avail_topic, 7, "offline", cfg.mqtt_qos, true);
+        mosquitto_connect_callback_set(mosq, on_connect);
+        mosquitto_disconnect_callback_set(mosq, on_disconnect);
+        mosquitto_reconnect_delay_set(mosq, 2, 30, true);
 
-    rc = mosquitto_connect_async(mosq, cfg.mqtt_broker_addr, cfg.mqtt_broker_port,
-                                 cfg.mqtt_keepalive_s);
-    if (rc != MOSQ_ERR_SUCCESS)
-        LOG_W("[mqtt] initial connect to %s:%d deferred (%s) — will retry\n",
-              cfg.mqtt_broker_addr, cfg.mqtt_broker_port, mosquitto_strerror(rc));
-    mosquitto_loop_start(mosq);   /* background network thread */
+        rc = mosquitto_connect_async(mosq, cfg.mqtt_broker_addr, cfg.mqtt_broker_port,
+                                     cfg.mqtt_keepalive_s);
+        if (rc != MOSQ_ERR_SUCCESS)
+            LOG_W("[mqtt] initial connect to %s:%d deferred (%s) — will retry\n",
+                  cfg.mqtt_broker_addr, cfg.mqtt_broker_port, mosquitto_strerror(rc));
+        mosquitto_loop_start(mosq);   /* background network thread */
 
-    LOG_I("[mqtt] bridge → %s:%d @ %d Hz (client '%s', prefix '%s', %s), reading %s\n",
-          cfg.mqtt_broker_addr, cfg.mqtt_broker_port, cfg.mqtt_rate_hz,
-          cfg.mqtt_client_id, cfg.mqtt_topic_prefix, deg ? "deg" : "rad",
-          cfg.stream_socket);
+        LOG_I("[mqtt] bridge → %s:%d @ %d Hz (client '%s', prefix '%s', %s), reading %s\n",
+              cfg.mqtt_broker_addr, cfg.mqtt_broker_port, cfg.mqtt_rate_hz,
+              cfg.mqtt_client_id, cfg.mqtt_topic_prefix, deg ? "deg" : "rad",
+              cfg.stream_socket);
+    } else {
+        LOG_W("[mqtt] no output enabled (broker_enabled = false) — nothing will be published\n");
+    }
     sd_notify_msg("READY=1");
 
     imud_t       *stream = NULL;
@@ -269,6 +275,8 @@ int main(int argc, char **argv)
                 period_ns  = (nc.mqtt_rate_hz > 0) ? 1000000000L / nc.mqtt_rate_hz
                                                    : 200000000L;
                 ctx.deg = deg; ctx.emit_heave = emit_heave; ctx.qos = nc.mqtt_qos;
+                if (nc.mqtt_broker_enabled != cfg.mqtt_broker_enabled)
+                    LOG_W("[mqtt] broker_enabled change needs a restart to apply\n");
                 if (strcmp(nc.mqtt_broker_addr, cfg.mqtt_broker_addr) != 0 ||
                     nc.mqtt_broker_port != cfg.mqtt_broker_port ||
                     strcmp(nc.mqtt_client_id, cfg.mqtt_client_id) != 0 ||
@@ -318,7 +326,7 @@ int main(int argc, char **argv)
         clock_gettime(CLOCK_MONOTONIC, &now);
         if ((now.tv_sec > next.tv_sec) ||
             (now.tv_sec == next.tv_sec && now.tv_nsec >= next.tv_nsec)) {
-            if (have_pkt) {
+            if (have_pkt && mosq) {
                 mqtt_msg_t st[MAX_MSGS];
                 int n = mqtt_build_state(st, MAX_MSGS, &latest,
                                          cfg.mqtt_topic_prefix, emit_heave, deg);
@@ -338,12 +346,14 @@ int main(int argc, char **argv)
     }
 
     LOG_I("[mqtt] shutting down\n");
-    /* Clean disconnect suppresses the LWT, so announce offline explicitly. */
-    mosquitto_publish(mosq, NULL, ctx.avail_topic, 7, "offline", cfg.mqtt_qos, true);
-    mosquitto_disconnect(mosq);
-    mosquitto_loop_stop(mosq, false);
-    mosquitto_destroy(mosq);
-    mosquitto_lib_cleanup();
+    if (mosq) {
+        /* Clean disconnect suppresses the LWT, so announce offline explicitly. */
+        mosquitto_publish(mosq, NULL, ctx.avail_topic, 7, "offline", cfg.mqtt_qos, true);
+        mosquitto_disconnect(mosq);
+        mosquitto_loop_stop(mosq, false);
+        mosquitto_destroy(mosq);
+        mosquitto_lib_cleanup();
+    }
     imud_free(stream);
     return 0;
 }

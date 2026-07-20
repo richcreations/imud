@@ -495,7 +495,9 @@ static void test_signalk_section(void)
     config_defaults(&cfg);
     EXPECT(config_load("config/imud-signalk.conf", &cfg) == 0,
            "imud-signalk.conf loads");
-    EXPECT(!cfg.sk_enabled,                         "sk enabled=false in conf");
+    EXPECT(cfg.sk_enabled,                          "sk enabled=true in stock conf");
+    EXPECT(!cfg.sk_udp_enabled,                     "sk udp_enabled off in stock conf");
+    EXPECT(!cfg.sk_tcp_enabled,                     "sk tcp_enabled off in stock conf");
     EXPECT(cfg.sk_dest_port == 10113,               "sk dest_port 10113");
     EXPECT(cfg.sk_rate_hz == 10,                    "sk rate_hz 10");
     EXPECT_STR(cfg.sk_source_label, "imud",         "sk source_label imud");
@@ -621,6 +623,64 @@ static void test_sim_conf_loads(void)
     end_test(fb);
 }
 
+/* Per-output enables (1.6+): every bridge's daemon `enabled` is separate from
+ * its output enables, which default off; influxdb keeps a back-compat mapping
+ * for the deprecated `transport` selector. */
+static void test_bridge_output_enables(void)
+{
+    begin_test("test_bridge_output_enables");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(!cfg.sk_udp_enabled,        "sk_udp_enabled default off");
+    EXPECT(!cfg.mqtt_broker_enabled,   "mqtt_broker_enabled default off");
+    EXPECT(!cfg.influx_udp_enabled,    "influx_udp_enabled default off");
+    EXPECT(!cfg.influx_http_enabled,   "influx_http_enabled default off");
+    EXPECT(!cfg.prom_http_enabled,     "prom_http_enabled default off");
+    EXPECT_STR(cfg.influx_transport, "", "influx_transport default empty (unset)");
+
+    const char *path = write_tmpconf(31,
+        "[imud-signalk]\n"
+        "udp_enabled    = true\n"
+        "[imud-mqtt]\n"
+        "broker_enabled = true\n"
+        "[imud-influxdb]\n"
+        "udp_enabled    = true\n"
+        "http_enabled   = true\n"
+        "[imud-prometheus]\n"
+        "http_enabled   = true\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0, "output-enable block loads");
+    EXPECT(cfg.sk_udp_enabled,        "sk udp_enabled loaded");
+    EXPECT(cfg.mqtt_broker_enabled,   "mqtt broker_enabled loaded");
+    EXPECT(cfg.influx_udp_enabled,    "influx udp_enabled loaded");
+    EXPECT(cfg.influx_http_enabled,   "influx http_enabled loaded (dual output)");
+    EXPECT(cfg.prom_http_enabled,     "prom http_enabled loaded");
+    remove(path);
+
+    /* Back-compat: legacy transport maps only when no new enable is set. */
+    config_defaults(&cfg);
+    snprintf(cfg.influx_transport, sizeof cfg.influx_transport, "http");
+    EXPECT(config_apply_influx_transport_compat(&cfg), "legacy transport mapped");
+    EXPECT(cfg.influx_http_enabled,   "transport=http → http_enabled");
+    EXPECT(!cfg.influx_udp_enabled,   "transport=http leaves udp off");
+
+    config_defaults(&cfg);
+    snprintf(cfg.influx_transport, sizeof cfg.influx_transport, "udp");
+    EXPECT(config_apply_influx_transport_compat(&cfg), "legacy transport=udp mapped");
+    EXPECT(cfg.influx_udp_enabled,    "transport=udp → udp_enabled");
+
+    /* An explicit new enable wins; the legacy key is ignored (no remap). */
+    config_defaults(&cfg);
+    cfg.influx_udp_enabled = true;
+    snprintf(cfg.influx_transport, sizeof cfg.influx_transport, "http");
+    EXPECT(!config_apply_influx_transport_compat(&cfg), "new enable set → no legacy remap");
+    EXPECT(!cfg.influx_http_enabled,  "http stays off when udp explicitly set");
+
+    end_test(fb);
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -636,6 +696,7 @@ int main(void)
     test_sim_playback_keys();
     test_capture_section();
     test_signalk_section();
+    test_bridge_output_enables();
     test_declination_valid_flag();
     test_fix_max_age_h_load();
     test_fix_max_age_h_zero();

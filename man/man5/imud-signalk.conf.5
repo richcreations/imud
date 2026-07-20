@@ -1,4 +1,4 @@
-.TH IMUD\-SIGNALK.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
+.TH IMUD\-SIGNALK.CONF 5 "2026-07-20" "imud 1.6.1" "File Formats Manual"
 .SH NAME
 imud\-signalk.conf \- configuration file for imud-signalk(8)
 .SH SYNOPSIS
@@ -7,8 +7,13 @@ imud\-signalk.conf \- configuration file for imud-signalk(8)
 Configuration for the
 .BR imud-signalk (8)
 bridge daemon, which reads imud's binary stream socket and emits Signal K delta
-JSON over UDP, plus an optional TCP listener serving the same deltas
-newline-framed to connecting clients.  The bridge reads
+JSON over UDP and/or an optional TCP listener serving the same deltas
+newline-framed to connecting clients.  The daemon runs whenever
+.B enabled
+is true and stays healthy under systemd; each output
+.RB ( udp_enabled ,\  tcp_enabled )
+is independent and off by default, so nothing is sent until you turn one on.
+The bridge reads
 .B only
 this file (never
 .IR imud.conf ).
@@ -32,14 +37,21 @@ take effect on the next service start.
 .SH KEYS
 .TP
 .B enabled
-.RI ( bool ,\ default:\ false )\ [restart]
-Enable the Signal K bridge.
+.RI ( bool ,\ default:\ true )\ [restart]
+Run the Signal K bridge daemon.  With it true and every output off the daemon
+runs but sends nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).
 .TP
 .B socket
 .RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
 imud stream socket to read (match
 .I imud.conf
 if you changed it there).
+.TP
+.B udp_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Emit deltas over UDP to
+.IR dest_addr : dest_port .
 .TP
 .B dest_addr
 .RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
@@ -69,7 +81,9 @@ Emit
 .RI ( bool ,\ default:\ false )\ [restart]
 Serve the same deltas (newline-framed JSON, one delta per line) on a TCP
 listener; the Signal K server consumes it as a TCP client data connection.
-Up to 8 clients; UDP keeps sending regardless.
+Up to 8 clients.  Independent of
+.BR udp_enabled ;
+enable either or both.
 .TP
 .B tcp_bind_addr
 .RI ( string ,\ default:\ \(dq0.0.0.0\(dq )\ [restart]

@@ -1,4 +1,4 @@
-.TH IMUD\-INFLUXDB.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
+.TH IMUD\-INFLUXDB.CONF 5 "2026-07-20" "imud 1.6.1" "File Formats Manual"
 .SH NAME
 imud\-influxdb.conf \- configuration file for imud-influxdb(8)
 .SH SYNOPSIS
@@ -7,7 +7,12 @@ imud\-influxdb.conf \- configuration file for imud-influxdb(8)
 Configuration for the
 .BR imud-influxdb (8)
 bridge daemon, which reads imud's binary stream socket and writes InfluxDB
-line-protocol points over UDP or HTTP.  The bridge reads
+line-protocol points over UDP and/or HTTP.  The daemon runs whenever
+.B enabled
+is true and stays healthy under systemd; each output
+.RB ( udp_enabled ,\  http_enabled )
+is independent and off by default, so nothing is written until you turn one on.
+The bridge reads
 .B only
 this file (never
 .IR imud.conf ).
@@ -31,18 +36,27 @@ take effect on the next service start.
 .SH KEYS
 .TP
 .B enabled
-.RI ( bool ,\ default:\ false )\ [restart]
-Enable the InfluxDB bridge.
+.RI ( bool ,\ default:\ true )\ [restart]
+Run the InfluxDB bridge daemon.  With it true and every output off the daemon
+runs but writes nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).
 .TP
 .B socket
 .RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]
 imud stream socket to read.
 .TP
 .B transport
-.RI ( string ,\ default:\ \(dqudp\(dq )\ [restart]
-.B udp
-or
-.BR http .
+.RI ( string ,\ default:\ \(dq\(dq )\ [restart]
+.B DEPRECATED.
+Legacy output selector
+.RB ( udp " or " http );
+kept only for old configs.  When neither
+.B udp_enabled
+nor
+.B http_enabled
+is set, a
+.B transport
+value is mapped to the matching enable (with a warning).  Prefer the enables.
 .TP
 .B rate_hz
 .RI ( int ,\ default:\ 10 )\ [hot]
@@ -71,6 +85,10 @@ Include the
 .B heave
 field.
 .TP
+.B udp_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Write line-protocol points over UDP.
+.TP
 .B udp_addr
 .RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
 UDP destination host (InfluxDB 1.x listener or Telegraf).
@@ -79,11 +97,14 @@ UDP destination host (InfluxDB 1.x listener or Telegraf).
 .RI ( int ,\ default:\ 8089 )\ [hot]
 UDP destination port.
 .TP
+.B http_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Write line-protocol points over HTTP (may run alongside
+.BR udp_enabled ).
+.TP
 .B http_host
 .RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [restart]
-HTTP host (when
-.B transport
-= http).
+HTTP host.
 .TP
 .B http_port
 .RI ( int ,\ default:\ 8086 )\ [restart]
