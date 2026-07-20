@@ -35,6 +35,7 @@ src/drivers/*.d
 /test_position
 /test_client
 /test_stream
+/test_netserv
 /test_log
 /test_signalk
 /test_mqtt

@@ -70,11 +70,14 @@ typedef struct {
     double startup_settle_sec;   /* discard sensor data for this long after chip init */
     double gyro_bias_sec;        /* stationary window at startup */
 
-    /* [nmea]  [restart]: enabled, port, addr; [hot]: rate */
+    /* [nmea]  [restart]: enabled, port, addr, tcp_*; [hot]: rate */
     bool  nmea_enabled;
     int   nmea_rate_hz;
     char  nmea_dest_addr[64];
     int   nmea_dest_port;
+    bool  nmea_tcp_enabled;       /* [restart] TCP listener (plotters connect) */
+    char  nmea_tcp_bind_addr[64]; /* [restart] listener bind address */
+    int   nmea_tcp_port;          /* [restart] listener port (default 10110) */
 
     /* [highrate]  [restart]: enabled, port, addr; [hot]: rate */
     bool  highrate_enabled;
@@ -83,10 +86,14 @@ typedef struct {
     int   highrate_dest_port;
     char  highrate_coord_frame[8]; /* "NED" | "ENU" */
 
-    /* [stream]  local AF_UNIX subscription stream (binary packets) */
+    /* [stream]  local AF_UNIX subscription stream (binary packets),
+     * plus an optional TCP listener carrying the same framed packets */
     bool  stream_enabled;         /* [restart] */
     char  stream_socket[108];     /* [restart] listen path; sized to sun_path */
     int   stream_rate_hz;         /* [hot] per-subscriber packet rate */
+    bool  stream_tcp_enabled;       /* [restart] TCP listener (remote consumers) */
+    char  stream_tcp_bind_addr[64]; /* [restart] listener bind address */
+    int   stream_tcp_port;          /* [restart] listener port (default 10112) */
 
     /* [imud-signalk]  Signal K bridge daemon — reads its own
      * /etc/imud/imud-signalk.conf (the [imud-signalk] section, plus the shared
@@ -98,6 +105,9 @@ typedef struct {
     int   sk_dest_port;           /* [hot] SK server UDP input port */
     int   sk_rate_hz;             /* [hot] delta emit rate */
     char  sk_source_label[32];    /* [hot] Signal K delta source.label */
+    bool  sk_tcp_enabled;         /* [restart] TCP listener (SK data connection) */
+    char  sk_tcp_bind_addr[64];   /* [restart] listener bind address */
+    int   sk_tcp_port;            /* [restart] listener port (default 10113) */
 
     /* Bridge-shared keys — the imud-signalk / imud-mqtt daemons read these from
      * their own config file (so they never read imud.conf). The `socket` key
@@ -174,6 +184,10 @@ typedef struct {
     bool  mav_serial_enabled;      /* [restart] */
     char  mav_serial_device[64];   /* [restart] e.g. /dev/serial0 */
     int   mav_serial_baud;         /* [restart] e.g. 57600 */
+    /* TCP-listener transport (GCS connects, e.g. QGroundControl tcp:host:5760) */
+    bool  mav_tcp_enabled;         /* [restart] */
+    char  mav_tcp_bind_addr[64];   /* [restart] listener bind address */
+    int   mav_tcp_port;            /* [restart] listener port (default 5760) */
 
     /* [logging]  [hot] */
     char  log_level[16];           /* "debug" | "info" | "warn" | "error" */

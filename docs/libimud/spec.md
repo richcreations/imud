@@ -18,6 +18,7 @@ contract below is that consumers do not track them.
 | --- | --- | --- |
 | `imud_t *imud_connect_stream(const char *path)` | handle, or NULL (errno set) | Local AF_UNIX stream — the recommended, lossless same-host path. NULL/"" uses `/run/imud/imud-stream.sock`. |
 | `imud_t *imud_connect_udp(int port, const char *group)` | handle, or NULL | High-rate binary UDP stream. port 0 = 10111. A multicast `group` (224.0.0.0/4) is joined; NULL/"" receives unicast/broadcast. |
+| `imud_t *imud_connect_tcp(const char *host, int port)` | handle, or NULL | A daemon's `[stream]` TCP listener (`tcp_enabled` in imud.conf) — the remote equivalent of `imud_connect_stream`, same lossless framing. host NULL/"" = 127.0.0.1 (hostnames resolved, IPv4); port 0 = 10112. Added in 1.6 (symbol version `IMUD_1`). |
 | `int imud_read(imud_t *h, int timeout_ms)` | 0 data · 1 timeout · -1 lost | Waits up to `timeout_ms` for the next **valid** packet; < 0 blocks indefinitely. After -1, call `imud_reconnect()` or `imud_free()`. |
 | `int imud_reconnect(imud_t *h)` | 0 / -1 (errno set) | Tear down and re-dial the same endpoint. Safe to retry with backoff. |
 | `const imud_data_t *imud_data(const imud_t *h)` | library-owned pointer | Latest decoded packet. Valid until `imud_free()`; updated in place by each successful `imud_read()`. Meaningful only after the first `imud_read() == 0`. |

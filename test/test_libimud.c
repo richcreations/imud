@@ -7,7 +7,8 @@
 /*
  * test_libimud.c — unit tests for the libimud public API (lib/libimud.c)
  *
- * End-to-end over a local AF_UNIX listener and a UDP loopback socket, with
+ * End-to-end over a local AF_UNIX listener, a UDP loopback socket, and a
+ * loopback TCP listener (imud_connect_tcp, 1.6), with
  * packets built by the daemon's real encoder (src/packet.c). Also enforces
  * the imud_data_t append-only ABI contract with offsetof static asserts:
  * if any of those fire, an existing member moved — an ABI break.
@@ -228,6 +229,61 @@ static void test_udp_roundtrip(void)
     end(fb);
 }
 
+/* TCP connect (1.6): same framed-stream semantics as AF_UNIX, over a
+ * loopback TCP listener standing in for the daemon's [stream] tcp_port. */
+static void test_tcp_roundtrip(void)
+{
+    begin("test_tcp_roundtrip");
+    int fb = g_fail;
+
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    assert(srv >= 0);
+    int yes = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+    assert(bind(srv, (struct sockaddr *)&sa, sizeof sa) == 0);  /* port 0 */
+    assert(listen(srv, 4) == 0);
+    socklen_t slen = sizeof sa;
+    assert(getsockname(srv, (struct sockaddr *)&sa, &slen) == 0);
+    int port = (int)ntohs(sa.sin_port);
+
+    imud_t *h = imud_connect_tcp("127.0.0.1", port);
+    EXPECT(h != NULL, "connect_tcp succeeds");
+    int conn = accept(srv, NULL, NULL);
+    EXPECT(conn >= 0, "server accepted the TCP client");
+
+    imu_packet_t pkt = make_pkt();
+    put(conn, &pkt, sizeof pkt);
+    EXPECT(imud_read(h, 1000) == 0, "read returns 0 on a full TCP frame");
+    EXPECT(fabsf(imud_data(h)->heading_deg - 90.0f) < 1e-3f, "payload decoded");
+
+    /* Split frame reassembly works over TCP exactly as over AF_UNIX. */
+    put(conn, &pkt, 100);
+    EXPECT(imud_read(h, 50) == 1, "mid-frame wait returns timeout");
+    put(conn, (const unsigned char *)&pkt + 100, sizeof pkt - 100);
+    EXPECT(imud_read(h, 1000) == 0, "split TCP frame reassembled");
+
+    /* EOF → -1; reconnect re-dials host:port. */
+    close(conn);
+    EXPECT(imud_read(h, 1000) == -1, "EOF reported as connection lost");
+    EXPECT(imud_reconnect(h) == 0, "TCP reconnect succeeds");
+    conn = accept(srv, NULL, NULL);
+    put(conn, &pkt, sizeof pkt);
+    EXPECT(imud_read(h, 1000) == 0, "read works after TCP reconnect");
+
+    close(conn);
+    close(srv);
+    imud_free(h);
+
+    /* Hostname resolution: "localhost" must be accepted (IPv4). */
+    EXPECT(imud_connect_tcp("localhost", 1) == NULL,
+           "connect to a closed port fails cleanly");
+    end(fb);
+}
+
 static void test_misc(void)
 {
     begin("test_misc");
@@ -249,6 +305,7 @@ int main(void)
     puts("=== imud libimud API tests ===");
     test_stream_roundtrip();
     test_udp_roundtrip();
+    test_tcp_roundtrip();
     test_misc();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

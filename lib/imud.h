@@ -134,6 +134,15 @@ imud_t *imud_connect_stream(const char *path);
 imud_t *imud_connect_udp(int port, const char *group);
 
 /*
+ * imud_connect_tcp — connect to a daemon's [stream] TCP listener
+ * (tcp_enabled in imud.conf) for lossless framed packets over the network:
+ * the remote equivalent of imud_connect_stream. host NULL or "" uses
+ * 127.0.0.1; hostnames are resolved (IPv4). port 0 uses the default 10112.
+ * The connect is blocking. Returns NULL on error (errno set). Added in 1.6.
+ */
+imud_t *imud_connect_tcp(const char *host, int port);
+
+/*
  * imud_read — wait up to timeout_ms for the next valid packet.
  * timeout_ms < 0 blocks indefinitely.
  *

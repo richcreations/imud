@@ -9,7 +9,9 @@
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
  * reads the 260-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
- * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP and/or serial simultaneously.
+ * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP, serial, and/or a TCP
+ * listener (GCS clients connect, e.g. QGroundControl tcp:host:5760)
+ * simultaneously.
  * Pure C, no external dependencies (hand-rolled encoder in mavlink_encode.c).
  *
  * MAVLink's body frame is FRD/NED, the same as imud, so roll/pitch/yaw, the gyro
@@ -44,6 +46,7 @@
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "mavlink_encode.h"
 #include "config.h"
+#include "netserv.h"
 #include "log.h"
 
 #ifndef SOCK_CLOEXEC
@@ -62,10 +65,12 @@ static void on_signal(int sig)
     else               g_stop   = 1;
 }
 
-/* One output transport. */
+/* One output transport: UDP destination, serial device, or a TCP listener
+ * (srv != NULL) whose connected GCS clients all receive the same frames. */
 typedef struct {
-    int      fd;
+    int      fd;       /* -1 for the TCP-listener sink */
     bool     is_udp;
+    netserv_t *srv;    /* TCP-listener sink; NULL for udp/serial */
     struct sockaddr_storage dst;
     socklen_t dlen;
     uint8_t  seq;      /* per-link sequence (MAVLink loss detection is per link) */
@@ -172,7 +177,9 @@ static int open_serial(const char *dev, int baud)
 
 static void sink_write(sink_t *s, const uint8_t *buf, int n)
 {
-    if (s->is_udp)
+    if (s->srv)
+        netserv_broadcast(s->srv, buf, (size_t)n);
+    else if (s->is_udp)
         sendto(s->fd, buf, (size_t)n, 0, (struct sockaddr *)&s->dst, s->dlen);
     else {
         ssize_t w = write(s->fd, buf, (size_t)n);
@@ -253,7 +260,9 @@ int main(int argc, char **argv)
     long period_ns = (cfg.mav_rate_hz > 0) ? 1000000000L / cfg.mav_rate_hz : 100000000L;
 
     /* Build the sink list. */
-    sink_t sinks[2];
+    sink_t sinks[3];
+    netserv_t tcp_srv;
+    netserv_init(&tcp_srv);
     int nsinks = 0;
     int udp_idx = -1;
     if (cfg.mav_udp_enabled) {
@@ -272,13 +281,28 @@ int main(int argc, char **argv)
         if (s->fd < 0) return 1;
         nsinks++;
     }
+    if (cfg.mav_tcp_enabled) {
+        if (netserv_open(&tcp_srv, cfg.mav_tcp_bind_addr, cfg.mav_tcp_port,
+                         "mavlink_tcp") < 0) {
+            for (int k = 0; k < nsinks; k++) close(sinks[k].fd);
+            return 1;
+        }
+        sink_t *s = &sinks[nsinks];
+        memset(s, 0, sizeof *s);
+        s->fd  = -1;
+        s->srv = &tcp_srv;
+        nsinks++;
+        LOG_I("[mavlink] TCP listener %s:%d (max %d clients)\n",
+              cfg.mav_tcp_bind_addr, tcp_srv.port, NETSRV_MAX_CLIENTS);
+    }
     if (nsinks == 0)
-        LOG_W("[mavlink] no transport enabled (udp_enabled/serial_enabled both false)"
-              " — nothing will be sent\n");
+        LOG_W("[mavlink] no transport enabled (udp_enabled/serial_enabled/"
+              "tcp_enabled all false) — nothing will be sent\n");
 
-    LOG_I("[mavlink] bridge v%d sys=%d comp=%d @ %d Hz%s%s, reading %s\n",
+    LOG_I("[mavlink] bridge v%d sys=%d comp=%d @ %d Hz%s%s%s, reading %s\n",
           ver, cfg.mav_system_id, cfg.mav_component_id, cfg.mav_rate_hz,
           cfg.mav_udp_enabled ? " +udp" : "", cfg.mav_serial_enabled ? " +serial" : "",
+          cfg.mav_tcp_enabled ? " +tcp" : "",
           cfg.stream_socket);
     sd_notify_msg("READY=1");
 
@@ -317,14 +341,20 @@ int main(int argc, char **argv)
                 if (nc.mav_system_id != cfg.mav_system_id ||
                     nc.mav_component_id != cfg.mav_component_id ||
                     nc.mav_udp_enabled != cfg.mav_udp_enabled ||
-                    nc.mav_serial_enabled != cfg.mav_serial_enabled)
-                    LOG_W("[mavlink] sysid/compid/transport-enable change needs a restart\n");
+                    nc.mav_serial_enabled != cfg.mav_serial_enabled ||
+                    nc.mav_tcp_enabled != cfg.mav_tcp_enabled ||
+                    nc.mav_tcp_port != cfg.mav_tcp_port ||
+                    strcmp(nc.mav_tcp_bind_addr, cfg.mav_tcp_bind_addr) != 0)
+                    LOG_W("[mavlink] sysid/compid/transport change needs a restart\n");
                 cfg = nc;
                 LOG_I("[mavlink] config reloaded\n");
             } else {
                 LOG_W("[mavlink] reload failed — keeping current config\n");
             }
         }
+
+        /* Accept pending TCP clients (no-op when tcp_enabled = false). */
+        netserv_accept(&tcp_srv);
 
         if (!stream) {
             stream = imud_connect_stream(cfg.stream_socket);
@@ -411,6 +441,9 @@ int main(int argc, char **argv)
 
     LOG_I("[mavlink] shutting down\n");
     imud_free(stream);
-    for (int k = 0; k < nsinks; k++) close(sinks[k].fd);
+    for (int k = 0; k < nsinks; k++) {
+        if (sinks[k].srv) netserv_close(sinks[k].srv);
+        else              close(sinks[k].fd);
+    }
     return 0;
 }

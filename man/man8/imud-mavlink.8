@@ -1,6 +1,6 @@
-.TH IMUD\-MAVLINK 8 "2026-07-15" "imud 1.5.1" "System Manager's Manual"
+.TH IMUD\-MAVLINK 8 "2026-07-19" "imud 1.6" "System Manager's Manual"
 .SH NAME
-imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial
+imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial/TCP
 .SH SYNOPSIS
 .B imud-mavlink
 [\fB\-\-config\fR \fIPATH\fR]
@@ -33,13 +33,19 @@ must have its
 output enabled, and it reconnects automatically if imud restarts.
 .PP
 Output goes to
-.B UDP
-and/or
-.B serial
+.BR UDP ,
+.BR serial ,
+and/or a
+.B TCP listener
 simultaneously (each independently enabled).  Serial is opened raw, 8N1, at the
 configured baud; the shipped unit grants the service the
 .B dialout
-group and tty-device access.
+group and tty-device access.  With
+.B tcp_enabled
+ground stations connect as TCP clients
+.RB ( tcp://<host>:5760
+in QGroundControl / Mission Planner) and every connected client receives the
+same frames.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

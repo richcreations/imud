@@ -2,8 +2,10 @@
 
 `imud-mavlink` connects to imud's `[stream]` socket and sends **HEARTBEAT** at
 1 Hz plus **ATTITUDE** and/or **ATTITUDE_QUATERNION** at `rate_hz` (default
-10 Hz), as MAVLink **v1 or v2**. Output goes to **UDP and/or serial
-simultaneously**. Pure C with a hand-rolled encoder — no dependencies. It holds
+10 Hz), as MAVLink **v1 or v2**. Output goes to **UDP, serial, and/or a TCP
+listener simultaneously** — ground stations connect to the TCP listener as
+clients (`tcp://<host>:5760` in QGroundControl / Mission Planner). Pure C
+with a hand-rolled encoder — no dependencies. It holds
 no hardware, reconnects to imud automatically, and requires imud's
 `[stream] enabled = true`.
 
@@ -34,6 +36,11 @@ For **serial** output (e.g. a telemetry radio on `/dev/serial0`), set
 grants the service the `dialout` group and tty-device access. On a vehicle bus
 alongside a real autopilot, raise `component_id` (e.g. 191) to avoid an id clash.
 
+For **TCP** output, set `tcp_enabled = true` and point the ground station at
+`tcp://<host>:5760` (QGroundControl: Comm Links → Add → TCP; Mission Planner:
+TCP connect). Up to 8 clients connect simultaneously and each receives the
+same frames; a slow client drops frames rather than stalling the bridge.
+
 ## Configuration
 
 The bridge reads its own file, `/etc/imud/imud-mavlink.conf` (the `[imud-mavlink]`
@@ -57,5 +64,8 @@ transports are enabled require a restart.
 | `serial_enabled` | bool | `false` | Enable serial output. |
 | `serial_device` | string | `"/dev/serial0"` | Serial device. |
 | `serial_baud` | int | `57600` | Serial baud (9600–921600). |
+| `tcp_enabled` | bool | `false` | Enable the TCP listener (GCS connects as a client). |
+| `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4); `127.0.0.1` keeps it host-local. |
+| `tcp_port` | int | `5760` | Listener TCP port (the de-facto MAVLink TCP port). |
 
 See also `imud-mavlink(8)` and `imud-mavlink.conf(5)`.

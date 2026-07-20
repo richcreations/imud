@@ -2,9 +2,10 @@
 
 ## `imud` — a general-purpose IMU daemon ("gpsd for IMUs")
 
-**Version:** 1.5  
+**Version:** 1.6  
 **What:** owns an IMU + magnetometer, fuses to attitude/heading, and publishes
-on NMEA 0183, binary UDP, and a local stream socket for any number of
+on NMEA 0183 (UDP/TCP), binary UDP, and a local stream socket with an
+optional TCP listener, for any number of
 consumers (marine nav, robotics, machine vision, gimbals/pointing).  
 **Reference hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA
 (SEN-19895); a driver layer supports other parts (see §4).  
@@ -169,17 +170,25 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`ism_reader`  |GPIO17 FIFO watermark edge  |Burst 64 samples, scale to SI, push ring buffer                          |
 |`mag_reader`  |GPIO27 INT edge             |Read MMC5983MA, apply cal, flip Z, push mag buffer                       |
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
-|`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP               |
+|`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP + serve TCP clients |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 260-byte binary packets to local AF_UNIX subscribers               |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 260-byte binary packets to local AF_UNIX subscribers + TCP clients |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
-`nmea_out` is only started when `nmea.enabled = true`.
+`nmea_out` is only started when `nmea.enabled` or `nmea.tcp_enabled` is true.
 `hirate_out` is only started when `highrate.enabled = true`.
-`stream_out` is only started when `stream.enabled = true`.
+`stream_out` is only started when `stream.enabled` or `stream.tcp_enabled`
+is true.
 `position` is only started when `position.gpsd_enabled` or
 `position.signalk_enabled` is true (see §9 `[position]`).
+
+Each optional TCP listener (netserv, `src/netserv.c`) is owned by exactly one
+output thread: non-blocking accept each tick, broadcast-only (clients are
+never read), at most 8 clients, and a slow-client policy of drop-payload on a
+full kernel buffer / disconnect on error or partial write. Default posture
+(1.6): only the local AF_UNIX stream socket is enabled — every network
+output is an explicit config opt-in.
 
 -----
 
@@ -543,14 +552,19 @@ orbital accel, run by `test_fusion`): attitude RMS 7.1° → 2.7°, heading RMS
 
 -----
 
-## 7. Output Stream A — NMEA 0183 UDP
+## 7. Output Stream A — NMEA 0183 (UDP broadcast and/or TCP listener)
 
-**Port:** 10110 UDP broadcast (`255.255.255.255`) / configurable  
-**Rate:** 10 Hz  
+**Port:** 10110 UDP broadcast (`255.255.255.255`) / configurable; optional
+TCP listener on 10110 (`nmea.tcp_enabled`, `tcp_bind_addr:tcp_port`)  
+**Rate:** 10 Hz (shared by both transports)  
 **Format:** NMEA 0183 ASCII sentences, `<CR><LF>` terminated, correct checksums
 
 Any chartplotter, MFD, multiplexer, OpenCPN, Expedition, SignalK server, or
-logging tool on the vessel LAN receives this without configuration.
+logging tool on the vessel LAN receives the broadcast without configuration;
+TCP-client consumers (most plotter apps) connect to `tcp://<host>:10110` and
+receive the identical sentence bursts. Up to 8 TCP clients; a slow client
+skips bursts (never stalls the daemon), and a client that errors or would
+receive a partial burst is disconnected.
 
 ### Sentence Set
 
@@ -822,12 +836,15 @@ startup_settle_sec = 5.0         # discard sensor data for this long after start
 gyro_bias_sec      = 2.0         # stationary still-window at startup (0 to skip)
 
 [nmea]
-# [restart]: enabled, dest_addr, dest_port
+# [restart]: enabled, dest_addr, dest_port, tcp_enabled, tcp_bind_addr, tcp_port
 # [hot]:     rate_hz
-enabled        = true
+enabled        = false           # UDP broadcast (off by default since 1.6)
 rate_hz        = 10
 dest_addr      = "255.255.255.255"
 dest_port      = 10110
+tcp_enabled    = false           # NMEA-over-TCP listener (plotters connect)
+tcp_bind_addr  = "0.0.0.0"       # 127.0.0.1 = host-local only
+tcp_port       = 10110
 
 [highrate]
 # [restart]: enabled, dest_addr, dest_port
@@ -839,13 +856,17 @@ dest_port      = 10111
 coord_frame    = "NED"           # "NED" or "ENU"
 
 [stream]
-# [restart]: enabled, socket
+# [restart]: enabled, socket, tcp_enabled, tcp_bind_addr, tcp_port
 # [hot]:     rate_hz
 # Local AF_UNIX subscription stream — 260-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
-enabled        = false
+# The one output enabled by default (1.6).
+enabled        = true
 socket         = "/run/imud/imud-stream.sock"
 rate_hz        = 100
+tcp_enabled    = false           # TCP listener: same framed packets, remote consumers
+tcp_bind_addr  = "0.0.0.0"       # 127.0.0.1 = host-local only
+tcp_port       = 10112
 
 [mount]
 # Board → body rotation expressed as Euler angles [roll, pitch, yaw] in degrees.
@@ -918,12 +939,15 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 
 -----
 
-## 10. Output Stream C — Local AF_UNIX subscription stream (optional)
+## 10. Output Stream C — Local AF_UNIX subscription stream + TCP listener
 
 **Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
+**TCP listener (optional):** `stream.tcp_bind_addr`:`stream.tcp_port`
+(default `0.0.0.0:10112`), enabled by `stream.tcp_enabled` (off by default)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
 **Format:** identical 260-byte binary packets as Stream B (§8)
-**Enabled by:** `stream.enabled = true` (disabled by default)
+**Enabled by:** `stream.enabled = true` (the default — the one output a
+stock daemon provides)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
 every packet as an exact 260-byte frame — no datagram loss, self-framing via
@@ -932,6 +956,14 @@ the deprecated `lib/imud_client.h`) works unchanged on 260-byte reads. Sends are
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead. The daemon never blocks
 on a consumer.
+
+The TCP listener carries the exact same framed packets to remote consumers
+(≤ 8 clients, same slow-client policy, served by the same `stream_out`
+thread): `imud_connect_tcp` in libimud, `ImudClient.connect_tcp` in Python,
+the imud-arduino library on ESP32-class boards
+(github.com/richcreations/imud-arduino), or `nc HOST 10112` for a raw
+capture. Both transports receive the final
+`FLAG_SHUTDOWN` packet on clean daemon exit.
 
 -----
 
@@ -954,8 +986,9 @@ on a consumer.
     → int_gpio = 0 → skip GPIO; reader threads use 10 ms timer fallback
 10. Open AF_UNIX status socket at /run/imud/imud.sock (mode 0660)
 11. Start threads: ism_reader, mag_reader, fusion, health (always);
-    nmea_out if nmea.enabled; hirate_out if highrate.enabled;
-    stream_out if stream.enabled;
+    nmea_out if nmea.enabled or nmea.tcp_enabled;
+    hirate_out if highrate.enabled;
+    stream_out if stream.enabled or stream.tcp_enabled;
     position if position.gpsd_enabled or position.signalk_enabled
 12. Write /run/imud/imud.pid
 13. sd_notify("READY=1")

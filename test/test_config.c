@@ -84,9 +84,12 @@ static void test_defaults_values(void)
     EXPECT(cfg.imu_fifo_wm  == 64,                    "imu_fifo_wm default");
     EXPECT_STR(cfg.mag_driver,       "mmc5983ma",     "mag_driver default");
     EXPECT(cfg.mag_addr     == 0x30,                  "mag_addr default");
-    EXPECT(cfg.nmea_enabled  == true,                 "nmea_enabled default");
+    EXPECT(cfg.nmea_enabled  == false,                "nmea_enabled default off (1.6: local stream only)");
     EXPECT(cfg.nmea_rate_hz  == 10,                   "nmea_rate_hz default");
     EXPECT(cfg.nmea_dest_port == 10110,               "nmea_dest_port default");
+    EXPECT(cfg.nmea_tcp_enabled == false,             "nmea_tcp_enabled default off");
+    EXPECT_STR(cfg.nmea_tcp_bind_addr, "0.0.0.0",     "nmea_tcp_bind_addr default");
+    EXPECT(cfg.nmea_tcp_port == 10110,                "nmea_tcp_port default 10110");
     EXPECT(cfg.highrate_enabled == false,             "highrate_enabled default (opt-in)");
     EXPECT(cfg.highrate_rate_hz == 500,               "highrate_rate_hz default");
     EXPECT(cfg.highrate_dest_port == 10111,           "highrate_dest_port default");
@@ -355,20 +358,73 @@ static void test_stream_section(void)
 
     imud_config_t cfg;
     config_defaults(&cfg);
-    EXPECT(!cfg.stream_enabled,                        "stream disabled by default");
+    EXPECT(cfg.stream_enabled,                         "stream enabled by default (1.6: the one stock output)");
     EXPECT(cfg.stream_rate_hz == 100,                  "stream rate_hz default 100");
     EXPECT_STR(cfg.stream_socket, "/run/imud/imud-stream.sock",
                "stream socket default path");
+    EXPECT(cfg.stream_tcp_enabled == false,            "stream_tcp_enabled default off");
+    EXPECT_STR(cfg.stream_tcp_bind_addr, "0.0.0.0",    "stream_tcp_bind_addr default");
+    EXPECT(cfg.stream_tcp_port == 10112,               "stream_tcp_port default 10112");
 
     const char *path = write_tmpconf(14,
         "[stream]\n"
-        "enabled = true\n"
+        "enabled = false\n"
         "socket  = \"/tmp/alt-stream.sock\"\n"
         "rate_hz = 50\n");
     EXPECT(config_load(path, &cfg) == 0,               "stream section loads");
-    EXPECT(cfg.stream_enabled,                         "stream enabled loaded");
+    EXPECT(!cfg.stream_enabled,                        "stream enabled=false loaded");
     EXPECT(cfg.stream_rate_hz == 50,                   "stream rate_hz loaded");
     EXPECT_STR(cfg.stream_socket, "/tmp/alt-stream.sock", "stream socket loaded");
+    remove(path);
+    end_test(fb);
+}
+
+/* tcp_* keys ([nmea]/[stream]/[imud-signalk]/[imud-mavlink]): defaults are
+ * off/0.0.0.0/per-output port; each section's block loads and overrides. */
+static void test_tcp_output_keys(void)
+{
+    begin_test("test_tcp_output_keys");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(!cfg.sk_tcp_enabled,                        "sk_tcp_enabled default off");
+    EXPECT_STR(cfg.sk_tcp_bind_addr, "0.0.0.0",        "sk_tcp_bind_addr default");
+    EXPECT(cfg.sk_tcp_port == 10113,                   "sk_tcp_port default 10113");
+    EXPECT(!cfg.mav_tcp_enabled,                       "mav_tcp_enabled default off");
+    EXPECT_STR(cfg.mav_tcp_bind_addr, "0.0.0.0",       "mav_tcp_bind_addr default");
+    EXPECT(cfg.mav_tcp_port == 5760,                   "mav_tcp_port default 5760");
+
+    const char *path = write_tmpconf(23,
+        "[nmea]\n"
+        "tcp_enabled   = true\n"
+        "tcp_bind_addr = \"127.0.0.1\"\n"
+        "tcp_port      = 20110\n"
+        "[stream]\n"
+        "tcp_enabled   = true\n"
+        "tcp_bind_addr = \"192.168.1.5\"\n"
+        "tcp_port      = 20112\n"
+        "[imud-signalk]\n"
+        "tcp_enabled   = true\n"
+        "tcp_bind_addr = \"127.0.0.1\"\n"
+        "tcp_port      = 20113\n"
+        "[imud-mavlink]\n"
+        "tcp_enabled   = true\n"
+        "tcp_bind_addr = \"0.0.0.0\"\n"
+        "tcp_port      = 5761\n");
+    EXPECT(config_load(path, &cfg) == 0,               "tcp_* blocks load");
+    EXPECT(cfg.nmea_tcp_enabled,                       "nmea tcp_enabled loaded");
+    EXPECT_STR(cfg.nmea_tcp_bind_addr, "127.0.0.1",    "nmea tcp_bind_addr loaded");
+    EXPECT(cfg.nmea_tcp_port == 20110,                 "nmea tcp_port loaded");
+    EXPECT(cfg.stream_tcp_enabled,                     "stream tcp_enabled loaded");
+    EXPECT_STR(cfg.stream_tcp_bind_addr, "192.168.1.5","stream tcp_bind_addr loaded");
+    EXPECT(cfg.stream_tcp_port == 20112,               "stream tcp_port loaded");
+    EXPECT(cfg.sk_tcp_enabled,                         "sk tcp_enabled loaded");
+    EXPECT_STR(cfg.sk_tcp_bind_addr, "127.0.0.1",      "sk tcp_bind_addr loaded");
+    EXPECT(cfg.sk_tcp_port == 20113,                   "sk tcp_port loaded");
+    EXPECT(cfg.mav_tcp_enabled,                        "mav tcp_enabled loaded");
+    EXPECT_STR(cfg.mav_tcp_bind_addr, "0.0.0.0",       "mav tcp_bind_addr loaded");
+    EXPECT(cfg.mav_tcp_port == 5761,                   "mav tcp_port loaded");
     remove(path);
     end_test(fb);
 }
@@ -576,6 +632,7 @@ int main(void)
     test_defaults_position();
     test_fusion_marine_keys();
     test_stream_section();
+    test_tcp_output_keys();
     test_sim_playback_keys();
     test_capture_section();
     test_signalk_section();

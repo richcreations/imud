@@ -14,6 +14,13 @@ For multicast (default hi-rate address 239.255.0.1):
     with ImudClient(port=10111, addr="239.255.0.1") as client:
         ...
 
+For the daemon's TCP stream listener ([stream] tcp_enabled, default port
+10112) — lossless framed packets over the network:
+
+    with ImudClient.connect_tcp("boat.local") as client:
+        ...
+    # equivalently: ImudClient(tcp=("boat.local", 10112))
+
 Requirements: Python 3.8+, standard library only.
 
 Copyright (c) 2026 Richard Simpson
@@ -24,7 +31,7 @@ import socket
 import struct
 import zlib
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Tuple
 
 # ── Protocol constants ────────────────────────────────────────────────────────
 
@@ -295,27 +302,48 @@ def _parse(buf: bytes) -> Optional[ImudPacket]:
 
 class ImudClient:
     """
-    Blocking UDP receiver for imud Stream B binary packets.
+    Blocking receiver for imud Stream B binary packets — UDP (default) or
+    a TCP connection to the daemon's [stream] tcp_port.
 
     Parameters
     ----------
     port : int
-        UDP port to listen on (default 10111).
+        UDP port to listen on (default 10111). Ignored in TCP mode.
     addr : str or None
         If a multicast address (224.0.0.0/4), joins that group.
-        Pass None or '' to receive unicast/broadcast.
+        Pass None or '' to receive unicast/broadcast. Ignored in TCP mode.
     timeout : float or None
         Socket receive timeout in seconds. None = block forever.
+    tcp : (host, port) tuple or None
+        When set, connect as a TCP client to the daemon's [stream] TCP
+        listener (tcp_enabled in imud.conf; default port 10112) and read
+        lossless 260-byte frames instead of receiving UDP datagrams.
     """
 
     def __init__(self, port: int = 10111, addr: Optional[str] = None,
-                 timeout: Optional[float] = None):
+                 timeout: Optional[float] = None,
+                 tcp: Optional[Tuple[str, int]] = None):
         self._port    = port
         self._addr    = addr or ''
         self._timeout = timeout
+        self._tcp     = tcp
         self._sock: Optional[socket.socket] = None
 
+    @classmethod
+    def connect_tcp(cls, host: str = '127.0.0.1', port: int = 10112,
+                    timeout: Optional[float] = None) -> 'ImudClient':
+        """Client for the daemon's [stream] TCP listener (open() to connect)."""
+        return cls(timeout=timeout, tcp=(host, port))
+
     def open(self) -> 'ImudClient':
+        if self._tcp is not None:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if self._timeout is not None:
+                sock.settimeout(self._timeout)
+            sock.connect(self._tcp)
+            self._sock = sock
+            return self
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         # Wildcard bind is deliberate: this is a receive-only listener for
@@ -347,23 +375,46 @@ class ImudClient:
             self._sock.close()
             self._sock = None
 
+    def _recv_frame(self) -> Optional[bytes]:
+        """TCP mode: read exactly one 260-byte frame (None on timeout)."""
+        chunks = []
+        got = 0
+        while got < IMUD_PACKET_SIZE:
+            try:
+                chunk = self._sock.recv(IMUD_PACKET_SIZE - got)
+            except socket.timeout:
+                if got:
+                    continue      # mid-frame: keep the framing, keep reading
+                return None
+            if not chunk:
+                raise ConnectionError("imud stream closed")
+            chunks.append(chunk)
+            got += len(chunk)
+        return b''.join(chunks)
+
     def recv(self) -> Optional[ImudPacket]:
         """
         Receive one valid packet (blocking).
 
-        Silently discards datagrams that are the wrong size, have a bad magic
+        Silently discards packets that are the wrong size, have a bad magic
         number, wrong version, or fail CRC.
 
         Returns ImudPacket, or None on socket timeout.
-        Raises OSError on socket error.
+        Raises OSError on socket error, ConnectionError when the TCP/stream
+        peer closes.
         """
         if self._sock is None:
             raise RuntimeError("ImudClient is not open — call open() first")
         while True:
-            try:
-                buf, _ = self._sock.recvfrom(IMUD_PACKET_SIZE + 1)
-            except socket.timeout:
-                return None
+            if self._tcp is not None:
+                buf = self._recv_frame()
+                if buf is None:
+                    return None
+            else:
+                try:
+                    buf, _ = self._sock.recvfrom(IMUD_PACKET_SIZE + 1)
+                except socket.timeout:
+                    return None
             pkt = _parse(buf)
             if pkt is not None:
                 return pkt
@@ -394,12 +445,22 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=10111)
     parser.add_argument('--addr', default='',
                         help='Multicast group or empty for unicast/broadcast')
+    parser.add_argument('--tcp', default='', metavar='HOST[:PORT]',
+                        help="Connect to the daemon's [stream] TCP listener "
+                             "instead of receiving UDP (default port 10112)")
     args = parser.parse_args()
 
-    print(f"Listening on UDP port {args.port} "
-          f"{'(multicast ' + args.addr + ')' if args.addr else '(unicast/broadcast)'}",
-          file=sys.stderr)
+    if args.tcp:
+        host, _, portstr = args.tcp.partition(':')
+        tcp_port = int(portstr) if portstr else 10112
+        print(f"Connecting to {host}:{tcp_port} (TCP stream)", file=sys.stderr)
+        client_ctx = ImudClient.connect_tcp(host, tcp_port)
+    else:
+        print(f"Listening on UDP port {args.port} "
+              f"{'(multicast ' + args.addr + ')' if args.addr else '(unicast/broadcast)'}",
+              file=sys.stderr)
+        client_ctx = ImudClient(port=args.port, addr=args.addr or None)
 
-    with ImudClient(port=args.port, addr=args.addr or None) as client:
+    with client_ctx as client:
         for pkt in client:
             print(pkt)

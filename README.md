@@ -30,9 +30,11 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
 - **Owns the sensor, once.** Drains the IMU FIFO on a hardware interrupt,
   applies calibration, and runs a quaternion MEKF at the full sample rate —
   so consumers get a fused estimate, not raw samples to process themselves.
-- **Publishes on standard interfaces, to many consumers at once.** NMEA 0183,
-  a high-rate binary packet over UDP, and a loss-free local stream socket —
-  broadcast/multicast so several programs share one IMU without contention.
+- **Publishes on standard interfaces, to many consumers at once.** NMEA 0183
+  (UDP broadcast or a TCP listener plotters just connect to), a high-rate
+  binary packet over UDP, and a loss-free stream of framed packets — local
+  AF_UNIX socket or TCP — so several programs share one IMU without
+  contention.
 - **Clean, well-defined outputs.** Quaternion, Euler angles, magnetic and
   true heading, rate of turn, heave, sea-state statistics (significant wave
   height and period, roll/pitch periods and amplitudes), compass-health
@@ -50,7 +52,9 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
   [docs/capture.md](docs/capture.md).
 - **An ABI-stable client library.** `libimud` decodes the binary stream for C
   programs and keeps working across daemon upgrades without recompiling;
-  a single-file Python client ships too.
+  a single-file Python client ships too, and an Arduino/ESP32 client
+  ([imud-arduino](https://github.com/richcreations/imud-arduino)) lives in
+  its own repository.
 - **Built to run unattended.** A hardened systemd unit with a watchdog,
   calibration tools, level-gated logging, and a status socket.
 
@@ -62,10 +66,10 @@ imud is output-agnostic; the same daemon serves very different consumers:
   Signal K, with true heading from the World Magnetic Model, heave, and live
   sea-state statistics. (The most exercised use case today; several fusion
   options are tuned for it.) The `imud-signalk` bridge also feeds Signal K
-  natively over UDP when its NMEA parsing falls short.
+  natively over UDP or TCP when its NMEA parsing falls short.
 - **Robotics / ROS2** — attitude and rate of turn over the binary stream.
 - **Drones & autopilots** — the `imud-mavlink` bridge feeds MAVLink ATTITUDE to
-  ArduPilot, PX4, or QGroundControl over UDP or serial.
+  ArduPilot, PX4, or QGroundControl over UDP, serial, or TCP.
 - **IoT / home automation & dashboards** — the `imud-mqtt` bridge publishes
   heading/attitude/heave to an MQTT broker with Home Assistant auto-discovery;
   `imud-influxdb` writes line-protocol points to InfluxDB for Grafana;
@@ -76,9 +80,12 @@ imud is output-agnostic; the same daemon serves very different consumers:
   attitude over the local stream socket or binary UDP.
 
 If you just need heading/pitch/roll for a chartplotter or autopilot, enable
-the NMEA output and point your software at UDP port 10110. If you need
+the NMEA output (`[nmea] tcp_enabled = true` and connect your app to
+`tcp://<host>:10110`, or `enabled = true` for UDP broadcast). If you need
 high-rate quaternion for vision or control, enable the binary stream on port
-10111 or the local socket.
+10111, the local socket (on by default), or its TCP listener
+(`[stream] tcp_enabled`, port 10112). A stock install emits only on the
+local socket — network outputs are explicit opt-ins.
 
 ## Quick start
 
@@ -158,6 +165,9 @@ in-situ `imud-cal mag`. See the
 - **[libimud](docs/libimud/)** — the ABI-stable C client library and the Python
   client for the binary stream: [README](docs/libimud/README.md),
   [manual](docs/libimud/manual.md), [spec](docs/libimud/spec.md).
+- **[imud-arduino](https://github.com/richcreations/imud-arduino)** — the
+  Arduino/ESP32 client library (`ImudClient`) for the binary stream over TCP
+  or UDP, maintained in its own repository.
 - **[Capture & replay](docs/capture.md)** — the black box, playback, and
   offline noise/temperature analysis.
 - **Bridges** — each optional bridge has its own docs under `docs/imud-<name>/`

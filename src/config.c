@@ -164,11 +164,15 @@ void config_defaults(imud_config_t *cfg)
     cfg->startup_settle_sec = 5.0;
     cfg->gyro_bias_sec = 2.0;
 
-    /* [nmea] */
-    cfg->nmea_enabled = true;
+    /* [nmea] — off by default since 1.6: a stock daemon emits only on the
+     * local [stream] socket; every network output is an explicit opt-in. */
+    cfg->nmea_enabled = false;
     cfg->nmea_rate_hz = 10;
     snprintf(cfg->nmea_dest_addr, sizeof(cfg->nmea_dest_addr), "255.255.255.255");
     cfg->nmea_dest_port = 10110;
+    cfg->nmea_tcp_enabled = false;
+    snprintf(cfg->nmea_tcp_bind_addr, sizeof(cfg->nmea_tcp_bind_addr), "0.0.0.0");
+    cfg->nmea_tcp_port = 10110;
 
     /* [highrate] */
     cfg->highrate_enabled = false;  /* opt-in; primary output is NMEA */
@@ -177,11 +181,15 @@ void config_defaults(imud_config_t *cfg)
     cfg->highrate_dest_port = 10111;
     snprintf(cfg->highrate_coord_frame, sizeof(cfg->highrate_coord_frame), "NED");
 
-    /* [stream] */
-    cfg->stream_enabled = false;
+    /* [stream] — on by default since 1.6: the local AF_UNIX socket is the
+     * one output a stock daemon provides (bridges and libimud read it). */
+    cfg->stream_enabled = true;
     snprintf(cfg->stream_socket, sizeof(cfg->stream_socket),
              "/run/imud/imud-stream.sock");
     cfg->stream_rate_hz = 100;
+    cfg->stream_tcp_enabled = false;
+    snprintf(cfg->stream_tcp_bind_addr, sizeof(cfg->stream_tcp_bind_addr), "0.0.0.0");
+    cfg->stream_tcp_port = 10112;
 
     /* [imud-signalk] */
     cfg->sk_enabled   = false;
@@ -189,6 +197,9 @@ void config_defaults(imud_config_t *cfg)
     cfg->sk_dest_port = 10113;
     cfg->sk_rate_hz   = 10;
     snprintf(cfg->sk_source_label, sizeof(cfg->sk_source_label), "imud");
+    cfg->sk_tcp_enabled = false;
+    snprintf(cfg->sk_tcp_bind_addr, sizeof(cfg->sk_tcp_bind_addr), "0.0.0.0");
+    cfg->sk_tcp_port  = 10113;
 
     /* Bridge-shared keys (imud-signalk / imud-mqtt). */
     cfg->publish_heave = true;   /* imud's heave estimator is on by default */
@@ -245,6 +256,9 @@ void config_defaults(imud_config_t *cfg)
     cfg->mav_serial_enabled = false;
     snprintf(cfg->mav_serial_device, sizeof(cfg->mav_serial_device), "/dev/serial0");
     cfg->mav_serial_baud = 57600;
+    cfg->mav_tcp_enabled = false;
+    snprintf(cfg->mav_tcp_bind_addr, sizeof(cfg->mav_tcp_bind_addr), "0.0.0.0");
+    cfg->mav_tcp_port    = 5760;
 
     /* [position] */
     cfg->pos_declination_deg = 0.0f;   /* disabled; set to local declination to enable */
@@ -526,6 +540,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "rate_hz")   == 0) NEED_INT(cfg->nmea_rate_hz);
         else if (strcmp(key, "dest_addr") == 0) NEED_STR(cfg->nmea_dest_addr);
         else if (strcmp(key, "dest_port") == 0) NEED_INT(cfg->nmea_dest_port);
+        else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->nmea_tcp_enabled);
+        else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->nmea_tcp_bind_addr);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->nmea_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -542,6 +559,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled") == 0) NEED_BOOL(cfg->stream_enabled);
         else if (strcmp(key, "socket")  == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "rate_hz") == 0) NEED_INT(cfg->stream_rate_hz);
+        else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->stream_tcp_enabled);
+        else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->stream_tcp_bind_addr);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->stream_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -553,6 +573,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "rate_hz")      == 0) NEED_INT(cfg->sk_rate_hz);
         else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
         else if (strcmp(key, "publish_heave")== 0) NEED_BOOL(cfg->publish_heave);
+        else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->sk_tcp_enabled);
+        else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->sk_tcp_bind_addr);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->sk_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -619,6 +642,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "serial_enabled") == 0) NEED_BOOL(cfg->mav_serial_enabled);
         else if (strcmp(key, "serial_device")  == 0) NEED_STR(cfg->mav_serial_device);
         else if (strcmp(key, "serial_baud")    == 0) NEED_INT(cfg->mav_serial_baud);
+        else if (strcmp(key, "tcp_enabled")    == 0) NEED_BOOL(cfg->mav_tcp_enabled);
+        else if (strcmp(key, "tcp_bind_addr")  == 0) NEED_STR(cfg->mav_tcp_bind_addr);
+        else if (strcmp(key, "tcp_port")       == 0) NEED_INT(cfg->mav_tcp_port);
         else WARN_UNKNOWN();
         break;
 

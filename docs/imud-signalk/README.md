@@ -10,7 +10,8 @@ relying on NMEA 0183 parsing.
 
 It's for marine users running Signal K who want imud's data in Signal K without
 the rough edges of NMEA. It holds no hardware, runs as its own service, and
-reconnects on its own if imud restarts.
+reconnects on its own if imud restarts. Deltas go out over UDP, a TCP
+listener the server connects to, or both.
 
 Once imud's stream output is enabled, turn it on with one command:
 

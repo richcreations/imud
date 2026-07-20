@@ -5,24 +5,30 @@
  */
 
 /*
- * test_stream.c — end-to-end test of the AF_UNIX subscription stream
+ * test_stream.c — end-to-end test of the [stream] subscription outputs
  *
- * Links the real output.c (plus nmea.c/packet.c/config.c) with stubbed
- * imu_get_state()/imu_ctx_is_settled(), starts a real stream_out_thread,
- * connects as a subscriber over the Unix socket, and verifies:
- *   - the listener socket is created and accepts connections
+ * Links the real output.c (plus nmea.c/netserv.c/packet.c/config.c) with
+ * stubbed imu_get_state()/imu_ctx_is_settled(), starts a real
+ * stream_out_thread, connects as a subscriber, and verifies:
+ *   - the AF_UNIX listener is created and accepts connections
  *   - packets arrive as exact sizeof(imu_packet_t) frames with correct magic/version
  *   - packet content reflects the fused state (heading roundtrip)
  *   - a disconnected subscriber is pruned and a new one can join
  *   - clean thread stop and socket unlink
+ *   - the TCP listener ([stream] tcp_*) serves the same framed packets
+ *     alongside the AF_UNIX path, and its subscribers get the final
+ *     FLAG_SHUTDOWN packet on stop
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <math.h>
 #include "../include/types.h"
 #include "../include/config.h"
@@ -97,11 +103,124 @@ static int read_frame(int fd, unsigned char *frame)
     return 0;
 }
 
+/* Grab a currently free TCP port (bind :0, read it back, release it). */
+static int free_tcp_port(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { close(fd); return -1; }
+    socklen_t slen = sizeof sa;
+    getsockname(fd, (struct sockaddr *)&sa, &slen);
+    int port = (int)ntohs(sa.sin_port);
+    close(fd);
+    return port;
+}
+
+static int connect_tcp_subscriber(int port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons((uint16_t)port);
+    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* The [stream] TCP listener serves the same framed packets as AF_UNIX. */
+static void test_stream_tcp(void)
+{
+    int fb = g_fail;
+    printf("%-52s", "test_stream_tcp_end_to_end");
+    fflush(stdout);
+
+    int port = free_tcp_port();
+    EXPECT(port > 0, "found a free TCP port for the listener");
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    cfg.nmea_enabled       = false;
+    cfg.highrate_enabled   = false;
+    cfg.stream_enabled     = true;    /* both paths in one thread */
+    cfg.stream_tcp_enabled = true;
+    cfg.stream_rate_hz     = 200;
+    cfg.stream_tcp_port    = port;
+    snprintf(cfg.stream_tcp_bind_addr, sizeof cfg.stream_tcp_bind_addr,
+             "127.0.0.1");
+    snprintf(cfg.stream_socket, sizeof cfg.stream_socket, TEST_SOCK);
+
+    unlink(TEST_SOCK);
+    out_ctx_t *out = NULL;
+    EXPECT(out_ctx_open(&out, &cfg, (imu_ctx_t *)0x1) == 0,
+           "out_ctx_open creates AF_UNIX + TCP listeners");
+
+    pthread_t tid;
+    EXPECT(pthread_create(&tid, NULL, stream_out_thread, out) == 0,
+           "stream_out_thread starts");
+
+    /* One subscriber on each transport; both must see valid frames. */
+    int tcp_sub  = connect_tcp_subscriber(port);
+    int unix_sub = connect_subscriber();
+    EXPECT(tcp_sub  >= 0, "TCP subscriber connects");
+    EXPECT(unix_sub >= 0, "AF_UNIX subscriber connects alongside");
+
+    unsigned char frame[sizeof(imu_packet_t)];
+    int tcp_ok = 0;
+    for (int i = 0; i < 3; i++) {
+        if (read_frame(tcp_sub, frame) != 0) break;
+        uint32_t magic;   memcpy(&magic,   frame,     4);
+        uint16_t version; memcpy(&version, frame + 4, 2);
+        float heading;
+        memcpy(&heading, frame + offsetof(imu_packet_t, heading_deg), 4);
+        if (magic == IMUD_MAGIC && version == IMUD_VERSION &&
+            fabsf(heading - 123.4f) < 1e-4f)
+            tcp_ok++;
+    }
+    EXPECT(tcp_ok == 3, "three exact frames over TCP with correct "
+                        "magic/version/heading");
+    EXPECT(read_frame(unix_sub, frame) == 0,
+           "AF_UNIX subscriber receives frames concurrently");
+
+    /* Stop: the thread must send a final FLAG_SHUTDOWN frame to the TCP
+     * subscriber before closing it (same contract as AF_UNIX). */
+    out_ctx_stop(out);
+    EXPECT(pthread_join(tid, NULL) == 0, "stream_out_thread joins cleanly");
+
+    bool saw_shutdown = false;
+    while (read_frame(tcp_sub, frame) == 0) {
+        uint16_t flags;
+        memcpy(&flags, frame + offsetof(imu_packet_t, flags), 2);
+        if (flags & FLAG_SHUTDOWN) saw_shutdown = true;
+    }
+    EXPECT(saw_shutdown, "TCP subscriber got the final FLAG_SHUTDOWN frame");
+
+    close(tcp_sub);
+    close(unix_sub);
+    out_ctx_free(out);
+    EXPECT(connect_tcp_subscriber(port) < 0,
+           "TCP listener closed after stop/free");
+
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
     puts("=== imud stream socket tests ===");
+    signal(SIGPIPE, SIG_IGN);   /* macOS: netserv sends lack MSG_NOSIGNAL */
     int fb = g_fail;
     printf("%-52s", "test_stream_end_to_end");
     fflush(stdout);
@@ -157,6 +276,9 @@ int main(void)
     EXPECT(access(TEST_SOCK, F_OK) != 0, "socket path unlinked on free");
 
     puts(g_fail == fb ? "OK" : "FAIL");
+
+    test_stream_tcp();
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

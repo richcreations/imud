@@ -1,7 +1,7 @@
 '\" t
-.TH IMUD\-SIGNALK 8 "2026-07-15" "imud 1.5.1" "System Manager's Manual"
+.TH IMUD\-SIGNALK 8 "2026-07-19" "imud 1.6" "System Manager's Manual"
 .SH NAME
-imud\-signalk \- bridge imud's binary stream to Signal K over UDP
+imud\-signalk \- bridge imud's binary stream to Signal K over UDP or TCP
 .SH SYNOPSIS
 .B imud-signalk
 [\fB\-\-config\fR \fIPATH\fR]
@@ -48,6 +48,14 @@ One delta is sent per UDP datagram at the configured rate (default 10 Hz),
 timestamped from the packet's wall-clock time.  Configure a matching UDP
 connection on the Signal K server (Server \(-> Connections \(-> Add, type UDP)
 listening on the bridge's destination port.
+.PP
+With
+.B tcp_enabled
+the bridge additionally serves the same deltas newline-framed on a TCP
+listener (default port 10113); configure a TCP client data connection on the
+Signal K server instead \(em useful when the server runs on another machine
+and \(dqjust connecting\(dq beats configuring UDP paths.  See
+.BR imud-signalk.conf (5).
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH

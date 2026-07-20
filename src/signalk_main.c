@@ -10,7 +10,9 @@
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
  * reads the 260-byte packets, and emits a Signal K delta (JSON) over UDP at
  * the configured rate for every imud field that has a standard Signal K path.
- * See sk_delta.c for the field/unit mapping.
+ * An optional TCP listener (tcp_enabled) serves the same deltas newline-
+ * framed to connected clients — the Signal K server consumes it as a TCP
+ * data connection.  See sk_delta.c for the field/unit mapping.
  *
  * It is an ordinary stream consumer: it holds no hardware, reuses the public
  * client header (lib/imud_client.h) for packet validation, and reconnects
@@ -40,6 +42,7 @@
 #include "sk_delta.h"          /* pulls in ../lib/imud_client.h (types only) */
 #include "../lib/imud.h"       /* libimud: stream connect/read/validate */
 #include "config.h"
+#include "netserv.h"
 #include "log.h"
 
 #ifndef SOCK_CLOEXEC
@@ -172,6 +175,16 @@ int main(int argc, char **argv)
     int udp_fd = open_udp_dest(cfg.sk_dest_addr, cfg.sk_dest_port, &dest);
     if (udp_fd < 0) return 1;
 
+    /* Optional TCP listener — same deltas, newline-framed ([restart]). */
+    netserv_t tcp;
+    netserv_init(&tcp);
+    if (cfg.sk_tcp_enabled) {
+        if (netserv_open(&tcp, cfg.sk_tcp_bind_addr, cfg.sk_tcp_port,
+                         "signalk_tcp") < 0) { close(udp_fd); return 1; }
+        LOG_I("[signalk] TCP listener %s:%d (max %d clients)\n",
+              cfg.sk_tcp_bind_addr, tcp.port, NETSRV_MAX_CLIENTS);
+    }
+
     LOG_I("[signalk] bridge → %s:%d @ %d Hz (source '%s'), reading %s\n",
           cfg.sk_dest_addr, cfg.sk_dest_port, cfg.sk_rate_hz,
           cfg.sk_source_label, cfg.stream_socket);
@@ -191,6 +204,9 @@ int main(int argc, char **argv)
     while (!g_stop) {
         sd_notify_msg("WATCHDOG=1");
 
+        /* Accept pending TCP clients (no-op when tcp_enabled = false). */
+        netserv_accept(&tcp);
+
         if (g_reload) {
             g_reload = 0;
             imud_config_t nc;
@@ -206,6 +222,10 @@ int main(int argc, char **argv)
                     udp_fd = open_udp_dest(nc.sk_dest_addr, nc.sk_dest_port, &dest);
                     if (udp_fd < 0) { LOG_E("[signalk] reload: bad dest — exiting\n"); break; }
                 }
+                if (nc.sk_tcp_enabled != cfg.sk_tcp_enabled ||
+                    nc.sk_tcp_port != cfg.sk_tcp_port ||
+                    strcmp(nc.sk_tcp_bind_addr, cfg.sk_tcp_bind_addr) != 0)
+                    LOG_W("[signalk] tcp_* change needs a restart\n");
                 cfg = nc;
                 LOG_I("[signalk] config reloaded\n");
             } else {
@@ -258,6 +278,12 @@ int main(int argc, char **argv)
                     if (sendto(udp_fd, delta, (size_t)n, 0,
                                (struct sockaddr *)&dest, sizeof dest) < 0)
                         LOG_W("[signalk] sendto: %s\n", strerror(errno));
+                    /* Same delta to TCP clients, newline-framed (one JSON
+                     * line per delta — the SK data-connection format). */
+                    if ((size_t)n + 1 < sizeof delta) {
+                        delta[n] = '\n';
+                        netserv_broadcast(&tcp, delta, (size_t)n + 1);
+                    }
                 }
             }
             /* Advance the deadline, skipping missed ticks after a stall. */
@@ -273,6 +299,7 @@ int main(int argc, char **argv)
 
     LOG_I("[signalk] shutting down\n");
     imud_free(stream);
+    netserv_close(&tcp);
     close(udp_fd);
     return 0;
 }

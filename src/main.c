@@ -347,9 +347,15 @@ static void write_status_response(int fd,
             WS("Capture:        stopped (see log)\n");
     }
 
-    if (cfg->nmea_enabled) {
+    if (cfg->nmea_enabled && cfg->nmea_tcp_enabled) {
+        WS("NMEA out:       %d Hz  (UDP port %d, TCP port %d)\n",
+            cfg->nmea_rate_hz, cfg->nmea_dest_port, cfg->nmea_tcp_port);
+    } else if (cfg->nmea_enabled) {
         WS("NMEA out:       %d Hz  (port %d)\n",
             cfg->nmea_rate_hz, cfg->nmea_dest_port);
+    } else if (cfg->nmea_tcp_enabled) {
+        WS("NMEA out:       %d Hz  (TCP port %d)\n",
+            cfg->nmea_rate_hz, cfg->nmea_tcp_port);
     } else {
         WS("NMEA out:       disabled\n");
     }
@@ -574,7 +580,8 @@ int main(int argc, char **argv)
     }
 
     /* Apply CLI overrides */
-    if (args.no_nmea)        cfg.nmea_enabled     = false;
+    if (args.no_nmea) {      cfg.nmea_enabled     = false;
+                             cfg.nmea_tcp_enabled = false; }
     if (args.no_hirate)      cfg.highrate_enabled = false;
     if (args.skip_bias_cal)  cfg.gyro_bias_sec    = 0.0;
     if (args.replay_path[0]) {
@@ -729,11 +736,12 @@ int main(int argc, char **argv)
         pid_remove(PID_FILE); return 1;
     }
 
-    if (cfg.nmea_enabled) {
+    if (cfg.nmea_enabled || cfg.nmea_tcp_enabled) {
         prc = pthread_create(&nmea_tid, NULL, nmea_out_thread, out);
         if (prc != 0) {
             LOG_W("[main] warning: cannot create nmea_out thread: %s\n", strerror(prc));
-            cfg.nmea_enabled = false;
+            cfg.nmea_enabled     = false;
+            cfg.nmea_tcp_enabled = false;
         } else {
             nmea_started = true;
         }
@@ -747,11 +755,12 @@ int main(int argc, char **argv)
             hirate_started = true;
         }
     }
-    if (cfg.stream_enabled) {
+    if (cfg.stream_enabled || cfg.stream_tcp_enabled) {
         prc = pthread_create(&stream_tid, NULL, stream_out_thread, out);
         if (prc != 0) {
             LOG_W("[main] warning: cannot create stream_out thread: %s\n", strerror(prc));
-            cfg.stream_enabled = false;
+            cfg.stream_enabled     = false;
+            cfg.stream_tcp_enabled = false;
         } else {
             stream_started = true;
         }

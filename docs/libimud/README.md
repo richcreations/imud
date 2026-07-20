@@ -3,7 +3,8 @@
 **Read imud's telemetry from C without pinning yourself to the wire format.**
 
 `libimud` is the ABI-stable client library for imud. It dials the daemon's
-local stream socket (or the high-rate UDP stream), validates every packet
+local stream socket, the high-rate UDP stream, or — since 1.6 — a remote
+daemon's `[stream]` TCP listener (`imud_connect_tcp`), validates every packet
 (magic, version, CRC32), and hands you the newest fused state as a plain
 struct — attitude, heading, heave, sea state, and the fusion/compass-health
 diagnostics.
@@ -36,7 +37,10 @@ cc app.c $(pkg-config --cflags --libs libimud)
 
 A Python client (`imud_client.py`, standard library only) ships alongside it,
 and a deprecated single-header C path (`imud_client.h`) remains for the
-wire-pinned cases — both are covered in the manual.
+wire-pinned cases — both are covered in the manual. For microcontrollers,
+[imud-arduino](https://github.com/richcreations/imud-arduino) (library name
+`ImudClient`) receives the same stream over TCP or UDP on Arduino/ESP32
+boards; it is maintained in its own repository.
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-.TH IMUD\-MAVLINK.CONF 5 "2026-07-15" "imud 1.5.1" "File Formats Manual"
+.TH IMUD\-MAVLINK.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
 .SH NAME
 imud\-mavlink.conf \- configuration file for imud-mavlink(8)
 .SH SYNOPSIS
@@ -7,7 +7,8 @@ imud\-mavlink.conf \- configuration file for imud-mavlink(8)
 Configuration for the
 .BR imud-mavlink (8)
 bridge daemon, which reads imud's binary stream socket and emits MAVLink (v1 or
-v2) HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.  The bridge
+v2) HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP, serial, and/or a TCP
+listener that ground stations connect to.  The bridge
 reads
 .B only
 this file (never
@@ -90,6 +91,24 @@ Serial device (e.g.
 .B serial_baud
 .RI ( int ,\ default:\ 57600 )\ [restart]
 Serial baud rate (9600\(en921600).
+.TP
+.B tcp_enabled
+.RI ( bool ,\ default:\ false )\ [restart]
+Enable the TCP listener.
+Ground stations connect as TCP clients (QGroundControl / Mission Planner
+.BR tcp://<host>:5760 );
+every connected client (up to 8) receives the same frames.
+Can run alongside UDP and serial.
+.TP
+.B tcp_bind_addr
+.RI ( string ,\ default:\ \(dq0.0.0.0\(dq )\ [restart]
+Listener bind address (numeric IPv4);
+.B 127.0.0.1
+keeps it host-local.
+.TP
+.B tcp_port
+.RI ( int ,\ default:\ 5760 )\ [restart]
+Listener TCP port (the de-facto MAVLink TCP port).
 .SH FILES
 .TP
 .I /etc/imud/imud-mavlink.conf

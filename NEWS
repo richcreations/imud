@@ -6,6 +6,48 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.6
+---
+* TCP outputs. Every consumer-facing stream can now serve TCP clients
+  alongside (not replacing) its existing transport, because that is how the
+  consuming software actually connects — chartplotter apps, signalk-server,
+  and ground stations are TCP clients first:
+  - [nmea] tcp_enabled: NMEA-over-TCP listener (port 10110) — OpenCPN,
+    Navionics, and phone/tablet nav apps connect to tcp://HOST:10110.
+  - [stream] tcp_enabled: the loss-free framed binary stream over TCP
+    (port 10112) — remote imud-mon, remote bridges, laptop consumers.
+  - imud-signalk tcp_enabled: newline-framed deltas on a TCP listener
+    (port 10113) for a Signal K server TCP data connection.
+  - imud-mavlink tcp_enabled: a TCP listener (port 5760) that
+    QGroundControl / Mission Planner connect to directly.
+  Each listener accepts up to 8 clients; a slow client drops
+  payloads/frames, never stalls the daemon. All tcp_* keys are [restart];
+  bind defaults to 0.0.0.0 (set tcp_bind_addr = 127.0.0.1 to stay local).
+* BEHAVIOR CHANGE — default output posture. A stock daemon (no config file,
+  or one that doesn't say otherwise) now enables ONLY the local AF_UNIX
+  [stream] socket: nmea.enabled flipped true -> false, stream.enabled
+  flipped false -> true. Bridges and libimud consumers work out of the box,
+  and nothing touches the network until an output is explicitly enabled.
+  Existing installs that relied on the built-in NMEA-UDP-on default must
+  set [nmea] enabled = true (the shipped /etc/imud/imud.conf has carried
+  this stream-only posture since 1.5, so installs using it are unaffected).
+* libimud: new imud_connect_tcp(host, port) — connect to a daemon's
+  [stream] TCP listener; the remote equivalent of imud_connect_stream, same
+  framed-read path. Additive (symbol version IMUD_1, SONAME stays
+  libimud.so.0). Python: ImudClient.connect_tcp(host, port) /
+  ImudClient(tcp=(host, port)), and imud_client.py --tcp HOST[:PORT].
+* New companion repository: imud-arduino
+  (https://github.com/richcreations/imud-arduino) — an Arduino/ESP32 client
+  library (ImudClient) that receives the binary stream over the [stream]
+  TCP listener or high-rate UDP, for gauges, displays, and remotes built on
+  microcontrollers.
+* New shared TCP-server core (src/netserv.c) used by the daemon and both
+  bridges: non-blocking accept, broadcast-only (clients are never read),
+  the stream thread's proven slow-client policy, single owning thread per
+  listener; covered by the new test_netserv suite plus TCP paths in
+  test_stream and test_libimud.
+
+
 1.5.1
 -----
 * Fix two C11 data races in the 1.5 release (neither is caught by the

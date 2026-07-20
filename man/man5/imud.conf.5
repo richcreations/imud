@@ -1,4 +1,4 @@
-.TH IMUD.CONF 5 "2026-07-15" "imud 1.5.1" "File Formats Manual"
+.TH IMUD.CONF 5 "2026-07-19" "imud 1.6" "File Formats Manual"
 .SH NAME
 imud.conf \- configuration file for the imud IMU daemon
 .SH SYNOPSIS
@@ -346,21 +346,27 @@ Set
 .B 0
 to skip.
 .SS [nmea]
-NMEA 0183 UDP output.
+NMEA 0183 output over UDP and/or a TCP listener.
+Both are off by default (since 1.6 a stock daemon emits only on the local
+.B [stream]
+socket; every network output is an explicit opt-in).
 .B [restart]:
 .BR enabled ,
 .BR dest_addr ,
-.BR dest_port .
+.BR dest_port ,
+.BR tcp_enabled ,
+.BR tcp_bind_addr ,
+.BR tcp_port .
 .B [hot]:
 .BR rate_hz .
 .TP
 .B enabled
-.RI (bool,\ default:\ true)
-Enable NMEA output.
+.RI (bool,\ default:\ false)
+Enable NMEA UDP output.
 .TP
 .B rate_hz
 .RI (int,\ default:\ 10)
-Output rate in Hz.
+Output rate in Hz (shared by UDP and TCP).
 .TP
 .B dest_addr
 .RI (string,\ default:\ \(dq255.255.255.255\(dq)
@@ -369,6 +375,24 @@ Destination IP address (broadcast, unicast, or multicast).
 .B dest_port
 .RI (int,\ default:\ 10110)
 Destination UDP port.
+.TP
+.B tcp_enabled
+.RI (bool,\ default:\ false)
+Enable the NMEA-over-TCP listener.
+Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP
+clients and each receives every sentence burst; up to 8 clients, slow clients
+skip bursts rather than stalling the daemon.
+.TP
+.B tcp_bind_addr
+.RI (string,\ default:\ \(dq0.0.0.0\(dq)
+Listener bind address (numeric IPv4).
+Set
+.B 127.0.0.1
+to keep the listener host-local.
+.TP
+.B tcp_port
+.RI (int,\ default:\ 10110)
+Listener TCP port (the de-facto NMEA-over-TCP port).
 .PP
 Sentences emitted:
 .BR $PASHR ,
@@ -425,15 +449,20 @@ as
 over a SOCK_STREAM socket: loss-free for same-host consumers, up to 8
 subscribers. Slow consumers get dropped packets (visible as imu_seq gaps),
 never a stalled daemon.
+An optional TCP listener serves the same framed packets to remote consumers.
 .B [restart]:
 .BR enabled ,
-.BR socket .
+.BR socket ,
+.BR tcp_enabled ,
+.BR tcp_bind_addr ,
+.BR tcp_port .
 .B [hot]:
 .BR rate_hz .
 .TP
 .B enabled
-.RI (bool,\ default:\ false)
-Enable the subscription stream.
+.RI (bool,\ default:\ true)
+Enable the subscription stream \(em the one output a stock daemon provides
+(the bridges and libimud consumers read it).
 .TP
 .B socket
 .RI (string,\ default:\ \(dq/run/imud/imud-stream.sock\(dq)
@@ -441,7 +470,30 @@ Listen socket path (mode 0660).
 .TP
 .B rate_hz
 .RI (int,\ default:\ 100)
-Per-subscriber packet rate in Hz.
+Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers).
+.TP
+.B tcp_enabled
+.RI (bool,\ default:\ false)
+Enable the TCP listener: the same framed packets, lossless, over the
+network \(em for a remote
+.BR imud-mon ,
+a bridge on another machine, or any
+.BR libimud (3)
+consumer using
+.B imud_connect_tcp
+(Python:
+.BR ImudClient.connect_tcp ).
+.TP
+.B tcp_bind_addr
+.RI (string,\ default:\ \(dq0.0.0.0\(dq)
+Listener bind address (numeric IPv4).
+Set
+.B 127.0.0.1
+to keep the listener host-local.
+.TP
+.B tcp_port
+.RI (int,\ default:\ 10112)
+Listener TCP port.
 .SS Bridge daemons
 The optional bridge daemons \(em
 .BR imud-signalk (8),
