@@ -48,8 +48,9 @@
   <p class="sub">Debian packages for <strong>imud</strong> — the marine IMU daemon
      (&ldquo;gpsd for IMUs&rdquo;).</p>
 
-  <p>Signed <code>.deb</code> packages for <strong>arm64</strong> Raspberry&nbsp;Pi&nbsp;OS
-     and Debian, suites <strong>bookworm</strong> and <strong>trixie</strong>.</p>
+  <p>Signed <code>.deb</code> packages for <strong>arm64</strong> and
+     <strong>armhf</strong> Raspberry&nbsp;Pi&nbsp;OS and Debian, suites
+     <strong>bookworm</strong> and <strong>trixie</strong>.</p>
 
   <h2>Add the repository</h2>
   <p>Import the signing key, add the source, and update — substitute
@@ -75,8 +76,10 @@ sudo apt install imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-promethe
      <code>sudo systemctl enable --now imud</code>.</p>
 
   <div class="note">
-    arm64 only. imud drives an I²C IMU on a Raspberry Pi, so the packages target the
-    Pi's architecture. On other platforms, build from source — see the
+    arm64 and armhf only. imud drives an I²C IMU on a Raspberry Pi, so the packages
+    target the Pi's architectures: arm64 for 64-bit OS images, armhf (ARMv7 — Pi&nbsp;2
+    and later) for 32-bit ones. apt picks the right one automatically. On other
+    platforms, build from source — see the
     <a href="https://github.com/richcreations/imud">repository</a>.
   </div>
 

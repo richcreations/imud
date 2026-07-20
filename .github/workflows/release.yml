@@ -11,49 +11,52 @@ permissions:
   contents: write
 
 jobs:
-  # Same container build as ci.yml's debs job: bookworm + trixie on both
-  # architectures, so the release carries installable packages for stock
-  # Raspberry Pi OS (bookworm) and current Debian (trixie).
+  # Same docker-run container build as ci.yml's debs job (see the comments
+  # there for why `container:` cannot host the armhf image): bookworm +
+  # trixie × arm64 + armhf, so the release carries installable packages
+  # for stock Raspberry Pi OS (bookworm, 64- and 32-bit) and current
+  # Debian (trixie).  armhf builds pass -B so the arch:all imud-wmm-data
+  # deb is built exactly once per dist, on arm64.
   debs:
     strategy:
       matrix:
         dist: [bookworm, trixie]
-    # arm64 only: the daemon needs I2C hardware and the bridges live on the
-    # daemon's machine, so amd64 debs have no real audience (an x86 imud-mon
-    # user builds from source).  amd64 COMPILATION is still covered by
-    # build-and-test + the sanitizer/fuzz jobs.
+        arch: [arm64, armhf]
+        include:
+          - arch: arm64
+            platform: linux/arm64
+            binary_flag: -b
+          - arch: armhf
+            platform: linux/arm/v7
+            binary_flag: -B
     runs-on: ubuntu-24.04-arm
-    container: debian:${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y build-essential debhelper devscripts lintian \
-                             pkgconf libgpiod-dev libmosquitto-dev
 
       # Suffix the version per distribution (1.5-1~bookworm1) so packages
       # for different dists never collide as filenames/release assets, and
       # dpkg orders upgrades correctly (~ sorts before the bare revision;
       # bookworm < trixie alphabetically matches the upgrade path).
-      - name: Stamp distribution into the version
-        env:
-          DEBEMAIL: richcreations@gmail.com
-          DEBFULLNAME: Richard Simpson
+      - name: Build packages (${{ matrix.dist }}/${{ matrix.arch }})
         run: |
-          dch --local "~${{ matrix.dist }}" \
-              "Automated CI build for Debian ${{ matrix.dist }}."
-
-      - name: Build packages
-        run: dpkg-buildpackage -us -uc -b
-
-      - name: Collect packages
-        run: mkdir -p dist-debs && mv ../*.deb dist-debs/
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e DEBEMAIL=richcreations@gmail.com \
+            -e "DEBFULLNAME=Richard Simpson" \
+            debian:${{ matrix.dist }} bash -euo pipefail -c '
+              apt-get update
+              apt-get install -y build-essential debhelper devscripts \
+                                 pkgconf libgpiod-dev libmosquitto-dev
+              dch --local "~${{ matrix.dist }}" \
+                  "Automated CI build for Debian ${{ matrix.dist }}."
+              dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}
+              mkdir -p dist-debs && mv ../*.deb dist-debs/
+            '
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.dist }}-${{ runner.arch }}
+          name: debs-${{ matrix.dist }}-${{ matrix.arch }}
           path: dist-debs/*.deb
 
   release:

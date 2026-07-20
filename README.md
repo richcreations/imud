@@ -89,7 +89,7 @@ local socket — network outputs are explicit opt-ins.
 
 ## Quick start
 
-**Raspberry Pi OS / Debian (arm64) — install from the apt repository:**
+**Raspberry Pi OS / Debian (arm64/armhf) — install from the apt repository:**
 
 ```sh
 # 1. Trust the signing key and add the repo (use bookworm or trixie)

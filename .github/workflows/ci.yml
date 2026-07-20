@@ -239,54 +239,66 @@ jobs:
           if-no-files-found: ignore
 
   # Build the real .debs (binary-only — the source-package/orig dance is a
-  # Debian-archive concern, not a GitHub-release one) on both architectures
-  # × both supported Debian releases, INSIDE debian:<dist> containers so
-  # the packages depend on Debian's library names/versions (the deploy
-  # target is Raspberry Pi OS, not the runner's Ubuntu).  The bookworm
-  # build doubles as continuous coverage of the libgpiod v1 API path
-  # (bookworm ships 1.6; trixie ships 2.x — the Makefile auto-detects).
+  # Debian-archive concern, not a GitHub-release one) for arm64 + armhf ×
+  # both supported Debian releases, inside debian:<dist> containers so the
+  # packages depend on Debian's library names/versions (the deploy target
+  # is Raspberry Pi OS, not the runner's Ubuntu).  The bookworm build
+  # doubles as continuous coverage of the libgpiod v1 API path (bookworm
+  # ships 1.6; trixie ships 2.x — the Makefile auto-detects).
   # Lintian runs advisory: its findings gate archive submission, not CI.
+  #
+  # arm64 + armhf only: the daemon needs I2C hardware and the bridges live
+  # on the daemon's machine, so amd64 debs have no real audience (an x86
+  # imud-mon user builds from source; amd64 COMPILATION is still covered
+  # by build-and-test + the sanitizer/fuzz jobs).  armhf serves 32-bit
+  # Raspberry Pi OS (ARMv7, Pi 2 and later).
+  #
+  # The containers are driven with explicit `docker run` instead of the
+  # workflow `container:` key: GitHub's arm runners (Neoverse N2) execute
+  # armhf natively (AArch32 at EL0, no QEMU), but `container:` mounts the
+  # runner's arm64 node binary into the container for JS actions like
+  # checkout, and that binary cannot run in an armhf rootfs.  So checkout
+  # and artifact upload happen on the host; only the build runs inside.
   debs:
     strategy:
       matrix:
         dist: [bookworm, trixie]
-    # arm64 only: the daemon needs I2C hardware and the bridges live on the
-    # daemon's machine, so amd64 debs have no real audience (an x86 imud-mon
-    # user builds from source).  amd64 COMPILATION is still covered by
-    # build-and-test + the sanitizer/fuzz jobs.
+        arch: [arm64, armhf]
+        include:
+          - arch: arm64
+            platform: linux/arm64
+            binary_flag: -b   # arch-dep + arch:all (imud-wmm-data)
+          - arch: armhf
+            platform: linux/arm/v7
+            binary_flag: -B   # arch-dep only: arch:all is built once, on arm64
     runs-on: ubuntu-24.04-arm
-    container: debian:${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y build-essential debhelper devscripts lintian \
-                             pkgconf libgpiod-dev libmosquitto-dev
 
       # Suffix the version per distribution (1.5-1~bookworm1) so packages
       # for different dists never collide as filenames/release assets, and
       # dpkg orders upgrades correctly (~ sorts before the bare revision;
-      # bookworm < trixie alphabetically matches the upgrade path).
-      - name: Stamp distribution into the version
-        env:
-          DEBEMAIL: richcreations@gmail.com
-          DEBFULLNAME: Richard Simpson
+      # bookworm < trixie alphabetically matches the upgrade path).  The
+      # arch needs no suffix: it is already in the .deb filename.
+      - name: Build packages (${{ matrix.dist }}/${{ matrix.arch }})
         run: |
-          dch --local "~${{ matrix.dist }}" \
-              "Automated CI build for Debian ${{ matrix.dist }}."
-
-      - name: Build packages
-        run: dpkg-buildpackage -us -uc -b
-
-      - name: Lintian (advisory)
-        run: lintian --info ../*.changes || true
-
-      - name: Collect packages
-        run: mkdir -p dist-debs && mv ../*.deb dist-debs/
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e DEBEMAIL=richcreations@gmail.com \
+            -e "DEBFULLNAME=Richard Simpson" \
+            debian:${{ matrix.dist }} bash -euo pipefail -c '
+              apt-get update
+              apt-get install -y build-essential debhelper devscripts \
+                                 lintian pkgconf libgpiod-dev libmosquitto-dev
+              dch --local "~${{ matrix.dist }}" \
+                  "Automated CI build for Debian ${{ matrix.dist }}."
+              dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}
+              lintian --info ../*.changes || true
+              mkdir -p dist-debs && mv ../*.deb dist-debs/
+            '
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.dist }}-${{ runner.arch }}
+          name: debs-${{ matrix.dist }}-${{ matrix.arch }}
           path: dist-debs/*.deb
