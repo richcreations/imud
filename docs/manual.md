@@ -642,9 +642,10 @@ Actisense NGT-1 (`actisense-serial` with `toChildProcess: nmea2000out`).
 
 **Steps:**
 
-1. Enable imud's stream + the bridge: `imud.conf` `[stream] enabled = true`;
-   `imud-signalk.conf` `enabled = true`, destination = the Signal K host,
-   port 10113 (default). `sudo systemctl enable --now imud-signalk`.
+1. Enable imud's stream + a bridge output: `imud.conf` `[stream] enabled = true`;
+   `imud-signalk.conf` `udp_enabled = true` (the daemon is enabled by default),
+   destination = the Signal K host, port 10113 (default).
+   `sudo systemctl enable --now imud-signalk`.
 2. Signal K server → *Data Connections* → add: data type **SignalK**, source
    **UDP**, port **10113**. imud's paths now appear under `vessels.self`.
 3. Add the N2K connection (canbus/canboatjs or Actisense) with output
@@ -783,6 +784,17 @@ All read imud's local stream, so they require `[stream] enabled = true` in
 `sudo make install-<name>`. See each bridge's **README** for a quick overview, its
 **manual** for configuration and setup, and its **spec** for the exact output
 format.
+
+Each bridge separates the daemon-level `enabled` from its per-output enables. A
+stock installed config ships the daemon `enabled = true` but **every output off**
+(`udp_enabled` / `tcp_enabled` for signalk, `udp_enabled` / `http_enabled` for
+influxdb, `broker_enabled` for mqtt, `http_enabled` for prometheus,
+`udp_enabled` / `serial_enabled` / `tcp_enabled` for mavlink) — so the service
+starts and stays healthy under systemd while emitting nothing until you turn on
+the output(s) you want. Setting the daemon `enabled = false` makes it exit
+cleanly (systemd stops it; no restart loop). (imud-influxdb's old
+`transport = "udp"|"http"` key is deprecated but still honored, mapped to the
+matching output enable with a warning.)
 
 ---
 

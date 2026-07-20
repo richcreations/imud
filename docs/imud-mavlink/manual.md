@@ -50,7 +50,7 @@ transports are enabled require a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Enable the MAVLink bridge. |
+| `enabled` | bool | `true` | Run the bridge daemon. With it true and every transport off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `version` | int | `2` | MAVLink protocol version (1 or 2). |
 | `system_id` | int | `1` | MAVLink system id. |

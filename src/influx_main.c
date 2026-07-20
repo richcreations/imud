@@ -257,8 +257,15 @@ int main(int argc, char **argv)
 
     if (!cfg.influx_enabled) {
         LOG_I("[influx] disabled in config ([imud-influxdb] enabled = false) — exiting\n");
+        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
         return 0;
     }
+
+    /* Back-compat: honour the deprecated `transport` key when no per-output
+     * enable is set (mirrors what the reload path does below). */
+    if (config_apply_influx_transport_compat(&cfg))
+        LOG_W("[influx] `transport` is deprecated — use udp_enabled / http_enabled "
+              "(mapped transport=\"%s\" for now)\n", cfg.influx_transport);
 
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
@@ -267,25 +274,29 @@ int main(int argc, char **argv)
     sigaction(SIGHUP,  &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
-    bool is_http    = (strcmp(cfg.influx_transport, "http") == 0);
     bool deg        = (strcmp(cfg.influx_units, "rad") != 0);
     bool emit_heave = cfg.publish_heave;
     long period_ns  = (cfg.influx_rate_hz > 0) ? 1000000000L / cfg.influx_rate_hz
                                                : 100000000L;
 
+    /* UDP transport ([restart]). */
     int udp_fd = -1;
     struct sockaddr_storage udest;
     socklen_t udestlen = 0;
-    if (!is_http) {
+    if (cfg.influx_udp_enabled) {
         udp_fd = open_udp(cfg.influx_udp_addr, cfg.influx_udp_port, &udest, &udestlen);
         if (udp_fd < 0) return 1;
     }
 
-    if (is_http)
+    if (!cfg.influx_udp_enabled && !cfg.influx_http_enabled)
+        LOG_W("[influx] no output enabled (udp_enabled/http_enabled both false) "
+              "— nothing will be sent\n");
+
+    if (cfg.influx_http_enabled)
         LOG_I("[influx] bridge → http://%s:%d%s @ %d Hz (%s), reading %s\n",
               cfg.influx_http_host, cfg.influx_http_port, cfg.influx_http_path,
               cfg.influx_rate_hz, deg ? "deg" : "rad", cfg.stream_socket);
-    else
+    if (cfg.influx_udp_enabled)
         LOG_I("[influx] bridge → udp %s:%d @ %d Hz (%s), reading %s\n",
               cfg.influx_udp_addr, cfg.influx_udp_port, cfg.influx_rate_hz,
               deg ? "deg" : "rad", cfg.stream_socket);
@@ -312,15 +323,17 @@ int main(int argc, char **argv)
                 emit_heave = nc.publish_heave;
                 period_ns  = (nc.influx_rate_hz > 0) ? 1000000000L / nc.influx_rate_hz
                                                      : 100000000L;
-                if (!is_http &&
+                config_apply_influx_transport_compat(&nc);
+                if (cfg.influx_udp_enabled &&
                     (strcmp(nc.influx_udp_addr, cfg.influx_udp_addr) != 0 ||
                      nc.influx_udp_port != cfg.influx_udp_port)) {
                     close(udp_fd);
                     udp_fd = open_udp(nc.influx_udp_addr, nc.influx_udp_port, &udest, &udestlen);
                     if (udp_fd < 0) { LOG_E("[influx] reload: bad UDP dest — exiting\n"); break; }
                 }
-                if (strcmp(nc.influx_transport, cfg.influx_transport) != 0)
-                    LOG_W("[influx] transport change needs a restart to apply\n");
+                if (nc.influx_udp_enabled != cfg.influx_udp_enabled ||
+                    nc.influx_http_enabled != cfg.influx_http_enabled)
+                    LOG_W("[influx] output enable change needs a restart to apply\n");
                 cfg = nc;
                 LOG_I("[influx] config reloaded\n");
             } else {
@@ -370,7 +383,7 @@ int main(int argc, char **argv)
                                           cfg.influx_measurement,
                                           cfg.influx_source_label, emit_heave, deg);
                 if (n > 0) {
-                    if (is_http) {
+                    if (cfg.influx_http_enabled) {
                         int st = http_post(&cfg, line, n);
                         if (st < 0 || st / 100 != 2) {
                             if (http_ok)
@@ -381,7 +394,8 @@ int main(int argc, char **argv)
                             LOG_I("[influx] HTTP write recovered\n");
                             http_ok = true;
                         }
-                    } else {
+                    }
+                    if (cfg.influx_udp_enabled) {
                         if (sendto(udp_fd, line, (size_t)n, 0,
                                    (struct sockaddr *)&udest, udestlen) < 0)
                             LOG_W("[influx] sendto: %s\n", strerror(errno));

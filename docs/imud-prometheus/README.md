@@ -13,7 +13,7 @@ a rebuild across imud wire revisions.
 It holds no hardware, runs as its own service, and reconnects to imud on its
 own (answering scrapes with `imud_up 0` while imud is away).
 
-Once imud's stream is on and the exporter is enabled:
+Once imud's stream is on and `http_enabled = true` in the config:
 
 ```sh
 sudo systemctl enable --now imud-prometheus

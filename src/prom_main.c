@@ -216,6 +216,7 @@ int main(int argc, char **argv)
 
     if (!cfg.prom_enabled) {
         LOG_I("[prom] disabled in config ([imud-prometheus] enabled = false) — exiting\n");
+        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
         return 0;
     }
 
@@ -226,11 +227,16 @@ int main(int argc, char **argv)
     sigaction(SIGHUP,  &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
-    int lfd = open_listener(cfg.prom_listen_addr, cfg.prom_listen_port);
-    if (lfd < 0) return 1;
-
-    LOG_I("[prom] exporter → http://%s:%d/metrics, reading %s\n",
-          cfg.prom_listen_addr, cfg.prom_listen_port, cfg.stream_socket);
+    /* /metrics HTTP listener ([restart]). */
+    int lfd = -1;
+    if (cfg.prom_http_enabled) {
+        lfd = open_listener(cfg.prom_listen_addr, cfg.prom_listen_port);
+        if (lfd < 0) return 1;
+        LOG_I("[prom] exporter → http://%s:%d/metrics, reading %s\n",
+              cfg.prom_listen_addr, cfg.prom_listen_port, cfg.stream_socket);
+    } else {
+        LOG_W("[prom] no output enabled (http_enabled = false) — /metrics not served\n");
+    }
     sd_notify_msg("READY=1");
 
     imud_t      *stream   = NULL;
@@ -247,6 +253,8 @@ int main(int argc, char **argv)
             config_defaults(&nc);
             if (config_load(config_path, &nc) != CONFIG_ERR_PARSE) {
                 log_set_level_str(nc.log_level);
+                if (nc.prom_http_enabled != cfg.prom_http_enabled)
+                    LOG_W("[prom] http_enabled change needs a restart to apply\n");
                 if (strcmp(nc.prom_listen_addr, cfg.prom_listen_addr) != 0 ||
                     nc.prom_listen_port != cfg.prom_listen_port)
                     LOG_W("[prom] listen address change needs a restart to apply\n");
@@ -264,10 +272,14 @@ int main(int argc, char **argv)
                       cfg.stream_socket, strerror(errno));
                 have_pkt = false;
                 /* Keep answering scrapes (imud_up 0) while imud is away. */
-                struct pollfd pw = { .fd = lfd, .events = POLLIN };
-                if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
-                    int cfd = accept(lfd, NULL, NULL);
-                    if (cfd >= 0) serve_scrape(cfd, NULL, packets);
+                if (lfd >= 0) {
+                    struct pollfd pw = { .fd = lfd, .events = POLLIN };
+                    if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
+                        int cfd = accept(lfd, NULL, NULL);
+                        if (cfd >= 0) serve_scrape(cfd, NULL, packets);
+                    }
+                } else {
+                    interruptible_sleep(2);
                 }
                 continue;
             }
@@ -278,7 +290,8 @@ int main(int argc, char **argv)
             { .fd = imud_fd(stream), .events = POLLIN },
             { .fd = lfd,             .events = POLLIN },
         };
-        int pr = poll(pfds, 2, 1000);
+        nfds_t nfds = (lfd >= 0) ? 2 : 1;   /* omit the listener when off */
+        int pr = poll(pfds, nfds, 1000);
         if (pr < 0) {
             if (errno == EINTR) continue;
             LOG_E("[prom] poll: %s\n", strerror(errno));
@@ -303,7 +316,7 @@ int main(int argc, char **argv)
             }
         }
 
-        if (pfds[1].revents & POLLIN) {
+        if (lfd >= 0 && (pfds[1].revents & POLLIN)) {
             int cfd = accept(lfd, NULL, NULL);
             if (cfd >= 0)
                 serve_scrape(cfd, have_pkt ? &latest : NULL, packets);
@@ -312,6 +325,6 @@ int main(int argc, char **argv)
 
     LOG_I("[prom] shutting down\n");
     imud_free(stream);
-    close(lfd);
+    if (lfd >= 0) close(lfd);
     return 0;
 }

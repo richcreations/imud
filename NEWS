@@ -6,6 +6,37 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.6.1
+-----
+* Bridge output posture — daemon on, outputs off. Every bridge
+  (imud-signalk, imud-mqtt, imud-influxdb, imud-mavlink, imud-prometheus)
+  now separates the daemon-level `enabled` from its per-output enables. A
+  stock installed config enables the daemon but ships every output OFF, so
+  the service starts, stays healthy under systemd, and reads imud's stream
+  while emitting nothing until you turn on the output(s) you want. This
+  matches how the main imud daemon already treats its section enables.
+  - imud-signalk: new `udp_enabled` gates the UDP delta output, independent
+    of the existing `tcp_enabled` (enable either or both). BEHAVIOR CHANGE:
+    UDP used to send whenever the daemon ran; an existing config that relied
+    on that must now add `udp_enabled = true`.
+  - imud-influxdb: new `udp_enabled` and `http_enabled` (both may run at
+    once) replace the `transport = "udp"|"http"` selector. `transport` is
+    DEPRECATED but still honored — when neither enable is set it is mapped
+    to the matching output with a one-time warning, so existing configs keep
+    working.
+  - imud-mqtt: new `broker_enabled` gates the broker connection/publish;
+    keeps a fresh install from repeatedly dialing an unconfigured broker.
+  - imud-prometheus: new `http_enabled` gates the /metrics listener.
+  - imud-mavlink: unchanged keys (it already had per-transport enables); the
+    stock config now ships `enabled = true` like the others.
+* Fix: a bridge with `enabled = false` no longer crash-loops under systemd.
+  It now signals readiness before exiting cleanly, so the Type=notify unit
+  records a successful start and stops (inactive/dead) instead of tripping
+  the start-protocol-failure + Restart=on-failure loop. Upgraded systems
+  keep their existing /etc/imud/*.conf (dpkg conffiles); bridges left at the
+  old `enabled = false` default now exit cleanly rather than looping.
+
+
 1.6
 ---
 * TCP outputs. Every consumer-facing stream can now serve TCP clients

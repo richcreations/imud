@@ -10,7 +10,8 @@ logging, where you want every field graphed over time. Pure C, no dependencies.
 It's for anyone running InfluxDB (1.x, 2.x, or 3.x) or Telegraf and Grafana. It
 holds no hardware, runs as its own service, and reconnects to imud on its own.
 
-Once imud's stream is on and the destination is set:
+Once imud's stream is on and an output is enabled (`udp_enabled` and/or
+`http_enabled`) with its destination set:
 
 ```sh
 sudo systemctl enable --now imud-influxdb

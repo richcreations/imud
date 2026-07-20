@@ -100,7 +100,8 @@ typedef struct {
      * `socket` and `publish_heave` keys below), connects to the stream socket,
      * and emits Signal K delta JSON over UDP. Consumed only by the imud-signalk
      * binary; unrelated to the pos_signalk_* input keys in [position]. */
-    bool  sk_enabled;             /* [restart] */
+    bool  sk_enabled;             /* [restart] run the daemon (outputs gated below) */
+    bool  sk_udp_enabled;         /* [restart] UDP delta output (to dest_addr:port) */
     char  sk_dest_addr[64];       /* [hot] Signal K server host */
     int   sk_dest_port;           /* [hot] SK server UDP input port */
     int   sk_rate_hz;             /* [hot] delta emit rate */
@@ -119,7 +120,8 @@ typedef struct {
      * connects to the stream socket, and publishes scalar telemetry topics
      * (+ Home Assistant discovery) to an MQTT broker via libmosquitto.
      * Consumed only by the imud-mqtt binary. */
-    bool  mqtt_enabled;           /* [restart] */
+    bool  mqtt_enabled;           /* [restart] run the daemon (outputs gated below) */
+    bool  mqtt_broker_enabled;    /* [restart] connect to the broker and publish */
     char  mqtt_broker_addr[64];   /* [restart] broker host (hostname or IP) */
     int   mqtt_broker_port;       /* [restart] broker TCP port */
     char  mqtt_client_id[64];     /* [restart] MQTT client id; also HA node id */
@@ -141,16 +143,19 @@ typedef struct {
      * `socket`/`publish_heave` keys), connects to the stream socket, and writes
      * InfluxDB line-protocol points over UDP (default) or HTTP. Pure C, no
      * external deps. Consumed only by the imud-influxdb binary. */
-    bool  influx_enabled;          /* [restart] */
-    char  influx_transport[8];     /* [restart] "udp" | "http" */
+    bool  influx_enabled;          /* [restart] run the daemon (outputs gated below) */
+    char  influx_transport[8];     /* [restart] DEPRECATED "udp"|"http" — mapped to
+                                    *   udp_enabled/http_enabled for old configs */
     int   influx_rate_hz;          /* [hot] point emit rate */
     char  influx_measurement[32];  /* [hot] line-protocol measurement name */
     char  influx_source_label[32]; /* [hot] value of the source= tag */
     char  influx_units[8];         /* [hot] "deg" | "rad" */
     /* UDP transport */
+    bool  influx_udp_enabled;      /* [restart] UDP line-protocol output */
     char  influx_udp_addr[64];     /* [hot] InfluxDB/Telegraf UDP host */
     int   influx_udp_port;         /* [hot] UDP port (InfluxDB default 8089) */
     /* HTTP transport */
+    bool  influx_http_enabled;     /* [restart] HTTP line-protocol output */
     char  influx_http_host[64];    /* [restart] HTTP host */
     int   influx_http_port;        /* [restart] HTTP port (InfluxDB default 8086) */
     char  influx_http_path[192];   /* [restart] write path incl. query (db / org+bucket / precision) */
@@ -161,7 +166,8 @@ typedef struct {
      * shared `socket` key above). Serves the latest fused state as Prometheus
      * text-format gauges on GET /metrics. Base SI units only (no deg/rad key).
      */
-    bool  prom_enabled;            /* [restart] */
+    bool  prom_enabled;            /* [restart] run the daemon (output gated below) */
+    bool  prom_http_enabled;       /* [restart] serve the /metrics HTTP listener */
     char  prom_listen_addr[64];    /* [restart] HTTP bind address */
     int   prom_listen_port;        /* [restart] HTTP port (default 9815) */
 
@@ -255,5 +261,14 @@ int  config_load(const char *path, imud_config_t *cfg);
  * Call before config_load so unset keys get the right fallback.
  */
 void config_defaults(imud_config_t *cfg);
+
+/*
+ * config_apply_influx_transport_compat: back-compat shim for the deprecated
+ * [imud-influxdb] `transport` key. If neither influx_udp_enabled nor
+ * influx_http_enabled is set but a legacy transport string is present, map it to
+ * the matching output enable. Returns true if a mapping was applied (so the
+ * caller can emit a one-time deprecation warning). Idempotent.
+ */
+bool config_apply_influx_transport_compat(imud_config_t *cfg);
 
 #endif /* IMUD_CONFIG_H */

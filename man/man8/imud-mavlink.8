@@ -1,4 +1,4 @@
-.TH IMUD\-MAVLINK 8 "2026-07-19" "imud 1.6" "System Manager's Manual"
+.TH IMUD\-MAVLINK 8 "2026-07-20" "imud 1.6.1" "System Manager's Manual"
 .SH NAME
 imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial/TCP
 .SH SYNOPSIS
@@ -91,10 +91,13 @@ imud-mavlink --config /etc/imud/imud-mavlink.conf
 .PP
 Enable as a service (after enabling imud's
 .B [stream]
-output and
-.B enabled
-in
-.IR imud-mavlink.conf ):
+output and at least one transport \(em
+.BR udp_enabled ,\  serial_enabled ,
+and/or
+.B tcp_enabled
+\(em in
+.IR imud-mavlink.conf ;
+the daemon itself is enabled by default):
 .PP
 .RS 4
 .EX

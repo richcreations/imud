@@ -193,6 +193,7 @@ void config_defaults(imud_config_t *cfg)
 
     /* [imud-signalk] */
     cfg->sk_enabled   = false;
+    cfg->sk_udp_enabled = false;
     snprintf(cfg->sk_dest_addr, sizeof(cfg->sk_dest_addr), "127.0.0.1");
     cfg->sk_dest_port = 10113;
     cfg->sk_rate_hz   = 10;
@@ -205,7 +206,8 @@ void config_defaults(imud_config_t *cfg)
     cfg->publish_heave = true;   /* imud's heave estimator is on by default */
 
     /* [imud-mqtt] */
-    cfg->mqtt_enabled     = false;
+    cfg->mqtt_enabled       = false;
+    cfg->mqtt_broker_enabled = false;
     snprintf(cfg->mqtt_broker_addr, sizeof(cfg->mqtt_broker_addr), "127.0.0.1");
     cfg->mqtt_broker_port = 1883;
     snprintf(cfg->mqtt_client_id,    sizeof(cfg->mqtt_client_id),    "imud");
@@ -224,13 +226,15 @@ void config_defaults(imud_config_t *cfg)
 
     /* [imud-influxdb] */
     cfg->influx_enabled = false;
-    snprintf(cfg->influx_transport,    sizeof(cfg->influx_transport),    "udp");
+    cfg->influx_transport[0] = '\0';  /* empty = unset; legacy key mapped in bridge */
     cfg->influx_rate_hz = 10;
     snprintf(cfg->influx_measurement,  sizeof(cfg->influx_measurement),  "imud");
     snprintf(cfg->influx_source_label, sizeof(cfg->influx_source_label), "imud");
     snprintf(cfg->influx_units,        sizeof(cfg->influx_units),        "deg");
+    cfg->influx_udp_enabled = false;
     snprintf(cfg->influx_udp_addr,     sizeof(cfg->influx_udp_addr),     "127.0.0.1");
     cfg->influx_udp_port = 8089;
+    cfg->influx_http_enabled = false;
     snprintf(cfg->influx_http_host,    sizeof(cfg->influx_http_host),    "127.0.0.1");
     cfg->influx_http_port = 8086;
     snprintf(cfg->influx_http_path,    sizeof(cfg->influx_http_path),
@@ -239,6 +243,7 @@ void config_defaults(imud_config_t *cfg)
 
     /* [imud-prometheus] */
     cfg->prom_enabled = false;
+    cfg->prom_http_enabled = false;
     snprintf(cfg->prom_listen_addr, sizeof(cfg->prom_listen_addr), "127.0.0.1");
     cfg->prom_listen_port = 9815;
 
@@ -283,6 +288,23 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->log_level, sizeof(cfg->log_level), "warn");
     cfg->log_file[0] = '\0';   /* empty = use stderr; set a path to redirect */
     cfg->log_stats_hz = 1;
+}
+
+bool config_apply_influx_transport_compat(imud_config_t *cfg)
+{
+    /* New configs use udp_enabled/http_enabled; only fall back to the legacy
+     * `transport` selector when neither new enable was set. */
+    if (cfg->influx_udp_enabled || cfg->influx_http_enabled)
+        return false;
+    if (strcmp(cfg->influx_transport, "http") == 0) {
+        cfg->influx_http_enabled = true;
+        return true;
+    }
+    if (strcmp(cfg->influx_transport, "udp") == 0) {
+        cfg->influx_udp_enabled = true;
+        return true;
+    }
+    return false;
 }
 
 /* ── Mount rotation helper ──────────────────────────────────────────────── */
@@ -567,6 +589,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_SIGNALK:
         if      (strcmp(key, "enabled")      == 0) NEED_BOOL(cfg->sk_enabled);
+        else if (strcmp(key, "udp_enabled")  == 0) NEED_BOOL(cfg->sk_udp_enabled);
         else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "dest_addr")    == 0) NEED_STR(cfg->sk_dest_addr);
         else if (strcmp(key, "dest_port")    == 0) NEED_INT(cfg->sk_dest_port);
@@ -581,6 +604,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_MQTT:
         if      (strcmp(key, "enabled")       == 0) NEED_BOOL(cfg->mqtt_enabled);
+        else if (strcmp(key, "broker_enabled")== 0) NEED_BOOL(cfg->mqtt_broker_enabled);
         else if (strcmp(key, "socket")        == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "broker_addr")   == 0) NEED_STR(cfg->mqtt_broker_addr);
         else if (strcmp(key, "broker_port")   == 0) NEED_INT(cfg->mqtt_broker_port);
@@ -610,8 +634,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "source_label")  == 0) NEED_STR(cfg->influx_source_label);
         else if (strcmp(key, "units")         == 0) NEED_STR(cfg->influx_units);
         else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
+        else if (strcmp(key, "udp_enabled")   == 0) NEED_BOOL(cfg->influx_udp_enabled);
         else if (strcmp(key, "udp_addr")      == 0) NEED_STR(cfg->influx_udp_addr);
         else if (strcmp(key, "udp_port")      == 0) NEED_INT(cfg->influx_udp_port);
+        else if (strcmp(key, "http_enabled")  == 0) NEED_BOOL(cfg->influx_http_enabled);
         else if (strcmp(key, "http_host")     == 0) NEED_STR(cfg->influx_http_host);
         else if (strcmp(key, "http_port")     == 0) NEED_INT(cfg->influx_http_port);
         else if (strcmp(key, "http_path")     == 0) NEED_STR(cfg->influx_http_path);
@@ -620,10 +646,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_PROM:
-        if      (strcmp(key, "enabled")     == 0) NEED_BOOL(cfg->prom_enabled);
-        else if (strcmp(key, "socket")      == 0) NEED_STR(cfg->stream_socket);
-        else if (strcmp(key, "listen_addr") == 0) NEED_STR(cfg->prom_listen_addr);
-        else if (strcmp(key, "listen_port") == 0) NEED_INT(cfg->prom_listen_port);
+        if      (strcmp(key, "enabled")      == 0) NEED_BOOL(cfg->prom_enabled);
+        else if (strcmp(key, "http_enabled") == 0) NEED_BOOL(cfg->prom_http_enabled);
+        else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
+        else if (strcmp(key, "listen_addr")  == 0) NEED_STR(cfg->prom_listen_addr);
+        else if (strcmp(key, "listen_port")  == 0) NEED_INT(cfg->prom_listen_port);
         else WARN_UNKNOWN();
         break;
 
