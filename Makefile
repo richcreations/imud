@@ -256,10 +256,13 @@ test_imu_math: src/imu_math.c test/test_imu_math.c
 
 # Per-driver register decode/encode over a mock I2C bus (test/i2c_mock.c wraps
 # ioctl with --wrap — GNU ld only).  Reference coverage: the two hardware-
-# validated drivers (ism330dhcx IMU, mmc5983ma mag).
+# validated drivers (ism330dhcx IMU, mmc5983ma mag).  Also wrap __ioctl_time64:
+# on 32-bit glibc with -D_TIME_BITS=64 (Debian armhf) ioctl() is redirected to
+# that symbol, so wrapping plain ioctl alone misses every call there.
 test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c src/log.c \
               test/i2c_mock.c test/test_drivers.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -Wl,--wrap=ioctl -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
 test: test_fusion test_config test_nmea test_packet test_capture test_ring \
       test_concurrency \
