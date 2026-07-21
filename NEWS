@@ -6,6 +6,20 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.6.2
+-----
+* Internal refactor: duplicated code across the daemon, drivers, and
+  bridges consolidated into shared helpers — no behavior, wire, config,
+  or log-output change. The five bridge daemons now share their startup
+  and main-loop scaffolding (src/bridge.c + src/sdnotify.c), all I2C
+  drivers share the register-access helpers (src/drivers/i2c_io.h), and
+  the WMM declination/field-reference derivation is a single function
+  used by both the static-position and GPS paths. Net −835 lines.
+* New test suite (test_bridge) covers the shared bridge scaffolding:
+  emit-tick timing math, CLI handling, config load/reload, systemd
+  notification delivery, and stream reconnect behavior.
+
+
 1.6.1
 -----
 * Bridge output posture — daemon on, outputs off. Every bridge

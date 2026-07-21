@@ -1,3 +1,23 @@
+imud-influxdb (1.6.2) unstable; urgency=medium
+
+  * Rebuilt on the shared bridge scaffolding (internal refactor); no
+    functional change — output, config keys, CLI, and log text are
+    unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
+imud-influxdb (1.6.1) unstable; urgency=medium
+
+  * New udp_enabled and http_enabled keys (both may run at once) replace
+    the transport = "udp"|"http" selector. transport is DEPRECATED but
+    still honoured — when neither enable is set it maps to the matching
+    output with a one-time warning. The stock config ships the daemon
+    enabled with every output off.
+  * Fix: enabled = false no longer crash-loops under systemd (Type=notify)
+    — the bridge signals readiness before exiting cleanly.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud-influxdb (1.5) unstable; urgency=medium
 
   * The temp field now reports the real IMU die temperature (the daemon

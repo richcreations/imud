@@ -1,3 +1,21 @@
+imud-mqtt (1.6.2) unstable; urgency=medium
+
+  * Rebuilt on the shared bridge scaffolding (internal refactor); no
+    functional change — output, config keys, CLI, and log text are
+    unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
+imud-mqtt (1.6.1) unstable; urgency=medium
+
+  * New broker_enabled key gates the broker connection and publishing;
+    keeps a fresh install from repeatedly dialing an unconfigured broker.
+    The stock config ships the daemon enabled with the output off.
+  * Fix: enabled = false no longer crash-loops under systemd (Type=notify)
+    — the bridge signals readiness before exiting cleanly.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud-mqtt (1.5) unstable; urgency=medium
 
   * The temperature topic now reports the real IMU die temperature (the

@@ -1,3 +1,15 @@
+imud (1.6.2-1) unstable; urgency=medium
+
+  * Internal dedup refactor, no functional change: the five bridges now
+    share their startup/reload/main-loop scaffolding (src/bridge.c +
+    src/sdnotify.c), all I2C drivers share the register-access helpers
+    (src/drivers/i2c_io.h), and the WMM declination/field-reference
+    derivation is a single shared function. Wire format, config keys,
+    CLI, and log output are unchanged.
+  * New test_bridge suite covers the shared bridge scaffolding.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud (1.6.1-1) unstable; urgency=medium
 
   * Bridges: separate the daemon-level `enabled` from per-output enables.
