@@ -252,12 +252,12 @@ static void maybe_update_decl(pos_ctx_t *ctx, const wmm_t *wmm,
     double year = wmm_decimal_year();
     double ned[3];
     wmm_field_ned(lat, lon, alt_m, year, wmm, ned);
-    double decl = atan2(ned[1], ned[0]) * (180.0 / M_PI);
+    /* Declination + MEKF field invariants (nT → Gauss) from the one vector. */
+    double decl;
+    float mref_h, mref_z;
+    wmm_derive_refs(ned, &decl, &mref_h, &mref_z);
     imu_ctx_set_declination(ctx->imu, (float)decl, true);
-    /* Field invariants (nT → Gauss) for the MEKF magnetic reference. */
-    imu_ctx_set_mag_ref(ctx->imu,
-                        (float)(sqrt(ned[0]*ned[0] + ned[1]*ned[1]) * 1e-5),
-                        (float)(ned[2] * 1e-5));
+    imu_ctx_set_mag_ref(ctx->imu, mref_h, mref_z);
     LOG_I("[pos] fix (%.4f°N, %.4f°E) → decl=%.2f°E\n",
             lat, lon, decl);
     *last_lat = lat;

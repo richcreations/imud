@@ -33,100 +33,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <signal.h>
 #include <unistd.h>
 #include <time.h>
 #include <fcntl.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <netdb.h>
 #include <netinet/in.h>
 
 #include "influx_line.h"        /* pulls in ../lib/imud_client.h (types only) */
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
+#include "bridge.h"             /* shared bridge scaffolding */
+#include "sdnotify.h"
 #include "config.h"
 #include "log.h"
 
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
-
-#include "version.h"                 /* IMUD_VERSION_STR — canonical version */
-#define VERSION_STR IMUD_VERSION_STR
-
-static volatile sig_atomic_t g_stop;
-static volatile sig_atomic_t g_reload;
-
-static void on_signal(int sig)
-{
-    if (sig == SIGHUP) g_reload = 1;
-    else               g_stop   = 1;
-}
-
-/* ── sd_notify (mirrors src/signalk_main.c) ──────────────────────────────── */
-
-static void sd_notify_msg(const char *msg)
-{
-    const char *sock = getenv("NOTIFY_SOCKET");
-    if (!sock) return;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    if (sock[0] == '@') {
-        addr.sun_path[0] = '\0';
-        strncpy(addr.sun_path + 1, sock + 1, sizeof(addr.sun_path) - 2);
-    } else {
-        strncpy(addr.sun_path, sock, sizeof(addr.sun_path) - 1);
-    }
-    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
-    sendto(fd, msg, strlen(msg), MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof addr);
-    close(fd);
-}
-
-static void interruptible_sleep(int secs)
-{
-    for (int i = 0; i < secs && !g_stop && !g_reload; i++) sleep(1);
-}
-
-/* ── UDP transport ───────────────────────────────────────────────────────── */
-
-/* Resolve host:port and open a datagram socket; store the destination. */
-static int open_udp(const char *host, int port,
-                    struct sockaddr_storage *dst, socklen_t *dlen)
-{
-    char portstr[16];
-    snprintf(portstr, sizeof portstr, "%d", port);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
-        LOG_E("[influx] cannot resolve UDP host '%s'\n", host);
-        return -1;
-    }
-    int fd = socket(res->ai_family, res->ai_socktype | SOCK_CLOEXEC, 0);
-    if (fd < 0) { freeaddrinfo(res); return -1; }
-    memcpy(dst, res->ai_addr, res->ai_addrlen);
-    *dlen = (socklen_t)res->ai_addrlen;
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof yes);  /* harmless for unicast */
-    freeaddrinfo(res);
-    return fd;
-}
+static const bridge_info_t BI = {
+    .prog         = "imud-influxdb",
+    .tag          = "influx",
+    .section      = "imud-influxdb",
+    .default_conf = "/etc/imud/imud-influxdb.conf",
+    .usage_desc   =
+        "  InfluxDB bridge: reads imud's stream socket and writes InfluxDB\n"
+        "  line-protocol points over UDP (default) or HTTP.\n"
+        "  Configured by [imud-influxdb] in its own file.\n",
+};
 
 /* ── HTTP transport ──────────────────────────────────────────────────────── */
-
-static int write_all(int fd, const char *b, int n)
-{
-    int off = 0;
-    while (off < n) {
-        ssize_t w = write(fd, b + off, n - off);
-        if (w <= 0) { if (w < 0 && errno == EINTR) continue; return -1; }
-        off += (int)w;
-    }
-    return 0;
-}
 
 /* Non-blocking connect with a bounded wait. Returns a connected fd or -1. */
 static int tcp_connect(const char *host, int port, int timeout_ms)
@@ -193,7 +125,7 @@ static int http_post(const imud_config_t *cfg, const char *line, int linelen)
 
     int status = -1;
     if (hn > 0 && hn < (int)sizeof hdr &&
-        write_all(fd, hdr, hn) == 0 && write_all(fd, line, linelen) == 0) {
+        bridge_write_all(fd, hdr, hn) == 0 && bridge_write_all(fd, line, linelen) == 0) {
         char resp[1024];
         ssize_t r = recv(fd, resp, sizeof resp - 1, 0);
         if (r > 0) {
@@ -207,57 +139,17 @@ static int http_post(const imud_config_t *cfg, const char *line, int linelen)
     return status;
 }
 
-/* ── CLI ─────────────────────────────────────────────────────────────────── */
-
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-        "Usage: %s [--config PATH]\n"
-        "\n"
-        "  InfluxDB bridge: reads imud's stream socket and writes InfluxDB\n"
-        "  line-protocol points over UDP (default) or HTTP.\n"
-        "  Configured by [imud-influxdb] in its own file.\n"
-        "\n"
-        "  --config PATH   Config file (default: /etc/imud/imud-influxdb.conf)\n"
-        "  --version       Print version and exit\n",
-        prog);
-}
-
 int main(int argc, char **argv)
 {
     char config_path[256];
-    snprintf(config_path, sizeof config_path, "/etc/imud/imud-influxdb.conf");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof config_path, "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--version") == 0) {
-            printf("imud-influxdb %s\n", VERSION_STR);
-            return 0;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else {
-            LOG_E("unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            return 1;
-        }
-    }
+    int rc = bridge_parse_cli(argc, argv, &BI, config_path, sizeof config_path);
+    if (rc != 0) return rc < 0 ? 1 : 0;
 
     imud_config_t cfg;
-    config_defaults(&cfg);
-    int rc = config_load(config_path, &cfg);
-    if (rc == CONFIG_ERR_PARSE) {
-        LOG_E("[influx] %s has errors (see above) — refusing to start\n", config_path);
-        return 1;
-    }
-
-    if (getenv("INVOCATION_ID")) log_set_style(LOG_STYLE_JOURNAL);
-    log_set_level_str(cfg.log_level);
+    if (bridge_load_config(&BI, config_path, &cfg) < 0) return 1;
 
     if (!cfg.influx_enabled) {
-        LOG_I("[influx] disabled in config ([imud-influxdb] enabled = false) — exiting\n");
-        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
+        bridge_exit_disabled(&BI);
         return 0;
     }
 
@@ -267,24 +159,19 @@ int main(int argc, char **argv)
         LOG_W("[influx] `transport` is deprecated — use udp_enabled / http_enabled "
               "(mapped transport=\"%s\" for now)\n", cfg.influx_transport);
 
-    struct sigaction sa = {0};
-    sa.sa_handler = on_signal;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT,  &sa, NULL);
-    sigaction(SIGHUP,  &sa, NULL);
-    signal(SIGPIPE, SIG_IGN);
+    bridge_install_signals();
 
     bool deg        = (strcmp(cfg.influx_units, "rad") != 0);
     bool emit_heave = cfg.publish_heave;
-    long period_ns  = (cfg.influx_rate_hz > 0) ? 1000000000L / cfg.influx_rate_hz
-                                               : 100000000L;
+    long period_ns  = bridge_period_ns(cfg.influx_rate_hz, 100000000L);
 
     /* UDP transport ([restart]). */
     int udp_fd = -1;
     struct sockaddr_storage udest;
     socklen_t udestlen = 0;
     if (cfg.influx_udp_enabled) {
-        udp_fd = open_udp(cfg.influx_udp_addr, cfg.influx_udp_port, &udest, &udestlen);
+        udp_fd = bridge_open_udp(cfg.influx_udp_addr, cfg.influx_udp_port,
+                                 BI.tag, &udest, &udestlen);
         if (udp_fd < 0) return 1;
     }
 
@@ -310,62 +197,41 @@ int main(int argc, char **argv)
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
 
-    while (!g_stop) {
+    while (!bridge_stop) {
         sd_notify_msg("WATCHDOG=1");
 
-        if (g_reload) {
-            g_reload = 0;
-            imud_config_t nc;
-            config_defaults(&nc);
-            if (config_load(config_path, &nc) != CONFIG_ERR_PARSE) {
-                log_set_level_str(nc.log_level);
-                deg        = (strcmp(nc.influx_units, "rad") != 0);
-                emit_heave = nc.publish_heave;
-                period_ns  = (nc.influx_rate_hz > 0) ? 1000000000L / nc.influx_rate_hz
-                                                     : 100000000L;
-                config_apply_influx_transport_compat(&nc);
-                if (cfg.influx_udp_enabled &&
-                    (strcmp(nc.influx_udp_addr, cfg.influx_udp_addr) != 0 ||
-                     nc.influx_udp_port != cfg.influx_udp_port)) {
-                    close(udp_fd);
-                    udp_fd = open_udp(nc.influx_udp_addr, nc.influx_udp_port, &udest, &udestlen);
-                    if (udp_fd < 0) { LOG_E("[influx] reload: bad UDP dest — exiting\n"); break; }
-                }
-                if (nc.influx_udp_enabled != cfg.influx_udp_enabled ||
-                    nc.influx_http_enabled != cfg.influx_http_enabled)
-                    LOG_W("[influx] output enable change needs a restart to apply\n");
-                cfg = nc;
-                LOG_I("[influx] config reloaded\n");
-            } else {
-                LOG_W("[influx] reload failed — keeping current config\n");
+        imud_config_t nc;
+        if (bridge_reload_begin(&BI, config_path, &nc)) {
+            deg        = (strcmp(nc.influx_units, "rad") != 0);
+            emit_heave = nc.publish_heave;
+            period_ns  = bridge_period_ns(nc.influx_rate_hz, 100000000L);
+            config_apply_influx_transport_compat(&nc);
+            if (cfg.influx_udp_enabled &&
+                (strcmp(nc.influx_udp_addr, cfg.influx_udp_addr) != 0 ||
+                 nc.influx_udp_port != cfg.influx_udp_port)) {
+                close(udp_fd);
+                udp_fd = bridge_open_udp(nc.influx_udp_addr, nc.influx_udp_port,
+                                         BI.tag, &udest, &udestlen);
+                if (udp_fd < 0) { LOG_E("[influx] reload: bad UDP dest — exiting\n"); break; }
             }
+            if (nc.influx_udp_enabled != cfg.influx_udp_enabled ||
+                nc.influx_http_enabled != cfg.influx_http_enabled)
+                LOG_W("[influx] output enable change needs a restart to apply\n");
+            cfg = nc;
+            bridge_reload_done(&BI);
         }
 
-        if (!stream) {
-            stream = imud_connect_stream(cfg.stream_socket);
-            if (!stream) {
-                LOG_W("[influx] stream socket %s unavailable: %s — retrying\n",
-                      cfg.stream_socket, strerror(errno));
-                have_pkt = false;
-                interruptible_sleep(2);
-                continue;
-            }
-            LOG_I("[influx] connected to %s\n", cfg.stream_socket);
-            clock_gettime(CLOCK_MONOTONIC, &next);
-        }
+        int cs = bridge_stream_ensure(&stream, cfg.stream_socket, BI.tag, 2);
+        if (cs == 0) { have_pkt = false; continue; }
+        if (cs == 2) clock_gettime(CLOCK_MONOTONIC, &next);
 
-        /* Wait until the next emit tick, draining frames as they arrive.
-         * Round up so a sub-millisecond remainder can't busy-spin. */
+        /* Wait until the next emit tick, draining frames as they arrive. */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        long wait_ns = (next.tv_sec - now.tv_sec) * 1000000000L
-                     + (next.tv_nsec - now.tv_nsec);
-        if (wait_ns < 0) wait_ns = 0;
-
-        int r = imud_read(stream, (int)((wait_ns + 999999L) / 1000000L));
+        int r = imud_read(stream, bridge_wait_ms(&now, &next));
         if (r < 0) {
-            LOG_I("[influx] stream disconnected\n");
-            imud_free(stream); stream = NULL; have_pkt = false;
+            bridge_stream_drop(&stream, BI.tag);
+            have_pkt = false;
             continue;
         }
         if (r == 0) {
@@ -375,8 +241,7 @@ int main(int argc, char **argv)
         /* r == 1: tick deadline (or a signal) — fall through to the emitter. */
 
         clock_gettime(CLOCK_MONOTONIC, &now);
-        if ((now.tv_sec > next.tv_sec) ||
-            (now.tv_sec == next.tv_sec && now.tv_nsec >= next.tv_nsec)) {
+        if (bridge_due(&now, &next)) {
             if (have_pkt) {
                 char line[768];   /* full field set incl. v12 diagnostics */
                 int n = influx_build_line(line, sizeof line, &latest,
@@ -402,13 +267,7 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            do {
-                next.tv_nsec += period_ns;
-                while (next.tv_nsec >= 1000000000L) {
-                    next.tv_sec++; next.tv_nsec -= 1000000000L;
-                }
-            } while ((next.tv_sec < now.tv_sec) ||
-                     (next.tv_sec == now.tv_sec && next.tv_nsec <= now.tv_nsec));
+            bridge_advance(&next, &now, period_ns);
         }
     }
 

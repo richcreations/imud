@@ -46,6 +46,7 @@
 #endif
 
 #include "output.h"
+#include "imu_math.h"    /* ts_add_ns */
 #include "nmea.h"
 #include "packet.h"
 #include "netserv.h"
@@ -191,13 +192,15 @@ static int open_udp_out(const char *dest_ip, int port,
 
 /* ── Timing helper ───────────────────────────────────────────────────────── */
 
-/* Advance abs timespec by period_ns nanoseconds. */
-static void ts_add_ns(struct timespec *ts, long period_ns)
+/* Align the first deadline to the next whole period boundary.
+ * (ts_add_ns comes from imu_math.h.) */
+static void align_next(struct timespec *next, long period_ns)
 {
-    ts->tv_nsec += period_ns;
-    while (ts->tv_nsec >= 1000000000L) {
-        ts->tv_sec++;
-        ts->tv_nsec -= 1000000000L;
+    clock_gettime(CLOCK_MONOTONIC, next);
+    next->tv_nsec = (next->tv_nsec / period_ns + 1) * period_ns;
+    while (next->tv_nsec >= 1000000000L) {
+        next->tv_sec++;
+        next->tv_nsec -= 1000000000L;
     }
 }
 
@@ -213,14 +216,8 @@ void *nmea_out_thread(void *arg)
         ? 1000000000L / ctx->nmea_rate_hz
         : 100000000L;  /* 10 Hz fallback if misconfigured */
 
-    /* Align first deadline to the next whole period boundary. */
     struct timespec next;
-    clock_gettime(CLOCK_MONOTONIC, &next);
-    next.tv_nsec = (next.tv_nsec / period_ns + 1) * period_ns;
-    while (next.tv_nsec >= 1000000000L) {
-        next.tv_sec++;
-        next.tv_nsec -= 1000000000L;
-    }
+    align_next(&next, period_ns);
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
@@ -275,12 +272,7 @@ void *hirate_out_thread(void *arg)
         : 2000000L;   /* 500 Hz fallback if misconfigured */
 
     struct timespec next;
-    clock_gettime(CLOCK_MONOTONIC, &next);
-    next.tv_nsec = (next.tv_nsec / period_ns + 1) * period_ns;
-    while (next.tv_nsec >= 1000000000L) {
-        next.tv_sec++;
-        next.tv_nsec -= 1000000000L;
-    }
+    align_next(&next, period_ns);
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
@@ -341,12 +333,7 @@ void *stream_out_thread(void *arg)
         : 10000000L;   /* 100 Hz fallback if misconfigured */
 
     struct timespec next;
-    clock_gettime(CLOCK_MONOTONIC, &next);
-    next.tv_nsec = (next.tv_nsec / period_ns + 1) * period_ns;
-    while (next.tv_nsec >= 1000000000L) {
-        next.tv_sec++;
-        next.tv_nsec -= 1000000000L;
-    }
+    align_next(&next, period_ns);
 
     while (!ctx->stop) {
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);

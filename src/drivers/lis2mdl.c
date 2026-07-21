@@ -25,11 +25,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "i2c_io.h"
 #include "log.h"
 
 /* ── Register addresses (DS12144 §8) ──────────────────────────────────────── */
@@ -46,32 +44,6 @@
 /* Fixed sensitivity: 1.5 mgauss/LSB = 0.15 µT/LSB */
 #define LIS2MDL_SCALE   0.15f
 
-/* ── I2C helpers ───────────────────────────────────────────────────────────── */
-
-static int burst_read(int fd, uint8_t addr, uint8_t reg,
-                      uint8_t *buf, uint16_t len)
-{
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    return burst_read(fd, addr, reg, val, 1);
-}
-
 /* ── ODR encoding (CFG_REG_A bits [3:2]) ──────────────────────────────────── */
 
 static uint8_t odr_encode(int hz)
@@ -87,7 +59,7 @@ static uint8_t odr_encode(int hz)
 static int li2_probe(int fd, uint8_t addr)
 {
     uint8_t who;
-    if (reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
         LOG_E("lis2mdl: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -102,7 +74,7 @@ static int li2_probe(int fd, uint8_t addr)
 static int li2_reset(int fd, uint8_t addr)
 {
     /* SOFT_RST is bit 5 of CFG_REG_A; self-clears after ~5 ms. */
-    if (reg_write(fd, addr, REG_CFG_REG_A, 0x20) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CFG_REG_A, 0x20) < 0) return -1;
     usleep(5000);
     return 0;
 }
@@ -110,11 +82,11 @@ static int li2_reset(int fd, uint8_t addr)
 static int li2_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
 {
     /* Enable block data update + DRDY interrupt pin. */
-    if (reg_write(fd, addr, REG_CFG_REG_C, 0x11) < 0) return -1;  /* BDU|DRDY_on_PIN */
+    if (i2c_reg_write(fd, addr, REG_CFG_REG_C, 0x11) < 0) return -1;  /* BDU|DRDY_on_PIN */
     /* Enable offset cancellation. */
-    if (reg_write(fd, addr, REG_CFG_REG_B, 0x02) < 0) return -1;  /* OFF_CANC */
+    if (i2c_reg_write(fd, addr, REG_CFG_REG_B, 0x02) < 0) return -1;  /* OFF_CANC */
     /* Set ODR and enable continuous mode (MD[1:0] = 00). */
-    if (reg_write(fd, addr, REG_CFG_REG_A, odr_encode(cfg->odr_hz)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CFG_REG_A, odr_encode(cfg->odr_hz)) < 0) return -1;
     return 0;
 }
 
@@ -129,15 +101,15 @@ static int li2_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
 static int li2_read(int fd, uint8_t addr, mag_sample_t *out)
 {
     uint8_t status;
-    if (reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
+    if (i2c_reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
     if (!(status & 0x08)) return 1;  /* ZYXDA not set */
 
     uint8_t raw[6];
-    if (burst_read(fd, addr, REG_OUTX_L, raw, 6) < 0) return -1;
+    if (i2c_burst_read(fd, addr, REG_OUTX_L, raw, 6) < 0) return -1;
 
-    int16_t rx = (int16_t)(((uint16_t)raw[1] << 8) | raw[0]);
-    int16_t ry = (int16_t)(((uint16_t)raw[3] << 8) | raw[2]);
-    int16_t rz = (int16_t)(((uint16_t)raw[5] << 8) | raw[4]);
+    int16_t rx = i2c_s16le(&raw[0]);
+    int16_t ry = i2c_s16le(&raw[2]);
+    int16_t rz = i2c_s16le(&raw[4]);
 
     /*
      * Remap chip frame (X=port, Y=bow, Z=up) → NED board frame.

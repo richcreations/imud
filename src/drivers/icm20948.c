@@ -24,11 +24,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "i2c_io.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -86,33 +84,10 @@ static struct {
 
 /* ── I2C helpers ────────────────────────────────────────────────────────────── */
 
-static int burst_read(int fd, uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
-{
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    return burst_read(fd, addr, reg, val, 1);
-}
-
 /* Select register bank (0–3). Must be called before accessing any bank register. */
 static int bank_sel(int fd, uint8_t addr, uint8_t bank)
 {
-    return reg_write(fd, addr, REG_BANK_SEL, (uint8_t)(bank << 4));
+    return i2c_reg_write(fd, addr, REG_BANK_SEL, (uint8_t)(bank << 4));
 }
 
 /* ── Full-scale encoding ────────────────────────────────────────────────────── */
@@ -166,7 +141,7 @@ static int icm_probe(int fd, uint8_t addr)
 {
     if (bank_sel(fd, addr, 0) < 0) return -1;
     uint8_t who;
-    if (reg_read(fd, addr, B0_WHO_AM_I, &who) < 0) {
+    if (i2c_reg_read(fd, addr, B0_WHO_AM_I, &who) < 0) {
         LOG_E("icm20948: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -183,12 +158,12 @@ static int icm_reset(int fd, uint8_t addr)
     if (bank_sel(fd, addr, 0) < 0) return -1;
 
     /* Trigger device reset (bit 7); self-clears. */
-    if (reg_write(fd, addr, B0_PWR_MGMT_1, 0x80) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_PWR_MGMT_1, 0x80) < 0) return -1;
 
     for (int i = 0; i < 100; i++) {
         usleep(1000);
         uint8_t val;
-        if (reg_read(fd, addr, B0_PWR_MGMT_1, &val) < 0) return -1;
+        if (i2c_reg_read(fd, addr, B0_PWR_MGMT_1, &val) < 0) return -1;
         if (!(val & 0x80)) goto reset_done;
     }
     LOG_W("icm20948: DEVICE_RESET did not clear after 100 ms\n");
@@ -211,49 +186,49 @@ static int icm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     if (bank_sel(fd, addr, 0) < 0) return -1;
 
     /* Auto-select best clock source (PLL when gyro is on, relaxation osc otherwise). */
-    if (reg_write(fd, addr, B0_PWR_MGMT_1, CLKSEL_AUTO) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_PWR_MGMT_1, CLKSEL_AUTO) < 0) return -1;
     usleep(5000);
 
     /* Enable accel and gyro (clear disable bits). */
-    if (reg_write(fd, addr, B0_PWR_MGMT_2, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_PWR_MGMT_2, 0x00) < 0) return -1;
 
     /* ── Bank 2: sample rate + full-scale + DLPF ─────────────────────────── */
     if (bank_sel(fd, addr, 2) < 0) return -1;
 
     /* Gyro: sample rate divider, then config (FCHOICE=1, DLPFCFG=3 ~51Hz NBW). */
-    if (reg_write(fd, addr, B2_GYRO_SMPLRT_DIV, gdiv) < 0) return -1;
-    if (reg_write(fd, addr, B2_GYRO_CONFIG_1,
+    if (i2c_reg_write(fd, addr, B2_GYRO_SMPLRT_DIV, gdiv) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B2_GYRO_CONFIG_1,
                   (uint8_t)(0x01 | (3 << 3) | gfs)) < 0) return -1;
 
     /* Accel: 12-bit sample rate divider, then config (FCHOICE=1, DLPFCFG=3 ~50Hz NBW). */
-    if (reg_write(fd, addr, B2_ACCEL_SMPLRT_1, (uint8_t)(adiv >> 8)) < 0) return -1;
-    if (reg_write(fd, addr, B2_ACCEL_SMPLRT_2, (uint8_t)(adiv & 0xFF)) < 0) return -1;
-    if (reg_write(fd, addr, B2_ACCEL_CONFIG,
+    if (i2c_reg_write(fd, addr, B2_ACCEL_SMPLRT_1, (uint8_t)(adiv >> 8)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B2_ACCEL_SMPLRT_2, (uint8_t)(adiv & 0xFF)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B2_ACCEL_CONFIG,
                   (uint8_t)(0x01 | (3 << 3) | afs)) < 0) return -1;
 
     /* ── Bank 0: FIFO + interrupts + bypass ──────────────────────────────── */
     if (bank_sel(fd, addr, 0) < 0) return -1;
 
     /* Enable FIFO in USER_CTRL (I2C master off). */
-    if (reg_write(fd, addr, B0_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
 
     /* Reset FIFO: assert then deassert. */
-    if (reg_write(fd, addr, B0_FIFO_RST, 0x1F) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_FIFO_RST, 0x1F) < 0) return -1;
     usleep(100);
-    if (reg_write(fd, addr, B0_FIFO_RST, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_FIFO_RST, 0x00) < 0) return -1;
 
     /* Stream mode: overwrite oldest when full. */
-    if (reg_write(fd, addr, B0_FIFO_MODE, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_FIFO_MODE, 0x00) < 0) return -1;
 
     /* Batch accel + gyro XYZ (12 bytes/sample); temp not needed in FIFO. */
-    if (reg_write(fd, addr, B0_FIFO_EN_2, FIFO_EN2_ACCEL_GYRO) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_FIFO_EN_2, FIFO_EN2_ACCEL_GYRO) < 0) return -1;
 
     /* Assert INT1 on raw data ready so a GPIO line can wake the reader.
      * If no GPIO is wired, the reader uses a 10 ms timer fallback instead. */
-    if (reg_write(fd, addr, B0_INT_ENABLE_1, 0x01) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_INT_ENABLE_1, 0x01) < 0) return -1;
 
     /* Enable I2C bypass so the AK09916 magnetometer is visible to the host. */
-    if (reg_write(fd, addr, B0_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
+    if (i2c_reg_write(fd, addr, B0_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
 
     s.accel_scale = accel_scale;
     s.gyro_scale  = gyro_scale;
@@ -280,7 +255,7 @@ static int icm_read(int fd, uint8_t addr,
 
     /* ── 1. FIFO byte count (13-bit) ─────────────────────────────────────── */
     uint8_t cnt[2];
-    if (burst_read(fd, addr, B0_FIFO_COUNTH, cnt, 2) < 0) return -1;
+    if (i2c_burst_read(fd, addr, B0_FIFO_COUNTH, cnt, 2) < 0) return -1;
     int n_bytes   = (((int)(cnt[0] & 0x1F)) << 8) | cnt[1];
     int n_samples = n_bytes / 12;
 
@@ -293,18 +268,18 @@ static int icm_read(int fd, uint8_t addr,
     /* ── 2. Burst read from FIFO_R_W ─────────────────────────────────────── */
     uint8_t raw[128 * 12];   /* max caller buf is 128 samples = 1536 bytes */
     int to_read = n_samples * 12;
-    if (burst_read(fd, addr, B0_FIFO_R_W, raw, (uint16_t)to_read) < 0) return -1;
+    if (i2c_burst_read(fd, addr, B0_FIFO_R_W, raw, (uint16_t)to_read) < 0) return -1;
 
     /* ── 3. Parse and scale ───────────────────────────────────────────────── */
     for (int i = 0; i < n_samples; i++) {
         const uint8_t *p = raw + i * 12;
 
-        int16_t ax = (int16_t)(((uint16_t)p[0]  << 8) | p[1]);
-        int16_t ay = (int16_t)(((uint16_t)p[2]  << 8) | p[3]);
-        int16_t az = (int16_t)(((uint16_t)p[4]  << 8) | p[5]);
-        int16_t gx = (int16_t)(((uint16_t)p[6]  << 8) | p[7]);
-        int16_t gy = (int16_t)(((uint16_t)p[8]  << 8) | p[9]);
-        int16_t gz = (int16_t)(((uint16_t)p[10] << 8) | p[11]);
+        int16_t ax = i2c_s16be(&p[0]);
+        int16_t ay = i2c_s16be(&p[2]);
+        int16_t az = i2c_s16be(&p[4]);
+        int16_t gx = i2c_s16be(&p[6]);
+        int16_t gy = i2c_s16be(&p[8]);
+        int16_t gz = i2c_s16be(&p[10]);
 
         /*
          * Remap chip frame → NED-compatible board frame.
@@ -326,8 +301,8 @@ static int icm_read(int fd, uint8_t addr,
 
     /* Read temperature from live register (single read for the whole burst). */
     uint8_t tmp[2];
-    if (burst_read(fd, addr, B0_TEMP_OUT_H, tmp, 2) == 0) {
-        int16_t raw_temp = (int16_t)(((uint16_t)tmp[0] << 8) | tmp[1]);
+    if (i2c_burst_read(fd, addr, B0_TEMP_OUT_H, tmp, 2) == 0) {
+        int16_t raw_temp = i2c_s16be(tmp);
         float temp_c = (float)raw_temp / 333.87f + 21.0f;
         for (int i = 0; i < n_samples; i++)
             buf[i].temp_c = temp_c;

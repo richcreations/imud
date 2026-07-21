@@ -907,38 +907,29 @@ out->field[1] = -(ry - NULL_FIELD) * scale;   /* flip Y: port → starboard */
 out->field[2] =  (rz - NULL_FIELD) * scale;   /* Z already points down */
 ```
 
-### The I²C helpers pattern
+### The I²C helpers
 
-All existing drivers use the same three helpers — copy them into your file:
+All drivers share the register helpers in `src/drivers/i2c_io.h` — include it
+and call them; do not roll your own:
 
 ```c
-static int burst_read(int fd, uint8_t addr, uint8_t reg,
-                      uint8_t *buf, uint16_t len)
-{
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
+#include "i2c_io.h"
 
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    return burst_read(fd, addr, reg, val, 1);
-}
+i2c_burst_read(fd, addr, reg, buf, len);  /* combined write-then-read */
+i2c_reg_write(fd, addr, reg, val);
+i2c_reg_read(fd, addr, reg, &val);        /* burst_read of length 1 */
+i2c_s16le(p);  i2c_s16be(p);              /* int16 from a register byte pair */
 ```
 
-`burst_read` issues a combined write-then-read in one I²C transaction (no
-repeated-start gap), saving ~40 µs vs two transactions at 400 kHz.
+`i2c_burst_read` issues a combined write-then-read in one I²C transaction (no
+repeated-start gap), saving ~40 µs vs two transactions at 400 kHz. If your
+chip needs a sub-address modifier for auto-increment (LIS3MDL's `0x80` bit),
+apply it at the call site: `i2c_burst_read(fd, addr, (uint8_t)(reg | 0x80), …)`.
+
+The helpers are `static inline`, so each driver still issues its own single
+`ioctl(fd, I2C_RDWR, &xfer)` per transfer — which is exactly what the mock-I2C
+test harness (`test/i2c_mock.c`, `--wrap=ioctl`) intercepts. Keep any new I/O
+on this path; SMBus calls or `read()`/`write()` would bypass the mock.
 
 ### Writing an IMU driver (`imu_ops_t`)
 
@@ -969,7 +960,7 @@ value. Log a clear error with the received and expected values on mismatch.
 static int myimu_probe(int fd, uint8_t addr)
 {
     uint8_t who;
-    if (reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
         LOG_E("myimu: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -994,11 +985,11 @@ causes init failures on slower hardware.
 ```c
 static int myimu_reset(int fd, uint8_t addr)
 {
-    if (reg_write(fd, addr, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
+    if (i2c_reg_write(fd, addr, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
     for (int i = 0; i < 50; i++) {
         usleep(1000);
         uint8_t val;
-        if (reg_read(fd, addr, REG_CTRL, &val) < 0) return -1;
+        if (i2c_reg_read(fd, addr, REG_CTRL, &val) < 0) return -1;
         if (!(val & 0x01)) goto done;
     }
     LOG_W("myimu: SW_RESET did not clear after 50 ms\n");
@@ -1024,8 +1015,8 @@ static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
-    if (reg_write(fd, addr, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
-    if (reg_write(fd, addr, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
     /* ... FIFO, interrupt config ... */
 
     s.accel_scale = accel_scale;

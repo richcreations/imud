@@ -30,11 +30,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "i2c_io.h"
 #include "log.h"
 
 /* ── Register addresses (AK09916, accessible in bypass mode) ──────────────── */
@@ -58,31 +56,6 @@
 /* Sensitivity: 0.15 µT per LSB (fixed, no sensitivity adjustment registers) */
 #define AK09916_SCALE    0.15f
 
-/* ── I2C helpers ─────────────────────────────────────────────────────────── */
-
-static int burst_read(int fd, uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
-{
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    return burst_read(fd, addr, reg, val, 1);
-}
-
 /* Select the continuous mode code for the requested ODR. */
 static uint8_t odr_to_mode(int odr_hz)
 {
@@ -97,7 +70,7 @@ static uint8_t odr_to_mode(int odr_hz)
 static int ak_probe(int fd, uint8_t addr)
 {
     uint8_t who;
-    if (reg_read(fd, addr, REG_WIA2, &who) < 0) {
+    if (i2c_reg_read(fd, addr, REG_WIA2, &who) < 0) {
         LOG_E("ak09916: WIA2 read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -112,15 +85,15 @@ static int ak_probe(int fd, uint8_t addr)
 static int ak_reset(int fd, uint8_t addr)
 {
     /* Power-down first, then issue soft reset. */
-    if (reg_write(fd, addr, REG_CNTL2, MODE_POWER_DOWN) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CNTL2, MODE_POWER_DOWN) < 0) return -1;
     usleep(1000);
 
-    if (reg_write(fd, addr, REG_CNTL3, 0x01) < 0) return -1;  /* SRST=1 */
+    if (i2c_reg_write(fd, addr, REG_CNTL3, 0x01) < 0) return -1;  /* SRST=1 */
 
     for (int i = 0; i < 20; i++) {
         usleep(1000);
         uint8_t val;
-        if (reg_read(fd, addr, REG_CNTL3, &val) < 0) return -1;
+        if (i2c_reg_read(fd, addr, REG_CNTL3, &val) < 0) return -1;
         if (!(val & 0x01)) return 0;   /* bit self-clears after reset */
     }
     LOG_W("ak09916: SRST did not clear after 20 ms\n");
@@ -131,9 +104,9 @@ static int ak_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
 {
     /* Transition through power-down before setting continuous mode
      * (required by AK09916 datasheet). */
-    if (reg_write(fd, addr, REG_CNTL2, MODE_POWER_DOWN) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CNTL2, MODE_POWER_DOWN) < 0) return -1;
     usleep(1000);
-    if (reg_write(fd, addr, REG_CNTL2, odr_to_mode(cfg->odr_hz)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CNTL2, odr_to_mode(cfg->odr_hz)) < 0) return -1;
     return 0;
 }
 
@@ -152,7 +125,7 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
     /* Poll DRDY (ST1 bit 0) — at 100 Hz this settles within ~10 ms. */
     uint8_t st1 = 0;
     for (int i = 0; i < 15; i++) {
-        if (reg_read(fd, addr, REG_ST1, &st1) < 0) return -1;
+        if (i2c_reg_read(fd, addr, REG_ST1, &st1) < 0) return -1;
         if (st1 & 0x01) break;   /* DRDY asserted */
         usleep(1000);
     }
@@ -165,11 +138,11 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
 
     /* Burst read HXL through HZH (6 bytes, little-endian 16-bit signed). */
     uint8_t raw[6];
-    if (burst_read(fd, addr, REG_HXL, raw, 6) < 0) return -1;
+    if (i2c_burst_read(fd, addr, REG_HXL, raw, 6) < 0) return -1;
 
     /* Read ST2 to complete the transaction.  Check HOFL (overflow). */
     uint8_t st2;
-    if (reg_read(fd, addr, REG_ST2, &st2) < 0) return -1;
+    if (i2c_reg_read(fd, addr, REG_ST2, &st2) < 0) return -1;
 
     if (st2 & 0x08) {
         /* HOFL: measurement data is not reliable during magnetic overflow.
@@ -177,9 +150,9 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
         return 1;
     }
 
-    int16_t hx = (int16_t)(((uint16_t)raw[1] << 8) | raw[0]);
-    int16_t hy = (int16_t)(((uint16_t)raw[3] << 8) | raw[2]);
-    int16_t hz = (int16_t)(((uint16_t)raw[5] << 8) | raw[4]);
+    int16_t hx = i2c_s16le(&raw[0]);
+    int16_t hy = i2c_s16le(&raw[2]);
+    int16_t hz = i2c_s16le(&raw[4]);
 
     /*
      * Remap to NED-compatible board frame (X=bow, Y=starboard, Z=down),

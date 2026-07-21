@@ -42,6 +42,7 @@ src/drivers/*.d
 /test_influxdb
 /test_mavlink
 /test_libimud
+/test_bridge
 /test_prometheus
 /test_drivers_registry
 /test_imu_math

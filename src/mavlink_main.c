@@ -32,38 +32,33 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <signal.h>
 #include <unistd.h>
 #include <time.h>
 #include <fcntl.h>
 #include <termios.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <netdb.h>
 #include <netinet/in.h>
 
 #include "../lib/imud_client.h"
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "mavlink_encode.h"
+#include "bridge.h"             /* shared bridge scaffolding */
+#include "sdnotify.h"
 #include "config.h"
 #include "netserv.h"
 #include "log.h"
 
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
-
-#include "version.h"                 /* IMUD_VERSION_STR — canonical version */
-#define VERSION_STR IMUD_VERSION_STR
-
-static volatile sig_atomic_t g_stop;
-static volatile sig_atomic_t g_reload;
-
-static void on_signal(int sig)
-{
-    if (sig == SIGHUP) g_reload = 1;
-    else               g_stop   = 1;
-}
+static const bridge_info_t BI = {
+    .prog         = "imud-mavlink",
+    .tag          = "mavlink",
+    .section      = "imud-mavlink",
+    .default_conf = "/etc/imud/imud-mavlink.conf",
+    .usage_desc   =
+        "  MAVLink bridge: reads imud's stream socket and emits MAVLink\n"
+        "  HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.\n"
+        "  Configured by [imud-mavlink] in its own file.\n",
+};
 
 /* One output transport: UDP destination, serial device, or a TCP listener
  * (srv != NULL) whose connected GCS clients all receive the same frames. */
@@ -76,56 +71,7 @@ typedef struct {
     uint8_t  seq;      /* per-link sequence (MAVLink loss detection is per link) */
 } sink_t;
 
-/* ── sd_notify (mirrors src/signalk_main.c) ──────────────────────────────── */
-
-static void sd_notify_msg(const char *msg)
-{
-    const char *sock = getenv("NOTIFY_SOCKET");
-    if (!sock) return;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    if (sock[0] == '@') {
-        addr.sun_path[0] = '\0';
-        strncpy(addr.sun_path + 1, sock + 1, sizeof(addr.sun_path) - 2);
-    } else {
-        strncpy(addr.sun_path, sock, sizeof(addr.sun_path) - 1);
-    }
-    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
-    sendto(fd, msg, strlen(msg), MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof addr);
-    close(fd);
-}
-
-static void interruptible_sleep(int secs)
-{
-    for (int i = 0; i < secs && !g_stop && !g_reload; i++) sleep(1);
-}
-
 /* ── Transports ──────────────────────────────────────────────────────────── */
-
-static int open_udp(const char *host, int port,
-                    struct sockaddr_storage *dst, socklen_t *dlen)
-{
-    char portstr[16];
-    snprintf(portstr, sizeof portstr, "%d", port);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
-        LOG_E("[mavlink] cannot resolve UDP host '%s'\n", host);
-        return -1;
-    }
-    int fd = socket(res->ai_family, res->ai_socktype | SOCK_CLOEXEC, 0);
-    if (fd < 0) { freeaddrinfo(res); return -1; }
-    memcpy(dst, res->ai_addr, res->ai_addrlen);
-    *dlen = (socklen_t)res->ai_addrlen;
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof yes);
-    freeaddrinfo(res);
-    return fd;
-}
 
 static speed_t baud_to_speed(int baud)
 {
@@ -196,69 +142,24 @@ static uint32_t boot_ms(const struct timespec *start)
     return (uint32_t)ms;
 }
 
-/* ── CLI ─────────────────────────────────────────────────────────────────── */
-
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-        "Usage: %s [--config PATH]\n"
-        "\n"
-        "  MAVLink bridge: reads imud's stream socket and emits MAVLink\n"
-        "  HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.\n"
-        "  Configured by [imud-mavlink] in its own file.\n"
-        "\n"
-        "  --config PATH   Config file (default: /etc/imud/imud-mavlink.conf)\n"
-        "  --version       Print version and exit\n",
-        prog);
-}
-
 int main(int argc, char **argv)
 {
     char config_path[256];
-    snprintf(config_path, sizeof config_path, "/etc/imud/imud-mavlink.conf");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof config_path, "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--version") == 0) {
-            printf("imud-mavlink %s\n", VERSION_STR);
-            return 0;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else {
-            LOG_E("unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            return 1;
-        }
-    }
+    int rc = bridge_parse_cli(argc, argv, &BI, config_path, sizeof config_path);
+    if (rc != 0) return rc < 0 ? 1 : 0;
 
     imud_config_t cfg;
-    config_defaults(&cfg);
-    int rc = config_load(config_path, &cfg);
-    if (rc == CONFIG_ERR_PARSE) {
-        LOG_E("[mavlink] %s has errors (see above) — refusing to start\n", config_path);
-        return 1;
-    }
-
-    if (getenv("INVOCATION_ID")) log_set_style(LOG_STYLE_JOURNAL);
-    log_set_level_str(cfg.log_level);
+    if (bridge_load_config(&BI, config_path, &cfg) < 0) return 1;
 
     if (!cfg.mav_enabled) {
-        LOG_I("[mavlink] disabled in config ([imud-mavlink] enabled = false) — exiting\n");
-        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
+        bridge_exit_disabled(&BI);
         return 0;
     }
 
-    struct sigaction sa = {0};
-    sa.sa_handler = on_signal;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT,  &sa, NULL);
-    sigaction(SIGHUP,  &sa, NULL);
-    signal(SIGPIPE, SIG_IGN);
+    bridge_install_signals();
 
     int  ver       = (cfg.mav_version == 1) ? 1 : 2;
-    long period_ns = (cfg.mav_rate_hz > 0) ? 1000000000L / cfg.mav_rate_hz : 100000000L;
+    long period_ns = bridge_period_ns(cfg.mav_rate_hz, 100000000L);
 
     /* Build the sink list. */
     sink_t sinks[3];
@@ -270,7 +171,8 @@ int main(int argc, char **argv)
         sink_t *s = &sinks[nsinks];
         memset(s, 0, sizeof *s);
         s->is_udp = true;
-        s->fd = open_udp(cfg.mav_udp_addr, cfg.mav_udp_port, &s->dst, &s->dlen);
+        s->fd = bridge_open_udp(cfg.mav_udp_addr, cfg.mav_udp_port, BI.tag,
+                                &s->dst, &s->dlen);
         if (s->fd < 0) return 1;
         udp_idx = nsinks++;
     }
@@ -318,72 +220,52 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &now);
     next_hb = next_data = now;
 
-    while (!g_stop) {
+    while (!bridge_stop) {
         sd_notify_msg("WATCHDOG=1");
 
-        if (g_reload) {
-            g_reload = 0;
-            imud_config_t nc;
-            config_defaults(&nc);
-            if (config_load(config_path, &nc) != CONFIG_ERR_PARSE) {
-                log_set_level_str(nc.log_level);
-                ver       = (nc.mav_version == 1) ? 1 : 2;
-                period_ns = (nc.mav_rate_hz > 0) ? 1000000000L / nc.mav_rate_hz : 100000000L;
-                if (udp_idx >= 0 &&
-                    (strcmp(nc.mav_udp_addr, cfg.mav_udp_addr) != 0 ||
-                     nc.mav_udp_port != cfg.mav_udp_port)) {
-                    close(sinks[udp_idx].fd);
-                    uint8_t keep_seq = sinks[udp_idx].seq;
-                    sinks[udp_idx].fd = open_udp(nc.mav_udp_addr, nc.mav_udp_port,
-                                                 &sinks[udp_idx].dst, &sinks[udp_idx].dlen);
-                    sinks[udp_idx].seq = keep_seq;
-                    if (sinks[udp_idx].fd < 0) { LOG_E("[mavlink] reload: bad UDP dest — exiting\n"); break; }
-                }
-                if (nc.mav_system_id != cfg.mav_system_id ||
-                    nc.mav_component_id != cfg.mav_component_id ||
-                    nc.mav_udp_enabled != cfg.mav_udp_enabled ||
-                    nc.mav_serial_enabled != cfg.mav_serial_enabled ||
-                    nc.mav_tcp_enabled != cfg.mav_tcp_enabled ||
-                    nc.mav_tcp_port != cfg.mav_tcp_port ||
-                    strcmp(nc.mav_tcp_bind_addr, cfg.mav_tcp_bind_addr) != 0)
-                    LOG_W("[mavlink] sysid/compid/transport change needs a restart\n");
-                cfg = nc;
-                LOG_I("[mavlink] config reloaded\n");
-            } else {
-                LOG_W("[mavlink] reload failed — keeping current config\n");
+        imud_config_t nc;
+        if (bridge_reload_begin(&BI, config_path, &nc)) {
+            ver       = (nc.mav_version == 1) ? 1 : 2;
+            period_ns = bridge_period_ns(nc.mav_rate_hz, 100000000L);
+            if (udp_idx >= 0 &&
+                (strcmp(nc.mav_udp_addr, cfg.mav_udp_addr) != 0 ||
+                 nc.mav_udp_port != cfg.mav_udp_port)) {
+                close(sinks[udp_idx].fd);
+                uint8_t keep_seq = sinks[udp_idx].seq;
+                sinks[udp_idx].fd = bridge_open_udp(nc.mav_udp_addr, nc.mav_udp_port,
+                                                    BI.tag, &sinks[udp_idx].dst,
+                                                    &sinks[udp_idx].dlen);
+                sinks[udp_idx].seq = keep_seq;
+                if (sinks[udp_idx].fd < 0) { LOG_E("[mavlink] reload: bad UDP dest — exiting\n"); break; }
             }
+            if (nc.mav_system_id != cfg.mav_system_id ||
+                nc.mav_component_id != cfg.mav_component_id ||
+                nc.mav_udp_enabled != cfg.mav_udp_enabled ||
+                nc.mav_serial_enabled != cfg.mav_serial_enabled ||
+                nc.mav_tcp_enabled != cfg.mav_tcp_enabled ||
+                nc.mav_tcp_port != cfg.mav_tcp_port ||
+                strcmp(nc.mav_tcp_bind_addr, cfg.mav_tcp_bind_addr) != 0)
+                LOG_W("[mavlink] sysid/compid/transport change needs a restart\n");
+            cfg = nc;
+            bridge_reload_done(&BI);
         }
 
         /* Accept pending TCP clients (no-op when tcp_enabled = false). */
         netserv_accept(&tcp_srv);
 
-        if (!stream) {
-            stream = imud_connect_stream(cfg.stream_socket);
-            if (!stream) {
-                LOG_W("[mavlink] stream socket %s unavailable: %s — retrying\n",
-                      cfg.stream_socket, strerror(errno));
-                have_pkt = false;
-                interruptible_sleep(2);
-                continue;
-            }
-            LOG_I("[mavlink] connected to %s\n", cfg.stream_socket);
+        if (bridge_stream_ensure(&stream, cfg.stream_socket, BI.tag, 2) == 0) {
+            have_pkt = false;
+            continue;
         }
 
-        /* Wait until the nearer of the two deadlines, draining stream frames.
-         * Round up so a sub-millisecond remainder can't busy-spin. */
+        /* Wait until the nearer of the two deadlines, draining stream frames. */
         clock_gettime(CLOCK_MONOTONIC, &now);
-        const struct timespec *earliest =
-            ((next_hb.tv_sec < next_data.tv_sec) ||
-             (next_hb.tv_sec == next_data.tv_sec && next_hb.tv_nsec < next_data.tv_nsec))
-            ? &next_hb : &next_data;
-        long wait_ns = (earliest->tv_sec - now.tv_sec) * 1000000000L
-                     + (earliest->tv_nsec - now.tv_nsec);
-        if (wait_ns < 0) wait_ns = 0;
+        const struct timespec *earliest = bridge_earlier(&next_hb, &next_data);
 
-        int r = imud_read(stream, (int)((wait_ns + 999999L) / 1000000L));
+        int r = imud_read(stream, bridge_wait_ms(&now, earliest));
         if (r < 0) {
-            LOG_I("[mavlink] stream disconnected\n");
-            imud_free(stream); stream = NULL; have_pkt = false;
+            bridge_stream_drop(&stream, BI.tag);
+            have_pkt = false;
             continue;
         }
         if (r == 0) {
@@ -400,8 +282,7 @@ int main(int argc, char **argv)
         clock_gettime(CLOCK_MONOTONIC, &now);
 
         /* HEARTBEAT at 1 Hz (independent of data, and of having a packet). */
-        if ((now.tv_sec > next_hb.tv_sec) ||
-            (now.tv_sec == next_hb.tv_sec && now.tv_nsec >= next_hb.tv_nsec)) {
+        if (bridge_due(&now, &next_hb)) {
             for (int k = 0; k < nsinks; k++) {
                 n = mav_pack_heartbeat(buf, ver, sid, cid, sinks[k].seq++);
                 sink_write(&sinks[k], buf, n);
@@ -410,8 +291,7 @@ int main(int argc, char **argv)
         }
 
         /* ATTITUDE / ATTITUDE_QUATERNION at rate_hz. */
-        if ((now.tv_sec > next_data.tv_sec) ||
-            (now.tv_sec == next_data.tv_sec && now.tv_nsec >= next_data.tv_nsec)) {
+        if (bridge_due(&now, &next_data)) {
             if (have_pkt) {
                 uint32_t t = boot_ms(&start);
                 for (int k = 0; k < nsinks; k++) {
@@ -430,13 +310,7 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            do {
-                next_data.tv_nsec += period_ns;
-                while (next_data.tv_nsec >= 1000000000L) {
-                    next_data.tv_sec++; next_data.tv_nsec -= 1000000000L;
-                }
-            } while ((next_data.tv_sec < now.tv_sec) ||
-                     (next_data.tv_sec == now.tv_sec && next_data.tv_nsec <= now.tv_nsec));
+            bridge_advance(&next_data, &now, period_ns);
         }
     }
 
