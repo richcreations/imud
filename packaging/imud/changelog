@@ -1,3 +1,14 @@
+imud (1.6.2) unstable; urgency=medium
+
+  * Internal dedup refactor, no functional change: all I2C drivers now
+    share the register-access helpers (src/drivers/i2c_io.h), the systemd
+    notify sender is a single shared module, and the WMM declination/
+    field-reference derivation is one function used by both the static-
+    position and GPS paths. Wire format, config keys, CLI, and log
+    output are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud (1.6) unstable; urgency=medium
 
   * TCP outputs: optional TCP listeners for NMEA ([nmea] tcp_enabled, port

@@ -1,3 +1,22 @@
+imud-signalk (1.6.2) unstable; urgency=medium
+
+  * Rebuilt on the shared bridge scaffolding (internal refactor); no
+    functional change — output, config keys, CLI, and log text are
+    unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
+imud-signalk (1.6.1) unstable; urgency=medium
+
+  * New udp_enabled key gates the UDP delta output, independent of
+    tcp_enabled. BEHAVIOR CHANGE: UDP previously sent whenever the bridge
+    ran; add udp_enabled = true to existing configs to keep sending.
+    The stock config ships the daemon enabled with every output off.
+  * Fix: enabled = false no longer crash-loops under systemd (Type=notify)
+    — the bridge signals readiness before exiting cleanly.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 20 Jul 2026 12:00:00 -0700
+
 imud-signalk (1.6) unstable; urgency=medium
 
   * New tcp_enabled/tcp_bind_addr/tcp_port keys: serve the same deltas
