@@ -27,11 +27,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "i2c_io.h"
 #include "log.h"
 
 /* ── Register addresses (DS9463 §7) ───────────────────────────────────────── */
@@ -51,43 +49,6 @@
 
 /* ±4 Gauss: 6842 LSB/G, 1 G = 100 µT → 100/6842 µT/LSB */
 #define LIS3MDL_SCALE   (100.0f / 6842.0f)
-
-/* ── I2C helpers ───────────────────────────────────────────────────────────── */
-
-/*
- * burst_read_auto: multi-byte read using 0x80|reg for address auto-increment.
- * Required for LIS3MDL burst reads (§6.1.1 of the datasheet).
- */
-static int burst_read_auto(int fd, uint8_t addr, uint8_t reg,
-                           uint8_t *buf, uint16_t len)
-{
-    uint8_t sub = (uint8_t)(reg | 0x80);
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &sub },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    /* Single-byte: no auto-increment needed, use plain sub-address. */
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1, .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = 1, .buf = val  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
 
 /* ── ODR encoding ──────────────────────────────────────────────────────────── */
 
@@ -119,7 +80,7 @@ static uint8_t odr_to_ctrl1(int hz)
 static int lis_probe(int fd, uint8_t addr)
 {
     uint8_t who;
-    if (reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
         LOG_E("lis3mdl: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -134,7 +95,7 @@ static int lis_probe(int fd, uint8_t addr)
 static int lis_reset(int fd, uint8_t addr)
 {
     /* SOFT_RST is bit 2 of CTRL_REG2; self-clears. */
-    if (reg_write(fd, addr, REG_CTRL_REG2, 0x04) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG2, 0x04) < 0) return -1;
     usleep(10000);  /* 10 ms power-on time */
     return 0;
 }
@@ -142,15 +103,15 @@ static int lis_reset(int fd, uint8_t addr)
 static int lis_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
 {
     /* Enable block data update (no partial reads). */
-    if (reg_write(fd, addr, REG_CTRL_REG5, 0x40) < 0) return -1;  /* BDU=1 */
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG5, 0x40) < 0) return -1;  /* BDU=1 */
     /* Z-axis operative mode = ultra-high performance. */
-    if (reg_write(fd, addr, REG_CTRL_REG4, 0x0C) < 0) return -1;  /* OMZ=11 */
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG4, 0x0C) < 0) return -1;  /* OMZ=11 */
     /* XY mode + ODR from CTRL_REG1. */
-    if (reg_write(fd, addr, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_hz)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_hz)) < 0) return -1;
     /* ±4 Gauss full scale; clear REBOOT and SOFT_RST. */
-    if (reg_write(fd, addr, REG_CTRL_REG2, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG2, 0x00) < 0) return -1;
     /* Continuous measurement mode: MD[1:0] = 00. */
-    if (reg_write(fd, addr, REG_CTRL_REG3, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL_REG3, 0x00) < 0) return -1;
     return 0;
 }
 
@@ -165,16 +126,16 @@ static int lis_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
 static int lis_read(int fd, uint8_t addr, mag_sample_t *out)
 {
     uint8_t status;
-    if (reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
+    if (i2c_reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
     if (!(status & 0x08)) return 1;  /* ZYXDA not set */
 
-    /* Burst read 6 bytes; address auto-increment requires 0x80|reg. */
+    /* Burst read 6 bytes; address auto-increment requires 0x80|reg (§6.1.1). */
     uint8_t raw[6];
-    if (burst_read_auto(fd, addr, REG_OUT_X_L, raw, 6) < 0) return -1;
+    if (i2c_burst_read(fd, addr, (uint8_t)(REG_OUT_X_L | 0x80), raw, 6) < 0) return -1;
 
-    int16_t rx = (int16_t)(((uint16_t)raw[1] << 8) | raw[0]);
-    int16_t ry = (int16_t)(((uint16_t)raw[3] << 8) | raw[2]);
-    int16_t rz = (int16_t)(((uint16_t)raw[5] << 8) | raw[4]);
+    int16_t rx = i2c_s16le(&raw[0]);
+    int16_t ry = i2c_s16le(&raw[2]);
+    int16_t rz = i2c_s16le(&raw[4]);
 
     /*
      * Remap chip frame (X=port, Y=bow, Z=up) → NED board frame.

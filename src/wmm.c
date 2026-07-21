@@ -256,3 +256,11 @@ double wmm_declination(double lat_deg, double lon_deg,
     wmm_field_ned(lat_deg, lon_deg, alt_m, decimal_year, wmm, ned);
     return atan2(ned[1], ned[0]) * (180.0 / M_PI);
 }
+
+void wmm_derive_refs(const double ned_nT[3], double *decl_deg,
+                     float *mref_h_gauss, float *mref_z_gauss)
+{
+    *decl_deg     = atan2(ned_nT[1], ned_nT[0]) * (180.0 / M_PI);
+    *mref_h_gauss = (float)(sqrt(ned_nT[0]*ned_nT[0] + ned_nT[1]*ned_nT[1]) * 1e-5);
+    *mref_z_gauss = (float)(ned_nT[2] * 1e-5);
+}

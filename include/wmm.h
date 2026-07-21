@@ -55,6 +55,15 @@ void wmm_field_ned(double lat_deg, double lon_deg,
                    const wmm_t *wmm, double ned_nT[3]);
 
 /*
+ * wmm_derive_refs — declination (degrees East) plus the MEKF magnetic-
+ * reference field invariants (nT → Gauss) from one wmm_field_ned() result.
+ * Shared by the daemon's static-position path (main.c) and the GPS path
+ * (position.c), which each need the NED vector once for both outputs.
+ */
+void wmm_derive_refs(const double ned_nT[3], double *decl_deg,
+                     float *mref_h_gauss, float *mref_z_gauss);
+
+/*
  * wmm_decimal_year — return the current date as a decimal year using
  * CLOCK_REALTIME (e.g. 2025.38 for mid-May 2025).
  */

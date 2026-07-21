@@ -63,6 +63,7 @@ IMUD_SRCS   = src/cal.c \
               src/output.c \
               src/packet.c \
               src/position.c \
+              src/sdnotify.c \
               src/wmm.c \
               src/drivers.c \
               $(DRIVER_SRCS)
@@ -104,22 +105,22 @@ imud-mon: src/config.o src/log.o src/mon_main.o
 # Stream access + validation come from libimud ($(LIBIMUD) in $^ is either the
 # versioned .so — linked directly, embedding its SONAME — or, on Darwin, the
 # plain object).
-imud-signalk: src/sk_delta.o src/config.o src/log.o src/netserv.o src/signalk_main.o $(LIBIMUD)
+imud-signalk: src/sk_delta.o src/config.o src/log.o src/netserv.o src/bridge.o src/sdnotify.o src/signalk_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-mqtt bridges the AF_UNIX stream to MQTT: scalar telemetry topics plus
 # Home Assistant discovery, via libmosquitto.  Needs libmosquitto-dev.
-imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/mqtt_main.o $(LIBIMUD)
+imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/mqtt_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
 
 # imud-influxdb bridges the AF_UNIX stream to InfluxDB line protocol over UDP or
 # HTTP.  Pure C — no external dependencies beyond libimud.
-imud-influxdb: src/influx_line.o src/config.o src/log.o src/influx_main.o $(LIBIMUD)
+imud-influxdb: src/influx_line.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/influx_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-mavlink bridges the AF_UNIX stream to MAVLink (v1/v2) over UDP and/or
 # serial.  Pure C — hand-rolled encoder, no external dependencies beyond libimud.
-imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/mavlink_main.o $(LIBIMUD)
+imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/bridge.o src/sdnotify.o src/mavlink_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Optional bridge daemons — each has its own config file, service, and man page,
@@ -128,7 +129,7 @@ imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/mavl
 # imud-prometheus serves the fused state as Prometheus /metrics gauges. Pure
 # C — no external dependencies beyond libimud; the first bridge built purely
 # on the ABI-stable imud_data_t (no wire pinning).
-imud-prometheus: src/prom_metrics.o src/config.o src/log.o src/prom_main.o $(LIBIMUD)
+imud-prometheus: src/prom_metrics.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/prom_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
@@ -241,6 +242,13 @@ test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# Bridge scaffolding (src/bridge.c + src/sdnotify.c): CLI matrix, emit-tick
+# timespec math (period/wait/due/advance/earlier), config load / reload /
+# disabled flows, and sd_notify delivery over a test-bound NOTIFY_SOCKET.
+# Links libimud directly, like test_libimud.
+test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c test/test_bridge.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 # Driver registry + ops-table sanity for every registered chip (no hardware).
 # Links every driver: sim.c pulls in capture.c for its .imucap playback path,
 # and the drivers reference log_emit (LOG_E) on their error branches.
@@ -268,7 +276,7 @@ test: test_fusion test_config test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
-      test_mavlink test_libimud test_prometheus \
+      test_mavlink test_libimud test_bridge test_prometheus \
       test_drivers_registry test_imu_math test_drivers
 	./test_fusion
 	./test_config
@@ -292,6 +300,7 @@ test: test_fusion test_config test_nmea test_packet test_capture test_ring \
 	./test_prometheus
 	./test_mavlink
 	./test_libimud
+	./test_bridge
 	./test_drivers_registry
 	./test_imu_math
 	./test_drivers
@@ -682,7 +691,7 @@ clean:
 	      test_fusion test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
-      test_libimud test_prometheus test_capture test_concurrency \
+      test_libimud test_bridge test_prometheus test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \

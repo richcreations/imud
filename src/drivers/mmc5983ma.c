@@ -21,11 +21,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <sys/ioctl.h>
 
 #include "drivers.h"
+#include "i2c_io.h"
 #include "log.h"
 
 /* ── Register addresses (datasheet §Register Map) ──────────────────────────── */
@@ -57,32 +55,6 @@
 #define NULL_FIELD        131072u   /* 2^17 — unsigned raw output for zero field */
 #define STATUS_M_DONE     0x01u
 
-/* ── I2C helpers ───────────────────────────────────────────────────────────── */
-
-static int burst_read(int fd, uint8_t addr, uint8_t reg,
-                      uint8_t *buf, uint16_t len)
-{
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_write(int fd, uint8_t addr, uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
-}
-
-static int reg_read(int fd, uint8_t addr, uint8_t reg, uint8_t *val)
-{
-    return burst_read(fd, addr, reg, val, 1);
-}
-
 /* ── ODR encoding ──────────────────────────────────────────────────────────── */
 
 /*
@@ -112,7 +84,7 @@ static void odr_encode(int hz, uint8_t *bw_out, uint8_t *cmfreq_out)
 static int mmc_probe(int fd, uint8_t addr)
 {
     uint8_t id;
-    if (reg_read(fd, addr, REG_PRODUCT_ID, &id) < 0) {
+    if (i2c_reg_read(fd, addr, REG_PRODUCT_ID, &id) < 0) {
         LOG_E("mmc5983ma: product ID read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -127,7 +99,7 @@ static int mmc_probe(int fd, uint8_t addr)
 static int mmc_reset(int fd, uint8_t addr)
 {
     /* SW_RST is bit 7 of CTRL1; self-clears. Power-on time: 10 ms. */
-    if (reg_write(fd, addr, REG_CTRL1, 0x80) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL1, 0x80) < 0) return -1;
     usleep(10000);
     return 0;
 }
@@ -138,16 +110,16 @@ static int mmc_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
     odr_encode(cfg->odr_hz, &bw, &cmfreq);
 
     /* Set measurement bandwidth (affects noise and max ODR). */
-    if (reg_write(fd, addr, REG_CTRL1, bw) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL1, bw) < 0) return -1;
 
     /* Clear CTRL0: disable Auto_SR_en; we do periodic manual SET instead. */
-    if (reg_write(fd, addr, REG_CTRL0, 0x00) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL0, 0x00) < 0) return -1;
 
     /* Enable continuous mode: Cmm_en=1 (bit 3) | CM_Freq. */
-    if (reg_write(fd, addr, REG_CTRL2, (uint8_t)(0x08u | cmfreq)) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL2, (uint8_t)(0x08u | cmfreq)) < 0) return -1;
 
     /* Enable INT pin on measurement completion (do this after CMM starts). */
-    if (reg_write(fd, addr, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
 
     return 0;
 }
@@ -168,15 +140,15 @@ static int mmc_read(int fd, uint8_t addr, mag_sample_t *out)
     /* Confirm data is ready. Should always be true after the GPIO edge, but
      * a spurious wakeup or race with the clear path can violate that. */
     uint8_t status;
-    if (reg_read(fd, addr, REG_STATUS, &status) < 0) return -1;
+    if (i2c_reg_read(fd, addr, REG_STATUS, &status) < 0) return -1;
     if (!(status & STATUS_M_DONE)) return 1;
 
     /* Burst-read Xout0…XYZout2 (registers 0x00–0x06, 7 bytes). */
     uint8_t raw[7];
-    if (burst_read(fd, addr, REG_XOUT0, raw, 7) < 0) return -1;
+    if (i2c_burst_read(fd, addr, REG_XOUT0, raw, 7) < 0) return -1;
 
     /* Clear the measurement-done interrupt so the next rising edge is clean. */
-    if (reg_write(fd, addr, REG_STATUS, STATUS_M_DONE) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_STATUS, STATUS_M_DONE) < 0) return -1;
 
     /*
      * Reconstruct 18-bit unsigned values from split registers.
@@ -240,7 +212,7 @@ static int mmc_read(int fd, uint8_t addr, mag_sample_t *out)
  */
 static int mmc_set_reset(int fd, uint8_t addr)
 {
-    if (reg_write(fd, addr, REG_CTRL0, CTRL0_SET) < 0) return -1;
+    if (i2c_reg_write(fd, addr, REG_CTRL0, CTRL0_SET) < 0) return -1;
     usleep(1000);  /* 1 ms settling before next read */
     return 0;
 }

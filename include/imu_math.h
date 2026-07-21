@@ -49,6 +49,18 @@ void apply_mag_cal(const imud_cal_t *cal, mag_sample_t *s);
 
 uint64_t ts_ns(const struct timespec *t);
 
+/* Advance an absolute timespec by ns nanoseconds (carries into tv_sec).
+ * static inline so consumers compiled without imu_math.c (test_stream) need
+ * no link change. */
+static inline void ts_add_ns(struct timespec *ts, long ns)
+{
+    ts->tv_nsec += ns;
+    while (ts->tv_nsec >= 1000000000L) {
+        ts->tv_sec++;
+        ts->tv_nsec -= 1000000000L;
+    }
+}
+
 void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
                    uint64_t wall_ns, uint64_t tai_ns);
 

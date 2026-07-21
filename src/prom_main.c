@@ -35,64 +35,33 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <signal.h>
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
 #include "prom_metrics.h"
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
+#include "bridge.h"             /* shared bridge scaffolding */
+#include "sdnotify.h"
 #include "config.h"
 #include "log.h"
 
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
-
-#include "version.h"                 /* IMUD_VERSION_STR — canonical version */
-#define VERSION_STR IMUD_VERSION_STR
-
 #define METRICS_BUF 8192             /* whole exposition page */
 
-static volatile sig_atomic_t g_stop;
-static volatile sig_atomic_t g_reload;
-
-static void on_signal(int sig)
-{
-    if (sig == SIGHUP) g_reload = 1;
-    else               g_stop   = 1;
-}
-
-/* ── sd_notify (mirrors src/influx_main.c) ───────────────────────────────── */
-
-static void sd_notify_msg(const char *msg)
-{
-    const char *sock = getenv("NOTIFY_SOCKET");
-    if (!sock) return;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    if (sock[0] == '@') {
-        addr.sun_path[0] = '\0';
-        strncpy(addr.sun_path + 1, sock + 1, sizeof(addr.sun_path) - 2);
-    } else {
-        strncpy(addr.sun_path, sock, sizeof(addr.sun_path) - 1);
-    }
-    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
-    sendto(fd, msg, strlen(msg), MSG_NOSIGNAL, (struct sockaddr *)&addr, sizeof addr);
-    close(fd);
-}
-
-static void interruptible_sleep(int secs)
-{
-    for (int i = 0; i < secs && !g_stop && !g_reload; i++) sleep(1);
-}
+static const bridge_info_t BI = {
+    .prog         = "imud-prometheus",
+    .tag          = "prom",
+    .section      = "imud-prometheus",
+    .default_conf = "/etc/imud/imud-prometheus.conf",
+    .usage_desc   =
+        "  Prometheus exporter: reads imud's stream socket and serves the\n"
+        "  latest fused state as text-format gauges on GET /metrics.\n"
+        "  Configured by [imud-prometheus] in its own file.\n",
+};
 
 /* ── HTTP listener ───────────────────────────────────────────────────────── */
 
@@ -123,17 +92,6 @@ static int open_listener(const char *addr, int port)
     return fd;
 }
 
-static int write_all(int fd, const char *b, int n)
-{
-    int off = 0;
-    while (off < n) {
-        ssize_t w = write(fd, b + off, n - off);
-        if (w <= 0) { if (w < 0 && errno == EINTR) continue; return -1; }
-        off += (int)w;
-    }
-    return 0;
-}
-
 /*
  * Serve one scrape: read (and discard) the request line, write the metrics
  * page, close. Short socket timeouts bound a stalled scraper; the loop's
@@ -161,71 +119,26 @@ static void serve_scrape(int cfd, const imud_data_t *d, uint64_t packets)
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n", blen);
     if (hn > 0 && hn < (int)sizeof hdr &&
-        write_all(cfd, hdr, hn) == 0)
-        (void)write_all(cfd, body, blen);
+        bridge_write_all(cfd, hdr, hn) == 0)
+        (void)bridge_write_all(cfd, body, blen);
     close(cfd);
-}
-
-/* ── CLI ─────────────────────────────────────────────────────────────────── */
-
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-        "Usage: %s [--config PATH]\n"
-        "\n"
-        "  Prometheus exporter: reads imud's stream socket and serves the\n"
-        "  latest fused state as text-format gauges on GET /metrics.\n"
-        "  Configured by [imud-prometheus] in its own file.\n"
-        "\n"
-        "  --config PATH   Config file (default: /etc/imud/imud-prometheus.conf)\n"
-        "  --version       Print version and exit\n",
-        prog);
 }
 
 int main(int argc, char **argv)
 {
     char config_path[256];
-    snprintf(config_path, sizeof config_path, "/etc/imud/imud-prometheus.conf");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof config_path, "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--version") == 0) {
-            printf("imud-prometheus %s\n", VERSION_STR);
-            return 0;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else {
-            LOG_E("unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            return 1;
-        }
-    }
+    int rc = bridge_parse_cli(argc, argv, &BI, config_path, sizeof config_path);
+    if (rc != 0) return rc < 0 ? 1 : 0;
 
     imud_config_t cfg;
-    config_defaults(&cfg);
-    int rc = config_load(config_path, &cfg);
-    if (rc == CONFIG_ERR_PARSE) {
-        LOG_E("[prom] %s has errors (see above) — refusing to start\n", config_path);
-        return 1;
-    }
-
-    if (getenv("INVOCATION_ID")) log_set_style(LOG_STYLE_JOURNAL);
-    log_set_level_str(cfg.log_level);
+    if (bridge_load_config(&BI, config_path, &cfg) < 0) return 1;
 
     if (!cfg.prom_enabled) {
-        LOG_I("[prom] disabled in config ([imud-prometheus] enabled = false) — exiting\n");
-        sd_notify_msg("READY=1");   /* signal a clean start so systemd stops us, no restart loop */
+        bridge_exit_disabled(&BI);
         return 0;
     }
 
-    struct sigaction sa = {0};
-    sa.sa_handler = on_signal;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT,  &sa, NULL);
-    sigaction(SIGHUP,  &sa, NULL);
-    signal(SIGPIPE, SIG_IGN);
+    bridge_install_signals();
 
     /* /metrics HTTP listener ([restart]). */
     int lfd = -1;
@@ -244,46 +157,33 @@ int main(int argc, char **argv)
     bool         have_pkt = false;
     uint64_t     packets  = 0;
 
-    while (!g_stop) {
+    while (!bridge_stop) {
         sd_notify_msg("WATCHDOG=1");
 
-        if (g_reload) {
-            g_reload = 0;
-            imud_config_t nc;
-            config_defaults(&nc);
-            if (config_load(config_path, &nc) != CONFIG_ERR_PARSE) {
-                log_set_level_str(nc.log_level);
-                if (nc.prom_http_enabled != cfg.prom_http_enabled)
-                    LOG_W("[prom] http_enabled change needs a restart to apply\n");
-                if (strcmp(nc.prom_listen_addr, cfg.prom_listen_addr) != 0 ||
-                    nc.prom_listen_port != cfg.prom_listen_port)
-                    LOG_W("[prom] listen address change needs a restart to apply\n");
-                cfg = nc;
-                LOG_I("[prom] config reloaded\n");
-            } else {
-                LOG_W("[prom] reload failed — keeping current config\n");
-            }
+        imud_config_t nc;
+        if (bridge_reload_begin(&BI, config_path, &nc)) {
+            if (nc.prom_http_enabled != cfg.prom_http_enabled)
+                LOG_W("[prom] http_enabled change needs a restart to apply\n");
+            if (strcmp(nc.prom_listen_addr, cfg.prom_listen_addr) != 0 ||
+                nc.prom_listen_port != cfg.prom_listen_port)
+                LOG_W("[prom] listen address change needs a restart to apply\n");
+            cfg = nc;
+            bridge_reload_done(&BI);
         }
 
-        if (!stream) {
-            stream = imud_connect_stream(cfg.stream_socket);
-            if (!stream) {
-                LOG_W("[prom] stream socket %s unavailable: %s — retrying\n",
-                      cfg.stream_socket, strerror(errno));
-                have_pkt = false;
-                /* Keep answering scrapes (imud_up 0) while imud is away. */
-                if (lfd >= 0) {
-                    struct pollfd pw = { .fd = lfd, .events = POLLIN };
-                    if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
-                        int cfd = accept(lfd, NULL, NULL);
-                        if (cfd >= 0) serve_scrape(cfd, NULL, packets);
-                    }
-                } else {
-                    interruptible_sleep(2);
+        if (bridge_stream_ensure(&stream, cfg.stream_socket, BI.tag, 0) == 0) {
+            have_pkt = false;
+            /* Keep answering scrapes (imud_up 0) while imud is away. */
+            if (lfd >= 0) {
+                struct pollfd pw = { .fd = lfd, .events = POLLIN };
+                if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
+                    int cfd = accept(lfd, NULL, NULL);
+                    if (cfd >= 0) serve_scrape(cfd, NULL, packets);
                 }
-                continue;
+            } else {
+                bridge_sleep_interruptible(2);
             }
-            LOG_I("[prom] connected to %s\n", cfg.stream_socket);
+            continue;
         }
 
         struct pollfd pfds[2] = {
@@ -307,11 +207,9 @@ int main(int argc, char **argv)
                 packets++;
             }
             if (r < 0) {
-                LOG_I("[prom] stream disconnected\n");
-                imud_free(stream);
-                stream   = NULL;
+                bridge_stream_drop(&stream, BI.tag);
                 have_pkt = false;
-                interruptible_sleep(1);
+                bridge_sleep_interruptible(1);
                 continue;
             }
         }

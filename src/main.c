@@ -55,9 +55,11 @@
 #include "cal.h"
 #include "config.h"
 #include "imu.h"
+#include "imu_math.h"    /* ts_add_ns */
 #include "log.h"
 #include "output.h"
 #include "position.h"
+#include "sdnotify.h"
 #include "types.h"
 #include "wmm.h"
 
@@ -160,29 +162,6 @@ static void pid_remove(const char *path)
 }
 
 /* ── sd_notify ───────────────────────────────────────────────────────────── */
-
-/* Send one sd_notify(3)-style datagram to systemd; no-op outside systemd. */
-static void sd_notify_msg(const char *msg)
-{
-    const char *sock = getenv("NOTIFY_SOCKET");
-    if (!sock) return;
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    if (sock[0] == '@') {               /* abstract socket */
-        addr.sun_path[0] = '\0';
-        strncpy(addr.sun_path + 1, sock + 1, sizeof(addr.sun_path) - 2);
-    } else {
-        strncpy(addr.sun_path, sock, sizeof(addr.sun_path) - 1);
-    }
-
-    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return;
-    sendto(fd, msg, strlen(msg), MSG_NOSIGNAL,
-           (struct sockaddr *)&addr, sizeof(addr));
-    close(fd);
-}
 
 static void sd_notify_ready(void)
 {
@@ -387,15 +366,6 @@ static void write_status_response(int fd,
     (void)write(fd, buf, (size_t)(wp - buf));
 }
 
-static void ts_add_ns(struct timespec *ts, long ns)
-{
-    ts->tv_nsec += ns;
-    while (ts->tv_nsec >= 1000000000L) {
-        ts->tv_sec++;
-        ts->tv_nsec -= 1000000000L;
-    }
-}
-
 static void *health_thread(void *arg)
 {
     health_ctx_t *ctx = arg;
@@ -517,14 +487,12 @@ static void apply_wmm_if_configured(imud_config_t *cfg)
 
     double ned[3];
     wmm_field_ned(cfg->pos_lat_deg, cfg->pos_lon_deg, 0.0, year, &wmm, ned);
-    double decl = atan2(ned[1], ned[0]) * (180.0 / M_PI);
+    /* Declination + MEKF field invariants (nT → Gauss) from the one vector. */
+    double decl;
+    wmm_derive_refs(ned, &decl, &cfg->pos_mref_h_gauss, &cfg->pos_mref_z_gauss);
     cfg->pos_declination_deg   = (float)decl;
     cfg->pos_declination_valid = true;   /* WMM result is valid even at 0.0° */
-
-    /* Field invariants for the MEKF magnetic reference (nT → Gauss). */
-    cfg->pos_mref_h_gauss = (float)(sqrt(ned[0]*ned[0] + ned[1]*ned[1]) * 1e-5);
-    cfg->pos_mref_z_gauss = (float)(ned[2] * 1e-5);
-    cfg->pos_mref_valid   = true;
+    cfg->pos_mref_valid        = true;
 
     LOG_I("[pos] WMM at (%.4f°N, %.4f°E): decl %.2f°E  "
             "H %.3f G  Z %.3f G\n",
