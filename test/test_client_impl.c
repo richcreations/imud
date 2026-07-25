@@ -44,6 +44,7 @@ float    client_wave_height(const void *buf) { return client_copy(buf).wave_heig
 float    client_roll_period(const void *buf) { return client_copy(buf).roll_period_s; }
 float    client_pitch_period(const void *buf) { return client_copy(buf).pitch_period_s; }
 float    client_mag_residual(const void *buf) { return client_copy(buf).mag_residual; }
+float    client_innov_weight(const void *buf) { return client_copy(buf).innov_weight; }
 
 float client_true_heading(const void *buf)
 {

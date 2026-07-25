@@ -191,6 +191,52 @@ static void test_load_bad_int(void)
     end_test(fb);
 }
 
+/*
+ * The four MEKF noise densities all end up as variances in a denominator, so
+ * zero or negative is a broken filter, not a tuning choice: mekf_accel_noise
+ * = 0 gives Ra = 0 and hence a Kalman gain of exactly 1, snapping attitude
+ * onto every raw accel sample. Must be rejected rather than clamped, so a
+ * config typo cannot hide behind plausible-looking output.
+ */
+static void test_load_noise_density_must_be_positive(void)
+{
+    begin_test("test_load_noise_density_must_be_positive");
+    int fb = g_fail;
+    imud_config_t def;
+    config_defaults(&def);
+
+    static const char *keys[] = {
+        "mekf_gyro_noise", "mekf_gyro_bias",
+        "mekf_accel_noise", "mekf_mag_noise",
+    };
+    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        for (int neg = 0; neg < 2; neg++) {
+            char body[128];
+            snprintf(body, sizeof body, "[fusion]\n%s = %s\n",
+                     keys[i], neg ? "-0.001" : "0.0");
+            const char *path = write_tmpconf(70 + i * 2 + neg, body);
+            imud_config_t cfg;
+            config_defaults(&cfg);
+            int rc = config_load(path, &cfg);
+            EXPECT(rc == CONFIG_ERR_PARSE,
+                   neg ? "negative noise density rejected"
+                       : "zero noise density rejected");
+            remove(path);
+        }
+    }
+
+    /* A positive value on the same key must still load normally. */
+    const char *ok = write_tmpconf(79,
+        "[fusion]\n"
+        "mekf_accel_noise = 0.0044\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(ok, &cfg) == 0, "positive noise density accepted");
+    EXPECT(cfg.mekf_accel_noise == 0.0044,     "positive noise density applied");
+    remove(ok);
+    end_test(fb);
+}
+
 /* Bad boolean value: same continue-and-report contract as bad int. */
 static void test_load_bad_bool(void)
 {
@@ -703,6 +749,7 @@ int main(void)
     test_load_real_conf();
     test_load_missing_file();
     test_load_bad_int();
+    test_load_noise_density_must_be_positive();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();

@@ -1,6 +1,6 @@
 # imud-signalk — output spec
 
-`imud-signalk` consumes imud's AF_UNIX stream (the 260-byte binary packet) and
+`imud-signalk` consumes imud's AF_UNIX stream (the 276-byte binary packet) and
 emits one Signal K **delta** JSON message per UDP datagram at the configured rate.
 With `tcp_enabled` the identical deltas are also served on a TCP listener,
 newline-framed (one JSON delta per `\n`-terminated line — the Signal K TCP

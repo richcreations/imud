@@ -78,6 +78,35 @@ Record from cold boot until the die temperature levels out (a span of
 several \(deC is required); the daemon then subtracts the fitted
 temperature term from the gyro before fusion.
 Offline: never touches the sensors.
+.TP
+.B fit\-ra
+Check the MEKF's accelerometer measurement model against a rough\-water
+capture (requires
+.BI \-\-from \ FILE\c
+).
+Replays the capture through the filter exactly as the daemon would and
+reports the gravity\-direction residual, its correlation time, and the mean
+normalised innovation squared (NIS) \(em the same quantity the daemon
+publishes live as
+.BR nis_accel .
+Unlike every other mode this one writes nothing: the value it comments on
+lives in
+.BR imud.conf (5)'s
+[fusion] section, not in cal.json, because it is filter tuning rather than a
+property of the sensor.
+.IP
+A mean NIS of roughly 10\(en30 is normal in a seaway. The residual there is
+wave\-orbital and strongly time\-correlated, so no single white\-noise value
+describes it; raising
+.B mekf_accel_noise
+until NIS reaches 1 makes the innovations look consistent but measurably
+degrades attitude accuracy. A large residual
+.I mean
+(as opposed to variance) instead indicates a wrong mount rotation or accel
+calibration, which no noise setting can fix.
+Requires a mag calibration in cal.json \(em without heading updates the
+covariance diverges and the analysis is refused.
+Offline: never touches the sensors.
 .SH OPTIONS
 .TP
 .BI \-\-config \ PATH
@@ -97,9 +126,10 @@ in the config.
 .TP
 .BI \-\-from \ FILE
 The .imucap capture to analyze (required by
-.B characterize
+.BR characterize ,
+.BR fit-temp ,
 and
-.BR fit-temp ).
+.BR fit\-ra ).
 .SH FILES
 .TP
 .I /etc/imud/cal.json

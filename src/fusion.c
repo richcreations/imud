@@ -89,6 +89,89 @@ static int m33_inv(const float A[3][3], float Ai[3][3])
     return 0;
 }
 
+/*
+ * Error-state reset Jacobian G = I − ½[δθ]× (Solà eq. 285).
+ *
+ * Injecting δθ into the nominal quaternion moves the linearisation point, so
+ * the covariance of the (now zeroed) error state must be rotated into the new
+ * frame. Only the attitude block resets — the gyro-bias error is additive and
+ * carries over unchanged — so callers apply diag(G, I₃).
+ */
+static void m33_reset_jac(const float dth[3], float G[3][3])
+{
+    G[0][0] =  1.0f;         G[0][1] =  0.5f*dth[2]; G[0][2] = -0.5f*dth[1];
+    G[1][0] = -0.5f*dth[2];  G[1][1] =  1.0f;        G[1][2] =  0.5f*dth[0];
+    G[2][0] =  0.5f*dth[1];  G[2][1] = -0.5f*dth[0]; G[2][2] =  1.0f;
+}
+
+/*
+ * M ← diag(G, I₃) × M, in place, for a 6×ncols row-major M.
+ * Rows 3–5 are left alone, so only the first three rows are touched.
+ */
+static void g_premul_rows3(const float G[3][3], float *M, int ncols)
+{
+    for (int j = 0; j < ncols; j++) {
+        float m0 = M[0*ncols + j], m1 = M[1*ncols + j], m2 = M[2*ncols + j];
+        M[0*ncols + j] = G[0][0]*m0 + G[0][1]*m1 + G[0][2]*m2;
+        M[1*ncols + j] = G[1][0]*m0 + G[1][1]*m1 + G[1][2]*m2;
+        M[2*ncols + j] = G[2][0]*m0 + G[2][1]*m1 + G[2][2]*m2;
+    }
+}
+
+/*
+ * Record how an eskf update fared against the innovation gate.
+ *   w:   Huber weight actually applied (1.0 when uncapped, 0.0 when rejected)
+ *   rej: 1.0 if the gross-outlier gate threw the measurement out, else 0.0
+ * Rejected updates must still be counted — they are the strongest evidence
+ * the filter and its measurements disagree, and hiding them would defeat the
+ * purpose of the metric.
+ */
+static void gate_health(mekf_t *f, float alpha, float w, float rej)
+{
+    f->innov_weight_ema += alpha * (w   - f->innov_weight_ema);
+    f->innov_reject_ema += alpha * (rej - f->innov_reject_ema);
+}
+
+/*
+ * Record the normalised innovation squared for one update.
+ *   ema:   channel accumulator (nis_accel_ema or nis_mag_ema)
+ *   alpha: that channel's EMA gain
+ *   d2:    νᵀS⁻¹ν, BEFORE any Huber capping or rejection
+ *   dof:   effective degrees of freedom — see below
+ *
+ * Normalising by dof puts "consistent" at 1.0 for every channel, so the two
+ * wire fields are directly comparable and a single threshold works for both.
+ *
+ * The vector updates carry TWO dof, not three, because the measurement is a
+ * unit vector: normalising z removes the radial component, so the noise lives
+ * only in the tangent plane. Writing the true innovation covariance as
+ * E[ννᵀ] = HPHᵀ + R(I − hhᵀ) while S = HPHᵀ + R·I,
+ *
+ *   E[d²] = tr(S⁻¹·E[ννᵀ]) = tr(S⁻¹(S − R·hhᵀ)) = 3 − R·hᵀS⁻¹h
+ *
+ * and since H = [h×] gives Hᵀh = −[h×]h = 0, h is an eigenvector of S with
+ * eigenvalue R, so S⁻¹h = h/R and the correction term is exactly 1:
+ *
+ *   E[d²] = 2   for both the gravity and 3-D mag updates.
+ *
+ * Dividing by 3 instead would peg a perfectly consistent filter at 0.67 and
+ * make the wire field disagree with its own documentation.
+ *
+ * Where gate_health records the filter's RESPONSE (how much it had to
+ * discount), this records the EVIDENCE (how badly the measurement and the
+ * covariance disagree) — which is why it must be fed the uncapped d², and
+ * fed on rejected updates too. Clamped because a transient singular-ish S
+ * can produce an enormous d² that would otherwise dominate the average for
+ * minutes; 100 is already ~100× inconsistent, far past any useful reading.
+ */
+static void nis_record(float *ema, float alpha, float d2, float dof)
+{
+    float v = d2 / dof;
+    if (!(v >= 0.0f)) return;          /* NaN guard */
+    if (v > 100.0f) v = 100.0f;
+    *ema += alpha * (v - *ema);
+}
+
 /* ── 6×6 matrix helpers ────────────────────────────────────────────────────── */
 
 static void m66_mul(const float A[6][6], const float B[6][6], float C[6][6])
@@ -167,6 +250,60 @@ static void q_from_rotvec(const float v[3], float dq[4])
 /* ── Core MEKF operations ──────────────────────────────────────────────────── */
 
 /*
+ * Gross-outlier reject threshold, as a multiple of the χ² cap γ.
+ *
+ * The Huber cap already bounds the influence of any single update smoothly;
+ * this gate exists only to discard measurements that cannot be sensor noise
+ * at all — a fault, a slam, a corrupted read. It must therefore sit far
+ * enough out that ordinary seaway motion never reaches it.
+ *
+ * It did not. At the original 9γ the gate threw away a quarter of the 3-D
+ * benchmark's accel updates — that is routine wave-orbital motion, not
+ * outliers — starving the filter of exactly the corrections it needed. The
+ * resulting drift produced larger innovations, which tripped the gate more
+ * often: a positive feedback that made the filter both less accurate and
+ * less self-consistent. Measured over the 12-seed benchmark, as
+ * 3-D / yaw-only pairs (attitude RMS, NEES(trace), accel NIS, reject rate):
+ *
+ *    9γ   6.85° / 3.57°   NEES 28.9 / 21.1   NIS 30.7 / 27.3   rej .262/.043
+ *   16γ   5.45° / 2.32°   NEES 16.7 /  7.9   NIS 22.3 / 25.2   rej .012/.000
+ *   25γ   5.65° / 2.31°   NEES 18.3 /  7.8   NIS 19.3 / 25.2   rej .007/.000
+ *   64γ   5.62° / 2.31°   NEES 18.3 /  7.8   NIS 16.7 / 25.2   rej .000/.000
+ *
+ * Widening it improves attitude RMS by 17% (3-D) and 35% (yaw-only) and
+ * roughly halves NEES, at no cost anywhere — and it collapses the benchmark's
+ * worst-draw spread (3-D 13.7° → 7.0°, yaw 9.6° → 2.3°), which §10.8 had
+ * attributed to scenario luck.
+ *
+ * The benefit saturates by 25γ, which is where this sits: far enough out that
+ * a steady seaway never trips it, close enough in to still catch a genuine
+ * fault. In innovation-distance terms it rejects beyond 5× the cap radius,
+ * where the old value rejected beyond 3×.
+ *
+ * Note what this does NOT fix: NIS stays around 20–25, so the measurement
+ * model really is over-confident, as ROADMAP §10.1 says. Widening the gate
+ * removes the damage the gate itself was doing; it does not make Ra right.
+ * See the Ra discussion in docs/math.md §4.7 for why no scalar value can be.
+ *
+ * Overridable for the sweep in test_fusion.c; see docs/math.md §4.7.
+ */
+/*
+ * Huber covariance-consistency variant (ROADMAP §10.2), for measurement only.
+ *   0 = shipped: attenuate ν, leave K at full confidence
+ *   1 = K ← w·K   (exact Joseph for the suboptimal gain)
+ *   2 = R → R/w   (one IRLS re-solve, uncapped ν)
+ *   3 = R → R/w²
+ * Rebuild with -DHUBER_VARIANT=n; see the measured table in eskf_update.
+ */
+#ifndef HUBER_VARIANT
+#define HUBER_VARIANT 0
+#endif
+
+#ifndef GROSS_REJECT_MULT
+#define GROSS_REJECT_MULT 25.0f
+#endif
+
+/*
  * Generic measurement update.  (Solà §4.2)
  *
  * h:         predicted measurement in body frame (3×1)
@@ -174,6 +311,8 @@ static void q_from_rotvec(const float v[3], float dq[4])
  * R_noise:   isotropic measurement noise variance (scalar, applied to I₃)
  * chi2_gate: innovation gate — skip the update when the normalised
  *            innovation distance d² = innovᵀ·S⁻¹·innov exceeds this
+ * nis_ema:   channel NIS accumulator to feed (NULL to skip)
+ * nis_alpha: EMA gain for that accumulator
  *            (χ²₃ quantile); 0 disables the gate.
  *
  * H = [-[h×]  |  0₃]  (3×6)  — Jacobian of h w.r.t. error-state δθ
@@ -186,7 +325,9 @@ static int eskf_update(mekf_t *f,
                        const float h[3],
                        const float z[3],
                        float R_noise,
-                       float chi2_gate)
+                       float chi2_gate,
+                       float *nis_ema,
+                       float nis_alpha)
 {
     /*
      * H (3×6): H[0:3][0:3] = +[h×], H[0:3][3:6] = 0₃
@@ -215,26 +356,31 @@ static int eskf_update(mekf_t *f,
             PHt[i][j] = s;
         }
 
-    /* S = H × PHᵀ + R_noise × I₃  (3×3) */
-    float S[3][3];
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            float s = (i == j) ? R_noise : 0.0f;
-            for (int k = 0; k < 6; k++) s += H[i][k] * PHt[k][j];
-            S[i][j] = s;
-        }
+    /*
+     * Gain solve: S = H·PHᵀ + R·I₃, then K = PHᵀ·S⁻¹.
+     * Factored into a macro rather than written once because the R-inflating
+     * Huber variants (HUBER_VARIANT 2/3, below) have to re-run it with a
+     * different R. PHt does not depend on R, so it stays hoisted out.
+     */
+    float S[3][3], Sinv[3][3], K[6][3];
+    #define ESKF_SOLVE_GAIN(Rv)                                            \
+        do {                                                               \
+            for (int i = 0; i < 3; i++)                                    \
+                for (int j = 0; j < 3; j++) {                              \
+                    float s = (i == j) ? (Rv) : 0.0f;                      \
+                    for (int k = 0; k < 6; k++) s += H[i][k] * PHt[k][j];  \
+                    S[i][j] = s;                                           \
+                }                                                          \
+            if (m33_inv(S, Sinv) < 0) return -1;                           \
+            for (int i = 0; i < 6; i++)                                    \
+                for (int j = 0; j < 3; j++) {                              \
+                    float s = 0;                                           \
+                    for (int k = 0; k < 3; k++) s += PHt[i][k]*Sinv[k][j]; \
+                    K[i][j] = s;                                           \
+                }                                                          \
+        } while (0)
 
-    float Sinv[3][3];
-    if (m33_inv(S, Sinv) < 0) return -1;
-
-    /* K = PHᵀ × S⁻¹  (6×3) */
-    float K[6][3];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 3; j++) {
-            float s = 0;
-            for (int k = 0; k < 3; k++) s += PHt[i][k] * Sinv[k][j];
-            K[i][j] = s;
-        }
+    ESKF_SOLVE_GAIN(R_noise);
 
     /* innovation = z − h  (3×1) */
     float innov[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
@@ -245,8 +391,46 @@ static int eskf_update(mekf_t *f,
      * passes those. A hard reject would starve the filter in a steady
      * seaway, so instead the influence is capped Huber-style (scale the
      * innovation so its effective distance equals the gate) and only gross
-     * outliers (9× the gate) are rejected outright. */
-    if (chi2_gate > 0.0f) {
+     * outliers (GROSS_REJECT_MULT × the gate) are rejected outright.
+     *
+     * KNOWN INCONSISTENCY (measured, deliberately left in place): shrinking ν
+     * alone leaves K — and hence the Joseph update below — at full confidence,
+     * so P contracts as if the measurement had been fully trusted. Making the
+     * covariance consistent with the applied attenuation was tried three ways
+     * (HUBER_VARIANT 1/2/3 above) and measured across the 12-seed wave
+     * benchmark. Re-measured after the GROSS_REJECT_MULT fix, since the
+     * earlier numbers were taken while the reject gate was corrupting every
+     * run (3-D / yaw-only attitude RMS, NEES(trace), accel NIS):
+     *
+     *                            3-D att   yaw att   NEES 3D/yaw   NIS 3D/yaw
+     *   current (this code)        5.65°     2.31°     18.3 /  7.8   19.3 / 25.2
+     *   K ← w·K (exact Joseph)     8.85°     3.09°     39.9 / 12.4   17.0 / 28.5
+     *   R → R/w  (IRLS)            7.79°     5.57°     31.5 / 40.5   15.1 / 43.3
+     *   R → R/w²                   8.48°     4.74°     35.0 / 27.9   18.2 / 36.3
+     *
+     * Every variant is still BOTH less accurate and less self-consistent —
+     * the opposite of the intent — and by a wider margin than before.
+     *
+     * The earlier root-cause note here blamed an over-optimistic Ra and said
+     * the consistent form could not help "until the measurement model is
+     * retuned against real rough-water captures". Ra IS over-optimistic (NIS
+     * ≈ 20 above), but that is not why these fail, because retuning Ra does
+     * not rescue them either — the whole family is worse across the sweep.
+     * The actual reason is that the cap is a robustness device, not a
+     * statistical one. Contracting P by the attenuated gain is "correct" in
+     * the sense that it records having learned less from that sample — but
+     * the consequence is a larger P, hence a larger gain on the FOLLOWING
+     * samples, which in a seaway are contaminated by the same wave. The
+     * inconsistency is doing useful work: it holds the gain down exactly when
+     * the measurements are least trustworthy. Making the bookkeeping honest
+     * removes that, and the extra wave energy admitted costs far more than
+     * the covariance error it fixes. It stays.
+     * See docs/ROADMAP.md §10.2 and docs/math.md §4.5.
+     *
+     * innov_weight_ema / innov_reject_ema below expose how hard the cap is
+     * being leaned on; nis_accel_ema / nis_mag_ema expose whether the noise
+     * model underneath it is right. */
+    if (chi2_gate > 0.0f || nis_ema) {
         /* No convergence gate needed: S = HPHᵀ + R already contains P, so
          * during acquisition (large P) d² stays small and the cap is
          * naturally inactive; it engages only once the filter is confident. */
@@ -255,12 +439,44 @@ static int eskf_update(mekf_t *f,
             Si[i] = Sinv[i][0]*innov[0] + Sinv[i][1]*innov[1]
                   + Sinv[i][2]*innov[2];
         float d2 = innov[0]*Si[0] + innov[1]*Si[1] + innov[2]*Si[2];
-        if (d2 > 9.0f * chi2_gate) return 1;
-        if (d2 > chi2_gate) {
-            float w = sqrtf(chi2_gate / d2);
-            innov[0] *= w; innov[1] *= w; innov[2] *= w;
+
+        /* Consistency first, while d² is still uncensored — see nis_record.
+         * dof = 2: unit-vector measurement, radial component carries no noise. */
+        if (nis_ema) nis_record(nis_ema, nis_alpha, d2, 2.0f);
+
+        if (chi2_gate > 0.0f) {
+            if (d2 > GROSS_REJECT_MULT * chi2_gate) {
+                gate_health(f, nis_alpha, 0.0f, 1.0f);
+                return 1;
+            }
+            float w = 1.0f;
+            if (d2 > chi2_gate) {
+                w = sqrtf(chi2_gate / d2);
+#if HUBER_VARIANT == 0
+                /* Shipped: attenuate the innovation, leave K alone. */
+                innov[0] *= w; innov[1] *= w; innov[2] *= w;
+#elif HUBER_VARIANT == 1
+                /* K ← w·K: identical state correction to variant 0, but the
+                 * Joseph update below then contracts P by the gain actually
+                 * used — the "exact Joseph for a suboptimal gain" form. */
+                for (int i = 0; i < 6; i++)
+                    for (int j = 0; j < 3; j++) K[i][j] *= w;
+#elif HUBER_VARIANT == 2
+                /* IRLS: re-solve the gain with R inflated to R/w, and apply
+                 * the UNCAPPED innovation through it. */
+                ESKF_SOLVE_GAIN(R_noise / w);
+                R_noise /= w;
+#elif HUBER_VARIANT == 3
+                ESKF_SOLVE_GAIN(R_noise / (w*w));
+                R_noise /= (w*w);
+#else
+#error "HUBER_VARIANT must be 0, 1, 2 or 3"
+#endif
+            }
+            gate_health(f, nis_alpha, w, 0.0f);
         }
     }
+    #undef ESKF_SOLVE_GAIN
 
     /* δx = K × innovation  (6×1) */
     float dx[6] = {0};
@@ -281,11 +497,14 @@ static int eskf_update(mekf_t *f,
     f->bias[2] += dx[5];
 
     /*
-     * Covariance update, Joseph form:
-     *   P ← (I − K·H) · P · (I − K·H)ᵀ + K·R·Kᵀ
-     * Guarantees symmetry and positive-definiteness in float arithmetic —
-     * the simple (I−KH)·P form slowly loses both at 833 Hz over multi-day
-     * runs. R is isotropic (R_noise·I₃), so K·R·Kᵀ = R_noise·K·Kᵀ.
+     * Covariance update, Joseph form, with the error-state reset folded in:
+     *   P ← G·[(I−K·H)·P·(I−K·H)ᵀ + K·R·Kᵀ]·Gᵀ
+     *     = [G(I−KH)]·P·[G(I−KH)]ᵀ + (G·K)·R·(G·K)ᵀ
+     * so the reset is applied by premultiplying K and (I−KH) by G_full.
+     * Joseph form guarantees symmetry and positive-definiteness in float
+     * arithmetic — the simple (I−KH)·P form slowly loses both at 833 Hz over
+     * multi-day runs — and holds for any gain, including the Huber-scaled one.
+     * R is isotropic (R_noise·I₃), so K·R·Kᵀ = R_noise·K·Kᵀ.
      */
     float KH[6][6] = {{0}};
     for (int i = 0; i < 6; i++)
@@ -296,6 +515,17 @@ static int eskf_update(mekf_t *f,
     for (int i = 0; i < 6; i++)
         for (int j = 0; j < 6; j++)
             IKH[i][j] = (i == j ? 1.0f : 0.0f) - KH[i][j];
+
+    /* Error-state reset: the correction just injected into q has moved the
+     * linearisation point, so P must be rotated into the new error frame.
+     * G_full = diag(G, I₃) — the bias error has no reset — hence only rows
+     * 0–2 of K and IKH are touched. */
+    {
+        float G[3][3];
+        m33_reset_jac(dx, G);
+        g_premul_rows3(G, &K[0][0],   3);
+        g_premul_rows3(G, &IKH[0][0], 6);
+    }
 
     float Ptmp[6][6], Pnew[6][6];
     m66_mul(IKH, f->P, Ptmp);
@@ -352,10 +582,20 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     for (int i = 0; i < 6; i++) S += H[i] * PHt[i];
     if (S < 1e-12f) return -1;
 
-    /* Same Huber policy as the vector update: self-regulating via S. */
+    /* Same Huber policy as the vector update, including the same deliberate
+     * covariance inconsistency documented there. */
     float d2 = y * y / S;
-    if (d2 > 9.0f * YAW_CHI2_GATE) return 1;
-    if (d2 > YAW_CHI2_GATE) y *= sqrtf(YAW_CHI2_GATE / d2);
+
+    /* Scalar measurement: dof = 1. Recorded pre-cap, as in eskf_update. */
+    nis_record(&f->nis_mag_ema, f->nis_mag_alpha, d2, 1.0f);
+
+    if (d2 > GROSS_REJECT_MULT * YAW_CHI2_GATE) {
+        gate_health(f, f->nis_mag_alpha, 0.0f, 1.0f);
+        return 1;
+    }
+    float w = 1.0f;
+    if (d2 > YAW_CHI2_GATE) { w = sqrtf(YAW_CHI2_GATE / d2); y *= w; }
+    gate_health(f, f->nis_mag_alpha, w, 0.0f);
 
     float K[6];
     for (int i = 0; i < 6; i++) K[i] = PHt[i] / S;
@@ -373,11 +613,19 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     f->bias[1] += dx[4];
     f->bias[2] += dx[5];
 
-    /* Joseph form, rank-1: P ← (I−KH)·P·(I−KH)ᵀ + R·K·Kᵀ */
+    /* Joseph form, rank-1, with the error-state reset folded in as in
+     * eskf_update: P ← [G(I−KH)]·P·[G(I−KH)]ᵀ + (G·K)·R·(G·K)ᵀ */
     float IKH[6][6];
     for (int i = 0; i < 6; i++)
         for (int j = 0; j < 6; j++)
             IKH[i][j] = (i == j ? 1.0f : 0.0f) - K[i] * H[j];
+
+    {
+        float G[3][3];
+        m33_reset_jac(dx, G);
+        g_premul_rows3(G, K,          1);
+        g_premul_rows3(G, &IKH[0][0], 6);
+    }
 
     float Ptmp[6][6], Pnew[6][6];
     m66_mul(IKH, f->P, Ptmp);
@@ -397,33 +645,31 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
 
 /* ── Public API ────────────────────────────────────────────────────────────── */
 
-void mekf_init(mekf_t *f,
-               const imud_config_t *cfg,
-               float odr_hz,
-               const float gyro_bias_init[3])
+/* m_ref EMA rate: one accepted sample per 1/mag_odr_hz, τ = 300 s. */
+#ifndef MREF_TAU_S
+#define MREF_TAU_S 300.0f
+#endif
+
+/* Update-gate health EMA time constant, s — matches the mag diagnostics. */
+#define GATE_TAU_S 30.0f
+
+/*
+ * Derive every tuning value that follows from config.  Called by BOTH
+ * mekf_init and mekf_reconfigure so the two can never drift apart — the
+ * stale-mref_alpha-after-reconfigure bug existed precisely because these
+ * derivations were duplicated and only one copy was kept up to date.
+ *
+ * Touches tuning only: filter state (q, P, bias, dt) and runtime scalars
+ * (Ra_scale, acc_quiet_ema, the gate-health and NIS EMAs) are deliberately
+ * left alone, so this is safe to call on a running filter. Note the EMA
+ * GAINS (gate_alpha, nis_mag_alpha) are derived here — only the accumulated
+ * values are preserved, so a SIGHUP retunes the averaging without discarding
+ * the history, which is exactly what an A/B of mekf_accel_noise needs.
+ */
+static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
 {
-    memset(f, 0, sizeof *f);
-
-    /* Nominal state: identity attitude, pre-estimated bias */
-    f->q[0] = 1.0f;
-    if (gyro_bias_init) {
-        f->bias[0] = gyro_bias_init[0];
-        f->bias[1] = gyro_bias_init[1];
-        f->bias[2] = gyro_bias_init[2];
-    }
-
-    /*
-     * Initial covariance: generous values so the filter accepts early
-     * measurements.  Attitude uncertainty ~10° (0.175 rad), bias from startup
-     * still window (small).
-     */
-    float init_att  = fsq(0.175f);    /* ~10° per axis */
-    float init_bias = fsq(0.001f);    /* 1 mdps/s residual bias uncertainty */
-    for (int i = 0; i < 3; i++) f->P[i][i]     = init_att;
-    for (int i = 3; i < 6; i++) f->P[i][i] = init_bias;
-
-    float dt = 1.0f / odr_hz;
-    f->dt = dt;
+    float dt     = f->dt;
+    float odr_hz = 1.0f / dt;
 
     /*
      * Discrete-time process noise (Solà §4.1):
@@ -455,20 +701,66 @@ void mekf_init(mekf_t *f,
     float mr = (float)cfg->mag_reject_gauss;
     f->mag_reject_sq = mr * mr;
 
-    f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
-    f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
-
     f->mag_yaw_only = cfg->mag_yaw_only;
 
-    /* m_ref EMA rate: one accepted sample per 1/mag_odr_hz, τ = 300 s. */
-#ifndef MREF_TAU_S
-#define MREF_TAU_S 300.0f
-#endif
     f->mref_alpha = (cfg->mag_odr_hz > 0 && MREF_TAU_S < 1e9f)
         ? 1.0f / (MREF_TAU_S * (float)cfg->mag_odr_hz)
         : 0.0f;
 
+    /* Gate health is fed by every eskf update; accel at odr_hz dominates.
+     * nis_accel_ema shares this gain — it too is fed at the accel rate. */
+    f->gate_alpha = 1.0f / (GATE_TAU_S * odr_hz);
+
+    /* The mag NIS channel is fed at the MAG rate, so it needs its own gain:
+     * reusing gate_alpha (sized for 833 Hz) at ~104 Hz would stretch its time
+     * constant from 30 s to about four minutes. */
+    f->nis_mag_alpha = (cfg->mag_odr_hz > 0)
+        ? 1.0f / (GATE_TAU_S * (float)cfg->mag_odr_hz)
+        : f->gate_alpha;
+
     f->conv_thresh = 3.0f * fsq(0.5f * (float)(M_PI/180.0)); /* 3 × (0.5°)² */
+}
+
+void mekf_init(mekf_t *f,
+               const imud_config_t *cfg,
+               float odr_hz,
+               const float gyro_bias_init[3])
+{
+    memset(f, 0, sizeof *f);
+
+    /* Nominal state: identity attitude, pre-estimated bias */
+    f->q[0] = 1.0f;
+    if (gyro_bias_init) {
+        f->bias[0] = gyro_bias_init[0];
+        f->bias[1] = gyro_bias_init[1];
+        f->bias[2] = gyro_bias_init[2];
+    }
+
+    /*
+     * Initial covariance: generous values so the filter accepts early
+     * measurements.  Attitude uncertainty ~10° (0.175 rad), bias from startup
+     * still window (small).
+     */
+    float init_att  = fsq(0.175f);    /* ~10° per axis */
+    float init_bias = fsq(0.001f);    /* 1 mdps/s residual bias uncertainty */
+    for (int i = 0; i < 3; i++) f->P[i][i]     = init_att;
+    for (int i = 3; i < 6; i++) f->P[i][i] = init_bias;
+
+    f->dt = 1.0f / odr_hz;
+
+    mekf_derive_tuning(f, cfg);
+
+    f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
+    f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
+
+    /* Health EMAs start optimistic: no capping, no rejection seen yet. */
+    f->innov_weight_ema = 1.0f;
+    f->innov_reject_ema = 0.0f;
+
+    /* NIS starts at the consistent value rather than 0, so a fresh filter
+     * does not spend its first τ reporting an implausibly perfect model. */
+    f->nis_accel_ema = 1.0f;
+    f->nis_mag_ema   = 1.0f;
 }
 
 void mekf_set_mref_invariants(mekf_t *f, float h_gauss, float z_gauss)
@@ -620,7 +912,26 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s)
     f->converged = (trace < f->conv_thresh);
 }
 
-/* χ²(3) 99% quantile — accel innovation gate (overridable for experiments). */
+/*
+ * χ²(3) 99% quantile — accel innovation cap (overridable for experiments).
+ *
+ * Re-measured after GROSS_REJECT_MULT moved 9γ → 25γ, since widening the
+ * reject gate changes how much work the cap is left doing. Over the 12-seed
+ * benchmark (3-D / yaw-only attitude RMS, accel NIS):
+ *
+ *    6.25   5.55° / 2.06°   reject .046 / .000
+ *   11.34   5.65° / 2.31°   reject .007 / .000   ← kept
+ *   20.00   5.78° / 2.90°   reject .000 / .000
+ *
+ * 6.25 buys ~2% of 3-D and ~11% of yaw-only attitude RMS, but it caps often
+ * enough to push the gross-reject rate back up to 4.6% on the 3-D path —
+ * re-entering, in miniature, the starvation regime that widening
+ * GROSS_REJECT_MULT just fixed. 20 gives that up for worse tracking. 11.34
+ * sits at the knee, and it is the principled value (the χ²(3) 99% quantile)
+ * rather than a fitted one — which matters because the benchmark's noise is
+ * uniform (×1.732), so its tails are not Gaussian and must not be used to fit
+ * gate quantiles. See docs/math.md §4.7.
+ */
 #ifndef ACCEL_CHI2_GATE
 #define ACCEL_CHI2_GATE 11.34f
 #endif
@@ -661,8 +972,24 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
         f->acc_quiet_ema += (dev * dev - f->acc_quiet_ema) * (f->dt / 2.0f);
     }
 
+    /*
+     * Advance the health clock on EVERY sample, accepted or not, so the gain
+     * below can be derived from elapsed TIME rather than from a count of
+     * updates. This matters more than it looks: in a seaway the |a| band
+     * discards 85–95% of samples, so a fixed per-update gain sized from the
+     * IMU ODR stretches the intended 30 s time constant to ten minutes or
+     * more — long enough that innov_weight/innov_reject/nis_accel report
+     * their own initial values instead of the data.
+     */
+    f->health_dt_accum += f->dt;
+
     /* Skip during linear acceleration (|a|/g outside [1±thresh]) */
     if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return;
+
+    /* Elapsed-time EMA gain: alpha = 1 − exp(−Δt/τ), exact for any feed rate
+     * and equal to Δt/τ in the limit of frequent updates. */
+    float alpha_a = 1.0f - expf(-f->health_dt_accum / GATE_TAU_S);
+    f->health_dt_accum = 0.0f;
 
     /* Gravity direction in body: z = −normalize(specific_force) */
     float z[3] = { -acc[0]/an, -acc[1]/an, -acc[2]/an };
@@ -691,7 +1018,8 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
     f->g_body[2] = z[2];
     f->g_body_valid = true;
 
-    eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE);
+    eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE,
+                &f->nis_accel_ema, alpha_a);
 }
 
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
@@ -846,7 +1174,8 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         float R_psi = f->Rm / (mh_ref * mh_ref);
         rc = eskf_update_yaw(f, y, R_psi);
     } else {
-        rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE);
+        rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE,
+                         &f->nis_mag_ema, f->nis_mag_alpha);
     }
     (void)rc;
 }
@@ -1004,27 +1333,14 @@ float seastate_pitch_amplitude(const seastate_t *w)
 
 void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
 {
-    float dt     = f->dt;
-    float odr_hz = 1.0f / dt;
-
-    float Ng = (float)cfg->mekf_gyro_noise;
-    float Nb = (float)cfg->mekf_gyro_bias;
-    f->Qg = Ng * Ng * dt;
-    f->Qb = Nb * Nb * dt;
-
-    float Na = (float)cfg->mekf_accel_noise;
-    float Nm = (float)cfg->mekf_mag_noise;
-    f->Ra = (Na / G_MS2) * (Na / G_MS2) * odr_hz;
-    f->Rm = Nm * Nm * (float)cfg->mag_odr_hz;
-
-    float sk = (float)cfg->accel_skip_thresh;
-    f->accel_skip_lo = 1.0f - sk;
-    f->accel_skip_hi = 1.0f + sk;
-
-    float mr = (float)cfg->mag_reject_gauss;
-    f->mag_reject_sq = mr * mr;
-
-    f->mag_yaw_only = cfg->mag_yaw_only;
+    /*
+     * Shared with mekf_init so no derived value can be updated in one and
+     * forgotten in the other. Note this resets accel_skip_lo/hi to the
+     * non-engine threshold; the fusion thread re-asserts the engine-mode
+     * window on the next sample (imu.c), so the two cannot be left in the
+     * half-engine state this used to produce on SIGHUP.
+     */
+    mekf_derive_tuning(f, cfg);
 }
 
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
@@ -1048,6 +1364,14 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
     /* Compass health diagnostics (see mekf_update_mag) */
     out->mag_anomaly  = f->mag_anom_ema;
     out->mag_residual = f->mag_resid_ema;
+
+    /* Update-gate health (see gate_health / eskf_update) */
+    out->innov_weight = f->innov_weight_ema;
+    out->innov_reject = f->innov_reject_ema;
+
+    /* Measurement-model consistency (see nis_record) */
+    out->nis_accel = f->nis_accel_ema;
+    out->nis_mag   = f->nis_mag_ema;
 
     /* Euler angles from rotation matrix R (NED, 3-2-1 aerospace convention) */
     float R[3][3];

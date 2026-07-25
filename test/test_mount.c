@@ -174,6 +174,106 @@ static void test_preset_pitch_90(void)
     remove(path);
 }
 
+/*
+ * An unrecognised preset name used to be a warning that still left
+ * mount_set = true with whatever Euler angles were already in the struct —
+ * i.e. the daemon ran with a silently wrong mount rotation biasing every
+ * sample. It must now be a hard parse error.
+ */
+static void test_preset_unknown_is_fatal(void)
+{
+    puts("test_preset_unknown_is_fatal");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    const char *path = write_tmpconf(10, "[mount]\npreset = \"yaw_45\"\n");
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "unknown preset is a parse error");
+    remove(path);
+    (void)fb;
+}
+
+/*
+ * A short array used to be accepted silently (only a completely empty one
+ * errored), leaving the missing angles at their defaults — e.g. "[0, 0]"
+ * would quietly mean yaw = 0 rather than being flagged as incomplete.
+ */
+static void test_euler_partial_array_rejected(void)
+{
+    puts("test_euler_partial_array_rejected");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    const char *path = write_tmpconf(11,
+        "[mount]\nrotation_euler_deg = [10.0, 20.0]\n");
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "two-element euler array is a parse error");
+    remove(path);
+
+    config_defaults(&cfg);
+    path = write_tmpconf(12,
+        "[mount]\nrotation_euler_deg = [10.0, 20.0, 30.0, 40.0]\n");
+    rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "four-element euler array is a parse error");
+    remove(path);
+    (void)fb;
+}
+
+/* A valid 3×3 rotation given directly must be accepted verbatim. */
+static void test_rotation_matrix_accepted(void)
+{
+    puts("test_rotation_matrix_accepted");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    /* Rz(90°): x→y, y→−x */
+    const char *path = write_tmpconf(13,
+        "[mount]\nrotation_matrix = [0,-1,0, 1,0,0, 0,0,1]\n");
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0, "valid rotation_matrix loads");
+    EXPECT(cfg.mount_set == true, "mount_set true for rotation_matrix");
+    EXPECT_NEAR_D(cfg.mount_rot[0][1], -1.0, 1e-12, "rot[0][1] = -1");
+    EXPECT_NEAR_D(cfg.mount_rot[1][0],  1.0, 1e-12, "rot[1][0] = 1");
+    EXPECT_NEAR_D(cfg.mount_rot[2][2],  1.0, 1e-12, "rot[2][2] = 1");
+    remove(path);
+    (void)fb;
+}
+
+/*
+ * The orthonormality check is the one A5 asked for. It is only reachable via
+ * rotation_matrix — euler_deg_to_rot output is orthonormal by construction.
+ * Both failure modes must be caught: a non-orthonormal matrix, and a
+ * reflection (det = −1), which an orthogonality-only test would accept.
+ */
+static void test_rotation_matrix_validated(void)
+{
+    puts("test_rotation_matrix_validated");
+    int fb = g_fail;
+    imud_config_t cfg;
+
+    config_defaults(&cfg);
+    const char *path = write_tmpconf(14,
+        "[mount]\nrotation_matrix = [1,0,0, 0,1,0, 0,0,1.5]\n");
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "non-orthonormal matrix rejected");
+    remove(path);
+
+    config_defaults(&cfg);
+    path = write_tmpconf(15,
+        "[mount]\nrotation_matrix = [1,0,0, 0,1,0, 0,0,-1]\n");
+    rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "reflection (det = -1) rejected");
+    remove(path);
+
+    config_defaults(&cfg);
+    path = write_tmpconf(16,
+        "[mount]\nrotation_matrix = [1,0,0, 0,1,0]\n");
+    rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE, "short rotation_matrix rejected");
+    remove(path);
+    (void)fb;
+}
+
 int main(void)
 {
     puts("=== imud mount tests ===");
@@ -183,6 +283,10 @@ int main(void)
     test_preset_roll_90();
     test_preset_pitch_90();
     test_euler_parse();
+    test_preset_unknown_is_fatal();
+    test_euler_partial_array_rejected();
+    test_rotation_matrix_accepted();
+    test_rotation_matrix_validated();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

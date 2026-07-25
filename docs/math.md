@@ -54,7 +54,7 @@ rotation:
 
 $$ v_{NED} = R(q)\, v_{b}, \qquad R(q)\in SO(3). $$
 
-The rotation matrix `q_to_R()` (`fusion.c:136`) is
+The rotation matrix `q_to_R()` (`fusion.c:179`) is
 
 $$
 R(q)=\begin{bmatrix}
@@ -64,7 +64,7 @@ R(q)=\begin{bmatrix}
 \end{bmatrix}.
 $$
 
-The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:118`) uses the
+The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:161`) uses the
 standard scalar-first convention (Solà eq. 16).
 
 **Units.** Gyroscope rad·s⁻¹; accelerometer m·s⁻²; magnetometer µT on the
@@ -77,7 +77,7 @@ with the **gravity direction** $z_a=-\widehat{a}_b$ (§4.7).
 
 **As-implemented.** All filter state is single precision (`float`);
 calibration fits and WMM are double precision. The quaternion is
-renormalized (`q_normalize`, `fusion.c:126`) after every multiplicative
+renormalized (`q_normalize`, `fusion.c:169`) after every multiplicative
 update, guarding unit-norm drift from float round-off.
 
 **Source:** Solà 2017 *(code comment)*; Shuster 1993 for quaternion
@@ -109,7 +109,7 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu.c:222`) applies a fixed 3×3 board→body
+`apply_mount_rot_if_set()` (`imu_math.c:106`) applies a fixed 3×3 board→body
 matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
@@ -119,11 +119,16 @@ double, stored back as float.
 
 **As-implemented.** $R_{mount}$ is supplied by configuration (a fixed
 installation rotation, e.g. yaw 180° for a stern-facing board); imud does not
-estimate it. No orthonormalization is performed on the configured matrix.
+estimate it. It may be given as Euler angles (`rotation_euler_deg`), a named
+`preset`, or directly as a 3×3 `rotation_matrix`. The first two are orthonormal
+by construction; a directly-supplied matrix is validated at config load against
+both $R^\top R\approx I$ and $\det R>0$ (rejecting reflections, which an
+orthogonality-only test would accept) and the daemon refuses to start if it
+fails.
 
 ### 3.2 Inertial calibration
 
-`apply_imu_cal()` (`imu.c:141`), per axis $i$:
+`apply_imu_cal()` (`imu_math.c:25`), per axis $i$:
 
 - **Gyro temperature compensation** (when `cal->has_gyro_temp`):
   $$ \omega_i \leftarrow \omega_i - c_i\,(T - T_{ref}), $$
@@ -135,7 +140,7 @@ estimate it. No orthonormalization is performed on the configured matrix.
 
 ### 3.3 Magnetometer hard/soft-iron
 
-`apply_mag_cal()` (`imu.c:159`), when `cal->has_mag`:
+`apply_mag_cal()` (`imu_math.c:43`), when `cal->has_mag`:
 
 $$ m_{cal} = S_{soft}\,(m_{raw} - b_{hard}), $$
 
@@ -183,7 +188,7 @@ the measurement Jacobian in §4.5.
 **Source:** Solà 2017 §5.4 *(code comment)*; Markley & Crassidis 2014 §6.1;
 Trawny & Roumeliotis 2005 *(canonical)*.
 
-### 4.2 Initialization — `mekf_init()` (`fusion.c:400`)
+### 4.2 Initialization — `mekf_init()` (`fusion.c:560`)
 
 Nominal: $q=[1,0,0,0]$, $b=$ `gyro_bias_init` (from the startup still window,
 §10; may be 0).
@@ -200,7 +205,7 @@ densities). Stored as `f->Qg`, `f->Qb`.
 Measurement-noise variances:
 $$ R_a = \left(\frac{N_a}{g}\right)^2 \text{ODR},\qquad
    R_m = N_m^2\,f_{s,\text{mag}}, $$
-`f->Ra` (`fusion.c:448`) in normalized (gravity-direction) units,
+`f->Ra` (`fusion.c:538`) in normalized (gravity-direction) units,
 `f->Rm` (`:449`) in Gauss², with $N_a=$ `mekf_accel_noise`,
 $N_m=$ `mekf_mag_noise`, $f_{s,\text{mag}}=$ `mag_odr_hz`.
 
@@ -219,7 +224,7 @@ not driven by the Allan-variance characterization of §12.5.
 
 **Source:** Solà 2017 §4.1 for discrete process noise *(code comment)*.
 
-### 4.3 Alignment — `mekf_align()` (`fusion.c:494`)
+### 4.3 Alignment — `mekf_align()` (`fusion.c:617`)
 
 Deterministic initial attitude from one static accel+mag pair (a
 tilt-then-heading decomposition, TRIAD-family).
@@ -259,7 +264,7 @@ alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 **Source:** tilt/heading coarse alignment — Farrell 2008 §10; TRIAD lineage
 Shuster & Oh 1981 *(canonical)*.
 
-### 4.4 Prediction — `mekf_predict()` (`fusion.c:551`)
+### 4.4 Prediction — `mekf_predict()` (`fusion.c:674`)
 
 Per IMU sample, with measured interval $dt$ (from hardware timestamps, §11;
 falls back to nominal $1/\text{ODR}$).
@@ -267,7 +272,7 @@ falls back to nominal $1/\text{ODR}$).
 **Bias-corrected rate:** $\omega = s.\text{gyro} - b$.
 
 **Quaternion propagation** by the exponential map (`q_from_rotvec`,
-`fusion.c:149`):
+`fusion.c:192`):
 $$ q \leftarrow q \otimes \exp\!\big(\tfrac12\,[\,0,\ \omega\,dt\,]\big),
 \qquad
 \exp(\phi) = \Big[\cos\tfrac{|\vartheta|}{2},\
@@ -277,7 +282,7 @@ $\delta q\approx[1,\tfrac12\vartheta]$ for $|\vartheta|<10^{-7}$. Renormalized
 after.
 
 **Covariance propagation** $P \leftarrow \Phi P \Phi^\top + Q_d$, first-order
-discrete transition (`fusion.c:588`):
+discrete transition (`fusion.c:711`):
 
 $$
 \Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt \\
@@ -301,7 +306,7 @@ error convention.
 **Source:** Solà 2017 eq. 259 (integration), eq. 268 (covariance)
 *(code comment)*.
 
-### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:185`)
+### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:228`)
 
 Measurement of a known NED reference observed in body: predicted $h$, actual
 $z$, isotropic noise $R_{noise}$, gate `chi2_gate`.
@@ -334,26 +339,85 @@ $$ \delta x = K\,\nu,\qquad q \leftarrow q\otimes\exp(\delta\theta),\qquad
 $\delta\theta=\delta x[0{:}3]$, $\delta b=\delta x[3{:}6]$; quaternion
 renormalized.
 
-**Covariance — Joseph form** (`fusion.c:284`):
-$$ P \leftarrow (I-KH)\,P\,(I-KH)^\top + R_{noise}\,K K^\top, $$
+**Covariance — Joseph form, with error-state reset folded in:**
+$$ P \leftarrow \big[G(I-KH)\big]\,P\,\big[G(I-KH)\big]^\top + R_{noise}\,(GK)(GK)^\top, $$
 then symmetrized. (Isotropic $R$ ⇒ $KRK^\top=R_{noise}KK^\top$.)
 
-**As-implemented / audit note.** The error is *reset* into the quaternion
-each update but $P$ is **not** rotated by the reset Jacobian
-$G=I-\tfrac12[\delta\theta]_\times$ (the common first-order reset). At the
-per-sample correction magnitudes here $G\approx I$; the omission is a
-deliberate first-order simplification. The Huber cap replaces a hard $\chi^2$
-reject so that wave-orbital acceleration (which swings gravity *direction*
-while keeping $|a|\approx g$) deweights rather than starves the filter; only
-gross outliers ($d^2>9\gamma$) are rejected. Because $S$ contains $P$, the cap
-is naturally inactive during acquisition (large $P$) and engages only once
-confident — no explicit convergence gate needed.
+**Error-state reset.** Injecting $\delta\theta$ into the quaternion moves the
+linearisation point, so $P$ is rotated by the reset Jacobian
+$G=I-\tfrac12[\delta\theta]_\times$ (Solà eq. 285). Only the attitude block
+resets — the gyro-bias error is additive and carries over — so the applied
+transform is $G_{full}=\mathrm{diag}(G,I_3)$, implemented by premultiplying
+the first three rows of $K$ and $(I-KH)$. Cost is ~81 multiply-adds against
+the Joseph block's ~450. Measured over the 12-seed wave benchmark this
+improves yaw-only attitude RMS 4.10° → 3.57° and covariance consistency
+(NEES 32.4 → 28.4), with 3-D attitude neutral (+2%).
+
+**Huber cap.** The cap replaces a hard $\chi^2$ reject so that wave-orbital
+acceleration (which swings gravity *direction* while keeping $|a|\approx g$)
+deweights rather than starves the filter; only gross outliers
+($d^2>25\gamma$, `GROSS_REJECT_MULT`) are rejected. Because $S$ contains $P$,
+the cap is naturally inactive during acquisition (large $P$) and engages only
+once confident — no explicit convergence gate needed.
+
+**Gross-reject threshold (1.7: $9\gamma\to25\gamma$).** The original $9\gamma$
+was too tight to be a fault gate. Over the 12-seed benchmark it discarded 26%
+of 3-D accel updates — routine wave motion, not outliers — which starved the
+filter, and the resulting drift produced larger innovations that tripped the
+gate more often still. Widening it (3-D / yaw-only pairs):
+
+| reject | 3-D att | yaw att | NEES(tr) 3-D/yaw | NIS 3-D/yaw | reject rate |
+|---|---|---|---|---|---|
+| $9\gamma$ | 6.85° | 3.57° | 28.9 / 21.1 | 30.7 / 27.3 | .262 / .043 |
+| $16\gamma$ | 5.45° | 2.32° | 16.7 / 7.9 | 22.3 / 25.2 | .012 / .000 |
+| $25\gamma$ | 5.65° | 2.31° | 18.3 / 7.8 | 19.3 / 25.2 | .007 / .000 |
+| $64\gamma$ | 5.62° | 2.31° | 18.3 / 7.8 | 16.7 / 25.2 | .000 / .000 |
+
+Attitude RMS improves 17% (3-D) and 35% (yaw-only), NEES roughly halves, and
+the worst-draw spread collapses (3-D 13.7°→7.0°, yaw 9.6°→2.3°) — the spread
+§10.8 had attributed to scenario luck. The benefit saturates by $25\gamma$,
+which keeps a genuine fault gate at 5× the cap radius instead of 3×.
+
+**Known inconsistency (measured, deliberately retained).** The cap scales
+$\nu$ but leaves $K$ — and hence the covariance update — at full confidence,
+so $P$ contracts as though the measurement had been fully trusted even when
+the correction was attenuated up to 3×. Making this consistent was tried three
+ways and measured over the 12-seed wave benchmark, where NEES $\approx 1$ would
+indicate a self-consistent filter:
+
+Re-measured after the $25\gamma$ change above (the earlier figures were taken
+while the reject gate was corrupting every run). Rebuild with
+`-DHUBER_VARIANT=n`:
+
+| n | variant | 3-D att | yaw att | NEES(tr) 3-D/yaw | NIS 3-D/yaw |
+|---|---|---|---|---|---|
+| 0 | ν-capping (shipped) | 5.65° | 2.31° | 18.3 / 7.8 | 19.3 / 25.2 |
+| 1 | $K\leftarrow wK$ (exact Joseph, suboptimal gain) | 8.85° | 3.09° | 39.9 / 12.4 | 17.0 / 28.5 |
+| 2 | $R\to R/w$ (IRLS inflation) | 7.79° | 5.57° | 31.5 / 40.5 | 15.1 / 43.3 |
+| 3 | $R\to R/w^2$ | 8.48° | 4.74° | 35.0 / 27.9 | 18.2 / 36.3 |
+
+Every variant is **both** less accurate and less self-consistent — by a wider
+margin than before. Inflating $R$ is additionally wrong on its own terms
+because $P\gg R$ here, a regime where $K=P/(P+R)$ is near unity and $R\to R/w$
+barely moves it, losing the bounded per-sample influence the seaway robustness
+depends on.
+
+The reason these fail is **not** that $R_a$ is mistuned. $R_a$ *is*
+over-optimistic (NIS ≈ 20, §4.7), but retuning it does not rescue the family —
+they stay worse across the whole sweep. The cap is a *robustness* device, not
+a statistical one: contracting $P$ by the attenuated gain faithfully records
+having learned less from that sample, but the consequence is a larger $P$,
+hence a larger gain on the **following** samples — which in a seaway carry the
+same wave contamination. The inconsistency does useful work, holding the gain
+down exactly when measurements are least trustworthy. `innov_weight` /
+`innov_reject` on the wire (§8.1) expose how hard the cap is being leaned on;
+`nis_accel` / `nis_mag` (§8.2) expose whether the model under it is right.
 
 **Source:** EKF update Kalman 1960; Joseph form Bucy & Joseph 1968; robust
 innovation capping Huber 1964; Mahalanobis gating Bar-Shalom et al. 2001
 *(canonical)*. Jacobian sign Solà 2017 §7 *(code comment)*.
 
-### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:337`)
+### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:418`)
 
 Heading-only correction (a 1-D measurement). Innovation $y$ (rad, wrapped to
 $\pm\pi$), variance $R_{noise}$. The Jacobian projects the error onto the
@@ -366,7 +430,7 @@ $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
 
 **Source:** scalar-measurement EKF specialization of §4.5 *(canonical)*.
 
-### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:628`)
+### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:751`)
 
 **Speed-aided centripetal correction.** In a turn the accelerometer senses
 $a = a_{platform} - g$, and with speed-over-ground $v$ (body $\approx[v,0,0]$,
@@ -396,10 +460,64 @@ benchmarking showed rectifies wave-phase-correlated error into an
 attitude/bias offset. The centripetal model assumes zero leeway and no
 vertical velocity.
 
-**Source:** specific-force / coordinated-turn model Titterton & Weston 2004;
-Farrell 2008 *(canonical)*.
+**Health-EMA gain (1.7 fix).** `innov_weight`, `innov_reject` and `nis_accel`
+are fed only by samples that clear the skip gate. In a seaway that gate
+discards 85–95% of samples, so a per-update gain sized from the IMU ODR
+(`gate_alpha` $=1/(\tau f_{odr})$) stretched the intended $\tau=30$ s to ten
+minutes or more, and the metrics reported their seed values rather than the
+data. The accel path now derives the gain from elapsed time instead:
+$$ \alpha = 1-\exp(-\Delta t/\tau), $$
+$\Delta t$ accumulated over *every* sample, accepted or skipped. This is exact
+at any feed rate and reduces to $\Delta t/\tau$ when updates are frequent.
 
-### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:697`)
+**What $R_a$ can and cannot do (ROADMAP §10.1).** $R_a$ derives from the
+datasheet noise floor, and the filter is measurably over-confident about it:
+mean NIS over the wave benchmark is 19 (3-D) / 25 (yaw-only) where a
+consistent model reads 1. The natural remedy — raise `mekf_accel_noise` until
+NIS ≈ 1 — does not work. Sweeping it (12 seeds, both mag modes):
+
+| $N_a$ | 3-D att | yaw att | NEES(tr) 3-D/yaw | NIS 3-D/yaw |
+|---|---|---|---|---|
+| 0.0022 (default) | 5.65° | 2.31° | 18.3 / 7.8 | 19.3 / 25.2 |
+| 0.004 | 7.93° | 11.13° | 114 / 304 | 33.7 / 39.6 |
+| 0.008 | 7.57° | 11.09° | 102 / 285 | 10.6 / 13.5 |
+| 0.015 | 6.98° | 10.29° | 81 / 241 | 3.2 / 4.2 |
+| **0.030** | 5.74° | **8.58°** | 50 / 156 | **0.82 / 1.03** |
+| 0.050 | 5.07° | 7.01° | 34 / 87 | 0.32 / 0.34 |
+| 0.120 | 4.72° | 4.33° | 17 / 17 | 0.06 / 0.05 |
+| 0.300 | 4.47° | 2.48° | 6.4 / 2.2 | 0.01 / 0.01 |
+
+Three things to read off it:
+
+1. **NIS ≈ 1 costs accuracy.** $N_a=0.03$ makes the innovations statistically
+   consistent, but the marine (yaw-only) default degrades 2.31° → 8.58° and
+   its NEES rises 7.8 → 156. Weakening the gravity correction makes the
+   filter lean on gyro integration, so the *state* error grows even as the
+   *innovations* start to look honest.
+2. **The two consistency criteria disagree.** NIS falls monotonically with
+   $N_a$ while NEES(trace) has its minimum near the default. No single scalar
+   satisfies both.
+3. **The inconsistency is structural, not a scale error.** NEES(strict) for
+   3-D stays pinned in the 44–64 band across the entire sweep — four orders
+   of magnitude of $R_a$ — so $P$'s *shape* is wrong, and no isotropic scalar
+   can fix that.
+
+The cause is that the seaway residual is wave-orbital: correlated with wave
+phase, with a measured correlation time $\tau\approx0.3$–$0.9$ s
+(`imud-cal fit-ra`), not white. A white isotropic $R$ cannot describe a
+coloured disturbance; making its *variance* right necessarily gets its
+*spectrum* wrong. The real fix is to model the correlation — an augmented
+state or the continuous $R_a$ scaling of §10.5 — not a larger number here.
+
+The default is therefore unchanged, and is additionally a sharp local optimum:
+$N_a\in[0.003,0.03]$ is markedly **worse** than either side of it, so hand-
+tuning it upward "a little" lands in the worst available region.
+
+**Source:** specific-force / coordinated-turn model Titterton & Weston 2004;
+Farrell 2008 *(canonical)*. NEES/NIS consistency tests Bar-Shalom et al. 2001
+§5.4 *(canonical)*.
+
+### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:820`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field
 $h_{raw}=R^\top m_{ref}$, magnitude $|h_{raw}|$.
@@ -446,9 +564,9 @@ and its dip channel is least trustworthy.
 
 **Source:** heading-only / tilt-compensated magnetometer fusion — standard
 marine AHRS practice, Farrell 2008 *(canonical)*; gauge-feedback avoidance is
-imud-specific design (see in-code rationale `fusion.c:781`).
+imud-specific design (see in-code rationale `fusion.c:923`).
 
-### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:474`)
+### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:597`)
 
 Given WMM horizontal magnitude $H$ and vertical $Z$ (Gauss) at a known
 position (from §13), rescale `m_ref` to those invariants while preserving
@@ -460,7 +578,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:1030`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:1140`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -472,17 +590,22 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1005`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1128`)
 
-Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`, and
-`mag_yaw_only` from a new config on hot-reload; $q$, $P$, $b$, $dt$ untouched
-(the filter keeps running).
+Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
+`mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
+a new config on hot-reload; $q$, $P$, $b$, $dt$ and the runtime scalars
+(`Ra_scale`, `acc_quiet_ema`, the health EMAs) are untouched, so the filter
+keeps running. Both this and `mekf_init()` derive their tuning through one
+shared helper (`mekf_derive_tuning`, `fusion.c:513`), so no value can be
+updated in one path and forgotten in the other — `mref_alpha` previously was,
+leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ---
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`imu.c:1004`–`1051`) from the bias-corrected
+Computed in the fusion thread (`imu.c:940`–`978`) from the bias-corrected
 body rate $\omega = s.\text{gyro}-b$ and the current Euler angles, using the
 inverse of the 3-2-1 kinematic relation.
 
@@ -508,7 +631,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:880`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1003`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -544,12 +667,12 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:907`–`1003`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1051`–`1122`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:937`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1060`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
@@ -596,7 +719,7 @@ recursion, West 1979 / Finch 2009 *(canonical)*.
 
 ---
 
-## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:749`)
+## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:820`)
 
 Two EMAs ($\alpha=1/3000$, $\tau\approx30$ s at 100 Hz mag ODR), updated
 **before** the rejection gates so that gated-out anomalies still register:
@@ -619,23 +742,102 @@ pre-gate innovations because the rejected samples are precisely the anomalies
 these metrics exist to surface. The 30 s time constant scales inversely with a
 non-standard mag rate (acceptable for a health indicator).
 
-**Source:** exponential moving average, standard *(canonical)*.
+### 8.1 Update-gate health — `gate_health()` (`fusion.c:129`)
+
+Two further EMAs ($\tau\approx30$ s, gain per §4.7), written by every
+`eskf_update` / `eskf_update_yaw` call — accepted, capped and rejected alike,
+with $\gamma_r=25\gamma$ the gross-reject threshold:
+
+$$ \text{innov\_weight} \leftarrow \text{innov\_weight} +
+   \alpha\big(w - \text{innov\_weight}\big), \qquad
+   w=\begin{cases}1 & d^2\le\gamma\\ \sqrt{\gamma/d^2} & \gamma<d^2\le\gamma_r\\
+   0 & d^2>\gamma_r\end{cases} $$
+
+$$ \text{innov\_reject} \leftarrow \text{innov\_reject} +
+   \alpha\big(\mathbb{1}[d^2>\gamma_r] - \text{innov\_reject}\big). $$
+
+`innov_weight` near 1 means the filter is accepting its measurements at face
+value; a sustained drift toward $1/5$ means the Huber cap is doing continuous
+work, which is the regime in which the covariance inconsistency noted in §4.5
+matters. `innov_reject` separates "capping hard" from "throwing measurements
+away outright". Both are exported on the wire (§8 of `spec.md`, offsets 256
+and 260) so the behaviour can be observed in the field rather than inferred
+from a synthetic benchmark.
+
+**Source:** exponential moving average, standard *(canonical)*; innovation
+consistency monitoring Bar-Shalom et al. 2001 *(canonical)*.
+
+### 8.2 Measurement-model consistency — `nis_record()` (`fusion.c:167`)
+
+Where §8.1 reports how hard the robustness machinery is *working*, this
+reports whether the noise model underneath it is *right*. Two EMAs of the
+normalised innovation squared, per channel (wire offsets 264 and 268):
+
+$$ \text{nis} \leftarrow \text{nis} + \alpha\Big(\min\big(d^2/n_{dof},\,100\big)
+   - \text{nis}\Big),\qquad d^2=\nu^\top S^{-1}\nu. $$
+
+Accumulated **before** the Huber cap and **including** rejected updates: the
+cap censors $d^2$ at $\gamma$, so a post-cap average would be bounded by
+construction and could never report the inconsistency it exists to measure.
+The channels are split because they run at very different rates (833 Hz accel
+vs ~104 Hz mag); a combined EMA would be ~8:1 accel.
+
+**Degrees of freedom.** The vector updates carry $n_{dof}=2$, not 3, because
+the measurement is a *unit* vector — normalising $z$ removes the radial
+component, so the noise lives only in the tangent plane. With true innovation
+covariance $E[\nu\nu^\top]=HPH^\top+R(I-hh^\top)$ while $S=HPH^\top+R\,I$:
+
+$$ E[d^2]=\operatorname{tr}\!\big(S^{-1}E[\nu\nu^\top]\big)
+        =\operatorname{tr}\!\big(S^{-1}(S-R\,hh^\top)\big)
+        =3-R\,h^\top S^{-1}h, $$
+
+and since $H=[h]_\times$ gives $H^\top h=-[h]_\times h=0$, $h$ is an
+eigenvector of $S$ with eigenvalue $R$, so $S^{-1}h=h/R$ and the correction
+term is exactly 1:
+$$ E[d^2]=2 \quad\text{for both the gravity and 3-D mag updates.} $$
+The yaw-only scalar update has $n_{dof}=1$. Dividing by 3 instead would peg a
+perfectly consistent filter at 0.67.
+
+Measured values are 19 (3-D) / 25 (yaw-only) over the wave benchmark: the
+model is over-confident by ~4.5× in $\sigma$. §4.7 explains why raising $R_a$
+is not the remedy. `imud-cal fit-ra` computes the same statistic offline from
+a capture so the live number can be checked against real water.
+
+**Source:** NIS consistency test Bar-Shalom et al. 2001 §5.4 *(canonical)*.
 
 ---
 
 ## 9. Engine-vibration detector — `ism_reader_thread()` (`imu.c`)
 
-EMA of squared specific-force deviation from 1 g, $\alpha=0.01$
-($\tau\approx1$ s at 100 Hz burst rate), per accepted sample:
+EMA of squared specific-force deviation from 1 g, stepped once per sample:
 $$ e \leftarrow e + \alpha\big((\lVert a\rVert - g)^2 - e\big),\qquad
-   \text{engine\_on} = \big[\,e > \text{engine\_vibration\_g2}\,\big]. $$
-`engine_on` raises the accel noise ×4 and widens the skip band (§4.7).
+   \alpha = \frac{1}{\tau\,f_{ODR}},\ \ \tau = 1\,\mathrm{s}. $$
 
-**Source:** EMA threshold detector, standard *(canonical)*.
+$\alpha$ is derived from the **resolved sample rate**, not fixed. Because the
+EMA advances once per sample but samples arrive in FIFO bursts, a constant
+$\alpha$ made the effective time constant a function of burst depth (a deeper
+burst = more steps per read = a faster EMA) rather than the intended 1 s.
+
+Assertion uses **hysteresis** rather than a bare threshold:
+$$ \text{engine\_on} = \begin{cases}
+   \text{true}  & e > \text{engine\_vibration\_g2}\\
+   \text{false} & e < 0.7\,\text{engine\_vibration\_g2}\\
+   \text{unchanged} & \text{otherwise}
+   \end{cases} $$
+
+A single threshold chattered at the boundary, and each toggle steps
+`Ra_scale`, rewrites the skip band, emits a log line, and flips
+`FLAG_ENGINE_ON` on the wire — all externally visible. `engine_on` raises the
+accel noise ×4 and widens the skip band (§4.7); the fusion thread re-asserts
+both on every sample, so a config reload cannot leave the skip band and
+`Ra_scale` disagreeing.
+
+**Source:** EMA threshold detector with Schmitt hysteresis, standard
+*(canonical)*.
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:729`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:592`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$
@@ -649,11 +851,11 @@ $\max_k\sigma_k > 0.00873$ rad·s⁻¹ ($0.5°$·s⁻¹) the window is **doubled
 
 ---
 
-## 11. Timestamp anchoring and per-sample dt — `imu.c:173`–`207`
+## 11. Timestamp anchoring and per-sample dt — `imu_math.c:57`–`104`
 
 A single anchor $(\text{chip\_ticks}, \text{wall\_ns}, \text{tai\_ns},
 \text{gen})$ maps the sensor's free-running counter to system time. Per
-sample (`chip_to_wall`, `imu.c:197`), with `tick_ns` the counter period:
+sample (`chip_to_wall`, `imu_math.c:81`), with `tick_ns` the counter period:
 $$ \text{offset} = (\text{chip\_ts} - \text{chip\_ticks})\cdot\text{tick\_ns},
 \qquad t_{wall} = \text{wall\_ns} + \text{offset}, $$
 $t_{tai}$ likewise. Subtraction is unsigned 32-bit (wrap-safe within one

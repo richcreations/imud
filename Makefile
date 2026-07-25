@@ -75,6 +75,9 @@ CAL_SRCS    = src/cal.c \
               src/cal_math.c \
               src/config.c \
               src/drivers.c \
+              src/fusion.c \
+              src/imu_math.c \
+              src/fit_ra.c \
               $(DRIVER_SRCS)
 
 IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
@@ -166,6 +169,9 @@ src/drivers/%.o: src/drivers/%.c
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 test_fusion: src/fusion.c test/test_fusion.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fit_ra.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_config: src/config.c src/log.c test/test_config.c
@@ -272,13 +278,14 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c src/log.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
-test: test_fusion test_config test_nmea test_packet test_capture test_ring \
+test: test_fusion test_fit_ra test_config test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus \
       test_drivers_registry test_imu_math test_drivers
 	./test_fusion
+	./test_fit_ra
 	./test_config
 	./test_nmea
 	./test_packet
@@ -314,6 +321,18 @@ dist:
 	git archive --format=tar.gz --prefix=imud-$(VERSION)/ \
 	    -o imud-$(VERSION).tar.gz HEAD
 	@echo "Wrote imud-$(VERSION).tar.gz"
+
+# Regenerate the packet fuzz seed for the CURRENT wire revision. The seed is
+# committed (CI's fuzz smoke run reads it), so this is only run when the wire
+# format changes — test_packet fails with a pointer here when it must be.
+.PHONY: fuzz-seeds
+fuzz-seeds:
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o mkseed_packet \
+	    src/packet.c fuzz/mkseed_packet.c -lm
+	@rm -f test/fuzz/corpus/packet/valid_v*.bin
+	./mkseed_packet test/fuzz/corpus/packet/valid_v$(shell sed -n 's/^\#define IMUD_VERSION *\([0-9]*\).*/\1/p' include/types.h).bin
+	@rm -f mkseed_packet
+	@echo "Regenerated test/fuzz/corpus/packet/ — commit the new seed."
 
 # GNU-convention alias
 check: test
@@ -688,12 +707,12 @@ clean:
 	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
       imud-prometheus \
 	      libimud.so libimud.so.* libimud.pc \
-	      test_fusion test_config test_nmea test_packet test_ring test_mount \
+	      test_fusion test_fit_ra test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers \
-	      fuzz_config fuzz_json fuzz_packet fuzz_capture \
+	      fuzz_config fuzz_json fuzz_packet fuzz_capture mkseed_packet \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info coverage-html \
 	      etc/*.service imud-*.tar.gz

@@ -8,7 +8,7 @@
  * mavlink_main.c — imud-mavlink: MAVLink bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 260-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
+ * reads the 276-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
  * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP, serial, and/or a TCP
  * listener (GCS clients connect, e.g. QGroundControl tcp:host:5760)
  * simultaneously.

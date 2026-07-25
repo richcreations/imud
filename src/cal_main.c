@@ -45,6 +45,7 @@
 #include "config.h"
 #include "imu.h"
 #include "drivers.h"
+#include "fit_ra.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -904,6 +905,28 @@ static int do_fit_temp(imud_cal_t *cal, const char *from, double settle_sec)
     return 0;
 }
 
+/*
+ * fit-ra — measurement-model check against a rough-water capture.
+ *
+ * Unlike every other mode this one writes nothing: the answer belongs in
+ * imud.conf's [fusion] section, not in cal.json, because it is filter tuning
+ * rather than a property of the sensor. See ROADMAP §10.1.
+ */
+static int do_fit_ra(const imud_config_t *cfg, const imud_cal_t *cal,
+                     const char *path)
+{
+    fitra_report_t rep;
+    char err[256] = {0};
+    int rc = fitra_run(path, cfg, cal, cfg->startup_settle_sec,
+                       &rep, err, sizeof err);
+    if (rc != 0) {
+        fprintf(stderr, "fit-ra: %s\n", err[0] ? err : "failed");
+        return -1;
+    }
+    fitra_print(&rep, path);
+    return 0;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -917,6 +940,9 @@ static void usage(const char *prog)
         "               (requires --from FILE; record with [capture] enabled)\n"
         "  fit-temp     Gyro bias/temperature fit from a warm-up capture\n"
         "               (requires --from FILE)\n"
+        "  fit-ra       Check the MEKF accel measurement model against a\n"
+        "               rough-water capture (requires --from FILE).\n"
+        "               Reports only; writes nothing.\n"
         "\n"
         "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
         "  --output PATH   Override cal.json output path from config\n"
@@ -954,11 +980,13 @@ int main(int argc, char **argv)
         strcmp(mode, "gyro")         != 0 &&
         strcmp(mode, "accel")        != 0 &&
         strcmp(mode, "characterize") != 0 &&
-        strcmp(mode, "fit-temp")     != 0) {
+        strcmp(mode, "fit-temp")     != 0 &&
+        strcmp(mode, "fit-ra")       != 0) {
         fprintf(stderr, "unknown mode '%s'\n", mode);
         usage(argv[0]); return 1;
     }
-    if ((strcmp(mode, "characterize") == 0 || strcmp(mode, "fit-temp") == 0)
+    if ((strcmp(mode, "characterize") == 0 || strcmp(mode, "fit-temp") == 0 ||
+         strcmp(mode, "fit-ra") == 0)
         && !from_path) {
         fprintf(stderr, "%s requires --from FILE (an .imucap capture)\n", mode);
         usage(argv[0]); return 1;
@@ -968,7 +996,8 @@ int main(int argc, char **argv)
      * cal.json path, so a MISSING file falls back to defaults there;
      * sensor modes stay strict (defaults could probe the wrong bus). */
     bool offline = strcmp(mode, "characterize") == 0 ||
-                   strcmp(mode, "fit-temp")     == 0;
+                   strcmp(mode, "fit-temp")     == 0 ||
+                   strcmp(mode, "fit-ra")       == 0;
     imud_config_t cfg;
     config_defaults(&cfg);
     int crc = config_load(config_path, &cfg);
@@ -991,6 +1020,7 @@ int main(int argc, char **argv)
     else if (strcmp(mode, "accel")        == 0) rc = do_accel(&cfg, &cal);
     else if (strcmp(mode, "characterize") == 0) rc = do_characterize(&cal, from_path, cfg.startup_settle_sec);
     else if (strcmp(mode, "fit-temp")     == 0) rc = do_fit_temp(&cal, from_path, cfg.startup_settle_sec);
+    else if (strcmp(mode, "fit-ra")       == 0) rc = do_fit_ra(&cfg, &cal, from_path);
 
     if (rc < 0) return 1;
 

@@ -98,6 +98,22 @@ int prom_build_metrics(char *buf, size_t sz, const imud_data_t *d,
     GAUGE("imud_mag_residual_radians",
           "EMA of the absolute heading innovation; compass calibration health.",
           "%.5f", d->mag_residual);
+    GAUGE("imud_innov_weight_ratio",
+          "EMA of the Huber weight applied to MEKF updates; 1 = no capping, "
+          "lower means the filter is persistently distrusting its sensors.",
+          "%.5f", d->innov_weight);
+    GAUGE("imud_innov_reject_ratio",
+          "EMA of the fraction of MEKF updates rejected by the innovation gate.",
+          "%.5f", d->innov_reject);
+    GAUGE("imud_nis_accel_ratio",
+          "EMA of the normalised innovation squared for the accelerometer "
+          "update (d^2/2); 1 = the filter's covariance matches its "
+          "innovations, higher means it is over-confident.",
+          "%.5f", d->nis_accel);
+    GAUGE("imud_nis_mag_ratio",
+          "EMA of the normalised innovation squared for the magnetometer "
+          "update (d^2/dof); 1 = consistent, higher means over-confident.",
+          "%.5f", d->nis_mag);
     GAUGE("imud_accel_quiescence_ratio",
           "EMA of (|a|/g - 1)^2; platform-disturbance metric.",
           "%.6f", d->accel_quiescence);

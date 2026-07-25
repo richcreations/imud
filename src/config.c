@@ -309,6 +309,84 @@ bool config_apply_influx_transport_compat(imud_config_t *cfg)
 
 /* ── Mount rotation helper ──────────────────────────────────────────────── */
 
+/*
+ * Parse "[a, b, c, ...]" into exactly n doubles.
+ *
+ * The count is checked exactly. The earlier version accepted a short array
+ * (only a completely empty one was an error), so `[0, 0]` silently left yaw at
+ * whatever the default was — a wrong mount rotation that biases every sample
+ * with nothing to catch it. Returns 0 on success, -1 having already logged.
+ */
+static int parse_float_array(const char *val, double *out, int n,
+                             const char *path, int lineno, const char *key)
+{
+    const char *p = strchr(val, '[');
+    if (!p) {
+        LOG_E("%s:%d: '%s': expected array of %d numbers in [ ]\n",
+              path, lineno, key, n);
+        return -1;
+    }
+    p++;
+    int count = 0;
+    while (*p && *p != ']') {
+        while (*p && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (!*p || *p == ']') break;
+        char *end;
+        double v = strtod(p, &end);
+        if (end == p) {
+            LOG_E("%s:%d: '%s': malformed number at offset %d\n",
+                  path, lineno, key, (int)(p - val));
+            return -1;
+        }
+        if (count < n) out[count] = v;
+        count++;
+        p = end;
+    }
+    if (count != n) {
+        LOG_E("%s:%d: '%s': expected exactly %d numbers, got %d\n",
+              path, lineno, key, n, count);
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Reject a mount matrix that is not a proper rotation.
+ *
+ * Only reachable for a hand-entered rotation_matrix — euler_deg_to_rot output
+ * is orthonormal by construction. Checks both RᵀR ≈ I and det(R) > 0: an
+ * orthogonality-only test happily accepts a reflection, and a sign-flipped
+ * axis (det = −1) is the likeliest way to mistype this by hand.
+ */
+static int validate_rotation(const double R[3][3],
+                             const char *path, int lineno, const char *key)
+{
+    double err = 0.0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            double d = 0.0;
+            for (int k = 0; k < 3; k++) d += R[k][i] * R[k][j];
+            d -= (i == j) ? 1.0 : 0.0;
+            err += d * d;
+        }
+    if (sqrt(err) > 1e-6) {
+        LOG_E("%s:%d: '%s': not orthonormal (|RᵀR − I| = %.2e) — "
+              "rows/columns must be unit length and mutually perpendicular\n",
+              path, lineno, key, sqrt(err));
+        return -1;
+    }
+    double det = R[0][0]*(R[1][1]*R[2][2] - R[1][2]*R[2][1])
+               - R[0][1]*(R[1][0]*R[2][2] - R[1][2]*R[2][0])
+               + R[0][2]*(R[1][0]*R[2][1] - R[1][1]*R[2][0]);
+    if (det < 0.0) {
+        LOG_E("%s:%d: '%s': determinant is %.3f, not +1 — this is a reflection, "
+              "not a rotation (check for a sign-flipped axis)\n",
+              path, lineno, key, det);
+        return -1;
+    }
+    return 0;
+}
+
 /* Build R = Rz(yaw) * Ry(pitch) * Rx(roll) from [roll, pitch, yaw] in degrees. */
 static void euler_deg_to_rot(const double euler[3], double R[3][3])
 {
@@ -420,6 +498,25 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         return -1; } \
         (field) = bv; } while (0)
 
+/*
+ * A noise density that is zero or negative is not a tuning choice, it is a
+ * broken filter: every one of these becomes a variance in a denominator.
+ * mekf_accel_noise = 0 gives Ra = 0, hence a Kalman gain of exactly 1 — the
+ * filter would snap its attitude onto every raw accelerometer sample, waves
+ * and all. Fatal rather than clamped, because silently substituting a value
+ * would hide a config typo behind plausible-looking output.
+ */
+#define NEED_POS_DBL(field) \
+    do { if (!parse_double(val, &dv)) { \
+        LOG_E("%s:%d: '%s': expected number\n", path, lineno, key); \
+        return -1; } \
+        if (!(dv > 0.0)) { \
+        LOG_E("%s:%d: '%s': must be greater than zero (got %g) — " \
+              "a zero or negative noise density makes the filter degenerate\n", \
+              path, lineno, key, dv); \
+        return -1; } \
+        (field) = dv; } while (0)
+
 #define NEED_STR(field) \
     do { if (!copy_str(val, (field), sizeof(field))) \
         LOG_W("%s:%d: '%s': value too long (max %zu chars) — truncated\n", \
@@ -429,60 +526,62 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_MOUNT:
         if (strcmp(key, "rotation_euler_deg") == 0) {
-            /* parse up to 3 floats from an array-like string: [r,p,y] */
-            const char *p = strchr(val, '[');
-            if (!p) {
-                LOG_E("%s:%d: '%s': expected array [r,p,y]\n", path, lineno, key);
+            double angs[3];
+            if (parse_float_array(val, angs, 3, path, lineno, key) < 0)
                 return -1;
-            }
-            p++;
-            int count = 0;
-            double angs[3] = {0.0, 0.0, 0.0};
-            while (count < 3 && *p && *p != ']') {
-                /* skip delimiters */
-                while (*p && (isspace((unsigned char)*p) || *p == ',')) p++;
-                if (!*p || *p == ']') break;
-                char *end;
-                angs[count] = strtod(p, &end);
-                if (end == p) break;
-                count++; p = end;
-            }
-            if (count == 0) {
-                LOG_E("%s:%d: '%s': expected numbers in array\n", path, lineno, key);
-                return -1;
-            }
             cfg->mount_set = true;
             for (int i = 0; i < 3; i++) cfg->mount_euler_deg[i] = angs[i];
             euler_deg_to_rot(cfg->mount_euler_deg, cfg->mount_rot);
             return 0;
+        } else if (strcmp(key, "rotation_matrix") == 0) {
+            /* Row-major 3×3: v_body = R · v_board. Last mount key wins. */
+            double m[9];
+            if (parse_float_array(val, m, 9, path, lineno, key) < 0)
+                return -1;
+            double R[3][3];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) R[i][j] = m[i*3 + j];
+            if (validate_rotation(R, path, lineno, key) < 0)
+                return -1;
+            cfg->mount_set = true;
+            memcpy(cfg->mount_rot, R, sizeof R);
+            /* Euler angles are not back-derived; mount_rot is authoritative. */
+            cfg->mount_euler_deg[0] = cfg->mount_euler_deg[1] =
+                cfg->mount_euler_deg[2] = 0.0;
+            return 0;
         } else if (strcmp(key, "preset") == 0) {
-            /* Named preset — string value */
+            /* Named preset — string value. Validate BEFORE committing: this
+             * used to set mount_set = true up front and only warn on an
+             * unrecognised name, so a typo left the daemon running with
+             * whatever angles happened to be in the struct. A silently wrong
+             * mount rotation biases every sample, so it is fatal. */
             char preset[32];
             copy_str(val, preset, sizeof(preset));
+            double e[3] = {0.0, 0.0, 0.0};
+            if (strcasecmp(preset, "identity") == 0 || strcasecmp(preset, "board_forward") == 0) {
+                e[0] = 0.0; e[1] = 0.0; e[2] = 0.0;
+            } else if (strcasecmp(preset, "yaw_90") == 0 || strcasecmp(preset, "rot_z_90") == 0) {
+                e[0] = 0.0; e[1] = 0.0; e[2] = 90.0;
+            } else if (strcasecmp(preset, "yaw_180") == 0 || strcasecmp(preset, "rot_z_180") == 0) {
+                e[0] = 0.0; e[1] = 0.0; e[2] = 180.0;
+            } else if (strcasecmp(preset, "yaw_270") == 0 || strcasecmp(preset, "rot_z_270") == 0) {
+                e[0] = 0.0; e[1] = 0.0; e[2] = 270.0;
+            } else if (strcasecmp(preset, "roll_90") == 0 || strcasecmp(preset, "rot_x_90") == 0) {
+                e[0] = 90.0; e[1] = 0.0; e[2] = 0.0;
+            } else if (strcasecmp(preset, "roll_270") == 0 || strcasecmp(preset, "rot_x_270") == 0) {
+                e[0] = 270.0; e[1] = 0.0; e[2] = 0.0;
+            } else if (strcasecmp(preset, "pitch_90") == 0 || strcasecmp(preset, "rot_y_90") == 0) {
+                e[0] = 0.0; e[1] = 90.0; e[2] = 0.0;
+            } else if (strcasecmp(preset, "pitch_270") == 0 || strcasecmp(preset, "rot_y_270") == 0) {
+                e[0] = 0.0; e[1] = 270.0; e[2] = 0.0;
+            } else {
+                LOG_E("%s:%d: '%s': unknown mount preset '%s'\n",
+                      path, lineno, key, preset);
+                return -1;
+            }
             snprintf(cfg->mount_preset, sizeof(cfg->mount_preset), "%s", preset);
             cfg->mount_set = true;
-            /* Map preset to Euler angles (degrees). */
-            if (strcasecmp(preset, "identity") == 0 || strcasecmp(preset, "board_forward") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 0.0;
-            } else if (strcasecmp(preset, "yaw_90") == 0 || strcasecmp(preset, "rot_z_90") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 90.0;
-            } else if (strcasecmp(preset, "yaw_180") == 0 || strcasecmp(preset, "rot_z_180") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 180.0;
-            } else if (strcasecmp(preset, "yaw_270") == 0 || strcasecmp(preset, "rot_z_270") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 270.0;
-            } else if (strcasecmp(preset, "roll_90") == 0 || strcasecmp(preset, "rot_x_90") == 0) {
-                cfg->mount_euler_deg[0] = 90.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 0.0;
-            } else if (strcasecmp(preset, "roll_270") == 0 || strcasecmp(preset, "rot_x_270") == 0) {
-                cfg->mount_euler_deg[0] = 270.0; cfg->mount_euler_deg[1] = 0.0; cfg->mount_euler_deg[2] = 0.0;
-            } else if (strcasecmp(preset, "pitch_90") == 0 || strcasecmp(preset, "rot_y_90") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 90.0; cfg->mount_euler_deg[2] = 0.0;
-            } else if (strcasecmp(preset, "pitch_270") == 0 || strcasecmp(preset, "rot_y_270") == 0) {
-                cfg->mount_euler_deg[0] = 0.0; cfg->mount_euler_deg[1] = 270.0; cfg->mount_euler_deg[2] = 0.0;
-            } else {
-                LOG_W("%s:%d: unknown mount preset '%s' — ignored\n", path, lineno, preset);
-                /* leave mount_set true only if rotation_euler_deg provided earlier */
-            }
-
+            for (int i = 0; i < 3; i++) cfg->mount_euler_deg[i] = e[i];
             euler_deg_to_rot(cfg->mount_euler_deg, cfg->mount_rot);
             return 0;
         }
@@ -539,10 +638,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
         else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
         else if (strcmp(key, "wave_tau_s")        == 0) NEED_FLT(cfg->wave_tau_s);
-        else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_DBL(cfg->mekf_gyro_noise);
-        else if (strcmp(key, "mekf_gyro_bias")    == 0) NEED_DBL(cfg->mekf_gyro_bias);
-        else if (strcmp(key, "mekf_accel_noise")  == 0) NEED_DBL(cfg->mekf_accel_noise);
-        else if (strcmp(key, "mekf_mag_noise")    == 0) NEED_DBL(cfg->mekf_mag_noise);
+        else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_POS_DBL(cfg->mekf_gyro_noise);
+        else if (strcmp(key, "mekf_gyro_bias")    == 0) NEED_POS_DBL(cfg->mekf_gyro_bias);
+        else if (strcmp(key, "mekf_accel_noise")  == 0) NEED_POS_DBL(cfg->mekf_accel_noise);
+        else if (strcmp(key, "mekf_mag_noise")    == 0) NEED_POS_DBL(cfg->mekf_mag_noise);
         else if (strcmp(key, "mag_reject_gauss")          == 0) NEED_DBL(cfg->mag_reject_gauss);
         else if (strcmp(key, "accel_skip_thresh")         == 0) NEED_DBL(cfg->accel_skip_thresh);
         else if (strcmp(key, "engine_vibration_g2")       == 0) NEED_DBL(cfg->engine_vibration_g2);

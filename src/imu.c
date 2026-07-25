@@ -50,6 +50,11 @@ typedef struct gpiod_line         imu_gpio_line_t;
 #include "fusion.h"
 #include "log.h"
 
+/* Engine-vibration detector: EMA time constant (s) and the ratio of the
+ * assert threshold at which the detector releases (Schmitt hysteresis). */
+#define VIB_TAU_S       1.0f
+#define VIB_HYST_RATIO  0.7f
+
 /* ── Full context (opaque to callers via imu.h) ─────────────────────────── */
 
 struct imu_ctx {
@@ -333,9 +338,15 @@ void *ism_reader_thread(void *arg)
         }
 
         /* Engine vibration detection: exponential moving average of (|a|-g)².
-         * Alpha = 0.01 gives a ~1 s time constant at 100 Hz burst rate. */
+         *
+         * Alpha is derived from the resolved sample rate, NOT hardcoded: the
+         * EMA is stepped once per SAMPLE, so a fixed alpha made the time
+         * constant scale with FIFO burst depth (a deeper burst = more steps
+         * per read = a faster EMA) rather than being the ~1 s the detector
+         * wants. 1/(τ·odr) gives τ = VIB_TAU_S regardless of how the driver
+         * happens to batch. */
         if (cfg.engine_vibration_g2 > 0.0 && n > 0) {
-            const float alpha = 0.01f;
+            const float alpha = 1.0f / (VIB_TAU_S * (float)ctx->actual_odr_hz);
             const float g = 9.80665f;
             for (int i = 0; i < n; i++) {
                 float a = sqrtf(buf[i].accel[0]*buf[i].accel[0]
@@ -344,7 +355,18 @@ void *ism_reader_thread(void *arg)
                 float dev = a - g;
                 ctx->vib_ema += alpha * (dev*dev - ctx->vib_ema);
             }
-            ctx->engine_on = (ctx->vib_ema > (float)cfg.engine_vibration_g2);
+            /* Schmitt trigger: assert above the threshold, clear only once the
+             * EMA falls to VIB_HYST_RATIO of it. A single threshold chattered
+             * at the boundary, and each toggle steps Ra_scale, rewrites the
+             * skip window, emits a log line and flips FLAG_ENGINE_ON on the
+             * wire — all externally visible. */
+            float on_thresh  = (float)cfg.engine_vibration_g2;
+            float off_thresh = on_thresh * VIB_HYST_RATIO;
+            if (ctx->engine_on) {
+                if (ctx->vib_ema < off_thresh) ctx->engine_on = false;
+            } else {
+                if (ctx->vib_ema > on_thresh)  ctx->engine_on = true;
+            }
         }
 
         /* Track hardware FIFO overflow (rc == 1) and software ring overflow. */
@@ -868,20 +890,28 @@ void *fusion_thread(void *arg)
         /* Switch accel gating when engine vibration is detected: widen the
          * skip window so the filter isn't starved, but also inflate the
          * accel noise ×4 so the vibration-contaminated samples that do pass
-         * are trusted proportionally less. */
-        if (cfg.engine_vibration_g2 > 0.0 &&
-            ctx->engine_on != prev_engine_on) {
-            prev_engine_on = ctx->engine_on;
+         * are trusted proportionally less.
+         *
+         * Applied on EVERY sample, not just on a transition: mekf_reconfigure
+         * resets accel_skip_lo/hi from the non-engine threshold, so a SIGHUP
+         * while the engine was running used to leave the skip window narrow
+         * with Ra_scale still at 4.0 — a half-engine state that persisted
+         * until the engine next stopped. Re-asserting is four float stores.
+         * Only the log stays edge-triggered. */
+        if (cfg.engine_vibration_g2 > 0.0) {
             float sk = ctx->engine_on
                        ? (float)cfg.engine_accel_skip_thresh
                        : (float)cfg.accel_skip_thresh;
             f.accel_skip_lo = 1.0f - sk;
             f.accel_skip_hi = 1.0f + sk;
             f.Ra_scale      = ctx->engine_on ? 4.0f : 1.0f;
-            LOG_I("[fusion] engine vibration %s — accel_skip=%.2f "
-                    "Ra×%.0f\n",
-                    ctx->engine_on ? "detected" : "cleared", sk,
-                    (double)f.Ra_scale);
+            if (ctx->engine_on != prev_engine_on) {
+                prev_engine_on = ctx->engine_on;
+                LOG_I("[fusion] engine vibration %s — accel_skip=%.2f "
+                        "Ra×%.0f\n",
+                        ctx->engine_on ? "detected" : "cleared", sk,
+                        (double)f.Ra_scale);
+            }
         }
 
         mekf_update_accel(&f, &s);

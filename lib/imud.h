@@ -112,6 +112,12 @@ typedef struct imud_data {
     /* Compass health (wire v14) — diagnostics, 0.0 until mag updates flow */
     float mag_anomaly;         /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
     float mag_residual;        /* EMA of |heading innovation|, rad */
+    /* MEKF update-gate health (wire v17) — how much the filter is having to
+     * distrust its own measurements; 1.0 / 0.0 when everything is accepted */
+    float innov_weight;        /* EMA of Huber weight √(γ/d²) on accepted updates */
+    float innov_reject;        /* EMA of the gate-reject indicator */
+    float nis_accel;           /* EMA of accel d²/2; 1.0 = covariance consistent */
+    float nis_mag;             /* EMA of mag d²/dof; 1.0 = covariance consistent */
     /* ── new members are appended here; never reorder the above ── */
 } imud_data_t;
 
