@@ -34,6 +34,7 @@ float    client_wave_height(const void *buf);
 float    client_roll_period(const void *buf);
 float    client_pitch_period(const void *buf);
 float    client_mag_residual(const void *buf);
+float    client_innov_weight(const void *buf);
 float    client_true_heading(const void *buf);
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
@@ -74,6 +75,8 @@ static void make_inputs(fused_state_t *st, mag_sample_t *mag,
     st->roll_period_s   = 5.6f;
     st->pitch_period_s  = 4.8f;
     st->mag_residual    = 0.02f;
+    st->innov_weight    = 0.87f;
+    st->innov_reject    = 0.06f;
     st->ts_tai_ns       = st->ts_wall_ns + 37000000000ULL;
 
     mag->field[0] = 21.5f; mag->field[1] = -3.2f; mag->field[2] = 44.1f;
@@ -93,7 +96,7 @@ static void test_client_accepts_daemon_packet(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    EXPECT(sizeof(pkt) == 260, "daemon packet is 260 bytes (v14)");
+    EXPECT(sizeof(pkt) == 276, "daemon packet is 276 bytes (v17)");
     EXPECT(client_packet_valid(&pkt, sizeof pkt),
            "client accepts daemon-built packet (magic+version+CRC)");
     EXPECT(!client_packet_valid(&pkt, sizeof pkt - 1),
@@ -111,7 +114,7 @@ static void test_client_rejects_corruption(void)
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
-    unsigned char bytes[260];
+    unsigned char bytes[276];
     memcpy(bytes, &pkt, sizeof bytes);
     bytes[100] ^= 0x01;   /* flip one payload bit */
     EXPECT(!client_packet_valid(bytes, sizeof bytes),
@@ -145,6 +148,7 @@ static void test_client_field_offsets(void)
     EXPECT_NEAR(client_roll_period(&pkt), 5.6f, 1e-4f, "roll_period_s roundtrip (v14)");
     EXPECT_NEAR(client_pitch_period(&pkt), 4.8f, 1e-4f, "pitch_period_s roundtrip (v14)");
     EXPECT_NEAR(client_mag_residual(&pkt), 0.02f, 1e-5f, "mag_residual roundtrip (v14)");
+    EXPECT_NEAR(client_innov_weight(&pkt), 0.87f, 1e-5f, "innov_weight roundtrip (v17)");
     end(fb);
 }
 

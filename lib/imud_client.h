@@ -59,10 +59,11 @@
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
 /* Wire-layout revision, NOT the release version.  Encoded as major*10 + minor
- * of the release that last CHANGED the packet layout — 14 = the layout
- * introduced in 1.4, which 1.5 ships unchanged.  Bump only on layout change. */
-#define IMUD_VERSION      14
-#define IMUD_PACKET_SIZE  260           /* bytes, fixed */
+ * of the release that last CHANGED the packet layout — 17 = the layout
+ * introduced in 1.7; 14 was the 1.4 layout that 1.5 and 1.6 shipped unchanged.
+ * Bump only on layout change. */
+#define IMUD_VERSION      17
+#define IMUD_PACKET_SIZE  276           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */
 
@@ -81,7 +82,7 @@
 #define IMUD_FLAG_WAVE_VALID           (1u << 12) /* sea-state stats settled (wave/roll/pitch fields valid) */
 #define IMUD_FLAG_ENGINE_ON            (1u << 13) /* engine-vibration detector asserting */
 
-/* ── Wire packet — 260 bytes, little-endian ─────────────────────────────── */
+/* ── Wire packet — 276 bytes, little-endian ─────────────────────────────── */
 
 #if defined(_MSC_VER)
 #  pragma pack(push, 1)
@@ -156,7 +157,15 @@ typedef struct IMUD__PACKED {
     float    pitch_amplitude; /* significant single amplitude 2σ(pitch), rad */
     float    mag_anomaly;     /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
     float    mag_residual;    /* EMA of |heading innovation|, rad; compass health */
-    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–255 */
+    /* v17 additions — MEKF update-gate health */
+    float    innov_weight;    /* EMA of Huber weight √(γ/d²); 1.0 = no capping */
+    float    innov_reject;    /* EMA of gate-reject indicator; 0.0 = none rejected */
+    /* v17 additions — MEKF measurement-model consistency (rolling NIS, τ≈30 s,
+     * pre-cap, rejected updates included). 1.0 = covariance consistent with
+     * the observed innovations; > 1.0 = filter over-confident. */
+    float    nis_accel;       /* accel gravity update, d²/2 */
+    float    nis_mag;         /* mag update, d²/2 (3-D) or d²/1 (yaw-only) */
+    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–271 */
 } imud_packet_t;
 
 #if defined(_MSC_VER)

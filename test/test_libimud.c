@@ -77,7 +77,11 @@ _Static_assert(OFF(pitch_period_s)   == 240, "ABI: pitch_period_s moved");
 _Static_assert(OFF(pitch_amplitude)  == 244, "ABI: pitch_amplitude moved");
 _Static_assert(OFF(mag_anomaly)      == 248, "ABI: mag_anomaly moved");
 _Static_assert(OFF(mag_residual)     == 252, "ABI: mag_residual moved");
-/* New members append AFTER mag_residual; update the assert list when
+_Static_assert(OFF(innov_weight)     == 256, "ABI: innov_weight moved");
+_Static_assert(OFF(innov_reject)     == 260, "ABI: innov_reject moved");
+_Static_assert(OFF(nis_accel)        == 264, "ABI: nis_accel moved");
+_Static_assert(OFF(nis_mag)          == 268, "ABI: nis_mag moved");
+/* New members append AFTER nis_mag; update the assert list when
  * they do (their offsets then become part of the contract too). */
 
 static int g_pass, g_fail;

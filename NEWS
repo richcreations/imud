@@ -6,6 +6,97 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.7
+---
+* Wire format v17 (packet grows 260 → 276 bytes). Four new MEKF diagnostic
+  fields. Two report how hard the filter is having to distrust its own
+  sensors: `innov_weight` (EMA of the Huber weight applied to accepted
+  updates; 1.0 = never capped) and `innov_reject` (EMA of the fraction of
+  updates thrown out by the innovation gate). Two report whether the noise
+  model itself is right: `nis_accel` and `nis_mag`, rolling averages of the
+  normalised innovation squared d²/dof, where 1.0 means the filter's
+  covariance is consistent with the innovations it actually sees and higher
+  means it is over-confident. The NIS pair is accumulated before the Huber
+  cap and includes gate-rejected updates, so — unlike `innov_weight`, which
+  saturates once the cap engages — it keeps climbing as the model gets
+  worse. Exposed via libimud, the Python client, and the Prometheus
+  (`imud_nis_accel_ratio`, `imud_nis_mag_ratio`) and InfluxDB bridges. The
+  daemon, all five bridges, and imud-mon validate the wire version and must
+  be upgraded together; libimud consumers do not need recompiling.
+* Fusion: the MEKF's gross-outlier rejection threshold moves from 9x to 25x
+  the chi-squared innovation gate. At 9x it was discarding 26% of the wave
+  benchmark's accelerometer updates -- ordinary wave-orbital motion, not
+  outliers -- which starved the filter; the resulting drift produced larger
+  innovations, which tripped the gate more often still. Widening it improves
+  every measured quantity in both magnetometer modes at no cost: attitude RMS
+  6.85 deg -> 5.65 deg (3-D) and 3.57 deg -> 2.31 deg (yaw-only, the marine
+  default), heading RMS 4.27 -> 3.07 and 3.10 -> 1.96, and covariance
+  consistency NEES 28.9 -> 18.3 and 21.1 -> 7.8. It also collapses the
+  benchmark's worst-case spread (3-D 13.68 -> 7.02, yaw-only 9.59 -> 2.34),
+  which had previously been put down to scenario luck. The Huber cap that
+  bounds each update's influence is unchanged, as is `mekf_accel_noise`.
+* Fixed: the update-gate health and consistency metrics (`innov_weight`,
+  `innov_reject`, `nis_accel`) averaged with a per-update gain derived from
+  the IMU sample rate, but the accelerometer skip band discards 85-95% of
+  samples in a seaway, so their true time constant was around ten minutes
+  rather than the intended 30 s -- long enough that they reported their
+  initial values instead of the data. The gain is now derived from elapsed
+  time, which is correct at any update rate.
+* Fusion: the error-state reset Jacobian G = I − ½[δθ]× is now applied to the
+  covariance after each correction is injected. Measured over the wave
+  benchmark this improves yaw-only attitude RMS 4.10° → 3.57° and covariance
+  consistency (NEES 32.4 → 28.4), with 3-D attitude unchanged. (Both figures
+  predate the rejection-gate change above.)
+* New `imud-cal fit-ra` mode: replays a rough-water .imucap capture through
+  the filter and reports the gravity-direction residual, its correlation
+  time, the innovation-distance distribution against the gates, and the mean
+  NIS -- the same statistic the daemon publishes live. Unlike the other
+  modes it writes nothing: the value it comments on is filter tuning in
+  imud.conf, not a sensor property. Requires --from FILE and a magnetometer
+  calibration.
+* Config: the four MEKF noise densities (`mekf_gyro_noise`, `mekf_gyro_bias`,
+  `mekf_accel_noise`, `mekf_mag_noise`) are now rejected at load if zero or
+  negative. Each becomes a variance in a denominator; `mekf_accel_noise = 0`
+  gave a Kalman gain of exactly 1, snapping attitude onto every raw
+  accelerometer sample.
+* Fixed: the packet fuzz target's seed corpus still held a v14/260-byte
+  frame, which packet_ok() rejects on size and version before reaching any
+  decode logic -- so the nightly fuzz run had been starting that target from
+  an empty effective corpus since the wire moved to v17. The seed is now
+  generated from packet_build() itself (`make fuzz-seeds`) and test_packet
+  asserts it still matches the wire the code implements, so the next wire
+  change fails a test instead of silently degrading the fuzzer.
+* Documented: `mekf_accel_noise` should not be hand-tuned upward to "allow
+  for waves". The default is a sharp local optimum for the marine
+  configuration and the range 0.003-0.03 is markedly worse than either side
+  of it. See man 5 imud.conf and docs/math.md 4.7 for the full sweep.
+* Engine-vibration detector: the EMA time constant is now derived from the
+  sample rate instead of being a fixed per-sample constant, so it is a true
+  ~1 s regardless of FIFO burst depth (previously it sped up as bursts got
+  deeper). The threshold gained hysteresis — it releases at 70% of the assert
+  level — so a signal sitting on the boundary no longer chatters `Ra_scale`,
+  the accel skip band, the log, and the `ENGINE_ON` wire flag.
+* Fixed: a config reload (SIGHUP) while the engine was running left the accel
+  skip band narrow with the noise inflation still applied, and stayed that
+  way until the engine next stopped.
+* Fixed: a config reload did not recompute the m_ref adaptation rate, so
+  changing `mag_odr_hz` left it running at the old rate indefinitely.
+* Config, `[mount]`: an unrecognised `preset` name is now a fatal error
+  instead of a warning. It previously left the mount marked as configured
+  with whatever angles happened to be in place, so a typo silently applied a
+  wrong rotation to every sample. `rotation_euler_deg` now requires exactly
+  three values; a short array was previously accepted with the missing angles
+  left at their defaults.
+* Config, `[mount]`: new `rotation_matrix` key accepts the board→body
+  rotation directly as 9 row-major values, validated at load against
+  RᵀR = I and det(R) = +1 (a reflection — typically a sign-flipped axis —
+  is rejected, which an orthogonality-only check would not catch).
+* The rough-sea wave benchmark now averages over a fixed set of 12 seeds
+  instead of asserting on one. The single seed it used was unrepresentative:
+  it scored 5.15° where the mean across seeds is 6.71° and the worst draw
+  13.78°, which both flattered the filter and made unrelated changes look
+  like regressions.
+
 1.6.2
 -----
 * Internal refactor: duplicated code across the daemon, drivers, and

@@ -68,6 +68,8 @@ static imud_packet_t make_pkt(void)
     p.wave_height_m = 1.6f; p.wave_period_s = 6.2f; p.roll_period_s = 4.4f;
     p.roll_amplitude = 0.12f; p.pitch_period_s = 5.1f; p.pitch_amplitude = 0.06f;
     p.mag_anomaly = 0.03f; p.mag_residual = 0.02f;
+    p.innov_weight = 0.87f; p.innov_reject = 0.06f;
+    p.nis_accel = 7.25f;    p.nis_mag = 1.10f;
     return p;
 }
 
@@ -77,7 +79,7 @@ static void test_structure_and_deg(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[512];
+    char buf[1024];
     int n = influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
     EXPECT(n > 0, "encode succeeds");
     EXPECT(strncmp(buf, "imud,source=imud ", 17) == 0, "measurement + source tag prefix");
@@ -101,7 +103,7 @@ static void test_rad_units(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[512];
+    char buf[1024];
     influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, false);
 
     double v;
@@ -118,7 +120,7 @@ static void test_declination_gated(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[512];
+    char buf[1024];
     double v;
 
     p.flags = 0; p.declination_deg = 13.2f;
@@ -139,7 +141,7 @@ static void test_heave_gated_and_tags(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[512];
+    char buf[1024];
     double v;
 
     influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
@@ -157,7 +159,7 @@ static void test_v12_diagnostics(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[768];
+    char buf[1024];
     double v;
 
     /* Gyro-bias / variance / quiescence are always emitted, never unit-converted
@@ -195,7 +197,7 @@ static void test_v14_seastate(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    char buf[768];
+    char buf[1024];
     double v;
 
     /* Sea state is always emitted (diagnostics sink), raw SI even in deg
@@ -210,6 +212,10 @@ static void test_v14_seastate(void)
     EXPECT(field(buf, "pitch_amplitude", &v) && fabs(v - 0.06) < 1e-3, "pitch_amplitude rad, SI");
     EXPECT(field(buf, "mag_anomaly", &v) && fabs(v - 0.03) < 1e-4, "mag_anomaly always on");
     EXPECT(field(buf, "mag_residual", &v) && fabs(v - 0.02) < 1e-4, "mag_residual always on");
+    EXPECT(field(buf, "innov_weight", &v) && fabs(v - 0.87) < 1e-4, "innov_weight always on");
+    EXPECT(field(buf, "innov_reject", &v) && fabs(v - 0.06) < 1e-4, "innov_reject always on");
+    EXPECT(field(buf, "nis_accel", &v) && fabs(v - 7.25) < 1e-4, "nis_accel always on");
+    EXPECT(field(buf, "nis_mag", &v) && fabs(v - 1.10) < 1e-4, "nis_mag always on");
     EXPECT(strstr(buf, "wave_valid=f") != NULL, "wave_valid=f when flag clear");
 
     p.flags = IMUD_FLAG_WAVE_VALID;

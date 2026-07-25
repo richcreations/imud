@@ -231,6 +231,19 @@ In-run gyro bias instability in rad/s.
 .B mekf_accel_noise
 .RI (double,\ default:\ 0.0022)
 Accelerometer noise density in m/s^2/sqrt(Hz).
+Resist the temptation to raise this to "account for wave acceleration".
+Across the 12-seed wave benchmark the default is a sharp local optimum for
+the marine (yaw-only) configuration, and values in the range 0.003 to 0.03
+are substantially worse than either side of it: the gravity correction
+weakens, the filter leans on gyro integration, gyro-bias observability
+degrades, and the growing errors feed back through the innovation gate.
+Wave-induced disturbance is handled by the chi-squared innovation cap
+instead. The
+.B nis_accel
+field on the wire reports whether the noise model matches reality (1.0 =
+consistent); check it against a real capture before changing this.
+Must be greater than zero \(em zero or negative is rejected at load, since it
+would make the Kalman gain degenerate.
 .TP
 .B mekf_mag_noise
 .RI (double,\ default:\ 0.0004)
@@ -529,6 +542,19 @@ Rotation as [roll, pitch, yaw] in degrees.
 Applied as R = Rz(yaw) x Ry(pitch) x Rx(roll).
 Only the yaw component is normally non-zero; set it to correct for
 the angle between the chip X axis and the vessel bow.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.
+.TP
+.B rotation_matrix
+.RI (array\ of\ 9,\ unset)
+Board-to-body rotation given directly, row-major, as
+v_body = R x v_board.
+An alternative to
+.B rotation_euler_deg
+for installations whose rotation is known as a matrix.
+Validated at load against R^T R = I and det(R) = +1;
+a non-orthonormal matrix or a reflection (det = -1, typically a
+sign-flipped axis) is a fatal configuration error.
 .TP
 .B preset
 .RI (string,\ unset)
@@ -544,7 +570,9 @@ One of:
 .BR pitch_270 .
 Overrides
 .B rotation_euler_deg
-when set.
+when set; whichever mount key appears last in the file wins.
+An unrecognised preset name is a fatal configuration error \(em
+starting with a silently wrong mount rotation would bias every sample.
 .SS [logging]
 .B [hot]:
 .BR level ,

@@ -7,7 +7,7 @@
 /*
  * types.h — core data structures shared across all imud threads
  *
- * Wire packet is little-endian, 260 bytes. All angle units are radians
+ * Wire packet is little-endian, 276 bytes. All angle units are radians
  * unless the field name ends in _deg. Magnetic field in µT. Accel in m/s².
  * Gyro in rad/s.
  */
@@ -31,9 +31,10 @@
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
 /* Wire-layout revision, NOT the release version (that is IMUD_VERSION_STR in
  * version.h).  Encoded as major*10 + minor of the release that last CHANGED the
- * packet layout — 14 = the layout introduced in 1.4, which 1.5 ships unchanged.
+ * packet layout — 17 = the layout introduced in 1.7 (update-gate health fields);
+ * 14 was the 1.4 layout, which 1.5 and 1.6 shipped unchanged.
  * Bump only when the layout changes; see docs/RELEASING.md. */
-#define IMUD_VERSION  14
+#define IMUD_VERSION  17
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 
@@ -96,6 +97,10 @@ typedef struct {
     float    pitch_amplitude;/* significant single amplitude 2σ(pitch), rad */
     float    mag_anomaly;    /* EMA of ||B|−|B_ref||/|B_ref|; interference metric */
     float    mag_residual;   /* EMA of |heading innovation|, rad; compass cal health */
+    float    innov_weight;   /* EMA of Huber weight √(γ/d²); 1 = no capping */
+    float    innov_reject;   /* EMA of gate-reject indicator; 0 = nothing rejected */
+    float    nis_accel;      /* EMA of accel d²/2; 1 = covariance consistent, >1 over-confident */
+    float    nis_mag;        /* EMA of mag d²/dof; 1 = covariance consistent */
     uint16_t flags;          /* FLAG_* bitmask */
     uint32_t imu_seq;        /* ISM330 sample counter of last prediction step */
     uint64_t ts_wall_ns;     /* CLOCK_REALTIME of last prediction step (ns) */
@@ -104,7 +109,7 @@ typedef struct {
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
-/* ── Wire packet — §8, 260 bytes fixed, little-endian ─────────────────────── */
+/* ── Wire packet — §8, 276 bytes fixed, little-endian ─────────────────────── */
 
 typedef struct __attribute__((packed)) {
     /* Header — 32 bytes */
@@ -172,13 +177,28 @@ typedef struct __attribute__((packed)) {
     float    pitch_amplitude;/* significant single amplitude 2σ(pitch), rad */
     float    mag_anomaly;    /* EMA of ||B|−|B_ref||/|B_ref| (unitless) */
     float    mag_residual;   /* EMA of |heading innovation|, rad */
-    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–255 */
+    /* v17 additions — MEKF update-gate health */
+    float    innov_weight;   /* EMA of the Huber weight √(γ/d²) applied to accepted
+                              * updates: 1.0 = never capped, → 0.33 = sustained
+                              * capping at the reject boundary */
+    float    innov_reject;   /* EMA of the reject indicator: fraction of updates
+                              * discarded by the gross-outlier innovation gate */
+    /* v17 additions — MEKF measurement-model consistency (rolling NIS).
+     * Normalised innovation squared d²/dof, EMA over τ ≈ 30 s, accumulated
+     * BEFORE the Huber cap and including gate-rejected updates. 1.0 = the
+     * filter's covariance correctly predicts its own innovation spread;
+     * > 1 = over-confident. Where innov_weight/innov_reject report how hard
+     * the robustness machinery is working, these report whether the noise
+     * model itself is right. See docs/ROADMAP.md §10.1. */
+    float    nis_accel;      /* accel gravity update, d²/2 */
+    float    nis_mag;        /* mag update, d²/2 (3-D) or d²/1 (yaw-only) */
+    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–271 */
 } imu_packet_t;
 
-_Static_assert(sizeof(imu_packet_t) == 260,
-               "imu_packet_t must be exactly 260 bytes");
-_Static_assert(offsetof(imu_packet_t, crc32) == 256,
-               "crc32 must be at offset 256");
+_Static_assert(sizeof(imu_packet_t) == 276,
+               "imu_packet_t must be exactly 276 bytes");
+_Static_assert(offsetof(imu_packet_t, crc32) == 272,
+               "crc32 must be at offset 272");
 
 /* ── IMU ring buffer — ism_reader → fusion ─────────────────────────────────── */
 

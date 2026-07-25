@@ -81,6 +81,14 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
     APPEND(",mag_anomaly=%.5f,mag_residual=%.5f",
            p->mag_anomaly, p->mag_residual);
 
+    /* MEKF update-gate health (v17): same always-on diagnostics policy. */
+    APPEND(",innov_weight=%.5f,innov_reject=%.5f",
+           p->innov_weight, p->innov_reject);
+
+    /* MEKF measurement-model consistency (v17): rolling NIS, 1.0 = the
+     * covariance is consistent with the innovations actually seen. */
+    APPEND(",nis_accel=%.5f,nis_mag=%.5f", p->nis_accel, p->nis_mag);
+
     /* Sea state (v14): same diagnostics-sink policy as heave — always emitted
      * (values are 0.0 until the estimator settles) with the validity flag as
      * a boolean field. Frame-neutral SI (m, s, rad), never unit-converted. */

@@ -307,10 +307,10 @@ void *hirate_out_thread(void *arg)
 /*
  * Local AF_UNIX subscription stream (Stream D) — the "third tier".
  *
- * Same 260-byte binary packets as the UDP high-rate stream, but over a
+ * Same 276-byte binary packets as the UDP high-rate stream, but over a
  * SOCK_STREAM socket: no datagram loss for same-host consumers, and clients
  * subscribe by connecting instead of listening on a port.  The fixed packet
- * size plus magic/CRC make the stream self-framing — read 260 bytes at a
+ * size plus magic/CRC make the stream self-framing — read 276 bytes at a
  * time and validate exactly as with UDP (lib/imud_client.h works unchanged
  * on chunks read from this socket).
  *

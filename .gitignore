@@ -18,6 +18,7 @@ src/drivers/*.d
 
 # Test binaries
 /test_fusion
+/test_fit_ra
 /test_config
 /test_nmea
 /test_packet

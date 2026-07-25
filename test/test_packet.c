@@ -126,8 +126,8 @@ static void test_packet_size(void)
 {
     begin("test_packet_size");
     int fb = g_fail;
-    EXPECT(sizeof(imu_packet_t) == 260, "imu_packet_t is exactly 260 bytes");
-    EXPECT(offsetof(imu_packet_t, crc32) == 256, "crc32 field at offset 256");
+    EXPECT(sizeof(imu_packet_t) == 276, "imu_packet_t is exactly 276 bytes");
+    EXPECT(offsetof(imu_packet_t, crc32) == 272, "crc32 field at offset 272");
     EXPECT(offsetof(imu_packet_t, gyro_bias_x)      == 192, "gyro_bias_x at offset 192");
     EXPECT(offsetof(imu_packet_t, gyro_bias_var_x)  == 204, "gyro_bias_var_x at offset 204");
     EXPECT(offsetof(imu_packet_t, heave_rate)       == 216, "heave_rate at offset 216");
@@ -140,6 +140,10 @@ static void test_packet_size(void)
     EXPECT(offsetof(imu_packet_t, pitch_amplitude)  == 244, "pitch_amplitude at offset 244");
     EXPECT(offsetof(imu_packet_t, mag_anomaly)      == 248, "mag_anomaly at offset 248");
     EXPECT(offsetof(imu_packet_t, mag_residual)     == 252, "mag_residual at offset 252");
+    EXPECT(offsetof(imu_packet_t, innov_weight)     == 256, "innov_weight at offset 256");
+    EXPECT(offsetof(imu_packet_t, innov_reject)     == 260, "innov_reject at offset 260");
+    EXPECT(offsetof(imu_packet_t, nis_accel)        == 264, "nis_accel at offset 264");
+    EXPECT(offsetof(imu_packet_t, nis_mag)          == 268, "nis_mag at offset 268");
     end(fb);
 }
 
@@ -153,7 +157,7 @@ static void test_magic_version(void)
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "NED");
     EXPECT(pkt.magic   == IMUD_MAGIC,   "magic == 0x494D5544");
-    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (14 = v1.4)");
+    EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (17 = v1.7)");
     end(fb);
 }
 
@@ -168,7 +172,7 @@ static void test_crc_correct(void)
     packet_build(&pkt, &s, &m, &i, &i, "NED");
 
     uint32_t expected = ref_crc32((const uint8_t *)&pkt, offsetof(imu_packet_t, crc32));
-    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-255 matches packet.crc32");
+    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-271 matches packet.crc32");
     EXPECT(pkt.crc32 != 0u,      "CRC32 is non-zero");
     end(fb);
 }
@@ -263,6 +267,8 @@ static void test_v14_fields_copied(void)
     s.pitch_amplitude = 0.07f;
     s.mag_anomaly = 0.04f;
     s.mag_residual = 0.025f;
+    s.innov_weight = 0.87f;
+    s.innov_reject = 0.06f;
     packet_build(&pkt, &s, &m, &i, &i, "NED");
     EXPECT_NEAR(pkt.wave_height_m, s.wave_height_m, 1e-9f, "wave_height_m copied");
     EXPECT_NEAR(pkt.wave_period_s, s.wave_period_s, 1e-9f, "wave_period_s copied");
@@ -272,6 +278,8 @@ static void test_v14_fields_copied(void)
     EXPECT_NEAR(pkt.pitch_amplitude, s.pitch_amplitude, 1e-9f, "pitch_amplitude copied");
     EXPECT_NEAR(pkt.mag_anomaly,     s.mag_anomaly,     1e-9f, "mag_anomaly copied");
     EXPECT_NEAR(pkt.mag_residual,    s.mag_residual,    1e-9f, "mag_residual copied");
+    EXPECT_NEAR(pkt.innov_weight,    s.innov_weight,    1e-9f, "innov_weight copied");
+    EXPECT_NEAR(pkt.innov_reject,    s.innov_reject,    1e-9f, "innov_reject copied");
     /* frame-neutral scalars — identical in ENU */
     imu_packet_t pkt_enu;
     packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
@@ -507,12 +515,58 @@ static void test_rate_of_turn_copied(void)
 
 /* ── main ────────────────────────────────────────────────────────────────── */
 
+/*
+ * The packet fuzz target only reaches its decode path through packet_ok(),
+ * which checks size, magic and version first. A seed left over from an older
+ * wire revision is therefore inert — the fuzzer starts from nothing and
+ * nobody notices, which is exactly what happened to the v14/260-byte seed
+ * across the v17 bump. This asserts the committed seed still matches the
+ * wire the code implements; regenerate with `make fuzz-seeds` when it fails.
+ */
+static void test_fuzz_seed_matches_wire(void)
+{
+    begin("test_fuzz_seed_matches_wire");
+    int fb = g_fail;
+
+    char path[128];
+    snprintf(path, sizeof path,
+             "test/fuzz/corpus/packet/valid_v%u.bin", (unsigned)IMUD_VERSION);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        /* Also try one level up, so the test works from a build subdir. */
+        char alt[160];
+        snprintf(alt, sizeof alt, "../%s", path);
+        f = fopen(alt, "rb");
+    }
+    EXPECT(f != NULL,
+           "fuzz seed for the current wire version exists "
+           "(run `make fuzz-seeds` after a wire change)");
+    if (!f) { end(fb); return; }
+
+    unsigned char buf[sizeof(imu_packet_t) + 8];
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+
+    EXPECT(n == sizeof(imu_packet_t), "fuzz seed is exactly one packet long");
+    if (n != sizeof(imu_packet_t)) { end(fb); return; }
+
+    imu_packet_t pkt;
+    memcpy(&pkt, buf, sizeof pkt);
+    EXPECT(pkt.magic   == IMUD_MAGIC,   "fuzz seed carries the current magic");
+    EXPECT(pkt.version == IMUD_VERSION, "fuzz seed carries the current version");
+    EXPECT(ref_crc32(buf, offsetof(imu_packet_t, crc32)) == pkt.crc32,
+           "fuzz seed CRC is valid for the current layout");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud packet tests ===");
 
     test_crc32_ieee_vector();
     test_packet_size();
+    test_fuzz_seed_matches_wire();
     test_magic_version();
     test_crc_correct();
     test_crc_detects_corruption();

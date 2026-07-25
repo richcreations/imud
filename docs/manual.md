@@ -217,7 +217,7 @@ imud is configured with a single TOML-like text file.
 - Strings must be double-quoted: `driver = "ism330dhcx"`.
 - Integers may be decimal (`833`) or hex (`0x6B`).
 - Booleans: `true` / `false`.
-- Arrays: `[0.0, 0.0, 0.0]` (used only for `rotation_euler_deg`).
+- Arrays: `[0.0, 0.0, 0.0]` (used by `rotation_euler_deg` and `rotation_matrix`). The element count is checked exactly.
 - `~/` paths are expanded to `$HOME/`.
 
 The annotated reference file at `config/imud.conf` documents every key inline
@@ -324,7 +324,7 @@ details.
 
 High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`, `coord_frame`. **[hot]**: `rate_hz`.
 
-The 260-byte binary packet format is documented in [spec.md §8](../spec.md).
+The 276-byte binary packet format is documented in [spec.md §8](../spec.md).
 Consumer libraries are in `lib/`.
 
 | Key | Type | Default | Description |
@@ -337,7 +337,7 @@ Consumer libraries are in `lib/`.
 
 ### `[stream]`
 
-Local AF_UNIX subscription stream — the same 260-byte binary packets as
+Local AF_UNIX subscription stream — the same 276-byte binary packets as
 `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a
 loss-free stream and subscribe by connecting (up to 8 at once). Slow
 consumers get dropped packets (visible as `imu_seq` gaps), never a stalled
@@ -397,7 +397,8 @@ between the chip X axis and the platform's forward direction.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `rotation_euler_deg` | array | `[0.0, 0.0, 0.0]` | `[roll, pitch, yaw]` in degrees. Measure the angle between chip X and the forward axis once (e.g. with a handbearing compass on a vessel); set that as `yaw`. |
-| `preset` | string | *(unset)* | Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. |
+| `preset` | string | *(unset)* | Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. An unrecognised name is a fatal config error. |
+| `rotation_matrix` | array of 9 | *(unset)* | Board→body rotation given directly, row-major (`v_body = R · v_board`). Validated at load against `RᵀR = I` and `det(R) = +1`; a non-orthonormal matrix or a reflection is a fatal config error. Whichever mount key appears last wins. |
 
 **Example** — chip X points aft (180° from forward; e.g. to a vessel's stern):
 ```toml
@@ -547,6 +548,7 @@ partial run updates only the section it calibrated, preserving the others.
 | `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Guided: a live bar shows heading-circle coverage (`#` covered, `.` needed, `o` = where you're pointing), running coverage %, and live radius/RMS; a bell + "FULL CIRCLE" message tells you when coverage is complete. Must be done after final mounting, with the engine and typical electronics running. |
 | `characterize` | Offline Allan-variance noise analysis of a **stationary** capture (`--from FILE`, recorded with `[capture]` enabled — overnight for a trustworthy bias-instability floor). Writes per-axis gyro/accel noise characteristics to cal.json's `noise` section as **informational** sensor characterization — the filter always keeps its tuned `mekf_*`; these numbers never feed it. Never touches the sensors. |
 | `fit-temp` | Offline linear gyro-bias/temperature fit from a warm-up capture (`--from FILE`, cold boot → warm, several °C of span). The daemon subtracts the fitted term from the gyro before fusion. Never touches the sensors. |
+| `fit-ra` | Offline check of the filter's accelerometer measurement model against a **rough-water** capture (`--from FILE`). Reports the gravity-direction residual, its correlation time, the innovation-distance distribution against the gates, and the mean NIS — the same statistic the daemon publishes live as `nis_accel`. **Writes nothing**: the value it comments on is filter tuning in `imud.conf`, not a sensor property. Needs a mag calibration in cal.json. Never touches the sensors. |
 
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are
@@ -556,6 +558,41 @@ residual under ~1 µT and coverage above ~75% indicate a good fit. Afterward,
 watch the wire's `mag_residual` / `mag_anomaly` compass-health metrics (v14,
 also on the InfluxDB and Prometheus bridges): a rising residual means the
 calibration is degrading and the swing should be repeated.
+
+### Checking the filter against real water
+
+The tuning that decides how much the filter trusts the accelerometer is
+`mekf_accel_noise`, and it is the one knob most likely to be "improved" into a
+worse configuration. The default is a sharp local optimum for the marine
+(yaw-only) configuration, and values a little above it are substantially
+*worse*, not a little worse — see `man 5 imud.conf`. Before changing it,
+measure:
+
+1. **Record a capture in the conditions you care about.** Enable `[capture]`
+   and run for at least 20 minutes in the seaway you want the filter tuned
+   for. The capture stores raw pre-calibration samples, so one recording can
+   be re-analysed against any tuning.
+2. **Analyse it offline** — this touches nothing and can run on any machine:
+
+   ```sh
+   imud-cal fit-ra --from /var/lib/imud/<capture>.imucap --config /etc/imud/imud.conf
+   ```
+
+3. **Read the mean NIS.** A value of roughly **10–30 is normal in a seaway**
+   and is not a reason to change anything: the gravity residual there is
+   wave-orbital and time-correlated, so no single white-noise value describes
+   it. Raising `mekf_accel_noise` until NIS reaches 1 does make the
+   innovations look consistent, and measurably degrades attitude accuracy.
+4. **Check the residual *mean*, not just its spread.** A large per-axis mean
+   points at a wrong mount rotation or a stale accelerometer calibration —
+   neither of which any noise setting can fix.
+
+Live, the same statistic is on the wire as `nis_accel` (and on the Prometheus
+and InfluxDB bridges as `imud_nis_accel_ratio` / `nis_accel`), alongside
+`innov_weight` and `innov_reject`, which say how hard the innovation gate is
+having to work. `mekf_accel_noise` is re-read on `SIGHUP`, so an A/B is: edit
+the value, `systemctl reload imud`, and watch the metric settle for a couple
+of minutes.
 
 Restart when done:
 
@@ -599,7 +636,7 @@ Per burst at `nmea.rate_hz`:
 
 ### High-rate binary — UDP port 10111 (default off)
 
-A fixed 260-byte little-endian packet (wire v14) at up to 500 Hz:
+A fixed 276-byte little-endian packet (wire v17) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 (wall + TAI + chip), declination, and an IEEE-802.3 CRC32. Every packet is
@@ -612,7 +649,7 @@ consumer libraries in [§9](#9-consumer-libraries).
 > This is the one output a stock daemon enables — the bridges and libimud
 > consumers read it.
 
-The same 260-byte binary packets over a `SOCK_STREAM` socket at
+The same 276-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
 loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets

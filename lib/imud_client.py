@@ -36,8 +36,8 @@ from typing import Iterator, Optional, Tuple
 # ── Protocol constants ────────────────────────────────────────────────────────
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
-IMUD_VERSION     = 14    # 1.4 — encoded as decimal: major*10 + minor
-IMUD_PACKET_SIZE = 260
+IMUD_VERSION     = 17    # 1.7 — encoded as decimal: major*10 + minor
+IMUD_PACKET_SIZE = 276
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ class Flags:
 
 # ── Packet struct ─────────────────────────────────────────────────────────────
 #
-# Wire layout (little-endian, 260 bytes):
+# Wire layout (little-endian, 276 bytes):
 #   Offset  Field
 #    0      magic          uint32
 #    4      version        uint16
@@ -115,9 +115,13 @@ class Flags:
 #  244      pitch_amplitude  float32     significant single amplitude 2σ(pitch), rad (v14)
 #  248      mag_anomaly      float32     EMA of ||B|−|B_ref||/|B_ref| (v14)
 #  252      mag_residual     float32     EMA of |heading innovation|, rad (v14)
-#  256      crc32          uint32
+#  256      innov_weight     float32     EMA of Huber weight sqrt(gate/d^2) (v17)
+#  260      innov_reject     float32     EMA of gate-reject indicator (v17)
+#  264      nis_accel        float32     EMA of accel d^2/2; 1.0 = consistent (v17)
+#  268      nis_mag          float32     EMA of mag d^2/dof; 1.0 = consistent (v17)
+#  272      crc32          uint32
 
-_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 18 + 'I')
+_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 22 + 'I')
 
 assert _STRUCT.size == IMUD_PACKET_SIZE, \
     f"struct size mismatch: {_STRUCT.size} != {IMUD_PACKET_SIZE}"
@@ -202,6 +206,17 @@ class ImudPacket:
     mag_anomaly:      float   # EMA of ||B|−|B_ref||/|B_ref| (unitless)
     mag_residual:     float   # EMA of |heading innovation|, rad
 
+    # v17 MEKF update-gate health
+    innov_weight:     float   # EMA of Huber weight sqrt(gate/d^2); 1.0 = no capping
+    innov_reject:     float   # EMA of gate-reject indicator; 0.0 = none rejected
+
+    # v17 MEKF measurement-model consistency (rolling NIS, tau ~30 s).
+    # Normalised innovation squared, accumulated before the Huber cap and
+    # including gate-rejected updates. 1.0 = the filter's covariance matches
+    # the innovations it actually sees; > 1.0 = over-confident.
+    nis_accel:        float   # accel gravity update, d^2/2
+    nis_mag:          float   # mag update, d^2/2 (3-D) or d^2/1 (yaw-only)
+
     crc32:            int
 
     # ── Convenience properties ────────────────────────────────────────────
@@ -283,7 +298,7 @@ def _parse(buf: bytes) -> Optional[ImudPacket]:
     if len(buf) != IMUD_PACKET_SIZE:
         return None
 
-    # Validate CRC before full unpack (covers bytes 0..255)
+    # Validate CRC before full unpack (covers bytes 0..271)
     crc_offset = IMUD_PACKET_SIZE - 4
     computed = zlib.crc32(buf[:crc_offset]) & 0xFFFFFFFF
     stored   = struct.unpack_from('<I', buf, crc_offset)[0]
@@ -317,7 +332,7 @@ class ImudClient:
     tcp : (host, port) tuple or None
         When set, connect as a TCP client to the daemon's [stream] TCP
         listener (tcp_enabled in imud.conf; default port 10112) and read
-        lossless 260-byte frames instead of receiving UDP datagrams.
+        lossless 276-byte frames instead of receiving UDP datagrams.
     """
 
     def __init__(self, port: int = 10111, addr: Optional[str] = None,
@@ -376,7 +391,7 @@ class ImudClient:
             self._sock = None
 
     def _recv_frame(self) -> Optional[bytes]:
-        """TCP mode: read exactly one 260-byte frame (None on timeout)."""
+        """TCP mode: read exactly one 276-byte frame (None on timeout)."""
         chunks = []
         got = 0
         while got < IMUD_PACKET_SIZE:

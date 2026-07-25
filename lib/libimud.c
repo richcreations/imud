@@ -138,6 +138,10 @@ static void fill_data(imud_data_t *d, const imud_packet_t *p)
     d->pitch_amplitude  = p->pitch_amplitude;
     d->mag_anomaly      = p->mag_anomaly;
     d->mag_residual     = p->mag_residual;
+    d->innov_weight     = p->innov_weight;
+    d->innov_reject     = p->innov_reject;
+    d->nis_accel        = p->nis_accel;
+    d->nis_mag          = p->nis_mag;
 }
 
 /* ── Transport dialing ───────────────────────────────────────────────────── */

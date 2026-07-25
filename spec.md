@@ -172,7 +172,7 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP + serve TCP clients |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 260-byte binary packets to local AF_UNIX subscribers + TCP clients |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 276-byte binary packets to local AF_UNIX subscribers + TCP clients |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
@@ -518,7 +518,7 @@ data has real 3D coverage.
 - **χ² innovation handling** on accel and mag updates: the normalised
   innovation distance d² = νᵀS⁻¹ν is capped Huber-style at the χ² 99 %
   quantile (influence bounded, information still flows in a steady seaway)
-  and rejected outright beyond 9× the gate. Because S contains P, the gate
+  and rejected outright beyond 25× the gate. Because S contains P, the gate
   self-regulates: inactive while the filter is still acquiring.
 - **`mag_yaw_only` (default true)**: scalar heading update via
   H = [−(R̂ e_D)ᵀ | 0]; the magnetometer never pulls on roll/pitch.
@@ -653,7 +653,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 **Port:** 10111  
 **Rate:** 500 Hz  
-**Format:** Binary, little-endian, 260 bytes fixed  
+**Format:** Binary, little-endian, 276 bytes fixed  
 **Wire load:** ~120 KB/s
 
 ### Packet Layout
@@ -721,10 +721,40 @@ Offset  Bytes  Type      Field             Notes
                                           interference / iron-cal drift metric (v14)
 252     4      float32   mag_residual      EMA of |heading innovation|, rad — compass
                                           calibration health (v14)
-256     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–255
+256     4      float32   innov_weight      EMA of the Huber weight √(γ/d²) applied
+                                          to accepted MEKF updates; 1.0 = never
+                                          capped, → 0.33 = sustained capping at
+                                          the reject boundary (v17)
+260     4      float32   innov_reject      EMA of the innovation-gate reject
+                                          indicator; fraction of MEKF updates
+                                          discarded outright (v17)
+264     4      float32   nis_accel         EMA of the normalised innovation
+                                          squared for the accel update, d²/2;
+                                          1.0 = the filter's covariance is
+                                          consistent with the innovations it
+                                          actually sees, > 1 = over-confident
+                                          (v17)
+268     4      float32   nis_mag           Same for the mag update: d²/2 in
+                                          3-D mode, d²/1 in yaw-only (v17)
+272     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–271
 ────────────────────────────────────────────────────────────────────
-Total: 260 bytes
+Total: 276 bytes
 ```
+
+**Consistency metrics (`nis_accel` / `nis_mag`).** Rolling averages (τ ≈ 30 s)
+of d² = νᵀS⁻¹ν, accumulated *before* the Huber cap and *including* updates the
+gross-outlier gate rejected — the cap censors d², so a post-cap average would be bounded
+by construction and could never report the inconsistency it exists to measure.
+The divisor is the effective degrees of freedom: 2 for the unit-vector updates
+(normalising the measurement removes the radial component, so `E[d²] = 2` for a
+consistent filter — see `docs/math.md`), 1 for the yaw-only scalar update. This
+puts "consistent" at 1.0 on every channel.
+
+Where `innov_weight`/`innov_reject` report how hard the robustness machinery is
+*working*, these report whether the noise model itself is *right*: they keep
+climbing after the Huber cap saturates. The two channels are separate because
+they run at very different rates (833 Hz accel vs ~104 Hz mag), and a combined
+average would be ~8:1 accel with the mag signal invisible.
 
 ### Flags Bitmask
 
@@ -760,7 +790,8 @@ Configurable to ENU via `coord_frame = "ENU"`.
 The v1.2 diagnostic fields (`gyro_bias_*`, `gyro_bias_var_*`, `heave_rate`,
 `accel_quiescence`) and the v14 sea-state / compass-health fields
 (`wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`,
-`pitch_period_s`, `pitch_amplitude`, `mag_anomaly`, `mag_residual`) are
+`pitch_period_s`, `pitch_amplitude`, `mag_anomaly`, `mag_residual`,
+`innov_weight`, `innov_reject`) are
 body-frame or frame-neutral scalars and are **not** affected by `coord_frame`.
 
 -----
@@ -858,7 +889,7 @@ coord_frame    = "NED"           # "NED" or "ENU"
 [stream]
 # [restart]: enabled, socket, tcp_enabled, tcp_bind_addr, tcp_port
 # [hot]:     rate_hz
-# Local AF_UNIX subscription stream — 260-byte binary packets (§8 format)
+# Local AF_UNIX subscription stream — 276-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
 # The one output enabled by default (1.6).
 enabled        = true
@@ -874,7 +905,12 @@ tcp_port       = 10112
 rotation_euler_deg = [0.0, 0.0, 0.0]
 # Named presets: identity | yaw_90 | yaw_180 | yaw_270 |
 #                roll_90 | roll_270 | pitch_90 | pitch_270
+# An unrecognised preset name is a fatal config error, not a warning.
 # preset = "identity"
+# Alternatively the rotation may be given directly, row-major (v_body = R*v_board).
+# Validated at load: R^T R = I and det(R) = +1; the daemon refuses to start
+# otherwise. Last of the three mount keys to appear wins.
+# rotation_matrix = [1,0,0, 0,1,0, 0,0,1]
 
 [logging]
 # [hot]
@@ -945,14 +981,14 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 **TCP listener (optional):** `stream.tcp_bind_addr`:`stream.tcp_port`
 (default `0.0.0.0:10112`), enabled by `stream.tcp_enabled` (off by default)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
-**Format:** identical 260-byte binary packets as Stream B (§8)
+**Format:** identical 276-byte binary packets as Stream B (§8)
 **Enabled by:** `stream.enabled = true` (the default — the one output a
 stock daemon provides)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
-every packet as an exact 260-byte frame — no datagram loss, self-framing via
+every packet as an exact 276-byte frame — no datagram loss, self-framing via
 the fixed size plus magic/CRC, so client-library validation (libimud, or
-the deprecated `lib/imud_client.h`) works unchanged on 260-byte reads. Sends are non-blocking: a slow consumer gets
+the deprecated `lib/imud_client.h`) works unchanged on 276-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead. The daemon never blocks
 on a consumer.
@@ -1287,9 +1323,33 @@ make CC=aarch64-linux-gnu-gcc
    update skip threshold may need tuning. The ISM330DHCX's onboard Machine
    Learning Core (MLC) can detect engine-on state and assert a GPIO flag,
    allowing the daemon to tighten `accel_skip_thresh` automatically.
+   (1.7 fixed the software detector's time constant and added threshold
+   hysteresis; the remaining response-side work is `docs/ROADMAP.md` §10.5.)
 
 3. **`cal_file` default** — `config_defaults()` sets `/etc/imud/cal.json`
    (alongside the main config; written by `imud-cal`, read-only by the daemon).
+
+4. **The measurement model is over-confident** — confirmed, but not fixable by
+   retuning `Ra`. Over the 12-seed wave benchmark, mean NIS is 19 (3-D) / 25
+   (yaw-only) where a consistent model reads 1, so the filter is ~4.5×
+   over-confident in σ. Sweeping `mekf_accel_noise` across four orders of
+   magnitude shows NIS reaches 1.0 only at `Na` ≈ 0.03, which costs the marine
+   default 2.31° → 8.58° of attitude RMS and drives NEES the wrong way; and
+   NEES(strict) for 3-D stays pinned at 44–64 throughout, so P's *shape* is
+   wrong and no isotropic scalar can fix it. The cause is that the seaway
+   residual is wave-orbital and time-correlated (τ ≈ 0.3–0.9 s, measured by
+   `imud-cal fit-ra`), and a white isotropic R cannot describe a coloured
+   disturbance. The remaining work is to model the correlation —
+   `docs/ROADMAP.md` §10.5.
+
+   Investigating this found and fixed two separate real bugs: the gross-outlier
+   reject gate was rejecting 26% of ordinary wave motion at 9γ (now 25γ, which
+   improved attitude RMS 17%/35% and halved NEES at no cost), and the
+   health/NIS EMAs used a gain that assumed every IMU sample produced an
+   update, making their true time constant ten minutes instead of 30 s.
+   Field instruments: `nis_accel` / `nis_mag` (wire v17) live, `imud-cal
+   fit-ra` offline. Full detail: `docs/ROADMAP.md` §10.1–10.2,
+   `docs/math.md` §4.5 / §4.7 / §8.2.
 
 -----
 

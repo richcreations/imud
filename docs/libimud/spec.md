@@ -76,6 +76,10 @@ settled — check the corresponding flag.
 | `pitch_amplitude` | float | significant single amplitude 2σ(pitch), rad |
 | `mag_anomaly` | float | EMA of \|\|B\|−\|B_ref\|\|/\|B_ref\| (unitless) |
 | `mag_residual` | float | EMA of \|heading innovation\|, rad |
+| `innov_weight` | float | EMA of the Huber weight √(γ/d²) applied to accepted MEKF updates; 1.0 = never capped |
+| `innov_reject` | float | EMA of the innovation-gate reject indicator; fraction of MEKF updates discarded |
+| `nis_accel` | float | EMA of the accel update's normalised innovation squared, d²/2; 1.0 = covariance consistent with the observed innovations, > 1 = over-confident |
+| `nis_mag` | float | Same for the mag update: d²/2 in 3-D mode, d²/1 in yaw-only |
 
 ## Flags (`imud_data_t.flags`)
 

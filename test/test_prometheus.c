@@ -63,6 +63,10 @@ static imud_data_t make_data(void)
     d.pitch_amplitude  = 0.06f;
     d.mag_anomaly      = 0.03f;
     d.mag_residual     = 0.02f;
+    d.innov_weight     = 0.87f;
+    d.innov_reject     = 0.06f;
+    d.nis_accel        = 7.25f;
+    d.nis_mag          = 1.10f;
     d.accel_quiescence = 0.001f;
     d.gyro_bias[1]     = -0.002f;
     d.temp_c           = 31.4f;
@@ -113,6 +117,14 @@ static void test_values_si(void)
            "pitch period s");
     EXPECT(metric(buf, "imud_mag_anomaly_ratio", &v) && fabs(v - 0.03) < 1e-4,
            "mag anomaly");
+    EXPECT(metric(buf, "imud_innov_weight_ratio", &v) && fabs(v - 0.87) < 1e-4,
+           "innov_weight always on");
+    EXPECT(metric(buf, "imud_innov_reject_ratio", &v) && fabs(v - 0.06) < 1e-4,
+           "innov_reject always on");
+    EXPECT(metric(buf, "imud_nis_accel_ratio", &v) && fabs(v - 7.25) < 1e-4,
+           "nis_accel always on");
+    EXPECT(metric(buf, "imud_nis_mag_ratio", &v) && fabs(v - 1.10) < 1e-4,
+           "nis_mag always on");
     EXPECT(metric(buf, "imud_mag_residual_radians", &v) && fabs(v - 0.02) < 1e-4,
            "mag residual rad");
     EXPECT(metric(buf, "imud_gyro_bias_y_radians_per_second", &v) &&

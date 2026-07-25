@@ -67,6 +67,45 @@ typedef struct {
      * are evidence of anomaly, not noise to hide. Exported on the wire. */
     float mag_anom_ema;  /* EMA of ||B|−|B_ref||/|B_ref| — interference / iron-cal drift */
     float mag_resid_ema; /* EMA of |heading innovation|, rad — compass-vs-filter disagreement */
+
+    /* ── Update-gate health (τ ≈ 30 s) ────────────────────────────────────
+     * Fed by every eskf update (accel, 3-D mag, yaw), so at the 833 Hz accel
+     * rate these are effectively an accel-path metric. Together they say how
+     * much the filter is having to distrust its own measurements. */
+    float innov_weight_ema; /* EMA of the Huber weight √(γ/d²); 1.0 = never capped,
+                             * → 0.33 = sustained capping at the reject boundary */
+    float innov_reject_ema; /* EMA of the reject indicator; fraction of updates
+                             * discarded by the gross-outlier gate */
+    float gate_alpha;       /* nominal per-update EMA gain (odr-derived) */
+    /* Seconds elapsed since the last accel-path health/NIS update. The |a|
+     * skip band throws away most samples in a seaway, so a gain sized from
+     * the IMU ODR would stretch the intended 30 s time constant by an order
+     * of magnitude; the accel path converts this elapsed time into a gain
+     * instead, which is rate-independent. */
+    float health_dt_accum;
+
+    /* ── Measurement-model consistency: rolling NIS (τ ≈ 30 s) ────────────
+     * EMA of the normalised innovation squared d²/dof, where
+     * d² = νᵀS⁻¹ν and S = HPHᵀ + R. Reads 1.0 when the filter's own
+     * covariance correctly predicts the spread of its innovations, > 1
+     * when it is over-confident (measurements disagree with P more than P
+     * claims they should). This is the field instrument for ROADMAP §10.1:
+     * unlike innov_weight/innov_reject — which say how hard the Huber cap
+     * is being LEANED ON — NIS says how wrong the model is, and it keeps
+     * rising after the cap saturates.
+     *
+     * Accumulated PRE-cap and including gross-outlier-rejected updates: the cap
+     * censors d² at the gate, so a post-cap average would be bounded by
+     * construction and could never report the inconsistency it exists to
+     * measure.
+     *
+     * Split by channel because the two run at very different rates — at
+     * 833 Hz accel vs ~104 Hz mag a combined EMA would be ~8:1 accel and
+     * the mag signal would be invisible — and because they have different
+     * dof (3 for accel and 3-D mag, 1 for yaw-only). */
+    float nis_accel_ema;    /* accel gravity update, d²/2 */
+    float nis_mag_ema;      /* mag update: d²/2 (3-D) or d²/1 (yaw-only) */
+    float nis_mag_alpha;    /* per-update EMA gain for nis_mag_ema (mag ODR) */
 } mekf_t;
 
 /*
