@@ -65,6 +65,21 @@ static int g_pass, g_fail;
  */
 static double bench_ra_override = 0.0;
 
+/*
+ * Gauss–Markov wave-state knobs. These carry the SHIPPED defaults, so the
+ * benchmark measures what a real vessel gets; the BENCH_SWEEP_WAVE driver
+ * overwrites them to explore the (σ, τ) grid. Kept here rather than read from
+ * config_defaults() because make_cfg hand-builds its config — test_fusion does
+ * not link config.c.
+ */
+static double bench_wave_sigma = 0.8;
+static double bench_wave_tau   = 0.5;
+
+/* Dip-reference uncertainty (deg) fed to the 3-D mag update; see
+ * mekf_update_mag. Carries the shipped default so the benchmark measures what
+ * a real vessel gets; the BENCH_SWEEP_DIP driver overwrites it. */
+static double bench_dip_sigma = 1.0;
+
 static imud_config_t make_cfg(void)
 {
     imud_config_t c;
@@ -76,9 +91,20 @@ static imud_config_t make_cfg(void)
     c.accel_skip_thresh = 0.05;
     c.mag_reject_gauss  = 0.05f;
     c.mag_odr_hz        = 100;
+    c.mekf_wave_accel       = bench_wave_sigma;
+    c.mekf_wave_accel_tau_s = bench_wave_tau;
+    c.mekf_mag_dip_sigma_deg = bench_dip_sigma;
     if (bench_ra_override > 0.0) c.mekf_accel_noise = bench_ra_override;
     return c;
 }
+
+/*
+ * Live error-state dimension. P is always MEKF_N×MEKF_N, but the wave block
+ * (rows/columns 6–8) is identically zero unless the Gauss–Markov state is
+ * configured — so a positive-diagonal check must scan only the live states,
+ * while a symmetry check can and should scan the whole matrix.
+ */
+static int live_n(const mekf_t *f) { return f->wave_enabled ? MEKF_N : 6; }
 
 /* Make a flat-board accel (Z-down, specific-force convention: reads −g). */
 static imu_sample_t make_accel(float ax, float ay, float az)
@@ -524,7 +550,14 @@ TEST(test_convergence_flag)
     mag_sample_t sm = make_mag(0.2f, 0, 0.05f);
     imu_sample_t sg = make_gyro(0, 0, 0);
 
-    for (int i = 0; i < 2000; i++) {
+    /*
+     * ~12 s. The 2.4 s this used to run was enough when P collapsed to an
+     * unbelievable 0.14°/axis; with the wave state the descent is honest and
+     * slower — the attitude uncertainty has to average a modelled 0.8 m/s²
+     * disturbance down over many correlation times. See mekf_derive_tuning
+     * for how conv_thresh now tracks that floor.
+     */
+    for (int i = 0; i < 10000; i++) {
         mekf_predict(&f, &sg, f.dt);
         mekf_update_accel(&f, &sa);
         if (i % 8 == 0) mekf_update_mag(&f, &sm);  /* ~100 Hz at 833 Hz predict */
@@ -935,9 +968,9 @@ TEST(test_joseph_symmetry_psd)
     }
 
     float max_asym = 0.0f, min_diag = 1e9f;
-    for (int i = 0; i < 6; i++) {
-        if (f.P[i][i] < min_diag) min_diag = f.P[i][i];
-        for (int j = 0; j < 6; j++) {
+    for (int i = 0; i < MEKF_N; i++) {
+        if (i < live_n(&f) && f.P[i][i] < min_diag) min_diag = f.P[i][i];
+        for (int j = 0; j < MEKF_N; j++) {
             float d = fabsf(f.P[i][j] - f.P[j][i]);
             if (d > max_asym) max_asym = d;
         }
@@ -966,7 +999,7 @@ TEST(test_reset_jacobian_rotates_P)
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Snapshot P and bias, then take one large-correction update. */
-    float P0[6][6];
+    float P0[MEKF_N][MEKF_N];
     memcpy(P0, f.P, sizeof P0);
     float q0[4]; memcpy(q0, f.q, sizeof q0);
 
@@ -1000,9 +1033,9 @@ TEST(test_reset_jacobian_rotates_P)
      * attitude block is NOT symmetric-equal to what an un-rotated update would
      * leave, and P stayed a valid covariance. */
     float max_asym = 0.0f, min_diag = 1e9f;
-    for (int i = 0; i < 6; i++) {
-        if (f.P[i][i] < min_diag) min_diag = f.P[i][i];
-        for (int j = 0; j < 6; j++) {
+    for (int i = 0; i < MEKF_N; i++) {
+        if (i < live_n(&f) && f.P[i][i] < min_diag) min_diag = f.P[i][i];
+        for (int j = 0; j < MEKF_N; j++) {
             float d = fabsf(f.P[i][j] - f.P[j][i]);
             if (d > max_asym) max_asym = d;
         }
@@ -1046,6 +1079,497 @@ TEST(test_reset_jacobian_rotates_P)
            "G is materially different from identity for this δθ");
     EXPECT(moved_offdiag > 1e-12f,
            "reset rotates off-diagonal attitude covariance, not just scale");
+
+    /* The reset applies G to the attitude block only: G_full = diag(G, I₃, I₃).
+     * Any leakage into the bias or wave rows would be a silent modelling error,
+     * so check the wave block came through the update still symmetric and
+     * still carrying its own variance rather than the attitude's. */
+    for (int i = 6; i < MEKF_N; i++)
+        EXPECT(f.P[i][i] > 0.0f, "wave block keeps positive variance through reset");
+}
+
+/* ── Gauss–Markov wave-acceleration state (ROADMAP §10.5) ───────────────────── */
+
+static imud_config_t make_cfg_nowave(void)
+{
+    imud_config_t c = make_cfg();
+    c.mekf_wave_accel       = 0.0;
+    c.mekf_wave_accel_tau_s = 0.0;
+    return c;
+}
+
+/*
+ * With either knob at 0 the wave block must be INERT, not merely small: rows
+ * and columns 6–8 of P exactly zero and the nominal estimate exactly zero,
+ * through tens of thousands of noisy cycles. This is what lets the feature
+ * ship enabled by default without stranding anyone who turns it off — the
+ * disabled filter is the pre-§10.5 filter, bit for bit.
+ */
+TEST(test_wave_disabled_inert)
+{
+    imud_config_t cfg = make_cfg_nowave();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    EXPECT(!f.wave_enabled, "wave state reports disabled with both knobs 0");
+
+    uint32_t rng = 7;
+    for (int i = 0; i < 50000; i++) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n1 = ((float)(int32_t)rng) * (1.0f/2147483648.0f);
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n2 = ((float)(int32_t)rng) * (1.0f/2147483648.0f);
+
+        imu_sample_t g = make_gyro(0.05f*n1, -0.03f*n2, 0.04f*n1);
+        mekf_predict(&f, &g, f.dt);
+        imu_sample_t a = make_accel(0.2f*n2, 0.2f*n1, -G);
+        mekf_update_accel(&f, &a);
+        if (i % 8 == 0) {
+            mag_sample_t m = make_mag(0.20f + 0.002f*n1, 0.002f*n2, 0.40f);
+            mekf_update_mag(&f, &m);
+        }
+    }
+
+    float leak = 0.0f;
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 6; j < MEKF_N; j++)
+            leak += fabsf(f.P[i][j]) + fabsf(f.P[j][i]);
+    for (int i = 0; i < 3; i++) leak += fabsf(f.wave_acc[i]);
+
+    EXPECT(leak == 0.0f, "disabled wave block stays exactly zero over 50k cycles");
+}
+
+/*
+ * One knob at 0 is enough to disable — the pair is meaningless apart, and a
+ * config with a σ but no τ (or vice versa) must not half-enable anything.
+ */
+TEST(test_wave_needs_both_knobs)
+{
+    mekf_t f;
+    float bias[3] = {0};
+
+    imud_config_t c1 = make_cfg();  c1.mekf_wave_accel_tau_s = 0.0;
+    mekf_init(&f, &c1, 833.0f, bias);
+    EXPECT(!f.wave_enabled, "sigma without tau leaves the wave state off");
+    EXPECT(f.P[6][6] == 0.0f, "sigma without tau seeds no wave covariance");
+
+    imud_config_t c2 = make_cfg();  c2.mekf_wave_accel = 0.0;
+    mekf_init(&f, &c2, 833.0f, bias);
+    EXPECT(!f.wave_enabled, "tau without sigma leaves the wave state off");
+    EXPECT(f.P[6][6] == 0.0f, "tau without sigma seeds no wave covariance");
+
+    imud_config_t c3 = make_cfg();
+    mekf_init(&f, &c3, 833.0f, bias);
+    EXPECT(f.wave_enabled, "both knobs positive enables the wave state");
+    EXPECT_NEAR(f.P[6][6], (c3.mekf_wave_accel/9.80665)*(c3.mekf_wave_accel/9.80665),
+                1e-9f, "wave block seeded at its steady-state variance");
+}
+
+/*
+ * The estimator has to actually estimate. Drive a level board with a KNOWN
+ * oscillating lateral acceleration — slow enough to be seen, fast enough that
+ * the τ = 0.5 s prior does not fight it — and check three things:
+ *
+ *   1. a_w tracks the truth (this is the sign check: get ẑ = normalize(h − a_w)
+ *      backwards and the state runs away from the disturbance, not toward it);
+ *   2. the attitude estimate stays much closer to level than the same run with
+ *      the state disabled, because the disturbance is explained rather than
+ *      absorbed into tilt;
+ *   3. NIS comes down, because the innovations are now predicted.
+ */
+static void wave_track_run(bool enabled, float *att_err_deg, float *aw_rms_err,
+                           float *aw_rms_true, float *nis)
+{
+    imud_config_t cfg = enabled ? make_cfg() : make_cfg_nowave();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    const float fs = 833.0f, dt = 1.0f/fs;
+    const float amp = 0.9f;                       /* m/s² */
+    const float w   = 2.0f*(float)M_PI*0.5f;      /* 0.5 Hz — period 2 s */
+
+    double se = 0.0, st = 0.0, sa = 0.0;
+    int n = 0;
+
+    for (int i = 0; i < (int)(90.0f*fs); i++) {
+        float t = (float)i * dt;
+        float a_lat = amp * sinf(w * t);
+
+        imu_sample_t s;
+        memset(&s, 0, sizeof s);
+        s.accel[0] = a_lat;     /* level board: specific force = a_lin − g */
+        s.accel[1] = 0.0f;
+        s.accel[2] = -G;
+
+        mekf_predict(&f, &s, dt);
+        mekf_update_accel(&f, &s);
+        if (i % 8 == 0) {
+            mag_sample_t m = make_mag(0.20f, 0.0f, 0.40f);
+            mekf_update_mag(&f, &m);
+        }
+
+        if (t > 30.0f) {                          /* after settling */
+            float truth = a_lat / G;              /* a_w in g units */
+            float d = f.wave_acc[0] - truth;
+            se += (double)d * d;
+            st += (double)truth * truth;
+            float roll, pitch, yaw;
+            q_to_euler(f.q, &roll, &pitch, &yaw);
+            sa += (double)(roll*roll + pitch*pitch);
+            n++;
+        }
+    }
+    *att_err_deg = (float)(sqrt(sa / n) / DEG);
+    *aw_rms_err  = (float)sqrt(se / n);
+    *aw_rms_true = (float)sqrt(st / n);
+    *nis         = f.nis_accel_ema;
+}
+
+TEST(test_wave_state_tracks_colored_residual)
+{
+    float att_on, att_off, err_on, err_off, truth, nis_on, nis_off;
+    wave_track_run(true,  &att_on,  &err_on,  &truth, &nis_on);
+    wave_track_run(false, &att_off, &err_off, &truth, &nis_off);
+
+    EXPECT(err_on < 0.5f * truth,
+           "wave state tracks the injected acceleration to better than half its RMS");
+    EXPECT(err_on < 0.5f * err_off,
+           "tracking is better than the disabled filter's implicit zero estimate");
+    EXPECT(att_on < 0.6f * att_off,
+           "explaining the disturbance keeps the attitude estimate closer to level");
+    EXPECT(nis_on < nis_off,
+           "modelled innovations are more consistent than unmodelled ones");
+}
+
+/*
+ * The dof = 2 the wire reports depends on ẑᵀH = 0 holding EXACTLY, which is
+ * what the tangent projector in wave_jacobian is for. Drop it and ẑ stops
+ * being an eigenvector of S, the radial component leaks into d², and the NIS
+ * field quietly stops meaning "1.0 = consistent".
+ *
+ * H is not reachable from here, but the consequence is. Feed a purely WHITE
+ * accel disturbance sized to match Ra exactly — so the base path's dof = 2
+ * derivation says NIS = 1 — and run it twice: once with the wave state off
+ * (the pre-§10.5 Jacobian) and once with it on at a σ small enough not to
+ * dominate S. Both must land on 1, and on each other. An unprojected wave
+ * Jacobian breaks the second run while leaving the first untouched.
+ *
+ * Note this is deliberately NOT run at the shipped σ. At σ = 0.8 m/s² in dead
+ * calm the filter budgets for a seaway that is not there and NIS reads 0.02 —
+ * correct, conservative, and useless as a dof check.
+ */
+static float white_nis_run(double wave_sigma)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mekf_wave_accel       = wave_sigma;
+    cfg.mekf_wave_accel_tau_s = wave_sigma > 0.0 ? 0.5 : 0.0;
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* Per-sample accel noise the filter expects: σ = Na·√odr = 0.0635 m/s². */
+    const float sig = (float)(0.0022 * sqrt(833.0));
+
+    uint32_t rng = 20260725u;
+    for (int i = 0; i < 300000; i++) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n1 = ((float)(int32_t)rng) * (1.0f/2147483648.0f) * 1.732f;
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n2 = ((float)(int32_t)rng) * (1.0f/2147483648.0f) * 1.732f;
+
+        imu_sample_t s;
+        memset(&s, 0, sizeof s);
+        s.accel[0] = sig*n1; s.accel[1] = sig*n2; s.accel[2] = -G;
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+        if (i % 8 == 0) {
+            mag_sample_t m = make_mag(0.20f, 0.0f, 0.40f);
+            mekf_update_mag(&f, &m);
+        }
+    }
+    return f.nis_accel_ema;
+}
+
+TEST(test_wave_nis_dof_consistent)
+{
+    float nis_off = white_nis_run(0.0);
+    float nis_on  = white_nis_run(0.02);   /* ≪ the 0.0635 m/s² of white noise */
+
+    EXPECT(nis_off > 0.6f && nis_off < 1.6f,
+           "white noise matched to Ra gives NIS ~ 1 on the base path (dof = 2)");
+    EXPECT(nis_on > 0.6f && nis_on < 1.6f,
+           "the wave-aware Jacobian preserves NIS ~ 1 (tangent projection)");
+    EXPECT(fabsf(nis_on - nis_off) < 0.25f * nis_off,
+           "wave-aware and base paths agree on d² when the state is not driving");
+}
+
+/*
+ * Enabling and disabling changes which states exist, so mekf_reconfigure has
+ * to seed and clear the block — see the comment there for why a σ/τ change
+ * with the state left on must NOT touch P.
+ */
+TEST(test_wave_reconfigure_transitions)
+{
+    imud_config_t on  = make_cfg();
+    imud_config_t off = make_cfg_nowave();
+    mekf_t f;
+    float bias[3] = {0};
+
+    /* Start enabled, run a little so cross-covariances build up. */
+    mekf_init(&f, &on, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    for (int i = 0; i < 5000; i++) {
+        imu_sample_t s = make_accel(0.3f, 0.0f, -G);
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+    }
+    EXPECT(f.P[6][6] > 0.0f, "enabled wave block carries variance");
+    EXPECT(fabsf(f.wave_acc[0]) > 1e-4f, "wave state learned something to clear");
+
+    /* on → off: block and estimate must both go to exactly zero. */
+    mekf_reconfigure(&f, &off);
+    float leak = 0.0f;
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 6; j < MEKF_N; j++) leak += fabsf(f.P[i][j]) + fabsf(f.P[j][i]);
+    for (int i = 0; i < 3; i++) leak += fabsf(f.wave_acc[i]);
+    EXPECT(!f.wave_enabled, "reconfigure to 0 disables the wave state");
+    EXPECT(leak == 0.0f, "disabling clears the wave block and estimate exactly");
+
+    /* off → on: block must be re-seeded, or the state can never learn. */
+    mekf_reconfigure(&f, &on);
+    EXPECT(f.wave_enabled, "reconfigure back on re-enables the wave state");
+    EXPECT_NEAR(f.P[6][6], (on.mekf_wave_accel/9.80665)*(on.mekf_wave_accel/9.80665),
+                1e-9f, "re-enabling reseeds the steady-state variance");
+
+    /* σ/τ change with the state on: P is deliberately left alone. */
+    for (int i = 0; i < 5000; i++) {
+        imu_sample_t s = make_accel(0.3f, 0.0f, -G);
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+    }
+    float p66 = f.P[6][6], p06 = f.P[0][6];
+    imud_config_t tweak = make_cfg();
+    tweak.mekf_wave_accel = on.mekf_wave_accel * 1.5;
+    mekf_reconfigure(&f, &tweak);
+    EXPECT(f.P[6][6] == p66 && f.P[0][6] == p06,
+           "changing sigma with the state on leaves P to re-equilibrate");
+    EXPECT(f.wave_sig2 > 0.0f, "changed sigma is picked up in the tuning");
+}
+
+/* ── Anisotropic magnetic dip-reference uncertainty ─────────────────────────── */
+
+/*
+ * Drive a level board with a clean field and a mag reference whose DIP is
+ * deliberately wrong by `dip_err_deg`, in 3-D vector mode. Reports the settled
+ * roll/pitch bias, P's roll/pitch sigma, and the mag NIS.
+ */
+static void dip_run(double dip_sigma_deg, float dip_err_deg, float mag_noise_g,
+                    float *bias_deg, float *sigma_deg, float *nis_mag)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mag_yaw_only = false;
+    cfg.mekf_mag_dip_sigma_deg = dip_sigma_deg;
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+
+    /* Field: 0.47 G total at 62° dip, pointing north. */
+    const float H = 0.2206f, Z = 0.4149f;
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){H*100.0f, 0.0f, Z*100.0f});
+
+    /* Corrupt ONLY the dip of the reference, preserving |m_ref| and the
+     * horizontal direction — exactly the error alignment leaves behind. */
+    {
+        float mag = sqrtf(H*H + Z*Z);
+        float d   = atan2f(Z, H) + dip_err_deg * DEG;
+        f.m_ref[0] = mag * cosf(d);
+        f.m_ref[1] = 0.0f;
+        f.m_ref[2] = mag * sinf(d);
+    }
+
+    imu_sample_t sa = make_accel(0, 0, -G);
+    imu_sample_t sg = make_gyro(0, 0, 0);
+    uint32_t rng = 424242u;
+    for (int i = 0; i < 200000; i++) {
+        mekf_predict(&f, &sg, f.dt);
+        mekf_update_accel(&f, &sa);
+        if (i % 8 == 0) {
+            float n[3];
+            for (int k = 0; k < 3; k++) {
+                rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+                n[k] = ((float)(int32_t)rng) * (1.0f/2147483648.0f)
+                       * mag_noise_g * 1.732f;
+            }
+            mag_sample_t sm = make_mag(H + n[0], n[1], Z + n[2]);
+            mekf_update_mag(&f, &sm);
+        }
+    }
+
+    float roll, pitch, yaw;
+    q_to_euler(f.q, &roll, &pitch, &yaw);
+    *bias_deg  = sqrtf(roll*roll + pitch*pitch) / DEG;
+    *sigma_deg = sqrtf(0.5f * (f.P[0][0] + f.P[1][1])) / DEG;
+    *nis_mag   = f.nis_mag_ema;
+}
+
+/*
+ * σ_dip = 0 must leave the 3-D update on the isotropic path untouched, and a
+ * non-zero σ_dip must widen P's roll/pitch without moving the estimate much —
+ * the term admits an unmodelled reference error into the covariance, it does
+ * not pretend to remove it.
+ */
+TEST(test_mag_dip_sigma_widens_covariance)
+{
+    float b0, s0, n0, b1, s1, n1, b2, s2, n2;
+    dip_run(0.0, 3.0f, 0.0f, &b0, &s0, &n0);
+    dip_run(3.0, 3.0f, 0.0f, &b1, &s1, &n1);
+    dip_run(6.0, 3.0f, 0.0f, &b2, &s2, &n2);
+
+    EXPECT(b0 > 0.5f, "a wrong dip reference does bias roll/pitch in 3-D mode");
+    EXPECT(s1 > s0 && s2 > s1,
+           "sigma_dip monotonically widens the roll/pitch covariance");
+    EXPECT(b2 <= b0,
+           "and does not make the bias itself worse");
+
+    /*
+     * The widening is deliberately modest HERE (0.82° → 0.88° at σ_dip = 6°)
+     * and that is not a weak result: this platform is dead flat and quiet, so
+     * the accelerometer is very confident about roll and pitch and owns most
+     * of that covariance — the magnetometer's dip channel is a small
+     * contributor to it. The regime where the term earns its keep is a seaway,
+     * where the wave state correctly makes the accelerometer far less
+     * confident: there the same knob moves 3-D NEES(strict) 12.83 → 5.74.
+     * That magnitude claim belongs to test_wave_benchmark; this test owns the
+     * mechanism.
+     */
+}
+
+/*
+ * The rank-1 term must be TANGENT to the predicted direction (uᵀĥ = 0). That
+ * is what keeps ĥ an eigenvector of S with eigenvalue Rm — the premise of the
+ * dof-2 normalisation behind `nis_mag` (docs/math.md §8.2) — and it is also
+ * what makes the term do any work: the radial direction of a normalised
+ * measurement carries no information, so any inflation spent there is wasted.
+ *
+ * The signature is measurable. With a correct reference and white mag noise,
+ * comparing σ_dip = 0 against σ_dip = 6°:
+ *
+ *                        P roll/pitch σ    residual pull    nis_mag
+ *   tangent u (correct)   0.787 → 0.862      93% absorbed    0.96 → 0.49
+ *   u with a radial part  0.787 → 0.796      53% absorbed    0.96 → 0.65
+ *
+ * i.e. a contaminated u barely widens P and leaves half the pull in place.
+ *
+ * On the nis_mag column: ~0.5 is the CORRECT reading once σ_dip dominates, not
+ * a regression. One of the two tangent degrees of freedom is deliberately
+ * deweighted, so a consistent filter reads about half. The dof is still 2 —
+ * that is the radial direction still contributing nothing. What must not
+ * happen is the collapse to ~0.01 that isotropic inflation produces, which
+ * would leave the wire unable to report a magnetometer fault at all.
+ */
+TEST(test_mag_dip_sigma_is_tangent_to_the_dip_channel)
+{
+    /* Mag noise sized to the filter's own Rm = Nm²·f_mag, so the isotropic
+     * case reads exactly 1: σ = √(0.0004²·100) = 4e-3 Gauss. */
+    const float sig_g = (float)sqrt(0.0004 * 0.0004 * 100.0);
+
+    float b0, s0, n0, b1, s1, n1;
+    dip_run(0.0, 0.0f, sig_g, &b0, &s0, &n0);
+    dip_run(6.0, 0.0f, sig_g, &b1, &s1, &n1);
+
+    EXPECT(n0 > 0.5f && n0 < 2.0f,
+           "isotropic 3-D mag update reads NIS ~1 on a correct reference");
+    EXPECT(n1 > 0.3f && n1 < 1.0f,
+           "nis_mag stays a usable instrument with the dip term active");
+
+    EXPECT(s1 > 1.05f * s0,
+           "the dip term widens P along the direction a dip error acts on");
+    EXPECT(b1 < 0.25f * b0,
+           "and absorbs the roll/pitch pull it is aimed at");
+}
+
+/* Yaw-only fusion never reads the dip channel, so the knob must be inert
+ * there — the marine default cannot be perturbed by a 3-D-mode setting. */
+TEST(test_mag_dip_sigma_inert_in_yaw_only)
+{
+    imud_config_t c0 = make_cfg(); c0.mag_yaw_only = true;
+    c0.mekf_mag_dip_sigma_deg = 0.0;
+    imud_config_t c1 = c0;         c1.mekf_mag_dip_sigma_deg = 5.0;
+
+    mekf_t f0, f1;
+    float bias[3] = {0};
+    mekf_init(&f0, &c0, 833.0f, bias);
+    mekf_init(&f1, &c1, 833.0f, bias);
+    mekf_align(&f0, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    mekf_align(&f1, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    uint32_t rng = 99;
+    for (int i = 0; i < 20000; i++) {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        float n1 = ((float)(int32_t)rng) * (1.0f/2147483648.0f);
+        imu_sample_t g = make_gyro(0.04f*n1, -0.02f*n1, 0.03f*n1);
+        imu_sample_t a = make_accel(0.2f*n1, 0.15f*n1, -G);
+        mekf_predict(&f0, &g, f0.dt); mekf_update_accel(&f0, &a);
+        mekf_predict(&f1, &g, f1.dt); mekf_update_accel(&f1, &a);
+        if (i % 8 == 0) {
+            mag_sample_t m = make_mag(0.20f + 0.002f*n1, 0.002f*n1, 0.40f);
+            mekf_update_mag(&f0, &m);
+            mekf_update_mag(&f1, &m);
+        }
+    }
+    EXPECT(memcmp(f0.q, f1.q, sizeof f0.q) == 0,
+           "dip sigma leaves yaw-only attitude bit-identical");
+    EXPECT(memcmp(f0.P, f1.P, sizeof f0.P) == 0,
+           "dip sigma leaves yaw-only covariance bit-identical");
+}
+
+/*
+ * The m_ref quiescence gate must stay tight enough that a seaway never opens
+ * it. This looks like a bug — the in-run dip/magnitude healing therefore never
+ * runs at sea, which is exactly when a reference error matters — and it is
+ * not. Raising it was measured over 30 minutes of the wave benchmark:
+ *
+ *   3-D, 5 s align, 1800 s   dip err   |m_ref_h| err   att RMS   NEES(strict)
+ *     gate 2e-4 (shipped)     +0.862°       −5.04%      1.151°       12.84
+ *     gate 2e-2               −1.460°       +4.24%      1.725°       42.10
+ *     gate OFF                −1.469°       +4.27%      1.729°       42.31
+ *
+ * The reference sails past truth and keeps going, because the samples that
+ * clear the |a| band in a seaway are wave-phase correlated: learning from that
+ * subset walks m_ref away, not toward. (A shorter 120 s window catches it in
+ * transit through zero and looks like a fix — it is not.) The dip error is not
+ * observable from seaway data; it is removed by WMM invariants or admitted
+ * into P by mekf_mag_dip_sigma_deg.
+ *
+ * This test exists so that measurement is not quietly re-litigated.
+ */
+TEST(test_mref_quiet_gate_stays_tight)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* A modest seaway: |a| swinging a few percent around g. */
+    const float fs = 833.0f, w = 2.0f*(float)M_PI*0.2f;
+    float quiet_min = 1e30f;
+    for (int i = 0; i < (int)(60.0f*fs); i++) {
+        float t = (float)i / fs;
+        imu_sample_t s = make_accel(1.2f*sinf(w*t), 1.2f*cosf(0.8f*w*t),
+                                    -G + 1.0f*sinf(w*t));
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+        if (t > 20.0f && f.acc_quiet_ema < quiet_min) quiet_min = f.acc_quiet_ema;
+    }
+
+    EXPECT(quiet_min > 1e-3f,
+           "a seaway keeps acc_quiet_ema well above the m_ref healing gate");
 }
 
 /*
@@ -1366,8 +1890,23 @@ TEST(test_centripetal_correction)
     float roll_off = turn_roll_error(0.0f);   /* no speed: leans into turn */
     float roll_on  = turn_roll_error(6.0f);   /* corrected */
 
-    EXPECT(roll_off > 2.0f*DEG,
-           "without speed, sustained turn tilts the roll estimate");
+    /*
+     * The uncorrected error is 1.81°, not the 5.24° it was before the wave
+     * state existed: a sustained 0.9 m/s² lateral acceleration looks a lot
+     * like the disturbance the Gauss–Markov state is there to absorb, and it
+     * soaks up roughly 60% of it (a_w settles near 0.06 g).
+     *
+     * It does NOT soak up all of it, and must not — the state's τ = 0.5 s
+     * prior keeps pulling it back to zero, so a genuinely sustained offset
+     * stays partly attributed to tilt. That is the δθ↔δa_w separation working:
+     * the two are told apart by their dynamics, and a DC lateral acceleration
+     * is not what a 0.5 s Gauss–Markov process looks like.
+     *
+     * So the speed aiding still earns its keep (1.81° → 0.00°) and this bound
+     * still proves it; it is just no longer measuring a 5° error.
+     */
+    EXPECT(roll_off > 1.2f*DEG,
+           "without speed, sustained turn still tilts the roll estimate");
     EXPECT(roll_on < 0.3f*DEG,
            "with speed, roll stays level through the turn");
 }
@@ -1669,7 +2208,54 @@ typedef struct {
     float m_ref[3];      /* filter's magnetic reference at end of run */
 } wave_run_t;
 
-static void run_wave_scenario(bool yaw_only, wave_run_t *out)
+/*
+ * Which linear-acceleration disturbance the scenario drives.
+ *
+ * SCEN_TONE is the historical single-tone seaway: three sinusoids locked to
+ * the roll frequency. It is realistic in amplitude and it is what every
+ * recorded number in the tree was measured on, so it stays byte-identical.
+ * But a pure tone has an autocorrelation that never decays, so it cannot say
+ * what the Gauss–Markov correlation time SHOULD be — fit τ against it and you
+ * are fitting the benchmark, not the physics.
+ *
+ * SCEN_GM drives the same filter with a genuine first-order Gauss–Markov
+ * process of KNOWN (σ, τ). That is the only configuration in which the right
+ * answer is known in advance: set the filter's knobs to the truth and a
+ * correct implementation must report NIS ≈ 1 and NEES ≈ 1. Tuning happens
+ * here; SCEN_TONE is the held-out validation.
+ */
+typedef enum { SCEN_TONE = 0, SCEN_GM = 1 } wave_scen_t;
+
+/* Truth for SCEN_GM, m/s² and s. Deliberately NOT the filter's knobs. */
+static double scen_gm_sigma = 0.8;
+static double scen_gm_tau   = 0.7;
+
+/*
+ * Whether the scenario supplies WMM field invariants at alignment. The daemon
+ * does this whenever a position source has given it a reference field
+ * (src/imu.c), and it is the only thing that removes the alignment dip error
+ * at the source rather than admitting it into P — so it is a distinct, and
+ * previously unmeasured, shipping configuration.
+ */
+static bool bench_wmm_ref = false;
+
+/*
+ * Align from a clean, disturbance-free sample instead of the daemon's window
+ * average. For UNIT TESTS OF THE ESTIMATOR only — never for the benchmark.
+ *
+ * Averaging specific force over the alignment window is biased in a seaway,
+ * and not only by sensor noise: the body frame is itself rotating, so the mean
+ * of a body-frame gravity vector over a roll cycle is both shrunk and tilted.
+ * The daemon has that characteristic (src/imu.c sums raw body-frame samples)
+ * and the benchmark must therefore keep it. But a test whose question is "does
+ * the wave estimator report NIS = 1 when its knobs are the truth" must not have
+ * that confound folded in — under the broadband disturbance the alignment error
+ * alone moves that number from 0.99 to 1.63, which says nothing about the
+ * estimator.
+ */
+static bool bench_align_clean = false;
+
+static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *out)
 {
     const float fs   = 833.0f;
     const float dt   = 1.0f / fs;
@@ -1696,9 +2282,30 @@ static void run_wave_scenario(bool yaw_only, wave_run_t *out)
     const float warmup_s = 60.0f, measure_s = 120.0f;
     const int   n_total  = (int)((warmup_s + measure_s) * fs);
 
+    /* Alignment window, matching the daemon's 5 s default (align_window_sec). */
+    const bool wmm_ref = bench_wmm_ref;
+    const int align_n = (int)(5.0f * fs);
+    double align_acc_sum[3] = {0}, align_mag_sum[3] = {0};
+
     double sum_att2 = 0.0, sum_hdg2 = 0.0;
     double sum_e2 = 0.0, sum_tr = 0.0, sum_nees_st = 0.0;
     int    n_meas   = 0, n_nees = 0;
+
+    /*
+     * SCEN_GM state: exact first-order GM recursion, the same discretisation
+     * the filter uses (fusion.c mekf_predict), driven by the benchmark's own
+     * uniform noise. Started at a draw from the stationary distribution so
+     * there is no spin-up transient inside the measurement window.
+     *
+     * Nothing here may draw from the RNG unless SCEN_GM is selected: SCEN_TONE
+     * has to consume exactly the stream it always did, or every recorded
+     * number in the tree shifts.
+     */
+    const float gm_phi = expf(-dt / (float)scen_gm_tau);
+    const float gm_q   = (float)scen_gm_sigma * sqrtf(1.0f - gm_phi*gm_phi);
+    float gm[3] = {0, 0, 0};
+    if (scen == SCEN_GM)
+        for (int k = 0; k < 3; k++) gm[k] = bench_noise((float)scen_gm_sigma);
 
     for (int i = 0; i < n_total; i++) {
         float t = (float)i * dt;
@@ -1722,11 +2329,17 @@ static void run_wave_scenario(bool yaw_only, wave_run_t *out)
         };
 
         /* Wave-orbital linear acceleration in NED (m/s²) */
-        float a_lin[3] = {
-            1.2f * sinf(wr * t + 0.5f),
-            1.2f * cosf(0.8f * wr * t),
-            1.0f * sinf(wr * t),
-        };
+        float a_lin[3];
+        if (scen == SCEN_GM) {
+            for (int k = 0; k < 3; k++) {
+                gm[k] = gm_phi * gm[k] + bench_noise(gm_q);
+                a_lin[k] = gm[k];
+            }
+        } else {
+            a_lin[0] = 1.2f * sinf(wr * t + 0.5f);
+            a_lin[1] = 1.2f * cosf(0.8f * wr * t);
+            a_lin[2] = 1.0f * sinf(wr * t);
+        }
 
         /* Specific force in body: f_b = Rᵀ (a_lin − g·e_down) */
         float f_ned[3] = { a_lin[0], a_lin[1], a_lin[2] - G };
@@ -1738,13 +2351,65 @@ static void run_wave_scenario(bool yaw_only, wave_run_t *out)
             s.gyro[k]  = w_body[k] + bias_true[k] + bench_noise(0.002f);
         }
 
-        /* Alignment: one instantaneous noisy sample, like the daemon */
-        if (i == 0) {
+        /*
+         * Alignment, as the daemon does it (src/imu.c, the align loop): mean
+         * accelerometer and magnetometer over a window, then WMM invariants if
+         * a position is known.
+         *
+         * This used to align from ONE instantaneous sample and claim in a
+         * comment that that was "like the daemon". It is not, and the
+         * difference dominated everything the 3-D mode reported. A single
+         * sample taken mid-roll bakes the instantaneous tilt error into m_ref
+         * as a permanent DIP error (measured: −4.38°), and in 3-D mode the dip
+         * channel then holds roll and pitch at that wrong reference forever —
+         * a constant attitude bias P has no term for. Measured over the 12
+         * seeds, 3-D mode:
+         *
+         *                       dip err   att RMS   hdg RMS   NEES(tr)  NEES(st)
+         *   1 sample (old)       −4.38°    4.452°    0.828°      3.47      335
+         *   window mean (this)   +0.86°    1.204°    0.745°      0.21     12.8
+         *   dip reference exact   0.00°    0.852°       —        0.11     0.22
+         *
+         * i.e. ~96% of the 3-D inconsistency was the instrument, not the
+         * filter. The remaining +0.86° is residual dip error, which cannot be
+         * healed from seaway data (see the acc_quiet_ema gate in fusion.c) and
+         * is what the anisotropic dip term in R exists to admit into P.
+         */
+        if (bench_align_clean && i == 0) {
+            /* Estimator unit tests: noise-free, disturbance-free reference. */
+            float ca[3], cm[3];
+            float g_ned[3] = { 0.0f, 0.0f, -G };
+            for (int k = 0; k < 3; k++) {
+                ca[k] = Rt[0][k]*g_ned[0] + Rt[1][k]*g_ned[1] + Rt[2][k]*g_ned[2];
+                cm[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1]
+                         + Rt[2][k]*m_ned[2]) * 100.0f;
+            }
+            mekf_align(&f, ca, cm);
+            continue;
+        }
+        if (!bench_align_clean && i < align_n) {
             float mb[3];
             for (int k = 0; k < 3; k++)
                 mb[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
                         * 100.0f + bench_noise(0.3f);   /* µT */
-            mekf_align(&f, s.accel, mb);
+            for (int k = 0; k < 3; k++) {
+                align_acc_sum[k] += s.accel[k];
+                align_mag_sum[k] += mb[k];
+            }
+            if (i == align_n - 1) {
+                float aa[3], mm[3];
+                for (int k = 0; k < 3; k++) {
+                    aa[k] = (float)(align_acc_sum[k] / align_n);
+                    mm[k] = (float)(align_mag_sum[k] / align_n);
+                }
+                mekf_align(&f, aa, mm);
+                /* WMM-known field invariants, as the daemon applies them when
+                 * a position source has given it a reference field. */
+                if (wmm_ref) {
+                    float mh = sqrtf(m_ned[0]*m_ned[0] + m_ned[1]*m_ned[1]);
+                    mekf_set_mref_invariants(&f, mh, m_ned[2]);
+                }
+            }
             continue;
         }
 
@@ -1826,7 +2491,7 @@ typedef struct {
     float nis_a_mean, nis_m_mean;
 } bench_result_t;
 
-static void run_wave_seeds(bool yaw_only, bench_result_t *r)
+static void run_wave_seeds_ex(bool yaw_only, wave_scen_t scen, bench_result_t *r)
 {
     double sa = 0, sh = 0, sb = 0, sn = 0, ss = 0, sw = 0, sr = 0;
     double sna = 0, snm = 0;
@@ -1834,7 +2499,7 @@ static void run_wave_seeds(bool yaw_only, bench_result_t *r)
     for (int i = 0; i < N_BENCH_SEEDS; i++) {
         wave_run_t run;
         bench_seed = bench_seeds[i];
-        run_wave_scenario(yaw_only, &run);
+        run_wave_scenario_ex(yaw_only, scen, &run);
         sa += run.rms_att;    sh += run.rms_hdg;      sb += run.bias_err;
         sn += run.nees_trace; ss += run.nees_strict;
         sw += run.innov_weight; sr += run.innov_reject;
@@ -1855,6 +2520,12 @@ static void run_wave_seeds(bool yaw_only, bench_result_t *r)
     r->reject_mean   = (float)(sr / N_BENCH_SEEDS);
     r->nis_a_mean    = (float)(sna / N_BENCH_SEEDS);
     r->nis_m_mean    = (float)(snm / N_BENCH_SEEDS);
+}
+
+/* The historical seaway. Every recorded number in the tree is this one. */
+static void run_wave_seeds(bool yaw_only, bench_result_t *r)
+{
+    run_wave_seeds_ex(yaw_only, SCEN_TONE, r);
 }
 
 /*
@@ -1894,14 +2565,76 @@ static void bench_sweep_ra(void)
 }
 #endif
 
+/*
+ * ROADMAP §10.5 tuning sweep for the Gauss–Markov wave state — not built by
+ * default. `make` does not track CFLAGS, so remove the binary first:
+ *
+ *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+ *       -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_WAVE" && ./test_fusion
+ *
+ * σ = 0 rows are the disabled filter, printed as the row everything else has
+ * to beat. The recorded run lives in docs/math.md §4.7.
+ */
+#ifdef BENCH_SWEEP_WAVE
+static void bench_sweep_wave(void)
+{
+    static const double sig[] = { 0.0, 0.3, 0.6, 0.8, 0.9, 1.2, 1.8 };
+    static const double tau[] = { 0.3, 0.5, 0.8, 1.0, 2.0, 4.0 };
+    double s0 = bench_wave_sigma, t0 = bench_wave_tau;
+
+    for (int sc = 0; sc < 2; sc++) {
+        wave_scen_t scen = sc ? SCEN_TONE : SCEN_GM;
+        if (scen == SCEN_GM)
+            printf("\n  ── GM wave-state sweep, BROADBAND scenario "
+                   "(truth sigma=%.2f tau=%.2f) ──\n"
+                   "  Tuning happens here: knobs = truth must give NIS ~ 1.\n",
+                   scen_gm_sigma, scen_gm_tau);
+        else
+            printf("\n  ── GM wave-state sweep, TONE scenario "
+                   "(held-out validation) ──\n");
+        printf("  %-6s %-5s %-5s %8s %8s %9s %9s %9s %8s %8s\n",
+               "sigma", "tau", "mode", "att RMS", "hdg RMS", "bias_z",
+               "NEES(tr)", "NEES(st)", "NIS_a", "reject");
+        for (size_t i = 0; i < sizeof sig / sizeof sig[0]; i++) {
+            size_t ntau = (sig[i] == 0.0) ? 1 : sizeof tau / sizeof tau[0];
+            for (size_t j = 0; j < ntau; j++) {
+                bench_wave_sigma = sig[i];
+                bench_wave_tau   = tau[j];
+                for (int mode = 0; mode < 2; mode++) {
+                    bench_result_t r;
+                    run_wave_seeds_ex(mode == 1, scen, &r);
+                    printf("  %-6.2f %-5.1f %-5s %8.3f %8.3f %9.6f %9.2f %9.2f %8.2f %8.4f\n",
+                           sig[i], sig[i] == 0.0 ? 0.0 : tau[j], mode ? "yaw" : "3D",
+                           r.att_mean, r.hdg_mean, r.bias_mean,
+                           r.nees_tr_mean, r.nees_st_mean, r.nis_a_mean,
+                           r.reject_mean);
+                }
+            }
+        }
+        printf("  ────────────────────────────────────────────────────────────\n");
+    }
+    bench_wave_sigma = s0;
+    bench_wave_tau   = t0;
+    printf("\n");
+}
+#endif
+
 static void test_wave_benchmark(void)
 {
 #ifdef BENCH_SWEEP_RA
     bench_sweep_ra();
 #endif
-    bench_result_t b3, by;
+#ifdef BENCH_SWEEP_WAVE
+    bench_sweep_wave();
+#endif
+    bench_result_t b3, by, bw;
     run_wave_seeds(false, &b3);   /* 3D vector mag */
     run_wave_seeds(true,  &by);   /* yaw-only (default) */
+    /* 3-D with WMM field invariants — what a GPS-equipped boat actually runs,
+     * and the only configuration in which the dip reference is trustworthy. */
+    bench_wmm_ref = true;
+    run_wave_seeds(false, &bw);
+    bench_wmm_ref = false;
 
     printf("\n    [wave bench 3D  ] attitude RMS = %.3f° (worst %.3f)  "
            "heading RMS = %.3f° (worst %.3f)  bias_z err = %.5f rad/s\n",
@@ -1914,9 +2647,13 @@ static void test_wave_benchmark(void)
            b3.nees_tr_mean, b3.nees_tr_worst, b3.nees_st_mean,
            b3.nis_a_mean, b3.nis_m_mean, b3.weight_mean, b3.reject_mean);
     printf("    [consistency yaw] NEES(trace) = %.2f (worst %.2f)  "
-           "NEES(strict/3) = %.2f  NIS(a/m) = %.2f/%.2f  weight = %.3f  reject = %.4f\n    ",
+           "NEES(strict/3) = %.2f  NIS(a/m) = %.2f/%.2f  weight = %.3f  reject = %.4f\n",
            by.nees_tr_mean, by.nees_tr_worst, by.nees_st_mean,
            by.nis_a_mean, by.nis_m_mean, by.weight_mean, by.reject_mean);
+    printf("    [wave bench 3D+WMM] attitude RMS = %.3f°  heading RMS = %.3f°  "
+           "NEES(trace) = %.2f  NEES(strict/3) = %.2f  NIS(a/m) = %.2f/%.2f\n    ",
+           bw.att_mean, bw.hdg_mean, bw.nees_tr_mean, bw.nees_st_mean,
+           bw.nis_a_mean, bw.nis_m_mean);
 
     /*
      * Regression bounds, on the MEAN over N_BENCH_SEEDS draws (see the
@@ -1954,42 +2691,185 @@ static void test_wave_benchmark(void)
      * but still NOT asserted: even though the tail is now tight, it remains a
      * scenario-luck statistic rather than a filter-quality one.
      *
-     * ── On the consistency columns ────────────────────────────────────────
-     * Both NEES and NIS remain far above 1, so the filter is still
-     * over-confident — ROADMAP §10.1's premise is correct. What the sweep
-     * shows is that Ra cannot fix it. Raising mekf_accel_noise to 0.03 does
-     * drive NIS to ~1.0, but it costs the marine (yaw-only) default 2.31° →
-     * 8.58° of attitude RMS and pushes NEES(trace) from 7.8 to 156, because
-     * a weaker gravity correction means the filter leans on gyro integration.
-     * Meanwhile NEES(strict) for 3-D stays pinned in the 44–64 band across
-     * the whole sweep, four orders of magnitude of Ra: the inconsistency is
-     * anisotropic and structural, not a scale error.
+     * ── Recorded change: m33_inv singularity test, and the Gauss–Markov
+     *    wave-acceleration state (ROADMAP §10.5) ───────────────────────────
      *
-     * The cause is that the seaway residual is wave-correlated (τ ≈ 0.3–0.9 s,
-     * measured by `imud-cal fit-ra`), not white, and no scalar white R can
-     * describe it. Fixing it needs the correlation modelled — see §10.5 and
-     * docs/math.md §4.7.
+     * The numbers above were, it turned out, measured through a bug. m33_inv
+     * declared S singular on an ABSOLUTE |det| < 1e-12, but S = HPHᵀ + R·I for
+     * the gravity update carries physical units and its determinant sits near
+     * 1e-13 at ordinary conditioning. 87% of accel updates in this benchmark
+     * were being silently discarded by that test, and the health EMAs were
+     * being fed only by the 13% that survived. The accidental decimation was
+     * doing real work — it crudely decorrelated the wave-contaminated samples
+     * — which is why the filter looked as good as it did.
      *
-     * These bounds are therefore ratchets against regression, not claims of
-     * consistency.
+     * With the test made scale-relative (fusion.c m33_inv) and nothing else
+     * changed, the filter feeds on all 833 samples/s, believes each one is an
+     * independent measurement of gravity, and diverges into its own
+     * over-confidence: 9.49°/11.42° attitude, NEES(trace) 259/252, NIS 56/57,
+     * 15% gross rejects. That is §10.1's diagnosis in its undisguised form —
+     * a seaway's gravity residual is correlated, so 833 correlated samples do
+     * not carry 833 samples' worth of information, and no scalar R can say so.
+     *
+     * The Gauss–Markov wave state says so. Modelling the disturbance as a
+     * first-order GM process (σ = 0.8 m/s², τ = 0.5 s) makes repeated samples
+     * correctly stop adding information, and every column lands:
+     *
+     *                  3-D att   3-D hdg   yaw att   yaw hdg   NEES(tr)   NIS_a
+     *   old baseline     5.653°    3.065°    2.309°    1.961°  18.3/ 7.8  19.3/25.2
+     *   inv fixed only   9.488°    7.255°   11.424°    8.801°   259 / 252  56.5/56.9
+     *   + wave state     4.452°    0.828°    2.308°    1.016°  3.47/0.99  1.01/0.69
+     *
+     * The old baseline is the honest bar (ROADMAP §10.5 states the criterion
+     * against it), and the wave state clears it everywhere: 3-D attitude −21%,
+     * 3-D heading −73%, yaw heading −48%, yaw attitude a dead heat, NIS from
+     * 19–25 to ≈1, NEES(trace) from 18.3/7.8 to 3.47/0.99, and the Huber cap
+     * and gross-reject gate both go completely idle (weight 1.000, reject 0).
+     *
+     * σ and τ were chosen on a BROADBAND scenario (SCEN_GM) whose disturbance
+     * is a real Gauss–Markov process of known σ and τ, not on the single tone
+     * asserted here — the tone's autocorrelation never decays, so fitting τ to
+     * it would be fitting the benchmark. The tone is the held-out validation.
+     * σ = 0.8 m/s² is also exactly the tone's true per-axis RMS and τ = 0.5 s
+     * sits inside fit-ra's measured 0.3–0.9 s, so neither knob is a free
+     * parameter. The grid is in docs/math.md §4.7 (-DBENCH_SWEEP_WAVE).
+     *
+     * ── Recorded change: the alignment fidelity bug ───────────────────────
+     * This scenario used to align from ONE instantaneous sample and claim it
+     * was doing what the daemon does. It was not — the daemon averages a 5 s
+     * window (src/imu.c) — and the difference dominated every 3-D number here.
+     * See the alignment block above for the mechanism and the measured table.
+     * Re-basing on a daemon-faithful alignment:
+     *
+     *                     3-D att   3-D hdg   yaw att   yaw hdg   NEES(st) 3D/yaw
+     *   1-sample (old)     4.452°    0.828°    2.308°    1.016°     335 / 10.1
+     *   5 s mean (this)    1.204°    0.745°    2.185°    1.011°    12.8 / 8.37
+     *
+     * Nothing in the filter changed to produce that: it is the instrument
+     * being made honest. The yaw-only default barely moves (2.308° → 2.185°),
+     * which is the expected signature — heading-only fusion never uses the dip
+     * channel that the alignment error corrupts.
+     *
+     * ── On the 3-D+WMM row ────────────────────────────────────────────────
+     * The residual 3-D inconsistency is m_ref DIP error left over from
+     * alignment (+0.86°), which the dip channel converts into a constant
+     * roll/pitch bias that P has no term for. It cannot be healed from seaway
+     * data — see the acc_quiet_ema gate in fusion.c and the refutation
+     * recorded there. It CAN be removed at the source, which is what
+     * mekf_set_mref_invariants does when a position source supplies the field.
+     * That configuration is the best the filter offers and was previously
+     * unmeasured, so it is now a printed row: attitude 0.841°, NEES(strict)
+     * 0.22 — an order of magnitude better than yaw-only, and consistent.
+     *
+     * ── On the anisotropic dip term (mekf_mag_dip_sigma_deg) ─────────────
+     * For installs without a position source, the dip error cannot be removed,
+     * so it is admitted into P instead: R gains a rank-1 term σ_dip²·uuᵀ along
+     * the one direction a dip error perturbs (see mekf_update_mag). At the
+     * shipped 1.0° — the measured +0.86° residual, rounded up, NOT a value
+     * fitted to this metric — 3-D NEES(strict) goes 12.83 → 5.74 while
+     * attitude and heading both improve slightly (1.204° → 1.178°,
+     * 0.745° → 0.714°) and yaw-only is bit-identical.
+     *
+     * It does not reach 1, and cannot: the dip error is a BIAS, and a
+     * covariance term can only partly stand in for one. The accelerometer
+     * legitimately keeps P tight in roll and pitch, so P cannot grow to cover
+     * a systematic offset without making the filter worse at everything else.
+     * Driving this number to ~1 needs σ_dip ≈ 4°, which would be inventing
+     * uncertainty to satisfy a statistic. The sweep is in docs/math.md §4.8.1;
+     * the real fix for an install that cares is a position source.
+     *
+     * The cost is `nis_mag` in 3-D mode: 0.52 → 0.31. Isotropic inflation
+     * reaching the same NEES puts it at 0.01 — i.e. destroys the wire's
+     * magnetometer-health instrument — which is the whole argument for the
+     * rank-1 form. Yaw-only, the default, is untouched at 0.55.
+     *
+     * Bounds are ~1.3× the measured means. The NIS bounds are TWO-SIDED: with
+     * a state that can absorb disturbance, under-confidence is now a reachable
+     * failure mode (too large a σ eats real tilt error) and a one-sided bound
+     * would not see it. Worst-case draws are printed but not asserted.
      */
-    EXPECT(b3.att_mean  < 6.5f,     "wave-bench 3D attitude RMS under bound");
-    EXPECT(b3.hdg_mean  < 3.5f,     "wave-bench 3D heading RMS under bound");
+    EXPECT(b3.att_mean  < 1.55f,    "wave-bench 3D attitude RMS under bound");
+    EXPECT(b3.hdg_mean  < 1.00f,    "wave-bench 3D heading RMS under bound");
     EXPECT(b3.bias_mean < 0.001f,   "wave-bench 3D bias error under bound");
-    EXPECT(by.att_mean  < 2.7f,     "wave-bench yaw-only attitude RMS under bound");
-    EXPECT(by.hdg_mean  < 2.3f,     "wave-bench yaw-only heading RMS under bound");
+    EXPECT(by.att_mean  < 2.90f,    "wave-bench yaw-only attitude RMS under bound");
+    EXPECT(by.hdg_mean  < 1.35f,    "wave-bench yaw-only heading RMS under bound");
     EXPECT(by.bias_mean < 0.001f,   "wave-bench yaw-only bias error under bound");
 
-    /* Consistency ratchets, at ~1.3× the measured values. */
-    EXPECT(b3.nis_a_mean   < 25.0f, "wave-bench 3D accel NIS under bound");
-    EXPECT(by.nis_a_mean   < 33.0f, "wave-bench yaw-only accel NIS under bound");
-    EXPECT(b3.nees_tr_mean < 24.0f, "wave-bench 3D NEES(trace) under bound");
-    EXPECT(by.nees_tr_mean < 10.0f, "wave-bench yaw-only NEES(trace) under bound");
-    /* The gross-reject gate must stay essentially idle in a normal seaway;
-     * the pre-1.7 9γ gate sat at 0.26 here, so this catches a regression to
-     * the starvation regime with a wide margin. */
+    /* Consistency, two-sided: 1.0 is the target, not a ceiling to stay under. */
+    EXPECT(b3.nis_a_mean > 0.35f && b3.nis_a_mean < 1.10f,
+           "wave-bench 3D accel NIS stays near 1");
+    EXPECT(by.nis_a_mean > 0.40f && by.nis_a_mean < 1.20f,
+           "wave-bench yaw-only accel NIS stays near 1");
+    EXPECT(b3.nees_tr_mean < 0.30f, "wave-bench 3D NEES(trace) under bound");
+    EXPECT(by.nees_tr_mean < 1.20f, "wave-bench yaw-only NEES(trace) under bound");
+    EXPECT(by.nees_st_mean < 11.0f, "wave-bench yaw-only NEES(strict) under bound");
+    EXPECT(b3.nees_st_mean < 7.50f, "wave-bench 3D NEES(strict) under bound");
+
+    /* 3-D with a trustworthy dip reference must be both the most accurate
+     * configuration and a consistent one — this is the row that proves the
+     * residual 3-D inconsistency is the REFERENCE, not the filter. */
+    EXPECT(bw.att_mean     < 1.05f, "wave-bench 3D+WMM attitude RMS under bound");
+    EXPECT(bw.att_mean     < b3.att_mean,
+           "WMM invariants beat an aligned dip reference");
+    EXPECT(bw.nees_st_mean < 0.50f,
+           "wave-bench 3D+WMM NEES(strict) is consistent");
+
+    /* Both gates must stay idle in a normal seaway; the pre-1.7 9γ gate sat at
+     * 0.26 here and the un-modelled seaway at 0.15, so this catches a
+     * regression to the starvation regime with a wide margin. */
     EXPECT(b3.reject_mean  < 0.02f, "wave-bench 3D gross-reject rate stays negligible");
     EXPECT(by.reject_mean  < 0.02f, "wave-bench yaw-only gross-reject rate stays negligible");
+    EXPECT(b3.weight_mean  > 0.95f, "wave-bench 3D Huber cap stays essentially idle");
+    EXPECT(by.weight_mean  > 0.95f, "wave-bench yaw-only Huber cap stays essentially idle");
+}
+
+/*
+ * Ground truth for the Gauss–Markov state. The tone benchmark cannot supply
+ * one: a sinusoid has no correlation time, so "the filter's knobs are right"
+ * is not a statement it can evaluate. Here the disturbance IS a first-order
+ * GM process of known σ and τ, so setting the filter's knobs to the truth
+ * makes the correct answer exactly NIS = 1 and NEES = 1 — which is the only
+ * check that tests the estimator rather than the tuning.
+ */
+static void test_wave_gm_ground_truth(void)
+{
+    double s0 = bench_wave_sigma, t0 = bench_wave_tau;
+    bench_wave_sigma = scen_gm_sigma;   /* knobs := truth */
+    bench_wave_tau   = scen_gm_tau;
+    bench_align_clean = true;           /* isolate the estimator; see the flag */
+
+    bench_result_t r;
+    run_wave_seeds_ex(true, SCEN_GM, &r);   /* marine default: yaw-only */
+
+    printf("\n    [GM truth yaw   ] sigma = %.2f m/s^2  tau = %.2f s  ->  "
+           "att RMS = %.3f°  NEES(trace) = %.2f  NIS_a = %.2f  reject = %.4f\n    ",
+           scen_gm_sigma, scen_gm_tau, r.att_mean, r.nees_tr_mean,
+           r.nis_a_mean, r.reject_mean);
+
+    /*
+     * Tight on purpose. This is the one configuration where the correct answer
+     * is known exactly rather than measured, so the band is a real check on the
+     * estimator, not a ratchet. It is also the suite's sharpest detector of a
+     * mis-derived Jacobian: dropping the tangent projector from wave_jacobian
+     * (H_δθ = [h×]/|v|, H_δa_w = −I/|v|, which is what a first pass at this
+     * naturally writes) leaves every other test in this file passing and moves
+     * this number out of the band.
+     *
+     * Measured: correct 0.87, unprojected 0.73. The margins are 8% below and
+     * 44% above, so the band is tight enough to be a real check and loose
+     * enough to survive float/platform variance — but it is deliberately not
+     * tighter, because 0.14 is the whole separation available.
+     */
+    EXPECT(r.nis_a_mean > 0.80f && r.nis_a_mean < 1.25f,
+           "GM ground truth: accel NIS is ~1 when the knobs are the truth");
+    EXPECT(r.nees_tr_mean > 0.5f && r.nees_tr_mean < 2.5f,
+           "GM ground truth: NEES(trace) is ~1 when the knobs are the truth");
+    EXPECT(r.reject_mean < 0.01f,
+           "GM ground truth: gross-reject gate stays idle");
+
+    bench_wave_sigma  = s0;
+    bench_wave_tau    = t0;
+    bench_align_clean = false;
 }
 
 /* ── Main ────────────────────────────────────────────────────────────────────── */
@@ -2036,7 +2916,17 @@ int main(void)
     RUN(test_seastate_sine);
     RUN(test_seastate_gates);
     RUN(test_mag_health);
+    RUN(test_wave_disabled_inert);
+    RUN(test_wave_needs_both_knobs);
+    RUN(test_wave_state_tracks_colored_residual);
+    RUN(test_wave_nis_dof_consistent);
+    RUN(test_wave_reconfigure_transitions);
+    RUN(test_mag_dip_sigma_widens_covariance);
+    RUN(test_mag_dip_sigma_is_tangent_to_the_dip_channel);
+    RUN(test_mag_dip_sigma_inert_in_yaw_only);
+    RUN(test_mref_quiet_gate_stays_tight);
     RUN(test_wave_benchmark);
+    RUN(test_wave_gm_ground_truth);
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
 }

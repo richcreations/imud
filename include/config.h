@@ -60,6 +60,16 @@ typedef struct {
     double mekf_gyro_bias;       /* rad/s — in-run bias instability */
     double mekf_accel_noise;     /* m/s²/√Hz — from datasheet */
     double mekf_mag_noise;       /* Gauss/√Hz — from datasheet */
+    /* Gauss–Markov wave-acceleration state (ROADMAP §10.5). Models the
+     * time-correlated seaway disturbance on the gravity measurement; either
+     * key at 0 disables the state entirely. NOTE: unrelated to wave_tau_s
+     * above, which is the sea-state REPORTING window. */
+    double mekf_wave_accel;      /* [hot] GM steady-state σ, m/s²; 0 = off */
+    double mekf_wave_accel_tau_s;/* [hot] GM correlation time, s; 0 = off */
+    /* Uncertainty of the magnetic reference's DIP angle, degrees. Feeds a
+     * rank-1 anisotropic term into the 3-D mag update's R. 0 = the dip is
+     * exact (a WMM reference). Ignored in mag_yaw_only mode. */
+    double mekf_mag_dip_sigma_deg; /* [hot] */
     double mag_reject_gauss;         /* reject mag if residual > this (post-cal) */
     double accel_skip_thresh;        /* skip accel update if ||a|-1g| > this */
     double engine_vibration_g2;      /* EMA of (|a|-g)² threshold for engine-on (0=disabled) */
@@ -69,6 +79,11 @@ typedef struct {
     char   cal_file[256];
     double startup_settle_sec;   /* discard sensor data for this long after chip init */
     double gyro_bias_sec;        /* stationary window at startup */
+    /* Seconds of accelerometer/magnetometer averaging used for the one-shot
+     * initial attitude alignment. Longer averages more of the wave cycle out
+     * of the reference at the cost of startup latency; 0 falls back to the
+     * minimum. See docs/math.md §4.3. */
+    double align_window_sec;
 
     /* [nmea]  [restart]: enabled, port, addr, tcp_*; [hot]: rate */
     bool  nmea_enabled;

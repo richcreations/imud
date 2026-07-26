@@ -35,7 +35,6 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include "sk_delta.h"          /* pulls in ../lib/imud_client.h (types only) */
 #include "../lib/imud.h"       /* libimud: stream connect/read/validate */
@@ -55,29 +54,6 @@ static const bridge_info_t BI = {
         "  delta JSON over UDP. Configured by [imud-signalk] in its own file.\n",
 };
 
-/* ── UDP destination socket ──────────────────────────────────────────────── */
-
-static int open_udp_dest(const char *addr_s, int port, struct sockaddr_in *dest)
-{
-    struct in_addr addr;
-    if (inet_pton(AF_INET, addr_s, &addr) <= 0) {
-        LOG_E("[signalk] invalid dest_addr '%s' (numeric IPv4 only)\n", addr_s);
-        return -1;
-    }
-    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) { LOG_E("[signalk] socket(): %s\n", strerror(errno)); return -1; }
-
-    /* Harmless for unicast; needed if the SK host is a broadcast address. */
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof yes);
-
-    memset(dest, 0, sizeof *dest);
-    dest->sin_family = AF_INET;
-    dest->sin_port   = htons((uint16_t)port);
-    dest->sin_addr   = addr;
-    return fd;
-}
-
 int main(int argc, char **argv)
 {
     char config_path[256];
@@ -94,11 +70,16 @@ int main(int argc, char **argv)
 
     bridge_install_signals();
 
-    /* UDP delta output ([restart]). */
-    struct sockaddr_in dest;
+    /* UDP delta output ([restart]).  bridge_open_udp() resolves with
+     * getaddrinfo(AF_UNSPEC), so dest_addr accepts a hostname as well as a
+     * numeric address — matching every other bridge.  This one used
+     * inet_pton() until 1.7 and rejected names the others accepted. */
+    struct sockaddr_storage dest;
+    socklen_t dest_len = 0;
     int udp_fd = -1;
     if (cfg.sk_udp_enabled) {
-        udp_fd = open_udp_dest(cfg.sk_dest_addr, cfg.sk_dest_port, &dest);
+        udp_fd = bridge_open_udp(cfg.sk_dest_addr, cfg.sk_dest_port,
+                                 BI.tag, &dest, &dest_len);
         if (udp_fd < 0) return 1;
     }
 
@@ -146,7 +127,8 @@ int main(int argc, char **argv)
                 (strcmp(nc.sk_dest_addr, cfg.sk_dest_addr) != 0 ||
                  nc.sk_dest_port != cfg.sk_dest_port)) {
                 close(udp_fd);
-                udp_fd = open_udp_dest(nc.sk_dest_addr, nc.sk_dest_port, &dest);
+                udp_fd = bridge_open_udp(nc.sk_dest_addr, nc.sk_dest_port,
+                                         BI.tag, &dest, &dest_len);
                 if (udp_fd < 0) { LOG_E("[signalk] reload: bad dest — exiting\n"); break; }
             }
             if (nc.sk_udp_enabled != cfg.sk_udp_enabled)
@@ -188,7 +170,7 @@ int main(int argc, char **argv)
                 if (n > 0) {
                     if (udp_fd >= 0 &&
                         sendto(udp_fd, delta, (size_t)n, 0,
-                               (struct sockaddr *)&dest, sizeof dest) < 0)
+                               (struct sockaddr *)&dest, dest_len) < 0)
                         LOG_W("[signalk] sendto: %s\n", strerror(errno));
                     /* Same delta to TCP clients, newline-framed (one JSON
                      * line per delta — the SK data-connection format). */

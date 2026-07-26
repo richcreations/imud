@@ -799,6 +799,9 @@ int main(int argc, char **argv)
                 cfg.mekf_gyro_bias      = new_cfg.mekf_gyro_bias;
                 cfg.mekf_accel_noise    = new_cfg.mekf_accel_noise;
                 cfg.mekf_mag_noise      = new_cfg.mekf_mag_noise;
+                cfg.mekf_wave_accel       = new_cfg.mekf_wave_accel;
+                cfg.mekf_wave_accel_tau_s = new_cfg.mekf_wave_accel_tau_s;
+                cfg.mekf_mag_dip_sigma_deg = new_cfg.mekf_mag_dip_sigma_deg;
                 cfg.mag_reject_gauss           = new_cfg.mag_reject_gauss;
                 cfg.accel_skip_thresh          = new_cfg.accel_skip_thresh;
                 cfg.engine_vibration_g2        = new_cfg.engine_vibration_g2;

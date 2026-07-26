@@ -48,6 +48,9 @@ mekf_gyro_noise     = 0.007      # rad/s/√Hz  (ISM330DHCX: 7 mdps/√Hz)
 mekf_gyro_bias      = 0.00015   # rad/s      (in-run bias instability)
 mekf_accel_noise    = 0.0022    # m/s²/√Hz  (ISM330DHCX: ~186 µg/√Hz × 9.81)
 mekf_mag_noise      = 0.0004    # Gauss/√Hz (MMC5983MA: 0.4 mGauss RMS)
+mekf_wave_accel       = 0.8     # m/s^2  Gauss-Markov wave-acceleration sigma
+mekf_wave_accel_tau_s = 0.5     # s      its correlation time (0 = state off)
+mekf_mag_dip_sigma_deg = 1.0    # deg    dip-reference uncertainty (3-D mode only)
 
 # Tuning knobs.
 # Fine-grained measurement consistency is handled internally by chi-squared

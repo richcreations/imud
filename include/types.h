@@ -44,7 +44,14 @@
 #define FLAG_ACCEL_CAL        (1u <<  3)  /* accel calibration applied */
 #define FLAG_GYRO_CAL         (1u <<  4)  /* gyro bias applied */
 #define FLAG_MAG_CAL          (1u <<  5)  /* mag hard/soft-iron cal applied */
-#define FLAG_MOTION           (1u <<  6)  /* reserved — never set as of wire v14 */
+/* Bit 6 is RETIRED, not pending.  It was reserved for a "platform is moving"
+ * indicator and never set.  The packet already carries that information at
+ * higher fidelity — accel_quiescence as a continuous float, plus
+ * FLAG_ENGINE_ON (bit 13) — so a boolean restatement would only lose
+ * resolution.  The define stays so existing consumers still compile; the bit
+ * will never be set.  Do not reuse it for something else: a stale consumer
+ * would read the new meaning through the old name. */
+#define FLAG_MOTION           (1u <<  6)  /* retired — never set, never will be */
 #define FLAG_FIFO_OVERFLOW    (1u <<  7)  /* ISM330 FIFO overflowed (gap!) */
 #define FLAG_STARTUP          (1u <<  8)  /* gyro bias estimation in progress */
 #define FLAG_SHUTDOWN         (1u <<  9)  /* final packet before clean exit */

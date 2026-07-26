@@ -55,7 +55,10 @@ Emit deltas over UDP to
 .TP
 .B dest_addr
 .RI ( string ,\ default:\ \(dq127.0.0.1\(dq )\ [hot]
-Signal K server host (numeric IPv4).
+Signal K server host: a hostname, a numeric IPv4 or IPv6 address, or a
+broadcast address.  Resolved with
+.BR getaddrinfo (3).
+Before 1.7 this key accepted numeric IPv4 only.
 .TP
 .B dest_port
 .RI ( int ,\ default:\ 10113 )\ [hot]

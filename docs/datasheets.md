@@ -32,4 +32,9 @@ Candidates evaluated during driver planning; datasheets at the manufacturer:
 Honeywell HMC5883L (discontinued), QST QMC5883L (<https://www.qstcorp.com/>),
 ST LSM6DS33 (<https://www.st.com/>), InvenSense MPU-6000
 (<https://invensense.tdk.com/>), Bosch BMI270 and BMM150
-(<https://www.bosch-sensortec.com/>).
+(<https://www.bosch-sensortec.com/>), InvenSense/TDK MPU-9250 and MPU-9255
+with their internal AKM AK8963 (<https://invensense.tdk.com/>, NRND).
+
+Where a part has been evaluated in depth — what it would take, and why it did
+or did not get a driver — the reasoning is recorded in
+[hardware-evaluations.md](hardware-evaluations.md).

@@ -99,6 +99,13 @@ static void test_defaults_values(void)
     EXPECT_NEAR_D(cfg.accel_skip_thresh,0.05,   1e-9, "accel_skip default");
     EXPECT(cfg.mag_yaw_only == true,                  "mag_yaw_only default true (marine)");
     EXPECT_NEAR_D(cfg.heave_tau_s, 12.0, 1e-5,        "heave_tau_s default 12 s");
+    EXPECT_NEAR_D(cfg.mekf_wave_accel, 0.8, 1e-9,     "mekf_wave_accel default 0.8 m/s²");
+    EXPECT_NEAR_D(cfg.mekf_wave_accel_tau_s, 0.5, 1e-9,
+                  "mekf_wave_accel_tau_s default 0.5 s");
+    EXPECT_NEAR_D(cfg.mekf_mag_dip_sigma_deg, 1.0, 1e-9,
+                  "mekf_mag_dip_sigma_deg default 1.0 deg");
+    EXPECT_NEAR_D(cfg.align_window_sec, 5.0, 1e-9,
+                  "align_window_sec default 5 s");
     EXPECT_NEAR_D(cfg.gyro_bias_sec,    2.0,    1e-9, "gyro_bias_sec default");
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
     EXPECT(cfg.log_stats_hz == 1,                     "log_stats_hz default");
@@ -393,6 +400,87 @@ static void test_fusion_marine_keys(void)
     EXPECT(cfg.mag_yaw_only == false,           "mag_yaw_only=false loaded");
     EXPECT_NEAR_D(cfg.heave_tau_s, 8.0, 1e-5,   "heave_tau_s loaded");
     remove(path);
+    end_test(fb);
+}
+
+/*
+ * [fusion] Gauss–Markov wave-state keys (ROADMAP §10.5).
+ *
+ * These deliberately use NEED_DBL, not NEED_POS_DBL: unlike the noise
+ * densities above, 0 is a documented value here — it disables the state and
+ * returns the pre-1.7 6-state filter, which is a legitimate thing to ask for.
+ * The name check matters too: mekf_wave_accel_tau_s sits one prefix away from
+ * the unrelated sea-state wave_tau_s, and a parser that confused them would
+ * silently retune the filter when someone set a reporting window.
+ */
+/*
+ * The magnetic dip-reference uncertainty and the alignment window. Both take 0
+ * as a meaningful value — 0 dip sigma means "the reference is exact" (a WMM
+ * install), and 0 align window falls back to the minimum — so both use
+ * NEED_DBL and must stay out of the positivity-fatal set above.
+ */
+static void test_fusion_dip_and_align_keys(void)
+{
+    begin_test("test_fusion_dip_and_align_keys");
+    int fb = g_fail;
+
+    const char *path = write_tmpconf(19,
+        "[fusion]\n"
+        "mekf_mag_dip_sigma_deg = 2.5\n"
+        "[calibration]\n"
+        "align_window_sec = 30.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,                 "dip/align keys load");
+    EXPECT_NEAR_D(cfg.mekf_mag_dip_sigma_deg, 2.5, 1e-9, "dip sigma loaded");
+    EXPECT_NEAR_D(cfg.align_window_sec, 30.0, 1e-9,      "align window loaded");
+    remove(path);
+
+    const char *zero = write_tmpconf(20,
+        "[fusion]\n"
+        "mekf_mag_dip_sigma_deg = 0\n"
+        "[calibration]\n"
+        "align_window_sec = 0\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(zero, &cfg) == 0,          "zero dip/align accepted");
+    EXPECT(cfg.mekf_mag_dip_sigma_deg == 0.0,     "zero dip sigma applied");
+    EXPECT(cfg.align_window_sec == 0.0,           "zero align window applied");
+    remove(zero);
+
+    end_test(fb);
+}
+
+static void test_fusion_wave_state_keys(void)
+{
+    begin_test("test_fusion_wave_state_keys");
+    int fb = g_fail;
+
+    const char *path = write_tmpconf(17,
+        "[fusion]\n"
+        "mekf_wave_accel       = 1.25\n"
+        "mekf_wave_accel_tau_s = 0.75\n"
+        "wave_tau_s            = 90.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0,               "wave-state keys load");
+    EXPECT_NEAR_D(cfg.mekf_wave_accel, 1.25, 1e-9,     "mekf_wave_accel loaded");
+    EXPECT_NEAR_D(cfg.mekf_wave_accel_tau_s, 0.75, 1e-9,
+                  "mekf_wave_accel_tau_s loaded");
+    EXPECT_NEAR_D(cfg.wave_tau_s, 90.0, 1e-5,
+                  "sea-state wave_tau_s is a different key and is untouched");
+    remove(path);
+
+    /* 0 must be ACCEPTED (it means "off"), not rejected as a bad tuning. */
+    const char *off = write_tmpconf(18,
+        "[fusion]\n"
+        "mekf_wave_accel       = 0\n"
+        "mekf_wave_accel_tau_s = 0\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(off, &cfg) == 0,                "zero wave-state accepted");
+    EXPECT(cfg.mekf_wave_accel == 0.0,                 "zero sigma applied");
+    EXPECT(cfg.mekf_wave_accel_tau_s == 0.0,           "zero tau applied");
+    remove(off);
+
     end_test(fb);
 }
 
@@ -737,6 +825,8 @@ int main(void)
     test_defaults_cal_file();
     test_defaults_position();
     test_fusion_marine_keys();
+    test_fusion_wave_state_keys();
+    test_fusion_dip_and_align_keys();
     test_stream_section();
     test_tcp_output_keys();
     test_sim_playback_keys();

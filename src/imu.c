@@ -716,8 +716,24 @@ void *fusion_thread(void *arg)
     {
         double acc_sum[3] = {0}, mag_sum[3] = {0};
         int    acc_n = 0, mag_n = 0;
-        int    n_avg = (int)odr_hz;      /* ~1 s of IMU samples */
+        /*
+         * Averaging window for the one-shot alignment (align_window_sec).
+         *
+         * This used to be a hardcoded ~1 s. That is fine at a dock and poor at
+         * sea: one second is a fifth of a typical roll period, so the mean is
+         * taken over an arbitrary fraction of the cycle and the tilt estimate
+         * — hence m_ref's dip and heading anchor — is left wherever the wave
+         * happened to be. Measured over the 12-seed wave benchmark, attitude
+         * RMS in the marine (yaw-only) default: 47.7° at 1 s, 2.28° at 2 s,
+         * 2.19° at 5 s, flat thereafter. The default is now 5 s.
+         */
+        double aw_s = ctx->cfg.align_window_sec;
+        if (!(aw_s > 0.0)) aw_s = 1.0;
+        int    n_avg = (int)(aw_s * odr_hz);
         if (n_avg < 8) n_avg = 8;
+
+        /* The mag-starvation fallback must outlast the averaging window. */
+        double mag_wait_s = (aw_s > 5.0) ? aw_s : 5.0;
 
         struct timespec align_start;
         clock_gettime(CLOCK_MONOTONIC, &align_start);
@@ -749,7 +765,7 @@ void *fusion_thread(void *arg)
             }
         }
 
-        /* Keep waiting (up to 5 s total) for at least one mag sample.
+        /* Keep waiting (up to mag_wait_s total) for at least one mag sample.
          * Drain the IMU ring while waiting: it holds only ~0.3 s at 833 Hz,
          * and an undrained wait counts thousands of ring drops as FIFO
          * overflows. */
@@ -758,7 +774,7 @@ void *fusion_thread(void *arg)
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
                            + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
-            if (elapsed > 5.0) break;
+            if (elapsed > mag_wait_s) break;
             if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
                 if (msample.valid || mag_uncal) {
                     mag_sum[0] += msample.field[0];
@@ -781,8 +797,8 @@ void *fusion_thread(void *arg)
                     mag_avg[k] = (float)(mag_sum[k] / mag_n);
             } else {
                 /* Timeout: align without heading (assume forward = North). */
-                LOG_W("[fusion] no mag sample after 5 s; "
-                        "aligning without heading\n");
+                LOG_W("[fusion] no mag sample after %.0f s; "
+                        "aligning without heading\n", mag_wait_s);
                 mag_avg[0] = 1.0f; mag_avg[1] = 0.0f; mag_avg[2] = 0.0f;
             }
             mekf_align(&f, acc_avg, mag_avg);
@@ -1189,6 +1205,9 @@ void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
     ctx->cfg.mekf_gyro_bias            = new_cfg->mekf_gyro_bias;
     ctx->cfg.mekf_accel_noise          = new_cfg->mekf_accel_noise;
     ctx->cfg.mekf_mag_noise            = new_cfg->mekf_mag_noise;
+    ctx->cfg.mekf_wave_accel           = new_cfg->mekf_wave_accel;
+    ctx->cfg.mekf_wave_accel_tau_s     = new_cfg->mekf_wave_accel_tau_s;
+    ctx->cfg.mekf_mag_dip_sigma_deg    = new_cfg->mekf_mag_dip_sigma_deg;
     ctx->cfg.mag_reject_gauss          = new_cfg->mag_reject_gauss;
     ctx->cfg.accel_skip_thresh         = new_cfg->accel_skip_thresh;
     ctx->cfg.engine_vibration_g2       = new_cfg->engine_vibration_g2;

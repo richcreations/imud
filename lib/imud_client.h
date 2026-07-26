@@ -73,7 +73,9 @@
 #define IMUD_FLAG_ACCEL_CAL        (1u << 3)  /* accel calibration applied */
 #define IMUD_FLAG_GYRO_CAL         (1u << 4)  /* gyro bias applied */
 #define IMUD_FLAG_MAG_CAL          (1u << 5)  /* mag hard/soft-iron cal applied */
-#define IMUD_FLAG_MOTION           (1u << 6)  /* reserved — never set as of wire v14 */
+/* Retired, not pending: use accel_quiescence (continuous) and
+ * IMUD_FLAG_ENGINE_ON instead.  Kept so existing code compiles; never set. */
+#define IMUD_FLAG_MOTION           (1u << 6)  /* retired — never set, never will be */
 #define IMUD_FLAG_FIFO_OVERFLOW    (1u << 7)  /* sample gap (ISM330 FIFO overflow) */
 #define IMUD_FLAG_STARTUP              (1u << 8)  /* gyro bias estimation in progress */
 #define IMUD_FLAG_SHUTDOWN             (1u << 9)  /* final packet before clean exit */

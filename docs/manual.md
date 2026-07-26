@@ -279,8 +279,11 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 |-----|------|---------|-------------|
 | `mekf_gyro_noise` | double | `0.007` | Gyro noise density in rad/s/√Hz. ISM330DHCX datasheet: 7 mdps/√Hz ≈ 0.000122 rad/s/√Hz. |
 | `mekf_gyro_bias` | double | `0.00015` | In-run gyro bias instability in rad/s. Sets the bias random-walk process noise. |
-| `mekf_accel_noise` | double | `0.0022` | Accelerometer noise density in m/s²/√Hz. ISM330DHCX: ~186 µg/√Hz × 9.81. |
+| `mekf_accel_noise` | double | `0.0022` | Accelerometer **sensor** noise density in m/s²/√Hz. ISM330DHCX: ~186 µg/√Hz × 9.81. Not the knob for rough weather — see `mekf_wave_accel`. |
 | `mekf_mag_noise` | double | `0.0004` | Magnetometer noise density in Gauss/√Hz. MMC5983MA: 0.4 mGauss RMS. |
+| `mekf_wave_accel` | double | `0.8` | Steady-state σ, in m/s², of the wave-orbital acceleration contaminating the gravity measurement. **This is the knob for "the sea is rough."** The disturbance is correlated over roughly a second rather than white, so it is carried as a first-order Gauss–Markov state; without it the filter treats 833 strongly correlated samples per second as 833 independent measurements of gravity and diverges. `0` (or `mekf_wave_accel_tau_s = 0`) disables the state and restores the pre-1.7 6-state filter exactly. Too small is the failure mode that hurts, so round up; `imud-cal fit-ra` measures it from a capture. |
+| `mekf_wave_accel_tau_s` | double | `0.5` | Correlation time in seconds of the Gauss–Markov wave-acceleration state. `0` disables. **Unrelated to `wave_tau_s`**, which is the sea-state reporting window. Attitude error and wave acceleration are told apart only by their dynamics, so too long a value lets the state absorb genuine tilt: benchmark yaw-only attitude RMS degrades 2.3° at 0.5 s → 7.1° at 2 s. Short is the safe side. |
+| `mekf_mag_dip_sigma_deg` | double | `1.0` | Uncertainty in degrees of the magnetic reference's **dip** angle. Applies only to 3-D vector fusion (`mag_yaw_only = false`), where the dip constrains roll and pitch — a wrong dip reference therefore biases them, permanently, and the error cannot be learned out at sea. It is admitted into the covariance instead, as a rank-1 anisotropic term in the magnetometer noise. Set `0` when a position source supplies WMM field invariants, which removes the error at its source and is strictly better. Raising it improves covariance consistency and lowers the `nis_mag` wire field by design. |
 | `mag_reject_gauss` | double | `0.05` | Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field). |
 | `accel_skip_thresh` | double | `0.05` | Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. |
 | `mag_yaw_only` | bool | `true` | Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration. |
@@ -297,6 +300,7 @@ Calibration file and startup behaviour. **[restart]**
 |-----|------|---------|-------------|
 | `file` | string | `"/etc/imud/cal.json"` | Path to the calibration JSON produced by `imud-cal`. Supports `~/` expansion. If the file does not exist, imud runs uncalibrated (magnetometer readings will be biased). |
 | `startup_settle_sec` | double | `5.0` | Seconds of sensor data to discard after chip initialisation. The ISM330DHCX gyro drifts ~0.02 rad/s for ~5 s after power-on; discarding this window keeps it out of the bias estimate. Set `0` for the `sim` driver. |
+| `align_window_sec` | double | `5.0` | Seconds of accelerometer and magnetometer averaging used for the one-shot initial attitude alignment. Whatever tilt error survives this window is baked permanently into the magnetic reference's dip, so in a seaway the length matters: 1 s (the value hardcoded before 1.7) is about a fifth of a roll period and aligns to an arbitrary point in the cycle — measured attitude RMS in the marine default is 47.7° at 1 s against 2.19° at 5 s, flat beyond. 3-D vector fusion keeps improving out to ~15 s. The only cost of a longer window is startup latency before usable attitude, so raise it when starting from a mooring, not underway. |
 | `gyro_bias_sec` | double | `2.0` | Length of the stationary window used to estimate gyro bias at startup. The board must be still for this duration. Skipped if the cal file already has a gyro bias. If motion is detected during the window (gyro std > 0.5 °/s) the window is doubled once and a warning is logged. Set `0` to skip bias estimation. |
 
 ### `[nmea]`
@@ -561,12 +565,31 @@ calibration is degrading and the swing should be repeated.
 
 ### Checking the filter against real water
 
-The tuning that decides how much the filter trusts the accelerometer is
-`mekf_accel_noise`, and it is the one knob most likely to be "improved" into a
-worse configuration. The default is a sharp local optimum for the marine
-(yaw-only) configuration, and values a little above it are substantially
-*worse*, not a little worse — see `man 5 imud.conf`. Before changing it,
-measure:
+Two knobs decide how much the filter trusts the accelerometer, and they are
+not interchangeable:
+
+- **`mekf_accel_noise`** describes the *sensor's* white noise. It is the knob
+  most likely to be "improved" into a worse configuration: the default is a
+  sharp local optimum for the marine (yaw-only) configuration, and values a
+  little above it are substantially *worse*, not a little worse — see
+  `man 5 imud.conf`.
+- **`mekf_wave_accel`** (with `mekf_wave_accel_tau_s`) describes the *seaway*.
+  This is the one to reach for when the boat is in rough water. It models the
+  wave-orbital disturbance as a correlated process in the filter state, which
+  is what lets the filter stop over-counting 833 nearly identical samples a
+  second as independent evidence about gravity.
+
+If you run 3-D vector fusion (`mag_yaw_only = false`) there is a third, and it
+is about the *magnetic reference* rather than either sensor:
+`mekf_mag_dip_sigma_deg`. In that mode the field's dip constrains roll and
+pitch, and the dip of the reference is fixed once at alignment — so a tilt
+error at startup becomes a permanent roll/pitch bias. The best fix is a
+position source, which supplies WMM field invariants and removes the error
+outright; failing that, this key tells the filter how much the dip channel is
+worth. `align_window_sec` matters here too: it sets how much of the wave cycle
+is averaged out before the reference is fixed.
+
+Before changing either, measure:
 
 1. **Record a capture in the conditions you care about.** Enable `[capture]`
    and run for at least 20 minutes in the seaway you want the filter tuned
@@ -578,21 +601,27 @@ measure:
    imud-cal fit-ra --from /var/lib/imud/<capture>.imucap --config /etc/imud/imud.conf
    ```
 
-3. **Read the mean NIS.** A value of roughly **10–30 is normal in a seaway**
-   and is not a reason to change anything: the gravity residual there is
-   wave-orbital and time-correlated, so no single white-noise value describes
-   it. Raising `mekf_accel_noise` until NIS reaches 1 does make the
-   innovations look consistent, and measurably degrades attitude accuracy.
-4. **Check the residual *mean*, not just its spread.** A large per-axis mean
+3. **Read the mean NIS.** With the wave state enabled (the default) this
+   **should sit near 1**: the correlated part of the residual is modelled
+   rather than left for a white R to absorb. Well above 1 means the seaway is
+   rougher than `mekf_wave_accel` allows for; well below 1 means calmer, which
+   is safe but conservative. (With the wave state *disabled*, 10–30 is normal
+   and is not by itself a reason to change anything — that reading is the
+   problem the wave state exists to solve.)
+4. **Read the wave-state block.** `fit-ra` replays the capture a second time
+   with the state forced off, so it reports the disturbance the filter is
+   actually up against — σ in m/s² and its correlation time — and suggests
+   values for both knobs. Round them up.
+5. **Check the residual *mean*, not just its spread.** A large per-axis mean
    points at a wrong mount rotation or a stale accelerometer calibration —
    neither of which any noise setting can fix.
 
 Live, the same statistic is on the wire as `nis_accel` (and on the Prometheus
 and InfluxDB bridges as `imud_nis_accel_ratio` / `nis_accel`), alongside
 `innov_weight` and `innov_reject`, which say how hard the innovation gate is
-having to work. `mekf_accel_noise` is re-read on `SIGHUP`, so an A/B is: edit
-the value, `systemctl reload imud`, and watch the metric settle for a couple
-of minutes.
+having to work. All three of `mekf_accel_noise`, `mekf_wave_accel` and
+`mekf_wave_accel_tau_s` are re-read on `SIGHUP`, so an A/B is: edit the value,
+`systemctl reload imud`, and watch the metric settle for a couple of minutes.
 
 Restart when done:
 
@@ -643,6 +672,17 @@ rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 self-describing (magic + version + CRC), so consumers can validate each one
 independently. See [spec.md §8](../spec.md) for the exact layout and the
 consumer libraries in [§9](#9-consumer-libraries).
+
+**Near-vertical pitch — read the quaternion.** The Euler fields (`pitch`,
+`roll`, `yaw`, `heading_deg`, `rate_of_turn`) are derived from the quaternion
+as ZYX intrinsic angles, which are singular at pitch = ±90°: approaching
+vertical, roll and yaw stop being separately determined and swing wildly, and
+at ±90° they are undefined. That is a property of any three-angle
+representation, not a filter limitation. The quaternion is never singular.
+Surface vessels never go near this and can use the Euler fields freely; a
+gimbal, tilting camera rig, or anything that can point straight up or down
+must read `quat_*` instead. Same for the NMEA sentences above, which are Euler
+by definition.
 
 ### Local subscription stream — AF_UNIX socket (default on) + TCP listener (default off)
 

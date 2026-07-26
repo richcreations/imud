@@ -53,13 +53,13 @@ settled — check the corresponding flag.
 | `gyro_raw[3]` | float | rad/s, before bias correction |
 | `mag[3]` | float | µT, calibrated |
 | `mag_raw[3]` | float | µT, pre-calibration |
-| `quat[4]` | float | unit quaternion [w, x, y, z], body→NED |
+| `quat[4]` | float | unit quaternion [w, x, y, z], body→NED. The authoritative attitude — never singular (see below) |
 | `pitch` | float | rad, NED (+bow up) |
-| `roll` | float | rad, NED (+starboard up) |
-| `yaw` | float | rad, NED magnetic |
-| `heading_deg` | float | 0–360° magnetic |
+| `roll` | float | rad, NED (+starboard up); degenerate near pitch ±90° |
+| `yaw` | float | rad, NED magnetic; degenerate near pitch ±90° |
+| `heading_deg` | float | 0–360° magnetic; degenerate near pitch ±90° |
 | `heading_true_deg` | float | 0–360° true; **-1.0** until declination known |
-| `rate_of_turn` | float | deg/min, + = turning right |
+| `rate_of_turn` | float | deg/min, + = turning right; degenerate near pitch ±90° |
 | `temp_c` | float | IMU die temperature, °C |
 | `cov[9]` | float | 3×3 attitude error covariance, row-major (rad²) |
 | `declination_deg` | float | °E+; valid with `IMUD_FLAG_DECLINATION_VALID` |
@@ -93,7 +93,7 @@ Values are fixed by the wire protocol.
 | `IMUD_FLAG_ACCEL_CAL` | 3 | accel calibration applied |
 | `IMUD_FLAG_GYRO_CAL` | 4 | gyro bias applied |
 | `IMUD_FLAG_MAG_CAL` | 5 | mag hard/soft-iron cal applied |
-| `IMUD_FLAG_MOTION` | 6 | reserved — never set as of wire v14 |
+| `IMUD_FLAG_MOTION` | 6 | **retired** — never set, and never will be. Use `accel_quiescence` (continuous) or `IMUD_FLAG_ENGINE_ON`. The define is kept so existing code compiles; the bit will not be reused. |
 | `IMUD_FLAG_FIFO_OVERFLOW` | 7 | sample gap (FIFO overflow) |
 | `IMUD_FLAG_STARTUP` | 8 | gyro bias estimation in progress |
 | `IMUD_FLAG_SHUTDOWN` | 9 | final packet before clean exit |
@@ -126,6 +126,21 @@ correctly from any newer `libimud.so.0`.
   SONAME (`libimud.so.1`) and the runtime package name (`libimud0` → `libimud1`).
 
 ## Python field names
+
+### Near-vertical pitch
+
+`pitch`/`roll`/`yaw`/`heading_deg`/`rate_of_turn` are ZYX intrinsic Euler
+angles derived from `quat`, and that parameterisation is **singular at
+pitch = ±90°**. Near vertical, roll and yaw are no longer separately
+determined and swing wildly for small attitude changes; at ±90° they are
+undefined. This is a property of three-angle representations, not of the
+filter.
+
+If your application can encounter steep pitch — aircraft, gimbals, tilting
+camera rigs — read `quat` and derive from it. The quaternion is always valid,
+as is `cov[9]`, which lives in its tangent space. Surface-vessel consumers can
+use the Euler fields freely. Full discussion in the wire spec (`spec.md`,
+"Near-vertical pitch").
 
 `imud_client.py` exposes the same quantities under Pythonic names. Where they
 differ from the C view: `ts_unix` (float seconds), `cov_trace` (trace of the

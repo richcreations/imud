@@ -29,8 +29,9 @@
 #define G_MS2  9.80665f
 
 /* Must match fusion.c; kept local rather than exported because these are the
- * filter's private tuning, and fit-ra reports against whatever the filter
- * actually uses. */
+ * filter's private tuning, and fit-ra only REPORTS against them — the
+ * innovation and its d² come from mekf_accel_probe, which is the filter's own
+ * code, so the two cannot drift on anything that affects a number. */
 #define FITRA_CHI2_GATE   11.34f
 #define FITRA_REJECT_MULT 25.0f
 #define FITRA_OLD_MULT     9.0f
@@ -46,85 +47,36 @@ typedef struct {
     double   ac_num, ac_den, prev_dev[3];
     bool     have_prev;
     double   dt_mean;
+    /*
+     * Mean interval between consecutive ACCEPTED samples — the lag the
+     * autocorrelation above is actually computed at.
+     *
+     * This is not the IMU period. The |a| skip band throws away most samples
+     * in a seaway (66% on the synthetic capture, 85–95% in a real one), so
+     * consecutive accepted samples are 3–10 periods apart. Dividing by the IMU
+     * period, as this did before, therefore reported τ that many times too
+     * SMALL — which is why the recorded field figure of "τ ≈ 0.3–0.9 s" is a
+     * lower bound on the real correlation time, and why it must not be used to
+     * set mekf_wave_accel_tau_s without this correction.
+     */
+    double   gap_sum, prev_t;
+    uint64_t gap_n;
 } fitra_acc_t;
 
-/* 3×3 inverse (Cramer); false if singular. */
-static bool m33_inverse(const float M[3][3], float Mi[3][3])
-{
-    float c00 =  M[1][1]*M[2][2] - M[1][2]*M[2][1];
-    float c01 = -(M[1][0]*M[2][2] - M[1][2]*M[2][0]);
-    float c02 =  M[1][0]*M[2][1] - M[1][1]*M[2][0];
-    float det =  M[0][0]*c00 + M[0][1]*c01 + M[0][2]*c02;
-    if (fabsf(det) < 1e-20f) return false;
-    float id = 1.0f / det;
-    Mi[0][0] = c00*id; Mi[1][0] = c01*id; Mi[2][0] = c02*id;
-    Mi[0][1] = -(M[0][1]*M[2][2] - M[0][2]*M[2][1]) * id;
-    Mi[1][1] =  (M[0][0]*M[2][2] - M[0][2]*M[2][0]) * id;
-    Mi[2][1] = -(M[0][0]*M[2][1] - M[0][1]*M[2][0]) * id;
-    Mi[0][2] =  (M[0][1]*M[1][2] - M[0][2]*M[1][1]) * id;
-    Mi[1][2] = -(M[0][0]*M[1][2] - M[0][2]*M[1][0]) * id;
-    Mi[2][2] =  (M[0][0]*M[1][1] - M[0][1]*M[1][0]) * id;
-    return true;
-}
-
 /*
- * Reproduce the pre-update half of mekf_update_accel: the |a| skip band, the
- * normalised gravity direction z, the predicted direction h, and d².
- * Returns false when the sample would be skipped.
+ * Lag-1 autocorrelation → exponential correlation time τ = −gap/ln(ρ), where
+ * gap is the mean interval between the ACCEPTED samples the autocorrelation
+ * was computed over (see fitra_acc_t). White noise gives ρ ≈ 0 and τ ≈ 0;
+ * wave contamination gives ρ → 1. Returns 0 when not estimable.
  */
-static bool accel_probe(const mekf_t *f, const imu_sample_t *s,
-                        float innov[3], float *d2_out)
+static double fitra_tau(const fitra_acc_t *a)
 {
-    float acc[3] = { s->accel[0], s->accel[1], s->accel[2] };
-    if (f->speed_mps > 0.1f) {
-        float wy = s->gyro[1] - f->bias[1];
-        float wz = s->gyro[2] - f->bias[2];
-        acc[1] -= wz * f->speed_mps;
-        acc[2] += wy * f->speed_mps;
-    }
-    float an = sqrtf(acc[0]*acc[0] + acc[1]*acc[1] + acc[2]*acc[2]);
-    if (an < 1e-6f) return false;
-    float ag = an / G_MS2;
-    if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return false;
-
-    float z[3] = { -acc[0]/an, -acc[1]/an, -acc[2]/an };
-
-    /* h = third row of R(q) — mirror of fusion.c q_to_R. */
-    float w=f->q[0], x=f->q[1], y=f->q[2], zq=f->q[3];
-    float h[3] = { 2*(x*zq - w*y), 2*(y*zq + w*x), 1 - 2*(x*x + y*y) };
-
-    for (int i = 0; i < 3; i++) innov[i] = z[i] - h[i];
-
-    /* S = H·P·Hᵀ + R_eff·I with H = [h×]. */
-    const float H[3][6] = {
-        {     0, -h[2],  h[1], 0, 0, 0 },
-        {  h[2],     0, -h[0], 0, 0, 0 },
-        { -h[1],  h[0],     0, 0, 0, 0 },
-    };
-    float PHt[6][3];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 3; j++) {
-            float acc2 = 0;
-            for (int k = 0; k < 6; k++) acc2 += f->P[i][k] * H[j][k];
-            PHt[i][j] = acc2;
-        }
-    float R_eff = f->Ra * f->Ra_scale;
-    float S[3][3];
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            float acc2 = (i == j) ? R_eff : 0.0f;
-            for (int k = 0; k < 6; k++) acc2 += H[i][k] * PHt[k][j];
-            S[i][j] = acc2;
-        }
-    float Si[3][3];
-    if (!m33_inverse(S, Si)) return false;
-
-    double d2 = 0.0;
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            d2 += (double)innov[i] * Si[i][j] * innov[j];
-    *d2_out = (float)d2;
-    return true;
+    if (a->ac_den <= 0.0 || a->gap_n == 0) return 0.0;
+    double rho = a->ac_num / a->ac_den;
+    if (!(rho > 1e-6 && rho < 0.999999)) return 0.0;
+    double gap = a->gap_sum / (double)a->gap_n;
+    if (!(gap > 0.0)) gap = a->dt_mean;
+    return -gap / log(rho);
 }
 
 /*
@@ -195,7 +147,7 @@ static int replay(const char *path, const imud_config_t *cfg_in,
             if (t_now >= settle_s) {
                 if (t_meas0 < 0.0) t_meas0 = t_now;
                 float innov[3], d2;
-                if (accel_probe(&f, &s, innov, &d2)) {
+                if (mekf_accel_probe(&f, &s, innov, &d2)) {
                     for (int i = 0; i < 3; i++) {
                         a->sum[i]   += innov[i];
                         a->sumsq[i] += (double)innov[i] * innov[i];
@@ -211,8 +163,11 @@ static int replay(const char *path, const imud_config_t *cfg_in,
                             a->ac_num += (double)innov[i] * a->prev_dev[i];
                             a->ac_den += (double)innov[i] * innov[i];
                         }
+                        a->gap_sum += t_now - a->prev_t;
+                        a->gap_n++;
                     }
                     for (int i = 0; i < 3; i++) a->prev_dev[i] = innov[i];
+                    a->prev_t    = t_now;
                     a->have_prev = true;
                 } else {
                     (*n_skip)++;
@@ -309,13 +264,7 @@ int fitra_run(const char *capture_path,
     out->d2_frac_over_rej = (double)a.n_over_rej / (double)a.n;
     out->d2_frac_over_9g  = (double)a.n_over_9g  / (double)a.n;
 
-    /* Lag-1 autocorrelation → exponential correlation time τ = −dt/ln(ρ).
-     * White noise gives ρ ≈ 0 and τ ≈ 0; wave contamination gives ρ → 1. */
-    if (a.ac_den > 0.0) {
-        double rho = a.ac_num / a.ac_den;
-        if (rho > 1e-6 && rho < 0.999999)
-            out->resid_tau_s = -a.dt_mean / log(rho);
-    }
+    out->resid_tau_s = fitra_tau(&a);
 
     /*
      * na_raw: the noise density whose per-sample variance equals the measured
@@ -323,6 +272,54 @@ int fitra_run(const char *capture_path,
      */
     double odr = (a.dt_mean > 0.0) ? 1.0 / a.dt_mean : 833.0;
     out->na_raw = G_MS2 * sqrt(out->resid_var_total / odr);
+
+    /*
+     * Gauss–Markov suggestions, from a replay with the wave state forced OFF.
+     *
+     * It has to be a separate pass. Once the state is enabled and roughly
+     * right it absorbs the correlated part of the residual — that is the whole
+     * point — so the residual measured through the configured filter is white
+     * and small, and reading σ off it would recommend switching the state off.
+     * What the operator needs is the disturbance the filter is up against,
+     * which is what the unmodelled residual measures.
+     */
+    out->wave_sigma_cfg  = cfg->mekf_wave_accel;
+    out->wave_tau_cfg    = cfg->mekf_wave_accel_tau_s;
+    out->wave_configured = (cfg->mekf_wave_accel > 0.0 &&
+                            cfg->mekf_wave_accel_tau_s > 0.0);
+    {
+        imud_config_t nowave = *cfg;
+        nowave.mekf_wave_accel       = 0.0;
+        nowave.mekf_wave_accel_tau_s = 0.0;
+
+        fitra_acc_t u; double ud; uint64_t ui, um, us; char ue[128];
+        if (replay(capture_path, &nowave, cal, settle_s, 0.0,
+                   &u, &ud, &ui, &um, &us, ue, sizeof ue) == 0 && u.n > 0) {
+            double uv = 0.0;
+            for (int i = 0; i < 3; i++) {
+                double mean = u.sum[i] / (double)u.n;
+                double var  = u.sumsq[i] / (double)u.n - mean * mean;
+                if (var > 0.0) uv += var;
+            }
+            uv /= 3.0;
+            out->resid_var_unmodelled = uv;
+            out->nis_unmodelled       = u.sum_d2 / (double)u.n;
+            out->wave_tau_suggest     = fitra_tau(&u);
+
+            /*
+             * σ from the part of the residual that white sensor noise cannot
+             * explain. The residual is a unit-vector difference, so its
+             * variance is already in gravity units: subtract the per-sample
+             * measurement variance Ra = (Na/g)²·odr and what is left is the
+             * disturbance. Multiplying by g puts it back in m/s².
+             */
+            double Ra = (out->na_configured / G_MS2) *
+                        (out->na_configured / G_MS2) * odr;
+            double excess = uv - Ra;
+            if (excess > 0.0)
+                out->wave_sigma_suggest = G_MS2 * sqrt(excess);
+        }
+    }
 
     /*
      * na_consistent: bisect Na so the mean NIS lands at 1. NIS falls
@@ -370,7 +367,9 @@ void fitra_print(const fitra_report_t *r, const char *capture_path)
            sqrt(r->resid_var_total) * 180.0 / M_PI);
     printf("    corr time %.3f s", r->resid_tau_s);
     if (r->resid_tau_s > 0.05)
-        printf("   ← strongly time-correlated; no white R can be fully correct");
+        printf("   <- strongly time-correlated; no white R can be fully correct");
+    else if (r->wave_configured)
+        printf("   <- white: the wave state has absorbed the correlation");
     printf("\n");
 
     printf("\n  Innovation consistency at mekf_accel_noise = %g\n",
@@ -382,6 +381,25 @@ void fitra_print(const fitra_report_t *r, const char *capture_path)
     printf("    d² over old 9γ      %.3f%%   (the pre-1.7 gate, for reference)\n",
            100.0 * r->d2_frac_over_9g);
 
+    printf("\n  Wave-acceleration state (Gauss-Markov)\n");
+    if (r->wave_configured)
+        printf("    configured          mekf_wave_accel = %.2f m/s^2, "
+               "tau = %.2f s\n", r->wave_sigma_cfg, r->wave_tau_cfg);
+    else
+        printf("    configured          DISABLED\n");
+    printf("    seaway measured     sigma ~ %.2f m/s^2, tau ~ %.2f s\n"
+           "                        (from a replay with the state off: NIS %.1f,\n"
+           "                         residual std %.5f)\n",
+           r->wave_sigma_suggest, r->wave_tau_suggest, r->nis_unmodelled,
+           sqrt(r->resid_var_unmodelled));
+    if (r->wave_sigma_suggest > 0.0)
+        printf("    suggested           mekf_wave_accel = %.1f, "
+               "mekf_wave_accel_tau_s = %.1f\n"
+               "                        (round both UP; too small a sigma is the\n"
+               "                         failure mode that hurts, and tau is a\n"
+               "                         lower bound from a lag-1 estimator)\n",
+               r->wave_sigma_suggest, r->wave_tau_suggest);
+
     printf("\n  Suggested mekf_accel_noise\n");
     printf("    from raw residual   %.4f\n", r->na_raw);
     if (r->na_consistent_ok)
@@ -390,19 +408,44 @@ void fitra_print(const fitra_report_t *r, const char *capture_path)
         printf("    for mean NIS = 1    did not converge (nearest %.4f)\n",
                r->na_consistent);
     printf("    currently configured %.4f\n", r->na_configured);
+    printf("      NOTE: this bisection is conditional on the wave state above.\n"
+           "      With it enabled, mekf_accel_noise should describe SENSOR noise\n"
+           "      only - the seaway is the wave state's job - so a suggestion far\n"
+           "      above the datasheet value means the wave state is under-sized,\n"
+           "      not that this one is.\n");
+
     printf("\n  These are diagnostics, not a calibration: nothing is written.\n");
-    printf("  A mean NIS of roughly 10-30 is NORMAL in a seaway and is not by\n"
-           "  itself a reason to change anything. The gravity residual there is\n"
-           "  wave-orbital and time-correlated, so no single white noise value\n"
-           "  can describe it: raising mekf_accel_noise until NIS reaches 1\n"
-           "  does make the innovations look consistent, but it weakens the\n"
-           "  gravity correction and measurably degrades attitude accuracy.\n"
-           "  See ROADMAP 10.1 and man 5 imud.conf before changing the value.\n");
-    if (r->nis_mean < 3.0)
-        printf("\n  NOTE: mean NIS is low, so this capture is calmer than the\n"
-               "  tuning assumes; it is not evidence for lowering the setting.\n");
-    else if (r->nis_mean > 60.0)
+    if (!r->wave_configured) {
+        printf("  A mean NIS of roughly 10-30 is NORMAL for this capture because\n"
+               "  the wave state is DISABLED. The gravity residual in a seaway is\n"
+               "  wave-orbital and time-correlated, so no single white noise value\n"
+               "  can describe it: raising mekf_accel_noise until NIS reaches 1\n"
+               "  does make the innovations look consistent, but it weakens the\n"
+               "  gravity correction and measurably degrades attitude accuracy.\n"
+               "  Enable mekf_wave_accel instead - see ROADMAP 10.5.\n");
+    } else {
+        printf("  With the wave state enabled, mean NIS SHOULD be near 1: the\n"
+               "  correlated part of the residual is modelled rather than left\n"
+               "  for a white R to absorb. Readings well above 1 mean the seaway\n"
+               "  is rougher than mekf_wave_accel allows for; well below 1 means\n"
+               "  calmer. See ROADMAP 10.5 and man 5 imud.conf.\n");
+    }
+
+    if (r->wave_configured) {
+        if (r->nis_mean > 5.0)
+            printf("\n  NOTE: mean NIS is high with the wave state on. Either this\n"
+                   "  seaway exceeds the configured sigma (%.2f, measured ~%.2f\n"
+                   "  above), or the mount rotation / accel calibration is wrong -\n"
+                   "  check for a large residual MEAN, which no noise value fixes.\n",
+                   r->wave_sigma_cfg, r->wave_sigma_suggest);
+        else if (r->nis_mean < 0.3)
+            printf("\n  NOTE: mean NIS is well below 1, so the filter is carrying\n"
+                   "  more wave budget than this capture needs. That is safe but\n"
+                   "  conservative; it is only worth lowering mekf_wave_accel if\n"
+                   "  this capture is representative of your worst conditions.\n");
+    } else if (r->nis_mean > 60.0) {
         printf("\n  NOTE: mean NIS is high even for a seaway. Check the mount\n"
                "  rotation and accel calibration first - a wrong mount shows up\n"
                "  here as a large residual MEAN, which no noise value can fix.\n");
+    }
 }

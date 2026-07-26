@@ -151,6 +151,13 @@ void config_defaults(imud_config_t *cfg)
     cfg->mekf_gyro_bias    = 0.00015;
     cfg->mekf_accel_noise  = 0.0022;
     cfg->mekf_mag_noise    = 0.0004;
+    /* Gauss–Markov wave-acceleration state; tuned over the 12-seed wave
+     * benchmark, see docs/math.md §4.7. */
+    cfg->mekf_wave_accel       = 0.8;
+    cfg->mekf_wave_accel_tau_s = 0.5;
+    /* Measured residual dip error after the daemon's 5 s averaged alignment in
+     * a seaway is +0.86°; 1.0 is that rounded up. See docs/math.md §4.8.1. */
+    cfg->mekf_mag_dip_sigma_deg = 1.0;
     /* Strong-anomaly threshold (nearby iron/magnet). 0.05 G ≈ 10% of the
      * Earth field: transient attitude wobble in a seaway must not trip it —
      * fine-grained consistency is handled by the χ² innovation gates. */
@@ -163,6 +170,12 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->cal_file, sizeof(cfg->cal_file), "/etc/imud/cal.json");
     cfg->startup_settle_sec = 5.0;
     cfg->gyro_bias_sec = 2.0;
+    /* 5 s, not the ~1 s this used to average. One second is a fifth of a
+     * typical roll period, so in a seaway it aligns to an arbitrary point in
+     * the cycle: measured over the wave benchmark, a 1 s window gives 47.7°
+     * of attitude RMS in the marine default against 2.2° at 5 s. Everything
+     * is flat from ~3 s. See docs/math.md §4.3. */
+    cfg->align_window_sec = 5.0;
 
     /* [nmea] — off by default since 1.6: a stock daemon emits only on the
      * local [stream] socket; every network output is an explicit opt-in. */
@@ -642,6 +655,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "mekf_gyro_bias")    == 0) NEED_POS_DBL(cfg->mekf_gyro_bias);
         else if (strcmp(key, "mekf_accel_noise")  == 0) NEED_POS_DBL(cfg->mekf_accel_noise);
         else if (strcmp(key, "mekf_mag_noise")    == 0) NEED_POS_DBL(cfg->mekf_mag_noise);
+        /* NEED_DBL, not NEED_POS_DBL: 0 is the documented "disabled" value. */
+        else if (strcmp(key, "mekf_wave_accel")       == 0) NEED_DBL(cfg->mekf_wave_accel);
+        else if (strcmp(key, "mekf_wave_accel_tau_s") == 0) NEED_DBL(cfg->mekf_wave_accel_tau_s);
+        else if (strcmp(key, "mekf_mag_dip_sigma_deg") == 0) NEED_DBL(cfg->mekf_mag_dip_sigma_deg);
         else if (strcmp(key, "mag_reject_gauss")          == 0) NEED_DBL(cfg->mag_reject_gauss);
         else if (strcmp(key, "accel_skip_thresh")         == 0) NEED_DBL(cfg->accel_skip_thresh);
         else if (strcmp(key, "engine_vibration_g2")       == 0) NEED_DBL(cfg->engine_vibration_g2);
@@ -653,6 +670,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "file")          == 0) NEED_STR(cfg->cal_file);
         else if (strcmp(key, "startup_settle_sec") == 0) NEED_DBL(cfg->startup_settle_sec);
         else if (strcmp(key, "gyro_bias_sec") == 0) NEED_DBL(cfg->gyro_bias_sec);
+        else if (strcmp(key, "align_window_sec") == 0) NEED_DBL(cfg->align_window_sec);
         else WARN_UNKNOWN();
         break;
 
