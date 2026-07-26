@@ -33,6 +33,16 @@ declination / iron cal), with the boot-heading-dependent component gone. Then a
 swing-circle recal with the new ellipse fit, and set lat/lon (or gpsd) so WMM
 declination is active.
 
+**This is now the gate on the 1.7 tag, not merely a queued bench task.** 1.7
+changed startup and the accelerometer update path in ways no hardware has seen:
+`align_window_sec` moved the alignment window ~1 s → 5 s, and the `m33_inv` fix
+took accel-update duty from ~13% to ~100% (both §10.5). Neither has run on real
+silicon, and `test_ring`, `test_concurrency`, `test_drivers` and
+`test_drivers_registry` cannot build on the macOS dev host and have never been
+built against this branch. A ready-to-run brief with a structured results
+template — so the outcome comes back rather than evaporating — is at
+`~/Desktop/imud-handoff-pi17/`.
+
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
 The mechanism shipped in 1.5: cal.json `gyro_temp` per-axis linear
@@ -105,7 +115,12 @@ Still open:
   shareable browser demo: live 3-D horizon over the WebSocket bridge. First
   satellite client shipped 2026-07-19: **imud-arduino**
   (github.com/richcreations/imud-arduino), the Arduino/ESP32 wire client in
-  its own repository.
+  its own repository. **Action required for 1.7:** it pins wire v14 (260 B)
+  and its parser rejects any other version word, so against a 1.7 daemon it
+  receives *nothing* — silently. A handoff package with machine-verified
+  golden vectors for v17 is at `~/Desktop/imud-handoff-wire17/` on the dev
+  host. Separate repo, so not part of the imud tag, but it should ship
+  alongside it.
 - **SPI transport.** Unlocks high-ODR modes (6.6 kHz ISM330) and lower jitter;
   pairs with the Pi 5 latency profiling item.
 - **Debian archive submission.** The self-hosted apt repo shipped (1.5
@@ -134,6 +149,12 @@ had already had. Still open after 1.6 (which added the TCP outputs without
 touching these). None blocks anything; each is a mechanical extraction plus
 a re-test.
 
+**Deferred again for 1.7, for the same reason.** The original argument —
+don't refactor immediately before a tag — applies verbatim to a release whose
+filter numbers were expensive to establish. The one item actioned in 1.7 was
+the Signal K UDP-open drift, and only because it is a *user-visible bug* that
+happens to delete a duplicate, not a refactor undertaken for tidiness.
+
 - **`sd_notify_msg()` ×6** — byte-identical copies in `main.c` and all five
   bridge mains (the copies even say "mirrors src/signalk_main.c"). Extract a
   shared `src/sd_notify.c`.
@@ -148,20 +169,35 @@ a re-test.
   (watchdog ping → SIGHUP reload → reconnect → read → deadline-advance) is
   structurally duplicated across the bridge mains; the deadline-advance
   block is verbatim in three of them.
-- **UDP-open drift (user-visible symptom)** — `signalk_main.c` `open_udp_dest()`
-  uses `inet_pton` (numeric IPv4 only) while influxdb/mavlink use
-  `getaddrinfo`: the Signal K UDP destination rejects hostnames the other
-  bridges accept. Unifying on a shared `getaddrinfo` helper fixes it.
-  (Daemon *bind* addresses stay `inet_pton`-only by design — no DNS in the
-  listen path.)
+- ~~**UDP-open drift**~~ — **FIXED 1.7.** `signalk_main.c`'s `open_udp_dest()`
+  is deleted; the bridge calls the existing `bridge_open_udp()` helper, so
+  `dest_addr` now accepts hostnames and IPv6 like every other bridge. Its
+  systemd unit gained `AF_INET6` in the same change — see the refuted note
+  below for why that was a *consequence* rather than a pre-existing bug.
+  (Daemon *bind* and *send* addresses stay `inet_pton`-only by design — no DNS
+  in the daemon's path.)
 - **`crc32_ieee` ×3 in-tree C copies** — packet.c, libimud.c, mon_main.c
   could share one internal helper. The copies in `lib/imud_client.h`
   (self-contained header) and the Python client (zlib) stay by design.
-- Minor notes from the same audit: `imud.service` `RestrictAddressFamilies`
-  omits `AF_INET6` while the gpsd/Signal K position clients target
-  `localhost` (may resolve `::1`); `FLAG_MOTION` (bit 6) is defined but
-  never set — decide to wire it up or retire it at the next wire-version
-  bump (marked "reserved" in all headers as of 1.5).
+- ~~**`imud.service` omits `AF_INET6`**~~ — **REFUTED 1.7, no action needed.**
+  The concern was that a `localhost` resolving to `::1` would be blocked. It
+  cannot: `src/position.c` pins `hints.ai_family = AF_INET`, so `getaddrinfo`
+  never returns an IPv6 address for the gpsd/Signal K position clients. Every
+  unit already matched its own code — the four bridges that resolve with
+  `AF_UNSPEC` (`bridge.c`, influx, prom) all listed `AF_INET6`, and the two
+  that pinned IPv4 did not. What *did* need it was `imud-signalk.service`,
+  and only because the fix above moved that bridge to `AF_UNSPEC`. Recorded
+  so the note is not "fixed" again on the daemon side, where it would loosen
+  the sandbox for nothing.
+- ~~**`FLAG_MOTION` (bit 6)**~~ — **RETIRED 1.7.** Decided rather than deferred
+  again: everything a motion bit could report is already on the wire at higher
+  fidelity — `accel_quiescence` as a continuous float, plus `FLAG_ENGINE_ON`
+  (bit 13) — so a boolean restatement would only lose resolution. The define
+  stays in all four headers so existing consumers compile; the bit will never
+  be set and will not be reused, since a stale consumer would read a new
+  meaning through the old name. Note this never needed a wire bump to decide:
+  `flags` is a `uint16_t` and bits 14–15 are still free, and `types.h`'s rule
+  is to bump only when the *layout* changes, so flag bits are additive.
 
 ## 9. Small items
 
@@ -170,6 +206,10 @@ a re-test.
   Cosmetic C11-cleanliness only.
 - Heave settling: ~10·τ (≈2 min) after boot before heave is trustworthy. Could be
   shortened by initializing the integrators from the first seconds of data.
+  Considered for 1.7 and deferred: it changes a settled estimator's startup
+  behaviour, which is the same class of change as `align_window_sec` (§10.5) —
+  and that one turned out to need a benchmark to get right, having been
+  catastrophically wrong at its original value without anyone noticing.
 - Centripetal correction models `v_body = [speed, 0, 0]` (no leeway); a leeway-angle
   estimate could refine it, but the residual is second-order for typical vessels.
   §11.1 replaces this approximation wholesale for the aerospace path, and would
@@ -184,9 +224,9 @@ ones that were. 1.7 shipped the error-state reset Jacobian, the
 reconfigure/engine-detector fixes, the mount-config validation, and the
 update-gate health metrics; those are in NEWS and not repeated here.
 
-Ordered by leverage. 10.1 and 10.2 were investigated in 1.7 and are recorded
-below with their outcomes; **10.5 is now the most valuable open item in this
-section**, having inherited the real remaining work from 10.1.
+Ordered by leverage. 10.1, 10.2 and the seaway half of 10.5 were resolved in
+1.7 and are recorded below with their outcomes. What remains in this section is
+the vibration half of 10.5 and the 3-D-mode NEES(strict) item it exposed.
 
 ### 10.1 The measurement model is over-confident  *(investigated 1.7 — premise confirmed, prescribed remedy refuted)*
 
@@ -243,9 +283,11 @@ phase, measured correlation time τ ≈ 0.3–0.9 s (`imud-cal fit-ra`) — and 
 white isotropic R cannot describe a coloured disturbance. Getting its variance
 right necessarily gets its spectrum wrong.
 
-**Remaining work → 10.5.** Modelling the correlation is the actual fix: an
-augmented state for the wave-acceleration component, or the continuous
-`Ra_scale` of 10.5. That is now the highest-value item in this section.
+**Remaining work → 10.5 — since DONE.** Modelling the correlation was the
+actual fix, and 10.5 implemented it as a Gauss–Markov augmented state: accel
+NIS 19.3/25.2 → 1.01/0.69 with attitude RMS improved, not traded away. See
+10.5 for the outcome, and for the `m33_inv` bug that turned out to underlie
+much of what this item measured.
 
 **Instruments shipped by this work** (all in-tree, no field data needed to
 re-run):
@@ -323,6 +365,11 @@ gyro-bias settling time, and keep the existing rough-water case unchanged.
 Smaller and more auditable than 10.7 (general adaptive Q), and the natural
 first step toward it.
 
+**Deferred from 1.7.** The counter-argument above is not hand-waving — it is a
+recorded measurement — and validating against it needs a calm-water benchmark
+case measuring gyro-bias settling time, which does not exist yet. Same shape as
+the 10.5 vibration half: the missing scenario is the work.
+
 ### 10.4 Geometric refinement of magnetometer fits  *(audit A4 — low priority)*
 
 `sphere_fit()` and `ellipse_fit()` minimise algebraic, not geometric, residual
@@ -336,39 +383,102 @@ parameter refinement needs a `gaussN` or block padding.
 Skip unless coverage-gated algebraic fits stop meeting accuracy targets in the
 field — nice-to-have, not correctness-critical for heading-only marine use.
 
-### 10.5 Correlated measurement noise / continuous deweighting  *(audit A6 + the residue of 10.1 — now the highest-value item here)*
+### 10.5 Correlated measurement noise / continuous deweighting  *(seaway half RESOLVED 1.7 via candidate 2; vibration half still open)*
 
-Two problems that turn out to be the same problem.
+Two problems that turned out to be the same problem. One is now solved.
 
-**The vibration half (audit A6).** 1.7 fixed the detector's time constant and
-added threshold hysteresis, but the response is still a hard 4× on/off:
-over-deweighted at low vibration, under-deweighted at high. A continuous
-mapping from the existing EMA (e.g. `Ra_scale = 1 + k·e`, clamped) reuses
-state that already exists.
+**The seaway half (from 10.1) — RESOLVED.** Implemented as candidate 2, the
+augmented state: a first-order Gauss–Markov wave-acceleration component
+appended to the error state (δx is now 9-D), tuned by `mekf_wave_accel` (σ,
+m/s², default 0.8) and `mekf_wave_accel_tau_s` (τ, s, default 0.5). Either at 0
+disables it and returns the pre-1.7 6-state filter bit-for-bit. Full derivation
+and outcome table in `docs/math.md` §4.1.1, §4.5.1 and §4.7.1.
 
-**The seaway half (from 10.1).** The gravity residual in a seaway is
-wave-orbital: correlated with wave phase, measured correlation time τ ≈ 0.3–0.9 s
-(`imud-cal fit-ra`), not white. A white isotropic `Ra` cannot describe it — 10.1
-established by sweep that *no* scalar value makes the filter consistent, and
-that the value which makes NIS = 1 costs the marine default 3.7× in attitude
-RMS. This is the whole of the remaining measurement-model inconsistency
-(NIS ≈ 19–25, NEES(strict) ≈ 44–64).
+Measured over the 12-seed wave benchmark against the baseline this item named
+as the bar to beat:
 
-Candidate approaches, in increasing order of ambition:
-1. **Wave-phase-aware `Ra_scale`.** The sea-state estimator (§7 of math.md)
-   already knows the wave period, and `acc_quiet_ema` already tracks
-   disturbance. Modulating `Ra` continuously from those is cheap and reuses
-   existing state — the same mechanism as the vibration half, which is why
-   these are one item.
-2. **Augmented state.** Add the wave-acceleration component (or a first-order
-   Gauss–Markov approximation of it) to the error state, so the correlation is
-   modelled rather than absorbed into R. Principled, and the standard answer
-   for coloured measurement noise; costs filter dimension and tuning.
+| | 3-D att | 3-D hdg | yaw att | yaw hdg | NEES(tr) | NIS_a | reject |
+|---|---|---|---|---|---|---|---|
+| baseline (1.6) | 5.653° | 3.065° | 2.309° | 1.961° | 18.3 / 7.8 | 19.3 / 25.2 | .007/.000 |
+| **1.7** | **4.452°** | **0.828°** | **2.308°** | **1.016°** | **3.47 / 0.99** | **1.01 / 0.69** | .000/.000 |
 
-Measure with the instruments 10.1 shipped: benchmark NEES/NIS, `nis_accel` on
-the wire, and `imud-cal fit-ra` on real captures. Success is NIS → 1 *without*
-the accuracy regression the naive `Ra` retune caused — that is the specific
-thing to beat, and the sweep table in `docs/math.md` §4.7 is the baseline.
+Success criterion met: NIS → 1 with **no** accuracy regression — 3-D attitude
+−21%, 3-D heading −73%, yaw heading −48%, yaw attitude a dead heat — and both
+the Huber cap and the gross-reject gate now completely idle in an ordinary
+seaway (weight 1.000, reject 0.0000).
+
+Candidate 1 (wave-phase-aware `Ra_scale`) was **not** implemented and is not
+needed for the seaway: it modulates the *variance* of a white model, which
+10.1 established cannot describe a coloured disturbance whatever the scale.
+
+**A larger bug found on the way.** `m33_inv` tested for singularity on an
+absolute `|det| < 1e-12`, but S for the gravity update carries physical units
+and its determinant sits near 1e-13 at perfectly ordinary conditioning
+(condition number ≈ 3). **87% of accel updates in the wave benchmark were
+being silently discarded**, and the health EMAs were fed only by the 13% that
+survived — so every number recorded in 10.1, 10.2 and the gate tables was
+measured through a filter that was mostly not using its accelerometer. The
+accidental decimation was doing real work, crudely decorrelating the
+wave-contaminated samples; with it removed and no wave state the filter
+diverges outright (9.5°/11.4° attitude, NIS ≈ 56, 15% rejects). The test is now
+relative to the matrix scale. This is the strongest single argument for the
+augmented state: the filter was only ever surviving the seaway by accident.
+
+**3-D NEES(strict) — RESOLVED, and the first diagnosis was wrong.** This was
+recorded as "the swing-circle mag calibration is structurally 2-D, so the dip
+channel pulls on roll and pitch". That cannot have been it: the benchmark
+synthesises magnetometer data from the true attitude with nothing but white
+noise, so there is no calibration error in it at all. Two real causes:
+
+1. **A benchmark-fidelity bug (~96% of it).** The scenario aligned from one
+   instantaneous sample taken mid-roll and commented that this was "like the
+   daemon". It is not — the daemon averages a window. That single sample baked
+   a −4.38° DIP error into `m_ref`, which in 3-D mode is a permanent roll/pitch
+   bias P has no term for. Aligning as the daemon does: 3-D attitude RMS
+   4.452° → 1.204°, NEES(strict) 335 → 12.8.
+
+2. **The daemon's alignment window was too short.** Fixing the benchmark
+   exposed that the window was a hardcoded ~1 s — about a fifth of a roll
+   period, so in a seaway it aligns to an arbitrary point in the cycle.
+   Measured attitude RMS in the marine default: **47.7° at 1 s**, 2.28° at 2 s,
+   2.19° at 5 s, flat thereafter. Now `align_window_sec`, default 5 s. This is
+   a real field fix, not a benchmark artefact — any install that starts up
+   underway was getting it.
+
+The residual dip error (+0.86° after a 5 s window) is **not observable from
+seaway data**: the in-run m_ref healing is gated on quiescence, and raising
+that gate is refuted over 30 minutes — `m_ref` walks past truth and NEES(strict)
+goes to 42. It is removed at the source by WMM invariants, or admitted into P,
+which is what `mekf_mag_dip_sigma_deg` now does: a rank-1 anisotropic term in
+the 3-D mag update's R along the one direction a dip error acts on. At the
+shipped 1.0° (the measured residual, rounded up) NEES(strict) goes 12.8 → 5.74
+with attitude and heading both slightly better and yaw-only bit-identical.
+Isotropic inflation reaches the same NEES but collapses `nis_mag` to 0.01,
+destroying the wire's magnetometer-health instrument — hence rank-1.
+
+It does not reach 1 and cannot: a dip error is a *bias*, and a covariance term
+only partly stands in for one. The best configuration is 3-D **with** a
+position source: attitude 0.841°, NEES(strict) 0.22 — now a printed benchmark
+row, previously unmeasured. Full derivation and sweeps in `docs/math.md`
+§4.3 and §4.8.1.
+
+**The vibration half (audit A6) — still open, deferred from 1.7.** 1.7 fixed
+the detector's time constant and added threshold hysteresis, but the response
+is still a hard 4× on/off (`src/imu.c`, `f.Ra_scale = ctx->engine_on ? 4.0f :
+1.0f`): over-deweighted at low vibration, under-deweighted at high. A
+continuous mapping from the existing EMA (e.g. `Ra_scale = 1 + k·e`, clamped)
+reuses state that already exists. Note this is now a genuinely separate
+problem from the seaway half: engine vibration is high-frequency and
+near-zero-mean, so it really is closer to white and really is a variance-
+scaling problem — which is why candidate 1 remains the right shape for it.
+
+**Why it did not ride along in 1.7, since the code change looks small:** the
+12-seed benchmark is seaway-only. There is no vibration scenario in it, so any
+continuous mapping would have been tuned against nothing and asserted against
+nothing. Building that scenario is the actual work, and it is a prerequisite —
+1.7 is a release in which two separate plausible-looking filter changes (a
+retuned `Ra`, and opening the `m_ref` quiescence gate) were each refuted only
+by measuring them properly. Do the scenario first.
 
 Scope the vibration half together with the MLC hardware-detection option in §4
 — they are the detection and response halves of one problem.
@@ -490,12 +600,16 @@ approximation.
   case). Same gpsd data as 11.1; follow the existing ~1 s averaging pattern
   rather than a single-instant fix. Established technique, worth adopting its
   name ("align in motion") in the docs.
-- **Non-Euler attitude output** *(B5 — documentation only)* — the wire packet
-  already carries the full quaternion and attitude covariance, so there is
-  nothing to build. What is missing is the guidance: state explicitly that
-  consumers operating near vertical pitch must read `quat_*` rather than
-  `pitch`/`roll`/`yaw`/`rate_of_turn`, which are degenerate near gimbal lock
-  by construction. Can land immediately, no dependencies.
+- ~~**Non-Euler attitude output** *(B5)*~~ — **SHIPPED 1.7.** Documentation
+  only, as scoped: the packet already carried the quaternion and its
+  covariance. `spec.md` gains a "Near-vertical pitch" subsection stating that
+  the Euler fields are ZYX intrinsic and singular at pitch ±90° by
+  construction — roll and yaw stop being separately determined approaching
+  vertical, taking `heading_deg` and `rate_of_turn` with them — and that
+  consumers operating there must read `quat_*`, which is never singular, as is
+  `cov[9]` in its tangent space. Cross-referenced from `docs/libimud/spec.md`
+  (with the affected fields flagged in the field table) and `docs/manual.md`,
+  where it also notes the NMEA sentences are Euler by definition.
 - **Aerospace config profile** *(B6)* — once the above are validated, a second
   named config file with aircraft-appropriate Qg/Qb/Ra, revisited gate
   constants, and `mag_yaw_only=false`. No code change beyond the items above.
@@ -541,4 +655,7 @@ requirement, and write a design doc first.
 *Compiled 2026-07-06; output-bridges section added 2026-07-08; ideas section
 + N2K demotion added 2026-07-11; pruned of shipped items 2026-07-19 (1.6);
 filter-mathematics and aerospace sections (§10, §11) added 2026-07-25 from the
-external audit, pruned of what 1.7 shipped.*
+external audit, pruned of what 1.7 shipped; triaged 2026-07-26 at the close of
+1.7 — §8's UDP drift fixed, its `AF_INET6` note refuted, `FLAG_MOTION` retired,
+B5 shipped, and the items 1.7 deliberately left (§8 consolidation, §9 heave
+init, §10.3, §10.5 vibration half) annotated with why.*

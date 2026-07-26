@@ -9,8 +9,9 @@
  *
  * ── Conventions ────────────────────────────────────────────────────────────
  * q = [w, x, y, z] represents the body→NED rotation: v_NED = R(q) × v_body.
- * Error-state δx = [δθ(3), δb(3)] (Solà §5.4).
- * P is 6×6, top-left 3×3 is attitude error covariance (rad²).
+ * Error-state δx = [δθ(3), δb(3), δa_w(3)] (Solà §5.4, plus the Gauss–Markov
+ * wave-acceleration state of ROADMAP §10.5).
+ * P is 9×9, top-left 3×3 is attitude error covariance (rad²).
  *
  * Gravity reference:    g_ref = [0, 0, 1]  (unit gravity in NED, Z-down)
  * Accel measurement:    z_a   = −normalize(accel_body)  [gravity direction]
@@ -69,13 +70,41 @@ static void m33_Atx(const float A[3][3], const float x[3], float y[3])
     }
 }
 
-/* 3×3 inverse via Cramer's rule; returns -1 if singular */
+/*
+ * 3×3 inverse via Cramer's rule; returns -1 if singular.
+ *
+ * The singularity test is RELATIVE to the matrix scale, not absolute. It has
+ * to be: the only caller inverts S = HPHᵀ + R·I, which carries physical units,
+ * and for the gravity update those units are tiny. With Ra ≈ 4.2e-5 and the
+ * attitude block converged to ~0.4°, det(S) ≈ Ra·λ² ≈ 6e-13 — a perfectly
+ * well-conditioned matrix (condition number ≈ 3) whose determinant simply
+ * lives near 1e-13.
+ *
+ * The previous absolute |det| < 1e-12 therefore declared the converged filter
+ * singular and made eskf_update return −1, silently dropping the accel
+ * correction. That produced a limit cycle rather than a divergence — updates
+ * were refused until gyro drift grew P back over the threshold, a few got
+ * through, and the correction switched off again — so attitude uncertainty sat
+ * pinned at whatever value made det(S) ≈ 1e-12 (0.41° at the default tuning)
+ * instead of converging. It looked like a noise-model floor; it was arithmetic.
+ *
+ * Comparing against scale³ (scale = largest |entry|) tests what "singular"
+ * actually means — rank deficiency — and is unit-free. 1e-6 is well above
+ * float's ~1.2e-7 epsilon, so a determinant lost to round-off is still caught.
+ */
 static int m33_inv(const float A[3][3], float Ai[3][3])
 {
     float d = A[0][0]*(A[1][1]*A[2][2] - A[1][2]*A[2][1])
             - A[0][1]*(A[1][0]*A[2][2] - A[1][2]*A[2][0])
             + A[0][2]*(A[1][0]*A[2][1] - A[1][1]*A[2][0]);
-    if (fabsf(d) < 1e-12f) return -1;
+
+    float scale = 0.0f;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            float a = fabsf(A[i][j]);
+            if (a > scale) scale = a;
+        }
+    if (!(fabsf(d) > 1e-6f * scale * scale * scale)) return -1;
     float id = 1.0f / d;
     Ai[0][0] = (A[1][1]*A[2][2] - A[1][2]*A[2][1]) * id;
     Ai[0][1] = (A[0][2]*A[2][1] - A[0][1]*A[2][2]) * id;
@@ -94,8 +123,9 @@ static int m33_inv(const float A[3][3], float Ai[3][3])
  *
  * Injecting δθ into the nominal quaternion moves the linearisation point, so
  * the covariance of the (now zeroed) error state must be rotated into the new
- * frame. Only the attitude block resets — the gyro-bias error is additive and
- * carries over unchanged — so callers apply diag(G, I₃).
+ * frame. Only the attitude block resets — the gyro-bias and wave-acceleration
+ * errors are additive and carry over unchanged — so callers apply
+ * diag(G, I₃, I₃).
  */
 static void m33_reset_jac(const float dth[3], float G[3][3])
 {
@@ -105,8 +135,8 @@ static void m33_reset_jac(const float dth[3], float G[3][3])
 }
 
 /*
- * M ← diag(G, I₃) × M, in place, for a 6×ncols row-major M.
- * Rows 3–5 are left alone, so only the first three rows are touched.
+ * M ← diag(G, I₃, I₃) × M, in place, for a MEKF_N×ncols row-major M.
+ * Rows 3+ are left alone, so only the first three rows are touched.
  */
 static void g_premul_rows3(const float G[3][3], float *M, int ncols)
 {
@@ -172,26 +202,38 @@ static void nis_record(float *ema, float alpha, float d2, float dof)
     *ema += alpha * (v - *ema);
 }
 
-/* ── 6×6 matrix helpers ────────────────────────────────────────────────────── */
+/* ── Error-state (MEKF_N × MEKF_N) matrix helpers ──────────────────────────── */
 
-static void m66_mul(const float A[6][6], const float B[6][6], float C[6][6])
+static void mNN_mul(const float A[MEKF_N][MEKF_N], const float B[MEKF_N][MEKF_N],
+                    float C[MEKF_N][MEKF_N])
 {
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++) {
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++) {
             float s = 0;
-            for (int k = 0; k < 6; k++) s += A[i][k] * B[k][j];
+            for (int k = 0; k < MEKF_N; k++) s += A[i][k] * B[k][j];
             C[i][j] = s;
         }
 }
 
-/* C = A × Bᵀ  (both 6×6) */
-static void m66_mulT(const float A[6][6], const float B[6][6], float C[6][6])
+/* C = A × Bᵀ  (both MEKF_N×MEKF_N) */
+static void mNN_mulT(const float A[MEKF_N][MEKF_N], const float B[MEKF_N][MEKF_N],
+                     float C[MEKF_N][MEKF_N])
 {
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++) {
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++) {
             float s = 0;
-            for (int k = 0; k < 6; k++) s += A[i][k] * B[j][k];
+            for (int k = 0; k < MEKF_N; k++) s += A[i][k] * B[j][k];
             C[i][j] = s;
+        }
+}
+
+/* Enforce exact symmetry (cheap insurance against float round-off). */
+static void mNN_symmetrize(float P[MEKF_N][MEKF_N])
+{
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < i; j++) {
+            float a = 0.5f * (P[i][j] + P[j][i]);
+            P[i][j] = P[j][i] = a;
         }
 }
 
@@ -304,6 +346,125 @@ static void q_from_rotvec(const float v[3], float dq[4])
 #endif
 
 /*
+ * Measurement Jacobian for a body-frame direction observation (3×MEKF_N).
+ *
+ * H = [ +[h×] | 0₃ | 0₃ ] — Jacobian of h w.r.t. the error state.
+ *
+ * Derivation (right-multiply error convention, q_true = q̂ ⊗ δq):
+ *   R(q_true) ≈ R(q̂) × (I + [δθ×])
+ *   h_true = R(q_true)ᵀ × g ≈ ĥ − [δθ×]ĥ = ĥ + [ĥ×]δθ
+ *   → H_δθ = +[ĥ×]   (Solà eq. 276 / §7, right-perturbation)
+ *
+ * +[h×] = [[  0,  -h2,  h1 ],
+ *          [ h2,   0,  -h0 ],
+ *          [-h1,  h0,   0  ]]
+ *
+ * Shared by eskf_update and mekf_accel_probe so the daemon's gain solve and
+ * the offline report can never disagree about what H is.
+ */
+static void dir_jacobian(const float h[3], float H[3][MEKF_N])
+{
+    memset(H, 0, 3 * MEKF_N * sizeof(float));
+    H[0][1] = -h[2];  H[0][2] =  h[1];
+    H[1][0] =  h[2];  H[1][2] = -h[0];
+    H[2][0] = -h[1];  H[2][1] =  h[0];
+}
+
+/*
+ * Measurement Jacobian and predicted direction for the gravity update with the
+ * Gauss–Markov wave state active (ROADMAP §10.5).
+ *
+ * The measured direction is z = −normalize(specific force).  Writing the
+ * specific force in normalised gravity units, that is
+ *
+ *   z = normalize(h − a_w)          v ≡ h − â_w,   ẑ ≡ v/|v|
+ *
+ * where h is the predicted gravity direction and a_w the wave acceleration in
+ * the same units.  Perturbing both (h_true = ĥ + [ĥ×]δθ, a_true = â_w + δa_w):
+ *
+ *   δv = [ĥ×]δθ − δa_w
+ *   δẑ = P_ẑ/|v| · δv        with the tangent projector P_ẑ = I − ẑẑᵀ
+ *
+ * giving the two blocks below.  The projector is NOT optional book-keeping:
+ * it is what makes ẑᵀH = 0 hold EXACTLY, hence Sẑ = R·ẑ, hence the NIS dof of
+ * 2 derived in docs/math.md §8.2 (a unit-vector measurement carries no radial
+ * noise).  Dropping it — using [ĥ×] and −I directly — leaves ẑᵀH = O(|â_w|),
+ * ẑ stops being an eigenvector of S, and the NIS the wire reports quietly
+ * stops meaning "1.0 = consistent".
+ *
+ * At â_w = 0 this reduces algebraically to dir_jacobian: v = h is already a
+ * unit vector, and (I − hhᵀ)[h×] = [h×] because hᵀ[h×] = 0.
+ *
+ * Returns false if |v| is too small to normalise — an acceleration comparable
+ * to gravity itself, where the linearisation has no meaning; the caller then
+ * falls back to the plain direction update.
+ */
+static bool wave_jacobian(const float h[3], const float aw[3],
+                          float zhat[3], float H[3][MEKF_N])
+{
+    float v[3] = { h[0]-aw[0], h[1]-aw[1], h[2]-aw[2] };
+    float vn = v3_norm(v);
+    if (vn < 0.5f) return false;
+    float inv = 1.0f / vn;
+
+    for (int i = 0; i < 3; i++) zhat[i] = v[i] * inv;
+
+    /* P_ẑ = I − ẑẑᵀ */
+    float Pz[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            Pz[i][j] = (i == j ? 1.0f : 0.0f) - zhat[i]*zhat[j];
+
+    /* +[h×], as in dir_jacobian */
+    const float hx[3][3] = {
+        {     0, -h[2],  h[1] },
+        {  h[2],     0, -h[0] },
+        { -h[1],  h[0],     0 },
+    };
+
+    memset(H, 0, 3 * MEKF_N * sizeof(float));
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            float s = 0;
+            for (int k = 0; k < 3; k++) s += Pz[i][k] * hx[k][j];
+            H[i][j]     =  s * inv;              /* H_δθ  = P_ẑ·[h×]/|v| */
+            H[i][6 + j] = -Pz[i][j] * inv;       /* H_δa_w = −P_ẑ/|v|    */
+        }
+    return true;
+}
+
+/* PHᵀ (MEKF_N×3):  PHt[i][j] = Σ_k P[i][k] × H[j][k] */
+static void dir_PHt(const mekf_t *f, const float H[3][MEKF_N],
+                    float PHt[MEKF_N][3])
+{
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < 3; j++) {
+            float s = 0;
+            for (int k = 0; k < MEKF_N; k++) s += f->P[i][k] * H[j][k];
+            PHt[i][j] = s;
+        }
+}
+
+/*
+ * Innovation covariance S = H·PHᵀ + R.
+ *
+ * R is isotropic R_noise·I₃ unless R33 is non-NULL, in which case it is that
+ * matrix. Only the 3-D magnetometer update needs the general form (see
+ * mekf_update_mag); everything else passes NULL and takes the scalar path
+ * literally.
+ */
+static void dir_S(const float H[3][MEKF_N], const float PHt[MEKF_N][3],
+                  float R_noise, const float (*R33)[3], float S[3][3])
+{
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            float s = R33 ? R33[i][j] : ((i == j) ? R_noise : 0.0f);
+            for (int k = 0; k < MEKF_N; k++) s += H[i][k] * PHt[k][j];
+            S[i][j] = s;
+        }
+}
+
+/*
  * Generic measurement update.  (Solà §4.2)
  *
  * h:         predicted measurement in body frame (3×1)
@@ -311,12 +472,15 @@ static void q_from_rotvec(const float v[3], float dq[4])
  * R_noise:   isotropic measurement noise variance (scalar, applied to I₃)
  * chi2_gate: innovation gate — skip the update when the normalised
  *            innovation distance d² = innovᵀ·S⁻¹·innov exceeds this
+ *            (χ²₃ quantile); 0 disables the gate.
  * nis_ema:   channel NIS accumulator to feed (NULL to skip)
  * nis_alpha: EMA gain for that accumulator
- *            (χ²₃ quantile); 0 disables the gate.
- *
- * H = [-[h×]  |  0₃]  (3×6)  — Jacobian of h w.r.t. error-state δθ
- * (Solà eq. 276, with sign from body-frame observation of a NED reference.)
+ * aw:        wave-acceleration estimate to fold into the prediction, or NULL
+ *            for a plain direction measurement.  NULL takes literally the
+ *            pre-§10.5 code path — no projection arithmetic runs at all — so
+ *            the mag channels and a disabled wave state are untouched.
+ * R33:       full 3×3 measurement noise, or NULL for isotropic R_noise·I₃.
+ *            Same contract as aw: NULL is the scalar path, unchanged.
  *
  * Returns 0 on success, -1 if S is singular, +1 if the innovation gate
  * rejected the measurement (update skipped either way).
@@ -327,34 +491,22 @@ static int eskf_update(mekf_t *f,
                        float R_noise,
                        float chi2_gate,
                        float *nis_ema,
-                       float nis_alpha)
+                       float nis_alpha,
+                       const float *aw,
+                       const float (*R33)[3])
 {
-    /*
-     * H (3×6): H[0:3][0:3] = +[h×], H[0:3][3:6] = 0₃
-     *
-     * Derivation (right-multiply error convention, q_true = q̂ ⊗ δq):
-     *   R(q_true) ≈ R(q̂) × (I + [δθ×])
-     *   h_true = R(q_true)ᵀ × g ≈ ĥ − [δθ×]ĥ = ĥ + [ĥ×]δθ
-     *   → H_δθ = +[ĥ×]   (Solà §7, right-perturbation)
-     *
-     * +[h×] = [[  0,  -h2,  h1 ],
-     *           [ h2,   0,  -h0 ],
-     *           [-h1,  h0,   0  ]]
-     */
-    const float H[3][6] = {
-        {     0, -h[2],  h[1],  0, 0, 0 },
-        {  h[2],     0, -h[0],  0, 0, 0 },
-        { -h[1],  h[0],     0,  0, 0, 0 },
-    };
+    /* Local, so the Huber R-inflating variants can repoint it at a scaled
+     * copy without touching the caller's matrix. */
+    const float (*Rmat)[3] = R33;
+    float H[3][MEKF_N];
+    float zhat[3];
+    if (!(aw && wave_jacobian(h, aw, zhat, H))) {
+        dir_jacobian(h, H);
+        zhat[0] = h[0]; zhat[1] = h[1]; zhat[2] = h[2];
+    }
 
-    /* PHᵀ (6×3):  PHt[i][j] = Σ_k P[i][k] × H[j][k] */
-    float PHt[6][3];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 3; j++) {
-            float s = 0;
-            for (int k = 0; k < 6; k++) s += f->P[i][k] * H[j][k];
-            PHt[i][j] = s;
-        }
+    float PHt[MEKF_N][3];
+    dir_PHt(f, H, PHt);
 
     /*
      * Gain solve: S = H·PHᵀ + R·I₃, then K = PHᵀ·S⁻¹.
@@ -362,17 +514,15 @@ static int eskf_update(mekf_t *f,
      * Huber variants (HUBER_VARIANT 2/3, below) have to re-run it with a
      * different R. PHt does not depend on R, so it stays hoisted out.
      */
-    float S[3][3], Sinv[3][3], K[6][3];
+    float S[3][3], Sinv[3][3], K[MEKF_N][3];
+#if HUBER_VARIANT == 2 || HUBER_VARIANT == 3
+    float R33_scaled[3][3];
+#endif
     #define ESKF_SOLVE_GAIN(Rv)                                            \
         do {                                                               \
-            for (int i = 0; i < 3; i++)                                    \
-                for (int j = 0; j < 3; j++) {                              \
-                    float s = (i == j) ? (Rv) : 0.0f;                      \
-                    for (int k = 0; k < 6; k++) s += H[i][k] * PHt[k][j];  \
-                    S[i][j] = s;                                           \
-                }                                                          \
+            dir_S(H, PHt, (Rv), Rmat, S);                                  \
             if (m33_inv(S, Sinv) < 0) return -1;                           \
-            for (int i = 0; i < 6; i++)                                    \
+            for (int i = 0; i < MEKF_N; i++)                               \
                 for (int j = 0; j < 3; j++) {                              \
                     float s = 0;                                           \
                     for (int k = 0; k < 3; k++) s += PHt[i][k]*Sinv[k][j]; \
@@ -382,8 +532,8 @@ static int eskf_update(mekf_t *f,
 
     ESKF_SOLVE_GAIN(R_noise);
 
-    /* innovation = z − h  (3×1) */
-    float innov[3] = { z[0]-h[0], z[1]-h[1], z[2]-h[2] };
+    /* innovation = z − ẑ  (3×1); ẑ = h when no wave state is in play */
+    float innov[3] = { z[0]-zhat[0], z[1]-zhat[1], z[2]-zhat[2] };
 
     /* Innovation handling: d² = innovᵀ·S⁻¹·innov follows χ²(3) when the
      * measurement is consistent with the filter. Wave-orbital acceleration
@@ -441,7 +591,9 @@ static int eskf_update(mekf_t *f,
         float d2 = innov[0]*Si[0] + innov[1]*Si[1] + innov[2]*Si[2];
 
         /* Consistency first, while d² is still uncensored — see nis_record.
-         * dof = 2: unit-vector measurement, radial component carries no noise. */
+         * dof = 2: unit-vector measurement, radial component carries no noise.
+         * Holds for the wave-aware Jacobian too — wave_jacobian projects H onto
+         * ẑ's tangent plane, so ẑᵀH = 0 exactly and S⁻¹ẑ = ẑ/R just as before. */
         if (nis_ema) nis_record(nis_ema, nis_alpha, d2, 2.0f);
 
         if (chi2_gate > 0.0f) {
@@ -459,16 +611,27 @@ static int eskf_update(mekf_t *f,
                 /* K ← w·K: identical state correction to variant 0, but the
                  * Joseph update below then contracts P by the gain actually
                  * used — the "exact Joseph for a suboptimal gain" form. */
-                for (int i = 0; i < 6; i++)
+                for (int i = 0; i < MEKF_N; i++)
                     for (int j = 0; j < 3; j++) K[i][j] *= w;
-#elif HUBER_VARIANT == 2
-                /* IRLS: re-solve the gain with R inflated to R/w, and apply
-                 * the UNCAPPED innovation through it. */
-                ESKF_SOLVE_GAIN(R_noise / w);
-                R_noise /= w;
-#elif HUBER_VARIANT == 3
-                ESKF_SOLVE_GAIN(R_noise / (w*w));
-                R_noise /= (w*w);
+#elif HUBER_VARIANT == 2 || HUBER_VARIANT == 3
+                /* IRLS: re-solve the gain with R inflated, and apply the
+                 * UNCAPPED innovation through it. With a full R the whole
+                 * matrix scales, not just the scalar. */
+                {
+#if HUBER_VARIANT == 2
+                    float wr = w;
+#else
+                    float wr = w*w;
+#endif
+                    if (Rmat) {
+                        for (int a = 0; a < 3; a++)
+                            for (int b = 0; b < 3; b++)
+                                R33_scaled[a][b] = Rmat[a][b] / wr;
+                        Rmat = (const float (*)[3])R33_scaled;
+                    }
+                    ESKF_SOLVE_GAIN(R_noise / wr);
+                    R_noise /= wr;
+                }
 #else
 #error "HUBER_VARIANT must be 0, 1, 2 or 3"
 #endif
@@ -478,9 +641,9 @@ static int eskf_update(mekf_t *f,
     }
     #undef ESKF_SOLVE_GAIN
 
-    /* δx = K × innovation  (6×1) */
-    float dx[6] = {0};
-    for (int i = 0; i < 6; i++)
+    /* δx = K × innovation  (MEKF_N×1) */
+    float dx[MEKF_N] = {0};
+    for (int i = 0; i < MEKF_N; i++)
         for (int j = 0; j < 3; j++) dx[i] += K[i][j] * innov[j];
 
     /* Multiplicative quaternion correction: q ← q ⊗ exp(δθ)  (Solà eq. 280) */
@@ -496,6 +659,13 @@ static int eskf_update(mekf_t *f,
     f->bias[1] += dx[4];
     f->bias[2] += dx[5];
 
+    /* Wave-acceleration correction: a_w ← a_w + δa_w. Unconditional: when the
+     * state is disabled P's wave rows are zero, so K's are too and this adds
+     * exactly 0.0f. */
+    f->wave_acc[0] += dx[6];
+    f->wave_acc[1] += dx[7];
+    f->wave_acc[2] += dx[8];
+
     /*
      * Covariance update, Joseph form, with the error-state reset folded in:
      *   P ← G·[(I−K·H)·P·(I−K·H)ᵀ + K·R·Kᵀ]·Gᵀ
@@ -506,45 +676,52 @@ static int eskf_update(mekf_t *f,
      * multi-day runs — and holds for any gain, including the Huber-scaled one.
      * R is isotropic (R_noise·I₃), so K·R·Kᵀ = R_noise·K·Kᵀ.
      */
-    float KH[6][6] = {{0}};
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
+    float KH[MEKF_N][MEKF_N] = {{0}};
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++)
             for (int k = 0; k < 3; k++) KH[i][j] += K[i][k] * H[k][j];
 
-    float IKH[6][6];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
+    float IKH[MEKF_N][MEKF_N];
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++)
             IKH[i][j] = (i == j ? 1.0f : 0.0f) - KH[i][j];
 
     /* Error-state reset: the correction just injected into q has moved the
      * linearisation point, so P must be rotated into the new error frame.
-     * G_full = diag(G, I₃) — the bias error has no reset — hence only rows
-     * 0–2 of K and IKH are touched. */
+     * G_full = diag(G, I₃, I₃) — neither the bias nor the wave-acceleration
+     * error has a reset — hence only rows 0–2 of K and IKH are touched. */
     {
         float G[3][3];
         m33_reset_jac(dx, G);
         g_premul_rows3(G, &K[0][0],   3);
-        g_premul_rows3(G, &IKH[0][0], 6);
+        g_premul_rows3(G, &IKH[0][0], MEKF_N);
     }
 
-    float Ptmp[6][6], Pnew[6][6];
-    m66_mul(IKH, f->P, Ptmp);
-    m66_mulT(Ptmp, IKH, Pnew);
+    float Ptmp[MEKF_N][MEKF_N], Pnew[MEKF_N][MEKF_N];
+    mNN_mul(IKH, f->P, Ptmp);
+    mNN_mulT(Ptmp, IKH, Pnew);
 
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++) {
-            float s = 0;
-            for (int k = 0; k < 3; k++) s += K[i][k] * K[j][k];
-            Pnew[i][j] += R_noise * s;
-        }
+    /* K·R·Kᵀ. The isotropic shortcut R·K Kᵀ is only valid for scalar R, so
+     * the general form is spelled out when a full matrix was supplied. */
+    if (Rmat) {
+        for (int i = 0; i < MEKF_N; i++)
+            for (int j = 0; j < MEKF_N; j++) {
+                float s = 0;
+                for (int k = 0; k < 3; k++)
+                    for (int l = 0; l < 3; l++)
+                        s += K[i][k] * Rmat[k][l] * K[j][l];
+                Pnew[i][j] += s;
+            }
+    } else {
+        for (int i = 0; i < MEKF_N; i++)
+            for (int j = 0; j < MEKF_N; j++) {
+                float s = 0;
+                for (int k = 0; k < 3; k++) s += K[i][k] * K[j][k];
+                Pnew[i][j] += R_noise * s;
+            }
+    }
 
-    /* Enforce exact symmetry (cheap insurance against float round-off). */
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < i; j++) {
-            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
-            Pnew[i][j] = Pnew[j][i] = a;
-        }
-
+    mNN_symmetrize(Pnew);
     memcpy(f->P, Pnew, sizeof f->P);
 
     return 0;
@@ -558,7 +735,7 @@ static int eskf_update(mekf_t *f,
  *
  * For the right-multiplied error convention, a heading innovation relates
  * to the error state through the NED-down axis expressed in body terms:
- *   y ≈ −(R̂·δθ)_D  →  H = [ −R̂[2][:] | 0₃ ]  (1×6)
+ *   y ≈ −(R̂·δθ)_D  →  H = [ −R̂[2][:] | 0₃ | 0₃ ]  (1×MEKF_N)
  * Same Joseph-form covariance update as the vector path.
  */
 /* χ²(1) 99% quantile — yaw innovation gate. */
@@ -569,17 +746,17 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     float R[3][3];
     q_to_R(f->q, R);
 
-    float H[6] = { -R[2][0], -R[2][1], -R[2][2], 0, 0, 0 };
+    float H[MEKF_N] = { -R[2][0], -R[2][1], -R[2][2] };
 
-    float PHt[6];
-    for (int i = 0; i < 6; i++) {
+    float PHt[MEKF_N];
+    for (int i = 0; i < MEKF_N; i++) {
         float s = 0;
-        for (int k = 0; k < 6; k++) s += f->P[i][k] * H[k];
+        for (int k = 0; k < MEKF_N; k++) s += f->P[i][k] * H[k];
         PHt[i] = s;
     }
 
     float S = R_noise;
-    for (int i = 0; i < 6; i++) S += H[i] * PHt[i];
+    for (int i = 0; i < MEKF_N; i++) S += H[i] * PHt[i];
     if (S < 1e-12f) return -1;
 
     /* Same Huber policy as the vector update, including the same deliberate
@@ -597,11 +774,11 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     if (d2 > YAW_CHI2_GATE) { w = sqrtf(YAW_CHI2_GATE / d2); y *= w; }
     gate_health(f, f->nis_mag_alpha, w, 0.0f);
 
-    float K[6];
-    for (int i = 0; i < 6; i++) K[i] = PHt[i] / S;
+    float K[MEKF_N];
+    for (int i = 0; i < MEKF_N; i++) K[i] = PHt[i] / S;
 
-    float dx[6];
-    for (int i = 0; i < 6; i++) dx[i] = K[i] * y;
+    float dx[MEKF_N];
+    for (int i = 0; i < MEKF_N; i++) dx[i] = K[i] * y;
 
     float dq[4], qnew[4];
     q_from_rotvec(dx, dq);
@@ -613,31 +790,35 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     f->bias[1] += dx[4];
     f->bias[2] += dx[5];
 
+    /* The heading measurement says nothing directly about wave acceleration
+     * (H's wave block is zero), but the cross-covariance built up by the accel
+     * path means K's is not — so the correction is real Kalman book-keeping,
+     * and structurally zero while the state is disabled. */
+    f->wave_acc[0] += dx[6];
+    f->wave_acc[1] += dx[7];
+    f->wave_acc[2] += dx[8];
+
     /* Joseph form, rank-1, with the error-state reset folded in as in
      * eskf_update: P ← [G(I−KH)]·P·[G(I−KH)]ᵀ + (G·K)·R·(G·K)ᵀ */
-    float IKH[6][6];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
+    float IKH[MEKF_N][MEKF_N];
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++)
             IKH[i][j] = (i == j ? 1.0f : 0.0f) - K[i] * H[j];
 
     {
         float G[3][3];
         m33_reset_jac(dx, G);
         g_premul_rows3(G, K,          1);
-        g_premul_rows3(G, &IKH[0][0], 6);
+        g_premul_rows3(G, &IKH[0][0], MEKF_N);
     }
 
-    float Ptmp[6][6], Pnew[6][6];
-    m66_mul(IKH, f->P, Ptmp);
-    m66_mulT(Ptmp, IKH, Pnew);
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < 6; j++)
+    float Ptmp[MEKF_N][MEKF_N], Pnew[MEKF_N][MEKF_N];
+    mNN_mul(IKH, f->P, Ptmp);
+    mNN_mulT(Ptmp, IKH, Pnew);
+    for (int i = 0; i < MEKF_N; i++)
+        for (int j = 0; j < MEKF_N; j++)
             Pnew[i][j] += R_noise * K[i] * K[j];
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < i; j++) {
-            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
-            Pnew[i][j] = Pnew[j][i] = a;
-        }
+    mNN_symmetrize(Pnew);
     memcpy(f->P, Pnew, sizeof f->P);
 
     return 0;
@@ -694,6 +875,36 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
     f->Ra = (Na / G_MS2) * (Na / G_MS2) * odr_hz;
     f->Rm = Nm * Nm * (float)cfg->mag_odr_hz;
 
+    /*
+     * Gauss–Markov wave-acceleration state (ROADMAP §10.5).
+     *
+     * The seaway gravity residual is wave-orbital: correlated over ~0.3–1 s,
+     * not white. Feeding 833 such samples per second to a white-noise R tells
+     * the filter it has 833 independent gravity measurements when it has
+     * closer to one per wave; P collapses and the filter diverges into its own
+     * over-confidence. Modelling the disturbance as a first-order GM process
+     * with steady-state σ and correlation time τ lets the correlated part live
+     * in the state, where repeated samples correctly stop adding information.
+     *
+     * σ is configured in m/s² (what an accelerometer spec sheet and fit-ra
+     * both speak) and stored as a variance in normalised gravity units, the
+     * units the measurement z = −normalize(a) actually uses.
+     *
+     * Either knob at 0 disables the state: the block stays identically zero
+     * and the filter is bit-for-bit the 6-state filter.
+     */
+    float wsig = (float)cfg->mekf_wave_accel / G_MS2;
+    f->wave_tau     = (float)cfg->mekf_wave_accel_tau_s;
+    f->wave_sig2    = wsig * wsig;
+    f->wave_enabled = (cfg->mekf_wave_accel > 0.0 &&
+                       cfg->mekf_wave_accel_tau_s > 0.0);
+
+    /* Dip-reference uncertainty: configured in degrees, used as a variance in
+     * the same normalised direction units as Rm_n (a dip error of δ radians
+     * displaces the predicted unit direction by δ). See mekf_update_mag. */
+    float dsig = (float)cfg->mekf_mag_dip_sigma_deg * (float)(M_PI/180.0);
+    f->dip_sig2 = (dsig > 0.0f) ? dsig * dsig : 0.0f;
+
     float sk = (float)cfg->accel_skip_thresh;
     f->accel_skip_lo = 1.0f - sk;
     f->accel_skip_hi = 1.0f + sk;
@@ -718,7 +929,32 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
         ? 1.0f / (GATE_TAU_S * (float)cfg->mag_odr_hz)
         : f->gate_alpha;
 
-    f->conv_thresh = 3.0f * fsq(0.5f * (float)(M_PI/180.0)); /* 3 × (0.5°)² */
+    /*
+     * Convergence threshold on tr(P[0:3]), i.e. "attitude is acquired".
+     *
+     * Historically a flat 3 × (0.5°)². That value was set against a filter
+     * whose steady-state attitude variance was not believable — it settled at
+     * 0.14°/axis while its actual error was degrees (NEES 8–18). With the wave
+     * state modelling the seaway disturbance, P tells the truth, and the truth
+     * has a floor: a correlated acceleration of σ_g is indistinguishable from a
+     * tilt of asin(σ_g) within one correlation time, and only averages down
+     * slowly after that. At the shipped tuning that floor is ≈0.9°/axis, so a
+     * 0.5° threshold would simply never be reached and FLAG_FUSION_CONVERGED
+     * would never set.
+     *
+     * The threshold therefore tracks the floor it has to clear. 0.30× the
+     * equivalent tilt puts it at 1.40°/axis for the default σ = 0.8 m/s²,
+     * about 1.6× the measured floor — reached in ~4 s of level running, and
+     * still far tighter than any heading requirement it gates.
+     */
+    float conv_deg = 0.5f;
+    if (f->wave_enabled) {
+        float sg = sqrtf(f->wave_sig2);
+        if (sg > 0.5f) sg = 0.5f;                      /* asin domain guard */
+        float floor_deg = 0.30f * asinf(sg) * (float)(180.0/M_PI);
+        if (floor_deg > conv_deg) conv_deg = floor_deg;
+    }
+    f->conv_thresh = 3.0f * fsq(conv_deg * (float)(M_PI/180.0));
 }
 
 void mekf_init(mekf_t *f,
@@ -743,12 +979,17 @@ void mekf_init(mekf_t *f,
      */
     float init_att  = fsq(0.175f);    /* ~10° per axis */
     float init_bias = fsq(0.001f);    /* 1 mdps/s residual bias uncertainty */
-    for (int i = 0; i < 3; i++) f->P[i][i]     = init_att;
+    for (int i = 0; i < 3; i++) f->P[i][i] = init_att;
     for (int i = 3; i < 6; i++) f->P[i][i] = init_bias;
 
     f->dt = 1.0f / odr_hz;
 
     mekf_derive_tuning(f, cfg);
+
+    /* Wave block starts at its steady state — the GM process is stationary,
+     * so there is no acquisition transient to model. Stays 0 when disabled. */
+    if (f->wave_enabled)
+        for (int i = 6; i < 9; i++) f->P[i][i] = f->wave_sig2;
 
     f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
     f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
@@ -869,15 +1110,19 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s)
      * ── Covariance propagation: P ← Φ·P·Φᵀ + Q_d  (Solà eq. 268) ────
      *
      * Discrete transition matrix (first-order zero-hold):
-     *   Φ = I₆ + Fc·dt
+     *   Φ = I₉ + Fc·dt   for the attitude/bias blocks
      *   Fc = [[-[w×]  -I₃], [0₃  0₃]]
-     *   Φ = [[I₃ - [w×]dt   -I₃·dt],
-     *         [0₃             I₃   ]]
+     *   Φ = [[I₃ - [w×]dt   -I₃·dt     0₃ ],
+     *         [0₃             I₃       0₃ ],
+     *         [0₃             0₃      φ·I₃]]
+     * where the wave block is the EXACT Gauss–Markov transition φ = e^(−dt/τ),
+     * not a first-order expansion (see below); φ = 1 when the state is
+     * disabled, leaving that block an identity that never touches anything.
      *
      * Diagonal process noise Q_d:
-     *   Q_d[0:3][0:3] = Qg·I₃    Q_d[3:6][3:6] = Qb·I₃
+     *   Q_d[0:3][0:3] = Qg·I₃   Q_d[3:6][3:6] = Qb·I₃   Q_d[6:9][6:9] = Qw·I₃
      */
-    float Phi[6][6] = {{0}};
+    float Phi[MEKF_N][MEKF_N] = {{0}};
 
     /* Top-left: I₃ − [w×]·dt */
     Phi[0][0] = 1.0f;           Phi[0][1] =  w[2]*dt;   Phi[0][2] = -w[1]*dt;
@@ -885,26 +1130,69 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s)
     Phi[2][0] =  w[1]*dt;       Phi[2][1] = -w[0]*dt;    Phi[2][2] = 1.0f;
     /* Top-right: -I₃·dt */
     Phi[0][3] = -dt;  Phi[1][4] = -dt;  Phi[2][5] = -dt;
-    /* Bottom-right: I₃ */
+    /* Bias block: I₃ */
     Phi[3][3] = 1.0f; Phi[4][4] = 1.0f; Phi[5][5] = 1.0f;
 
-    float Ptmp[6][6], Pnew[6][6];
-    m66_mul(Phi, f->P, Ptmp);
-    m66_mulT(Ptmp, Phi, Pnew);
+    /*
+     * Wave block: the EXACT first-order Gauss–Markov transition
+     *   φ  = e^(−dt/τ)          Q_w = σ²·(1 − e^(−2dt/τ))
+     * rather than the linear-in-dt approximation used for Qg/Qb below.
+     *
+     * Not a refinement for its own sake: τ is of order 0.5 s while the |a|
+     * skip band routinely leaves gaps of the same order, so dt/τ is NOT small
+     * on the steps that matter and a first-order expansion would both
+     * over-decay the state and mis-size the noise exactly when it is being
+     * asked to bridge a gap. The exact form is stationary for any dt — feed it
+     * a step of 10τ and it returns the state to zero with variance σ², which
+     * is the correct answer — so the filter cannot be destabilised by a
+     * scheduling hiccup.
+     */
+    float phi_w = 1.0f, qw = 0.0f;
+    if (f->wave_enabled) {
+        phi_w = expf(-dt / f->wave_tau);
+        qw    = f->wave_sig2 * (1.0f - phi_w * phi_w);
+    }
+    Phi[6][6] = phi_w; Phi[7][7] = phi_w; Phi[8][8] = phi_w;
+#ifdef WAVE_TRANSPORT
+    /*
+     * Optional transport term. Wave-orbital acceleration is a property of the
+     * seaway, so it is arguably NED-stationary; carrying it as a body-frame
+     * vector then needs Φ_w = e^(−dt/τ)(I − [ω dt]×) to account for the frame
+     * rotating underneath it. Measured A/B in docs/math.md §4.7.
+     */
+    if (f->wave_enabled) {
+        Phi[6][7] =  w[2]*dt*phi_w;  Phi[6][8] = -w[1]*dt*phi_w;
+        Phi[7][6] = -w[2]*dt*phi_w;  Phi[7][8] =  w[0]*dt*phi_w;
+        Phi[8][6] =  w[1]*dt*phi_w;  Phi[8][7] = -w[0]*dt*phi_w;
+    }
+#endif
+
+    float Ptmp[MEKF_N][MEKF_N], Pnew[MEKF_N][MEKF_N];
+    mNN_mul(Phi, f->P, Ptmp);
+    mNN_mulT(Ptmp, Phi, Pnew);
 
     /* Add diagonal Q_d, scaled to the actual step length (Qg/Qb are stored
-     * per nominal step; noise variance grows linearly with dt). */
+     * per nominal step; noise variance grows linearly with dt). The wave
+     * block's Q is already exact for this dt and must not be rescaled. */
     float qscale = dt / f->dt;
     for (int i = 0; i < 3; i++) Pnew[i][i] += f->Qg * qscale;
     for (int i = 3; i < 6; i++) Pnew[i][i] += f->Qb * qscale;
+    if (f->wave_enabled)
+        for (int i = 6; i < 9; i++) Pnew[i][i] += qw;
 
-    /* Keep P exactly symmetric (ΦPΦᵀ picks up float round-off). */
-    for (int i = 0; i < 6; i++)
-        for (int j = 0; j < i; j++) {
-            float a = 0.5f * (Pnew[i][j] + Pnew[j][i]);
-            Pnew[i][j] = Pnew[j][i] = a;
-        }
+    /* Nominal wave acceleration follows the same transition (zero-mean). */
+    if (f->wave_enabled) {
+#ifdef WAVE_TRANSPORT
+        float a[3] = { f->wave_acc[0], f->wave_acc[1], f->wave_acc[2] };
+        f->wave_acc[0] = phi_w * (a[0] + (w[2]*a[1] - w[1]*a[2]) * dt);
+        f->wave_acc[1] = phi_w * (a[1] + (w[0]*a[2] - w[2]*a[0]) * dt);
+        f->wave_acc[2] = phi_w * (a[2] + (w[1]*a[0] - w[0]*a[1]) * dt);
+#else
+        for (int i = 0; i < 3; i++) f->wave_acc[i] *= phi_w;
+#endif
+    }
 
+    mNN_symmetrize(Pnew);
     memcpy(f->P, Pnew, sizeof f->P);
 
     /* Update convergence flag */
@@ -936,20 +1224,28 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s)
 #define ACCEL_CHI2_GATE 11.34f
 #endif
 
-void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
+/*
+ * Pre-update geometry for the accelerometer path, shared by
+ * mekf_update_accel and mekf_accel_probe:
+ *
+ *   - speed-aided centripetal correction: in a turn the accelerometer
+ *     measures gravity plus ω×v, which tilts the apparent gravity exactly
+ *     when the autopilot most needs good roll. With speed over ground from
+ *     gpsd (v_body ≈ [v, 0, 0] along the bow — leeway neglected):
+ *       ω×v = [0, ω_z·v, −ω_y·v]
+ *     Subtracting it turns coordinated-turn samples from χ²-gate rejects
+ *     into usable gravity references. speed_mps = 0 (no live GPS) is a no-op.
+ *   - the |a|/g skip band (linear acceleration)
+ *   - z = −normalize(specific force) — the measured gravity direction, body
+ *   - h = Rᵀ·[0,0,1] = third row of R — the predicted gravity direction, body
+ *
+ * ag_out (optional) receives |a|/g whether or not the band accepts, because
+ * the caller's quiescence tracker must see every sample.
+ * Returns false when the sample must be skipped; z and h are then untouched.
+ */
+static bool accel_geometry(const mekf_t *f, const imu_sample_t *s,
+                           float z[3], float h[3], float *ag_out)
 {
-    if (!f->initialized) return;
-
-    /*
-     * Speed-aided centripetal correction: in a turn the accelerometer
-     * measures gravity plus ω×v, which tilts the apparent gravity exactly
-     * when the autopilot most needs good roll. With speed over ground from
-     * gpsd (v_body ≈ [v, 0, 0] along the bow — leeway neglected):
-     *   ω×v = [0, ω_z·v, −ω_y·v]
-     * Subtracting it turns coordinated-turn samples from χ²-gate rejects
-     * into usable gravity references. speed_mps = 0 (no live GPS) is a
-     * no-op.
-     */
     float acc[3] = { s->accel[0], s->accel[1], s->accel[2] };
     if (f->speed_mps > 0.1f) {
         float wy = s->gyro[1] - f->bias[1];
@@ -960,6 +1256,58 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
 
     float an = v3_norm(acc);
     float ag = an / G_MS2;
+    if (ag_out) *ag_out = ag;
+
+    if (an < 1e-6f) return false;
+    if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return false;
+
+    z[0] = -acc[0]/an;  z[1] = -acc[1]/an;  z[2] = -acc[2]/an;
+
+    float R[3][3];
+    q_to_R(f->q, R);
+    h[0] = R[2][0];  h[1] = R[2][1];  h[2] = R[2][2];
+    return true;
+}
+
+bool mekf_accel_probe(const mekf_t *f, const imu_sample_t *s,
+                      float innov[3], float *d2_out)
+{
+    if (!f->initialized) return false;
+
+    float z[3], h[3];
+    if (!accel_geometry(f, s, z, h, NULL)) return false;
+
+    /* Exactly the choice mekf_update_accel makes — the innovation the daemon
+     * would form, not an approximation of it. */
+    float H[3][MEKF_N], zhat[3];
+    if (!(f->wave_enabled && wave_jacobian(h, f->wave_acc, zhat, H))) {
+        dir_jacobian(h, H);
+        zhat[0] = h[0]; zhat[1] = h[1]; zhat[2] = h[2];
+    }
+
+    for (int i = 0; i < 3; i++) innov[i] = z[i] - zhat[i];
+
+    float PHt[MEKF_N][3], S[3][3], Sinv[3][3];
+    dir_PHt(f, H, PHt);
+    dir_S(H, PHt, f->Ra * f->Ra_scale, NULL, S);
+    if (m33_inv(S, Sinv) < 0) return false;
+
+    /* d² in double: the report averages millions of these and the offline
+     * tool has no reason to inherit the filter's float budget. */
+    double d2 = 0.0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            d2 += (double)innov[i] * Sinv[i][j] * innov[j];
+    *d2_out = (float)d2;
+    return true;
+}
+
+void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
+{
+    if (!f->initialized) return;
+
+    float z[3], h[3], ag = 0.0f;
+    bool usable = accel_geometry(f, s, z, h, &ag);
 
     /* Quiescence tracker (τ ≈ 2 s): EMA of squared |a|-deviation from 1 g,
      * updated on EVERY sample including gated ones. The m_ref EMA learns
@@ -983,21 +1331,13 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
      */
     f->health_dt_accum += f->dt;
 
-    /* Skip during linear acceleration (|a|/g outside [1±thresh]) */
-    if (ag < f->accel_skip_lo || ag > f->accel_skip_hi) return;
+    /* Skipped during linear acceleration (|a|/g outside [1±thresh]) */
+    if (!usable) return;
 
     /* Elapsed-time EMA gain: alpha = 1 − exp(−Δt/τ), exact for any feed rate
      * and equal to Δt/τ in the limit of frequent updates. */
     float alpha_a = 1.0f - expf(-f->health_dt_accum / GATE_TAU_S);
     f->health_dt_accum = 0.0f;
-
-    /* Gravity direction in body: z = −normalize(specific_force) */
-    float z[3] = { -acc[0]/an, -acc[1]/an, -acc[2]/an };
-
-    /* Predicted gravity in body: h = Rᵀ × [0, 0, 1] = third row of R */
-    float R[3][3];
-    q_to_R(f->q, R);
-    float h[3] = { R[2][0], R[2][1], R[2][2] };
 
     /*
      * Ra_scale inflates the accel noise ×4 while engine vibration is
@@ -1019,7 +1359,8 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
     f->g_body_valid = true;
 
     eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE,
-                &f->nis_accel_ema, alpha_a);
+                &f->nis_accel_ema, alpha_a,
+                f->wave_enabled ? f->wave_acc : NULL, NULL);
 }
 
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
@@ -1174,8 +1515,70 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         float R_psi = f->Rm / (mh_ref * mh_ref);
         rc = eskf_update_yaw(f, y, R_psi);
     } else {
+        /*
+         * 3-D vector fusion. Here the field's DIP constrains roll and pitch,
+         * which is the mode's whole value — and also its exposure, because the
+         * dip of m_ref is the one part of the reference the filter cannot get
+         * right on its own.
+         *
+         * m_ref's dip is fixed at alignment from the tilt estimate available
+         * at that moment. In a seaway that tilt is wrong by around a degree
+         * even after averaging the alignment window, and the error is not
+         * recoverable afterwards: the in-run m_ref EMA can only learn while
+         * the platform is quiescent (acc_quiet_ema), because the samples that
+         * clear the |a| band in a seaway are wave-phase correlated and
+         * learning from them walks the reference away rather than toward the
+         * truth — measured, and recorded at that gate. So a dip error simply
+         * persists, and in this mode it shows up as a CONSTANT roll/pitch
+         * bias that P has no term for (12-seed benchmark: +0.86° of dip error
+         * → 1.20° attitude RMS at NEES(strict) 12.8, against 0.84°/0.22 when
+         * the dip reference is exact).
+         *
+         * The honest response is to tell P how much that channel is worth. A
+         * dip error dδ rotates m_ref about â_NED = ĥ_hor × ê_D, so in body
+         * frame it perturbs the normalised prediction along the single unit
+         * tangent direction u = (Rᵀâ_NED) × ĥ. The uncertainty is therefore
+         * exactly rank-1:
+         *
+         *     R = Rm_n·I₃ + σ_dip²·u·uᵀ
+         *
+         * Inflating Rm isotropically would move NEES(strict) just as well, but
+         * it deweights the heading-carrying components too and collapses
+         * nis_mag to ~0.01 — destroying the wire's magnetometer-health
+         * instrument to fix a roll/pitch problem. The rank-1 form leaves them
+         * alone.
+         *
+         * u is tangent (uᵀĥ = 0), so R·ĥ = Rm_n·ĥ and ĥ stays an eigenvector
+         * of S with eigenvalue Rm_n — which is what keeps the NIS dof at 2
+         * (docs/math.md §8.2). An anisotropy with any radial component would
+         * silently break that.
+         */
+        float R33[3][3];
+        const float (*Rp)[3] = NULL;
+        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+        if (f->dip_sig2 > 0.0f && mh_ref > 0.2f * h_mag) {
+            /* â_NED = ĥ_hor × ê_D = (ĥ_hor_y, −ĥ_hor_x, 0) */
+            float a_ned[3] = { f->m_ref[1]/mh_ref, -f->m_ref[0]/mh_ref, 0.0f };
+            float a_body[3];
+            m33_Atx(R, a_ned, a_body);
+            float u[3] = {
+                a_body[1]*h[2] - a_body[2]*h[1],
+                a_body[2]*h[0] - a_body[0]*h[2],
+                a_body[0]*h[1] - a_body[1]*h[0],
+            };
+            float un = v3_norm(u);
+            if (un > 1e-6f) {
+                for (int i = 0; i < 3; i++) u[i] /= un;
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++)
+                        R33[i][j] = (i == j ? Rm_n : 0.0f)
+                                  + f->dip_sig2 * u[i] * u[j];
+                Rp = (const float (*)[3])R33;
+            }
+        }
+        /* aw NULL: the magnetic field is not contaminated by acceleration. */
         rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE,
-                         &f->nis_mag_ema, f->nis_mag_alpha);
+                         &f->nis_mag_ema, f->nis_mag_alpha, NULL, Rp);
     }
     (void)rc;
 }
@@ -1340,7 +1743,32 @@ void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
      * window on the next sample (imu.c), so the two cannot be left in the
      * half-engine state this used to produce on SIGHUP.
      */
+    bool was_enabled = f->wave_enabled;
     mekf_derive_tuning(f, cfg);
+
+    /*
+     * The wave block is the one piece of P a reconfigure cannot leave alone,
+     * because enabling and disabling changes which states exist:
+     *
+     *   off → on:  seed the steady-state variance, else the state is pinned at
+     *              its (zero) initial estimate with zero uncertainty and can
+     *              never learn anything.
+     *   on → off:  clear the block and the nominal estimate, else a stale a_w
+     *              would keep biasing the gravity prediction with no dynamics
+     *              left to decay it — and the cross-covariances would keep
+     *              feeding a state nothing updates.
+     *
+     * A σ or τ change with the state left enabled needs neither: the GM
+     * process re-equilibrates through Q_w within a few τ, and discarding the
+     * learned cross-covariance would cost more than the transient.
+     */
+    if (f->wave_enabled && !was_enabled) {
+        for (int i = 6; i < MEKF_N; i++) f->P[i][i] = f->wave_sig2;
+    } else if (!f->wave_enabled && was_enabled) {
+        for (int i = 0; i < MEKF_N; i++)
+            for (int j = 6; j < MEKF_N; j++) f->P[i][j] = f->P[j][i] = 0.0f;
+        f->wave_acc[0] = f->wave_acc[1] = f->wave_acc[2] = 0.0f;
+    }
 }
 
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)

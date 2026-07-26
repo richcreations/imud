@@ -176,8 +176,14 @@ static imud_config_t bench_cfg(void)
     c.accel_skip_thresh = 0.05;
     c.mag_reject_gauss  = 0.05;
     c.mag_odr_hz        = 104;
+    c.imu_odr_hz        = 833;
     c.mag_yaw_only      = true;
     c.startup_settle_sec = 30.0;
+    /* Shipped Gauss–Markov wave-state defaults (config.c). fit-ra reports on
+     * the filter the daemon actually runs, so the replay has to be configured
+     * like the daemon — with these at 0 it measures a filter nobody ships. */
+    c.mekf_wave_accel       = 0.8;
+    c.mekf_wave_accel_tau_s = 0.5;
     return c;
 }
 
@@ -186,10 +192,9 @@ static imud_config_t bench_cfg(void)
 static char g_cap[256];
 
 /*
- * The headline cross-validation. test_fusion measures the daemon's own
- * nis_accel EMA at 25.2 for this scenario in yaw-only mode; fit-ra computes
- * the same statistic by an independent path (explicit S and d² recomputed
- * outside the filter, over a file round-trip). They must agree.
+ * The headline cross-validation: fit-ra replays the same seaway the fusion
+ * benchmark drives, over a file round-trip, and must reach the same verdict
+ * about the measurement model.
  *
  * This cross-check earns its keep: it is what exposed the health-EMA gain
  * bug. The daemon's EMA used a per-update gain sized from the IMU ODR, but
@@ -197,6 +202,12 @@ static char g_cap[256];
  * converging ~20× too slowly and reporting its own seed value of 1.0 rather
  * than the data. fit-ra's uniform mean over the window disagreed, and the
  * disagreement was the bug.
+ *
+ * The verdict itself changed with ROADMAP §10.5. It used to be "NIS ≈ 25, the
+ * model is over-confident"; with the Gauss–Markov wave state carrying the
+ * correlated part of the residual it is "NIS ≈ 1 — and here is the ≈70 it
+ * would have been without the state", which fit-ra now measures in a second
+ * pass so the two can be asserted against each other.
  */
 static void test_fitra_matches_bench_nis(void)
 {
@@ -215,14 +226,24 @@ static void test_fitra_matches_bench_nis(void)
     EXPECT(rep.n_accel_upd > 1000, "enough accel updates were analysed");
     EXPECT(rep.duration_s > 30.0,  "measured window spans the capture");
 
-    /* The daemon's benchmark reads 25.2 for this scenario. Allow a wide band
-     * — the capture starts from a zero bias estimate where the benchmark
-     * seeds a near-truth one, and the settle windows differ — but the two
-     * must not disagree by an order of magnitude. */
-    EXPECT(rep.nis_mean > 5.0 && rep.nis_mean < 90.0,
-           "fit-ra mean NIS agrees with the fusion benchmark (~25)");
-    EXPECT(rep.nis_mean > 3.0,
-           "fit-ra confirms the measurement model is over-confident (ROADMAP 10.1)");
+    /*
+     * With the shipped wave state the model is no longer over-confident. A
+     * one-sided bound only: this synthetic capture is calmer than the shipped
+     * σ budgets for (it reads ≈0.14), and being conservative is not a fault —
+     * but reading HIGH would mean the state is not doing its job.
+     */
+    EXPECT(rep.nis_mean < 3.0,
+           "fit-ra: with the wave state on, the model is not over-confident");
+
+    /*
+     * ...and the same capture through the same code with the state off is the
+     * control. This is the measurement that says the wave state — not a lucky
+     * capture — is what brought NIS down.
+     */
+    EXPECT(rep.nis_unmodelled > 10.0,
+           "fit-ra: without the wave state the same seaway is wildly inconsistent");
+    EXPECT(rep.nis_unmodelled > 20.0 * rep.nis_mean,
+           "fit-ra: the wave state accounts for the difference");
 
     /* With the 25γ gate almost nothing should be rejected — the property the
      * gate widening was made for. The old 9γ gate must show visibly more. */
@@ -235,10 +256,57 @@ static void test_fitra_matches_bench_nis(void)
 }
 
 /*
- * The residual in a seaway is wave-driven and therefore strongly
- * time-correlated. This is the measurement that justifies NOT trying to fix
- * covariance consistency with a bigger scalar R (ROADMAP §10.1/§10.5): if
- * the residual were white, a scalar R would be the right tool.
+ * fit-ra's σ/τ suggestions are what an operator tunes from, so they have to
+ * recover a disturbance whose truth is known. The synthesised capture drives
+ * the same 1.2/1.2/1.0 m/s² wave-orbital tone the fusion benchmark does —
+ * per-axis RMS 0.80 m/s² — and fit-ra sees it only through a file, a replayed
+ * filter, and a 67%-decimating skip band.
+ */
+static void test_fitra_suggests_wave_knobs(void)
+{
+    begin("test_fitra_suggests_wave_knobs");
+    int fb = g_fail;
+
+    imud_config_t cfg = bench_cfg();
+    imud_cal_t cal = identity_cal();
+    fitra_report_t rep; char err[256] = {0};
+
+    if (fitra_run(g_cap, &cfg, &cal, 30.0, &rep, err, sizeof err) != 0) {
+        EXPECT(0, err); end(fb); return;
+    }
+
+    EXPECT(rep.wave_configured, "the replayed config had the wave state on");
+    EXPECT(rep.wave_sigma_suggest > 0.4 && rep.wave_sigma_suggest < 1.4,
+           "suggested sigma recovers the capture's true 0.80 m/s^2");
+    EXPECT(rep.wave_tau_suggest > 0.2 && rep.wave_tau_suggest < 6.0,
+           "suggested tau is a plausible seaway correlation time");
+
+    /*
+     * The τ estimator divides by the mean gap between ACCEPTED samples, not by
+     * the IMU period. With 67% of samples discarded by the |a| band those
+     * differ by ~3×, and using the period reported τ that much too small — the
+     * bias behind the "τ ≈ 0.3–0.9 s" figure in the older notes. A τ below the
+     * IMU period would mean the correction was dropped.
+     */
+    EXPECT(rep.wave_tau_suggest > 0.05,
+           "tau is corrected for the skip band, not the raw IMU period");
+
+    end(fb);
+}
+
+/*
+ * The seaway residual is wave-driven and therefore strongly time-correlated.
+ * That measurement is what justified NOT trying to fix covariance consistency
+ * with a bigger scalar R (ROADMAP §10.1) and what motivated the Gauss–Markov
+ * state (§10.5) — and it is now ALSO the pass/fail criterion for that state,
+ * from the two ends of the same replay:
+ *
+ *   with the state off  → the residual is correlated (that is the problem)
+ *   with the state on   → the residual is white     (that is the fix)
+ *
+ * A whitened residual is the strongest available statement that the state is
+ * modelling the disturbance rather than merely inflating the covariance until
+ * the innovations stop complaining.
  */
 static void test_fitra_detects_time_correlation(void)
 {
@@ -253,10 +321,19 @@ static void test_fitra_detects_time_correlation(void)
         EXPECT(0, err); end(fb); return;
     }
 
-    EXPECT(rep.resid_tau_s > 0.01,
-           "residual is measurably time-correlated, not white");
-    EXPECT(rep.na_raw > rep.na_configured,
-           "raw-residual estimate exceeds the datasheet-derived default");
+    EXPECT(rep.wave_tau_suggest > 0.01,
+           "unmodelled residual is measurably time-correlated, not white");
+    EXPECT(rep.resid_tau_s < 0.5 * rep.wave_tau_suggest,
+           "the wave state whitens the residual it is given");
+    EXPECT(rep.resid_var_unmodelled > 4.0 * rep.resid_var_total,
+           "and shrinks it: the disturbance is explained, not absorbed into tilt");
+
+    /* Raw-residual Na is a white-noise reading of the UNMODELLED residual, so
+     * it must still exceed the datasheet value — the seaway is really there. */
+    double na_raw_unmodelled = 9.80665 * sqrt(rep.resid_var_unmodelled /
+                                              (double)cfg.imu_odr_hz);
+    EXPECT(na_raw_unmodelled > rep.na_configured,
+           "unmodelled residual still exceeds the datasheet-derived default");
     end(fb);
 }
 
@@ -297,6 +374,7 @@ int main(void)
     write_wave_capture(g_cap, 833, 90);
 
     test_fitra_matches_bench_nis();
+    test_fitra_suggests_wave_knobs();
     test_fitra_detects_time_correlation();
     test_fitra_rejects_bad_input();
 

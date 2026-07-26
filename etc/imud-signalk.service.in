@@ -31,8 +31,10 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
-# UDP out (AF_INET) + the imud stream socket (AF_UNIX) only.
-RestrictAddressFamilies=AF_INET AF_UNIX
+# UDP out + the imud stream socket (AF_UNIX) only.  AF_INET6 is required
+# because dest_addr resolves with getaddrinfo(AF_UNSPEC) since 1.7: a hostname
+# that resolves to IPv6 fails at socket() without it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # No device access — the bridge touches no hardware.
 DevicePolicy=closed
 

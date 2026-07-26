@@ -10,9 +10,14 @@
  * Reference: Joan Solà, "Quaternion Kinematics for the Error-State Kalman
  * Filter," arXiv:1711.02508.  Notation follows that paper directly.
  *
- * Error-state: δx = [δθ(3), δb(3)] — rotation error + gyro bias error.
- * Nominal state: q (unit quaternion, body→NED), b (gyro bias rad/s).
- * Covariance: P (6×6, symmetric positive-definite).
+ * Error-state: δx = [δθ(3), δb(3), δa_w(3)] — rotation error, gyro bias error,
+ * and wave-acceleration error (a first-order Gauss–Markov process modelling the
+ * time-correlated seaway disturbance on the gravity measurement; see §4.1 of
+ * docs/math.md).  The wave block is APPENDED so the attitude and bias blocks
+ * keep their indices — mekf_get_state and the wire format are untouched.
+ * Nominal state: q (unit quaternion, body→NED), b (gyro bias rad/s),
+ * a_w (wave acceleration in body frame, normalised gravity units).
+ * Covariance: P (9×9, symmetric positive-definite).
  *
  * Coordinate convention:
  *   q represents the body→NED rotation:  v_NED = R(q) × v_body
@@ -28,13 +33,24 @@
 #include "types.h"
 #include "config.h"
 
+/*
+ * Error-state dimension.  [δθ(3) | δb(3) | δa_w(3)].
+ *
+ * The wave block is inert (P rows/columns 6–8 identically zero, Φ block = I,
+ * H block = 0) unless BOTH mekf_wave_accel and mekf_wave_accel_tau_s are
+ * configured positive, in which case the filter is bit-for-bit the 6-state
+ * filter it was before.  There is no compile-time or runtime dimension switch.
+ */
+#define MEKF_N 9
+
 typedef struct {
     /* ── Nominal state ────────────────────────────────────────────────── */
-    float q[4];      /* unit quaternion [w, x, y, z], body→NED */
-    float bias[3];   /* gyro bias estimate, rad/s */
+    float q[4];        /* unit quaternion [w, x, y, z], body→NED */
+    float bias[3];     /* gyro bias estimate, rad/s */
+    float wave_acc[3]; /* wave-acceleration estimate, body frame, g units */
 
-    /* ── Error-state covariance P (6×6) ───────────────────────────────── */
-    float P[6][6];   /* [δθ(3) | δb(3)], row-major */
+    /* ── Error-state covariance P (9×9) ───────────────────────────────── */
+    float P[MEKF_N][MEKF_N];   /* [δθ(3) | δb(3) | δa_w(3)], row-major */
 
     /* ── Magnetometer reference ───────────────────────────────────────── */
     float m_ref[3];     /* Earth field direction in NED (with magnitude), Gauss */
@@ -61,6 +77,22 @@ typedef struct {
     bool  g_body_valid;  /* true once an accel update has stashed g_body */
     float acc_quiet_ema; /* EMA of (|a|/g−1)², τ≈2 s — platform quiescence */
     float speed_mps;     /* speed over ground for centripetal correction; 0 = off */
+
+    /* ── Gauss–Markov wave-acceleration state (ROADMAP §10.5) ─────────────
+     * Derived in mekf_derive_tuning from mekf_wave_accel / _tau_s. */
+    float wave_tau;      /* GM correlation time, s */
+    float wave_sig2;     /* GM steady-state variance per axis, g² */
+    bool  wave_enabled;  /* both knobs positive — otherwise the block is inert */
+
+    /* ── Magnetic dip-reference uncertainty ───────────────────────────────
+     * Variance (rad²) of the DIP angle of m_ref — the one part of the
+     * magnetic reference that alignment cannot get right in a seaway and
+     * that no amount of in-run learning can heal (see mekf_update_mag).
+     * Feeds a rank-1 anisotropic term into the 3-D mag update's R so the
+     * error it causes is admitted into P instead of biasing roll/pitch
+     * invisibly. 0 = the dip reference is exact (WMM). Unused in yaw-only
+     * mode, which never reads the dip channel. */
+    float dip_sig2;
 
     /* ── Compass health diagnostics (τ ≈ 30 s at 100 Hz mag ODR) ──────────
      * Fed BEFORE the rejection gates in mekf_update_mag — rejected samples
@@ -147,6 +179,22 @@ void mekf_predict(mekf_t *f, const imu_sample_t *s, float dt_s);
  * Expects accel in body frame as calibrated m/s² (specific force convention).
  */
 void mekf_update_accel(mekf_t *f, const imu_sample_t *s);
+
+/*
+ * mekf_accel_probe — the pre-update half of mekf_update_accel, exposed for
+ * offline analysis (imud-cal fit-ra).  Reproduces the centripetal correction,
+ * the |a| skip band, the measured and predicted gravity directions, and the
+ * normalised innovation distance d² = νᵀS⁻¹ν, all from the filter's own state
+ * and WITHOUT modifying it.
+ *
+ * Exported rather than reimplemented so the offline tool and the daemon can
+ * never drift apart — the two copies did, silently, before this existed.
+ *
+ * Returns false when the sample would be skipped (|a| outside the band, or a
+ * singular S); innov and d2_out are then untouched.
+ */
+bool mekf_accel_probe(const mekf_t *f, const imu_sample_t *s,
+                      float innov[3], float *d2_out);
 
 /*
  * mekf_update_mag — magnetometer heading correction.

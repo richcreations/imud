@@ -47,8 +47,12 @@ typedef struct {
     double d2_frac_over_9g;    /* fraction with d² > 9 × gate (pre-1.7 gate) */
 
     /* Residual autocorrelation time, s — how far from white the residual is.
-     * A large value is the signature of wave-orbital contamination and means
-     * no scalar white R can be fully correct. 0 when not estimable. */
+     * A large value is the signature of wave-orbital contamination. 0 when not
+     * estimable, and near 0 when the wave state has absorbed the correlation,
+     * which is what a correctly tuned filter looks like. Computed from the gap
+     * between consecutive ACCEPTED samples, not the IMU period: the |a| band
+     * discards most samples in a seaway, so using the raw period understates τ
+     * by whatever the acceptance ratio happens to be (typically 3–10×). */
     double resid_tau_s;
 
     /* Recommendations, both as mekf_accel_noise values (m/s²/√Hz). */
@@ -56,6 +60,24 @@ typedef struct {
     double na_consistent;      /* bisected so mean NIS ≈ 1 */
     bool   na_consistent_ok;   /* false when the bisection did not converge */
     double na_configured;      /* what the config passed in, for comparison */
+
+    /*
+     * Gauss–Markov wave state (ROADMAP §10.5).
+     *
+     * The suggestions come from a SEPARATE replay with the wave state forced
+     * off, because the disturbance has to be measured before it is modelled:
+     * with a well-tuned state enabled, the residual is white and small by
+     * construction and would suggest turning the state off. So `wave_*_suggest`
+     * describes the seaway; nis_mean and resid_* above describe how the
+     * configured filter is coping with it.
+     */
+    bool   wave_configured;    /* the replayed config had the state enabled */
+    double wave_sigma_cfg;     /* mekf_wave_accel as configured, m/s² */
+    double wave_tau_cfg;       /* mekf_wave_accel_tau_s as configured, s */
+    double wave_sigma_suggest; /* GM σ implied by the unmodelled residual, m/s² */
+    double wave_tau_suggest;   /* GM τ implied by the unmodelled residual, s */
+    double resid_var_unmodelled;  /* residual variance with the state off */
+    double nis_unmodelled;        /* mean NIS with the state off */
 } fitra_report_t;
 
 /*

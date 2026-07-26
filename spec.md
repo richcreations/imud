@@ -381,10 +381,19 @@ pipeline, or bundle adjustment — the consumer knows not just attitude but
 
 ### State and Noise Model
 
-The error-state is a 3-vector δθ (small-angle rotation error) plus a 3-vector
-gyro bias estimate b — 6 states total. The full quaternion q is maintained
-separately on the SO(3) manifold and updated multiplicatively, avoiding the
-rank-deficiency problem of naively applying EKF to a 4-component quaternion.
+The error-state is a 3-vector δθ (small-angle rotation error), a 3-vector
+gyro bias estimate b, and a 3-vector wave-acceleration estimate a_w — 9 states
+total. The full quaternion q is maintained separately on the SO(3) manifold and
+updated multiplicatively, avoiding the rank-deficiency problem of naively
+applying EKF to a 4-component quaternion.
+
+`a_w` (1.7) models the wave-orbital acceleration that contaminates the gravity
+measurement in a seaway as a first-order Gauss–Markov process, tuned by
+`mekf_wave_accel` (steady-state σ, m/s²) and `mekf_wave_accel_tau_s`
+(correlation time). Without it the filter treats 833 strongly correlated
+samples per second as 833 independent measurements of gravity, collapses its
+own covariance, and diverges. Either knob at 0 disables the state and returns
+the pre-1.7 6-state filter exactly. See `docs/math.md` §4.1.1 and §4.7.1.
 
 The `mekf_*` noise parameters are **tuning knobs**, seeded from the sensor
 datasheets but not bound to them. In particular `mekf_gyro_noise` (default
@@ -509,6 +518,9 @@ data has real 3D coverage.
 
 ### Rough-sea mechanics (v1.1 fusion revision)
 
+- **Gauss–Markov wave-acceleration state** (1.7): the correlated part of the
+  seaway's gravity disturbance is modelled in the filter state rather than
+  mis-described as white measurement noise. See `docs/math.md` §4.7.1.
 - **Joseph-form covariance updates** everywhere, plus explicit
   symmetrization after predict — P stays symmetric positive-definite in
   float arithmetic over multi-day runs.
@@ -765,7 +777,10 @@ bit 2   fusion_converged   MEKF covariance trace < threshold (filter settled)
 bit 3   accel_cal          Accel calibration applied
 bit 4   gyro_cal           Gyro bias applied
 bit 5   mag_cal            Mag hard/soft-iron cal applied
-bit 6   motion             Significant motion detected
+bit 6   motion             RETIRED — never set. Use accel_quiescence (a
+                           continuous disturbance metric) or bit 13. The bit
+                           is not reused: a stale consumer would read a new
+                           meaning through the old name.
 bit 7   fifo_overflow      ISM330 FIFO overflowed since last packet (gap!)
 bit 8   startup            Gyro bias estimation still in progress
 bit 9   shutdown           Final packet before clean exit
@@ -793,6 +808,27 @@ The v1.2 diagnostic fields (`gyro_bias_*`, `gyro_bias_var_*`, `heave_rate`,
 `pitch_period_s`, `pitch_amplitude`, `mag_anomaly`, `mag_residual`,
 `innov_weight`, `innov_reject`) are
 body-frame or frame-neutral scalars and are **not** affected by `coord_frame`.
+
+### Near-vertical pitch: read the quaternion, not the Euler angles
+
+`quat_w/x/y/z` is the filter's actual attitude state. `pitch`, `roll`, `yaw`,
+`heading_deg` and `rate_of_turn` are derived from it as ZYX intrinsic Euler
+angles, and that parameterisation is **singular at pitch = ±90°** by
+construction — not as a filter limitation but as a property of any three-angle
+representation. Approaching vertical, roll and yaw stop being separately
+determined: they trade off against each other, so small attitude changes
+produce large and noisy swings in both, and `heading_deg` and `rate_of_turn`
+degenerate with them. Exactly at ±90° they are undefined.
+
+Consumers that can encounter steep pitch — aircraft, gimbals, tilting camera
+rigs, a handheld unit pointed up or down — must read `quat_*` and derive what
+they need from it. The quaternion is never singular and is always valid. The
+covariance in `cov[9]` is likewise an error covariance in the tangent space of
+the quaternion, so it stays well-conditioned where the Euler angles do not.
+
+This is not a concern for surface-vessel use, where pitch stays small; the
+Euler fields are provided because they are what marine consumers and NMEA
+sentences want. The quaternion is the authoritative field regardless.
 
 -----
 
@@ -842,6 +878,39 @@ mekf_gyro_noise     = 0.007      # rad/s/√Hz — tuned Q (raw sensor ≈ 1.2e-
 mekf_gyro_bias      = 0.00015   # rad/s      (in-run bias instability)
 mekf_accel_noise    = 0.0022    # m/s²/√Hz  (ISM330DHCX: ~186 µg/√Hz × 9.81)
 mekf_mag_noise      = 0.0004    # Gauss/√Hz (MMC5983MA: 0.4 mGauss RMS)
+# Gauss-Markov wave-acceleration state (1.7). THIS is the knob for "the sea is
+# rough", not mekf_accel_noise above.
+#
+# Wave-orbital acceleration contaminates the gravity measurement and is
+# correlated over roughly a second, not white. Modelling it as a first-order
+# Gauss-Markov process lets 833 correlated samples per second correctly stop
+# adding information; without it the filter treats them as 833 independent
+# measurements of gravity, collapses its own covariance and diverges.
+#
+#   mekf_wave_accel       steady-state sigma of the disturbance, m/s^2
+#   mekf_wave_accel_tau_s its correlation time, s
+#
+# Either at 0 disables the state entirely and returns the pre-1.7 6-state
+# filter. NOTE: unrelated to wave_tau_s below, which is the sea-state
+# REPORTING window.
+#
+# The defaults were tuned over the 12-seed wave benchmark and agree with three
+# independent measurements of the same seaway (docs/math.md 4.7.1). Measured
+# effect vs 1.6: accel NIS 19.3/25.2 -> 1.01/0.69, NEES(trace) 18.3/7.8 ->
+# 3.47/0.99, 3-D heading RMS 3.07 -> 0.83 deg. Run `imud-cal fit-ra` on a
+# capture of YOUR worst conditions to check both values; it prints suggestions.
+# Sigma too small is the failure mode that hurts, so round up. Long tau (> ~1 s)
+# lets the state absorb genuine tilt error - the benchmark degrades sharply
+# past 2 s.
+mekf_wave_accel       = 0.8     # m/s^2  (RMS wave-orbital acceleration)
+mekf_wave_accel_tau_s = 0.5     # s      (correlation time)
+
+# Uncertainty of the magnetic reference's DIP angle. 3-D vector fusion only
+# (mag_yaw_only = false), where the dip constrains roll/pitch. Admits the
+# alignment's residual dip error into P via a rank-1 anisotropic noise term.
+# 0 = the dip is exact (a WMM reference removes it at the source).
+mekf_mag_dip_sigma_deg = 1.0    # degrees
+
 mag_reject_gauss    = 0.05      # strong-anomaly cutoff (~10% of Earth field);
                                  # fine consistency is handled by χ² innovation gates
 accel_skip_thresh   = 0.05      # skip accel update if ||a| - 1g| > 5% of g
@@ -865,6 +934,7 @@ engine_accel_skip_thresh = 0.20  # skip threshold used while engine detected
 file               = "/etc/imud/cal.json"   # written by imud-cal, read by imud
 startup_settle_sec = 5.0         # discard sensor data for this long after start
 gyro_bias_sec      = 2.0         # stationary still-window at startup (0 to skip)
+align_window_sec   = 5.0         # accel+mag averaging window for initial alignment
 
 [nmea]
 # [restart]: enabled, dest_addr, dest_port, tcp_enabled, tcp_bind_addr, tcp_port
@@ -1040,7 +1110,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 
 | Section     | Fields                                                                 |
 |-------------|------------------------------------------------------------------------|
-| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s`, `wave_tau_s` — applied next predict |
+| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s`, `wave_tau_s`, `mekf_wave_accel`, `mekf_wave_accel_tau_s`, `mekf_mag_dip_sigma_deg` — applied next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |
@@ -1329,18 +1399,41 @@ make CC=aarch64-linux-gnu-gcc
 3. **`cal_file` default** — `config_defaults()` sets `/etc/imud/cal.json`
    (alongside the main config; written by `imud-cal`, read-only by the daemon).
 
-4. **The measurement model is over-confident** — confirmed, but not fixable by
-   retuning `Ra`. Over the 12-seed wave benchmark, mean NIS is 19 (3-D) / 25
-   (yaw-only) where a consistent model reads 1, so the filter is ~4.5×
-   over-confident in σ. Sweeping `mekf_accel_noise` across four orders of
-   magnitude shows NIS reaches 1.0 only at `Na` ≈ 0.03, which costs the marine
-   default 2.31° → 8.58° of attitude RMS and drives NEES the wrong way; and
-   NEES(strict) for 3-D stays pinned at 44–64 throughout, so P's *shape* is
-   wrong and no isotropic scalar can fix it. The cause is that the seaway
-   residual is wave-orbital and time-correlated (τ ≈ 0.3–0.9 s, measured by
-   `imud-cal fit-ra`), and a white isotropic R cannot describe a coloured
-   disturbance. The remaining work is to model the correlation —
-   `docs/ROADMAP.md` §10.5.
+4. **The measurement model was over-confident** — RESOLVED in 1.7 by modelling
+   the correlation, after confirming it could not be fixed by retuning `Ra`.
+   Sweeping `mekf_accel_noise` across four orders of magnitude showed NIS
+   reaching 1.0 only at `Na` ≈ 0.03, which cost the marine default 2.31° →
+   8.58° of attitude RMS and drove NEES the wrong way, while NEES(strict) for
+   3-D stayed pinned at 44–64 throughout: P's *shape* was wrong, and no
+   isotropic scalar can fix that. The cause is that the seaway residual is
+   wave-orbital and time-correlated, and a white isotropic R cannot describe a
+   coloured disturbance.
+
+   The fix is the Gauss–Markov wave-acceleration state (`mekf_wave_accel`,
+   `mekf_wave_accel_tau_s`), which carries the correlated part in the filter
+   state so repeated samples correctly stop adding information. Measured over
+   the 12-seed benchmark, against the pre-1.7 baseline: accel NIS 19.3/25.2 →
+   1.01/0.69, NEES(trace) 18.3/7.8 → 3.47/0.99, 3-D attitude RMS 5.65° →
+   4.45°, 3-D heading 3.07° → 0.83°, yaw-only heading 1.96° → 1.02° with
+   attitude unchanged at 2.31°, and both the Huber cap and the gross-reject
+   gate idle. `docs/math.md` §4.7.1.
+
+   Doing this exposed a further real bug: `m33_inv` tested for singularity on
+   an absolute `|det| < 1e-12`, but S for the gravity update carries physical
+   units and its determinant sits near 1e-13 at ordinary conditioning — so
+   **87% of accel updates in the benchmark were being silently discarded** and
+   the health EMAs were fed only by the survivors. The test is now relative to
+   the matrix scale.
+
+   That in turn exposed a third bug, in the initial alignment: it averaged a
+   hardcoded ~1 s of sensor data, about a fifth of a roll period, so a daemon
+   started underway aligned to an arbitrary point in the wave cycle and baked
+   the resulting tilt error permanently into the magnetic reference's dip
+   (47.7° of attitude RMS in the marine default against 2.19° at a 5 s window).
+   The window is now `align_window_sec`, default 5 s. The residual dip error
+   cannot be learned out at sea, so 3-D vector mode admits it into the
+   covariance via `mekf_mag_dip_sigma_deg` — a rank-1 anisotropic term in the
+   magnetometer noise. `docs/math.md` §4.3 and §4.8.1, `docs/ROADMAP.md` §10.5.
 
    Investigating this found and fixed two separate real bugs: the gross-outlier
    reject gate was rejecting 26% of ordinary wave motion at 9γ (now 25γ, which

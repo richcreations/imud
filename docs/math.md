@@ -171,15 +171,62 @@ multiplicatively so the quaternion never leaves the unit sphere.
 Nominal state (`mekf_t`, `fusion.h:31`):
 - $q$ — unit quaternion, body→NED (`q[4]`).
 - $b$ — gyro bias, rad·s⁻¹ (`bias[3]`).
+- $a_w$ — wave acceleration, body frame, normalized gravity units
+  (`wave_acc[3]`); see §4.1.1.
 
 Error state (never stored explicitly; the axis of `P`):
 
-$$ \delta x = [\,\delta\theta\ (3)\ \mid\ \delta b\ (3)\,] \in \mathbb{R}^6, $$
+$$ \delta x = [\,\delta\theta\ (3)\ \mid\ \delta b\ (3)\ \mid\ \delta a_w\ (3)\,]
+   \in \mathbb{R}^9, $$
 
-$\delta\theta$ = small-angle rotation error (rad), $\delta b$ = bias error.
-Covariance $P\in\mathbb{R}^{6\times6}$ (`P[6][6]`), symmetric PD; top-left
-3×3 is attitude-error covariance (rad²), bottom-right 3×3 is bias-error
-covariance ((rad·s⁻¹)²).
+$\delta\theta$ = small-angle rotation error (rad), $\delta b$ = bias error,
+$\delta a_w$ = wave-acceleration error.
+Covariance $P\in\mathbb{R}^{9\times9}$ (`P[MEKF_N][MEKF_N]`, `MEKF_N = 9`),
+symmetric PD; top-left 3×3 is attitude-error covariance (rad²), the middle
+3×3 is bias-error covariance ((rad·s⁻¹)²), the trailing 3×3 is
+wave-acceleration-error covariance (g²).
+
+The wave block is **appended**, not inserted, so the attitude and bias blocks
+keep their indices: `mekf_get_state()` reads `P[0:3][0:3]` and `P[3][3]`,
+`P[4][4]`, `P[5][5]` exactly as before and the wire format is unchanged.
+
+#### 4.1.1 The wave-acceleration state
+
+The gravity measurement is contaminated in a seaway by wave-orbital
+acceleration, which is **correlated over ~0.5–1.5 s, not white**. A white $R_a$
+therefore tells the filter that 833 samples per second are 833 independent
+measurements of gravity when they are closer to one per wave. The consequence
+is not subtle: the filter's covariance collapses, its gain vanishes, and it
+diverges into its own over-confidence (measured: attitude RMS 9.5°/11.4°,
+NIS ≈ 56 — §4.7).
+
+$a_w$ is modelled as a **first-order Gauss–Markov (Ornstein–Uhlenbeck)
+process** with steady-state standard deviation $\sigma$ and correlation time
+$\tau$:
+
+$$ \dot a_w = -\frac{1}{\tau}a_w + w,\qquad
+   \mathbb{E}[a_w a_w^{\mathsf T}] = \sigma^2 I_3 . $$
+
+$\sigma$ is configured in m·s⁻² (`mekf_wave_accel`, the units a spec sheet and
+`imud-cal fit-ra` both speak) and stored as the variance $\sigma_g^2 =
+(\sigma/g)^2$ in `wave_sig2`; $\tau$ is `mekf_wave_accel_tau_s`. Either at 0
+disables the state, and the disabled filter is bit-for-bit the pre-1.7 6-state
+filter — $P$'s wave rows and columns stay identically zero, $\Phi$'s block is
+$I$, and the measurement Jacobian's block is never executed.
+
+**Frame.** $a_w$ is carried in the **body** frame. Wave-orbital acceleration is
+arguably a property of the seaway and so NED-stationary, which would add a
+transport term $\Phi_w = e^{-dt/\tau}(I-[\omega\,dt]_\times)$. That was
+implemented and measured (`-DWAVE_TRANSPORT` in `fusion.c`): it changes the
+benchmark in the third decimal and is slightly *worse* on yaw-only attitude
+RMS (2.308° → 2.325°), because at ±15° of roll the frame rotation is small
+compared with $\tau$. The body-frame form is kept for the simpler Jacobian.
+
+**Observability.** $\delta\theta$ and $\delta a_w$ both act in the tangent
+plane of the measured direction, so they are separated *only* by their
+dynamics — attitude error is a random walk driven by gyro noise, wave
+acceleration decays with $\tau$. Too large a $\sigma$ or $\tau$ lets the wave
+state absorb genuine tilt error; §4.7 records the sweep that bounds this.
 
 The nominal/error relationship is the **right** (local) perturbation
 $q_{true} = \hat q \otimes \delta q(\delta\theta)$, established by the sign of
@@ -195,7 +242,13 @@ Nominal: $q=[1,0,0,0]$, $b=$ `gyro_bias_init` (from the startup still window,
 
 Initial covariance (diagonal):
 $$ P_{0}[0{:}3] = (0.175)^2\ \mathrm{rad^2}\ (\approx10°),\qquad
-   P_{0}[3{:}6] = (0.001)^2\ (\mathrm{rad\,s^{-1}})^2. $$
+   P_{0}[3{:}6] = (0.001)^2\ (\mathrm{rad\,s^{-1}})^2,\qquad
+   P_{0}[6{:}9] = \sigma_g^2 . $$
+
+The wave block starts at its **steady state**, not at a wide acquisition
+value: the Gauss–Markov process is stationary, so there is no transient to
+model. (It is seeded to 0 when the state is disabled, which is what keeps the
+block inert.)
 
 Discrete process-noise variances, step $dt=1/\text{ODR}$:
 $$ Q_g = N_g^2\,dt,\qquad Q_b = N_b^2\,dt, $$
@@ -212,7 +265,12 @@ $N_m=$ `mekf_mag_noise`, $f_{s,\text{mag}}=$ `mag_odr_hz`.
 Derived thresholds: accel skip band
 $[\,1-s_k,\ 1+s_k\,]$ with $s_k=$ `accel_skip_thresh`;
 $mag\_reject\_sq = (\text{mag\_reject\_gauss})^2$; convergence threshold
-$conv\_thresh = 3\,(0.5°\text{ in rad})^2$ (`:471`); m_ref EMA gain
+$conv\_thresh = 3\,\theta_c^2$ with
+$\theta_c = \max(0.5°,\ 0.30\,\arcsin\sigma_g)$ — 1.40° at the default
+$\sigma$. The flat 0.5° it used to be was set against a filter whose
+steady-state attitude variance was not believable; with the wave state $P$
+tells the truth, and the truth has a floor near 0.9°/axis that a 0.5°
+threshold would never reach (§4.1.1). m_ref EMA gain
 $mref\_alpha = 1/(\tau_{mref}\, f_{s,\text{mag}})$ with $\tau_{mref}=300$ s
 (`:467`).
 
@@ -228,6 +286,28 @@ not driven by the Allan-variance characterization of §12.5.
 
 Deterministic initial attitude from one static accel+mag pair (a
 tilt-then-heading decomposition, TRIAD-family).
+
+**The caller supplies a window mean, not one sample** (`imu.c`, the align
+loop): the accelerometer and magnetometer are averaged over
+`align_window_sec` before this is called. That window matters far more than
+its obscurity suggests, because whatever tilt error survives it is baked
+permanently into $m_{ref}$'s dip (§4.8.1) and, in 3-D mode, becomes a constant
+roll/pitch bias. One second — the hardcoded value before 1.7 — is about a
+fifth of a typical roll period, so it averages an arbitrary fraction of the
+cycle. Measured over the 12-seed wave benchmark, attitude RMS:
+
+| window | yaw-only (default) | 3-D | 3-D NEES(strict) |
+|---|---|---|---|
+| 1 s | 47.7° | 6.72° | 339 |
+| 2 s | 2.28° | 5.78° | 250 |
+| 3 s | 2.11° | 2.38° | 38.9 |
+| **5 s (default)** | **2.19°** | **1.18°** | **5.74** |
+| 15 s | 2.19° | 0.90° | 1.71 |
+| 30 s | 2.24° | 0.93° | 1.94 |
+
+The marine default is flat from ~2 s; 3-D keeps improving to ~15 s. The default
+is 5 s, and the cost of a longer window is purely startup latency before the
+filter produces usable attitude — worth paying at a mooring, not underway.
 
 **Tilt from accelerometer.** With $\widehat g_b=-a_b/\lVert a_b\rVert$ the
 gravity direction in body (guard: reject if $\lVert a_b\rVert<0.5g$):
@@ -285,16 +365,33 @@ after.
 discrete transition (`fusion.c:711`):
 
 $$
-\Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt \\
-0_3 & I_3 \end{bmatrix},\qquad
+\Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt & 0_3 \\
+0_3 & I_3 & 0_3 \\ 0_3 & 0_3 & \varphi\,I_3\end{bmatrix},\qquad
 Q_d = \operatorname{diag}\!\big(Q_g\tfrac{dt}{dt_0} I_3,\
-Q_b\tfrac{dt}{dt_0} I_3\big),
+Q_b\tfrac{dt}{dt_0} I_3,\ Q_w I_3\big),
 $$
 
-$[\omega]_\times$ the skew-symmetric cross-product matrix; the noise is
-rescaled by $dt/dt_0$ ($dt_0=$ nominal step) so variance grows linearly with
-the real interval. $P$ is symmetrized after (`:610`). Convergence flag
-$\operatorname{tr}(P[0{:}3]) < conv\_thresh$ (`:619`).
+$[\omega]_\times$ the skew-symmetric cross-product matrix; the gyro/bias noise
+is rescaled by $dt/dt_0$ ($dt_0=$ nominal step) so variance grows linearly with
+the real interval. $P$ is symmetrized after. Convergence flag
+$\operatorname{tr}(P[0{:}3]) < conv\_thresh$.
+
+**The wave block is discretized exactly**, not to first order:
+
+$$ \varphi = e^{-dt/\tau},\qquad Q_w = \sigma_g^2\,(1 - \varphi^2),\qquad
+   \hat a_w \leftarrow \varphi\,\hat a_w . $$
+
+This is not fastidiousness. $\tau$ is of order 0.5 s while the $|a|$ skip band
+routinely leaves gaps of the same order, so $dt/\tau$ is **not** small on
+exactly the steps that matter, and a first-order expansion would both
+over-decay the state and mis-size its noise while bridging a gap. The exact
+form is stationary for any $dt$: feed it a step of $10\tau$ and it returns the
+state to zero with variance $\sigma_g^2$, which is the correct answer — so a
+scheduling hiccup cannot destabilize the filter. It is also why $Q_w$ is *not*
+put through the $dt/dt_0$ rescaling: it is already exact for this $dt$.
+
+With the state disabled $\varphi=1$ and $Q_w=0$, leaving an identity block
+that touches nothing.
 
 **As-implemented.** Prediction uses the plain $\Phi P\Phi^\top+Q$ form (not
 Joseph — the Joseph stabilization is applied on the *updates*, §4.5).
@@ -311,15 +408,32 @@ error convention.
 Measurement of a known NED reference observed in body: predicted $h$, actual
 $z$, isotropic noise $R_{noise}$, gate `chi2_gate`.
 
-**Jacobian** (3×6), attitude block only:
-$$ H = \big[\, [h]_\times \ \big|\ 0_3 \,\big],\qquad
+**Jacobian** (3×9), attitude block only (`dir_jacobian`):
+$$ H = \big[\, [h]_\times \ \big|\ 0_3 \ \big|\ 0_3 \,\big],\qquad
 [h]_\times=\begin{bmatrix}0&-h_2&h_1\\ h_2&0&-h_0\\ -h_1&h_0&0\end{bmatrix}. $$
+
+The **gravity** update uses a different Jacobian when the wave state is
+enabled — see §4.5.1. The mag channels use this one, unchanged.
 
 **Innovation covariance and gain:**
 $$ S = H P H^\top + R_{noise} I_3,\qquad K = P H^\top S^{-1}, $$
 $S^{-1}$ by Cramer's rule (`m33_inv`, `fusion.c:73`; singular ⇒ skip).
 
-**Innovation** $\nu = z - h$, with **robust (Huber-style) gating** on the
+**The singularity test is relative, not absolute** (1.7). $S$ carries physical
+units, and for the gravity update they are tiny: with $R_a\approx4.2\times
+10^{-5}$ and the attitude block converged to ~0.4°, $\det S \approx R_a
+\lambda^2 \approx 6\times10^{-13}$ at a condition number of about 3. The
+previous absolute test $|\det S| < 10^{-12}$ therefore declared a
+well-conditioned matrix singular and made `eskf_update` return −1, **silently
+dropping 87% of accel updates in the wave benchmark** and pinning attitude
+uncertainty at whatever value made $\det S\approx10^{-12}$ rather than letting
+it converge. `m33_inv` now compares $|\det|$ against $10^{-6}\,\lVert
+A\rVert_{\max}^3$, which is unit-free, tests rank deficiency (what "singular"
+means), and still sits well above float's $\approx1.2\times10^{-7}$ epsilon.
+§4.7 records what this exposed.
+
+**Innovation** $\nu = z - \hat z$ ($\hat z = h$ here), with **robust
+(Huber-style) gating** on the
 Mahalanobis distance $d^2 = \nu^\top S^{-1}\nu$:
 
 $$
@@ -335,9 +449,13 @@ the gate distance rather than discarding it.
 
 **Correction and injection:**
 $$ \delta x = K\,\nu,\qquad q \leftarrow q\otimes\exp(\delta\theta),\qquad
-   b \leftarrow b + \delta b, $$
-$\delta\theta=\delta x[0{:}3]$, $\delta b=\delta x[3{:}6]$; quaternion
-renormalized.
+   b \leftarrow b + \delta b,\qquad a_w \leftarrow a_w + \delta a_w, $$
+$\delta\theta=\delta x[0{:}3]$, $\delta b=\delta x[3{:}6]$,
+$\delta a_w=\delta x[6{:}9]$; quaternion renormalized. The $a_w$ injection is
+unconditional: with the state disabled $P$'s wave rows are zero, so $K$'s are
+too and it adds exactly $0.0f$. The *mag* channels inject it as well — their
+$H$ has no wave block, but the cross-covariance the accel path builds up means
+$K$ does, and that is correct Kalman book-keeping.
 
 **Covariance — Joseph form, with error-state reset folded in:**
 $$ P \leftarrow \big[G(I-KH)\big]\,P\,\big[G(I-KH)\big]^\top + R_{noise}\,(GK)(GK)^\top, $$
@@ -346,8 +464,9 @@ then symmetrized. (Isotropic $R$ ⇒ $KRK^\top=R_{noise}KK^\top$.)
 **Error-state reset.** Injecting $\delta\theta$ into the quaternion moves the
 linearisation point, so $P$ is rotated by the reset Jacobian
 $G=I-\tfrac12[\delta\theta]_\times$ (Solà eq. 285). Only the attitude block
-resets — the gyro-bias error is additive and carries over — so the applied
-transform is $G_{full}=\mathrm{diag}(G,I_3)$, implemented by premultiplying
+resets — the gyro-bias and wave-acceleration errors are additive and carry
+over — so the applied transform is $G_{full}=\mathrm{diag}(G,I_3,I_3)$,
+implemented by premultiplying
 the first three rows of $K$ and $(I-KH)$. Cost is ~81 multiply-adds against
 the Joseph block's ~450. Measured over the 12-seed wave benchmark this
 improves yaw-only attitude RMS 4.10° → 3.57° and covariance consistency
@@ -416,6 +535,45 @@ down exactly when measurements are least trustworthy. `innov_weight` /
 **Source:** EKF update Kalman 1960; Joseph form Bucy & Joseph 1968; robust
 innovation capping Huber 1964; Mahalanobis gating Bar-Shalom et al. 2001
 *(canonical)*. Jacobian sign Solà 2017 §7 *(code comment)*.
+
+#### 4.5.1 Wave-aware gravity Jacobian — `wave_jacobian()`
+
+When the Gauss–Markov state is enabled, the gravity update no longer predicts
+$h$; it predicts the *contaminated* direction the accelerometer actually sees.
+With the specific force written in normalized gravity units,
+
+$$ v \equiv h - \hat a_w,\qquad \hat z = \frac{v}{\lVert v\rVert},\qquad
+   \nu = z - \hat z . $$
+
+Perturbing both contributions ($h_{true}=\hat h+[\hat h]_\times\delta\theta$,
+$a_{true}=\hat a_w+\delta a_w$) gives $\delta v = [\hat h]_\times\delta\theta -
+\delta a_w$, and differentiating the normalization introduces the **tangent
+projector** $P_{\hat z} = I - \hat z\hat z^{\mathsf T}$:
+
+$$ \delta\hat z = \frac{P_{\hat z}}{\lVert v\rVert}\,\delta v
+\quad\Longrightarrow\quad
+H = \Big[\ \tfrac{1}{\lVert v\rVert}P_{\hat z}[h]_\times \ \Big|\ 0_3 \ \Big|\
+        -\tfrac{1}{\lVert v\rVert}P_{\hat z} \ \Big]. $$
+
+**The projector is load-bearing, not tidiness.** It is what makes
+$\hat z^{\mathsf T}H = 0$ hold *exactly*, since $P_{\hat z}\hat z = 0$. That in
+turn makes $\hat z$ an eigenvector of $S$ with eigenvalue $R$, which is the
+sole premise of the $\mathbb{E}[d^2]=2$ derivation in §8.2 — i.e. of the
+`nis_accel` wire field meaning "1.0 = consistent". Writing the Jacobian the
+way a first pass naturally would, $[\hat h]_\times/\lVert v\rVert$ and
+$-I/\lVert v\rVert$, leaves $\hat z^{\mathsf T}H = O(\lVert\hat a_w\rVert)$;
+the radial component then leaks into $d^2$ and NIS is biased. Measured: the
+unprojected form moves the ground-truth benchmark NIS from 0.99 to 0.76 while
+leaving every other test in the suite passing
+(`test_wave_gm_ground_truth`).
+
+At $\hat a_w = 0$ this reduces algebraically to `dir_jacobian`: $v=h$ is
+already a unit vector and $(I-hh^{\mathsf T})[h]_\times = [h]_\times$ because
+$h^{\mathsf T}[h]_\times = 0$.
+
+$\lVert v\rVert$ is guarded at 0.5; below that the acceleration is comparable
+to gravity itself and the linearisation is meaningless, so the update falls
+back to the plain direction form.
 
 ### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:418`)
 
@@ -503,19 +661,87 @@ Three things to read off it:
    can fix that.
 
 The cause is that the seaway residual is wave-orbital: correlated with wave
-phase, with a measured correlation time $\tau\approx0.3$–$0.9$ s
-(`imud-cal fit-ra`), not white. A white isotropic $R$ cannot describe a
-coloured disturbance; making its *variance* right necessarily gets its
-*spectrum* wrong. The real fix is to model the correlation — an augmented
-state or the continuous $R_a$ scaling of §10.5 — not a larger number here.
+phase, with a measured correlation time of order a second (`imud-cal fit-ra`),
+not white. A white isotropic $R$ cannot describe a coloured disturbance;
+making its *variance* right necessarily gets its *spectrum* wrong. The real
+fix is to model the correlation, which is what §4.7.1 does.
 
 The default is therefore unchanged, and is additionally a sharp local optimum:
 $N_a\in[0.003,0.03]$ is markedly **worse** than either side of it, so hand-
 tuning it upward "a little" lands in the worst available region.
 
-**Source:** specific-force / coordinated-turn model Titterton & Weston 2004;
-Farrell 2008 *(canonical)*. NEES/NIS consistency tests Bar-Shalom et al. 2001
-§5.4 *(canonical)*.
+> **Caveat on the table above.** These rows were measured before the `m33_inv`
+> singularity bug of §4.5 was found, i.e. through a filter that was discarding
+> 87% of its accel updates. The *conclusions* survive — no scalar $R_a$ fixes a
+> coloured disturbance, and the 44–64 NEES(strict) band really was structural —
+> but the absolute numbers are not reproducible on current code and the table is
+> kept as the historical record of why §10.5 was undertaken.
+
+#### 4.7.1 The Gauss–Markov wave state — outcome (ROADMAP §10.5)
+
+Fixing `m33_inv` removed an accidental 87% decimation of accel updates. That
+decimation had been doing real work: it crudely decorrelated the
+wave-contaminated samples, which is why the filter looked as good as it did.
+With every sample fed to a white $R$, the filter believes it has 833
+independent gravity measurements per second, $P$ collapses, and it diverges.
+Modelling the disturbance as a first-order Gauss–Markov process (§4.1.1) makes
+repeated correlated samples correctly stop adding information. Over the
+12-seed wave benchmark:
+
+| | 3-D att | 3-D hdg | yaw att | yaw hdg | NEES(tr) 3-D/yaw | NEES(st) 3-D/yaw | NIS 3-D/yaw | reject |
+|---|---|---|---|---|---|---|---|---|
+| old baseline (bug present) | 5.653° | 3.065° | 2.309° | 1.961° | 18.3 / 7.8 | 57 / 38 | 19.3 / 25.2 | .007/.000 |
+| `m33_inv` fixed, no wave state | 9.488° | 7.255° | 11.424° | 8.801° | 259 / 252 | 933 / 1086 | 56.5 / 56.9 | .148/.160 |
+| **+ wave state (shipped)** | **4.452°** | **0.828°** | **2.308°** | **1.016°** | **3.47 / 0.99** | 335 / **10.1** | **1.01 / 0.69** | .000/.000 |
+
+(The 3-D columns of this table were themselves measured through a broken
+benchmark alignment; §4.8.1 re-bases them. The wave-state conclusions are
+unaffected — they rest on the yaw-only default and on the NIS column — but the
+3-D attitude and NEES(strict) figures here are superseded.)
+
+Against the bar ROADMAP §10.5 set (the old baseline): 3-D attitude −21%, 3-D
+heading −73%, yaw heading −48%, yaw attitude a dead heat, NIS from 19–25 to
+≈1, NEES(trace) from 18.3/7.8 to 3.47/0.99, and both the Huber cap and the
+gross-reject gate go completely idle (weight 1.000, reject 0.0000) — the
+filter no longer needs robustness machinery to survive an ordinary seaway.
+
+**Tuning, and why it is not curve-fitting.** $\sigma$ and $\tau$ were chosen on
+a *broadband* scenario (`SCEN_GM` in `test_fusion.c`) whose disturbance is a
+genuine Gauss–Markov process of known $\sigma$ and $\tau$, because a single
+tone has no correlation time and fitting $\tau$ to one is fitting the
+benchmark. The tone is the held-out validation. Three independent lines agree
+on $\sigma\approx0.8$ m·s⁻²:
+
+- it is the broadband scenario's ground truth, at which the filter reports
+  NIS $=0.99$ (`test_wave_gm_ground_truth`);
+- it is exactly the tone scenario's true per-axis RMS ($1.2/\sqrt2$);
+- `imud-cal fit-ra` independently recovers $0.67$ m·s⁻² from a capture of that
+  tone, seen only through a file, a replayed filter and a 67%-decimating skip
+  band.
+
+$\tau = 0.5$ s sits inside the range fit-ra measures. Neither knob is a free
+parameter. The full grid is reproducible with
+
+```
+rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+    -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_WAVE" && ./test_fusion
+```
+
+**The degeneracy ridge.** $\delta\theta$ and $\delta a_w$ are separated only by
+their dynamics, so an over-large $\tau$ lets the wave state absorb real tilt.
+The sweep shows exactly that: at $\sigma=0.9$ the yaw-only attitude RMS runs
+2.17° / 2.29° / 2.40° / 2.72° for $\tau =$ 0.3 / 0.5 / 0.6 / 0.8 s, and by
+$\tau=2$ s it has collapsed to 7.14°. Short $\tau$ is the safe side; the
+shipped 0.5 s sits at the knee. A visible symptom of straying too far is
+`bias_z` drifting, which the benchmark bounds independently.
+
+**The column that looked worse: 3-D NEES(strict), 57 → 335.** Two things were
+going on, and the first attribution of this to "the swing-circle mag
+calibration is structurally 2-D" was **wrong** — the benchmark synthesises its
+magnetometer data from the true attitude with nothing but white noise, so no
+calibration defect can be what it measures. See §4.8.1: it is the magnetic
+reference's DIP error, and ~96% of it was the benchmark aligning from a single
+instantaneous sample where the daemon averages a window.
 
 ### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:820`)
 
@@ -549,9 +775,106 @@ heading innovation
 $$ y = \operatorname{atan2}(m^{NED}_y,m^{NED}_x) -
        \operatorname{atan2}(m_{ref,y},m_{ref,x})\ (\text{wrapped}), $$
 noise $R_\psi = R_m/(m_{ref}^{h})^2$, and call the scalar update §4.6.
-Otherwise call the full vector update §4.5 with $(h,z,R_{m,n},11.34)$. A near-
-vertical field ($m^h<0.2|h_{raw}|$) carries no heading information and is
-skipped.
+Otherwise call the full vector update §4.5 with $(h,z,R,11.34)$, where $R$
+carries the anisotropic dip term of §4.8.1. A near-vertical field
+($m^h<0.2|h_{raw}|$) carries no heading information and is skipped.
+
+#### 4.8.1 The dip-reference error, and the anisotropic $R$
+
+In 3-D vector mode the field's **dip** constrains roll and pitch. That is the
+mode's whole value over `mag_yaw_only`, and also its exposure: the dip of
+$m_{ref}$ is the one part of the reference the filter cannot establish
+accurately on its own.
+
+$m_{ref}$ is fixed once, at alignment, from the tilt estimate available at that
+moment (§4.3). In a seaway that tilt is wrong, and the error is baked in
+permanently — in 3-D mode it becomes a **constant roll/pitch bias** that $P$ has
+no term for, which is what a large NEES(strict) is reporting. Measured over the
+12-seed benchmark (this supersedes the 3-D columns of §4.7.1's table):
+
+| 3-D mode | dip error | att RMS | hdg RMS | NEES(tr) | NEES(st) |
+|---|---|---|---|---|---|
+| align from 1 sample | −4.38° | 4.452° | 0.828° | 3.47 | 335 |
+| align over the window | +0.86° | 1.204° | 0.745° | 0.21 | 12.8 |
+| + dip reference exact (WMM) | 0.00° | 0.841° | 0.737° | 0.11 | 0.22 |
+
+The per-axis decomposition is unambiguous: at the top row the mean attitude
+error is $[-3.85°, -2.00°, -0.28°]$ against an RMS of $[3.87°, 2.04°, 0.87°]$ —
+almost pure bias, not spread.
+
+**It cannot be healed in run.** The m_ref EMA above exists for exactly this and
+is gated on $q_{quiet}<2\times10^{-4}$, which a seaway never reaches
+($q_{quiet}\approx5\times10^{-3}$). That gate is correct, not an oversight.
+Raising it looks like a fix over 120 s and is refuted over 30 minutes:
+
+| 3-D, 1800 s window | dip error | $\lvert m_{ref}^h\rvert$ error | att RMS | NEES(st) |
+|---|---|---|---|---|
+| gate $2\times10^{-4}$ (shipped) | +0.862° | −5.04% | 1.151° | 12.84 |
+| gate $2\times10^{-2}$ | −1.460° | +4.24% | 1.725° | 42.10 |
+| gate off | −1.469° | +4.27% | 1.729° | 42.31 |
+
+The reference sails past truth and keeps going, because the samples clearing
+the $|a|$ band are wave-phase correlated: learning from that subset walks
+$m_{ref}$ away rather than toward. (De-contaminating $g_{body}$ with the
+Gauss–Markov $\hat a_w$ was also tried, and is worse — $\hat a_w$ has itself
+absorbed some tilt, so adding it back re-injects a correlated error.)
+
+So the dip error is **not observable from seaway data**. It is removed at the
+source by WMM invariants (`mekf_set_mref_invariants`), or it is admitted into
+$P$.
+
+**The anisotropic term.** A dip error $d\delta$ rotates $m_{ref}$ about
+$\hat a_{NED} = \hat h_{hor}\times\hat e_D$, so in body frame it perturbs the
+normalised prediction along one unit tangent direction:
+
+$$ \hat a_{body} = R^\top\hat a_{NED},\qquad u = \hat a_{body}\times\hat h,
+   \qquad \lVert u\rVert = 1,\ \ u^{\mathsf T}\hat h = 0, $$
+
+(the last two because $\hat m_{ref}$ lies in the plane spanned by
+$\hat h_{hor}$ and $\hat e_D$, hence $\hat m_{ref}\perp\hat a_{NED}$). The
+uncertainty is therefore exactly rank-1:
+
+$$ R = R_{m,n} I_3 + \sigma_{dip}^2\,u u^{\mathsf T}, $$
+
+with $\sigma_{dip}$ = `mekf_mag_dip_sigma_deg` in radians (a dip error of
+$\delta$ displaces the predicted unit direction by $\delta$, so the units match
+directly). Default 1.0°, which is the measured +0.86° residual rounded up —
+**not** a value fitted to the metric.
+
+**Why rank-1 and not just a larger $R_m$.** Isotropic inflation reaches the same
+NEES: $R_m\times64$ gives NEES(strict) 12.83 → 1.57 with attitude and heading
+both marginally better. But it deweights the heading-carrying components too,
+and `nis_mag` falls to **0.01** — the wire's magnetometer-health instrument
+stops being able to report a fault. The rank-1 form leaves those components
+alone. Sweep, 3-D mode with a window-aligned reference:
+
+| $\sigma_{dip}$ | att RMS | hdg RMS | NEES(st) | `nis_mag` |
+|---|---|---|---|---|
+| 0° | 1.204° | 0.745° | 12.83 | 0.52 |
+| 0.5° | 1.186° | 0.723° | 9.06 | 0.39 |
+| **1.0° (shipped)** | **1.178°** | **0.714°** | **5.74** | **0.31** |
+| 2.0° | 1.177° | 0.715° | 3.14 | 0.28 |
+| 3.0° | 1.179° | 0.720° | 2.15 | 0.27 |
+
+**dof = 2 survives.** Because $u$ is tangent, $R\hat h = R_{m,n}\hat h$, so
+$\hat h$ remains an eigenvector of $S = HPH^\top + R$ with eigenvalue
+$R_{m,n}$; combined with $H^\top\hat h = 0$ the §8.2 derivation
+$E[d^2] = 3 - R_{m,n}\hat h^\top S^{-1}\hat h = 2$ is unchanged. An anisotropy
+with any radial component would break it silently — and would also stop the
+term working at all, since the radial direction of a normalised measurement
+carries no information (measured: a contaminated $u$ widens $P$ by 1% instead
+of 9.5% and absorbs 53% of the pull instead of 93%).
+
+Note `nis_mag` settling near **0.5** once $\sigma_{dip}$ dominates is the
+correct reading, not a regression: one of the two tangent degrees of freedom is
+deliberately deweighted, so a consistent filter reads about half.
+
+**What this does not do.** It does not reach NEES(strict) = 1, and cannot. The
+dip error is a *bias*; a covariance term can only partly stand in for one, and
+the accelerometer legitimately keeps $P$ tight in roll and pitch. Driving the
+number to 1 would need $\sigma_{dip}\approx4°$, i.e. inventing uncertainty to
+satisfy a statistic. For an install that cares, the answer is a position
+source.
 
 **As-implemented / audit note.** Adapting **only** magnitude and dip is
 deliberate: the horizontal direction *is* the heading reference, so learning
@@ -784,24 +1107,36 @@ vs ~104 Hz mag); a combined EMA would be ~8:1 accel.
 
 **Degrees of freedom.** The vector updates carry $n_{dof}=2$, not 3, because
 the measurement is a *unit* vector — normalising $z$ removes the radial
-component, so the noise lives only in the tangent plane. With true innovation
-covariance $E[\nu\nu^\top]=HPH^\top+R(I-hh^\top)$ while $S=HPH^\top+R\,I$:
+component, so the noise lives only in the tangent plane. Write $\hat z$ for the
+predicted direction ($\hat z = h$ without the wave state, $\hat z =
+(h-\hat a_w)/\lVert h-\hat a_w\rVert$ with it, §4.5.1). The true innovation
+covariance is $E[\nu\nu^\top]=HPH^\top+R(I-\hat z\hat z^\top)$ while
+$S=HPH^\top+R\,I$:
 
 $$ E[d^2]=\operatorname{tr}\!\big(S^{-1}E[\nu\nu^\top]\big)
-        =\operatorname{tr}\!\big(S^{-1}(S-R\,hh^\top)\big)
-        =3-R\,h^\top S^{-1}h, $$
+        =\operatorname{tr}\!\big(S^{-1}(S-R\,\hat z\hat z^\top)\big)
+        =3-R\,\hat z^\top S^{-1}\hat z, $$
 
-and since $H=[h]_\times$ gives $H^\top h=-[h]_\times h=0$, $h$ is an
-eigenvector of $S$ with eigenvalue $R$, so $S^{-1}h=h/R$ and the correction
-term is exactly 1:
+and in **both** cases $H^\top\hat z=0$ — for the plain form because
+$H=[h]_\times$ gives $[h]_\times h=0$, and for the wave-aware form because
+every row of $H$ is left-multiplied by the tangent projector
+$P_{\hat z}=I-\hat z\hat z^\top$ and $P_{\hat z}\hat z=0$. So $\hat z$ is an
+eigenvector of $S$ with eigenvalue $R$, $S^{-1}\hat z=\hat z/R$, and the
+correction term is exactly 1:
 $$ E[d^2]=2 \quad\text{for both the gravity and 3-D mag updates.} $$
 The yaw-only scalar update has $n_{dof}=1$. Dividing by 3 instead would peg a
 perfectly consistent filter at 0.67.
 
-Measured values are 19 (3-D) / 25 (yaw-only) over the wave benchmark: the
-model is over-confident by ~4.5× in $\sigma$. §4.7 explains why raising $R_a$
-is not the remedy. `imud-cal fit-ra` computes the same statistic offline from
-a capture so the live number can be checked against real water.
+This identity is the reason the projector in §4.5.1 cannot be dropped: it is
+the *only* thing that keeps $H^\top\hat z=0$ once $\hat a_w\ne0$, and without
+it the wire field silently stops meaning what its documentation says.
+
+Measured values over the wave benchmark are 1.01 (3-D) / 0.69 (yaw-only) with
+the shipped Gauss–Markov wave state — i.e. the model is now consistent, and
+mildly conservative in yaw-only mode. They were 19 / 25 before §4.7.1, and 56
+/ 57 with the `m33_inv` fix but no wave state. `imud-cal fit-ra` computes the
+same statistic offline from a capture, through the filter's own
+`mekf_accel_probe()`, so the live number can be checked against real water.
 
 **Source:** NIS consistency test Bar-Shalom et al. 2001 §5.4 *(canonical)*.
 
@@ -1054,10 +1389,14 @@ defining document; ALF recursion Langel 1987 / WMM Technical Note 28
 |---|---|---|
 | $q$ | attitude quaternion, body→NED, scalar-first | `mekf_t.q[4]` |
 | $b$ | gyro bias | `mekf_t.bias[3]` |
-| $P$ | 6×6 error covariance $[\delta\theta\mid\delta b]$ | `mekf_t.P[6][6]` |
+| $a_w$ | wave acceleration, body, g units | `mekf_t.wave_acc[3]` |
+| $P$ | 9×9 error covariance $[\delta\theta\mid\delta b\mid\delta a_w]$ | `mekf_t.P[MEKF_N][MEKF_N]` |
 | $R(q)$ | body→NED rotation matrix | `q_to_R()` |
 | $Q_g,Q_b$ | process-noise variances / step | `mekf_t.Qg, .Qb` |
 | $R_a,R_m$ | accel / mag meas. noise var | `mekf_t.Ra, .Rm` |
+| $\sigma,\tau$ | Gauss–Markov wave σ (m·s⁻²), correlation time (s) | `mekf_wave_accel`, `mekf_wave_accel_tau_s` |
+| $\sigma_g^2,\varphi,Q_w$ | wave variance (g²), GM transition, GM noise | `mekf_t.wave_sig2`, `mekf_predict` |
+| $P_{\hat z}$ | tangent projector $I-\hat z\hat z^\top$ | `wave_jacobian` |
 | $H$ | measurement Jacobian | `eskf_update`, `eskf_update_yaw` |
 | $\gamma$ | $\chi^2$ innovation gate | `ACCEL_CHI2_GATE`=11.34, `YAW_CHI2_GATE`=6.63 |
 | $m_{ref}$ | Earth-field reference, NED, Gauss | `mekf_t.m_ref[3]` |

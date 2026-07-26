@@ -48,7 +48,7 @@ class Flags:
     ACCEL_CAL        = 1 << 3   # accel calibration applied
     GYRO_CAL         = 1 << 4   # gyro bias applied
     MAG_CAL          = 1 << 5   # mag hard/soft-iron cal applied
-    MOTION           = 1 << 6   # reserved — never set as of wire v14
+    MOTION           = 1 << 6   # retired — never set; use quiescence or ENGINE_ON
     FIFO_OVERFLOW    = 1 << 7   # sample gap (FIFO overflow)
     STARTUP              = 1 << 8   # gyro bias estimation in progress
     SHUTDOWN             = 1 << 9   # final packet before clean exit

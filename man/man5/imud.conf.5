@@ -231,14 +231,16 @@ In-run gyro bias instability in rad/s.
 .B mekf_accel_noise
 .RI (double,\ default:\ 0.0022)
 Accelerometer noise density in m/s^2/sqrt(Hz).
-Resist the temptation to raise this to "account for wave acceleration".
+This describes SENSOR noise only. Resist the temptation to raise it to
+"account for wave acceleration" \(em that is what
+.B mekf_wave_accel
+below is for.
 Across the 12-seed wave benchmark the default is a sharp local optimum for
 the marine (yaw-only) configuration, and values in the range 0.003 to 0.03
 are substantially worse than either side of it: the gravity correction
 weakens, the filter leans on gyro integration, gyro-bias observability
 degrades, and the growing errors feed back through the innovation gate.
-Wave-induced disturbance is handled by the chi-squared innovation cap
-instead. The
+The
 .B nis_accel
 field on the wire reports whether the noise model matches reality (1.0 =
 consistent); check it against a real capture before changing this.
@@ -248,6 +250,70 @@ would make the Kalman gain degenerate.
 .B mekf_mag_noise
 .RI (double,\ default:\ 0.0004)
 Magnetometer noise density in Gauss/sqrt(Hz).
+.TP
+.B mekf_wave_accel
+.RI (double,\ default:\ 0.8)
+Steady-state standard deviation, in m/s^2, of the wave-orbital acceleration
+that contaminates the gravity measurement in a seaway. This is the knob for
+"the sea is rough", not
+.BR mekf_accel_noise .
+.IP
+The disturbance is correlated over roughly a second rather than white, so it
+is modelled as a first-order Gauss\(enMarkov process in the filter state.
+Without that, the filter treats 833 strongly correlated samples per second as
+833 independent measurements of gravity, collapses its own covariance and
+diverges. Set to 0 (or set
+.B mekf_wave_accel_tau_s
+to 0) to disable the state entirely, which returns the pre\-1.7 six\-state
+filter exactly.
+.IP
+Too small a value is the failure mode that hurts, so round up. Run
+.B imud\-cal fit\-ra
+on a capture of your worst conditions: it measures the disturbance with the
+state disabled and prints a suggested value.
+.TP
+.B mekf_wave_accel_tau_s
+.RI (double,\ default:\ 0.5)
+Correlation time, in seconds, of the Gauss\(enMarkov wave-acceleration state.
+0 disables the state.
+.IP
+Not to be confused with
+.BR wave_tau_s ,
+which is the unrelated sea\-state reporting window.
+.IP
+Attitude error and wave acceleration are separated only by their dynamics, so
+too long a value lets the state absorb genuine tilt: the benchmark's yaw\-only
+attitude RMS degrades from 2.3 degrees at 0.5 s to 7.1 degrees at 2 s. Short
+is the safe side.
+.TP
+.B mekf_mag_dip_sigma_deg
+.RI (double,\ default:\ 1.0)
+Uncertainty, in degrees, of the magnetic reference's DIP angle.
+.IP
+Applies only to 3\-D vector fusion
+.RB ( mag_yaw_only
+= false), where the field's dip is what constrains roll and pitch. The dip of
+the reference is fixed once, at alignment, from the tilt estimate available at
+that moment; in a seaway that is wrong by around a degree, and in this mode the
+error becomes a permanent roll/pitch bias.
+.IP
+It cannot be corrected in run. The reference's in\-run healing is gated on the
+platform being quiescent, deliberately: the accelerometer samples that pass the
+motion gate in a seaway are wave\-phase correlated, and learning from that
+subset walks the reference away from the truth rather than toward it (measured
+over 30 minutes; opening the gate roughly triples the covariance
+inconsistency). So the error is admitted into the covariance instead, as a
+rank\-1 term along the one direction a dip error acts on.
+.IP
+The default is the residual measured after a 5 s
+.BR align_window_sec ,
+rounded up. Set to
+.B 0
+when a position source supplies WMM field invariants \(em that removes the dip
+error at its source and is strictly better. Raising it improves covariance
+consistency and lowers the
+.B nis_mag
+wire field, by design: the dip channel is being trusted less.
 .TP
 .B mag_reject_gauss
 .RI (double,\ default:\ 0.05)
@@ -358,6 +424,22 @@ Length of the stationary bias-estimation window at startup.
 Set
 .B 0
 to skip.
+.TP
+.B align_window_sec
+.RI (double,\ default:\ 5.0)
+Seconds of accelerometer and magnetometer averaging used for the one\-shot
+initial attitude alignment.
+.IP
+Whatever tilt error survives this window is baked permanently into the magnetic
+reference's dip, so in a seaway the length matters. One second \(em the value
+hardcoded before 1.7 \(em is about a fifth of a typical roll period, so it
+aligns to an arbitrary point in the cycle: measured attitude RMS in the marine
+default is 47.7 degrees at a 1 s window against 2.19 degrees at 5 s, flat
+beyond. 3\-D vector fusion keeps improving out to roughly 15 s.
+.IP
+The only cost of a longer window is startup latency before the filter produces
+usable attitude, so raising it is worthwhile when starting from a mooring and
+not when starting underway.
 .SS [nmea]
 NMEA 0183 output over UDP and/or a TCP listener.
 Both are off by default (since 1.6 a stock daemon emits only on the local
