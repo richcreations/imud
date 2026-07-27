@@ -45,11 +45,19 @@ jobs:
       # build-mode: manual, not autobuild — `make` alone would miss the
       # bridges, which are deliberately outside the `all` target, and they
       # are half the C in the tree.
+      # security-extended, NOT security-and-quality: the latter adds CodeQL's
+      # maintainability queries (commented-out code, long functions, unused
+      # statics, implicit conversions), which produced ~196 alerts on the
+      # first run and buried the security findings.  security-extended keeps
+      # the deeper security queries — the ones that matter for a daemon
+      # parsing config files, JSON, wire packets and captures — without the
+      # style backlog.  Switch back deliberately if you ever want a
+      # maintainability sweep, and expect the noise again.
       - uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: manual
-          queries: security-and-quality
+          queries: security-extended
 
       - name: Build (daemon, utils, bridges)
         run: |
