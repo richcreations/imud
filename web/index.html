@@ -3,50 +3,468 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>imud — IMU daemon</title>
+<title>imud — IMU daemon for Linux | NMEA 0183 + MEKF fusion</title>
+<meta name="description" content="imud is an IMU daemon for Linux — &quot;gpsd for IMUs&quot;. MEKF sensor fusion publishing attitude, heading, heave and sea state over NMEA 0183, UDP, and sockets.">
+<meta name="author" content="Richard Simpson">
+<link rel="canonical" href="https://richcreations.github.io/imud/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="imud">
+<meta property="og:title" content="imud — an IMU daemon for Linux">
+<meta property="og:description" content="One small daemon owns your I²C inertial sensor, fuses it with a quaternion MEKF, and publishes attitude, heading, rate of turn, heave and sea state to NMEA 0183, UDP, and local sockets.">
+<meta property="og:url" content="https://richcreations.github.io/imud/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="imud — an IMU daemon for Linux">
+<meta name="twitter:description" content="&quot;gpsd for IMUs&quot; — quaternion MEKF fusion published over NMEA 0183, binary UDP, and local sockets. Debian/Raspberry Pi OS packages.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "imud",
+  "alternateName": "imud — IMU daemon",
+  "description": "A general-purpose IMU daemon for Linux. imud owns an I2C inertial sensor and magnetometer, samples it on a hardware interrupt, applies calibration, fuses it with a quaternion Multiplicative Extended Kalman Filter, and publishes attitude, magnetic and true heading, rate of turn, heave and sea-state statistics over NMEA 0183, binary UDP, and local or TCP stream sockets.",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "System daemon, sensor fusion, marine navigation, robotics",
+  "operatingSystem": "Linux, Raspberry Pi OS, Debian",
+  "processorRequirements": "arm64, armhf",
+  "softwareVersion": "1.6.2",
+  "license": "https://opensource.org/licenses/MIT",
+  "codeRepository": "https://github.com/richcreations/imud",
+  "programmingLanguage": "C",
+  "downloadUrl": "https://richcreations.github.io/imud/apt/",
+  "url": "https://richcreations.github.io/imud/",
+  "author": {
+    "@type": "Person",
+    "name": "Richard Simpson"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+
 <style>
   :root {
-    --bg: #ffffff; --fg: #1a1a1a; --muted: #5a5a5a;
-    --border: #e2e2e4; --accent: #0b6bcb;
+    --bg: #fbfbf9; --fg: #1a1a1a; --muted: #5a5a5a; --bold: #000000;
+    --code-bg: #f1f1ee; --border: #dedcd6; --rule: #c9c7c0; --accent: #0b6bcb;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #17181a; --fg: #e6e6e6; --muted: #9a9a9a;
-      --border: #303237; --accent: #5ba7f0;
+      --bg: #17181a; --fg: #e6e6e6; --muted: #9a9a9a; --bold: #ffffff;
+      --code-bg: #1f2023; --border: #303237; --rule: #3a3d43; --accent: #5ba7f0;
     }
   }
+
   * { box-sizing: border-box; }
+
   body {
-    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    background: var(--bg); color: var(--fg); padding: 2rem 1.25rem;
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 1.75rem 1.25rem 2.5rem;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    font-size: clamp(13px, 2.7vw, 15px);
+    line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
   }
-  main { max-width: 34rem; }
-  h1 { font-size: 2.2rem; margin: 0 0 .3rem; }
-  .tag { color: var(--muted); margin: 0 0 1.75rem; font-size: 1.05rem; }
-  p { margin: .9rem 0; }
-  a { color: var(--accent); }
-  .links { margin-top: 1.75rem; display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: .95rem; }
+
+  main { max-width: 78ch; margin: 0 auto; }
+
+  /* ---- running header / footer bars ---- */
+  .bar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 1rem;
+    color: var(--muted);
+    font-weight: 700;
+    letter-spacing: .04em;
+    font-size: .95em;
+  }
+  .bar :nth-child(2) { text-align: center; }
+  .bar :nth-child(3) { text-align: right; }
+  .bar span { white-space: nowrap; }
+  .bar.top    { border-bottom: 1px solid var(--rule); padding-bottom: .5rem; margin-bottom: 2rem; }
+  .bar.bottom { border-top: 1px solid var(--rule); padding-top: .5rem; margin-top: 2.75rem; }
+
+  /* ---- section heads + indented body ---- */
+  h2 {
+    font-size: 1em;
+    font-weight: 700;
+    letter-spacing: .08em;
+    color: var(--bold);
+    text-transform: uppercase;
+    margin: 2.25rem 0 .6rem;
+  }
+  .body { padding-left: 5ch; }
+
+  h1 { font-size: 1em; font-weight: 700; color: var(--bold); margin: 0; }
+  p  { margin: .75rem 0; }
+  a  { color: var(--accent); text-underline-offset: 2px; }
+  strong, b { color: var(--bold); font-weight: 700; }
+
+  /* ---- .TP-style hanging-indent rows ---- */
+  dl { margin: .75rem 0; }
+  dt { font-weight: 700; color: var(--bold); margin-top: .9rem; }
+  dt:first-child { margin-top: 0; }
+  dd { margin: .15rem 0 0 4ch; }
+
+  ul { margin: .6rem 0; padding-left: 2.5ch; }
+  li { margin: .3rem 0; }
+
+  /* ---- code ---- */
+  .scroll { overflow-x: auto; margin: 1rem 0; }
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .85rem 1rem;
+    font-size: .9em;
+    line-height: 1.5;
+    min-width: min-content;
+  }
+  pre.art {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--muted);
+    line-height: 1.25;
+  }
+  code { font-family: inherit; }
+  .body > .scroll > pre { font-size: .88em; }
+  .cmt { color: var(--muted); }
+
+  /* ---- table ---- */
+  .scroll table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+  th, td {
+    text-align: left;
+    padding: .4rem .8rem .4rem 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; font-size: .85em; }
+
+  @media (max-width: 40rem) {
+    .body { padding-left: 2ch; }
+    dd { margin-left: 2ch; }
+    .bar { grid-template-columns: 1fr auto; font-size: .85em; }
+    .bar :nth-child(2) { display: none; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <h1>imud</h1>
-  <p class="tag">A general-purpose IMU daemon for Linux &mdash; &ldquo;gpsd for IMUs&rdquo;.</p>
 
-  <p>imud owns an I²C inertial sensor, fuses it with a quaternion MEKF, and publishes
-     attitude, heading, rate of turn, heave, and sea-state to NMEA&nbsp;0183, a binary
-     UDP stream, and a local socket &mdash; for chartplotters, robotics, gimbals, and
-     dashboards alike.</p>
+<div class="bar top">
+  <span>IMUD(8)</span>
+  <span>System Manager's Manual</span>
+  <span>IMUD(8)</span>
+</div>
 
-  <p>Prebuilt packages for Raspberry&nbsp;Pi&nbsp;OS and Debian are in the
-     <a href="apt/">apt repository</a>.</p>
+<h2>Name</h2>
+<div class="body">
+  <h1>imud — a general-purpose IMU daemon for Linux</h1>
+  <p>Think of it as <em>gpsd for IMUs</em>.</p>
+</div>
 
-  <div class="links">
-    <a href="apt/">apt repository</a>
-    <a href="https://github.com/richcreations/imud">source on GitHub</a>
-    <a href="https://github.com/richcreations/imud/releases">releases</a>
+<h2>Synopsis</h2>
+<div class="body">
+  <div class="scroll"><pre><code><span class="cmt"># install and run</span>
+sudo apt install imud imud-wmm-data
+sudo systemctl enable --now imud
+
+<span class="cmt"># or invoke it directly</span>
+imud [--config PATH] [--replay FILE] [--version]</code></pre></div>
+</div>
+
+<h2>Description</h2>
+<div class="body">
+  <p><strong>imud</strong> owns the inertial sensor and does the hard real-time
+  work exactly once: interrupt-driven sampling, calibration, sensor fusion, and
+  precise hardware timestamps. It then publishes a clean attitude, heading, and
+  motion estimate on standard interfaces that any number of programs can read at
+  the same time.</p>
+
+  <p>Instead of every application re-implementing I²C drivers and a Kalman
+  filter, you run one small daemon and consume its output. Like gpsd, it is
+  meant to be boring, always-on infrastructure: start it, forget it, and point
+  your software at the stream.</p>
+
+  <div class="scroll"><pre class="art">   IMU + magnetometer (I²C)                      consumers
+            │                          ┌────────────────────────────┐
+            ▼                          │  chartplotter / autopilot   │
+   ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                  │
+   │      imud       │   binary UDP ──▶│  vision / stabilization     │
+   │  drivers·MEKF·  │   AF_UNIX    ──▶│  gimbal / dish pointing     │
+   │  timestamps     │                 │  loggers, dashboards, …     │
+   └─────────────────┘                 └────────────────────────────┘</pre></div>
+
+  <p>It is written in C and depends only on <code>libgpiod</code> and the C
+  standard library. The license is MIT.</p>
+</div>
+
+<h2>Features</h2>
+<div class="body">
+  <dl>
+    <dt>Owns the sensor, once.</dt>
+    <dd>Drains the IMU FIFO on a hardware interrupt, applies calibration, and
+    runs a quaternion MEKF at the full sample rate — so consumers get a fused
+    estimate, not raw samples to process themselves.</dd>
+
+    <dt>Publishes to many consumers at once.</dt>
+    <dd>NMEA 0183 (UDP broadcast or a TCP listener that plotters simply connect
+    to), a high-rate binary packet over UDP, and a loss-free stream of framed
+    packets over a local AF_UNIX socket or TCP — so several programs share one
+    IMU without contention.</dd>
+
+    <dt>Clean, well-defined outputs.</dt>
+    <dd>Quaternion, Euler angles, magnetic and true heading, rate of turn,
+    heave, sea-state statistics (significant wave height and period, roll and
+    pitch periods and amplitudes), compass-health diagnostics, and the attitude
+    covariance — each carrying wall-clock, TAI, and per-sample hardware
+    timestamps for correlation with cameras and other sensors.</dd>
+
+    <dt>Pluggable hardware.</dt>
+    <dd>A thin driver layer hides chip differences behind one interface, so
+    swapping sensors is a config change rather than a rewrite. A
+    <code>sim</code> driver runs the entire pipeline with no hardware at
+    all.</dd>
+
+    <dt>A flight recorder built in.</dt>
+    <dd>The capture black box records every raw sensor sample to rotating
+    files. <code>imud --replay</code> plays a capture back through the full
+    pipeline, and <code>imud-cal</code> measures your unit's actual noise (Allan
+    variance) and gyro temperature drift from those same files.</dd>
+
+    <dt>An ABI-stable client library.</dt>
+    <dd><code>libimud</code> decodes the binary stream for C programs and keeps
+    working across daemon upgrades without recompiling. A single-file Python
+    client ships too, and there is an Arduino/ESP32 client in its own
+    repository.</dd>
+
+    <dt>Built to run unattended.</dt>
+    <dd>A hardened systemd unit with a watchdog, calibration tools, level-gated
+    logging, and a status socket for health queries.</dd>
+  </dl>
+</div>
+
+<h2>Use cases</h2>
+<div class="body">
+  <p>imud is output-agnostic — the same daemon serves very different consumers.</p>
+
+  <dl>
+    <dt>Marine navigation</dt>
+    <dd>NMEA 0183 to chartplotters, autopilots, and Signal K, with true heading
+    from the World Magnetic Model, heave, and live sea-state statistics. This is
+    the most exercised use case today, and several fusion options are tuned for
+    it. The <code>imud-signalk</code> bridge feeds Signal K natively over UDP or
+    TCP where NMEA parsing falls short.</dd>
+
+    <dt>Robotics and ROS2</dt>
+    <dd>Attitude and rate of turn over the binary stream, at the sensor's full
+    rate rather than a decimated NMEA cadence.</dd>
+
+    <dt>Drones and autopilots</dt>
+    <dd>The <code>imud-mavlink</code> bridge feeds MAVLink ATTITUDE messages to
+    ArduPilot, PX4, or QGroundControl over UDP, serial, or TCP.</dd>
+
+    <dt>IoT, home automation, and dashboards</dt>
+    <dd><code>imud-mqtt</code> publishes heading, attitude, and heave to an MQTT
+    broker with Home Assistant auto-discovery; <code>imud-influxdb</code> writes
+    line-protocol points to InfluxDB for Grafana; <code>imud-prometheus</code>
+    serves a <code>/metrics</code> endpoint for Prometheus scraping and
+    alerting.</dd>
+
+    <dt>Machine vision and camera stabilization</dt>
+    <dd>High-rate quaternion with hardware timestamps, for frame-accurate
+    correlation between motion and imagery.</dd>
+
+    <dt>Gimbals, pan/tilt rigs, and antenna pointing</dt>
+    <dd>Low-latency attitude over the local stream socket or binary UDP.</dd>
+  </dl>
+</div>
+
+<h2>Installation</h2>
+<div class="body">
+  <p>Prebuilt, signed packages for <strong>Raspberry Pi OS</strong> and
+  <strong>Debian</strong> — arm64 and armhf, suites <em>bookworm</em> and
+  <em>trixie</em> — are in the <a href="apt/">imud apt repository</a>. The
+  suite is read from your machine, so these are the same four commands on
+  either release:</p>
+
+  <div class="scroll"><pre><code><span class="cmt"># 1. Trust the signing key</span>
+curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
+
+<span class="cmt"># 2. Add the repository (suite detected from /etc/os-release)</span>
+sudo tee /etc/apt/sources.list.d/imud.sources &gt;/dev/null &lt;&lt;EOF
+Types: deb
+URIs: https://richcreations.github.io/imud/apt
+Suites: $(. /etc/os-release &amp;&amp; echo "$VERSION_CODENAME")
+Components: main
+Signed-By: /usr/share/keyrings/imud.gpg
+EOF
+
+<span class="cmt"># 3. Install the daemon + World Magnetic Model data</span>
+sudo apt update &amp;&amp; sudo apt install imud imud-wmm-data
+
+<span class="cmt"># 4. Edit for your hardware, then start on boot</span>
+sudo nano /etc/imud/imud.conf
+sudo systemctl enable --now imud</code></pre></div>
+
+  <p>The optional bridges and the network monitor are separate packages —
+  <code>imud-signalk</code>, <code>imud-mqtt</code>, <code>imud-influxdb</code>,
+  <code>imud-mavlink</code>, <code>imud-prometheus</code>,
+  <code>imud-utils</code>. See the
+  <a href="apt/">apt repository page</a> for the full package list.</p>
+
+  <p>On any other Linux host with I²C, build from source:</p>
+
+  <div class="scroll"><pre><code>sudo apt update &amp;&amp; sudo apt install -y build-essential libgpiod-dev
+make
+sudo make install
+sudo make install-wmm-data   <span class="cmt"># World Magnetic Model (for true heading)</span>
+sudo nano /etc/imud/imud.conf
+sudo systemctl enable --now imud</code></pre></div>
+
+  <p>Once it is running, <code>imud-status</code> reports daemon health,
+  attitude, declination, and heave; <code>imud-mon</code> gives a live view of
+  the output streams from any host on the network.</p>
+
+  <p>No hardware yet? Run the whole pipeline in simulation, or replay a capture
+  recorded on a real vessel:</p>
+
+  <div class="scroll"><pre><code>imud --config config/sim.conf              <span class="cmt"># synthetic scenario</span>
+imud --replay session.imucap               <span class="cmt"># recorded raw sensor data</span></code></pre></div>
+
+  <p>Before first real use, calibrate: <code>imud-cal gyro</code>,
+  <code>imud-cal accel</code>, and an in-situ <code>imud-cal mag</code>.</p>
+</div>
+
+<h2>Output formats</h2>
+<div class="body">
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Output</th><th>Transport</th><th>For</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>NMEA 0183</td>
+          <td>UDP broadcast, or TCP&nbsp;:10110</td>
+          <td>Chartplotters, autopilots, Signal K</td>
+        </tr>
+        <tr>
+          <td>Binary packet</td>
+          <td>UDP&nbsp;:10111</td>
+          <td>High-rate quaternion for vision and control</td>
+        </tr>
+        <tr>
+          <td>Framed stream</td>
+          <td>AF_UNIX socket, or TCP&nbsp;:10112</td>
+          <td>Loss-free local consumers, bridges, libimud</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
+
+  <p>A stock install emits on the local AF_UNIX socket and nothing else; each
+  network output has to be switched on deliberately in
+  <code>/etc/imud/imud.conf</code>. If you just need heading, pitch, and roll
+  for a chartplotter, turn on the NMEA TCP listener and point your app at
+  <code>tcp://&lt;host&gt;:10110</code>.</p>
+</div>
+
+<h2>Hardware</h2>
+<div class="body">
+  <dl>
+    <dt>Reference</dt>
+    <dd>SparkFun 9DoF IMU Breakout — ST <strong>ISM330DHCX</strong> (gyro +
+    accelerometer) with a MEMSIC <strong>MMC5983MA</strong> magnetometer. This
+    is the best-tested combination.</dd>
+
+    <dt>Experimental drivers</dt>
+    <dd>ST LSM6DSO, TDK InvenSense ICM-20948 and ICM-42688-P;
+    magnetometers ST LIS2MDL and LIS3MDL, and AKM AK09916.</dd>
+
+    <dt>No hardware</dt>
+    <dd>The <code>sim</code> driver runs the full pipeline from a synthetic
+    scenario or a recorded capture file, on any Linux machine.</dd>
+  </dl>
+
+  <p>Host side, imud targets the Raspberry Pi — it drives the sensor over I²C
+  and takes the data-ready interrupt on a GPIO line via libgpiod — but nothing
+  in it is Pi-specific beyond that.</p>
+</div>
+
+<h2>Bridges and clients</h2>
+<div class="body">
+  <dl>
+    <dt>Protocol bridges</dt>
+    <dd>Five optional daemons read the local stream socket and re-publish it:
+    <code>imud-signalk</code> (Signal K deltas),
+    <code>imud-mqtt</code> (MQTT + Home Assistant discovery),
+    <code>imud-influxdb</code> (line protocol for Grafana),
+    <code>imud-mavlink</code> (MAVLink v1/v2 to autopilots), and
+    <code>imud-prometheus</code> (a <code>/metrics</code> endpoint). Each is
+    self-contained, with its own config file and man page.</dd>
+
+    <dt>Client libraries</dt>
+    <dd><code>libimud</code> is the ABI-stable C library for the binary stream.
+    A single-file Python client ships with the daemon, and
+    <a href="https://github.com/richcreations/imud-arduino">imud-arduino</a>
+    provides an Arduino/ESP32 client over TCP or UDP.</dd>
+
+    <dt>Tools</dt>
+    <dd><code>imud-cal</code> for gyro, accelerometer, and magnetometer
+    calibration; <code>imud-status</code> to query a running daemon;
+    <code>imud-mon</code> for a live network view of the streams.</dd>
+  </dl>
+</div>
+
+<h2>See also</h2>
+<div class="body">
+  <ul>
+    <li><a href="https://github.com/richcreations/imud">Source on GitHub</a>
+        — the full repository, issues, and pull requests.</li>
+    <li><a href="https://github.com/richcreations/imud/releases">Releases</a>
+        — tagged versions and release notes.</li>
+    <li><a href="https://github.com/richcreations/imud/blob/main/docs/manual.md">Manual</a>
+        — installation, the complete configuration reference, calibration,
+        output streams, monitoring, troubleshooting, and how to write a
+        driver.</li>
+    <li><a href="https://github.com/richcreations/imud/blob/main/spec.md">Protocol spec</a>
+        — architecture, the binary packet layout, NMEA sentence formats, and the
+        timestamp design.</li>
+    <li><a href="https://github.com/richcreations/imud/blob/main/docs/capture.md">Capture &amp; replay</a>
+        — the black box, playback, and offline noise and temperature
+        analysis.</li>
+    <li><a href="apt/">apt repository</a>
+        — Debian and Raspberry Pi OS packages.</li>
+  </ul>
+
+  <p>Installed man pages: <code>imud(8)</code>, <code>imud-cal(8)</code>,
+  <code>imud.conf(5)</code>, <code>imud-status(1)</code>,
+  <code>libimud(3)</code>, and one per bridge.</p>
+</div>
+
+<h2>Author</h2>
+<div class="body">
+  <p>Written by Richard Simpson. Released under the
+  <a href="https://github.com/richcreations/imud/blob/main/LICENSE">MIT
+  license</a>.</p>
+</div>
+
+<div class="bar bottom">
+  <span>imud 1.6.2</span>
+  <span>2026-07-27</span>
+  <span>IMUD(8)</span>
+</div>
+
 </main>
 </body>
 </html>

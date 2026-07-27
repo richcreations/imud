@@ -6,13 +6,19 @@ From the apt repository (Raspberry Pi OS / Debian, arm64/armhf — recommended)
 
     curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
       | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
-    echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] \
-      https://richcreations.github.io/imud/apt trixie main' \
-      | sudo tee /etc/apt/sources.list.d/imud.list
+
+    printf 'Types: deb\nURIs: %s\nSuites: %s\nComponents: main\nSigned-By: %s\n' \
+      'https://richcreations.github.io/imud/apt' \
+      "$(. /etc/os-release && echo "$VERSION_CODENAME")" \
+      '/usr/share/keyrings/imud.gpg' \
+      | sudo tee /etc/apt/sources.list.d/imud.sources >/dev/null
+
     sudo apt update && sudo apt install imud imud-wmm-data
 
-Substitute "bookworm" for "trixie" to match your release. Optional packages:
-imud-utils (imud-mon), and the bridges imud-signalk / imud-mqtt /
+The suite is read from /etc/os-release, so the above is identical on bookworm
+and trixie. If you added /etc/apt/sources.list.d/imud.list under earlier
+instructions, remove it so apt does not see the repository twice. Optional
+packages: imud-utils (imud-mon), and the bridges imud-signalk / imud-mqtt /
 imud-influxdb / imud-mavlink / imud-prometheus. Repository landing page:
 https://richcreations.github.io/imud/apt/
 
