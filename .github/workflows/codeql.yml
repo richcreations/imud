@@ -45,7 +45,7 @@ jobs:
       # build-mode: manual, not autobuild — `make` alone would miss the
       # bridges, which are deliberately outside the `all` target, and they
       # are half the C in the tree.
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
           build-mode: manual
@@ -56,6 +56,6 @@ jobs:
           make
           make bridges
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: /language:c-cpp

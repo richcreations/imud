@@ -34,7 +34,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ossf/scorecard-action@v2
+      # Pinned to an EXACT version on purpose: unlike actions/* and
+      # github/*, ossf/scorecard-action publishes no floating major tag, so
+      # `@v2` does not resolve.  Dependabot bumps this line like any other.
+      - uses: ossf/scorecard-action@v2.4.4
         with:
           results_file: scorecard.sarif
           results_format: sarif
@@ -48,6 +51,6 @@ jobs:
           path: scorecard.sarif
           retention-days: 5
 
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: scorecard.sarif

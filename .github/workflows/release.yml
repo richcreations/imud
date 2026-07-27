@@ -69,7 +69,7 @@ jobs:
       # from the maintainer; this proves each deb came from this workflow
       # at this commit.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             imud-*.tar.gz
