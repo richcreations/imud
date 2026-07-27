@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [config, json, packet, capture]
+        target: [config, json, packet, capture, wmm, cal]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -44,6 +44,8 @@ jobs:
             json)    DEPS="src/position.c src/wmm.c src/log.c" ;;
             packet)  DEPS="" ;;
             capture) DEPS="src/capture.c" ;;
+            wmm)     DEPS="src/wmm.c src/log.c" ;;
+            cal)     DEPS="src/cal.c src/imu_math.c src/log.c" ;;
           esac
           clang -g -O1 -fsanitize=fuzzer,address,undefined \
                 -D_GNU_SOURCE -DIMUD_CLIENT_ALLOW_DEPRECATED -Iinclude \

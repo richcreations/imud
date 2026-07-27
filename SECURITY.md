@@ -38,6 +38,18 @@ has a dedicated fuzz harness under `fuzz/` that runs for an hour a night:
 | JSON | gpsd / Signal K over the network | `fuzz_json` |
 | Wire packets | the binary UDP/stream protocol | `fuzz_packet` |
 | `.imucap` captures | replayed capture files | `fuzz_capture` |
+| Calibration | `/etc/imud/cal.json` | `fuzz_cal` |
+| Magnetic model | `WMM.COF` coefficient file | `fuzz_wmm` |
+
+The last two go beyond the parse: values that survive validation are fed into
+the code that consumes them — `apply_imu_cal` / `apply_mag_cal` on the sample
+hot path, and the spherical-harmonic field evaluation at the poles and far
+from the model epoch — because a non-finite value quietly poisoning the filter
+is a worse outcome than a rejected file.
+
+Command-line arguments are deliberately **not** fuzzed: `argv` is supplied by
+whoever launches the process, at that user's privilege, so it crosses no trust
+boundary. The CLI parsers are covered by unit tests instead.
 
 Also in scope: the `libimud` client library (a bad packet must never
 compromise a consuming application), privilege or permission errors in the

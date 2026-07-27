@@ -73,61 +73,84 @@ jobs:
           set -euo pipefail
           VERSION="${TAG#v}"
 
-          # Debian package names cannot contain '_', and every filename is
-          # <name>_<version>-<revision>~<suite><n>_<arch>.deb — so field 2
-          # split on '_', truncated at the first '-', is the upstream version.
-          deb_version() { printf '%s' "${1##*/}" | cut -d_ -f2 | cut -d- -f1; }
-
-          # --- exclude automatic dbgsym packages --------------------------
-          # debian/rules sets no --no-automatic-dbgsym, so dh_strip emits a
-          # dbgsym deb per binary package and they ride onto the Release as
-          # ordinary .deb files.  Debian keeps debug symbols in a SEPARATE
-          # archive (deb.debian.org/debian-debug) so the main archive is not
-          # bloated by them; same policy here.  They stay attached to the
-          # GitHub Release — that is where you fetch them from to symbolize
-          # a crash report — and never enter the pool.
+          # NEVER trust a downloaded asset's filename.  GitHub sanitizes '~'
+          # to '.' when a release asset is uploaded, so a package built as
+          #   imud_1.6.2-1~bookworm1_arm64.deb
+          # comes back from `gh release download` as
+          #   imud_1.6.2-1.bookworm1_arm64.deb
+          # The bytes are identical (verified by sha256 against the pool) —
+          # only the name is mangled.  So read the real identity out of the
+          # control file and rebuild the canonical Debian filename, which is
+          # what apt/pool has held since 1.5.  Routing on the downloaded name
+          # instead would fail to match every single deb.
           dropped=0
-          for f in incoming/*.deb; do
-            [ -e "$f" ] || continue
-            case "${f##*/}" in
-              *-dbgsym_*) rm -f "$f"; dropped=$((dropped + 1)) ;;
-            esac
-          done
-          echo "dbgsym packages excluded from the pool: $dropped"
-
-          # --- version guard + route by suite -----------------------------
           added=0
+
           for f in incoming/*.deb; do
             [ -e "$f" ] || continue
-            base="${f##*/}"
+
+            pkg="$(dpkg-deb -f "$f" Package)"
+            ver="$(dpkg-deb -f "$f" Version)"
+            arch="$(dpkg-deb -f "$f" Architecture)"
+
+            # --- exclude automatic dbgsym packages ------------------------
+            # debian/rules sets no --no-automatic-dbgsym, so dh_strip emits
+            # one dbgsym .deb per binary package (8 per suite per arch, 32
+            # per release) and they ride onto the Release as ordinary .deb
+            # files.  Debian keeps debug symbols in a SEPARATE archive
+            # (deb.debian.org/debian-debug) so the main archive is not
+            # bloated by them; same policy here.  They stay attached to the
+            # GitHub Release — that is where you fetch them from to
+            # symbolize a crash report — and never enter the pool.
+            case "$pkg" in
+              *-dbgsym) rm -f "$f"; dropped=$((dropped + 1)); continue ;;
+            esac
 
             # Catches "tagged v1.7 but debian/changelog still says 1.6.2".
-            ver="$(deb_version "$base")"
-            if [ "$ver" != "$VERSION" ]; then
-              echo "::error::$base has version '$ver' but tag $TAG implies '$VERSION'" >&2
+            # Strip any epoch, then the Debian revision: 1:1.6.2-1~x → 1.6.2
+            up="${ver#*:}"
+            up="${up%%-*}"
+            if [ "$up" != "$VERSION" ]; then
+              echo "::error::$pkg has version '$ver' but tag $TAG implies '$VERSION'" >&2
               exit 1
             fi
 
             # The ~<suite>1 suffix comes from build-debs.yml's `dch --local`.
-            case "$base" in
-              *~bookworm1_*) suite=bookworm ;;
-              *~trixie1_*)   suite=trixie ;;
+            case "$ver" in
+              *~bookworm1) suite=bookworm ;;
+              *~trixie1)   suite=trixie ;;
               *)
-                echo "::error::cannot route $base — no ~bookworm1/~trixie1 suffix" >&2
+                echo "::error::cannot route $pkg $ver — no ~bookworm1/~trixie1 suffix" >&2
                 exit 1
                 ;;
             esac
+
+            # Canonical pool name.  An epoch is written %3a per Debian
+            # convention; imud has never used one, but the encoding is a
+            # single substitution and getting it wrong would be silent.
+            base="${pkg}_${ver//:/%3a}_${arch}.deb"
 
             mkdir -p "apt/pool/$suite"
             cp "$f" "apt/pool/$suite/$base"
             added=$((added + 1))
           done
+
+          echo "dbgsym packages excluded from the pool: $dropped"
           echo "debs added to the pool: $added"
 
           if [ "$added" -eq 0 ]; then
             echo "::error::$TAG carried no publishable .debs — nothing to do" >&2
             exit 1
           fi
+
+          # Pool filenames are canonical (written just above), so field 2
+          # split on '_' — minus any epoch, truncated at the first '-' — is
+          # the upstream version.  Debian package names cannot contain '_'.
+          deb_version() {
+            local n="${1##*/}"
+            n="${n#*_}"; n="${n%%_*}"; n="${n#*%3a}"
+            printf '%s' "${n%%-*}"
+          }
 
           # --- prune to the newest $KEEP upstream versions per suite ------
           # Committed binaries are permanent in git history, so the pool has

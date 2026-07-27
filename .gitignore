@@ -27,6 +27,8 @@ src/drivers/*.d
 /fuzz_json
 /fuzz_packet
 /fuzz_capture
+/fuzz_wmm
+/fuzz_cal
 /test_ring
 /test_concurrency
 /test_mount

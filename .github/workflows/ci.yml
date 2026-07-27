@@ -364,7 +364,8 @@ jobs:
   # the parsers' own error logging so the runs stay fast.
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Six harnesses now: ~6 min of fuzzing plus six ASan+UBSan builds.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -378,13 +379,19 @@ jobs:
           $FZ fuzz/fuzz_json.c    src/position.c src/wmm.c src/log.c  -o fuzz_json    -lm
           $FZ fuzz/fuzz_packet.c                                      -o fuzz_packet  -lm
           $FZ fuzz/fuzz_capture.c src/capture.c                       -o fuzz_capture -lm
+          # fuzz_json links wmm.c but only ever drives pos_json_double —
+          # wmm_load itself was unfuzzed until this harness.  Both of these
+          # go on to exercise the math the parsed values feed (field
+          # evaluation / apply_*_cal), not just the parse.
+          $FZ fuzz/fuzz_wmm.c     src/wmm.c src/log.c                 -o fuzz_wmm     -lm
+          $FZ fuzz/fuzz_cal.c     src/cal.c src/imu_math.c src/log.c  -o fuzz_cal     -lm
 
       # -max_total_time is only checked BETWEEN inputs; -timeout caps a
       # single input (default is 1200 s!) so a hang-inducing input fails
       # the run in seconds and gets dumped as a timeout-* reproducer.
       - name: Run fuzzers (60 s each)
         run: |
-          for t in config json packet capture; do
+          for t in config json packet capture wmm cal; do
             echo "=== fuzz_$t ==="
             ./fuzz_$t -max_total_time=60 -timeout=10 -rss_limit_mb=1024 \
                       -close_fd_mask=3 "test/fuzz/corpus/$t"

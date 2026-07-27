@@ -123,6 +123,12 @@ jobs:
 
   deploy:
     needs: build
+    # Only main is ever published.  `workflow_dispatch` accepts any ref, and
+    # apt-publish.yml kicks this workflow with --ref <its own branch> — so
+    # rehearsing a publish on a scratch branch would otherwise push that
+    # branch's pool to the live site.  The build above still runs on every
+    # ref, which is the useful half: it proves the index builds and signs.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
