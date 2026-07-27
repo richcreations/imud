@@ -24,10 +24,11 @@ on:
       - '.github/workflows/apt-repo.yml'
   workflow_dispatch:
 
+# Default is read-only; the Pages scopes are granted to the deploy job
+# alone.  The build job is the one that handles the private signing key,
+# so it gets no write scope of any kind.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Never let two Pages deploys race; let an in-flight one finish.
 concurrency:
@@ -37,8 +38,13 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install apt-ftparchive + gpg
         run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
@@ -118,6 +124,10 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write     # publish the Pages deployment
+      id-token: write  # OIDC token deploy-pages exchanges
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

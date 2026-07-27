@@ -1,3 +1,16 @@
+imud-signalk (1.7) unstable; urgency=medium
+
+  * Fix: dest_addr accepted a numeric IPv4 address only, while every
+    other bridge resolved its destination with getaddrinfo(3). It now
+    uses the same shared helper, so a hostname, an IPv6 address or a
+    broadcast address all work. The systemd unit gains AF_INET6 to match
+    — without it a hostname resolving to IPv6 failed at socket() under
+    the unit's sandbox.
+  * Rebuilt for wire format v17 (packet 260 -> 276 bytes); must be
+    upgraded together with the daemon. Delta output is unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud-signalk (1.6.2) unstable; urgency=medium
 
   * Rebuilt on the shared bridge scaffolding (internal refactor); no

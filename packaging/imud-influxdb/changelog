@@ -1,3 +1,17 @@
+imud-influxdb (1.7) unstable; urgency=medium
+
+  * Four new always-on fields from wire v17: innov_weight and
+    innov_reject (MEKF update-gate health) and nis_accel and nis_mag
+    (measurement-model consistency; 1.0 = the filter's covariance matches
+    the innovations it sees, higher means over-confident).
+  * The line-protocol buffer grows 768 -> 1024 bytes to fit the wider
+    field set with headroom. An overflow returned n <= 0 and dropped the
+    sample silently, so the margin matters.
+  * Requires wire format v17 (packet 260 -> 276 bytes); must be upgraded
+    together with the daemon.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud-influxdb (1.6.2) unstable; urgency=medium
 
   * Rebuilt on the shared bridge scaffolding (internal refactor); no

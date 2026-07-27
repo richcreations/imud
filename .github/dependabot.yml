@@ -1,0 +1,21 @@
+# Only the github-actions ecosystem applies here: imud is C, its
+# dependencies are Debian system libraries (libgpiod, libmosquitto)
+# resolved by debian/control, and Dependabot has no ecosystem for those.
+#
+# Everything is grouped into a single PR so a routine v4 -> v5 bump is one
+# review, not six.  Action refs stay as major-version tags (@v4): every
+# action used is first-party actions/* or github/*, where tag hijack is not
+# a realistic threat and the readable tag is worth more than a SHA.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+    labels: []

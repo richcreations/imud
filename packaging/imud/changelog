@@ -1,3 +1,88 @@
+imud (1.7) unstable; urgency=medium
+
+  * WIRE FORMAT v17 (packet 260 -> 276 bytes): four new MEKF diagnostic
+    fields — innov_weight, innov_reject (how hard the filter is having to
+    distrust its sensors) and nis_accel, nis_mag (whether the noise model
+    itself is right; 1.0 = consistent). The daemon, all five bridges and
+    imud-mon validate the wire version and must be upgraded together.
+    libimud consumers do not need recompiling.
+  * Fusion: the MEKF error state grows 6 -> 9 with a Gauss-Markov
+    wave-acceleration state, so the seaway's disturbance of the gravity
+    measurement is modelled instead of treated as white sensor noise. Two
+    new hot-reloadable [fusion] keys tune it, mekf_wave_accel (default
+    0.8 m/s^2) and mekf_wave_accel_tau_s (default 0.5 s); either at 0
+    restores the previous 6-state filter exactly. Over the 12-seed wave
+    benchmark: accel NIS 19.3/25.2 -> 1.01/0.69, NEES 18.3/7.8 ->
+    3.47/0.99, attitude RMS 5.65 -> 4.45 deg (3-D), heading RMS 3.07 ->
+    0.83 and 1.96 -> 1.02 deg. mekf_accel_noise now describes sensor
+    noise only — rough weather is mekf_wave_accel's job.
+  * Fusion: the gross-outlier rejection threshold moves 9x -> 25x the
+    chi-squared gate. At 9x it discarded 26% of the benchmark's
+    accelerometer updates — ordinary wave motion, not outliers.
+  * Fusion: the error-state reset Jacobian G = I - 1/2[dtheta]x is now
+    applied to the covariance after each correction is injected.
+  * Fix: the innovation-covariance singularity test used an absolute
+    determinant threshold (1e-12) on a matrix carrying physical units, so
+    the accelerometer update was silently skipped once the filter
+    converged — 87% of updates discarded in the wave benchmark. The test
+    is now relative to the size of the matrix. Accuracy and consistency
+    numbers in documentation predating this release were measured with
+    the bug present and are not comparable.
+  * Fix: initial attitude alignment averaged a hardcoded ~1 s of data —
+    about a fifth of a roll period, so a daemon started underway aligned
+    to an arbitrary point in the wave cycle and baked the tilt error into
+    the magnetic reference's dip (47.7 deg attitude RMS at 1 s against
+    2.19 deg at 5 s). The window is now [calibration] align_window_sec,
+    default 5 s. Installs starting at a mooring were unaffected.
+  * Fix: the gate health/consistency metrics averaged with a gain derived
+    from the IMU sample rate, but the accel skip band discards 85-95% of
+    samples in a seaway, so their true time constant was ~10 min rather
+    than 30 s. The gain now comes from elapsed time.
+  * New [fusion] key mekf_mag_dip_sigma_deg (default 1.0): the dip-angle
+    uncertainty of the magnetic reference, admitted into the covariance
+    as a rank-1 anisotropic noise term. Affects 3-D vector fusion only
+    (mag_yaw_only = false); the marine yaw-only default is bit-for-bit
+    unchanged. NEES-strict in 3-D mode improves 12.8 -> 5.7.
+  * Config: mekf_gyro_noise, mekf_gyro_bias, mekf_accel_noise and
+    mekf_mag_noise are rejected at load if zero or negative — each is a
+    variance in a denominator, and 0 gave a Kalman gain of exactly 1.
+  * Config, [mount]: an unrecognised preset name is now a fatal error
+    rather than a warning that left a wrong rotation applied to every
+    sample; rotation_euler_deg now requires exactly three values; new
+    rotation_matrix key takes the board->body rotation as 9 row-major
+    values, validated against R'R = I and det(R) = +1.
+  * Engine-vibration detector: the EMA time constant is derived from the
+    sample rate (a true ~1 s regardless of FIFO burst depth) and the
+    threshold gained hysteresis, releasing at 70% of the assert level, so
+    a boundary signal no longer chatters Ra_scale, the accel skip band,
+    the log and the ENGINE_ON wire flag.
+  * Fix: a config reload (SIGHUP) while the engine was running left the
+    accel skip band narrow with noise inflation applied until the engine
+    next stopped, and did not recompute the m_ref adaptation rate after a
+    mag_odr_hz change.
+  * New imud-cal fit-ra mode: replays a rough-water .imucap through the
+    filter and reports the gravity-direction residual, its correlation
+    time, the innovation-distance distribution against the gates, and the
+    mean NIS. It writes nothing — what it comments on is filter tuning in
+    imud.conf, not a sensor property. Two fixes over its first cut: the
+    residual correlation time was low by the accel-skip decimation factor
+    (3-10x), and it now calls the filter's own innovation code instead of
+    a drifted copy, so the offline report and the live nis_accel field
+    cannot disagree.
+  * Flag bit 6 (FLAG_MOTION) is formally retired. It was defined but
+    never set in any released version; the define stays so existing code
+    compiles, but the bit will never be set or reused.
+  * Docs: the Euler attitude fields (pitch, roll, yaw, heading_deg,
+    rate_of_turn) are stated to be ZYX intrinsic angles, singular at
+    pitch +/-90 deg by construction. Consumers that can encounter steep
+    pitch must read quat_*. Nothing changed in the packet.
+  * The rough-sea wave benchmark now averages over a fixed set of 12
+    seeds instead of asserting on one unrepresentative draw, and the
+    packet fuzz seed corpus is generated from packet_build() itself
+    (make fuzz-seeds) with test_packet asserting it matches the wire.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud (1.6.2) unstable; urgency=medium
 
   * Internal dedup refactor, no functional change: all I2C drivers now

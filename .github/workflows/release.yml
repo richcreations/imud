@@ -1,69 +1,59 @@
-# Release pipeline: on a version tag, build the .debs for amd64 + arm64 and
-# the dist tarball, then open a DRAFT GitHub release with everything
-# attached — the maintainer reviews and publishes it by hand.
+# Release pipeline: on a version tag, build the .debs (arm64 + armhf ×
+# bookworm + trixie, via the reusable build-debs workflow) and the dist
+# tarball, then open a DRAFT GitHub release with everything attached — the
+# maintainer reviews and publishes it by hand.
+#
+# Publishing the draft is the gate: it fires apt-publish.yml, which routes
+# the packages into apt/pool/ and triggers the signed index rebuild.
 name: Release
 
 on:
   push:
     tags: ['v*']
 
+# Least-privilege default; only the release job widens, and only for itself.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Same docker-run container build as ci.yml's debs job (see the comments
-  # there for why `container:` cannot host the armhf image): bookworm +
-  # trixie × arm64 + armhf, so the release carries installable packages
-  # for stock Raspberry Pi OS (bookworm, 64- and 32-bit) and current
-  # Debian (trixie).  armhf builds pass -B so the arch:all imud-wmm-data
-  # deb is built exactly once per dist, on arm64.
-  debs:
-    strategy:
-      matrix:
-        dist: [bookworm, trixie]
-        arch: [arm64, armhf]
-        include:
-          - arch: arm64
-            platform: linux/arm64
-            binary_flag: -b
-          - arch: armhf
-            platform: linux/arm/v7
-            binary_flag: -B
-    runs-on: ubuntu-24.04-arm
+  # Fail in seconds rather than after 45 minutes of arm container builds if
+  # the tag and the canonical version disagree.  ci.yml checks that
+  # version.h agrees with the changelogs and man pages; this is the one
+  # check that can only happen at tag time.
+  check-tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      # Suffix the version per distribution (1.5-1~bookworm1) so packages
-      # for different dists never collide as filenames/release assets, and
-      # dpkg orders upgrades correctly (~ sorts before the bare revision;
-      # bookworm < trixie alphabetically matches the upgrade path).
-      - name: Build packages (${{ matrix.dist }}/${{ matrix.arch }})
-        run: |
-          docker run --rm --platform ${{ matrix.platform }} \
-            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
-            -e DEBIAN_FRONTEND=noninteractive \
-            -e DEBEMAIL=richcreations@gmail.com \
-            -e "DEBFULLNAME=Richard Simpson" \
-            debian:${{ matrix.dist }} bash -euo pipefail -c '
-              apt-get update
-              apt-get install -y build-essential debhelper devscripts \
-                                 pkgconf libgpiod-dev libmosquitto-dev
-              dch --local "~${{ matrix.dist }}" \
-                  "Automated CI build for Debian ${{ matrix.dist }}."
-              dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}
-              mkdir -p dist-debs && mv ../*.deb dist-debs/
-            '
-
-      - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.dist }}-${{ matrix.arch }}
-          path: dist-debs/*.deb
+          persist-credentials: false
+
+      - name: Tag matches include/version.h
+        run: |
+          ver=$(sed -n 's/^#define IMUD_VERSION_STR *"\(.*\)"/\1/p' include/version.h)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$ver" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME implies version '$tag' but include/version.h says '$ver'" >&2
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches include/version.h ($ver)"
+
+  debs:
+    needs: check-tag
+    uses: ./.github/workflows/build-debs.yml
 
   release:
     needs: debs
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write      # gh release create
+      attestations: write  # record build provenance
+      id-token: write      # sign the provenance statement
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build dist tarball
         run: make dist
@@ -73,6 +63,23 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Signed, verifiable provenance for every published artifact:
+      #   gh attestation verify <file> --repo <owner>/imud
+      # Complements the GPG-signed apt index — that proves the index came
+      # from the maintainer; this proves each deb came from this workflow
+      # at this commit.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            imud-*.tar.gz
+            artifacts/*.deb
+
+      # Draft, not published: the maintainer reviews, writes the notes, and
+      # publishes — and that publish is what promotes these debs to apt.
+      # Automatic dbgsym packages ride along as release assets (useful for
+      # symbolizing a crash report); apt-publish.yml filters them out of
+      # the apt pool, matching Debian's separate debian-debug archive.
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}

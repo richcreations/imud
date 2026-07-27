@@ -1,3 +1,11 @@
+imud-utils (1.7) unstable; urgency=medium
+
+  * Rebuilt for wire format v17 (packet 260 -> 276 bytes). imud-mon
+    validates the wire version, so it must be upgraded together with the
+    daemon and the bridges.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud-utils (1.5) unstable; urgency=medium
 
   * Initial release: imud-mon split out of the imud package so network

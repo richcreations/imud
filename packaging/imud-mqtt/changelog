@@ -1,3 +1,11 @@
+imud-mqtt (1.7) unstable; urgency=medium
+
+  * Rebuilt for wire format v17 (packet 260 -> 276 bytes); must be
+    upgraded together with the daemon. Topics, units, Home Assistant
+    discovery, config keys and CLI are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud-mqtt (1.6.2) unstable; urgency=medium
 
   * Rebuilt on the shared bridge scaffolding (internal refactor); no

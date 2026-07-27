@@ -28,7 +28,7 @@
   "applicationSubCategory": "System daemon, sensor fusion, marine navigation, robotics",
   "operatingSystem": "Linux, Raspberry Pi OS, Debian",
   "processorRequirements": "arm64, armhf",
-  "softwareVersion": "1.6.2",
+  "softwareVersion": "1.7",
   "license": "https://opensource.org/licenses/MIT",
   "codeRepository": "https://github.com/richcreations/imud",
   "programmingLanguage": "C",
@@ -416,8 +416,9 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     <dt>Client libraries</dt>
     <dd><code>libimud</code> is the ABI-stable C library for the binary stream.
     A single-file Python client ships with the daemon, and
-    <a href="https://github.com/richcreations/imud-arduino">imud-arduino</a>
-    provides an Arduino/ESP32 client over TCP or UDP.</dd>
+    <a href="https://richcreations.github.io/imud-arduino/">ImudClient</a>
+    provides an Arduino/ESP32 client over TCP or UDP — header-only, no heap,
+    for cockpit displays and telemetry heads.</dd>
 
     <dt>Tools</dt>
     <dd><code>imud-cal</code> for gyro, accelerometer, and magnetometer
@@ -445,6 +446,8 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
         analysis.</li>
     <li><a href="apt/">apt repository</a>
         — Debian and Raspberry Pi OS packages.</li>
+    <li><a href="https://richcreations.github.io/imud-arduino/">ImudClient</a>
+        — the Arduino/ESP32 client library for the binary stream.</li>
   </ul>
 
   <p>Installed man pages: <code>imud(8)</code>, <code>imud-cal(8)</code>,
@@ -460,7 +463,7 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
 </div>
 
 <div class="bar bottom">
-  <span>imud 1.6.2</span>
+  <span>imud 1.7</span>
   <span>2026-07-27</span>
   <span>IMUD(8)</span>
 </div>
