@@ -1,0 +1,183 @@
+# Promote a published GitHub Release into the apt pool.
+#
+# This is the automated half of what used to be a hand routine (download the
+# debs from the draft release, sort 38 files into apt/pool/<suite>/ by eye,
+# commit, push).  The human gate did not go away — it MOVED: clicking
+# "Publish" on the draft release is now the gate.  Nothing reaches users
+# until you do that.
+#
+#   git tag v1.7 && git push --tags
+#     → release.yml       builds 4× debs, opens a DRAFT release
+#     → [you review, click Publish]            ← THE GATE
+#     → apt-publish.yml   routes debs into apt/pool/, prunes, commits
+#     → apt-repo.yml      regenerates the signed index, deploys Pages
+#
+# To rehearse safely, run this by hand with a `branch` other than main: it
+# will commit the pool change there and leave main and the live repo alone.
+name: Publish to apt
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v1.7)'
+        required: true
+      branch:
+        description: 'Branch to commit the pool change to'
+        default: main
+      keep:
+        description: 'How many upstream versions to keep per suite'
+        default: '3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Pre-releases are for testing; they never reach the apt pool.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write  # commit the pool change
+      actions: write   # dispatch apt-repo.yml (see the last step)
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      BRANCH: ${{ inputs.branch || 'main' }}
+      KEEP: ${{ inputs.keep || '3' }}
+    steps:
+      # Check out the BRANCH, not the release tag: the tag commit is
+      # detached and we need somewhere to commit.  Full history so the push
+      # below can rebase if the branch moved while the arm builds ran.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch || 'main' }}
+          fetch-depth: 0
+
+      - name: Download release .debs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p incoming
+          gh release download "$TAG" --pattern '*.deb' --dir incoming --repo "$GITHUB_REPOSITORY"
+          echo "downloaded $(find incoming -name '*.deb' | wc -l) .deb file(s) from $TAG"
+
+      - name: Route into the pool and prune old versions
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+
+          # Debian package names cannot contain '_', and every filename is
+          # <name>_<version>-<revision>~<suite><n>_<arch>.deb — so field 2
+          # split on '_', truncated at the first '-', is the upstream version.
+          deb_version() { printf '%s' "${1##*/}" | cut -d_ -f2 | cut -d- -f1; }
+
+          # --- exclude automatic dbgsym packages --------------------------
+          # debian/rules sets no --no-automatic-dbgsym, so dh_strip emits a
+          # dbgsym deb per binary package and they ride onto the Release as
+          # ordinary .deb files.  Debian keeps debug symbols in a SEPARATE
+          # archive (deb.debian.org/debian-debug) so the main archive is not
+          # bloated by them; same policy here.  They stay attached to the
+          # GitHub Release — that is where you fetch them from to symbolize
+          # a crash report — and never enter the pool.
+          dropped=0
+          for f in incoming/*.deb; do
+            [ -e "$f" ] || continue
+            case "${f##*/}" in
+              *-dbgsym_*) rm -f "$f"; dropped=$((dropped + 1)) ;;
+            esac
+          done
+          echo "dbgsym packages excluded from the pool: $dropped"
+
+          # --- version guard + route by suite -----------------------------
+          added=0
+          for f in incoming/*.deb; do
+            [ -e "$f" ] || continue
+            base="${f##*/}"
+
+            # Catches "tagged v1.7 but debian/changelog still says 1.6.2".
+            ver="$(deb_version "$base")"
+            if [ "$ver" != "$VERSION" ]; then
+              echo "::error::$base has version '$ver' but tag $TAG implies '$VERSION'" >&2
+              exit 1
+            fi
+
+            # The ~<suite>1 suffix comes from build-debs.yml's `dch --local`.
+            case "$base" in
+              *~bookworm1_*) suite=bookworm ;;
+              *~trixie1_*)   suite=trixie ;;
+              *)
+                echo "::error::cannot route $base — no ~bookworm1/~trixie1 suffix" >&2
+                exit 1
+                ;;
+            esac
+
+            mkdir -p "apt/pool/$suite"
+            cp "$f" "apt/pool/$suite/$base"
+            added=$((added + 1))
+          done
+          echo "debs added to the pool: $added"
+
+          if [ "$added" -eq 0 ]; then
+            echo "::error::$TAG carried no publishable .debs — nothing to do" >&2
+            exit 1
+          fi
+
+          # --- prune to the newest $KEEP upstream versions per suite ------
+          # Committed binaries are permanent in git history, so the pool has
+          # to stay bounded or the clone grows without limit.  Anyone pinned
+          # to a pruned version loses their install source: that is the
+          # deliberate trade.
+          shopt -s nullglob
+          for suite in bookworm trixie; do
+            pool=("apt/pool/$suite"/*.deb)
+            [ "${#pool[@]}" -gt 0 ] || continue
+
+            versions=""
+            for f in "${pool[@]}"; do
+              versions="$versions$(deb_version "$f")"$'\n'
+            done
+            keep="$(printf '%s' "$versions" | sort -u -V | tail -n "$KEEP")"
+            echo "$suite: keeping $(printf '%s' "$keep" | tr '\n' ' ')"
+
+            for f in "${pool[@]}"; do
+              v="$(deb_version "$f")"
+              if ! printf '%s\n' "$keep" | grep -qxF "$v"; then
+                rm -f "$f"
+                echo "  pruned ${f##*/}"
+              fi
+            done
+          done
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A apt/pool
+
+          if git diff --cached --quiet; then
+            echo "::notice::pool already matches $TAG — nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "$TAG debs added to apt repo"
+          git pull --rebase --autostash origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
+
+      # REQUIRED, not belt-and-braces: a push made with GITHUB_TOKEN does
+      # not trigger other workflows, so apt-repo.yml's `push` trigger will
+      # NOT fire for the commit above.  workflow_dispatch is the documented
+      # exception that does work with GITHUB_TOKEN — hence this explicit
+      # kick.  Run unconditionally so re-running this workflow is also a
+      # way to force an index rebuild.
+      - name: Trigger the signed index rebuild
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run apt-repo.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"

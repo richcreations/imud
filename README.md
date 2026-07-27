@@ -1,5 +1,11 @@
 # imud — IMU Daemon
 
+[![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/richcreations/imud/badge)](https://scorecard.dev/viewer/?uri=github.com/richcreations/imud)
+[![Latest release](https://img.shields.io/github/v/release/richcreations/imud?sort=semver)](https://github.com/richcreations/imud/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **imud is a general-purpose IMU daemon for Linux — think of it as *gpsd for
 IMUs*.** It owns the inertial sensor, does the hard real-time work once
 (interrupt-driven sampling, calibration, sensor fusion, precise hardware

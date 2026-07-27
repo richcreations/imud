@@ -15,19 +15,38 @@ repo is namespaced under `/apt/` so a future project page can own the root.
 
 ## Publishing a package (the routine)
 
-1. Build the `.deb`s (the release workflow already does this on a version tag,
-   and attaches them to the GitHub Release — download from there), or
-   `dpkg-buildpackage -us -uc -b` on a Pi.
-2. Copy the ones you want live into the matching suite folder:
-   ```sh
-   cp imud_1.5-1~trixie1_arm64.deb        apt/pool/trixie/
-   cp imud_1.5-1~trixie1_armhf.deb        apt/pool/trixie/
-   cp imud-wmm-data_1.5-1~trixie1_all.deb apt/pool/trixie/
-   # …and the ~bookworm1 debs into apt/pool/bookworm/
-   ```
-3. Commit and push. The workflow regenerates the signed index and redeploys.
-   Multiple versions may coexist in a pool (apt serves the newest); delete old
-   `.deb`s when you want to retire them.
+**Publish the draft GitHub Release.** That is the whole routine.
+
+Tagging `vX.Y` makes `release.yml` build the debs and open a *draft* release.
+When you review it and click **Publish**, `.github/workflows/apt-publish.yml`
+takes over: it downloads the release's `.deb` assets, routes each into
+`apt/pool/bookworm/` or `apt/pool/trixie/` by its `~bookworm1` / `~trixie1`
+suffix, prunes the pool to the three most recent versions per suite, commits
+that, and then triggers this repo's `apt-repo.yml` to regenerate and GPG-sign
+the index and redeploy Pages.
+
+It refuses to publish anything whose version disagrees with the tag, and it
+skips pre-releases entirely.
+
+Two deliberate exclusions:
+
+- **`-dbgsym` packages never enter the pool.** `dh_strip` builds one per binary
+  package and they ride along as Release assets, which is where they stay —
+  the same split Debian makes with its separate `debian-debug` archive. Fetch
+  them from the Release when you need to symbolize a crash.
+- **Only the newest three versions stay installable.** Older debs are pruned
+  from the pool on each publish, so a clone does not grow without bound. Anyone
+  pinned to a pruned version loses their install source.
+
+### Re-running or doing it by hand
+
+`apt-publish.yml` can be re-run from the Actions tab (**Run workflow**) with a
+tag, a target branch, and a keep-count — that is also how to rehearse it
+against a scratch branch without touching `main`.
+
+The old manual path still works if you need it: drop `.deb` files into
+`apt/pool/<suite>/`, commit, and push. Any push touching `apt/**` or `web/**`
+rebuilds the signed index.
 
 Only arm64/armhf + arch-`all` debs belong here — the packages target the Pi
 (64- and 32-bit Raspberry Pi OS). Both arches share one pool directory; CI

@@ -1,3 +1,44 @@
+imud (1.7-1) unstable; urgency=medium
+
+  * WIRE FORMAT v17 (packet 260 -> 276 bytes): four new MEKF diagnostic
+    fields — innov_weight, innov_reject, nis_accel, nis_mag. The daemon,
+    all five bridges and imud-mon validate the wire version and must be
+    upgraded together; libimud consumers do not need recompiling.
+  * Fusion: the MEKF error state grows 6 -> 9 with a Gauss-Markov
+    wave-acceleration state, so the seaway's disturbance of the gravity
+    measurement is modelled instead of treated as white sensor noise.
+    New [fusion] keys mekf_wave_accel (0.8 m/s^2) and
+    mekf_wave_accel_tau_s (0.5 s); either at 0 restores the 6-state
+    filter exactly. New mekf_mag_dip_sigma_deg (1.0) admits the magnetic
+    reference's dip uncertainty into the covariance in 3-D vector fusion.
+  * Fusion: gross-outlier rejection widens 9x -> 25x the chi-squared
+    gate, and the error-state reset Jacobian is applied to the covariance.
+  * Fix: the innovation-covariance singularity test used an absolute
+    determinant threshold on a matrix carrying physical units, silently
+    skipping the accelerometer update once the filter converged.
+  * Fix: initial attitude alignment averaged a hardcoded ~1 s of data, so
+    a daemon started underway aligned to an arbitrary point in the wave
+    cycle. The window is now [calibration] align_window_sec, default 5 s.
+  * Fix: the update-gate health metrics used a per-sample averaging gain,
+    giving a ~10 min time constant instead of 30 s; it is now time-based.
+  * Config: the four MEKF noise densities are rejected at load if zero or
+    negative; [mount] preset typos are fatal rather than silently applying
+    a wrong rotation; new [mount] rotation_matrix key (9 row-major values,
+    validated against R'R = I and det(R) = +1).
+  * Engine-vibration detector: sample-rate-derived EMA time constant and
+    threshold hysteresis so a boundary signal no longer chatters.
+  * New imud-cal fit-ra mode reports the gravity-direction residual, its
+    correlation time, the innovation distribution and the mean NIS from a
+    rough-water capture.
+  * imud-signalk: dest_addr now resolves hostnames and IPv6 via
+    getaddrinfo(3) like every other bridge; unit gains AF_INET6.
+  * imud-influxdb and imud-prometheus expose the four new diagnostics.
+  * New test_fit_ra and test_mount suites; the wave benchmark averages
+    over 12 seeds and the packet fuzz seed is generated from
+    packet_build() with test_packet asserting it matches the wire.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 imud (1.6.2-1) unstable; urgency=medium
 
   * Internal dedup refactor, no functional change: the five bridges now

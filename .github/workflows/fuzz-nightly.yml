@@ -68,3 +68,35 @@ jobs:
             timeout-*
             oom-*
           if-no-files-found: ignore
+
+  # A scheduled run that goes red is invisible: nobody is watching the
+  # Actions tab at 06:17 UTC, and the reproducers expire with the artifact
+  # retention window.  Raise an issue so a crash cannot be missed, reusing
+  # one issue for consecutive failures rather than filing a new one nightly.
+  notify:
+    needs: fuzz
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly fuzz failure"
+          body="A scheduled fuzz run failed. Reproducers are attached to the run as \
+          \`fuzz-nightly-reproducers-<target>\` artifacts (they expire — download them before then).
+
+          Run: $RUN_URL"
+
+          existing=$(gh issue list --state open --search "\"$title\" in:title" \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on existing issue #$existing"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

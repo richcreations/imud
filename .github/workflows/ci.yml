@@ -5,11 +5,80 @@ name: CI
 permissions:
   contents: read
 
+# push is filtered to main: without the filter a same-repo PR branch runs
+# the whole suite twice per push (once for push, once for pull_request).
 on:
   push:
+    branches: [main]
   pull_request:
 
+# Superseded runs are pointless and this workflow is expensive (four
+# containerised arm deb builds among ~10 jobs), so cancel the previous run
+# for a ref when a new commit lands on it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # The canonical version lives in include/version.h and everything else is
+  # hand-propagated across ~28 files at release time (docs/RELEASING.md).
+  # This is the guard that catches a half-finished bump before it is tagged.
+  version-consistency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Version strings agree with include/version.h
+        run: |
+          ver=$(sed -n 's/^#define IMUD_VERSION_STR *"\(.*\)"/\1/p' include/version.h)
+          [ -n "$ver" ] || { echo "::error::cannot parse include/version.h" >&2; exit 1; }
+          echo "include/version.h = $ver"
+          rc=0
+
+          # debian/changelog drives the .deb version; packaging/README
+          # requires it to match version.h at release time.  Strip the
+          # Debian revision (1.7-1 -> 1.7).
+          deb=$(sed -n '1s/^[^(]*(\([^)]*\)).*/\1/p' debian/changelog)
+          if [ "${deb%%-*}" != "$ver" ]; then
+            echo "::error file=debian/changelog::head stanza is '$deb', expected upstream version '$ver'" >&2
+            rc=1
+          fi
+
+          # The core package always changes in a release, so its changelog
+          # must be current.  Bridges only get a stanza when they change
+          # (docs/RELEASING.md), so they may legitimately lag — they must
+          # merely never be AHEAD of version.h.  imud-wmm-data is exempt:
+          # it tracks the WMM epoch (2025.0), not the imud version.
+          core=$(sed -n '1s/^[^(]*(\([^)]*\)).*/\1/p' packaging/imud/changelog)
+          if [ "$core" != "$ver" ]; then
+            echo "::error file=packaging/imud/changelog::head stanza is '$core', expected '$ver'" >&2
+            rc=1
+          fi
+          for f in packaging/*/changelog; do
+            case "$f" in */imud-wmm-data/*) continue ;; esac
+            v=$(sed -n '1s/^[^(]*(\([^)]*\)).*/\1/p' "$f")
+            if ! dpkg --compare-versions "$v" le "$ver"; then
+              echo "::error file=$f::head stanza '$v' is ahead of include/version.h ($ver)" >&2
+              rc=1
+            fi
+          done
+
+          # Every man page footer must name this release ('\" t preambles
+          # mean .TH is not always line 1, so grep rather than head -1).
+          for f in man/man1/*.1 man/man3/*.3 man/man5/*.5 man/man8/*.8; do
+            th=$(grep -m1 '^\.TH' "$f" | sed 's/.*"\(imud [0-9][0-9.]*\)".*/\1/')
+            if [ "$th" != "imud $ver" ]; then
+              echo "::error file=$f::.TH says '$th', expected 'imud $ver'" >&2
+              rc=1
+            fi
+          done
+
+          [ "$rc" -eq 0 ] && echo "all version strings agree ($ver)"
+          exit "$rc"
+
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
   build-and-test:
@@ -17,8 +86,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -152,14 +224,101 @@ jobs:
           mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3 man/man5/*.5 man/man8/*.8
           echo "man lint OK"
 
+  # The suite on 32-bit ARM.  armhf .debs are built and published, but until
+  # now nothing ever RAN the tests there: build-and-test covers amd64 and
+  # arm64 only.  32-bit is where the packed wire struct, time_t width and
+  # pointer size actually differ — test_drivers wraps __ioctl_time64, a
+  # symbol that only exists on 32-bit glibc with 64-bit time_t.
+  #
+  # Same explicit `docker run` as build-debs.yml, for the same reason: the
+  # `container:` key cannot host an armhf rootfs on an arm64 runner.
+  test-armhf:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build and test under 32-bit armhf (trixie)
+        run: |
+          docker run --rm --platform linux/arm/v7 \
+            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
+            -e DEBIAN_FRONTEND=noninteractive \
+            debian:trixie bash -euo pipefail -c '
+              apt-get update
+              apt-get install -y build-essential pkgconf libgpiod-dev \
+                                 libmosquitto-dev python3
+              uname -m
+              make clean
+              make
+              make bridges
+              make test
+            '
+
+  # Static analysis: the one axis the rest of CI does not cover.  Everything
+  # else here is dynamic (sanitizers, fuzzers) and so only sees paths the
+  # tests execute; these read the code instead.  CodeQL runs separately in
+  # codeql.yml — it is slower and reports into the Security tab.
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev cppcheck clang-tools
+
+      # Blocking: the tree is clean under these checks today.  The single
+      # known false positive is suppressed inline at its site with the
+      # reason, so new findings are real findings.
+      - name: cppcheck
+        run: |
+          cppcheck --enable=warning,performance,portability \
+                   --inline-suppr --std=c11 -Iinclude \
+                   --suppress=missingIncludeSystem \
+                   --error-exitcode=1 --quiet src lib
+          echo "cppcheck clean"
+
+      # scan-build injects its analyzer by exporting CC, and the Makefile
+      # only defaults CC when $(origin CC) is `default` — so an environment
+      # CC wins and plain `scan-build make` is analysed correctly.
+      #
+      # Advisory for now: unlike cppcheck above, this has not been run
+      # against the tree yet (it needs a Linux build), so the finding count
+      # is unknown and a red CI on the first push would be noise.  Triage
+      # the uploaded report, then add --status-bugs to make it blocking.
+      - name: clang static analyzer (advisory)
+        run: |
+          make clean
+          scan-build -o scan-out --keep-going make all bridges || true
+          echo "--- scan-build report ---"
+          find scan-out -name '*.html' 2>/dev/null | head -20
+          test -d scan-out || echo "::warning::scan-build produced no report directory"
+
+      - name: Save scan-build report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-build-report
+          path: scan-out
+          if-no-files-found: ignore
+
   # The full test suite under AddressSanitizer + UBSan: memory errors and
   # undefined behavior fail the build. The Makefile respects external
   # CFLAGS/LDFLAGS by design, so the flags flow through every test binary.
   # (TSan + fuzzers run as their own jobs below.)
   sanitizers:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -180,8 +339,11 @@ jobs:
   # _Atomic), and test_ring exercises the ring handshake directly.
   tsan:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         run: |
@@ -205,6 +367,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build fuzz harnesses
         run: |
@@ -238,67 +402,10 @@ jobs:
             oom-*
           if-no-files-found: ignore
 
-  # Build the real .debs (binary-only — the source-package/orig dance is a
-  # Debian-archive concern, not a GitHub-release one) for arm64 + armhf ×
-  # both supported Debian releases, inside debian:<dist> containers so the
-  # packages depend on Debian's library names/versions (the deploy target
-  # is Raspberry Pi OS, not the runner's Ubuntu).  The bookworm build
-  # doubles as continuous coverage of the libgpiod v1 API path (bookworm
-  # ships 1.6; trixie ships 2.x — the Makefile auto-detects).
-  # Lintian runs advisory: its findings gate archive submission, not CI.
-  #
-  # arm64 + armhf only: the daemon needs I2C hardware and the bridges live
-  # on the daemon's machine, so amd64 debs have no real audience (an x86
-  # imud-mon user builds from source; amd64 COMPILATION is still covered
-  # by build-and-test + the sanitizer/fuzz jobs).  armhf serves 32-bit
-  # Raspberry Pi OS (ARMv7, Pi 2 and later).
-  #
-  # The containers are driven with explicit `docker run` instead of the
-  # workflow `container:` key: GitHub's arm runners (Neoverse N2) execute
-  # armhf natively (AArch32 at EL0, no QEMU), but `container:` mounts the
-  # runner's arm64 node binary into the container for JS actions like
-  # checkout, and that binary cannot run in an armhf rootfs.  So checkout
-  # and artifact upload happen on the host; only the build runs inside.
+  # Build the real .debs on every push so packaging cannot rot between
+  # releases, with lintian advisory.  release.yml calls the same reusable
+  # workflow without lintian — one definition, no drift.
   debs:
-    strategy:
-      matrix:
-        dist: [bookworm, trixie]
-        arch: [arm64, armhf]
-        include:
-          - arch: arm64
-            platform: linux/arm64
-            binary_flag: -b   # arch-dep + arch:all (imud-wmm-data)
-          - arch: armhf
-            platform: linux/arm/v7
-            binary_flag: -B   # arch-dep only: arch:all is built once, on arm64
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      # Suffix the version per distribution (1.5-1~bookworm1) so packages
-      # for different dists never collide as filenames/release assets, and
-      # dpkg orders upgrades correctly (~ sorts before the bare revision;
-      # bookworm < trixie alphabetically matches the upgrade path).  The
-      # arch needs no suffix: it is already in the .deb filename.
-      - name: Build packages (${{ matrix.dist }}/${{ matrix.arch }})
-        run: |
-          docker run --rm --platform ${{ matrix.platform }} \
-            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
-            -e DEBIAN_FRONTEND=noninteractive \
-            -e DEBEMAIL=richcreations@gmail.com \
-            -e "DEBFULLNAME=Richard Simpson" \
-            debian:${{ matrix.dist }} bash -euo pipefail -c '
-              apt-get update
-              apt-get install -y build-essential debhelper devscripts \
-                                 lintian pkgconf libgpiod-dev libmosquitto-dev
-              dch --local "~${{ matrix.dist }}" \
-                  "Automated CI build for Debian ${{ matrix.dist }}."
-              dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}
-              lintian --info ../*.changes || true
-              mkdir -p dist-debs && mv ../*.deb dist-debs/
-            '
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: debs-${{ matrix.dist }}-${{ matrix.arch }}
-          path: dist-debs/*.deb
+    uses: ./.github/workflows/build-debs.yml
+    with:
+      lintian: true

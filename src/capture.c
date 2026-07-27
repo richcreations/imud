@@ -345,6 +345,10 @@ static void cap_rot_prune(const cap_rotator_t *rt)
     }
     closedir(d);
 
+    /* cppcheck-suppress uninitvar
+     * False positive: cppcheck flags names[] as uninitialized on the path
+     * where readdir() matched nothing, but that path leaves n == 0 and
+     * qsort() reads no elements for a zero count. */
     qsort(names, (size_t)n, sizeof(names[0]), name_cmp);
 
     const char *slash = strrchr(rt->cur_path, '/');

@@ -3,29 +3,83 @@
 Checklist for cutting release X.Y. The canonical version lives in ONE place —
 `include/version.h` — everything else follows it.
 
-1. **Bump the version**: `include/version.h` → `#define IMUD_VERSION_STR "X.Y"`.
-   (All six daemons — imud + the five bridges — report this via `--version`.
-   The *wire* version `IMUD_VERSION` in `include/types.h` / `lib/imud_client.h`
-   is separate and changes only when the packet layout changes.)
-2. **NEWS**: add an `X.Y` section at the top — user-visible changes only.
-3. **Changelogs**: add an `imud (X.Y)` stanza to `packaging/imud/changelog`,
-   and to each `packaging/imud-<bridge>/changelog` whose package changed.
-   Trailer format is Debian's: `-- Name <email>  Day, DD Mon YYYY HH:MM:SS ±ZZZZ`.
-4. **Man pages**: update every `.TH` line to `"imud X.Y"` and the release date
-   in ISO form, e.g. `"2026-07-10"`:
-   `sed -i 's/"imud [0-9.]*"/"imud X.Y"/; s/"[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}"/"YYYY-MM-DD"/' man/man*/*`
-   then `mandoc -Tlint man/man*/*` must be clean.
-5. **Verify**: `make clean && make && make bridges && make test` (on the Pi or
-   CI for the full set), and `mandoc -Tlint man/man*/*`.
-6. **Commit and tag**: commit the release, then `git tag vX.Y` and push the tag.
-7. **Tarball**: `make dist` → `imud-X.Y.tar.gz` (built from git HEAD, so tag
-   first or at the same commit). This is the upstream release artifact — for
-   Debian packaging it later becomes `imud_X.Y.orig.tar.gz`.
+CI enforces this: the **version-consistency** job in `.github/workflows/ci.yml`
+fails if `include/version.h`, `debian/changelog`, `packaging/imud/changelog` and
+the man page `.TH` lines disagree, and the **Release** workflow refuses to build
+if the tag does not match `include/version.h`. So a half-finished bump cannot
+reach the apt repository.
 
-Deployment reminder: the daemon, all bridges, and imud-mon validate the wire
-version and must be rebuilt/deployed together when `IMUD_VERSION` changes.
-Third-party libimud consumers do NOT need rebuilding — that is the point of
-the library — but the installed libimud.so must be upgraded with the daemon.
+## 1. Bump the version strings
+
+```sh
+make bump-version VERSION=X.Y            # DATE=YYYY-MM-DD to override "today"
+```
+
+`tools/bump-version.sh` rewrites `include/version.h`, every man page `.TH` line
+(version + date), the `imud X.Y` / date footers and JSON-LD `softwareVersion` in
+`web/index.html` and `apt/index.html`, `web/sitemap.xml`'s `lastmod`, and the
+`**Version:**` header in `spec.md`. It then lists the changelogs that still need
+a stanza. It is idempotent, so re-running it is safe.
+
+(All six daemons — imud + the five bridges — report this version via
+`--version`. The *wire* version `IMUD_VERSION` in `include/types.h` /
+`lib/imud_client.h` is separate and changes only when the packet layout does.)
+
+## 2. Write the prose — the part no script can do
+
+- **`NEWS`**: add an `X.Y` section at the top, user-visible changes only.
+- **`debian/changelog`**: add an `imud (X.Y-1) unstable; urgency=medium` stanza.
+  This drives the .deb version and **must** match `include/version.h`.
+  (`dch -v X.Y-1` writes the trailer for you.) The per-dist suffix
+  (`X.Y-1~bookworm1`) is added by CI, not committed.
+- **`packaging/imud/changelog`**: an `imud (X.Y)` stanza — always required.
+- **`packaging/imud-<bridge>/changelog`**: a stanza only for packages that
+  actually changed. `packaging/imud-wmm-data/changelog` is exempt — it tracks
+  the WMM epoch (2025.0), not the imud version.
+
+Trailer format is Debian's:
+`-- Name <email>  Day, DD Mon YYYY HH:MM:SS ±ZZZZ`
+
+## 3. Verify
+
+```sh
+make clean && make && make bridges && make test
+mandoc -Tlint -Wwarning man/man*/*
+```
+
+Push the branch and let CI do the rest — it covers amd64, arm64 and 32-bit
+armhf, the sanitizers, the fuzzers, static analysis, and a full .deb build for
+both suites.
+
+## 4. Tag
+
+```sh
+git tag vX.Y && git push origin vX.Y
+```
+
+That fires `.github/workflows/release.yml`, which checks the tag against
+`include/version.h`, builds .debs for bookworm + trixie × arm64 + armhf, records
+build provenance, and opens a **draft** GitHub Release with the debs and the
+`make dist` tarball attached.
+
+## 5. Publish — this is the gate
+
+Review the draft release, write the notes, and click **Publish**.
+
+Publishing is what promotes the packages: it fires
+`.github/workflows/apt-publish.yml`, which routes the debs into
+`apt/pool/<suite>/`, prunes to the three most recent versions per suite,
+commits, and triggers `apt-repo.yml` to rebuild and GPG-sign the index and
+redeploy Pages. Nothing reaches users before this click.
+
+Automatic `-dbgsym` packages stay attached to the Release and are deliberately
+kept **out** of the apt pool — the same split Debian makes with its separate
+`debian-debug` archive. Download them from the Release when you need to
+symbolize a crash report.
+
+If anything goes wrong, `apt-publish.yml` can be re-run by hand from the
+Actions tab (**Run workflow** → tag), and `apt/README.md` documents the fully
+manual fallback.
 
 ## libimud ABI / soname discipline
 
@@ -39,3 +93,8 @@ Release-relevant summary: appending a member to `imud_data_t` or a function to
 `lib/libimud.map` keeps SONAME `libimud.so.0`, so a normal release never
 touches it. Only a reorder/retype/removal would force `libimud.so.1` and a
 runtime package rename (libimud0 → libimud1) — that should not happen.
+
+Deployment reminder: the daemon, all bridges, and imud-mon validate the wire
+version and must be rebuilt/deployed together when `IMUD_VERSION` changes.
+Third-party libimud consumers do NOT need rebuilding — that is the point of
+the library — but the installed libimud.so must be upgraded with the daemon.

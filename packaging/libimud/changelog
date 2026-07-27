@@ -1,3 +1,20 @@
+libimud (1.7) unstable; urgency=medium
+
+  * imud_data_t gains the wire-v17 MEKF diagnostic fields (append-only,
+    ABI preserved): innov_weight and innov_reject report how hard the
+    filter is having to distrust its sensors, nis_accel and nis_mag
+    report whether the noise model itself is right (1.0 = the filter's
+    covariance is consistent with the innovations it sees, higher means
+    over-confident). Existing binaries keep working unchanged and do not
+    need recompiling; the SONAME stays libimud.so.0.
+  * Documented: the Euler attitude fields (pitch, roll, yaw, heading_deg,
+    rate_of_turn) are ZYX intrinsic angles and are singular at pitch
+    +/-90 deg by construction. Consumers that can encounter steep pitch
+    must read quat_*, which is never singular. No code change — the
+    quaternion has always been there.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 27 Jul 2026 12:00:00 -0700
+
 libimud (1.6) unstable; urgency=medium
 
   * New imud_connect_tcp(host, port): connect to a daemon's [stream] TCP

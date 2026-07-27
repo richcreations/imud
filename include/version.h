@@ -15,6 +15,6 @@
 #ifndef IMUD_VERSION_H
 #define IMUD_VERSION_H
 
-#define IMUD_VERSION_STR "1.6.2"
+#define IMUD_VERSION_STR "1.7"
 
 #endif /* IMUD_VERSION_H */

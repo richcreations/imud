@@ -1,0 +1,94 @@
+# Reusable .deb build: arm64 + armhf × bookworm + trixie.
+#
+# Called by ci.yml (rot-detection on every push, lintian advisory) and by
+# release.yml (on a version tag, artifacts feed the GitHub Release).  It
+# lives in one file so the two callers cannot drift — they did before, and
+# the release workflow carried a stale "amd64 + arm64" comment for it.
+#
+# Binary-only builds: the source-package/orig dance is a Debian-archive
+# concern, not a GitHub-release one.  arm64 + armhf only — the daemon needs
+# I2C hardware and the bridges live on the daemon's machine, so amd64 debs
+# have no real audience (an x86 imud-mon user builds from source; amd64
+# COMPILATION is still covered by ci.yml's build-and-test and the
+# sanitizer/fuzz jobs).  armhf serves 32-bit Raspberry Pi OS (ARMv7, Pi 2
+# and later).  The bookworm build doubles as continuous coverage of the
+# libgpiod v1 API path (bookworm ships 1.6; trixie ships 2.x — the Makefile
+# auto-detects).
+#
+# The containers are driven with explicit `docker run` instead of the
+# workflow `container:` key: GitHub's arm runners (Neoverse N2) execute
+# armhf natively (AArch32 at EL0, no QEMU), but `container:` mounts the
+# runner's arm64 node binary into the container for JS actions like
+# checkout, and that binary cannot run in an armhf rootfs.  So checkout and
+# artifact upload happen on the host; only the build runs inside.
+name: build-debs
+
+on:
+  workflow_call:
+    inputs:
+      lintian:
+        description: 'Run lintian after the build (advisory, never fails the job)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  debs:
+    strategy:
+      matrix:
+        dist: [bookworm, trixie]
+        arch: [arm64, armhf]
+        include:
+          - arch: arm64
+            platform: linux/arm64
+            binary_flag: -b   # arch-dep + arch:all (imud-wmm-data)
+          - arch: armhf
+            platform: linux/arm/v7
+            binary_flag: -B   # arch-dep only: arch:all is built once, on arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      # persist-credentials: false — the workspace is bind-mounted into a
+      # container that apt-gets from the network; no token belongs in
+      # .git/config for that.  Nothing here pushes.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Suffix the version per distribution (1.5-1~bookworm1) so packages
+      # for different dists never collide as filenames/release assets, and
+      # dpkg orders upgrades correctly (~ sorts before the bare revision;
+      # bookworm < trixie alphabetically matches the upgrade path).  The
+      # arch needs no suffix: it is already in the .deb filename.
+      #
+      # apt-publish.yml routes debs into the pool by this exact ~<dist>1
+      # suffix, so changing the dch --local string breaks publishing.
+      - name: Build packages (${{ matrix.dist }}/${{ matrix.arch }})
+        env:
+          LINTIAN: ${{ inputs.lintian }}
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e DEBEMAIL=richcreations@gmail.com \
+            -e "DEBFULLNAME=Richard Simpson" \
+            -e "LINTIAN=$LINTIAN" \
+            debian:${{ matrix.dist }} bash -euo pipefail -c '
+              apt-get update
+              apt-get install -y build-essential debhelper devscripts \
+                                 pkgconf libgpiod-dev libmosquitto-dev
+              if [ "$LINTIAN" = "true" ]; then apt-get install -y lintian; fi
+              dch --local "~${{ matrix.dist }}" \
+                  "Automated CI build for Debian ${{ matrix.dist }}."
+              dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}
+              # Advisory only: lintian findings gate archive submission, not CI.
+              if [ "$LINTIAN" = "true" ]; then lintian --info ../*.changes || true; fi
+              mkdir -p dist-debs && mv ../*.deb dist-debs/
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debs-${{ matrix.dist }}-${{ matrix.arch }}
+          path: dist-debs/*.deb

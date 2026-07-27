@@ -1,0 +1,53 @@
+# OpenSSF Scorecard: an outside assessment of this repository's supply-chain
+# posture (branch protection, token permissions, pinned dependencies, signed
+# releases, fuzzing, SAST, ...).  Findings land in the Security tab like any
+# other code-scanning result, and the badge in README.md reflects the latest
+# score.
+#
+# It grades the REPOSITORY, not the C code — think of it as lint for the
+# things ci.yml cannot see.  Expect it to have opinions about unpinned
+# action tags; that is a deliberate choice, documented in dependabot.yml.
+name: Scorecard
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: '19 5 * * 2'   # weekly, Tuesday 05:19 UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      security-events: write  # upload the SARIF result
+      id-token: write         # publish the signed result for the badge
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: ossf/scorecard-action@v2
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          # Publishes the result so the README badge can resolve it. Requires
+          # a public repo; harmless to leave on, the step just no-ops if not.
+          publish_results: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-results
+          path: scorecard.sarif
+          retention-days: 5
+
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scorecard.sarif

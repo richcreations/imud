@@ -1,0 +1,74 @@
+# Security policy
+
+## Reporting a vulnerability
+
+Please report security issues **privately**, not as a public issue.
+
+Use GitHub's private vulnerability reporting — the **Security** tab of this
+repository → **Report a vulnerability**. If that is unavailable to you, email
+<richcreations@gmail.com> with `imud security` in the subject.
+
+Please include the imud version (`imud --version`), the platform (Raspberry Pi
+OS bookworm/trixie, 32- or 64-bit), and enough detail to reproduce — a config
+file, a capture, or a packet dump is ideal. If you have a reproducer that fits
+one of the fuzz harnesses below, that is the fastest possible report.
+
+This is a single-maintainer project, so please allow a few days for an initial
+response. You will get an acknowledgement, an assessment, and credit in the
+`NEWS` entry for the fix unless you would rather not be named.
+
+## Supported versions
+
+Fixes land in the next release from `main`. Only the **latest release** is
+supported; there are no maintenance branches for older versions.
+
+The apt repository at <https://richcreations.github.io/imud/apt/> carries the
+three most recent releases per Debian suite, so an upgrade path is always
+available — but only the newest of those receives fixes.
+
+## What is in scope
+
+imud runs as an unprivileged system user (`imud`) and reads several inputs it
+does not control. Those parsers are the interesting attack surface, and each
+has a dedicated fuzz harness under `fuzz/` that runs for an hour a night:
+
+| Input | Source | Harness |
+| --- | --- | --- |
+| Config file | `/etc/imud/*.conf` | `fuzz_config` |
+| JSON | gpsd / Signal K over the network | `fuzz_json` |
+| Wire packets | the binary UDP/stream protocol | `fuzz_packet` |
+| `.imucap` captures | replayed capture files | `fuzz_capture` |
+
+Also in scope: the `libimud` client library (a bad packet must never
+compromise a consuming application), privilege or permission errors in the
+packaging (the daemon must not need root at runtime), and anything that lets a
+network peer affect the daemon beyond the documented outputs.
+
+## What is out of scope
+
+- The binary UDP broadcast and the AF_UNIX stream are **unauthenticated by
+  design** — they are local/LAN telemetry, like gpsd's. Anyone who can reach
+  the socket can read the attitude data. Restrict this at the network layer;
+  it is not a vulnerability.
+- Physical I²C bus access, and anything requiring root on the host.
+- Denial of service by a local user who can already exhaust the machine's
+  CPU, memory, or file descriptors.
+- Inaccurate attitude output. Fusion bugs are ordinary bugs — please file
+  them publicly, with a capture if you can.
+
+## Verifying what you install
+
+Packages from the apt repository are covered by two independent mechanisms:
+
+- **The repository index is GPG-signed.** `apt` verifies it against
+  `/etc/apt/keyrings/imud.gpg`; see the [apt repository page](apt/README.md).
+- **Release artifacts carry build provenance.** Every `.deb` and source
+  tarball attached to a GitHub Release is attested to this repository's
+  release workflow, so you can confirm a package really was built here:
+
+  ```sh
+  gh attestation verify imud_1.7-1~trixie1_arm64.deb --repo richcreations/imud
+  ```
+
+If a signature or attestation ever fails to verify, treat that as a security
+report and use the private channel above.

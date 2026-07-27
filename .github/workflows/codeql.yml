@@ -1,0 +1,61 @@
+# Static analysis via CodeQL — the axis the rest of CI does not cover.
+#
+# ci.yml is entirely DYNAMIC (ASan/UBSan, TSan, libFuzzer, hardening-check):
+# it can only find bugs on paths the tests actually execute.  CodeQL reads
+# the code instead, so it reaches the error paths and edge cases the suite
+# never reaches.  Results land in the repo's Security → Code scanning tab.
+#
+# Requires a public repo (or GitHub Advanced Security on a private one).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so newly published queries reach old code even in a quiet week.
+    - cron: '43 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      security-events: write  # upload the SARIF results
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+
+      # build-mode: manual, not autobuild — `make` alone would miss the
+      # bridges, which are deliberately outside the `all` target, and they
+      # are half the C in the tree.
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+
+      - name: Build (daemon, utils, bridges)
+        run: |
+          make
+          make bridges
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:c-cpp
