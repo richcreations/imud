@@ -91,20 +91,34 @@ local socket — network outputs are explicit opt-ins.
 
 **Raspberry Pi OS / Debian (arm64/armhf) — install from the apt repository:**
 
+The suite is read from `/etc/os-release`, so these are the same commands on
+bookworm and trixie — nothing to substitute:
+
 ```sh
-# 1. Trust the signing key and add the repo (use bookworm or trixie)
+# 1. Trust the signing key
 curl -fsSL https://richcreations.github.io/imud/apt/KEY.gpg \
   | sudo gpg --dearmor -o /usr/share/keyrings/imud.gpg
-echo 'deb [signed-by=/usr/share/keyrings/imud.gpg] https://richcreations.github.io/imud/apt trixie main' \
-  | sudo tee /etc/apt/sources.list.d/imud.list
 
-# 2. Install the daemon + World Magnetic Model data
+# 2. Add the repository (suite detected from /etc/os-release)
+sudo tee /etc/apt/sources.list.d/imud.sources >/dev/null <<EOF
+Types: deb
+URIs: https://richcreations.github.io/imud/apt
+Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+Components: main
+Signed-By: /usr/share/keyrings/imud.gpg
+EOF
+
+# 3. Install the daemon + World Magnetic Model data
 sudo apt update && sudo apt install imud imud-wmm-data
 
-# 3. Edit for your hardware, then start on boot
+# 4. Edit for your hardware, then start on boot
 sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud
 ```
+
+If you added `/etc/apt/sources.list.d/imud.list` under earlier instructions,
+remove it (`sudo rm -f /etc/apt/sources.list.d/imud.list`) so apt does not see
+the repository twice.
 
 Optional bridges and the network monitor are separate packages:
 `imud-signalk`, `imud-mqtt`, `imud-influxdb`, `imud-mavlink`, `imud-prometheus`,
