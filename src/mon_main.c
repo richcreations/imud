@@ -203,10 +203,16 @@ static void print_snapshot(const mon_state_t *st,
                             bool want_nmea, bool want_binary)
 {
     time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    struct tm tmbuf;
+
+    /* localtime_r, not localtime(): the latter returns a pointer into a
+       shared static buffer and NULL on an out-of-range time_t, which the
+       old code dereferenced unchecked. */
+    if (!localtime_r(&now, &tmbuf))
+        memset(&tmbuf, 0, sizeof tmbuf);
 
     printf("─── %02d:%02d:%02d ────────────────────────────────────────────────\n",
-           t->tm_hour, t->tm_min, t->tm_sec);
+           tmbuf.tm_hour, tmbuf.tm_min, tmbuf.tm_sec);
 
     if (want_nmea) {
         if (st->have_nmea) {

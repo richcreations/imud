@@ -506,6 +506,14 @@ int main(int argc, char **argv)
 {
     g_start_time = time(NULL);
 
+    /* Every file this daemon creates goes through fopen(), which asks for
+     * mode 0666 and relies on the umask to narrow it.  Under systemd that
+     * is 0022 (so 0644), but a manual start inherits whatever the invoking
+     * shell had — umask 0 would make the PID file, cal.json and the .imucap
+     * captures world-WRITABLE.  Pin it here rather than depend on how the
+     * daemon was launched. */
+    umask(022);
+
     /* ── 1. Args + config ───────────────────────────────────────────────── */
 
     cli_args_t args;

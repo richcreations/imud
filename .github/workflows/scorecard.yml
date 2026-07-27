@@ -25,8 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      security-events: write  # upload the SARIF result
-      id-token: write         # publish the signed result for the badge
+      id-token: write  # publish the signed result for the badge
       contents: read
       actions: read
     steps:
@@ -45,12 +44,18 @@ jobs:
           # a public repo; harmless to leave on, the step just no-ops if not.
           publish_results: true
 
+      # The SARIF is kept as a downloadable artifact, but deliberately NOT
+      # uploaded to code scanning.  Doing so put 158 Scorecard rows into the
+      # Security tab alongside CodeQL's — 154 of them a single check,
+      # Binary-Artifacts, firing once per committed .deb in apt/pool/.  Those
+      # debs ARE the apt repository; the finding is correct-by-design and
+      # unfixable, and it buried the 20 real CodeQL findings at 8:1.
+      #
+      # Scorecard's posture results belong on the README badge and the
+      # scorecard.dev viewer, which publish_results above still feeds.  The
+      # Security tab stays a queue of actual code defects.
       - uses: actions/upload-artifact@v7
         with:
           name: scorecard-results
           path: scorecard.sarif
           retention-days: 5
-
-      - uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: scorecard.sarif
