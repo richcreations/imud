@@ -55,7 +55,7 @@ jobs:
       # Check out the BRANCH, not the release tag: the tag commit is
       # detached and we need somewhere to commit.  Full history so the push
       # below can rebase if the branch moved while the arm builds ran.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.branch || 'main' }}
           fetch-depth: 0
