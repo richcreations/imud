@@ -28,7 +28,9 @@ static uint8_t g_fifo[NADDR][FIFOSZ];
 static int     g_fifo_head[NADDR];   /* next byte to pop */
 static int     g_fifo_tail[NADDR];   /* next free slot */
 static int     g_fifo_reg[NADDR];    /* declared FIFO register, or -1 */
+static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static int     g_fail_next;          /* one-shot ioctl failure */
+static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
 /* ── Public harness API ──────────────────────────────────────────────────── */
 
@@ -38,8 +40,15 @@ void i2cmock_reset(void)
     memset(g_fifo, 0, sizeof g_fifo);
     memset(g_fifo_head, 0, sizeof g_fifo_head);
     memset(g_fifo_tail, 0, sizeof g_fifo_tail);
+    memset(g_selfclear, 0, sizeof g_selfclear);
     for (int i = 0; i < NADDR; i++) g_fifo_reg[i] = -1;
     g_fail_next = 0;
+    g_fail_all  = 0;
+}
+
+void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask)
+{
+    g_selfclear[addr & (NADDR - 1)][reg] |= mask;
 }
 
 void i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val)
@@ -75,6 +84,11 @@ void i2cmock_fail_next_ioctl(void)
     g_fail_next = 1;
 }
 
+void i2cmock_fail_all(int enable)
+{
+    g_fail_all = enable;
+}
+
 /* ── FIFO pop ────────────────────────────────────────────────────────────── */
 
 static uint8_t fifo_pop(int a)
@@ -90,7 +104,7 @@ static uint8_t fifo_pop(int a)
 /* Shared dispatch for the wrappers below. */
 static int mock_dispatch(unsigned long request, void *arg)
 {
-    if (g_fail_next) {
+    if (g_fail_next || g_fail_all) {
         g_fail_next = 0;
         errno = EIO;
         return -1;
@@ -118,7 +132,11 @@ static int mock_dispatch(unsigned long request, void *arg)
                 if (g_fifo_reg[a] >= 0 && reg_ptr == g_fifo_reg[a]) {
                     msg->buf[i] = fifo_pop(a);   /* FIFO port: pointer stays put */
                 } else {
-                    msg->buf[i] = g_reg[a][(uint8_t)reg_ptr];
+                    uint8_t r = (uint8_t)reg_ptr;
+                    msg->buf[i] = g_reg[a][r];
+                    /* Self-clearing bits read back set once, then drop — the
+                     * behaviour every reset()/trigger poll is waiting for. */
+                    if (g_selfclear[a][r]) g_reg[a][r] &= (uint8_t)~g_selfclear[a][r];
                     reg_ptr++;
                 }
             }

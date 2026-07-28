@@ -42,10 +42,11 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * the lookup tests below (an added chip that is not listed here goes
  * untested, but the count assertions catch a removed one). */
 static const char *imu_names[] = {
-    "ism330dhcx", "lsm6dso", "lsm6dsox", "icm42688p", "icm20948", "sim", NULL
+    "ism330dhcx", "lsm6dso", "lsm6dsox", "icm42688p", "icm20948",
+    "mpu9250", "mpu9255", "sim", NULL
 };
 static const char *mag_names[] = {
-    "mmc5983ma", "ak09916", "lis3mdl", "lis2mdl", "sim", NULL
+    "mmc5983ma", "ak09916", "ak8963", "lis3mdl", "lis2mdl", "sim", NULL
 };
 
 /* ── Shared table validator ──────────────────────────────────────────────── */
@@ -106,7 +107,7 @@ static void test_imu_lookups(void)
     int n = 0;
     for (const char **p = imu_names; *p; p++, n++)
         check_imu_ops(imu_driver_find(*p), *p);
-    EXPECT(n == 6, "6 IMU drivers registered");
+    EXPECT(n == 8, "8 IMU drivers registered");
     end(fb);
 }
 
@@ -117,7 +118,7 @@ static void test_mag_lookups(void)
     int n = 0;
     for (const char **p = mag_names; *p; p++, n++)
         check_mag_ops(mag_driver_find(*p), *p);
-    EXPECT(n == 5, "5 mag drivers registered");
+    EXPECT(n == 6, "6 mag drivers registered");
     end(fb);
 }
 

@@ -1,5 +1,10 @@
 imud-utils (1.7) unstable; urgency=medium
 
+  * New tool imud-imutest: validates a sensor driver against real hardware
+    and writes a Markdown report suitable for attaching to a bug report.
+    Unlike imud-mon it talks to the sensor over I2C, so it must run on the
+    machine the sensor is attached to, with the daemon stopped. This adds a
+    libgpiod dependency to the package.
   * Rebuilt for wire format v17 (packet 260 -> 276 bytes). imud-mon
     validates the wire version, so it must be upgraded together with the
     daemon and the bridges.

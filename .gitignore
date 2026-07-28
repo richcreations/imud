@@ -8,6 +8,7 @@ src/*.d
 src/drivers/*.d
 /imud
 /imud-cal
+/imud-imutest
 /imud-status
 /imud-mon
 /imud-signalk
@@ -50,6 +51,7 @@ src/drivers/*.d
 /test_drivers_registry
 /test_imu_math
 /test_drivers
+/test_imutest
 
 # Coverage artifacts (make coverage)
 *.gcno
@@ -93,6 +95,14 @@ cal.json
 *.imucap
 # ...but fuzz corpus seeds are tracked test data, not build products
 !test/fuzz/corpus/**/*.imucap
+
+# Manufacturer datasheets are reference-only and never committed: they are
+# copyrighted with no redistribution licence, and shipping them would make the
+# source tarball non-DFSG-free.  See docs/datasheets.md — drivers cite a
+# datasheet revision in their header comment instead.
+docs/*.pdf
+# ...but docs/math.pdf is generated in-tree from docs/math.md and IS tracked.
+!docs/math.pdf
 
 # debian build artifacts (dpkg-buildpackage)
 /debian/tmp/

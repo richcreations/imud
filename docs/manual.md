@@ -57,6 +57,7 @@ C standard library. Nothing else.
 | `imud-cal` | Calibration tool (gyro bias, accel 6-position, magnetometer swing). |
 | `imud-status` | Query a running daemon's health over its Unix socket. |
 | `imud-mon` | Live monitor of the UDP output streams from any host on the LAN. |
+| `imud-imutest` | Validate a sensor driver against real hardware and write a report. |
 | `imud-signalk` | Bridge daemon (optional package): emits Signal K delta JSON over UDP (see [§9a Bridges](#9a-bridges)). |
 | `imud-mqtt` | Bridge daemon (optional package): MQTT topics + Home Assistant discovery (see [§9a Bridges](#9a-bridges)). |
 | `imud-influxdb` | Bridge daemon (optional package): InfluxDB line protocol over UDP/HTTP (see [§9a Bridges](#9a-bridges)). |
@@ -81,7 +82,7 @@ sudo apt update && sudo apt install -y build-essential libgpiod-dev
 ### Build
 
 ```sh
-make            # builds imud, imud-cal, imud-status, imud-mon
+make            # builds imud, imud-cal, imud-imutest, imud-status, imud-mon
 make test       # builds and runs the host-side unit tests (no hardware needed)
 ```
 
@@ -105,8 +106,11 @@ This installs:
 | Client libraries | `libimud.so` + `/usr/local/include/imud.h` (see `man 3 libimud`), `/usr/local/share/imud/imud_client.py` |
 | Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `libimud.3` |
 
-`imud-mon` (the network stream monitor) is its own install target — it can
-live on machines that don't run the daemon:
+`imud-mon` and `imud-imutest` share their own install target. They are
+operator tools rather than part of the running system: `imud-mon` reads the
+UDP streams and can live on any machine on the network, while `imud-imutest`
+talks to the sensor over I²C and must run on the daemon's own box, with the
+daemon stopped.
 
 ```sh
 sudo make install-utils
@@ -256,7 +260,7 @@ Magnetometer driver settings. **[restart]**
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `driver` | string | `"mmc5983ma"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
-| `i2c_addr` | int | `0x30` | I²C address. MMC5983MA has a fixed address; AK09916 (in ICM-20948) is accessed via the ICM's I²C master — leave at `0x30` and let the IMU driver handle it. |
+| `i2c_addr` | int | `0x30` | I²C address. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both. |
 | `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
 | `odr_hz` | int | `100` | Output data rate in Hz. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
@@ -515,8 +519,11 @@ Links to the manufacturers' datasheets are collected in
 | `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. |
 | `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | *Experimental.* Near-clone of ISM330DHCX. ODR up to 6664 Hz. |
 | `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | *Experimental.* LSM6DSO with ML core; same driver. |
+| `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
+| `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | Primary reference mag. 18-bit, SET/RESET coil. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
+| `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
 | `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | *Experimental.* Popular standalone mag. ±4 G fixed. |
 | `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
 | `sim` | — | IMU + Magnetometer | — | none | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
@@ -529,6 +536,41 @@ when the pin is wired differently or unavailable.
 datasheet but have **not** been validated on physical hardware. imud prints a
 warning at startup when an experimental driver is selected. To add a new
 driver, see [§11 Writing a driver](#11-writing-a-driver).
+
+If you have one of these parts, you can clear its experimental flag for
+everyone: run [`imud-imutest`](imud-utils/manual.md) against it and open an
+issue with the report it writes.
+
+### Fitting an MPU-9250 or MPU-9255
+
+Three things about this part differ from imud's shipped defaults, and all
+three are worth knowing before you wire one up.
+
+- **The FIFO is smaller than the default watermark.** 512 bytes ÷ 12 bytes per
+  accel+gyro sample-set is about 42 sets, and `imu.fifo_wm` defaults to `64`,
+  which this chip cannot reach. The driver logs the mismatch at startup and
+  drains whatever is pending instead. Roughly 42 ms of headroom at 1 kHz also
+  means a stalled reader raises `FLAG_FIFO_OVERFLOW` far sooner than on the
+  ISM330DHCX's much larger FIFO.
+- **The default ODR is not on the grid.** Output rate is
+  `1000 / (1 + SMPLRT_DIV)`, giving 1000 / 500 / 333 / 250 / 200 / 125 /
+  100 Hz. imud's default of 833 Hz is not reachable and rounds to 1000 Hz,
+  which also costs more CPU on a Pi. Set `imu.odr_hz` explicitly.
+- **Do not copy the datasheet noise figure into `mekf_accel_noise`.** The
+  MPU-9250's accelerometer noise density (~300 µg/√Hz) converts naively to
+  about `0.0035`, which lands *inside* the divergence region documented in
+  [math.md §4.7](math.md) and `man 5 imud.conf`. `mekf_accel_noise` is a tuned
+  filter parameter, not a per-chip datasheet transcription. A noisier IMU is
+  not a reason to change it.
+
+The magnetometer is a separate driver: set `mag.driver = "ak8963"` and
+`mag.i2c_addr = 0x0C`. It is reached through the MPU's I²C bypass, which the
+IMU driver opens during init, so the IMU must be configured too — imud always
+brings the IMU up first.
+
+Boards sold as MPU-9250 are very often relabelled **MPU-6500s**, which have no
+magnetometer at all. `probe()` rejects those by name rather than letting the
+failure surface later as an unexplained I²C error from the mag driver.
 
 ---
 
@@ -548,11 +590,37 @@ partial run updates only the section it calibrated, preserving the others.
 | Mode | Procedure |
 |---|---|
 | `gyro` | Hold the board completely still. Captures gyro bias over a short window. |
-| `accel` | Bench 6-position calibration; follow the on-screen prompts to orient each face in turn. Do this before final mounting. |
+| `accel` | Bench 6-position calibration; follow the on-screen prompts to orient each face in turn (see below). Do this before final mounting. |
 | `mag` | In-situ magnetometer swing — drive the vessel slowly through at least two full 360° circles, then press Ctrl-C. Guided: a live bar shows heading-circle coverage (`#` covered, `.` needed, `o` = where you're pointing), running coverage %, and live radius/RMS; a bell + "FULL CIRCLE" message tells you when coverage is complete. Must be done after final mounting, with the engine and typical electronics running. |
 | `characterize` | Offline Allan-variance noise analysis of a **stationary** capture (`--from FILE`, recorded with `[capture]` enabled — overnight for a trustworthy bias-instability floor). Writes per-axis gyro/accel noise characteristics to cal.json's `noise` section as **informational** sensor characterization — the filter always keeps its tuned `mekf_*`; these numbers never feed it. Never touches the sensors. |
 | `fit-temp` | Offline linear gyro-bias/temperature fit from a warm-up capture (`--from FILE`, cold boot → warm, several °C of span). The daemon subtracts the fitted term from the gyro before fusion. Never touches the sensors. |
 | `fit-ra` | Offline check of the filter's accelerometer measurement model against a **rough-water** capture (`--from FILE`). Reports the gravity-direction residual, its correlation time, the innovation-distance distribution against the gates, and the mean NIS — the same statistic the daemon publishes live as `nis_accel`. **Writes nothing**: the value it comments on is filter tuning in `imud.conf`, not a sensor property. Needs a mag calibration in cal.json. Never touches the sensors. |
+
+### The six accelerometer positions
+
+Remember that the board frame has **Z pointing down** (§11), so the axis
+pointing **up** reads +g and the axis pointing **down** reads −g. Flat and
+component-side up therefore reads `[0, 0, −9.807]`, not `+9.807`.
+
+| # | Position | Board axis | Expected reading |
+|---|---|---|---|
+| 1 | Flat, component side up | +Z points down | `[0, 0, −9.807]` |
+| 2 | Flat, upside down | +Z points up | `[0, 0, +9.807]` |
+| 3 | Nose down (bow edge on the bench) | +X points down | `[−9.807, 0, 0]` |
+| 4 | Nose up (stern edge on the bench) | +X points up | `[+9.807, 0, 0]` |
+| 5 | Starboard side down (right edge down) | +Y points down | `[0, −9.807, 0]` |
+| 6 | Port side down (left edge down) | +Y points up | `[0, +9.807, 0]` |
+
+Each prompt states the expected vector before you take the reading, and prints
+what it actually measured afterwards, so a misplaced board shows up
+immediately. If a reading is geometrically impossible — gravity landing on an
+axis other than the one asked for, or a pair taken the wrong way round — the
+run names the offending position and exits **without writing anything**. A
+calibration fitted from a misplaced board is worse than no calibration, so it
+is not offered for saving.
+
+These are the same six orientations `imud-imutest` uses for its guided
+axis-sign check, so the two tools can be cross-checked against each other.
 
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are
@@ -782,6 +850,28 @@ imud-mon --config config/sim.conf   # read ports/addresses from a specific confi
 
 It reads the port numbers and multicast addresses from the config file and
 validates each binary packet (magic + CRC) before display.
+
+### imud-imutest
+
+Validates a sensor driver against real hardware and writes a Markdown report
+suitable for attaching to an issue. Ships in `imud-utils`; full documentation
+is in [docs/imud-utils/manual.md](imud-utils/manual.md) and
+`man 8 imud-imutest`.
+
+```sh
+sudo systemctl stop imud       # both would drain the same FIFO
+imud-imutest --imu-driver icm20948 --mag-driver ak09916 --mag-addr 0x0C --all
+sudo systemctl start imud
+```
+
+It runs a fully automatic pass (probe, reset timing, register readback,
+measured ODR, FIFO depth and overflow, `seq` continuity, the error-return
+contract, noise, gravity, temperature, `chip_ts`, interrupt edges, full-scale
+sweep) and then three guided phases that prompt the operator to place and turn
+the board — the only way to prove the chip-to-board axis remap is right.
+
+This is how an experimental driver gets its flag cleared: run it, then open an
+issue with the report.
 
 ### Raw capture with netcat
 
@@ -1304,3 +1394,5 @@ heading      increases ~6°/s from a 60° start
 - [ ] Logs use `LOG_*`, not bare `fprintf`.
 - [ ] Tested with `driver = "sim"` and `make test` passes.
 - [ ] Tested on real hardware with `imud-status` confirming sensor activity.
+- [ ] `imud-imutest --all` run against the part, with the report attached to
+      the pull request or issue. This is what clears `experimental = true`.

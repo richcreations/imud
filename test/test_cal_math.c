@@ -521,6 +521,222 @@ static void test_gyro_temp_fit(void)
     end(fb);
 }
 
+/* ── Six-position accelerometer fit ──────────────────────────────────────── */
+
+/*
+ * Build a meas[3][2][3] table by placing the board in each of the six
+ * orientations cal_accel_positions[] asks for, in the NED board frame
+ * (X fwd, Y stbd, Z down): the axis pointing UP reads +g.
+ *
+ * `truth_scale`/`truth_offset` let a test inject a real sensor error and
+ * check the fit recovers it: raw = ideal / scale + offset.
+ */
+static void build_meas(float meas[3][2][3],
+                       const float truth_scale[3], const float truth_offset[3])
+{
+    memset(meas, 0, sizeof(float) * 3 * 2 * 3);
+    for (int p = 0; p < 6; p++) {
+        int axis = cal_accel_positions[p].axis;
+        int sign = cal_accel_positions[p].sign;
+        int slot = (sign > 0) ? 0 : 1;
+        for (int k = 0; k < 3; k++) {
+            float ideal = (k == axis) ? (float)sign * CAL_G_MS2 : 0.0f;
+            float sc  = truth_scale  ? truth_scale[k]  : 1.0f;
+            float off = truth_offset ? truth_offset[k] : 0.0f;
+            meas[axis][slot][k] = ideal / sc + off;
+        }
+    }
+}
+
+static void test_accel_fit_ideal(void)
+{
+    begin("test_accel_fit_ideal");
+    int fb = g_fail;
+
+    float meas[3][2][3];
+    build_meas(meas, NULL, NULL);
+
+    float off[3], sc[3];
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == 0,
+           "a correct six-position run is accepted");
+    for (int k = 0; k < 3; k++) {
+        EXPECT_NEAR_D(sc[k],  1.0, 1e-5, "scale is unity");
+        EXPECT_NEAR_D(off[k], 0.0, 1e-5, "offset is zero");
+    }
+    end(fb);
+}
+
+static void test_accel_fit_recovers_real_error(void)
+{
+    begin("test_accel_fit_recovers_real_error");
+    int fb = g_fail;
+
+    /* A genuine sensor: 3% sensitivity error and a real zero-g offset. */
+    const float ts[3]  = { 1.03f, 0.97f, 1.01f };
+    const float toff[3] = { 0.20f, -0.15f, 0.05f };
+    float meas[3][2][3];
+    build_meas(meas, ts, toff);
+
+    float off[3], sc[3];
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == 0, "accepted");
+    for (int k = 0; k < 3; k++) {
+        EXPECT_NEAR_D(sc[k],  ts[k],   1e-4, "recovers the true scale");
+        EXPECT_NEAR_D(off[k], toff[k], 1e-4, "recovers the true offset");
+    }
+    end(fb);
+}
+
+static void test_accel_fit_tolerates_sloppy_placement(void)
+{
+    begin("test_accel_fit_tolerates_sloppy_placement");
+    int fb = g_fail;
+
+    /* 5 degrees off square on every face — a realistic hand placement.
+     * The guards must not fire on this. */
+    float meas[3][2][3];
+    build_meas(meas, NULL, NULL);
+    const float c = 0.99619f, s = 0.08716f;   /* cos/sin 5 deg */
+    for (int a = 0; a < 3; a++)
+        for (int u = 0; u < 2; u++) {
+            int other = (a + 1) % 3;
+            float on = meas[a][u][a];
+            meas[a][u][a]     = on * c;
+            meas[a][u][other] = on * s;
+        }
+
+    float off[3], sc[3];
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == 0,
+           "5 degrees of placement slop is still accepted");
+    end(fb);
+}
+
+/*
+ * The regression test for the imud-cal accel bug.
+ *
+ * Before the fix, the prompts' parenthetical instructions described the wrong
+ * physical position: Z inverted, and X/Y swapped with each other and
+ * inverted.  Every axis then produced either a negative or a near-zero
+ * half-range, which the old code silently turned into scale = 1.0 with no
+ * warning — a calibration that looked clean and did nothing.
+ */
+static void test_accel_fit_rejects_old_wrong_positions(void)
+{
+    begin("test_accel_fit_rejects_old_wrong_positions");
+    int fb = g_fail;
+
+    const float G = CAL_G_MS2;
+    float meas[3][2][3];
+    memset(meas, 0, sizeof meas);
+
+    /* What a board actually reads when the operator follows the old
+     * instructions, filed into the slots the old code used. */
+    /* "+Z up (flat, normal side up)"  -> +Z points DOWN -> Z reads -g */
+    meas[2][0][2] = -G;
+    /* "+Z down (flat, upside down)"   -> +Z points UP   -> Z reads +g */
+    meas[2][1][2] = +G;
+    /* "+X up (right edge down)"       -> +Y points DOWN -> Y reads -g */
+    meas[0][0][1] = -G;
+    /* "+X down (left edge down)"      -> +Y points UP   -> Y reads +g */
+    meas[0][1][1] = +G;
+    /* "+Y up (front edge down)"       -> +X points DOWN -> X reads -g */
+    meas[1][0][0] = -G;
+    /* "+Y down (back edge down)"      -> +X points UP   -> X reads +g */
+    meas[1][1][0] = +G;
+
+    float off[3] = { 9, 9, 9 }, sc[3] = { 9, 9, 9 };
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == -1,
+           "the old wrong positions are rejected, not silently fitted");
+    EXPECT(err[0] != '\0', "a diagnosis is produced");
+    /* Must not leave a usable-looking result behind. */
+    EXPECT(sc[0] == 9 && off[0] == 9,
+           "offset/scale are untouched on failure");
+    end(fb);
+}
+
+static void test_accel_fit_rejects_inverted_pair(void)
+{
+    begin("test_accel_fit_rejects_inverted_pair");
+    int fb = g_fail;
+
+    /* Correct everywhere except that the Z faces were taken the wrong way
+     * round — the single most likely operator slip. */
+    float meas[3][2][3];
+    build_meas(meas, NULL, NULL);
+    float tmp = meas[2][0][2];
+    meas[2][0][2] = meas[2][1][2];
+    meas[2][1][2] = tmp;
+
+    float off[3], sc[3];
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == -1,
+           "an inverted Z pair is rejected");
+    EXPECT(strstr(err, "inverted") != NULL, "diagnosis says inverted");
+    EXPECT(strchr(err, 'Z') != NULL, "diagnosis names the Z axis");
+    end(fb);
+}
+
+static void test_accel_fit_rejects_wrong_axis(void)
+{
+    begin("test_accel_fit_rejects_wrong_axis");
+    int fb = g_fail;
+
+    /* X and Y positions swapped: gravity lands on the wrong axis. */
+    float meas[3][2][3];
+    build_meas(meas, NULL, NULL);
+    for (int u = 0; u < 2; u++)
+        for (int k = 0; k < 3; k++) {
+            float t = meas[0][u][k];
+            meas[0][u][k] = meas[1][u][k];
+            meas[1][u][k] = t;
+        }
+
+    float off[3], sc[3];
+    char err[512] = {0};
+    EXPECT(cal_accel_fit(meas, off, sc, err, sizeof err) == -1,
+           "gravity on the wrong axis is rejected");
+    EXPECT(strstr(err, "gravity landed on") != NULL,
+           "diagnosis names the wrong-axis case");
+    end(fb);
+}
+
+/* The position table itself must stay consistent with the board frame. */
+static void test_accel_positions_table(void)
+{
+    begin("test_accel_positions_table");
+    int fb = g_fail;
+
+    int seen[3][2] = {{0,0},{0,0},{0,0}};
+    for (int p = 0; p < 6; p++) {
+        const cal_accel_pos_t *q = &cal_accel_positions[p];
+        EXPECT(q->label && q->label[0],   "position has a label");
+        EXPECT(q->detail && q->detail[0], "position has a detail line");
+        EXPECT(q->axis >= 0 && q->axis <= 2, "axis in range");
+        EXPECT(q->sign == 1 || q->sign == -1, "sign is +/-1");
+        seen[q->axis][q->sign > 0 ? 0 : 1]++;
+    }
+    for (int a = 0; a < 3; a++)
+        for (int u = 0; u < 2; u++)
+            EXPECT(seen[a][u] == 1, "each axis/direction appears exactly once");
+
+    /* The one that was wrong: flat and component-side up must be the
+     * Z-points-DOWN position, i.e. the one that reads -g. */
+    const cal_accel_pos_t *flat = NULL;
+    for (int p = 0; p < 6; p++)
+        if (strstr(cal_accel_positions[p].label, "component side up"))
+            flat = &cal_accel_positions[p];
+    EXPECT(flat != NULL, "the component-side-up position exists");
+    if (flat) {
+        EXPECT(flat->axis == 2, "component-side-up is a Z position");
+        EXPECT(flat->sign == -1,
+               "component-side-up reads -g (Z is DOWN in the board frame)");
+    }
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud cal_math tests ===");
@@ -545,6 +761,13 @@ int main(void)
     test_allan_random_walk();
     test_allan_characterize_floor();
     test_gyro_temp_fit();
+    test_accel_positions_table();
+    test_accel_fit_ideal();
+    test_accel_fit_recovers_real_error();
+    test_accel_fit_tolerates_sloppy_placement();
+    test_accel_fit_rejects_old_wrong_positions();
+    test_accel_fit_rejects_inverted_pair();
+    test_accel_fit_rejects_wrong_axis();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

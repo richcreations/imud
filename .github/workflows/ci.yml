@@ -129,7 +129,7 @@ jobs:
           make clean
           export DEB_BUILD_MAINT_OPTIONS="hardening=+all"
           eval "$(dpkg-buildflags --export=sh)"
-          make imud imud-cal imud-status imud-mon && make bridges
+          make imud imud-cal imud-imutest imud-status imud-mon && make bridges
           hardening-check --nocfprotection imud imud-signalk imud-influxdb imud-prometheus
           hardening-check --nocfprotection --nopie --nofortify libimud.so.0.0
 
@@ -172,10 +172,12 @@ jobs:
           test -f stage/usr/include/imud.h
           test ! -e stage/usr/include/imud_client.h
           test -f stage/usr/lib/pkgconfig/libimud.pc
-          # imud-mon ships in imud-utils, not the core package
+          # imud-mon and imud-imutest ship in imud-utils, not the core package
           test -x stage/usr/bin/imud-mon
+          test -x stage/usr/bin/imud-imutest
           test -f stage/usr/share/doc/imud-utils/copyright
           test -f stage/usr/share/man/man1/imud-mon.1.gz
+          test -f stage/usr/share/man/man8/imud-imutest.8.gz
           # WMM data is its own package: /usr/share only, never /etc
           test -f stage/usr/share/imud/WMM.COF
           test -f stage/usr/share/doc/imud-wmm-data/copyright

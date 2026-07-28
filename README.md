@@ -172,6 +172,7 @@ in-situ `imud-cal mag`. See the
 | `imud-cal` | Gyro, accelerometer, and magnetometer calibration. |
 | `imud-status` | Query a running daemon's health. |
 | `imud-mon` | Live monitor of the output streams from any host on the network (`make install-utils`). |
+| `imud-imutest` | Validate a sensor driver against real hardware; writes a Markdown report to attach to an issue (`make install-utils`). |
 | `imud-signalk` | Bridge daemon (optional install): pushes Signal K deltas over UDP from the local stream socket. |
 | `imud-mqtt` | Bridge daemon (optional install): publishes MQTT topics + Home Assistant discovery from the local stream socket. |
 | `imud-influxdb` | Bridge daemon (optional install): writes InfluxDB line-protocol points (UDP/HTTP) for Grafana. |
@@ -199,8 +200,8 @@ in-situ `imud-cal mag`. See the
 - **[Contributing](CONTRIBUTING.md)** — build, test, coding conventions, and how
   to submit a pull request.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
-  `libimud(3)` (installed by `make install`); `imud-mon(1)` by
-  `make install-utils`; `imud-signalk(8)` / `imud-mqtt(8)` /
+  `libimud(3)` (installed by `make install`); `imud-mon(1)` and
+  `imud-imutest(8)` by `make install-utils`; `imud-signalk(8)` / `imud-mqtt(8)` /
   `imud-influxdb(8)` / `imud-mavlink(8)` / `imud-prometheus(8)` (each with
   an `imud-<name>.conf(5)`) by the matching `install-<name>` target.
 - **[ROADMAP](docs/ROADMAP.md)** — deferred and future work.

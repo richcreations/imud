@@ -21,6 +21,8 @@
  *     from a byte queue instead of the register file, modelling a hardware FIFO
  *     that returns a fresh word on each read without advancing the register
  *     pointer.
+ *   - Self-clearing bits (i2cmock_set_selfclear), so a driver's reset() can
+ *     poll for its own reset bit to drop, the way real silicon behaves.
  *   - One-shot error injection to exercise the drivers' I2C-failure paths.
  *
  * A test typically: i2cmock_reset(); preload WHO_AM_I and any data registers;
@@ -46,8 +48,24 @@ uint8_t i2cmock_get_reg(uint8_t addr, uint8_t reg);
 void i2cmock_set_fifo_reg(uint8_t addr, uint8_t reg);
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
 
+/*
+ * Declare the bits in `mask` at `reg` as self-clearing: a read returns them as
+ * currently set, then drops them.  This models the reset and trigger bits that
+ * hardware clears once the operation completes — without it, every driver
+ * reset() that polls for its own bit to clear would time out against the plain
+ * register file.  Bits accumulate; i2cmock_reset() forgets them.
+ */
+void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask);
+
 /* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
  * Drives the drivers' "I2C error" branches. */
 void i2cmock_fail_next_ioctl(void);
+
+/*
+ * Sticky version: every ioctl fails until disabled, modelling a wedged bus.
+ * Needed where the code under test has no per-iteration hook to re-arm the
+ * one-shot through — imud-imutest's sustained-read check, for one.
+ */
+void i2cmock_fail_all(int enable);
 
 #endif /* IMUD_TEST_I2C_MOCK_H */

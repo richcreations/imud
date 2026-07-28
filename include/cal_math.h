@@ -40,6 +40,45 @@ void sphere_add(sphere_accum_t *a, float x, float y, float z);
  */
 int sphere_fit(const sphere_accum_t *a, double center[3], double *radius);
 
+/* ── Six-position accelerometer calibration ───────────────────────────────── */
+
+/*
+ * The board frame is NED-compatible: X forward, Y starboard, Z **down**.  The
+ * axis pointing UP therefore reads +g, and the axis pointing DOWN reads -g —
+ * so flat and component-side up reads [0, 0, -9.80665].  See manual §11.
+ *
+ * The position descriptions live here rather than in the tool so that
+ * imud-cal and imud-imutest ask for the same six orientations in the same
+ * words, and so the fit can be tested without hardware.
+ */
+typedef struct {
+    const char *label;   /* what the operator is asked to do */
+    const char *detail;  /* why, in board-frame terms */
+    int         axis;    /* 0=X 1=Y 2=Z */
+    int         sign;    /* +1 = this axis points up, so it reads +g */
+} cal_accel_pos_t;
+
+extern const cal_accel_pos_t cal_accel_positions[6];
+
+/* Standard gravity, m/s² — the reference every position is measured against. */
+#define CAL_G_MS2 9.80665f
+
+/*
+ * Fit the accelerometer offset/scale model  a_cal = (a_raw - offset) * scale
+ * from the six averaged readings.
+ *
+ *   meas[axis][0] = reading taken with that axis pointing up   (expect +g)
+ *   meas[axis][1] = reading taken with that axis pointing down (expect -g)
+ *
+ * Returns 0 on success.  Returns -1 when a reading is geometrically
+ * impossible — gravity on the wrong axis, or an inverted pair — and writes a
+ * diagnosis naming the offending position into `err`.  offset[] and scale[]
+ * are left untouched on failure: a calibration fitted from a misplaced board
+ * is worse than none, so the caller must not save one.
+ */
+int cal_accel_fit(const float meas[3][2][3], float offset[3], float scale[3],
+                  char *err, size_t errsz);
+
 /*
  * Heading-circle coverage tracking for the guided swing calibration.
  * The circle is split into nsec angular sectors around the (running)

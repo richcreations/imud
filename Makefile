@@ -47,7 +47,9 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
               src/drivers/lsm6dso.c \
               src/drivers/icm42688p.c \
               src/drivers/lis3mdl.c \
-              src/drivers/lis2mdl.c
+              src/drivers/lis2mdl.c \
+              src/drivers/mpu925x.c \
+              src/drivers/ak8963.c
 
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \
@@ -80,12 +82,28 @@ CAL_SRCS    = src/cal.c \
               src/fit_ra.c \
               $(DRIVER_SRCS)
 
-IMUD_OBJS   = $(IMUD_SRCS:.c=.o)
-CAL_OBJS    = $(CAL_SRCS:.c=.o)
+# Driver-validation tool: hardware access, config, the driver registry, and the
+# swing-coverage helper shared with imud-cal.  src/capture.c is here only
+# because the sim driver's .imucap playback needs it.
+IMUTEST_SRCS = src/config.c \
+               src/log.c \
+               src/capture.c \
+               src/cal_math.c \
+               src/imu_math.c \
+               src/drivers.c \
+               src/imutest.c \
+               src/imutest_open.c \
+               src/imutest_gpio.c \
+               src/imutest_report.c \
+               $(DRIVER_SRCS)
+
+IMUD_OBJS    = $(IMUD_SRCS:.c=.o)
+CAL_OBJS     = $(CAL_SRCS:.c=.o)
+IMUTEST_OBJS = $(IMUTEST_SRCS:.c=.o)
 
 .PHONY: all bridges libimud clean test check coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
-all: imud imud-cal imud-status imud-mon
+all: imud imud-cal imud-imutest imud-status imud-mon
 
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +112,13 @@ imud: $(IMUD_OBJS) src/main.o
 
 # imud-cal requires src/cal_main.c
 imud-cal: $(CAL_OBJS) src/cal_main.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+
+# imud-imutest exercises any registered driver against real silicon and writes
+# a Markdown validation report (ROADMAP §1).  Ships in imud-utils alongside
+# imud-mon, but unlike imud-mon it must run on the box with the sensor.
+# -lgpiod (the interrupt edge-count check) makes it Linux-only, like imud.
+imud-imutest: $(IMUTEST_OBJS) src/imutest_main.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
 
 # imud-status is a plain socket client: no hardware libs
@@ -269,12 +294,27 @@ test_imu_math: src/imu_math.c test/test_imu_math.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Per-driver register decode/encode over a mock I2C bus (test/i2c_mock.c wraps
-# ioctl with --wrap — GNU ld only).  Reference coverage: the two hardware-
-# validated drivers (ism330dhcx IMU, mmc5983ma mag).  Also wrap __ioctl_time64:
-# on 32-bit glibc with -D_TIME_BITS=64 (Debian armhf) ioctl() is redirected to
-# that symbol, so wrapping plain ioctl alone misses every call there.
-test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c src/log.c \
+# ioctl with --wrap — GNU ld only).  Covers the two hardware-validated drivers
+# (ism330dhcx IMU, mmc5983ma mag) plus the MPU-925x pair, whose fuse-ROM
+# correction and rotated magnetometer axes are worth pinning down off-hardware.
+# Also wrap __ioctl_time64: on 32-bit glibc with -D_TIME_BITS=64 (Debian armhf)
+# ioctl() is redirected to that symbol, so wrapping plain ioctl alone misses
+# every call there.
+test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
+              src/drivers/mpu925x.c src/drivers/ak8963.c src/log.c \
               test/i2c_mock.c test/test_drivers.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
+
+# The imud-imutest checker logic over the mock I2C bus, with a scripted
+# imt_ui_t standing in for the operator so the guided phases are covered too.
+# Links the driver ops structs directly (not src/drivers.c) and stubs
+# imt_gpio_count_edges, so it needs neither the registry nor -lgpiod.
+# Same --wrap pair as test_drivers; Linux/GNU-ld only.
+test_imutest: src/imutest.c src/imutest_report.c \
+              src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
+              src/config.c src/log.c src/imu_math.c src/cal_math.c \
+              test/i2c_mock.c test/test_imutest.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
@@ -283,7 +323,7 @@ test: test_fusion test_fit_ra test_config test_nmea test_packet test_capture tes
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus \
-      test_drivers_registry test_imu_math test_drivers
+      test_drivers_registry test_imu_math test_drivers test_imutest
 	./test_fusion
 	./test_fit_ra
 	./test_config
@@ -311,6 +351,7 @@ test: test_fusion test_fit_ra test_config test_nmea test_packet test_capture tes
 	./test_drivers_registry
 	./test_imu_math
 	./test_drivers
+	./test_imutest
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -487,18 +528,23 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 # ── Install the Signal K bridge (optional) ─────────────────────────────────────
 # Run after `make bridges`.  Installs the binary, service, man page, and its own
 # config file (non-clobbering).  Prep for a standalone imud-signalk package.
-# Diagnostics that need not live on the daemon box (imud-mon listens to the
-# UDP broadcast from anywhere) — the imud-utils package.
-install-utils: imud-mon
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANDIR)/man1
-	install -m 755 imud-mon $(DESTDIR)$(PREFIX)/bin/
+# Diagnostic tools kept out of the core package — the imud-utils package.
+# imud-mon listens to the UDP broadcast and can run from any machine on the
+# network; imud-imutest talks to the sensor over I2C and must run on the
+# daemon's own box.  Both are operator tools rather than part of the running
+# system, which is why they share a package.
+install-utils: imud-mon imud-imutest
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANDIR)/man1 \
+	                   $(DESTDIR)$(MANDIR)/man8
+	install -m 755 imud-mon imud-imutest $(DESTDIR)$(PREFIX)/bin/
 	gzip -9nc man/man1/imud-mon.1 > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
+	gzip -9nc man/man8/imud-imutest.8 > $(DESTDIR)$(MANDIR)/man8/imud-imutest.8.gz
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-utils
 	install -m 644 docs/imud-utils/README.md docs/imud-utils/manual.md \
 	               docs/imud-utils/spec.md $(DESTDIR)$(DOCDIR)/imud-utils/
 	install -m 644 packaging/imud-utils/copyright $(DESTDIR)$(DOCDIR)/imud-utils/copyright
 	gzip -9nc packaging/imud-utils/changelog > $(DESTDIR)$(DOCDIR)/imud-utils/changelog.gz
-	@echo "Installed imud-utils (imud-mon)."
+	@echo "Installed imud-utils (imud-mon, imud-imutest)."
 
 # WMM coefficient data — separate target so it can be packaged on its own
 # (tzdata pattern: imud-wmm-data updates independently of the daemon).
@@ -670,6 +716,7 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mon \
+	      $(DESTDIR)$(PREFIX)/bin/imud-imutest \
 	      $(DESTDIR)$(PREFIX)/bin/imud-signalk \
 	      $(DESTDIR)$(PREFIX)/bin/imud-mqtt \
 	      $(DESTDIR)$(PREFIX)/bin/imud-influxdb \
@@ -695,6 +742,7 @@ uninstall:
 	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz \
+	      $(DESTDIR)$(MANDIR)/man8/imud-imutest.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz \
 	      $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz \
@@ -719,14 +767,14 @@ uninstall:
 
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d lib/*.o lib/*.d \
-	      imud imud-cal imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
+	      imud imud-cal imud-imutest imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
       imud-prometheus \
 	      libimud.so libimud.so.* libimud.pc \
 	      test_fusion test_fit_ra test_config test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_capture test_concurrency \
-	      test_drivers_registry test_imu_math test_drivers \
+	      test_drivers_registry test_imu_math test_drivers test_imutest \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture mkseed_packet \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info coverage-html \

@@ -1,3 +1,5 @@
 usr/bin/imud-mon
+usr/bin/imud-imutest
 usr/share/man/man1/imud-mon.1.gz
+usr/share/man/man8/imud-imutest.8.gz
 usr/share/doc/imud-utils

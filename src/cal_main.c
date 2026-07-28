@@ -551,36 +551,33 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
 
     printf("imud-cal: accelerometer 6-position calibration\n");
     printf("Place the sensor on a flat, level surface in each orientation.\n");
-    printf("Press Enter when steady, wait for the beep, then move to the next.\n\n");
+    printf("Press Enter when steady, wait for the beep, then move to the next.\n");
+    printf("\n");
+    printf("Board frame: X forward, Y starboard, Z DOWN. The axis pointing UP\n");
+    printf("reads +g; the axis pointing DOWN reads -g.\n\n");
 
     /*
-     * Six positions: for each axis, one face pointing up (+g) and one down (-g).
-     * When axis K points up, specific force reads approximately +g on axis K.
-     */
-    static const struct {
-        const char *label;
-        int axis;   /* 0=X, 1=Y, 2=Z */
-        int sign;   /* +1 = axis up, -1 = axis down */
-    } positions[6] = {
-        { "+Z up  (flat, normal side up)",   2,  1 },
-        { "+Z down (flat, upside down)",     2, -1 },
-        { "+X up  (right edge down)",        0,  1 },
-        { "+X down (left edge down)",        0, -1 },
-        { "+Y up  (front edge down)",        1,  1 },
-        { "+Y down (back edge down)",        1, -1 },
-    };
-
-    /*
+     * Positions and the fit both live in cal_math.c so they can be tested
+     * without hardware, and so imud-imutest asks for the same six
+     * orientations in the same words.
+     *
      * meas[axis][0] = reading when axis points up   (expected +g on that axis)
      * meas[axis][1] = reading when axis points down (expected -g on that axis)
      */
     float meas[3][2][3];   /* [axis][up/down][xyz] */
 
     for (int p = 0; p < 6 && !g_stop; p++) {
-        int axis = positions[p].axis;
-        int slot = (positions[p].sign > 0) ? 0 : 1;
+        const cal_accel_pos_t *pos = &cal_accel_positions[p];
+        int axis = pos->axis;
+        int slot = (pos->sign > 0) ? 0 : 1;
 
-        printf("Position %d/6: %s\n", p + 1, positions[p].label);
+        float want[3] = { 0.0f, 0.0f, 0.0f };
+        want[axis] = (float)pos->sign * G_MS2;
+
+        printf("Position %d/6: %s\n", p + 1, pos->label);
+        printf("  %s\n", pos->detail);
+        printf("  Expect roughly [%+.2f, %+.2f, %+.2f] m/s²\n",
+               (double)want[0], (double)want[1], (double)want[2]);
         printf("  Press Enter when steady... ");
         fflush(stdout);
 
@@ -611,7 +608,7 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
 
         printf("  Measured [%.3f, %.3f, %.3f] m/s²  (expected: %s%.3f on axis %c)\n",
                meas[axis][slot][0], meas[axis][slot][1], meas[axis][slot][2],
-               positions[p].sign > 0 ? "+" : "-", (double)G_MS2,
+               pos->sign > 0 ? "+" : "-", (double)G_MS2,
                "XYZ"[axis]);
     }
 
@@ -619,26 +616,30 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
     if (g_stop) { if (fd >= 0) close(fd); return 0; }
     if (fd >= 0) close(fd);
 
+    /*
+     * Geometry check before anything else.  A reading taken in the wrong
+     * orientation says nothing about the axis it was filed under, and a
+     * calibration fitted from it is worse than no calibration — so this
+     * aborts rather than warning.
+     */
+    float offset[3], scale[3];
+    char  err[512] = {0};
+    if (cal_accel_fit(meas, offset, scale, err, sizeof(err)) < 0) {
+        printf("\nResults:\n  %s\n", err);
+        fprintf(stderr,
+                "cal: accelerometer geometry check failed — nothing written.\n");
+        return -1;
+    }
+
     printf("\nResults:\n");
 
-    float offset[3], scale[3];
     bool any_warn = false;
     for (int k = 0; k < 3; k++) {
-        float plus  = meas[k][0][k];   /* on-axis reading when face up   */
-        float minus = meas[k][1][k];   /* on-axis reading when face down */
-
-        /*
-         * Calibration model: a_cal = (a_raw - offset) * scale
-         * offset: midpoint of +g and -g readings (should be 0)
-         * scale:  true g / measured half-range
-         */
-        offset[k] = (plus + minus) / 2.0f;
-        float half_range = (plus - minus) / 2.0f;
-        scale[k]  = (half_range > 0.1f) ? (G_MS2 / half_range) : 1.0f;
-
         printf("  Axis %c: offset %+.4f m/s²  scale %.6f\n",
                "XYZ"[k], offset[k], scale[k]);
 
+        /* Soft checks: the reading is geometrically sane but looks unusual,
+         * which is a judgement call for the operator rather than an error. */
         if (fabsf(offset[k]) > 0.5f * G_MS2) {
             printf("  WARNING: axis %c offset %.3f is large\n", "XYZ"[k], offset[k]);
             any_warn = true;

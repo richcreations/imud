@@ -34,10 +34,26 @@ Takes approximately 5\(en10 seconds.
 .TP
 .B accel
 Accelerometer 6-position calibration.
-Place the board in each of the six cardinal orientations
-(+X, \-X, +Y, \-Y, +Z, \-Z face up) as prompted.
 Fits a scale-and-offset model that corrects for sensitivity and misalignment.
 Takes approximately 2\(en5 minutes.
+.IP
+The board frame is X forward, Y starboard, Z
+.BR down ,
+so the axis pointing
+.I up
+reads +g and the axis pointing
+.I down
+reads \-g.
+The six prompted positions are: flat component-side up; flat upside down;
+nose down; nose up; starboard side down; port side down.
+Each prompt states which way the named axis ends up pointing and what the
+reading should be, so a misplaced board is visible before it is recorded.
+.IP
+If a reading is geometrically impossible \(em gravity on an axis other than
+the one asked for, or a pair taken the wrong way round \(em the run reports
+which position was wrong and exits without writing anything.
+A calibration fitted from a misplaced board is worse than no calibration,
+so it is not offered for saving.
 .TP
 .B mag
 Magnetometer hard/soft-iron calibration.

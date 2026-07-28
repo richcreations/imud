@@ -33,11 +33,20 @@ Description: IMU daemon — attitude, heading, and heave for boats ("gpsd for IM
 Package: imud-utils
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: diagnostics for the imud IMU daemon
- Tools for watching an imud daemon from any machine on the network.
- Currently imud-mon, a terminal monitor that decodes the daemon's NMEA
- and binary UDP output streams live. Wire-pinned to the daemon's packet
- version: keep imud-utils and imud at the same release.
+Description: diagnostic tools for the imud IMU daemon
+ Operator tools that are not part of the running system.
+ .
+ imud-mon is a terminal monitor that decodes the daemon's NMEA and binary
+ UDP output streams live, from any machine on the network. It is wire-pinned
+ to the daemon's packet version: keep imud-utils and imud at the same release.
+ .
+ imud-imutest validates a sensor driver against real hardware and writes a
+ Markdown report suitable for attaching to a bug report. It exercises probe,
+ reset, init, ODR, FIFO and interrupt behaviour automatically, then walks the
+ operator through the orientation, rotation and magnetometer-spin checks that
+ confirm the axis conventions. Unlike imud-mon it talks to the sensor over
+ I2C, so it must run on the machine the sensor is attached to, with the
+ daemon stopped.
 
 Package: libimud0
 Architecture: any

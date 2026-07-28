@@ -124,6 +124,8 @@ Driver name:
 .BR icm42688p ,
 .BR lsm6dso ,
 .BR lsm6dsox ,
+.BR mpu9250 ,
+.BR mpu9255 ,
 or
 .B sim
 (software simulation, no hardware required).
@@ -175,6 +177,7 @@ Magnetometer driver settings.
 Driver name:
 .BR mmc5983ma ,
 .BR ak09916 ,
+.BR ak8963 ,
 .BR lis3mdl ,
 .BR lis2mdl ,
 or
@@ -189,6 +192,13 @@ are experimental.
 .RI (int,\ default:\ 0x30)
 I2C address.
 MMC5983MA has a fixed address (0x30).
+The AKM compasses inside a 9-axis IMU
+.RB ( ak09916
+in the ICM-20948,
+.B ak8963
+in the MPU-9250/9255) are reached through the host chip's I2C
+.IR bypass ,
+not its I2C master, and answer on the host bus at 0x0C.
 .TP
 .B int_gpio
 .RI (int,\ default:\ 27)

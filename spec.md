@@ -251,6 +251,8 @@ static const imu_ops_t *imu_registry[] = {
     &icm42688p_ops,    /* ICM-42688-P                      [experimental] */
     &lsm6dso_ops,      /* LSM6DSO                          [experimental] */
     &lsm6dsox_ops,     /* LSM6DSOX (alias of lsm6dso)      [experimental] */
+    &mpu9250_ops,      /* MPU-9250                         [experimental] */
+    &mpu9255_ops,      /* MPU-9255 (same driver)           [experimental] */
     &sim_imu_ops,      /* synthetic driver for testing without hardware */
     NULL
 };
@@ -258,6 +260,7 @@ static const imu_ops_t *imu_registry[] = {
 static const mag_ops_t *mag_registry[] = {
     &mmc5983ma_ops,    /* MMC5983MA — reference hardware */
     &ak09916_ops,      /* AK09916 — compass on ICM-20948   [experimental] */
+    &ak8963_ops,       /* AK8963 — compass on MPU-925x     [experimental] */
     &lis3mdl_ops,      /* LIS3MDL                          [experimental] */
     &lis2mdl_ops,      /* LIS2MDL                          [experimental] */
     &sim_mag_ops,      /* synthetic driver for testing without hardware */
@@ -267,7 +270,16 @@ static const mag_ops_t *mag_registry[] = {
 
 Drivers marked `[experimental]` set `experimental = true` in their ops struct
 and have not been validated on real silicon; the daemon logs a warning at
-startup when one is selected.
+startup when one is selected. `imud-imutest` (§12) exercises any registered
+driver against real hardware and writes the report that clears the flag.
+
+Two of the IMU drivers pair with a magnetometer that lives on the same die
+behind an I²C **bypass** rather than on the host bus in its own right:
+`icm20948` with `ak09916`, and `mpu9250`/`mpu9255` with `ak8963`. Both mags
+answer at 0x0C once the IMU's `init()` has opened the bypass, which is why
+`imu_ctx_open()` always brings the IMU up before the magnetometer. The two
+AKM parts are **not** interchangeable — different device IDs, register maps,
+and axis alignments.
 
 ### Synthetic (sim) Driver
 
@@ -1247,6 +1259,43 @@ imud-mon [--config PATH] [nmea] [binary]
 ```
 
 Binary packets are validated (magic + CRC32) before display.
+
+### imud-imutest
+
+Driver validation against real hardware. Exercises a registered `imu_ops_t` /
+`mag_ops_t` pair through the whole contract and writes a Markdown report.
+Ships in the `imud-utils` package.
+
+```
+imud-imutest [--config PATH] [--report PATH]
+             [--imu-driver NAME] [--mag-driver NAME|none]
+             [--imu-addr HEX] [--mag-addr HEX] [--i2c-bus PATH]
+             [--gpio-chip NAME] [--int-gpio N]
+             [--odr HZ] [--accel-g N] [--gyro-dps N] [--fifo-wm N]
+             [--passive|--faces|--gyro|--spin|--all] [--non-interactive]
+             [--odr-window S] [--noise-window S] [--drdy-window S]
+             [--turn-deg N] [--grav-tol M] [--odr-tol PCT]
+             [--no-fs-sweep] [--no-overflow] [--no-regdiff]
+             [--force] [--quiet] [--version] [-h|--help]
+```
+
+Four phases. **Passive** needs no operator: probe and bogus-address rejection,
+reset timing, a control-register snapshot diff around `init()` plus an
+idempotency check, measured ODR against `nearest_odr()`, FIFO depth and
+deliberate overflow and recovery, `seq` monotonicity and gap accounting, the
+error-return contract, noise floor and stuck-axis detection, gravity
+magnitude, temperature plausibility, `chip_ts` presence/rate/wrap handling,
+interrupt edge counting, and a full-scale sweep re-initialising at every
+advertised range. **Six-face**, **gyro rotation** and **magnetometer spin** are
+operator-guided and are what actually prove the chip-to-board axis remap; the
+spin phase cross-checks the magnetometer heading against the gyro Z integral.
+
+Refuses to run while the daemon is up (detected via the stream socket) unless
+`--force`: both would drain the same FIFO, halving the sample rate each sees.
+
+Exit status: `0` all pass, `1` usage/config/I-O error, `2` a check failed, `3`
+warnings only, `130` aborted. Per-check definitions are in
+`docs/imud-utils/spec.md`.
 
 ### imud-status
 

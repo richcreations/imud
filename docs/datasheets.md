@@ -15,6 +15,8 @@ search the part number on the linked page if a deep link has rotted.
 | TDK ICM-20948 | 9-axis IMU, experimental | `icm20948` | <https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/> |
 | AKM AK09916 | magnetometer (inside ICM-20948), experimental | `ak09916` | documented in the TDK ICM-20948 datasheet above |
 | ST LSM6DSO / LSM6DSOX | IMU, experimental | `lsm6dso` | <https://www.st.com/en/mems-and-sensors/lsm6dso.html> |
+| TDK MPU-9250 / MPU-9255 | 9-axis IMU, experimental (NRND) | `mpu9250`, `mpu9255` | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
+| AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
 | ST LIS2MDL | magnetometer, experimental | `lis2mdl` | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |
 | ST LIS3MDL | magnetometer, experimental | `lis3mdl` | <https://www.st.com/en/mems-and-sensors/lis3mdl.html> |
 
@@ -32,8 +34,7 @@ Candidates evaluated during driver planning; datasheets at the manufacturer:
 Honeywell HMC5883L (discontinued), QST QMC5883L (<https://www.qstcorp.com/>),
 ST LSM6DS33 (<https://www.st.com/>), InvenSense MPU-6000
 (<https://invensense.tdk.com/>), Bosch BMI270 and BMM150
-(<https://www.bosch-sensortec.com/>), InvenSense/TDK MPU-9250 and MPU-9255
-with their internal AKM AK8963 (<https://invensense.tdk.com/>, NRND).
+(<https://www.bosch-sensortec.com/>).
 
 Where a part has been evaluated in depth — what it would take, and why it did
 or did not get a driver — the reasoning is recorded in

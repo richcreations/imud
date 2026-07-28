@@ -1,0 +1,2492 @@
+/*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * imutest.c — the driver-validation core (see include/imutest.h).
+ *
+ * Nothing here writes to a terminal or reads a keyboard: the operator is
+ * reached only through imt_ui_t, which is what lets test/test_imutest.c drive
+ * every phase — including the guided ones — against the mock I2C bus.
+ *
+ * Check ordering is deliberate and load-bearing:
+ *   - bring-up mirrors imu_ctx_open() exactly (IMU probe/reset/init before the
+ *     mag), because the bypass magnetometers only appear on the host bus once
+ *     the IMU's init() has opened the bypass;
+ *   - the seq checks run before the deliberate FIFO overflow, since an
+ *     overflow produces a legitimate seq gap;
+ *   - the full-scale sweep runs last of the passive checks, because every
+ *     init() resets the driver's seq counter.
+ */
+
+#include <errno.h>
+#include <math.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <fcntl.h>
+#include <sys/utsname.h>
+
+#include "imutest.h"
+#include "cal_math.h"
+#include "imu_math.h"
+#include "log.h"
+#include "version.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/* An I2C address nothing sane answers on: 0x7B is in the reserved range. */
+#define IMT_BOGUS_ADDR 0x7B
+
+/* ── Abort plumbing ────────────────────────────────────────────────────────── */
+
+static volatile sig_atomic_t g_abort;
+
+void imt_request_abort(void) { g_abort = 1; }
+
+/* ── Small helpers ─────────────────────────────────────────────────────────── */
+
+static double now_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static void sleep_s(double s)
+{
+    if (s <= 0) return;
+    struct timespec ts = { (time_t)s, (long)((s - (double)(time_t)s) * 1e9) };
+    nanosleep(&ts, NULL);
+}
+
+static int tab_len(const int *t, int cap)
+{
+    int n = 0;
+    while (n < cap && t[n] != 0) n++;
+    return n;
+}
+
+const char *imt_status_str(imt_status_t s)
+{
+    switch (s) {
+    case IMT_PASS: return "PASS";
+    case IMT_WARN: return "WARN";
+    case IMT_FAIL: return "FAIL";
+    case IMT_INFO: return "INFO";
+    default:       return "SKIP";
+    }
+}
+
+const imt_check_t *imt_find(const imt_report_t *r, const char *id)
+{
+    for (int i = 0; i < r->n_checks; i++)
+        if (strcmp(r->check[i].id, id) == 0) return &r->check[i];
+    return NULL;
+}
+
+int imt_exit_code(const imt_report_t *r)
+{
+    if (r->aborted)    return 130;
+    if (r->n_fail > 0) return 2;
+    if (r->n_warn > 0) return 3;
+    return 0;
+}
+
+void imt_opts_defaults(imt_opts_t *o)
+{
+    memset(o, 0, sizeof *o);
+    o->phases          = IMT_PHASE_ALL;
+    o->odr_window_s    = 5.0;
+    o->noise_window_s  = 10.0;
+    o->drdy_window_s   = 3.0;
+    o->mag_window_s    = 5.0;
+    o->face_settle_s   = 0.7;
+    o->face_collect_s  = 2.0;
+    o->turn_deg        = 90.0;
+    o->turn_timeout_s  = 30.0;
+    o->spin_timeout_s  = 180.0;
+    o->grav_tol_warn   = 0.25;
+    o->grav_tol_fail   = 0.60;
+    o->odr_tol_warn    = 0.05;
+    o->odr_tol_fail    = 0.15;
+    o->fs_sweep        = true;
+    o->induce_overflow = true;
+    o->regdiff         = true;
+}
+
+/* ── Check recording ───────────────────────────────────────────────────────── */
+
+/*
+ * All five fields go in at once so a check is never half-written, and every
+ * caller is forced to say what it measured and what it expected — that pair is
+ * what makes the report reviewable by someone without the hardware.
+ */
+static void add_check(imt_report_t *r, const char *id, const char *name,
+                      imt_status_t st, const char *measured,
+                      const char *expected, const char *fmt, ...)
+{
+    if (r->n_checks >= IMT_MAX_CHECKS) return;
+    imt_check_t *c = &r->check[r->n_checks++];
+
+    snprintf(c->id,   sizeof c->id,   "%s", id);
+    snprintf(c->name, sizeof c->name, "%s", name);
+    c->status = st;
+    snprintf(c->measured, sizeof c->measured, "%s", measured ? measured : "");
+    snprintf(c->expected, sizeof c->expected, "%s", expected ? expected : "");
+
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(c->note, sizeof c->note, fmt, ap);
+        va_end(ap);
+    }
+
+    switch (st) {
+    case IMT_PASS: r->n_pass++; break;
+    case IMT_WARN: r->n_warn++; break;
+    case IMT_FAIL: r->n_fail++; break;
+    case IMT_INFO: r->n_info++; break;
+    default:       r->n_skip++; break;
+    }
+}
+
+static void skip_check(imt_report_t *r, const char *id, const char *name,
+                       const char *why)
+{
+    add_check(r, id, name, IMT_SKIP, "-", "-", "%s", why);
+}
+
+/* Format helper for the measured/expected columns. */
+static const char *fmtbuf(char *buf, size_t sz, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sz, fmt, ap);
+    va_end(ap);
+    return buf;
+}
+
+/* ── UI shims (a NULL callback is always legal) ────────────────────────────── */
+
+static int ui_prompt(const imt_opts_t *o, const char *id,
+                     const char *title, const char *body)
+{
+    if (!o->ui.prompt) return 1;   /* no operator available -> skip the item */
+    return o->ui.prompt(o->ui.user, id, title, body);
+}
+
+static int ui_poll_done(const imt_opts_t *o)
+{
+    return o->ui.poll_done ? o->ui.poll_done(o->ui.user) : 0;
+}
+
+static void ui_progress(const imt_opts_t *o, const char *id, double frac,
+                        const char *detail)
+{
+    if (o->ui.progress) o->ui.progress(o->ui.user, id, frac, detail);
+}
+
+static void ui_coverage(const imt_opts_t *o, const int *sectors, int nsec,
+                        int cur, int n, double radius)
+{
+    if (o->ui.coverage) o->ui.coverage(o->ui.user, sectors, nsec, cur, n, radius);
+    else                ui_progress(o, "spin", -1.0, NULL);
+}
+
+/* ── Welford accumulation ──────────────────────────────────────────────────── */
+
+typedef struct {
+    uint64_t n;
+    double   mean[3], m2[3], min[3], max[3];
+} welford3_t;
+
+static void w3_init(welford3_t *w)
+{
+    memset(w, 0, sizeof *w);
+    for (int k = 0; k < 3; k++) { w->min[k] = 1e30; w->max[k] = -1e30; }
+}
+
+static void w3_add(welford3_t *w, const float v[3])
+{
+    w->n++;
+    for (int k = 0; k < 3; k++) {
+        double x = v[k];
+        double d = x - w->mean[k];
+        w->mean[k] += d / (double)w->n;
+        w->m2[k]   += d * (x - w->mean[k]);
+        if (x < w->min[k]) w->min[k] = x;
+        if (x > w->max[k]) w->max[k] = x;
+    }
+}
+
+static void w3_finish(const welford3_t *w, imt_stats3_t *out)
+{
+    out->n = w->n;
+    for (int k = 0; k < 3; k++) {
+        out->mean[k]  = w->n ? w->mean[k] : 0.0;
+        out->sigma[k] = (w->n > 1) ? sqrt(w->m2[k] / (double)(w->n - 1)) : 0.0;
+        out->min[k]   = w->n ? w->min[k] : 0.0;
+        out->max[k]   = w->n ? w->max[k] : 0.0;
+    }
+}
+
+/* ── Safe control-register ranges, per driver ─────────────────────────────── */
+
+/*
+ * Drivers are opaque, so the only chip-agnostic readback available is a
+ * snapshot diff around init().  That is only safe with a per-driver map: a
+ * blind scan would read a FIFO port (popping data) or a read-to-clear status
+ * register.  Reads are single-byte for the same reason — a burst would
+ * auto-increment straight into the data port.
+ *
+ * An unmapped driver SKIPs the regdiff check rather than guessing.
+ */
+typedef struct {
+    const char *driver;
+    uint8_t     lo, hi;
+    uint8_t     skip[8];
+    int         nskip;
+    uint8_t     bank_reg;   /* 0x00 = not banked */
+} imt_regmap_t;
+
+static const imt_regmap_t imt_regmaps[] = {
+    /* ST: 0x78/0x79 are FIFO_DATA_OUT. */
+    { "ism330dhcx", 0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
+    { "lsm6dso",    0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
+    { "lsm6dsox",   0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
+    /* TDK: FIFO ports and banked register files. */
+    { "icm42688p",  0x00, 0x7F, { 0x2E, 0x2F, 0x30 }, 3, 0x76 },
+    { "icm20948",   0x00, 0x7F, { 0x72, 0x73, 0x74 }, 3, 0x7F },
+    { "mpu9250",    0x00, 0x7F, { 0x74 }, 1, 0x00 },
+    { "mpu9255",    0x00, 0x7F, { 0x74 }, 1, 0x00 },
+    /* Mags. 0x08 on the MMC is read-to-clear status. */
+    { "mmc5983ma",  0x00, 0x1F, { 0x08 }, 1, 0x00 },
+    /* AKM: ST1/data/ST2 — reading any of them completes a measurement. */
+    { "ak09916",    0x00, 0x3F, { 0x10, 0x11, 0x18 }, 3, 0x00 },
+    { "ak8963",     0x00, 0x1F, { 0x02, 0x03, 0x09 }, 3, 0x00 },
+    { "lis3mdl",    0x00, 0x3F, { 0 }, 0, 0x00 },
+    { "lis2mdl",    0x00, 0x3F, { 0 }, 0, 0x00 },
+};
+
+static const imt_regmap_t *regmap_for(const char *driver)
+{
+    for (size_t i = 0; i < sizeof imt_regmaps / sizeof imt_regmaps[0]; i++)
+        if (strcmp(imt_regmaps[i].driver, driver) == 0) return &imt_regmaps[i];
+    return NULL;
+}
+
+static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
+{
+    for (int i = 0; i < m->nskip; i++)
+        if (m->skip[i] == reg) return true;
+    /* Never read the bank selector itself as part of the sweep. */
+    return m->bank_reg && reg == m->bank_reg;
+}
+
+/*
+ * The register snapshot needs raw bus access, so this file includes the
+ * drivers' private I2C header.  That is the same single-ioctl(I2C_RDWR) path
+ * every driver uses, which keeps the snapshot visible to test/i2c_mock.c, and
+ * it is why the tool is Linux-only exactly like the drivers are.
+ */
+#include "drivers/i2c_io.h"
+
+/* Single-byte snapshot of a device's safe control registers. */
+static int reg_snapshot(int fd, uint8_t addr, const imt_regmap_t *m, uint8_t *out)
+{
+    for (int reg = m->lo; reg <= (int)m->hi; reg++) {
+        if (regmap_skips(m, (uint8_t)reg)) { out[reg] = 0; continue; }
+        uint8_t v = 0;
+        if (i2c_reg_read(fd, addr, (uint8_t)reg, &v) < 0) return -1;
+        out[reg] = v;
+    }
+    return 0;
+}
+
+static int reg_diff(const uint8_t *before, const uint8_t *after,
+                    const imt_regmap_t *m, imt_regdiff_t *out, int cap)
+{
+    int n = 0;
+    for (int reg = m->lo; reg <= (int)m->hi && n < cap; reg++) {
+        if (regmap_skips(m, (uint8_t)reg)) continue;
+        if (before[reg] != after[reg]) {
+            out[n].reg    = (uint8_t)reg;
+            out[n].before = before[reg];
+            out[n].after  = after[reg];
+            n++;
+        }
+    }
+    return n;
+}
+
+/* ── IMU drain helper ──────────────────────────────────────────────────────── */
+
+typedef struct {
+    const imu_ops_t *ops;
+    int              fd;
+    uint8_t          addr;
+    /* Running contract observations, accumulated across every drain. */
+    bool             have_seq;
+    uint32_t         last_seq;
+    uint64_t         gaps, backwards, max_gap;
+    int              rc1, rcneg, last_errno;
+    uint64_t         total;
+} drain_ctx_t;
+
+static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, int fd, uint8_t addr)
+{
+    memset(d, 0, sizeof *d);
+    d->ops = ops; d->fd = fd; d->addr = addr;
+}
+
+/*
+ * One read() call, with the seq contract checked on every sample.  Unsigned
+ * deltas make the 32-bit wrap correct for free.  Returns the driver's rc.
+ */
+static int drain_once(drain_ctx_t *d, imu_sample_t *buf, int max, int *n)
+{
+    int rc = d->ops->read(d->fd, d->addr, buf, max, n);
+    if (rc < 0) { d->rcneg++; d->last_errno = errno; *n = 0; return rc; }
+    if (rc > 0) d->rc1++;
+
+    for (int i = 0; i < *n; i++) {
+        if (d->have_seq) {
+            uint32_t delta = buf[i].seq - d->last_seq;   /* wrap-safe */
+            if (delta == 0 || delta >= 0x80000000u) {
+                d->backwards++;
+            } else if (delta > 1) {
+                d->gaps++;
+                if (delta - 1 > d->max_gap) d->max_gap = delta - 1;
+            }
+        }
+        d->last_seq = buf[i].seq;
+        d->have_seq = true;
+        d->total++;
+    }
+    return rc;
+}
+
+/* Drain until empty (bounded), discarding samples. */
+static void drain_flush(drain_ctx_t *d)
+{
+    imu_sample_t buf[128];
+    int n = 0;
+    for (int i = 0; i < 64; i++) {
+        if (drain_once(d, buf, 128, &n) < 0) return;
+        if (n == 0) return;
+    }
+}
+
+/* ── Phase A: probe / reset / init ─────────────────────────────────────────── */
+
+/* Returns 0 if the device came up, -1 if a prerequisite failed. */
+static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
+                         const imu_ops_t *imu, const mag_ops_t *mag,
+                         const imud_config_t *cfg, const imu_cfg_t *icfg,
+                         const mag_cfg_t *mcfg, bool *mag_ok)
+{
+    char mb[56];
+    uint8_t addr = (uint8_t)cfg->imu_addr;
+
+    /* ── probe ───────────────────────────────────────────────────────────── */
+    if (imu->probe(fd, addr) < 0) {
+        add_check(r, "imu.probe", "IMU probe() / chip identification", IMT_FAIL,
+                  "rejected", "accepted",
+                  "probe() failed at 0x%02X. Wrong address, wrong driver, or "
+                  "the part is not present. Check `i2cdetect -y` for the bus.",
+                  cfg->imu_addr);
+        return -1;
+    }
+    add_check(r, "imu.probe", "IMU probe() / chip identification", IMT_PASS,
+              fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->imu_addr),
+              "accepted", "driver '%s' recognised the part", imu->name);
+
+    /*
+     * A probe that ignores WHO_AM_I, or swallows the ioctl error, passes the
+     * check above for the wrong reason.  Nothing answers at the reserved
+     * address, so a driver that accepts it is not identifying anything.
+     */
+    if (imu->probe(fd, IMT_BOGUS_ADDR) == 0)
+        add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+                  IMT_FAIL, "accepted", "rejected",
+                  "probe() returned 0 at unused address 0x%02X — it is not "
+                  "checking WHO_AM_I, or it is discarding the I2C error.",
+                  IMT_BOGUS_ADDR);
+    else
+        add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+                  IMT_PASS, "rejected", "rejected",
+                  "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+
+    /* ── reset ───────────────────────────────────────────────────────────── */
+    double t0 = now_s();
+    int rc = imu->reset(fd, addr);
+    double ms = (now_s() - t0) * 1e3;
+    r->raw.reset_ms = ms;
+
+    if (rc < 0) {
+        add_check(r, "imu.reset.rc", "IMU reset()", IMT_FAIL, "failed", "0",
+                  "reset() returned -1 after %.1f ms — the reset bit never "
+                  "self-cleared, or the bus dropped.", ms);
+        return -1;
+    }
+    add_check(r, "imu.reset.rc", "IMU reset()", IMT_PASS, "0", "0",
+              "completed in %.1f ms", ms);
+
+    if (ms < 1.0)
+        add_check(r, "imu.reset.ms", "IMU reset() settle time", IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.2f ms", ms), "> 1 ms",
+                  "no measurable settle — check reset() both polls the "
+                  "self-clearing bit and waits the datasheet turn-on time.");
+    else if (ms > 500.0)
+        add_check(r, "imu.reset.ms", "IMU reset() settle time", IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.0f ms", ms), "< 500 ms",
+                  "unusually long — close to a poll timeout.");
+    else
+        add_check(r, "imu.reset.ms", "IMU reset() settle time", IMT_INFO,
+                  fmtbuf(mb, sizeof mb, "%.1f ms", ms), "informational",
+                  "time from reset() entry to return.");
+
+    /* ── init, with the register snapshot around it ──────────────────────── */
+    const imt_regmap_t *rm = o->regdiff ? regmap_for(imu->name) : NULL;
+    static uint8_t before[256], after[256], again[256];
+    bool snapped = false;
+
+    if (rm) {
+        memset(before, 0, sizeof before);
+        snapped = (reg_snapshot(fd, addr, rm, before) == 0);
+    }
+
+    if (imu->init(fd, addr, icfg) < 0) {
+        add_check(r, "imu.init.rc", "IMU init()", IMT_FAIL, "failed", "0",
+                  "init() returned -1 for ODR %d Hz, %d g, %d dps, wm %d.",
+                  icfg->odr_hz, icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
+        return -1;
+    }
+    add_check(r, "imu.init.rc", "IMU init()", IMT_PASS, "0", "0",
+              "%d Hz, +/-%d g, +/-%d dps, watermark %d sample-sets",
+              icfg->odr_hz, icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
+
+    if (!o->regdiff) {
+        skip_check(r, "imu.init.regdiff", "IMU control-register diff",
+                   "disabled with --no-regdiff");
+        skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
+                   "needs the register diff");
+    } else if (!rm) {
+        skip_check(r, "imu.init.regdiff", "IMU control-register diff",
+                   "no safe-register map for this driver; add one to "
+                   "imt_regmaps[] in src/imutest.c rather than scanning blind");
+        skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
+                   "needs a safe-register map");
+    } else if (!snapped) {
+        skip_check(r, "imu.init.regdiff", "IMU control-register diff",
+                   "the post-reset snapshot could not be read");
+        skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
+                   "the post-reset snapshot could not be read");
+    } else {
+        memset(after, 0, sizeof after);
+        if (reg_snapshot(fd, addr, rm, after) < 0) {
+            skip_check(r, "imu.init.regdiff", "IMU control-register diff",
+                       "the post-init snapshot could not be read");
+            skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
+                       "the post-init snapshot could not be read");
+        } else {
+            int n = reg_diff(before, after, rm, r->raw.regdiff_imu,
+                             IMT_MAX_REGDIFF);
+            r->raw.n_regdiff_imu     = n;
+            r->raw.regdiff_imu_mapped = true;
+
+            add_check(r, "imu.init.regdiff", "IMU control-register diff",
+                      n > 0 ? IMT_PASS : IMT_WARN,
+                      fmtbuf(mb, sizeof mb, "%d register%s changed",
+                             n, n == 1 ? "" : "s"),
+                      "> 0",
+                      n > 0
+                      ? "raw values are in the appendix; decoding them against "
+                        "the datasheet is the reviewer's job, not the tool's."
+                      : "init() changed nothing in the mapped range — either "
+                        "the map is wrong or init() is not configuring the part.");
+
+            /* A second init must land on the same image: catches a bank left
+             * selected, a latched enable, or any state-dependent branch. */
+            if (imu->init(fd, addr, icfg) < 0) {
+                add_check(r, "imu.init.idempotent", "IMU init() is idempotent",
+                          IMT_FAIL, "second init failed", "0",
+                          "init() succeeded once but failed when repeated.");
+            } else {
+                memset(again, 0, sizeof again);
+                if (reg_snapshot(fd, addr, rm, again) < 0) {
+                    skip_check(r, "imu.init.idempotent",
+                               "IMU init() is idempotent",
+                               "the second snapshot could not be read");
+                } else {
+                    /* Only the count matters here; the interesting diff is the
+                     * reset-to-init one already recorded above. */
+                    int ndiff = 0;
+                    for (int reg = rm->lo; reg <= (int)rm->hi; reg++)
+                        if (!regmap_skips(rm, (uint8_t)reg) &&
+                            after[reg] != again[reg]) ndiff++;
+                    add_check(r, "imu.init.idempotent",
+                              "IMU init() is idempotent",
+                              ndiff == 0 ? IMT_PASS : IMT_WARN,
+                              fmtbuf(mb, sizeof mb, "%d register%s differ",
+                                     ndiff, ndiff == 1 ? "" : "s"),
+                              "0",
+                              ndiff == 0
+                              ? "two consecutive inits leave an identical image"
+                              : "a repeated init() lands on a different register "
+                                "image — init() depends on prior state (a bank "
+                                "left selected, or a latched enable).");
+                }
+            }
+        }
+    }
+
+    /* ── magnetometer, always after the IMU ──────────────────────────────── */
+    *mag_ok = false;
+    if (!mag) {
+        skip_check(r, "mag.probe", "Mag probe() / chip identification",
+                   "no magnetometer configured (--mag-driver none)");
+        return 0;
+    }
+
+    uint8_t maddr = (uint8_t)cfg->mag_addr;
+    if (mag->probe(fd, maddr) < 0) {
+        add_check(r, "mag.probe", "Mag probe() / chip identification", IMT_FAIL,
+                  "rejected", "accepted",
+                  "probe() failed at 0x%02X. For a compass behind an IMU's I2C "
+                  "bypass (ak09916, ak8963) the address is 0x0C and the IMU "
+                  "must have initialised first — it did here.", cfg->mag_addr);
+        return 0;
+    }
+    add_check(r, "mag.probe", "Mag probe() / chip identification", IMT_PASS,
+              fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->mag_addr),
+              "accepted", "driver '%s' recognised the part", mag->name);
+
+    if (mag->probe(fd, IMT_BOGUS_ADDR) == 0)
+        add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+                  IMT_FAIL, "accepted", "rejected",
+                  "probe() returned 0 at unused address 0x%02X.", IMT_BOGUS_ADDR);
+    else
+        add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+                  IMT_PASS, "rejected", "rejected",
+                  "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+
+    t0 = now_s();
+    rc = mag->reset(fd, maddr);
+    ms = (now_s() - t0) * 1e3;
+    r->raw.mag_reset_ms = ms;
+    if (rc < 0) {
+        add_check(r, "mag.reset.rc", "Mag reset()", IMT_FAIL, "failed", "0",
+                  "reset() returned -1 after %.1f ms.", ms);
+        return 0;
+    }
+    add_check(r, "mag.reset.rc", "Mag reset()", IMT_PASS, "0", "0",
+              "completed in %.1f ms", ms);
+
+    const imt_regmap_t *mrm = o->regdiff ? regmap_for(mag->name) : NULL;
+    static uint8_t mbefore[256], mafter[256];
+    bool msnapped = false;
+    if (mrm) {
+        memset(mbefore, 0, sizeof mbefore);
+        msnapped = (reg_snapshot(fd, maddr, mrm, mbefore) == 0);
+    }
+
+    if (mag->init(fd, maddr, mcfg) < 0) {
+        add_check(r, "mag.init.rc", "Mag init()", IMT_FAIL, "failed", "0",
+                  "init() returned -1 for ODR %d Hz.", mcfg->odr_hz);
+        return 0;
+    }
+    add_check(r, "mag.init.rc", "Mag init()", IMT_PASS, "0", "0",
+              "%d Hz requested", mcfg->odr_hz);
+
+    if (mrm && msnapped) {
+        memset(mafter, 0, sizeof mafter);
+        if (reg_snapshot(fd, maddr, mrm, mafter) == 0) {
+            int n = reg_diff(mbefore, mafter, mrm, r->raw.regdiff_mag,
+                             IMT_MAX_REGDIFF);
+            r->raw.n_regdiff_mag      = n;
+            r->raw.regdiff_mag_mapped = true;
+            add_check(r, "mag.init.regdiff", "Mag control-register diff",
+                      n > 0 ? IMT_PASS : IMT_WARN,
+                      fmtbuf(mb, sizeof mb, "%d register%s changed",
+                             n, n == 1 ? "" : "s"),
+                      "> 0",
+                      n > 0 ? "raw values are in the appendix."
+                            : "init() changed nothing in the mapped range.");
+        } else {
+            skip_check(r, "mag.init.regdiff", "Mag control-register diff",
+                       "the post-init snapshot could not be read");
+        }
+    } else {
+        skip_check(r, "mag.init.regdiff", "Mag control-register diff",
+                   mrm ? "the post-reset snapshot could not be read"
+                       : "no safe-register map for this driver");
+    }
+
+    *mag_ok = true;
+    return 0;
+}
+
+/* ── Phase A: measured ODR, seq, chip_ts ──────────────────────────────────── */
+
+static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
+                             drain_ctx_t *d, const imu_ops_t *imu,
+                             int eff_odr)
+{
+    char mb[56], eb[56];
+    imu_sample_t buf[128];
+    int n = 0;
+
+    /* Discard setup residue so the window measures steady state. */
+    double t_end = now_s() + 0.3;
+    while (now_s() < t_end && !g_abort) { drain_once(d, buf, 128, &n); sleep_s(0.005); }
+    drain_flush(d);
+
+    /* Reset the contract counters so the ODR window is measured cleanly. */
+    d->gaps = d->backwards = d->max_gap = 0;
+    d->rc1 = d->rcneg = 0;
+    d->total = 0;
+    d->have_seq = false;
+
+    bool     have_ts = false;
+    uint32_t ts_first = 0, ts_last = 0, ts_prev = 0;
+    int      ts_backwards = 0, ts_zero = 0, ts_wraps = 0;
+    double   ts_deltas[512];
+    int      n_deltas = 0;
+    uint32_t seq_first = 0;
+    bool     have_first = false;
+
+    double t0        = now_s();
+    double first_t   = 0, last_t = 0;
+    double prev_loop = t0, max_gap_ms = 0;
+    double deadline  = t0 + o->odr_window_s;
+
+    while (now_s() < deadline && !g_abort) {
+        double t = now_s();
+        double gap_ms = (t - prev_loop) * 1e3;
+        if (gap_ms > max_gap_ms) max_gap_ms = gap_ms;
+        prev_loop = t;
+
+        int rc = drain_once(d, buf, 128, &n);
+        if (rc < 0) { sleep_s(0.002); continue; }
+
+        if (n > 0) {
+            if (!have_first) { first_t = t; seq_first = buf[0].seq; have_first = true; }
+            last_t = t;
+
+            for (int i = 0; i < n; i++) {
+                uint32_t ts = buf[i].chip_ts;
+                if (ts == 0) ts_zero++;
+                if (!have_ts) {
+                    if (ts != 0) { ts_first = ts_prev = ts; have_ts = true; }
+                } else {
+                    uint32_t delta = ts - ts_prev;   /* wrap-safe */
+                    if (delta == 0 || delta >= 0x80000000u) ts_backwards++;
+                    else {
+                        if (delta > 0 && n_deltas < 512) ts_deltas[n_deltas++] = delta;
+                        if (ts < ts_prev) ts_wraps++;
+                    }
+                    ts_prev = ts;
+                    ts_last = ts;
+                }
+            }
+        }
+        ui_progress(o, "imu.odr", (now_s() - t0) / o->odr_window_s, NULL);
+        sleep_s(0.002);
+    }
+
+    double span = (last_t > first_t) ? (last_t - first_t) : 0.0;
+    double hz   = span > 0 ? (double)(d->total - 1) / span : 0.0;
+
+    r->raw.odr_measured_hz     = hz;
+    r->raw.odr_window_s        = span;
+    r->raw.odr_n               = d->total;
+    r->raw.odr_max_loop_gap_ms = max_gap_ms;
+    r->raw.seq_first           = seq_first;
+    r->raw.seq_last            = d->last_seq;
+    r->raw.seq_gaps            = d->gaps;
+    r->raw.seq_backwards       = d->backwards;
+    r->raw.seq_max_gap         = d->max_gap;
+    r->raw.rc1_count           = d->rc1;
+    r->raw.rcneg_count         = d->rcneg;
+    r->raw.last_errno          = d->last_errno;
+
+    /* Which supported_odr_hz entry does the measurement actually match? */
+    int best = 0;
+    double bestdiff = 1e30;
+    int ntab = tab_len(imu->supported_odr_hz, 16);
+    for (int i = 0; i < ntab; i++) {
+        double diff = fabs(hz - imu->supported_odr_hz[i]);
+        if (diff < bestdiff) { bestdiff = diff; best = imu->supported_odr_hz[i]; }
+    }
+    r->raw.odr_best_table_hz = best;
+
+    if (d->total < 10) {
+        add_check(r, "imu.odr", "Measured ODR against nearest_odr()", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%llu samples",
+                         (unsigned long long)d->total),
+                  fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
+                  "almost no data in %.1f s. The chip is configured but not "
+                  "producing samples — check the FIFO enable in init().",
+                  o->odr_window_s);
+    } else {
+        double err = fabs(hz - eff_odr) / (double)eff_odr;
+        bool starved = max_gap_ms > 0.20 * o->odr_window_s * 1e3;
+        imt_status_t st = (err <= o->odr_tol_warn) ? IMT_PASS
+                        : (err <= o->odr_tol_fail) ? IMT_WARN : IMT_FAIL;
+        /* A starved reader undercounts; that is scheduling, not the driver. */
+        if (st == IMT_FAIL && (starved || !imu->has_fifo)) st = IMT_WARN;
+
+        if (st == IMT_PASS)
+            add_check(r, "imu.odr", "Measured ODR against nearest_odr()",
+                      IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
+                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                             eff_odr, o->odr_tol_warn * 100),
+                      "%llu samples in %.3f s",
+                      (unsigned long long)d->total, span);
+        else if (best && best != eff_odr && fabs(hz - best) < fabs(hz - eff_odr))
+            add_check(r, "imu.odr", "Measured ODR against nearest_odr()", st,
+                      fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
+                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                             eff_odr, o->odr_tol_warn * 100),
+                      "off by %.1f%%, and it matches supported_odr_hz entry "
+                      "%d Hz instead — check the rate encoding in init().",
+                      err * 100, best);
+        else
+            add_check(r, "imu.odr", "Measured ODR against nearest_odr()", st,
+                      fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
+                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                             eff_odr, o->odr_tol_warn * 100),
+                      "off by %.1f%%%s", err * 100,
+                      starved ? "; the read loop stalled for up to "
+                                "20%+ of the window, so this may be scheduling "
+                                "rather than the driver" : "");
+    }
+
+    /* seq contract */
+    if (d->backwards > 0)
+        add_check(r, "imu.seq.monotonic", "seq is monotonic", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%llu non-advancing",
+                         (unsigned long long)d->backwards),
+                  "0",
+                  "seq repeated or went backwards. Fusion uses seq deltas to "
+                  "detect dropped samples, so this corrupts the timeline.");
+    else
+        add_check(r, "imu.seq.monotonic", "seq is monotonic", IMT_PASS, "0", "0",
+                  "%llu samples, no repeats or reversals",
+                  (unsigned long long)d->total);
+
+    if (d->gaps == 0)
+        add_check(r, "imu.seq.gapless", "seq has no unexplained gaps", IMT_PASS,
+                  "0 gaps", "0",
+                  "every consecutive delta was exactly 1");
+    else {
+        /* Gaps are legitimate only where the driver reported an overflow. */
+        bool explained = (d->rc1 > 0);
+        double frac = (double)d->gaps / (double)(d->total ? d->total : 1);
+        add_check(r, "imu.seq.gapless", "seq has no unexplained gaps",
+                  (explained && frac < 0.001) ? IMT_WARN : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%llu gaps, max %llu",
+                         (unsigned long long)d->gaps,
+                         (unsigned long long)d->max_gap),
+                  "0",
+                  explained
+                  ? "%d read(s) reported a FIFO overflow in this window, which "
+                    "legitimately drops samples."
+                  : "no overflow was reported, so samples are being lost "
+                    "silently — the FIFO drain is dropping data.",
+                  d->rc1);
+    }
+
+    /* chip_ts contract */
+    if (!imu->has_hw_timestamp) {
+        if (ts_zero == (int)d->total)
+            add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
+                      IMT_PASS, "always 0", "0",
+                      "has_hw_timestamp is false and every chip_ts was 0, as "
+                      "the contract requires.");
+        else
+            add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
+                      IMT_FAIL,
+                      fmtbuf(mb, sizeof mb, "%d of %llu nonzero",
+                             (int)d->total - ts_zero, (unsigned long long)d->total),
+                      "always 0",
+                      "has_hw_timestamp is false, so chip_ts must be 0 on every "
+                      "sample — imu.c re-anchors wall-clock time when it is.");
+        skip_check(r, "imu.chipts.monotonic", "chip_ts is monotonic",
+                   "part has no sample timer");
+        skip_check(r, "imu.chipts.rate", "chip_ts tick period",
+                   "part has no sample timer");
+        skip_check(r, "imu.chipts.wall", "chip_ts against wall clock",
+                   "part has no sample timer");
+        return;
+    }
+
+    if (!have_ts) {
+        add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
+                  IMT_FAIL, "always 0", "nonzero",
+                  "has_hw_timestamp is true but chip_ts stayed 0 — the "
+                  "timestamp read is failing silently inside read().");
+        skip_check(r, "imu.chipts.monotonic", "chip_ts is monotonic",
+                   "prerequisite imu.chipts.presence failed");
+        skip_check(r, "imu.chipts.rate", "chip_ts tick period",
+                   "prerequisite imu.chipts.presence failed");
+        skip_check(r, "imu.chipts.wall", "chip_ts against wall clock",
+                   "prerequisite imu.chipts.presence failed");
+        return;
+    }
+
+    add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
+              IMT_PASS, "nonzero", "nonzero",
+              "declared tick %u ns", imu->ts_tick_ns);
+
+    r->raw.ts_first     = ts_first;
+    r->raw.ts_last      = ts_last;
+    r->raw.ts_backwards = ts_backwards;
+    r->raw.ts_zero_count = ts_zero;
+    r->raw.ts_wraps     = ts_wraps;
+
+    add_check(r, "imu.chipts.monotonic", "chip_ts is monotonic",
+              ts_backwards == 0 ? IMT_PASS : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "%d reversals", ts_backwards), "0",
+              ts_backwards == 0
+              ? "unsigned deltas advanced on every sample (%d counter wrap%s "
+                "seen and handled)"
+              : "chip_ts went backwards — for a counter narrower than 32 bits "
+                "this is usually a missing unwrap in the driver (%d wrap%s in "
+                "this window)",
+              ts_wraps, ts_wraps == 1 ? "" : "s");
+
+    if (n_deltas < 4) {
+        skip_check(r, "imu.chipts.rate", "chip_ts tick period",
+                   "too few timestamp deltas to estimate a rate");
+    } else {
+        /* Median is robust to the burst boundaries. */
+        for (int i = 1; i < n_deltas; i++) {
+            double v = ts_deltas[i];
+            int j = i - 1;
+            while (j >= 0 && ts_deltas[j] > v) { ts_deltas[j + 1] = ts_deltas[j]; j--; }
+            ts_deltas[j + 1] = v;
+        }
+        double med = ts_deltas[n_deltas / 2];
+        double expect = 1e9 / ((double)eff_odr * (double)imu->ts_tick_ns);
+        double implied = med > 0 ? 1e9 / ((double)eff_odr * med) : 0.0;
+        r->raw.ts_median_delta    = med;
+        r->raw.ts_implied_tick_ns = implied;
+
+        double err = fabs(med - expect) / expect;
+        imt_status_t st = err <= 0.05 ? IMT_PASS : err <= 0.20 ? IMT_WARN : IMT_FAIL;
+        add_check(r, "imu.chipts.rate", "chip_ts tick period", st,
+                  fmtbuf(mb, sizeof mb, "%.2f ticks/sample", med),
+                  fmtbuf(eb, sizeof eb, "%.2f +/-5%%", expect),
+                  "implied ts_tick_ns = %.0f against the declared %u",
+                  implied, imu->ts_tick_ns);
+
+        double elapsed_chip = (double)(uint32_t)(ts_last - ts_first)
+                            * (double)imu->ts_tick_ns * 1e-9;
+        double ratio = span > 0 ? elapsed_chip / span : 0.0;
+        r->raw.ts_wall_ratio = ratio;
+        double werr = fabs(ratio - 1.0);
+        imt_status_t wst = werr <= 0.02 ? IMT_PASS : werr <= 0.10 ? IMT_WARN : IMT_FAIL;
+        add_check(r, "imu.chipts.wall", "chip_ts against wall clock", wst,
+                  fmtbuf(mb, sizeof mb, "%.4f", ratio),
+                  "1.0000 +/-2%",
+                  "chip time %.3f s against %.3f s of wall clock over %d "
+                  "counter wrap%s. A short reading here is a lost wrap in the "
+                  "driver's unwrap.",
+                  elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s");
+    }
+}
+
+/* ── Phase A: error-return contract ───────────────────────────────────────── */
+
+static void check_error_contract(imt_report_t *r, drain_ctx_t *d)
+{
+    char mb[56];
+    imu_sample_t buf[128];
+    int n = 0;
+
+    drain_flush(d);
+
+    /* An empty FIFO is not an error: 0 with n == 0.  This is the single most
+     * commonly violated line of the contract. */
+    int rc = drain_once(d, buf, 128, &n);
+    if (rc < 0)
+        add_check(r, "imu.err.nodata_not_error",
+                  "Empty FIFO returns 0, not -1", IMT_FAIL, "-1", "0",
+                  "read() returned -1 on an empty FIFO (errno %d). -1 is "
+                  "reserved for I2C errors; imu.c counts it toward the "
+                  "reset threshold and will restart the chip.", errno);
+    else
+        add_check(r, "imu.err.nodata_not_error",
+                  "Empty FIFO returns 0, not -1", IMT_PASS,
+                  fmtbuf(mb, sizeof mb, "%d, n=%d", rc, n), "0",
+                  "no data is reported as success with zero samples");
+
+    /* Sustained reads on a healthy bus must never produce -1. */
+    int neg = 0, saved_errno = 0;
+    for (int i = 0; i < 200 && !g_abort; i++) {
+        if (drain_once(d, buf, 128, &n) < 0) { neg++; saved_errno = errno; }
+    }
+    if (neg == 0)
+        add_check(r, "imu.err.no_spurious", "No spurious -1 on a healthy bus",
+                  IMT_PASS, "0 of 200", "0",
+                  "200 back-to-back reads, no I2C errors reported");
+    else
+        add_check(r, "imu.err.no_spurious", "No spurious -1 on a healthy bus",
+                  IMT_FAIL, fmtbuf(mb, sizeof mb, "%d of 200", neg), "0",
+                  "read() reported I2C errors on an otherwise working bus "
+                  "(last errno %d: %s).", saved_errno, strerror(saved_errno));
+}
+
+/* ── Phase A: FIFO behaviour ──────────────────────────────────────────────── */
+
+static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                       const imu_ops_t *imu, int eff_odr, int fifo_wm)
+{
+    char mb[56], eb[56];
+    imu_sample_t buf[128];
+    int n = 0;
+
+    if (!imu->has_fifo) {
+        skip_check(r, "imu.fifo.depth", "FIFO accumulates between reads",
+                   "driver declares has_fifo = false");
+        skip_check(r, "imu.fifo.watermark", "FIFO watermark timing",
+                   "driver declares has_fifo = false");
+        skip_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                   "driver declares has_fifo = false");
+        skip_check(r, "imu.fifo.recovers", "FIFO recovers after overflow",
+                   "driver declares has_fifo = false");
+        return;
+    }
+
+    double period = 1.0 / (double)eff_odr;
+    double wait   = period * (fifo_wm > 0 ? fifo_wm : 32);
+    if (wait < 0.02) wait = 0.02;
+    if (wait > 0.5)  wait = 0.5;
+
+    /* Depth should grow roughly linearly with the wait. */
+    int depth[3] = { 0, 0, 0 };
+    for (int step = 0; step < 3 && !g_abort; step++) {
+        drain_flush(d);
+        double w = wait * (step + 1);
+        sleep_s(w);
+        if (drain_once(d, buf, 128, &n) < 0) { depth[step] = -1; continue; }
+        depth[step] = n;
+        if (r->raw.fifo_steps < IMT_MAX_FIFO_STEPS) {
+            r->raw.fifo_wait_s[r->raw.fifo_steps] = w;
+            r->raw.fifo_depth[r->raw.fifo_steps]  = n;
+            r->raw.fifo_steps++;
+        }
+        ui_progress(o, "imu.fifo", (step + 1) / 3.0, NULL);
+    }
+
+    int expect0 = (int)(wait * eff_odr);
+    if (depth[0] <= 0)
+        add_check(r, "imu.fifo.depth", "FIFO accumulates between reads",
+                  IMT_FAIL, "0 samples",
+                  fmtbuf(eb, sizeof eb, "~%d", expect0),
+                  "nothing accumulated in %.0f ms — the FIFO is not filling, "
+                  "or read() returns only the newest sample.", wait * 1e3);
+    else if (depth[1] > depth[0])
+        add_check(r, "imu.fifo.depth", "FIFO accumulates between reads",
+                  IMT_PASS,
+                  fmtbuf(mb, sizeof mb, "%d / %d / %d", depth[0], depth[1], depth[2]),
+                  fmtbuf(eb, sizeof eb, "rising, ~%d first", expect0),
+                  "depth grows with the wait, so read() drains a real queue "
+                  "rather than a single sample register");
+    else
+        add_check(r, "imu.fifo.depth", "FIFO accumulates between reads",
+                  IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%d / %d / %d", depth[0], depth[1], depth[2]),
+                  fmtbuf(eb, sizeof eb, "rising, ~%d first", expect0),
+                  "depth did not grow with a longer wait — the FIFO may "
+                  "already be at capacity, or the caller's buffer is the limit.");
+
+    /* Watermark timing is only visible on the interrupt line. */
+    skip_check(r, "imu.fifo.watermark", "FIFO watermark timing",
+               "only observable through int_gpio; see imu.drdy.edges, which "
+               "reports which interrupt model the measured edge rate fits");
+
+    if (!o->induce_overflow) {
+        skip_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                   "disabled with --no-overflow");
+        skip_check(r, "imu.fifo.recovers", "FIFO recovers after overflow",
+                   "disabled with --no-overflow");
+        return;
+    }
+
+    /*
+     * Fill the FIFO by not draining it.  Depth is chip-specific and not
+     * knowable generically, so search with a doubling sleep and give up
+     * politely.  The overflow flag is latched and cleared by the read that
+     * reports it, so it must be taken from that read's return value.
+     */
+    drain_flush(d);
+    double waited = 0, w = wait * 2;
+    int rc = 0;
+    for (int i = 0; i < 12 && !g_abort; i++) {
+        sleep_s(w);
+        waited += w;
+        rc = drain_once(d, buf, 128, &n);
+        if (rc != 0) break;
+        if (waited > 8.0) break;
+        w *= 1.6;
+        ui_progress(o, "imu.fifo.overflow", waited / 8.0, NULL);
+    }
+    r->raw.overflow_after_s = waited;
+
+    if (rc == 1)
+        add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                  IMT_PASS, "1",
+                  "1 after the FIFO fills",
+                  "overflow signalled after %.2f s without draining", waited);
+    else if (rc < 0)
+        add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                  IMT_FAIL, "-1", "1",
+                  "read() returned an I2C error while the FIFO was full "
+                  "instead of reporting the overflow.");
+    else
+        add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                  IMT_WARN, "0", "1",
+                  "no overflow signalled after %.1f s without draining — the "
+                  "FIFO may be deeper than this window, or the driver does not "
+                  "surface the overflow bit.", waited);
+
+    /* Whatever happened, reads must return to normal afterwards. */
+    drain_flush(d);
+    sleep_s(wait);
+    rc = drain_once(d, buf, 128, &n);
+    add_check(r, "imu.fifo.recovers", "FIFO recovers after overflow",
+              rc == 0 ? IMT_PASS : rc > 0 ? IMT_WARN : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "rc %d, %d samples", rc, n), "0",
+              rc == 0 ? "normal reads resumed after the overflow"
+                      : "reads did not return to rc 0 after draining.");
+}
+
+/* ── Phase A: noise floor, gravity, temperature ───────────────────────────── */
+
+static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
+{
+    char mb[56], eb[56];
+    imu_sample_t buf[128];
+    int n = 0;
+
+    welford3_t wa, wg;
+    w3_init(&wa); w3_init(&wg);
+    double gsum = 0, g2sum = 0;
+    uint64_t gn = 0;
+    double tmin = 1e30, tmax = -1e30, tsum = 0;
+    uint64_t tn = 0;
+    /* Cheap distinct-value estimate: count changes in the quantised reading. */
+    int tdistinct = 0;
+    float tprev = 0;
+    bool  have_tprev = false;
+
+    drain_flush(d);
+    double t0 = now_s(), deadline = t0 + o->noise_window_s;
+    while (now_s() < deadline && !g_abort) {
+        if (drain_once(d, buf, 128, &n) < 0) { sleep_s(0.002); continue; }
+        for (int i = 0; i < n; i++) {
+            w3_add(&wa, buf[i].accel);
+            w3_add(&wg, buf[i].gyro);
+            double mag = sqrt((double)buf[i].accel[0] * buf[i].accel[0] +
+                              (double)buf[i].accel[1] * buf[i].accel[1] +
+                              (double)buf[i].accel[2] * buf[i].accel[2]);
+            gsum += mag; g2sum += mag * mag; gn++;
+
+            float t = buf[i].temp_c;
+            if (t < tmin) tmin = t;
+            if (t > tmax) tmax = t;
+            tsum += t; tn++;
+            if (!have_tprev || fabsf(t - tprev) > 1e-6f) { tdistinct++; tprev = t; have_tprev = true; }
+        }
+        ui_progress(o, "imu.noise", (now_s() - t0) / o->noise_window_s, NULL);
+        sleep_s(0.002);
+    }
+
+    w3_finish(&wa, &r->raw.accel);
+    w3_finish(&wg, &r->raw.gyro);
+    r->raw.grav_mean  = gn ? gsum / (double)gn : 0.0;
+    r->raw.grav_sigma = gn > 1 ? sqrt(fabs(g2sum / (double)gn -
+                                     (gsum / (double)gn) * (gsum / (double)gn))) : 0.0;
+    r->raw.temp_min = tn ? tmin : 0.0;
+    r->raw.temp_max = tn ? tmax : 0.0;
+    r->raw.temp_mean = tn ? tsum / (double)tn : 0.0;
+    r->raw.temp_distinct = tdistinct;
+
+    if (gn < 10) {
+        skip_check(r, "imu.rest.still", "Platform was still", "no samples collected");
+        skip_check(r, "imu.noise.gyro", "Gyro noise floor", "no samples collected");
+        skip_check(r, "imu.noise.accel", "Accel noise floor", "no samples collected");
+        skip_check(r, "imu.rest.gravity", "Gravity magnitude at rest", "no samples collected");
+        skip_check(r, "imu.temp.plausible", "Temperature is plausible", "no samples collected");
+        skip_check(r, "imu.temp.varies", "Temperature is not stuck", "no samples collected");
+        return;
+    }
+
+    /* Was the board actually still?  Everything below is graded on that. */
+    double gmax = fmax(fmax(r->raw.gyro.sigma[0], r->raw.gyro.sigma[1]),
+                       r->raw.gyro.sigma[2]);
+    bool moved = gmax > 0.1;
+    add_check(r, "imu.rest.still", "Platform was still", moved ? IMT_WARN : IMT_PASS,
+              fmtbuf(mb, sizeof mb, "gyro sigma %.4f rad/s", gmax),
+              "< 0.1 rad/s",
+              moved ? "the board moved during the rest window; the noise and "
+                      "gravity checks below are graded leniently as a result."
+                    : "the rest window was quiet enough to grade noise and "
+                      "gravity strictly.");
+
+    /* A stuck axis reads a perfect constant.  That is a decode bug, never
+     * physics, so it fails regardless of how still the platform was. */
+    bool gstuck = false, astuck = false;
+    for (int k = 0; k < 3; k++) {
+        if (r->raw.gyro.sigma[k]  == 0.0 || !isfinite(r->raw.gyro.sigma[k]))  gstuck = true;
+        if (r->raw.accel.sigma[k] == 0.0 || !isfinite(r->raw.accel.sigma[k])) astuck = true;
+    }
+
+    if (gstuck)
+        add_check(r, "imu.noise.gyro", "Gyro noise floor", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.2g / %.2g / %.2g",
+                         r->raw.gyro.sigma[0], r->raw.gyro.sigma[1],
+                         r->raw.gyro.sigma[2]),
+                  "5e-4 .. 5e-2 rad/s",
+                  "an axis has exactly zero variance — that axis is stuck, "
+                  "which means it is not being decoded from the sample.");
+    else {
+        bool ok = true;
+        for (int k = 0; k < 3; k++)
+            if (r->raw.gyro.sigma[k] < 5e-4 || r->raw.gyro.sigma[k] > 5e-2) ok = false;
+        add_check(r, "imu.noise.gyro", "Gyro noise floor",
+                  ok ? IMT_PASS : IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.2g / %.2g / %.2g",
+                         r->raw.gyro.sigma[0], r->raw.gyro.sigma[1],
+                         r->raw.gyro.sigma[2]),
+                  "5e-4 .. 5e-2 rad/s",
+                  ok ? "per-axis standard deviation over %.0f s at rest"
+                     : "outside the usual band over %.0f s — plausible if the "
+                       "bench is not still, otherwise check the gyro scaling.",
+                  o->noise_window_s);
+    }
+
+    if (astuck)
+        add_check(r, "imu.noise.accel", "Accel noise floor", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.2g / %.2g / %.2g",
+                         r->raw.accel.sigma[0], r->raw.accel.sigma[1],
+                         r->raw.accel.sigma[2]),
+                  "2e-3 .. 0.5 m/s^2",
+                  "an axis has exactly zero variance — that axis is stuck.");
+    else {
+        bool ok = true;
+        for (int k = 0; k < 3; k++)
+            if (r->raw.accel.sigma[k] < 2e-3 || r->raw.accel.sigma[k] > 0.5) ok = false;
+        add_check(r, "imu.noise.accel", "Accel noise floor",
+                  ok ? IMT_PASS : IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.2g / %.2g / %.2g",
+                         r->raw.accel.sigma[0], r->raw.accel.sigma[1],
+                         r->raw.accel.sigma[2]),
+                  "2e-3 .. 0.5 m/s^2",
+                  ok ? "per-axis standard deviation over %.0f s at rest"
+                     : "outside the usual band over %.0f s.", o->noise_window_s);
+    }
+
+    /* Gravity magnitude is orientation-independent, so it is the one accel
+     * check that works without asking the operator to do anything. */
+    double err = fabs(r->raw.grav_mean - IMT_G_MS2);
+    imt_status_t st = err <= o->grav_tol_warn ? IMT_PASS
+                    : err <= o->grav_tol_fail ? IMT_WARN : IMT_FAIL;
+    if (moved && st == IMT_FAIL) st = IMT_WARN;
+    double ratio = r->raw.grav_mean > 0.01 ? IMT_G_MS2 / r->raw.grav_mean : 0.0;
+    bool pow2 = ratio > 0.1 && fabs(ratio - round(ratio)) < 0.05 &&
+                (fabs(ratio - 2.0) < 0.05 || fabs(ratio - 4.0) < 0.05 ||
+                 fabs(ratio - 8.0) < 0.05 || fabs(ratio - 0.5) < 0.05);
+    add_check(r, "imu.rest.gravity", "Gravity magnitude at rest", st,
+              fmtbuf(mb, sizeof mb, "%.4f m/s^2", r->raw.grav_mean),
+              fmtbuf(eb, sizeof eb, "9.8066 +/-%.2f", o->grav_tol_warn),
+              pow2 ? "ratio to true g is %.2f — a power of two, so this "
+                     "full-scale branch's sensitivity constant is wrong."
+                   : "|a| averaged over %.0f s; ratio to true g is %.3f.",
+              pow2 ? ratio : ratio);
+
+    /* Temperature */
+    bool pinned = (tdistinct <= 1 && fabs(r->raw.temp_mean - 25.0) < 1e-3);
+    if (pinned)
+        add_check(r, "imu.temp.plausible", "Temperature is plausible", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.3f C, 1 value", r->raw.temp_mean),
+                  "-20 .. 85 C, varying",
+                  "pinned at exactly 25.000 C with no variation — that is the "
+                  "placeholder, so the temperature word is never decoded.");
+    else if (r->raw.temp_mean < -20.0 || r->raw.temp_mean > 85.0)
+        add_check(r, "imu.temp.plausible", "Temperature is plausible", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.2f C", r->raw.temp_mean),
+                  "-20 .. 85 C",
+                  "outside any plausible die temperature — check the "
+                  "temperature scaling and offset.");
+    else
+        add_check(r, "imu.temp.plausible", "Temperature is plausible", IMT_PASS,
+                  fmtbuf(mb, sizeof mb, "%.2f C", r->raw.temp_mean),
+                  "-20 .. 85 C",
+                  "range %.2f .. %.2f C over %.0f s",
+                  r->raw.temp_min, r->raw.temp_max, o->noise_window_s);
+
+    add_check(r, "imu.temp.varies", "Temperature is not stuck",
+              tdistinct > 1 ? IMT_PASS : IMT_WARN,
+              fmtbuf(mb, sizeof mb, "%d distinct, range %.2f C",
+                     tdistinct, r->raw.temp_max - r->raw.temp_min),
+              "> 1 distinct value",
+              tdistinct > 1
+              ? "the reading moves, so it is being read live"
+              : "no variation in %.0f s. Expected for a coarse 1 C/LSB word "
+                "(the ICM-42688-P decodes an int8); confirm against the "
+                "datasheet before treating this as a defect.",
+              o->noise_window_s);
+}
+
+/* ── Phase A: full-scale sweep ────────────────────────────────────────────── */
+
+/*
+ * Re-init at every entry in supported_accel_g / supported_gyro_dps.  This is
+ * the check that catches one wrong sensitivity constant in one branch of an
+ * encode function — a very common driver bug that no single-configuration test
+ * can see.  Runs last, because each init() resets the driver's seq counter.
+ */
+/* Collect for `secs`, returning per-axis accel/gyro stats and mean |a|. */
+static uint64_t collect_stats(const imt_opts_t *o, drain_ctx_t *d, double secs,
+                              const char *prog_id,
+                              imt_stats3_t *accel, imt_stats3_t *gyro,
+                              double *grav_mean)
+{
+    imu_sample_t buf[128];
+    int n = 0;
+    welford3_t wa, wg;
+    w3_init(&wa); w3_init(&wg);
+    double gsum = 0;
+    uint64_t gn = 0;
+
+    double t0 = now_s(), deadline = t0 + secs;
+    while (now_s() < deadline && !g_abort) {
+        if (drain_once(d, buf, 128, &n) < 0) { sleep_s(0.002); continue; }
+        for (int i = 0; i < n; i++) {
+            w3_add(&wa, buf[i].accel);
+            w3_add(&wg, buf[i].gyro);
+            gsum += sqrt((double)buf[i].accel[0] * buf[i].accel[0] +
+                         (double)buf[i].accel[1] * buf[i].accel[1] +
+                         (double)buf[i].accel[2] * buf[i].accel[2]);
+            gn++;
+        }
+        if (prog_id) ui_progress(o, prog_id, (now_s() - t0) / secs, NULL);
+        sleep_s(0.002);
+    }
+
+    if (accel) w3_finish(&wa, accel);
+    if (gyro)  w3_finish(&wg, gyro);
+    if (grav_mean) *grav_mean = gn ? gsum / (double)gn : 0.0;
+    return gn;
+}
+
+static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                           const imu_ops_t *imu, int fd, uint8_t addr,
+                           const imu_cfg_t *base)
+{
+    char mb[56], eb[56], id[32], nm[64];
+
+    if (!o->fs_sweep) {
+        skip_check(r, "imu.fs.accel", "Full-scale sweep, accelerometer",
+                   "disabled with --no-fs-sweep");
+        skip_check(r, "imu.fs.gyro", "Full-scale sweep, gyroscope",
+                   "disabled with --no-fs-sweep");
+        skip_check(r, "imu.fs.restore", "Configured full scale restored",
+                   "disabled with --no-fs-sweep");
+        return;
+    }
+
+    /* ── Accelerometer: gravity is the reference at every full scale ─────── */
+    int na = tab_len(imu->supported_accel_g, 8);
+    int failed = 0, worst = 0;
+    for (int i = 0; i < na && !g_abort; i++) {
+        imu_cfg_t c = *base;
+        c.accel_g = imu->supported_accel_g[i];
+
+        if (imu->reset(fd, addr) < 0 || imu->init(fd, addr, &c) < 0) {
+            snprintf(id, sizeof id, "imu.fs.a%d", c.accel_g);
+            snprintf(nm, sizeof nm, "Accel full scale +/-%d g", c.accel_g);
+            add_check(r, id, nm, IMT_FAIL, "init failed", "0",
+                      "could not configure +/-%d g, which supported_accel_g[] "
+                      "advertises.", c.accel_g);
+            failed++;
+            continue;
+        }
+        drain_flush(d);
+        sleep_s(0.3);
+        drain_flush(d);
+
+        imt_stats3_t acc;
+        double grav = 0;
+        uint64_t gn = collect_stats(o, d, 1.0, "imu.fs", &acc, NULL, &grav);
+
+        imt_fs_row_t *row = &r->raw.fs_accel[r->raw.n_fs_accel];
+        row->fs        = c.accel_g;
+        row->grav_mean = grav;
+        row->ratio     = grav > 0.01 ? IMT_G_MS2 / grav : 0.0;
+        row->n         = (int)gn;
+        for (int k = 0; k < 3; k++) row->sigma[k] = acc.sigma[k];
+
+        double err = fabs(grav - IMT_G_MS2);
+        row->status = gn < 10 ? IMT_SKIP
+                    : err <= o->grav_tol_warn ? IMT_PASS
+                    : err <= o->grav_tol_fail ? IMT_WARN : IMT_FAIL;
+        if (r->raw.n_fs_accel < IMT_MAX_FS_ROWS - 1) r->raw.n_fs_accel++;
+
+        if (row->status == IMT_FAIL) { failed++; worst = c.accel_g; }
+
+        snprintf(id, sizeof id, "imu.fs.a%d", c.accel_g);
+        snprintf(nm, sizeof nm, "Accel full scale +/-%d g", c.accel_g);
+        add_check(r, id, nm, row->status,
+                  fmtbuf(mb, sizeof mb, "%.4f m/s^2", grav),
+                  fmtbuf(eb, sizeof eb, "9.8066 +/-%.2f", o->grav_tol_warn),
+                  "ratio to true g %.3f%s", row->ratio,
+                  (row->status == IMT_FAIL && fabs(row->ratio - 2.0) < 0.05)
+                      ? " — exactly 2x, so this branch's sensitivity constant "
+                        "is off by a factor of two" : "");
+    }
+    add_check(r, "imu.fs.accel", "Full-scale sweep, accelerometer",
+              failed ? IMT_FAIL : IMT_PASS,
+              fmtbuf(mb, sizeof mb, "%d of %d ranges bad", failed, na),
+              "0 bad",
+              failed ? "gravity does not read 9.807 at every advertised full "
+                       "scale (worst: +/-%d g) — one sensitivity constant is "
+                       "wrong."
+                     : "gravity reads correctly at all %d advertised ranges",
+              failed ? worst : na);
+
+    /*
+     * Gyro has no static reference: a stationary gyro reads about zero at
+     * every full scale.  The usable bench proxy is that the ADC range, and so
+     * the noise standard deviation, scales with the full scale — a branch with
+     * a wrong constant breaks the ratio between adjacent entries.  Absolute
+     * gyro scale is only verified by the guided rotation phase, and only at
+     * the configured full scale; the report says so.
+     */
+    int ng = tab_len(imu->supported_gyro_dps, 8);
+    int gbad = 0;
+    double prev_sigma = 0;
+    int prev_fs = 0;
+    for (int i = 0; i < ng && !g_abort; i++) {
+        imu_cfg_t c = *base;
+        c.gyro_dps = imu->supported_gyro_dps[i];
+
+        if (imu->reset(fd, addr) < 0 || imu->init(fd, addr, &c) < 0) {
+            gbad++;
+            continue;
+        }
+        drain_flush(d);
+        sleep_s(0.3);
+        drain_flush(d);
+
+        imt_stats3_t gy;
+        collect_stats(o, d, 1.0, "imu.fs", NULL, &gy, NULL);
+        double s = (gy.sigma[0] + gy.sigma[1] + gy.sigma[2]) / 3.0;
+
+        imt_fs_row_t *row = &r->raw.fs_gyro[r->raw.n_fs_gyro];
+        row->fs = c.gyro_dps;
+        for (int k = 0; k < 3; k++) row->sigma[k] = gy.sigma[k];
+        row->status = IMT_INFO;
+
+        if (prev_fs > 0 && prev_sigma > 0 && s > 0) {
+            double sratio  = s / prev_sigma;
+            double fsratio = (double)c.gyro_dps / (double)prev_fs;
+            /* Deliberately loose: this is a proxy, not a measurement. */
+            if (sratio > fsratio * 2.0 || sratio < fsratio / 2.0) {
+                row->status = IMT_WARN;
+                gbad++;
+            } else {
+                row->status = IMT_PASS;
+            }
+            row->ratio = sratio;
+        }
+        prev_sigma = s;
+        prev_fs    = c.gyro_dps;
+        if (r->raw.n_fs_gyro < IMT_MAX_FS_ROWS - 1) r->raw.n_fs_gyro++;
+    }
+    add_check(r, "imu.fs.gyro", "Full-scale sweep, gyroscope",
+              ng < 2 ? IMT_SKIP : gbad ? IMT_WARN : IMT_PASS,
+              fmtbuf(mb, sizeof mb, "%d of %d steps off", gbad, ng ? ng - 1 : 0),
+              "noise scales with full scale",
+              "a stationary gyro reads ~0 at every range, so this compares "
+              "noise sigma between adjacent ranges as a proxy. Absolute gyro "
+              "scale is checked only by the guided rotation phase, and only "
+              "at the configured +/-%d dps.", base->gyro_dps);
+
+    /* Everything after this depends on the configured setup being back. */
+    bool ok = (imu->reset(fd, addr) == 0) && (imu->init(fd, addr, base) == 0);
+    add_check(r, "imu.fs.restore", "Configured full scale restored",
+              ok ? IMT_PASS : IMT_FAIL,
+              ok ? "restored" : "failed",
+              fmtbuf(eb, sizeof eb, "%d g / %d dps", base->accel_g, base->gyro_dps),
+              ok ? "back to the configured full scale after the sweep"
+                 : "could not restore the configured full scale — later "
+                   "checks in this run are not trustworthy.");
+    drain_flush(d);
+}
+
+/* ── Phase A: DRDY / watermark interrupt line ─────────────────────────────── */
+
+static void drain_cb(void *user)
+{
+    drain_ctx_t *d = user;
+    imu_sample_t buf[128];
+    int n = 0;
+    drain_once(d, buf, 128, &n);
+}
+
+static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                       const imud_config_t *cfg, int eff_odr, int fifo_wm)
+{
+    char mb[56], eb[56];
+
+    if (cfg->imu_int_gpio <= 0) {
+        skip_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+                   "imu.int_gpio is 0 — the reader uses a polling timer");
+        r->raw.gpio_why = IMT_GPIO_DISABLED;
+        return;
+    }
+
+    imt_gpio_why_t why = IMT_GPIO_OK;
+    long ms = (long)(o->drdy_window_s * 1e3);
+    drain_flush(d);
+    int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
+                                     drain_cb, d, &why);
+    r->raw.gpio_why      = why;
+    r->raw.gpio_edges    = edges;
+    r->raw.gpio_window_s = o->drdy_window_s;
+    r->raw.gpio_rate_hz  = edges > 0 ? edges / o->drdy_window_s : 0.0;
+
+    if (edges < 0) {
+        const char *reason =
+            why == IMT_GPIO_EBUSY  ? "GPIO is held by another process — is imud running?"
+          : why == IMT_GPIO_ENOCHIP ? "GPIO chip not found; check device.gpio_chip"
+          : why == IMT_GPIO_UNSUPPORTED ? "built without libgpiod"
+          : "GPIO request failed";
+        skip_check(r, "imu.drdy.edges", "IMU interrupt line produces edges", reason);
+        return;
+    }
+
+    /*
+     * The tool cannot know which interrupt the driver programmed, so it
+     * measures and reports which model the edge rate fits rather than
+     * asserting one.
+     */
+    double per_sample = eff_odr;
+    double watermark  = fifo_wm > 0 ? (double)eff_odr / fifo_wm : 0.0;
+    double rate = r->raw.gpio_rate_hz;
+    bool fits_sample = per_sample > 0 && fabs(rate - per_sample) / per_sample < 0.20;
+    bool fits_wm     = watermark  > 0 && fabs(rate - watermark)  / watermark  < 0.20;
+
+    if (edges == 0)
+        add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+                  IMT_FAIL, "0 edges", "> 0",
+                  "no edges on BCM %d in %.1f s. The line is not wired, the "
+                  "interrupt is not enabled in init(), or the BCM number is "
+                  "wrong.", cfg->imu_int_gpio, o->drdy_window_s);
+    else if (fits_sample || fits_wm)
+        add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+                  IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz (%d edges)", rate, edges),
+                  fmtbuf(eb, sizeof eb, "%.0f or %.1f Hz", per_sample, watermark),
+                  "matches the %s model on BCM %d",
+                  fits_sample ? "per-sample data-ready" : "FIFO watermark",
+                  cfg->imu_int_gpio);
+    else
+        add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+                  IMT_WARN, fmtbuf(mb, sizeof mb, "%.1f Hz (%d edges)", rate, edges),
+                  fmtbuf(eb, sizeof eb, "%.0f or %.1f Hz", per_sample, watermark),
+                  "edges are present but match neither the per-sample (%.0f Hz) "
+                  "nor the watermark (%.1f Hz) model.", per_sample, watermark);
+}
+
+/* ── Phase A: magnetometer ────────────────────────────────────────────────── */
+
+static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
+                              const mag_ops_t *mag, int fd, uint8_t addr,
+                              int eff_odr)
+{
+    char mb[56], eb[56];
+    welford3_t w;
+    w3_init(&w);
+
+    double period = eff_odr > 0 ? 1.0 / eff_odr : 0.01;
+    double poll   = period / 4;
+    if (poll > 0.002) poll = 0.002;
+
+    uint64_t got = 0;
+    int rc1 = 0, rcneg = 0, zero_wall = 0, backwards_wall = 0;
+    uint64_t prev_wall = 0;
+    double nsum = 0, nmin = 1e30, nmax = -1e30;
+
+    double t0 = now_s(), deadline = t0 + o->mag_window_s;
+    while (now_s() < deadline && !g_abort) {
+        mag_sample_t s;
+        memset(&s, 0, sizeof s);
+        int rc = mag->read(fd, addr, &s);
+        if (rc < 0)      rcneg++;
+        else if (rc > 0) rc1++;
+        else {
+            w3_add(&w, s.field);
+            double norm = sqrt((double)s.field[0] * s.field[0] +
+                               (double)s.field[1] * s.field[1] +
+                               (double)s.field[2] * s.field[2]);
+            nsum += norm;
+            if (norm < nmin) nmin = norm;
+            if (norm > nmax) nmax = norm;
+            if (s.wall_ns == 0)              zero_wall++;
+            else if (s.wall_ns < prev_wall)  backwards_wall++;
+            if (s.wall_ns) prev_wall = s.wall_ns;
+            got++;
+        }
+        ui_progress(o, "mag.rate", (now_s() - t0) / o->mag_window_s, NULL);
+        sleep_s(poll);
+    }
+    double span = now_s() - t0;
+
+    w3_finish(&w, &r->raw.magf);
+    r->raw.mag_n        = got;
+    r->raw.mag_rc1      = rc1;
+    r->raw.mag_rcneg    = rcneg;
+    r->raw.mag_window_s = span;
+    r->raw.mag_rate_hz  = span > 0 ? got / span : 0.0;
+    r->raw.mag_norm_mean = got ? nsum / (double)got : 0.0;
+    r->raw.mag_norm_min  = got ? nmin : 0.0;
+    r->raw.mag_norm_max  = got ? nmax : 0.0;
+
+    /* Rate */
+    if (got < 5) {
+        add_check(r, "mag.rate", "Measured mag rate", IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%llu samples", (unsigned long long)got),
+                  fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
+                  "almost no samples in %.1f s (%d not-ready, %d I2C errors).",
+                  span, rc1, rcneg);
+    } else {
+        double err = fabs(r->raw.mag_rate_hz - eff_odr) / (double)eff_odr;
+        add_check(r, "mag.rate", "Measured mag rate",
+                  err <= o->odr_tol_warn ? IMT_PASS
+                : err <= o->odr_tol_fail ? IMT_WARN : IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.1f Hz", r->raw.mag_rate_hz),
+                  fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%", eff_odr,
+                         o->odr_tol_warn * 100),
+                  "%llu samples in %.2f s; the poll loop bounds this from "
+                  "above, so a low reading can be pacing rather than the chip.",
+                  (unsigned long long)got, span);
+    }
+
+    /*
+     * The contract line that most often gets broken: a not-ready sensor must
+     * report 1, not -1.  imu.c counts -1 toward the error-reset threshold, so
+     * a driver that returns it for "no data yet" makes the daemon reset a
+     * perfectly healthy chip.
+     */
+    add_check(r, "mag.nodata_not_error", "Not-ready returns 1, not -1",
+              rcneg == 0 ? IMT_PASS : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "%d not-ready, %d errors", rc1, rcneg),
+              "0 errors",
+              rcneg == 0
+              ? "polling faster than the ODR produced %d not-ready returns "
+                "and no I2C errors, which is exactly right"
+              : "read() returned -1 on a healthy bus. -1 is reserved for I2C "
+                "faults; DRDY-not-set and overflow must return 1.", rc1);
+
+    if (got == 0) {
+        skip_check(r, "mag.field_magnitude", "Field magnitude", "no samples");
+        skip_check(r, "mag.noise", "Mag noise floor", "no samples");
+        skip_check(r, "mag.wall_ns", "wall_ns is stamped and monotonic", "no samples");
+    } else {
+        double n = r->raw.mag_norm_mean;
+        imt_status_t st = (n >= 25.0 && n <= 65.0) ? IMT_PASS
+                        : (n >= 15.0 && n <= 100.0) ? IMT_WARN : IMT_FAIL;
+        add_check(r, "mag.field_magnitude", "Field magnitude", st,
+                  fmtbuf(mb, sizeof mb, "%.1f uT", n), "25 .. 65 uT",
+                  "range %.1f .. %.1f uT. Earth's field is 25-65 uT; well "
+                  "outside that is a scaling error or heavy local iron.",
+                  r->raw.mag_norm_min, r->raw.mag_norm_max);
+
+        bool stuck = false;
+        for (int k = 0; k < 3; k++)
+            if (r->raw.magf.sigma[k] == 0.0 || !isfinite(r->raw.magf.sigma[k]))
+                stuck = true;
+        add_check(r, "mag.noise", "Mag noise floor", stuck ? IMT_FAIL : IMT_PASS,
+                  fmtbuf(mb, sizeof mb, "%.3f / %.3f / %.3f uT",
+                         r->raw.magf.sigma[0], r->raw.magf.sigma[1],
+                         r->raw.magf.sigma[2]),
+                  "all axes > 0",
+                  stuck ? "an axis has exactly zero variance — that axis is "
+                          "stuck and is not being decoded."
+                        : "per-axis standard deviation at rest");
+
+        add_check(r, "mag.wall_ns", "wall_ns is stamped and monotonic",
+                  (zero_wall == 0 && backwards_wall == 0) ? IMT_PASS : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%d zero, %d backwards",
+                         zero_wall, backwards_wall), "0 / 0",
+                  (zero_wall == 0 && backwards_wall == 0)
+                  ? "every sample carried a non-decreasing CLOCK_REALTIME stamp"
+                  : "wall_ns must be set on every valid sample and never go "
+                    "backwards — fusion timestamps mag updates with it.");
+    }
+
+    /* SET/RESET coil, if the driver claims one. */
+    if (mag->has_set_reset) {
+        if (!mag->set_reset) {
+            add_check(r, "mag.set_reset", "SET/RESET degauss pulse", IMT_FAIL,
+                      "NULL", "non-NULL",
+                      "has_set_reset is true but set_reset is NULL — the "
+                      "daemon would call through a null pointer.");
+        } else {
+            int rc = mag->set_reset(fd, addr);
+            add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
+                      rc == 0 ? IMT_PASS : IMT_FAIL,
+                      fmtbuf(mb, sizeof mb, "%d", rc), "0",
+                      rc == 0 ? "the degauss pulse was issued"
+                              : "set_reset() failed.");
+        }
+    } else {
+        add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
+                  mag->set_reset == NULL ? IMT_PASS : IMT_FAIL,
+                  mag->set_reset ? "non-NULL" : "NULL", "NULL",
+                  mag->set_reset == NULL
+                  ? "no coil declared and none exposed, which is consistent"
+                  : "has_set_reset is false but set_reset is not NULL.");
+    }
+}
+
+/* ── Phase B: guided six-face accelerometer / axis-sign test ──────────────── */
+
+/*
+ * The rule, in the NED-compatible board frame (X bow, Y starboard, Z DOWN):
+ * the axis pointing UP reads +g, the axis pointing DOWN reads -g.  Face 1 is
+ * the cross-check on the whole convention and matches the driver guide: flat,
+ * component side up, must read [0, 0, -9.807].
+ *
+ * This is the check that catches a wrong axis flip, which is the single most
+ * likely defect in a new driver.
+ */
+static const struct {
+    const char *id;
+    const char *label;
+    const char *instruction;
+    int axis, sign;
+} imt_faces[6] = {
+    { "face.1", "Flat, component side up",
+      "Lay the board flat on the bench the normal way up.", 2, -1 },
+    { "face.2", "Flat, upside down",
+      "Turn the board over so the components face the bench.", 2, +1 },
+    { "face.3", "Nose down",
+      "Stand the board on its front edge, the bow arrow (chip +X) "
+      "pointing at the floor.", 0, -1 },
+    { "face.4", "Nose up",
+      "Stand the board on its back edge, the bow arrow (chip +X) "
+      "pointing at the ceiling.", 0, +1 },
+    { "face.5", "Starboard side down",
+      "Stand the board on its right-hand (starboard) edge.", 1, -1 },
+    { "face.6", "Port side down",
+      "Stand the board on its left-hand (port) edge.", 1, +1 },
+};
+
+static int dominant_axis(const double a[3])
+{
+    int k = 0;
+    for (int i = 1; i < 3; i++) if (fabs(a[i]) > fabs(a[k])) k = i;
+    return k;
+}
+
+static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
+{
+    char mb[64], eb[64], id[32], nm[64], body[512];
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    int frame_bad = 0;
+
+    for (int f = 0; f < 6 && !g_abort; f++) {
+        double want[3] = { 0, 0, 0 };
+        want[imt_faces[f].axis] = imt_faces[f].sign * IMT_G_MS2;
+
+        snprintf(body, sizeof body,
+                 "%s\n"
+                 "  Expected: accel ~ [ %+.2f, %+.2f, %+.2f ] m/s^2\n"
+                 "  (board %c points %s, so %c reads %sg)",
+                 imt_faces[f].instruction, want[0], want[1], want[2],
+                 axis_name[imt_faces[f].axis],
+                 imt_faces[f].sign > 0 ? "up" : "down",
+                 axis_name[imt_faces[f].axis],
+                 imt_faces[f].sign > 0 ? "+" : "-");
+
+        snprintf(nm, sizeof nm, "Face %d/6: %s", f + 1, imt_faces[f].label);
+        int pr = ui_prompt(o, imt_faces[f].id, nm, body);
+        if (pr < 0) { r->aborted = true; return; }
+        if (pr > 0) {
+            snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
+            skip_check(r, id, nm, "skipped by the operator");
+            continue;
+        }
+
+        drain_flush(d);
+        sleep_s(o->face_settle_s);
+        drain_flush(d);
+
+        imt_stats3_t acc;
+        double grav = 0;
+        uint64_t n = collect_stats(o, d, o->face_collect_s, imt_faces[f].id,
+                                   &acc, NULL, &grav);
+
+        imt_face_row_t *row = &r->raw.face[r->raw.n_faces];
+        row->idx      = f;
+        row->label    = imt_faces[f].label;
+        row->exp_axis = imt_faces[f].axis;
+        row->exp_sign = imt_faces[f].sign;
+        for (int k = 0; k < 3; k++) row->a[k] = acc.mean[k];
+        row->norm     = grav;
+        row->n        = (int)n;
+        row->got_axis = dominant_axis(acc.mean);
+        row->got_sign = acc.mean[row->got_axis] >= 0 ? +1 : -1;
+
+        if (n < 10) {
+            row->status = IMT_SKIP;
+            snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
+            skip_check(r, id, nm, "too few samples collected at this face");
+            if (r->raw.n_faces < 5) r->raw.n_faces++;
+            continue;
+        }
+        if (r->raw.n_faces < 6) r->raw.n_faces++;
+
+        /* Magnitude */
+        double err = fabs(grav - IMT_G_MS2);
+        snprintf(id, sizeof id, "%s.mag", imt_faces[f].id);
+        snprintf(nm, sizeof nm, "Face %d magnitude", f + 1);
+        add_check(r, id, nm,
+                  err <= o->grav_tol_warn ? IMT_PASS
+                : err <= o->grav_tol_fail ? IMT_WARN : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.3f m/s^2", grav),
+                  fmtbuf(eb, sizeof eb, "9.807 +/-%.2f", o->grav_tol_warn),
+                  "|a| at face %d", f + 1);
+
+        /* Sign — the substantive check.  Diagnose, do not just report. */
+        snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
+        snprintf(nm, sizeof nm, "Face %d axis and sign", f + 1);
+        bool axis_ok = (row->got_axis == row->exp_axis);
+        bool sign_ok = (row->got_sign == row->exp_sign);
+        row->status  = (axis_ok && sign_ok) ? IMT_PASS : IMT_FAIL;
+
+        fmtbuf(mb, sizeof mb, "%c%c (%+.2f)",
+               row->got_sign > 0 ? '+' : '-', axis_name[row->got_axis],
+               acc.mean[row->got_axis]);
+        fmtbuf(eb, sizeof eb, "%c%c (%+.2f)",
+               row->exp_sign > 0 ? '+' : '-', axis_name[row->exp_axis],
+               want[row->exp_axis]);
+
+        if (axis_ok && sign_ok)
+            add_check(r, id, nm, IMT_PASS, mb, eb,
+                      "measured [%+.2f, %+.2f, %+.2f] m/s^2",
+                      acc.mean[0], acc.mean[1], acc.mean[2]);
+        else if (axis_ok)
+            add_check(r, id, nm, IMT_FAIL, mb, eb,
+                      "right axis, wrong sign: the %c sign flip is missing "
+                      "from (or spurious in) the driver's chip-to-board remap.",
+                      axis_name[row->exp_axis]);
+        else
+            add_check(r, id, nm, IMT_FAIL, mb, eb,
+                      "gravity landed on %c but should be on %c — those two "
+                      "axes appear swapped in the chip-to-board remap.",
+                      axis_name[row->got_axis], axis_name[row->exp_axis]);
+
+        if (row->status != IMT_PASS) frame_bad++;
+
+        /* Cross-axis leakage grades the bench, not the driver: hand placement
+         * on a bench edge is good to a few degrees at best. */
+        double cross = 0;
+        for (int k = 0; k < 3; k++)
+            if (k != row->exp_axis && fabs(acc.mean[k]) > cross)
+                cross = fabs(acc.mean[k]);
+        snprintf(id, sizeof id, "%s.cross", imt_faces[f].id);
+        snprintf(nm, sizeof nm, "Face %d off-axis components", f + 1);
+        add_check(r, id, nm, cross <= 1.5 ? IMT_PASS : IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.2f m/s^2", cross), "< 1.5 m/s^2",
+                  cross <= 1.5 ? "the board was close to square with gravity"
+                               : "about %.0f degrees off square — this grades "
+                                 "how the board was held, not the driver.",
+                  asin(fmin(1.0, cross / IMT_G_MS2)) * 180.0 / M_PI);
+    }
+
+    /* Rollup */
+    if (r->raw.n_faces < 6) {
+        skip_check(r, "faces.frame", "Board frame matches NED",
+                   "not all six faces were measured");
+    } else {
+        add_check(r, "faces.frame", "Board frame matches NED",
+                  frame_bad ? IMT_FAIL : IMT_PASS,
+                  fmtbuf(mb, sizeof mb, "%d of 6 faces wrong", frame_bad),
+                  "0 wrong",
+                  frame_bad ? "the chip-to-board axis remap is wrong; see the "
+                              "per-face diagnoses above."
+                            : "X forward, Y starboard, Z down confirmed on all "
+                              "six faces, signs included.");
+    }
+
+    /*
+     * The calibration model imud-cal accel would derive from these same six
+     * readings.  Recorded for information: a sane offset/scale pair here means
+     * a calibration run on this board would produce something usable.
+     */
+    if (r->raw.n_faces == 6) {
+        bool have[3] = { false, false, false };
+        double plus[3] = { 0, 0, 0 }, minus[3] = { 0, 0, 0 };
+        for (int i = 0; i < 6; i++) {
+            imt_face_row_t *row = &r->raw.face[i];
+            if (row->exp_sign > 0) plus[row->exp_axis]  = row->a[row->exp_axis];
+            else                   minus[row->exp_axis] = row->a[row->exp_axis];
+            have[row->exp_axis] = true;
+        }
+        char buf[64] = "";
+        for (int k = 0; k < 3; k++) {
+            if (!have[k]) continue;
+            r->raw.face_offset[k] = (plus[k] + minus[k]) / 2.0;
+            double half = (plus[k] - minus[k]) / 2.0;
+            r->raw.face_scale[k]  = fabs(half) > 0.1 ? IMT_G_MS2 / half : 1.0;
+        }
+        add_check(r, "faces.symmetry", "Derived accel offset and scale", IMT_INFO,
+                  fmtbuf(buf, sizeof buf, "scale %.3f/%.3f/%.3f",
+                         r->raw.face_scale[0], r->raw.face_scale[1],
+                         r->raw.face_scale[2]),
+                  "~1.000 each",
+                  "offsets %+.3f/%+.3f/%+.3f m/s^2. This is the model "
+                  "`imud-cal accel` fits; scales far from 1.0 mean a "
+                  "sensitivity error rather than a mounting one.",
+                  r->raw.face_offset[0], r->raw.face_offset[1],
+                  r->raw.face_offset[2]);
+    }
+}
+
+/* ── Phase C: guided gyro rotation ────────────────────────────────────────── */
+
+/*
+ * Right-hand rule in the board frame: +X roll puts starboard down, +Y pitch
+ * puts the bow up, +Z yaw turns clockwise seen from above.
+ *
+ * The scale tolerance is deliberately wide.  A hand turn to "90 degrees" is
+ * +/-10 degrees at best, so this cannot measure sensitivity — it exists to
+ * catch factor errors, and the two that matter are 57.30 (returned deg/s where
+ * the contract says rad/s) and 0.01745 (converted twice).
+ */
+static const struct {
+    const char *id;
+    const char *cmd;
+    int axis;
+} imt_turns[3] = {
+    { "gyro.x", "ROLL the board to starboard: rotate about the bow-stern axis "
+                "so the right-hand edge goes DOWN", 0 },
+    { "gyro.y", "PITCH the bow UP: rotate about the port-starboard axis so the "
+                "bow (chip +X) rises", 1 },
+    { "gyro.z", "YAW CLOCKWISE seen from above: keep the board flat and swing "
+                "the bow to starboard", 2 },
+};
+
+static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                       const imu_ops_t *imu, int eff_odr)
+{
+    char mb[64], eb[64], id[32], nm[64], body[512];
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    imu_sample_t buf[128];
+    int n = 0;
+
+    bool use_ts = imu->has_hw_timestamp && imu->ts_tick_ns != 0;
+    double dt_nominal = 1.0 / (double)eff_odr;
+
+    for (int t = 0; t < 3 && !g_abort; t++) {
+        int axis = imt_turns[t].axis;
+        snprintf(body, sizeof body,
+                 "%s,\n"
+                 "  by about %.0f degrees, slowly and steadily.\n"
+                 "  Signal when the turn is finished.\n"
+                 "  Expected: theta%c ~ %+.0f deg, the other two near zero.",
+                 imt_turns[t].cmd, o->turn_deg, axis_name[axis], o->turn_deg);
+        snprintf(nm, sizeof nm, "Gyro %c rotation", axis_name[axis]);
+
+        int pr = ui_prompt(o, imt_turns[t].id, nm, body);
+        if (pr < 0) { r->aborted = true; return; }
+        if (pr > 0) {
+            snprintf(id, sizeof id, "%s.sign", imt_turns[t].id);
+            skip_check(r, id, nm, "skipped by the operator");
+            continue;
+        }
+
+        drain_flush(d);
+
+        double theta[3] = { 0, 0, 0 };
+        uint64_t count = 0;
+        bool have_prev_ts = false;
+        uint32_t prev_ts = 0;
+        double t0 = now_s(), deadline = t0 + o->turn_timeout_s;
+        bool done = false;
+
+        while (now_s() < deadline && !g_abort && !done) {
+            if (drain_once(d, buf, 128, &n) < 0) { sleep_s(0.002); continue; }
+            for (int i = 0; i < n; i++) {
+                double dt = dt_nominal;
+                if (use_ts && buf[i].chip_ts) {
+                    if (have_prev_ts) {
+                        uint32_t delta = buf[i].chip_ts - prev_ts;
+                        if (delta > 0 && delta < 0x80000000u)
+                            dt = (double)delta * (double)imu->ts_tick_ns * 1e-9;
+                    }
+                    prev_ts = buf[i].chip_ts;
+                    have_prev_ts = true;
+                }
+                for (int k = 0; k < 3; k++)
+                    theta[k] += (double)buf[i].gyro[k] * dt * 180.0 / M_PI;
+                count++;
+            }
+            fmtbuf(mb, sizeof mb, "%+.1f / %+.1f / %+.1f deg",
+                   theta[0], theta[1], theta[2]);
+            ui_progress(o, imt_turns[t].id, -1.0, mb);
+
+            int pd = ui_poll_done(o);
+            if (pd < 0) { r->aborted = true; return; }
+            if (pd > 0) done = true;
+            sleep_s(0.002);
+        }
+
+        imt_turn_row_t *row = &r->raw.turn[r->raw.n_turns];
+        row->axis    = axis;
+        row->cmd_deg = o->turn_deg;
+        row->dur_s   = now_s() - t0;
+        row->n       = (int)count;
+        row->used_chip_ts = use_ts;
+        for (int k = 0; k < 3; k++) row->theta[k] = theta[k];
+        if (r->raw.n_turns < 2) r->raw.n_turns++;
+
+        if (count < 10) {
+            snprintf(id, sizeof id, "%s.sign", imt_turns[t].id);
+            skip_check(r, id, nm, "too few samples during the turn");
+            row->status = IMT_SKIP;
+            continue;
+        }
+
+        double got = theta[axis];
+
+        /* Sign */
+        snprintf(id, sizeof id, "%s.sign", imt_turns[t].id);
+        row->status = got > 0 ? IMT_PASS : IMT_FAIL;
+        fmtbuf(mb, sizeof mb, "%+.1f deg", got);
+        fmtbuf(eb, sizeof eb, "%+.0f deg", o->turn_deg);
+        if (got > 0)
+            add_check(r, id, nm, IMT_PASS, mb, eb,
+                      "integrated the right way for a commanded +%.0f degrees "
+                      "about %c", o->turn_deg, axis_name[axis]);
+        else
+            add_check(r, id, nm, IMT_FAIL, mb, eb,
+                      "the %c gyro sign is inverted: a commanded +%.0f degree "
+                      "turn integrated to %+.1f.",
+                      axis_name[axis], o->turn_deg, got);
+
+        /* Scale */
+        snprintf(id, sizeof id, "%s.scale", imt_turns[t].id);
+        snprintf(nm, sizeof nm, "Gyro %c scale factor", axis_name[axis]);
+        double ratio = o->turn_deg > 0 ? fabs(got) / o->turn_deg : 0.0;
+        imt_status_t st = (ratio > 0.8 && ratio < 1.2) ? IMT_PASS
+                        : (ratio > 0.6 && ratio < 1.4) ? IMT_WARN : IMT_FAIL;
+        const char *hint = "";
+        if (st == IMT_FAIL) {
+            if (ratio > 40.0 && ratio < 80.0)
+                hint = " — about 57.3x, so read() is returning deg/s where the "
+                       "contract says rad/s";
+            else if (ratio > 0.01 && ratio < 0.03)
+                hint = " — about 1/57.3, so the deg-to-rad conversion is "
+                       "being applied twice";
+        }
+        add_check(r, id, nm, st,
+                  fmtbuf(mb, sizeof mb, "%.2fx commanded", ratio),
+                  "1.0 +/-20%",
+                  "integrated %+.1f deg against a commanded %.0f%s. A hand "
+                  "turn is only good to about +/-10%%, so this catches factor "
+                  "errors, not sensitivity.", got, o->turn_deg, hint);
+
+        /* Cross-axis */
+        double cross = 0;
+        for (int k = 0; k < 3; k++)
+            if (k != axis && fabs(theta[k]) > cross) cross = fabs(theta[k]);
+        snprintf(id, sizeof id, "%s.cross", imt_turns[t].id);
+        snprintf(nm, sizeof nm, "Gyro %c cross-axis", axis_name[axis]);
+        add_check(r, id, nm,
+                  cross <= 0.30 * fabs(got) ? IMT_PASS : IMT_WARN,
+                  fmtbuf(mb, sizeof mb, "%.1f deg", cross),
+                  "< 30% of the commanded axis",
+                  "other axes integrated to %+.1f / %+.1f / %+.1f deg; a large "
+                  "value means swapped axes or a sloppy turn.",
+                  theta[0], theta[1], theta[2]);
+    }
+}
+
+/* ── Phase D: guided magnetometer spin ────────────────────────────────────── */
+
+static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                       const mag_ops_t *mag, int fd, uint8_t maddr,
+                       const imud_config_t *cfg, const imu_ops_t *imu,
+                       int eff_odr)
+{
+    char mb[64], eb[64];
+    imu_sample_t ibuf[128];
+    int in = 0;
+
+    int pr = ui_prompt(o, "spin", "Magnetometer spin",
+                       "Hold the board LEVEL and turn it slowly through at "
+                       "least two full circles, clockwise seen from above.\n"
+                       "  Keep it away from steel, motors, and speakers.\n"
+                       "  Signal when the circles are complete.");
+    if (pr < 0) { r->aborted = true; return; }
+    if (pr > 0) {
+        skip_check(r, "spin.magnitude", "Spin field magnitude", "skipped by the operator");
+        skip_check(r, "spin.coverage", "Spin heading coverage", "skipped by the operator");
+        skip_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                   "skipped by the operator");
+        return;
+    }
+
+    int sectors[IMT_MAG_SECTORS] = { 0 };
+    double bx_min = 1e30, bx_max = -1e30, by_min = 1e30, by_max = -1e30;
+    double bz_min = 1e30, bz_max = -1e30, bz_sum = 0, norm_sum = 0;
+    uint64_t got = 0;
+    double gyro_z_deg = 0, heading_unwrapped = 0, prev_heading = 0;
+    bool have_heading = false;
+    bool use_ts = imu->has_hw_timestamp && imu->ts_tick_ns != 0;
+    double dt_nominal = 1.0 / (double)eff_odr;
+    bool have_prev_ts = false;
+    uint32_t prev_ts = 0;
+
+    drain_flush(d);
+    double t0 = now_s(), deadline = t0 + o->spin_timeout_s;
+    bool done = false;
+
+    while (now_s() < deadline && !g_abort && !done) {
+        /* Gyro Z, integrated over the same interval as the mag heading. */
+        if (drain_once(d, ibuf, 128, &in) >= 0) {
+            for (int i = 0; i < in; i++) {
+                double dt = dt_nominal;
+                if (use_ts && ibuf[i].chip_ts) {
+                    if (have_prev_ts) {
+                        uint32_t delta = ibuf[i].chip_ts - prev_ts;
+                        if (delta > 0 && delta < 0x80000000u)
+                            dt = (double)delta * (double)imu->ts_tick_ns * 1e-9;
+                    }
+                    prev_ts = ibuf[i].chip_ts;
+                    have_prev_ts = true;
+                }
+                gyro_z_deg += (double)ibuf[i].gyro[2] * dt * 180.0 / M_PI;
+            }
+        }
+
+        mag_sample_t s;
+        memset(&s, 0, sizeof s);
+        if (mag->read(fd, maddr, &s) == 0 && s.valid) {
+            double bx = s.field[0], by = s.field[1], bz = s.field[2];
+            if (bx < bx_min) bx_min = bx;
+            if (bx > bx_max) bx_max = bx;
+            if (by < by_min) by_min = by;
+            if (by > by_max) by_max = by;
+            if (bz < bz_min) bz_min = bz;
+            if (bz > bz_max) bz_max = bz;
+            bz_sum   += bz;
+            norm_sum += sqrt(bx * bx + by * by + bz * bz);
+            got++;
+
+            /*
+             * Heading from the horizontal field.  Bow north puts the field
+             * along +X (0 deg); bow east puts magnetic north to port, so
+             * By < 0, giving +90 deg.  Unwrapped so the total swing over the
+             * spin can be compared against the gyro.
+             */
+            double heading = atan2(-by, bx) * 180.0 / M_PI;
+            if (have_heading) {
+                double dh = heading - prev_heading;
+                while (dh >  180.0) dh -= 360.0;
+                while (dh < -180.0) dh += 360.0;
+                heading_unwrapped += dh;
+            }
+            prev_heading = heading;
+            have_heading = true;
+
+            double cx = (bx_min + bx_max) / 2.0, cy = (by_min + by_max) / 2.0;
+            int cur = cal_cov_mark(sectors, IMT_MAG_SECTORS, bx, by, cx, cy);
+            ui_coverage(o, sectors, IMT_MAG_SECTORS, cur, (int)got,
+                        got ? norm_sum / (double)got : 0.0);
+        }
+
+        int pd = ui_poll_done(o);
+        if (pd < 0) { r->aborted = true; return; }
+        if (pd > 0) done = true;
+        sleep_s(0.002);
+    }
+
+    memcpy(r->raw.spin_sectors, sectors, sizeof sectors);
+    r->raw.spin_covered = cal_cov_count(sectors, IMT_MAG_SECTORS);
+    r->raw.spin_n       = got;
+    r->raw.spin_norm_mean = got ? norm_sum / (double)got : 0.0;
+    r->raw.spin_bz_mean   = got ? bz_sum / (double)got : 0.0;
+    r->raw.spin_range[0]  = got ? bx_max - bx_min : 0.0;
+    r->raw.spin_range[1]  = got ? by_max - by_min : 0.0;
+    r->raw.spin_range[2]  = got ? bz_max - bz_min : 0.0;
+    r->raw.spin_heading_delta_deg = heading_unwrapped;
+    r->raw.spin_gyro_z_deg        = gyro_z_deg;
+
+    if (got < 20) {
+        skip_check(r, "spin.magnitude", "Spin field magnitude", "too few mag samples");
+        skip_check(r, "spin.axes_vary", "All mag axes respond", "too few mag samples");
+        skip_check(r, "spin.coverage", "Spin heading coverage", "too few mag samples");
+        skip_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                   "too few mag samples");
+        skip_check(r, "spin.dip", "Vertical field sign", "too few mag samples");
+        return;
+    }
+
+    double nm_ = r->raw.spin_norm_mean;
+    add_check(r, "spin.magnitude", "Spin field magnitude",
+              (nm_ >= 25.0 && nm_ <= 65.0) ? IMT_PASS
+            : (nm_ >= 15.0 && nm_ <= 100.0) ? IMT_WARN : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "%.1f uT", nm_), "25 .. 65 uT",
+              "mean |B| over %llu samples while turning",
+              (unsigned long long)got);
+
+    /*
+     * X and Y must swing through the spin.  Z must merely not be constant: a
+     * level spin barely changes the dip component, so requiring Z to vary
+     * would be a false failure.
+     */
+    double bh = sqrt(r->raw.magf.mean[0] * r->raw.magf.mean[0] +
+                     r->raw.magf.mean[1] * r->raw.magf.mean[1]);
+    double need = 0.5 * (bh > 1.0 ? bh : nm_ * 0.5);
+    bool xy_ok = r->raw.spin_range[0] >= need && r->raw.spin_range[1] >= need;
+    bool z_stuck = r->raw.spin_range[2] == 0.0;
+    add_check(r, "spin.axes_vary", "All mag axes respond",
+              z_stuck ? IMT_FAIL : xy_ok ? IMT_PASS : IMT_WARN,
+              fmtbuf(mb, sizeof mb, "%.1f / %.1f / %.1f uT",
+                     r->raw.spin_range[0], r->raw.spin_range[1],
+                     r->raw.spin_range[2]),
+              fmtbuf(eb, sizeof eb, "X,Y > %.0f uT; Z nonzero", need),
+              z_stuck ? "the Z axis never changed at all — it is stuck."
+                      : xy_ok ? "X and Y both swept through the turn, as a "
+                                "level spin requires"
+                              : "X or Y barely moved; the turn may not have "
+                                "been level or complete.");
+
+    add_check(r, "spin.coverage", "Spin heading coverage",
+              r->raw.spin_covered >= IMT_MAG_SECTORS ? IMT_PASS
+            : r->raw.spin_covered >= 18 ? IMT_WARN : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "%d/%d sectors", r->raw.spin_covered,
+                     IMT_MAG_SECTORS),
+              fmtbuf(eb, sizeof eb, "%d/%d", IMT_MAG_SECTORS, IMT_MAG_SECTORS),
+              "how much of the heading circle the turn actually visited");
+
+    /*
+     * The check that makes this phase worth doing.  Two independent sensors
+     * measure the same rotation; if the mag's axes are swapped or a sign is
+     * inverted relative to the IMU, the heading runs backwards against the
+     * gyro.  That is the most common magnetometer-driver defect.
+     */
+    if (fabs(gyro_z_deg) < 45.0) {
+        skip_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                   "the gyro saw less than 45 degrees of turn — spin further");
+    } else {
+        double ratio = heading_unwrapped / gyro_z_deg;
+        bool same_sign = ratio > 0;
+        bool magnitude_ok = fabs(ratio - 1.0) < 0.25;
+        add_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                  (same_sign && magnitude_ok) ? IMT_PASS
+                : same_sign ? IMT_WARN : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%+.0f deg mag", heading_unwrapped),
+                  fmtbuf(eb, sizeof eb, "%+.0f deg gyro", gyro_z_deg),
+                  !same_sign
+                  ? "the mag heading turns the OPPOSITE way to the gyro: an "
+                    "X or Y sign is inverted in the magnetometer's remap "
+                    "relative to the IMU frame."
+                  : magnitude_ok
+                    ? "both sensors agree on the direction and amount of turn"
+                    : "same direction but %.0f%% of the gyro's angle — likely "
+                      "hard iron distorting the circle, or an incomplete turn.",
+                  ratio * 100.0);
+    }
+
+    /* Dip sign needs to know which hemisphere the bench is in. */
+    if (cfg->pos_lat_deg == 0.0) {
+        skip_check(r, "spin.dip", "Vertical field sign",
+                   "position.latitude is not set, so the expected dip sign is "
+                   "unknown");
+    } else {
+        bool north = cfg->pos_lat_deg > 0;
+        bool ok = north ? (r->raw.spin_bz_mean > 0) : (r->raw.spin_bz_mean < 0);
+        add_check(r, "spin.dip", "Vertical field sign", ok ? IMT_PASS : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%+.1f uT", r->raw.spin_bz_mean),
+                  north ? "positive (northern hemisphere)"
+                        : "negative (southern hemisphere)",
+                  ok ? "Z points into the earth as expected at latitude %.1f"
+                     : "the vertical component has the wrong sign for latitude "
+                       "%.1f — the mag Z axis is inverted.",
+                  cfg->pos_lat_deg);
+    }
+}
+
+/* ── Recommendation ───────────────────────────────────────────────────────── */
+
+/*
+ * The named subset that has to PASS before a driver's `experimental` flag can
+ * come off.  Everything else in the report is context; these are the claims.
+ * A SKIP here suppresses the recommendation and says which one.
+ */
+static const char *imt_required_imu[] = {
+    "imu.probe", "imu.probe.reject", "imu.reset.rc", "imu.init.rc",
+    "imu.odr", "imu.seq.monotonic", "imu.seq.gapless",
+    "imu.err.nodata_not_error", "imu.err.no_spurious",
+    "imu.noise.accel", "imu.noise.gyro", "imu.rest.gravity",
+    "imu.temp.plausible", "imu.chipts.presence", "imu.fs.accel",
+    "faces.frame", "gyro.x.sign", "gyro.y.sign", "gyro.z.sign",
+    NULL
+};
+
+static const char *imt_required_mag[] = {
+    "mag.probe", "mag.init.rc", "mag.rate", "mag.nodata_not_error",
+    "mag.field_magnitude", "mag.noise", "mag.wall_ns",
+    "spin.magnitude", "spin.frame_agreement",
+    NULL
+};
+
+static void decide_verdict(imt_report_t *r)
+{
+    const char *blocker = NULL;
+
+    bool complete = !r->aborted
+                 && r->n_fail == 0
+                 && r->phases_requested == IMT_PHASE_ALL
+                 && r->phases_run == IMT_PHASE_ALL
+                 && !r->is_sim
+                 && !r->daemon_was_running;
+
+    if (complete) {
+        for (const char **p = imt_required_imu; *p && !blocker; p++) {
+            const imt_check_t *c = imt_find(r, *p);
+            if (!c || c->status == IMT_SKIP || c->status == IMT_FAIL) blocker = *p;
+        }
+        if (r->have_mag)
+            for (const char **p = imt_required_mag; *p && !blocker; p++) {
+                const imt_check_t *c = imt_find(r, *p);
+                if (!c || c->status == IMT_SKIP || c->status == IMT_FAIL) blocker = *p;
+            }
+    }
+
+    r->recommend_clear_experimental = complete && !blocker;
+
+    if (r->is_sim)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "This run used the `sim` driver: it exercises imud-imutest "
+                 "itself, not any hardware. No conclusion about a driver can "
+                 "be drawn from it.");
+    else if (r->aborted)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "Run ABORTED before completing — the results below are partial.");
+    else if (r->n_fail > 0)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "%d check%s FAILED: `%s` is not ready to have its "
+                 "`experimental` flag cleared.",
+                 r->n_fail, r->n_fail == 1 ? "" : "s", r->imu_driver);
+    else if (r->daemon_was_running)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "No failures, but imud was running during this run and both "
+                 "processes drain the same FIFO — the timing figures are not "
+                 "trustworthy. Re-run with the daemon stopped.");
+    else if (blocker)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "No failures, but `%s` did not run, so this report does not "
+                 "yet support clearing `experimental` for `%s`.",
+                 blocker, r->imu_driver);
+    else if (r->phases_requested != IMT_PHASE_ALL)
+        snprintf(r->verdict, sizeof r->verdict,
+                 "No failures, but only some phases were selected. Run with "
+                 "--all to produce a report that can clear `experimental`.");
+    else
+        snprintf(r->verdict, sizeof r->verdict,
+                 "All required checks passed. RECOMMEND clearing "
+                 "`experimental` for `%s`%s%s.",
+                 r->imu_driver,
+                 r->have_mag ? " and " : "",
+                 r->have_mag ? r->mag_driver : "");
+}
+
+/* ── Entry points ─────────────────────────────────────────────────────────── */
+
+static void fill_environment(imt_report_t *r, const imud_config_t *cfg)
+{
+    snprintf(r->imud_version, sizeof r->imud_version, "%s", IMUD_VERSION_STR);
+
+    struct utsname u;
+    if (uname(&u) == 0) {
+        snprintf(r->sysname, sizeof r->sysname, "%s", u.sysname);
+        snprintf(r->release, sizeof r->release, "%s", u.release);
+        snprintf(r->machine, sizeof r->machine, "%s", u.machine);
+        snprintf(r->hostname, sizeof r->hostname, "%s", u.nodename);
+    }
+#ifdef GPIOD_V2
+    r->gpiod_v2 = true;
+#endif
+
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    strftime(r->started_utc, sizeof r->started_utc, "%Y-%m-%dT%H:%M:%SZ", &tm);
+
+    snprintf(r->i2c_bus,   sizeof r->i2c_bus,   "%s", cfg->i2c_bus);
+    snprintf(r->gpio_chip, sizeof r->gpio_chip, "%s", cfg->gpio_chip);
+}
+
+int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
+                const imud_config_t *cfg, const imt_opts_t *opts,
+                imt_report_t *r, char *errbuf, size_t errbufsz)
+{
+    if (!imu) {
+        snprintf(errbuf, errbufsz, "no IMU driver supplied");
+        return -1;
+    }
+
+    g_abort = 0;
+    double t_start = now_s();
+
+    fill_environment(r, cfg);
+
+    /* Subject under test */
+    snprintf(r->imu_driver, sizeof r->imu_driver, "%s", imu->name);
+    r->imu_addr         = cfg->imu_addr;
+    r->imu_int_gpio     = cfg->imu_int_gpio;
+    r->imu_experimental = imu->experimental;
+    r->imu_has_fifo     = imu->has_fifo;
+    r->imu_has_hw_ts    = imu->has_hw_timestamp;
+    r->imu_ts_tick_ns   = imu->ts_tick_ns;
+    memcpy(r->imu_odr_tab,   imu->supported_odr_hz,   sizeof r->imu_odr_tab);
+    memcpy(r->imu_accel_tab, imu->supported_accel_g,  sizeof r->imu_accel_tab);
+    memcpy(r->imu_gyro_tab,  imu->supported_gyro_dps, sizeof r->imu_gyro_tab);
+    r->is_sim = (strcmp(imu->name, "sim") == 0);
+
+    r->have_mag = (mag != NULL);
+    if (mag) {
+        snprintf(r->mag_driver, sizeof r->mag_driver, "%s", mag->name);
+        r->mag_addr              = cfg->mag_addr;
+        r->mag_int_gpio          = cfg->mag_int_gpio;
+        r->mag_experimental      = mag->experimental;
+        r->mag_has_interrupt     = mag->has_interrupt;
+        r->mag_has_set_reset     = mag->has_set_reset;
+        r->mag_set_reset_nonnull = (mag->set_reset != NULL);
+        r->mag_set_period_s      = cfg->mag_set_period_s;
+        memcpy(r->mag_odr_tab, mag->supported_odr_hz, sizeof r->mag_odr_tab);
+    }
+
+    r->req_odr_hz = cfg->imu_odr_hz;
+    r->eff_odr_hz = nearest_odr(imu->supported_odr_hz, cfg->imu_odr_hz);
+    r->accel_g    = cfg->imu_accel_g;
+    r->gyro_dps   = cfg->imu_gyro_dps;
+    r->fifo_wm    = cfg->imu_fifo_wm;
+    if (mag) {
+        r->mag_req_odr_hz = cfg->mag_odr_hz;
+        r->mag_eff_odr_hz = nearest_odr(mag->supported_odr_hz, cfg->mag_odr_hz);
+    }
+    r->phases_requested = opts->phases;
+
+    imu_cfg_t icfg = {
+        .odr_hz   = r->eff_odr_hz,
+        .accel_g  = cfg->imu_accel_g,
+        .gyro_dps = cfg->imu_gyro_dps,
+        .fifo_wm  = cfg->imu_fifo_wm,
+    };
+    mag_cfg_t mcfg = {
+        .odr_hz       = mag ? r->mag_eff_odr_hz : 0,
+        .set_period_s = 0.0f,   /* the SET pulse is exercised explicitly */
+    };
+
+    {
+        char rb[56];
+        add_check(r, "imu.odr.rounding",
+                  "Requested ODR rounds to a supported rate", IMT_INFO,
+                  fmtbuf(rb, sizeof rb, "%d -> %d Hz",
+                         r->req_odr_hz, r->eff_odr_hz),
+                  "-",
+                  r->req_odr_hz == r->eff_odr_hz
+                  ? "the configured rate is on this chip's grid"
+                  : "the configured rate is not reachable; nearest_odr() picked "
+                    "the closest entry in supported_odr_hz[]");
+    }
+
+    bool mag_ok = false;
+    if (check_bringup(r, opts, fd, imu, mag, cfg, &icfg, &mcfg, &mag_ok) < 0) {
+        r->wall_duration_s = now_s() - t_start;
+        decide_verdict(r);
+        return 0;   /* the checks carry the verdict */
+    }
+
+    drain_ctx_t d;
+    drain_init(&d, imu, fd, (uint8_t)cfg->imu_addr);
+
+    if (opts->phases & IMT_PHASE_PASSIVE) {
+        check_odr_seq_ts(r, opts, &d, imu, r->eff_odr_hz);
+        check_error_contract(r, &d);
+        /* seq before the deliberate overflow: an overflow is a legitimate gap */
+        check_fifo(r, opts, &d, imu, r->eff_odr_hz, cfg->imu_fifo_wm);
+        check_rest(r, opts, &d);
+        check_drdy(r, opts, &d, cfg, r->eff_odr_hz, cfg->imu_fifo_wm);
+        if (mag_ok)
+            check_mag_passive(r, opts, mag, fd, (uint8_t)cfg->mag_addr,
+                              r->mag_eff_odr_hz);
+        /* last: every init() in the sweep resets the driver's seq counter */
+        check_fs_sweep(r, opts, &d, imu, fd, (uint8_t)cfg->imu_addr, &icfg);
+        r->phases_run |= IMT_PHASE_PASSIVE;
+    }
+
+    /*
+     * The sim driver has a real FIFO, seq and chip_ts, so the passive checks
+     * above are a genuine smoke test of this tool.  It has no physical
+     * orientation, so the guided phases would be meaningless.
+     */
+    if (r->is_sim) {
+        if (opts->phases & IMT_PHASE_FACES)
+            skip_check(r, "faces.frame", "Board frame matches NED",
+                       "the sim driver has no physical orientation");
+        if (opts->phases & IMT_PHASE_GYRO)
+            skip_check(r, "gyro.x.sign", "Gyro rotation",
+                       "the sim driver has no physical orientation");
+        if (opts->phases & IMT_PHASE_SPIN)
+            skip_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                       "the sim driver has no physical orientation");
+    } else {
+        if ((opts->phases & IMT_PHASE_FACES) && !g_abort) {
+            phase_faces(r, opts, &d);
+            r->phases_run |= IMT_PHASE_FACES;
+        }
+        if ((opts->phases & IMT_PHASE_GYRO) && !g_abort && !r->aborted) {
+            phase_gyro(r, opts, &d, imu, r->eff_odr_hz);
+            r->phases_run |= IMT_PHASE_GYRO;
+        }
+        if ((opts->phases & IMT_PHASE_SPIN) && !g_abort && !r->aborted) {
+            if (mag_ok) {
+                phase_spin(r, opts, &d, mag, fd, (uint8_t)cfg->mag_addr,
+                           cfg, imu, r->eff_odr_hz);
+                r->phases_run |= IMT_PHASE_SPIN;
+            } else {
+                skip_check(r, "spin.frame_agreement",
+                           "Mag frame agrees with the gyro",
+                           "no working magnetometer in this run");
+            }
+        }
+    }
+
+    if (g_abort) r->aborted = true;
+    r->wall_duration_s = now_s() - t_start;
+    decide_verdict(r);
+    return 0;
+}

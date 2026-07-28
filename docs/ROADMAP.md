@@ -11,11 +11,30 @@ the older section is authoritative and the newer one cross-references it.
 
 ## 1. Hardware validation matrix  *(bench task — requires the Pi and real silicon)*
 
-Seven drivers are implemented but marked `experimental = true` and have never run on
+Ten drivers are implemented but marked `experimental = true` and have never run on
 real hardware: `icm20948`, `ak09916`, `icm42688p`, `lsm6dso`, `lsm6dsox`, `lis3mdl`,
-`lis2mdl`. Each needs a bench pass (probe/WHO_AM_I, init, ODR verification, FIFO/DRDY
-behavior, sane values in all orientations) before clearing its flag. The driver
-contract in the driver guide in `docs/manual.md` makes this mechanical. Two of
+`lis2mdl`, and (added 2026-07-28) `mpu9250`, `mpu9255`, `ak8963`. Each needs a bench
+pass (probe/WHO_AM_I, init, ODR verification, FIFO/DRDY behavior, sane values in all
+orientations) before clearing its flag.
+
+**The bench pass is now a single command.** `imud-imutest` (shipped in
+`imud-utils`, 2026-07-28) runs exactly that checklist against any registered
+driver and writes a Markdown report designed to be pasted into an issue:
+
+```
+sudo systemctl stop imud
+imud-imutest --imu-driver icm20948 --mag-driver ak09916 --mag-addr 0x0C --all
+```
+
+It covers the passive half automatically (probe, reset timing, register
+readback, measured ODR, FIFO depth/overflow/recovery, `seq` monotonicity, the
+error-return contract, noise floor, temperature, `chip_ts`, DRDY edges,
+full-scale sweep) and walks the operator through the three physical checks a
+mock cannot do: six-face accelerometer signs, gyro rotation direction, and a
+magnetometer spin that cross-checks the mag frame against the gyro. Clearing a
+flag means reading one of those reports, not re-deriving the checklist. The
+driver contract in the driver guide in `docs/manual.md` remains the reference
+for what each check is asserting. Two of
 them carry unverified pre-1.5-tag fixes to confirm on the bench: `ak09916`
 (DRDY-timeout/overflow now return "no data" instead of counting toward the
 error-reset threshold) and `icm42688p` (1 µs timestamp tick + 20-bit counter

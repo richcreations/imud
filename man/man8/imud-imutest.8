@@ -1,0 +1,267 @@
+.TH IMUD\-IMUTEST 8 "2026-07-28" "imud 1.7" "System Manager's Manual"
+.SH NAME
+imud\-imutest \- validate an imud sensor driver against real hardware
+.SH SYNOPSIS
+.B imud-imutest
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-report\fR \fIPATH\fR]
+[\fIdevice overrides\fR]
+[\fIphases\fR]
+[\fItuning\fR]
+.SH DESCRIPTION
+.B imud-imutest
+drives a registered IMU and magnetometer driver through the whole
+.BR imu_ops_t / mag_ops_t
+contract on real silicon, and writes a Markdown report suitable for pasting
+into a bug report.
+.PP
+A driver's register map is checked against the datasheet when it is written,
+and the in-tree unit tests prove its register encoding and decoding against a
+mock I2C bus. Neither says anything about timing, real output rate, FIFO or
+interrupt behaviour, or whether the chip-to-board axis remap is correct. This
+tool covers that gap.
+.PP
+Drivers that have never run on physical hardware are marked
+.B experimental
+in the registry, and
+.BR imud (8)
+warns at startup when one is selected. A clean report from this tool is what
+justifies clearing that flag \(em see
+.B REPORT
+below.
+.PP
+It works with any registered driver, not only the one in the configuration
+file: use the device overrides to point it at whatever is wired up.
+.SH PHASES
+.TP
+.B Passive
+No operator action. Chip identification, reset timing, control-register
+readback, measured output rate against
+.BR nearest_odr (),
+FIFO depth, deliberate overflow and recovery, sequence-number monotonicity and
+gaps, the error-return contract, noise floor, gravity magnitude, temperature
+sanity, hardware-timestamp rate and wrap handling, interrupt edge counting, and
+a full-scale sweep that re-initialises the part at every advertised range.
+.TP
+.B Six-face
+Prompts for each of six orientations and checks that the axis pointing down
+reads \-g and the axis pointing up reads +g, in the NED board frame (X forward,
+Y starboard, Z down). This is the check that catches an inverted or swapped
+axis, the most likely defect in a new driver.
+.TP
+.B Gyro rotation
+Prompts for a deliberate turn about each axis and checks the sign follows the
+right-hand rule, and that the integrated angle is the right order of magnitude.
+A hand turn is only good to about ten percent, so this catches factor errors \(em
+notably returning degrees per second where the contract requires radians \(em
+rather than measuring sensitivity.
+.TP
+.B Magnetometer spin
+Prompts for two slow level circles and checks the field magnitude, that every
+axis responds, that the heading circle is covered, and \(em the substantive
+check \(em that the magnetometer's heading turns the same way and by the same
+amount as the gyroscope's Z integral. A disagreement there means the mag axes
+are inverted or swapped relative to the IMU.
+.SH OPTIONS
+.TP
+.BI \-\-config " PATH"
+Configuration file. Default
+.IR /etc/imud/imud.conf .
+.TP
+.BI \-\-report " PATH"
+Where to write the Markdown report. Defaults to
+.I imud-imutest-<driver>-<timestamp>.md
+in the current directory. Running as root leaves it owned by root.
+.SS Device overrides
+Each overrides the corresponding configuration key for this run only.
+.TP
+.BI \-\-imu\-driver " NAME"
+.TQ
+.BI \-\-mag\-driver " NAME"
+Driver names. Pass
+.B none
+as the magnetometer driver for an IMU-only board.
+.TP
+.BI \-\-imu\-addr " HEX"
+.TQ
+.BI \-\-mag\-addr " HEX"
+I2C addresses, for example
+.BR 0x6A .
+A compass behind an IMU's I2C bypass (ak09916, ak8963) answers at
+.BR 0x0C .
+.TP
+.BI \-\-i2c\-bus " PATH"
+.TQ
+.BI \-\-gpio\-chip " NAME"
+.TQ
+.BI \-\-int\-gpio " N"
+Bus device, GPIO chip, and the IMU interrupt line.
+.B 0
+skips the interrupt check.
+.TP
+.BI \-\-odr " HZ"
+.TQ
+.BI \-\-accel\-g " N"
+.TQ
+.BI \-\-gyro\-dps " N"
+.TQ
+.BI \-\-fifo\-wm " N"
+Output rate, full scales, and FIFO watermark.
+.SS Phases
+.TP
+.B \-\-passive
+.TQ
+.B \-\-faces
+.TQ
+.B \-\-gyro
+.TQ
+.B \-\-spin
+.TQ
+.B \-\-all
+Select which phases run. The default is all four; a report that can clear the
+experimental flag needs all four.
+.TP
+.B \-\-non\-interactive
+Passive checks only, never prompt. Implied when standard input is not a
+terminal, so a piped or scripted run degrades cleanly instead of hanging.
+.SS Tuning
+.TP
+.BI \-\-odr\-window " S"
+Window for the rate, sequence and timestamp checks. Default 5 s, clamped to a
+minimum of 3 s: a 20-bit hardware counter wraps in about a second, and the
+wrap-handling check needs several wraps inside the window to mean anything.
+.TP
+.BI \-\-noise\-window " S"
+Noise floor and temperature window. Default 10 s.
+.TP
+.BI \-\-drdy\-window " S"
+Interrupt edge-count window. Default 3 s.
+.TP
+.BI \-\-turn\-deg " N"
+Commanded angle for the rotation phase. Default 90.
+.TP
+.BI \-\-grav\-tol " M"
+Gravity warning tolerance in m/s^2. Default 0.25.
+.TP
+.BI \-\-odr\-tol " PCT"
+Output-rate warning tolerance, percent. Default 5.
+.TP
+.B \-\-no\-fs\-sweep
+.TQ
+.B \-\-no\-overflow
+.TQ
+.B \-\-no\-regdiff
+Skip the full-scale sweep, the deliberate FIFO overflow, or the
+control-register readback.
+.SS Other
+.TP
+.B \-\-force
+Run even when the daemon appears to be running. See
+.B NOTES.
+.TP
+.B \-\-quiet
+Suppress the live progress lines.
+.TP
+.B \-\-version
+.TQ
+.BR \-h ", " \-\-help
+Print version or usage and exit.
+.SH REPORT
+The report is self-contained and prints every threshold inline, so a reviewer
+never needs the source to know what a check asserted. It records the
+environment, the driver's advertised capabilities, one row per check with the
+measured and expected values and a one-line diagnosis, an appendix of raw
+measurements, and the command line that produced it.
+.PP
+Results are graded:
+.TP
+.B PASS
+The driver met the contract.
+.TP
+.B FAIL
+The driver violated the contract on evidence the bench cannot explain away.
+.TP
+.B WARN
+Out of band, but with a plausible physical cause \(em an unlevel surface, a
+moving board, magnetic clutter, a starved scheduler \(em or a check that is
+one-sided by nature. A warning never blocks clearing the experimental flag; it
+asks the reviewer to read the number.
+.TP
+.B SKIP
+Capability absent, phase not selected, prerequisite failed, or a resource was
+unavailable.
+.TP
+.B INFO
+Recorded for the record, with no pass criterion.
+.PP
+Two limits are stated in every report rather than left implicit. The
+control-register diff is raw and undecoded by design, because deciding whether
+those values are correct needs the datasheet. And the requirement that
+.B \-1
+is returned
+.I only
+on a genuine I2C fault is checked off-hardware by the unit tests, which inject
+bus failures through the mock; a hardware run can only show that no spurious
+errors occurred.
+.SH EXIT STATUS
+.TP
+.B 0
+Every check passed.
+.TP
+.B 1
+Usage, configuration, or I/O error; also when the daemon is running and
+.B \-\-force
+was not given.
+.TP
+.B 2
+At least one check failed.
+.TP
+.B 3
+Warnings only.
+.TP
+.B 130
+Aborted by the operator.
+.SH FILES
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+.TP
+.I ./imud-imutest-<driver>-<timestamp>.md
+Default report path.
+.SH NOTES
+The daemon
+.RB ( imud )
+and
+.B imud-imutest
+must not run simultaneously. Both open the same I2C device and, more
+importantly, both drain the same FIFO, so each would see roughly half the
+samples: the measured output rate reads low and the sequence-gap check fails
+for a reason that has nothing to do with the driver. The tool refuses to start
+when it can reach the daemon's status socket.
+.PP
+.RS 4
+.EX
+sudo systemctl stop imud
+imud-imutest --imu-driver icm20948 --mag-driver ak09916 --mag-addr 0x0C --all
+sudo systemctl start imud
+.EE
+.RE
+.PP
+The tool can also be run against the
+.B sim
+driver, which has a real FIFO, sequence counter and timestamp. That exercises
+the tool itself rather than any hardware; the report says so and never
+recommends clearing an experimental flag.
+.PP
+.RS 4
+.EX
+imud-imutest --imu-driver sim --mag-driver sim --passive
+.EE
+.RE
+.SH SEE ALSO
+.BR imud (8),
+.BR imud-cal (8),
+.BR imud-mon (1),
+.BR imud.conf (5)
+.SH AUTHORS
+Richard Simpson

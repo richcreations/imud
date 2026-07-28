@@ -20,10 +20,25 @@ comment.
 ## InvenSense/TDK MPU-9250 / MPU-9255 ("MPU-925x")
 
 **Requested:** 2026-07-25, by a user.
-**Verdict:** technically suitable and cheap to build, but **deferred** —
-recommend clearing the existing experimental-driver validation backlog first.
-**Revisit if:** the request recurs from several users, or someone with a
-genuine board volunteers to bench-validate it.
+**Verdict (2026-07-25):** technically suitable and cheap to build, but
+**deferred** — recommend clearing the existing experimental-driver validation
+backlog first.
+**Superseded (2026-07-28): BUILT.** Shipped as
+[`src/drivers/mpu925x.c`](../src/drivers/mpu925x.c) (`mpu9250` + `mpu9255`) and
+[`src/drivers/ak8963.c`](../src/drivers/ak8963.c), both `experimental = true`.
+
+The deferral was reversed rather than overruled: its central objection was that
+the part would become the eighth and ninth driver with no way to clear the
+experimental flag. `imud-imutest` — built alongside these drivers — removes
+that objection for the whole backlog, not just this part. The remaining
+reasons (NRND, second-tier on merit, hard to validate because of counterfeits)
+are real but are arguments about *what to recommend*, not about whether the
+driver should exist; the design notes below were followed as written, including
+the counterfeit-detection policy.
+
+**Everything below is the original evaluation, kept because it is the design
+rationale for the drivers as built.** One correction found while implementing
+it is marked inline.
 
 ### What it is
 
@@ -98,6 +113,18 @@ That correction should be applied even though imud fits its own hard- and
 soft-iron calibration afterwards. It is a known per-device factory constant;
 leaving it out just pushes a diagonal scale error into the soft-iron fit,
 where it is estimated less precisely and conflated with the vessel's iron.
+
+> **Correction, found while implementing (2026-07-28).** This list of
+> differences was incomplete in the way that mattered most. The AK8963 is also
+> **rotated relative to the host gyro/accel**, which the AK09916 is not:
+> per PS-MPU-9250A-01 Rev 1.0 Figures 4 and 5 (and DS-000007 Rev 1.0 Figures 4
+> and 5, which agree), `AK_X = MPU_Y`, `AK_Y = MPU_X`, `AK_Z = −MPU_Z`.
+> Copying `ak09916.c`'s "flip Y only" remap — which this evaluation's framing
+> invited — would have silently swapped the horizontal axes and produced a
+> heading mirrored about the bow-stern line. The shipped driver derives the
+> composed board-frame mapping in a comment, and `test_drivers.c` pins the
+> decode. The lesson generalises: for a compass on a host die, check the
+> orientation figure, never infer it from a sibling part.
 
 ### Three mismatches with imud's shipped defaults
 

@@ -8,6 +8,57 @@ packaging-level record, and the git history holds the full detail.
 
 1.7
 ---
+* Fixed: `imud-cal accel` printed the wrong physical instructions for all six
+  positions, so an operator following them measured the wrong thing. imud's
+  board frame has **Z pointing down**, meaning the axis pointing *up* reads
+  +g — but the prompts said things like "+Z up (flat, normal side up)", and
+  flat component-side up puts +Z *down*. The Z pair was inverted and the X and
+  Y pairs were swapped with each other and inverted. The fit then divided by a
+  negative or near-zero half-range and silently fell back to `scale = 1.0`
+  with no warning, so the tool printed a clean-looking result and offered to
+  save it. **If you have run `imud-cal accel` and followed the printed
+  instructions, your accelerometer calibration almost certainly does nothing**
+  — an identity scale and zero offset are what cal.json already defaults to,
+  so the practical effect is that the daemon reported `FLAG_ACCEL_CAL` for a
+  calibration that was not there. Worse outcomes were reachable: on real
+  hardware a near-zero half-range can land just above the old 0.1 m/s^2
+  threshold and produce a scale of up to ~98x, which warned but was still
+  offered for saving. Re-run `imud-cal accel` with the corrected prompts.
+  The six positions are now named the same way `imud-imutest` names them
+  (flat component-side up, flat upside down, nose down, nose up, starboard
+  side down, port side down), each prompt states the expected reading before
+  you take it, and a geometrically impossible reading now names the offending
+  position and exits without writing anything instead of silently fitting an
+  identity. The position table and the fit moved to `src/cal_math.c` so both
+  are covered by `test_cal_math`, including a regression case built from the
+  exact readings the old instructions produced.
+* New tool `imud-imutest` (in the imud-utils package): validates a sensor
+  driver against real hardware and writes a Markdown report to attach to an
+  issue. Ten of imud's twelve drivers have never run on physical silicon and
+  are flagged `experimental`; their register maps are datasheet-checked and
+  their encode/decode is unit-tested against a mock I²C bus, but nothing until
+  now covered timing, real output rate, FIFO and interrupt behaviour, or
+  whether the chip-to-board axis remap is correct. A passive phase checks all
+  of that automatically — including a deliberate FIFO overflow, `seq`
+  continuity, the -1-means-I²C-error contract, `chip_ts` wrap handling, and a
+  sweep that re-initialises the part at every advertised full scale — and
+  three guided phases walk the operator through the six-face, rotation and
+  magnetometer-spin checks that actually prove the axis conventions. The spin
+  phase cross-checks the magnetometer's heading against the gyro's Z integral,
+  which is what catches the most common magnetometer-driver defect. Refuses to
+  run alongside the daemon, since both would drain the same FIFO. A clean
+  report is what clears an `experimental` flag: see ROADMAP §1.
+* New drivers `mpu9250` / `mpu9255` (IMU) and `ak8963` (magnetometer), for the
+  widely-deployed InvenSense/TDK MPU-925x 9-axis breakouts, by user request.
+  All three are `experimental`. The magnetometer sits behind the IMU's I²C
+  bypass at 0x0C, the same arrangement as the ICM-20948 and its AK09916, and
+  the driver applies the AK8963's factory fuse-ROM sensitivity correction.
+  Note the AK8963 is *rotated* relative to the host gyro/accel, unlike the
+  AK09916 — see the header comment in `src/drivers/ak8963.c`. `probe()`
+  rejects the relabelled MPU-6500s that are common in this market by name,
+  rather than letting the failure surface later as an unexplained I²C error.
+  Three of imud's defaults do not suit this part (FIFO watermark, ODR grid,
+  and `mekf_accel_noise`) — see the fitting notes in manual §5.
 * Wire format v17 (packet grows 260 → 276 bytes). Four new MEKF diagnostic
   fields. Two report how hard the filter is having to distrust its own
   sensors: `innov_weight` (EMA of the Huber weight applied to accepted

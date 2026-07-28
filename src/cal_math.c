@@ -14,6 +14,7 @@
  */
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "cal_math.h"
 
@@ -143,6 +144,135 @@ int sphere_fit(const sphere_accum_t *a, double center[3], double *radius)
     double r2 = sol[3] + sol[0]*sol[0] + sol[1]*sol[1] + sol[2]*sol[2];
     if (r2 <= 0) return -1;
     *radius = sqrt(r2);
+    return 0;
+}
+
+/* ── Six-position accelerometer calibration ───────────────────────────────── */
+
+/*
+ * Board frame: X forward, Y starboard, Z DOWN.  So the axis pointing UP reads
+ * +g.  The `detail` line states which way the named axis ends up pointing,
+ * because that is the part that is easy to get backwards: "flat, component
+ * side up" puts board +Z *down*, not up.
+ *
+ * Same six orientations, in the same words, as imud-imutest's guided
+ * six-face phase.
+ */
+const cal_accel_pos_t cal_accel_positions[6] = {
+    { "Flat, component side up",
+      "board +Z points down, so Z reads -g",              2, -1 },
+    { "Flat, upside down",
+      "board +Z points up, so Z reads +g",                2, +1 },
+    { "Nose down (bow edge on the bench)",
+      "board +X points down, so X reads -g",              0, -1 },
+    { "Nose up (stern edge on the bench)",
+      "board +X points up, so X reads +g",                0, +1 },
+    { "Starboard side down (right edge on the bench)",
+      "board +Y points down, so Y reads -g",              1, -1 },
+    { "Port side down (left edge on the bench)",
+      "board +Y points up, so Y reads +g",                1, +1 },
+};
+
+/*
+ * Tolerances.  Both are deliberately loose: a board stood on its edge by hand
+ * is a few degrees off at best, and this check exists to catch a *wrong
+ * position*, not to grade placement.  0.7 g corresponds to about 45° of tilt.
+ */
+#define ACCEL_MIN_HALF_RANGE (0.70f * CAL_G_MS2)
+
+static int dominant_axis(const float v[3])
+{
+    int k = 0;
+    for (int i = 1; i < 3; i++)
+        if (fabsf(v[i]) > fabsf(v[k])) k = i;
+    return k;
+}
+
+/* Which prompt number (1-based) asked for this axis/sign pair? */
+static int position_number(int axis, int sign)
+{
+    for (int i = 0; i < 6; i++)
+        if (cal_accel_positions[i].axis == axis &&
+            cal_accel_positions[i].sign == sign)
+            return i + 1;
+    return 0;
+}
+
+int cal_accel_fit(const float meas[3][2][3], float offset[3], float scale[3],
+                  char *err, size_t errsz)
+{
+    static const char axis_name[3] = { 'X', 'Y', 'Z' };
+    float off[3], sc[3];
+
+    for (int k = 0; k < 3; k++) {
+        const float *up   = meas[k][0];   /* axis k pointing up   -> +g */
+        const float *down = meas[k][1];   /* axis k pointing down -> -g */
+        int n_up   = position_number(k, +1);
+        int n_down = position_number(k, -1);
+
+        /*
+         * Gravity has to have landed on the axis we asked for.  If it did
+         * not, the board was in the wrong orientation and the pair says
+         * nothing about axis k — which is exactly the failure that used to
+         * pass silently as scale = 1.0.
+         */
+        int dom_up   = dominant_axis(up);
+        int dom_down = dominant_axis(down);
+        if (dom_up != k || dom_down != k) {
+            int bad     = (dom_up != k) ? dom_up : dom_down;
+            int bad_pos = (dom_up != k) ? n_up   : n_down;
+            snprintf(err, errsz,
+                     "Axis %c: gravity landed on %c, not %c.\n"
+                     "    up-face   read [%+.2f, %+.2f, %+.2f]\n"
+                     "    down-face read [%+.2f, %+.2f, %+.2f]\n"
+                     "  Position %d was not the orientation it asked for — "
+                     "re-read the prompt and repeat the run.",
+                     axis_name[k], axis_name[bad], axis_name[k],
+                     (double)up[0],   (double)up[1],   (double)up[2],
+                     (double)down[0], (double)down[1], (double)down[2],
+                     bad_pos);
+            return -1;
+        }
+
+        off[k] = (up[k] + down[k]) / 2.0f;
+        float half_range = (up[k] - down[k]) / 2.0f;
+
+        /* Negative half-range means the two faces were taken the wrong way
+         * round: the "up" reading is the one that came out negative. */
+        if (half_range < 0.0f) {
+            snprintf(err, errsz,
+                     "Axis %c: the two readings are inverted.\n"
+                     "    up-face   read %+.3f (expected about %+.3f)\n"
+                     "    down-face read %+.3f (expected about %+.3f)\n"
+                     "  Positions %d and %d appear to have been swapped.",
+                     axis_name[k],
+                     (double)up[k],   (double)CAL_G_MS2,
+                     (double)down[k], (double)-CAL_G_MS2,
+                     n_up < n_down ? n_up : n_down,
+                     n_up < n_down ? n_down : n_up);
+            return -1;
+        }
+
+        if (half_range < ACCEL_MIN_HALF_RANGE) {
+            snprintf(err, errsz,
+                     "Axis %c: half-range %.3f m/s^2 is far below gravity.\n"
+                     "    up-face   read %+.3f (expected about %+.3f)\n"
+                     "    down-face read %+.3f (expected about %+.3f)\n"
+                     "  The board was not square with gravity at position "
+                     "%d or %d.",
+                     axis_name[k], (double)half_range,
+                     (double)up[k],   (double)CAL_G_MS2,
+                     (double)down[k], (double)-CAL_G_MS2,
+                     n_up < n_down ? n_up : n_down,
+                     n_up < n_down ? n_down : n_up);
+            return -1;
+        }
+
+        sc[k] = CAL_G_MS2 / half_range;
+    }
+
+    /* Only commit once all three axes have passed. */
+    for (int k = 0; k < 3; k++) { offset[k] = off[k]; scale[k] = sc[k]; }
     return 0;
 }
 
