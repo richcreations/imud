@@ -311,11 +311,17 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
 # Links the driver ops structs directly (not src/drivers.c) and stubs
 # imt_gpio_count_edges, so it needs neither the registry nor -lgpiod.
 # Same --wrap pair as test_drivers; Linux/GNU-ld only.
+# -Isrc is for test/test_imutest.c alone: it checks the mock's FIFO-port window
+# through drivers/i2c_io.h, the same single-byte read path imud-imutest's
+# register sweep uses, and a quoted include only searches the including file's
+# own directory — which works from src/imutest.c and not from test/. src/ holds
+# exactly one header (drivers/i2c_io.h) and none of include/'s names, so this
+# widens the search path without shadowing anything.
 test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
               test/i2c_mock.c test/test_imutest.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
 test: test_fusion test_fit_ra test_config test_nmea test_packet test_capture test_ring \
