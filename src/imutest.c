@@ -130,7 +130,19 @@ void imt_opts_defaults(imt_opts_t *o)
  * All five fields go in at once so a check is never half-written, and every
  * caller is forced to say what it measured and what it expected — that pair is
  * what makes the report reviewable by someone without the hardware.
+ *
+ * The printf attribute is not decoration: nearly every note here is built from
+ * a ternary that picks one of two format strings, and it is easy to give the
+ * two branches different conversion counts while passing the argument list of
+ * only one.  That reads off the end of the va_list and printed a garbage
+ * "ratio to true g is 0.000" in a shipped report before this was added.  Keep
+ * both branches of every ternary taking the same arguments.
  */
+static void add_check(imt_report_t *r, const char *id, const char *name,
+                      imt_status_t st, const char *measured,
+                      const char *expected, const char *fmt, ...)
+    __attribute__((format(printf, 7, 8)));
+
 static void add_check(imt_report_t *r, const char *id, const char *name,
                       imt_status_t st, const char *measured,
                       const char *expected, const char *fmt, ...)
@@ -167,6 +179,9 @@ static void skip_check(imt_report_t *r, const char *id, const char *name,
 }
 
 /* Format helper for the measured/expected columns. */
+static const char *fmtbuf(char *buf, size_t sz, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+
 static const char *fmtbuf(char *buf, size_t sz, const char *fmt, ...)
 {
     va_list ap;
@@ -250,32 +265,76 @@ static void w3_finish(const welford3_t *w, imt_stats3_t *out)
  * auto-increment straight into the data port.
  *
  * An unmapped driver SKIPs the regdiff check rather than guessing.
+ *
+ * Two kinds of register have to be kept out of the sweep, and they need
+ * different mechanisms:
+ *
+ *   Destructive to read — a FIFO port, a read-to-clear status word.  These
+ *   cannot be discovered by experiment without corrupting the run, so they
+ *   are listed here.  `skip[]` names individual registers; `nrd_lo..nrd_hi`
+ *   covers a contiguous window, which is what a FIFO port usually is.  The
+ *   ST 6-axis parts are the reason the range exists: FIFO_DATA_OUT is seven
+ *   registers wide (tag at 0x78, then X/Y/Z low/high through 0x7E), and
+ *   listing only the first two left the sweep single-byte-reading five FIFO
+ *   words per snapshot.
+ *
+ *   Volatile — sensor output, status, FIFO level, the timestamp counter.
+ *   Safe to read, but they change on their own, so a diff across init() is
+ *   dominated by them and an idempotency compare is meaningless.  These are
+ *   NOT listed: reg_volatile_scan() finds them by reading the mapped range
+ *   several times with the part running and no writes in between.  That is
+ *   self-calibrating, needs no datasheet, and stays correct for drivers that
+ *   do not exist yet — which matters, because this tree ships no datasheets
+ *   and a hand-written volatile table would be exactly the kind of unverified
+ *   register knowledge it avoids.
  */
 typedef struct {
     const char *driver;
     uint8_t     lo, hi;
     uint8_t     skip[8];
     int         nskip;
-    uint8_t     bank_reg;   /* 0x00 = not banked */
+    uint8_t     bank_reg;        /* 0x00 = not banked */
+    uint8_t     nrd_lo, nrd_hi;  /* destructive window; lo > hi = none */
+    bool        ctrl_writeonly;  /* control registers do not read back at all */
 } imt_regmap_t;
 
 static const imt_regmap_t imt_regmaps[] = {
-    /* ST: 0x78/0x79 are FIFO_DATA_OUT. */
-    { "ism330dhcx", 0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
-    { "lsm6dso",    0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
-    { "lsm6dsox",   0x00, 0x7F, { 0x78, 0x79 }, 2, 0x00 },
+    /* ST: FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high). */
+    { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
+      .nrd_lo = 0x78, .nrd_hi = 0x7E },
+    { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
+      .nrd_lo = 0x78, .nrd_hi = 0x7E },
+    { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
+      .nrd_lo = 0x78, .nrd_hi = 0x7E },
     /* TDK: FIFO ports and banked register files. */
-    { "icm42688p",  0x00, 0x7F, { 0x2E, 0x2F, 0x30 }, 3, 0x76 },
-    { "icm20948",   0x00, 0x7F, { 0x72, 0x73, 0x74 }, 3, 0x7F },
-    { "mpu9250",    0x00, 0x7F, { 0x74 }, 1, 0x00 },
-    { "mpu9255",    0x00, 0x7F, { 0x74 }, 1, 0x00 },
-    /* Mags. 0x08 on the MMC is read-to-clear status. */
-    { "mmc5983ma",  0x00, 0x1F, { 0x08 }, 1, 0x00 },
+    { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
+      .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
+      .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "icm20948",   .lo = 0x00, .hi = 0x7F,
+      .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
+      .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
+      .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
+      .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
+    /*
+     * Mags.  0x08 on the MMC is read-to-clear status, and its three control
+     * registers (CTRL0 0x09, CTRL1 0x0A, CTRL2 0x0B) are write-only — the
+     * datasheet gives them as W, and src/drivers/mmc5983ma.c marks them so.
+     * A readback diff across init() is therefore structurally empty on this
+     * part, which is a fact about the silicon and not a finding about the
+     * driver; ctrl_writeonly makes the check SKIP and say that.
+     */
+    { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x1F,
+      .skip = { 0x08 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0,
+      .ctrl_writeonly = true },
     /* AKM: ST1/data/ST2 — reading any of them completes a measurement. */
-    { "ak09916",    0x00, 0x3F, { 0x10, 0x11, 0x18 }, 3, 0x00 },
-    { "ak8963",     0x00, 0x1F, { 0x02, 0x03, 0x09 }, 3, 0x00 },
-    { "lis3mdl",    0x00, 0x3F, { 0 }, 0, 0x00 },
-    { "lis2mdl",    0x00, 0x3F, { 0 }, 0, 0x00 },
+    { .driver = "ak09916",    .lo = 0x00, .hi = 0x3F,
+      .skip = { 0x10, 0x11, 0x18 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "ak8963",     .lo = 0x00, .hi = 0x1F,
+      .skip = { 0x02, 0x03, 0x09 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
 };
 
 static const imt_regmap_t *regmap_for(const char *driver)
@@ -289,6 +348,8 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
 {
     for (int i = 0; i < m->nskip; i++)
         if (m->skip[i] == reg) return true;
+    if (m->nrd_lo <= m->nrd_hi && reg >= m->nrd_lo && reg <= m->nrd_hi)
+        return true;
     /* Never read the bank selector itself as part of the sweep. */
     return m->bank_reg && reg == m->bank_reg;
 }
@@ -313,12 +374,57 @@ static int reg_snapshot(int fd, uint8_t addr, const imt_regmap_t *m, uint8_t *ou
     return 0;
 }
 
+/*
+ * Mark every register in the mapped range that changes on its own.
+ *
+ * Called with the part running and configured, and with no writes in between
+ * passes, so anything that moves is sensor output, a status word, a FIFO
+ * level, or a timestamp counter — never a control register.  `ref` is the
+ * post-init snapshot the caller already holds; each pass is compared against
+ * it and the differences are accumulated, so a register only has to move once
+ * across the whole probe to be caught.
+ *
+ * Passes are spaced so slowly-batched words get a chance to move too: on the
+ * ISM330DHCX the temperature is batched at 12.5 Hz, an order of magnitude
+ * below the 833 Hz accel and gyro.
+ *
+ * Returns the number marked, or -1 if the bus failed.  A register that holds
+ * the same value through every pass stays unmarked — a stationary board's
+ * accelerometer high byte is the usual case — so the filter reduces the noise
+ * in the diff rather than eliminating it.  Section 4 of the report says so.
+ */
+#define IMT_VOLATILE_PASSES 4
+
+static int reg_volatile_scan(int fd, uint8_t addr, const imt_regmap_t *m,
+                             const uint8_t *ref, bool *vol)
+{
+    static uint8_t probe[256];
+
+    memset(vol, 0, 256 * sizeof *vol);
+    for (int pass = 0; pass < IMT_VOLATILE_PASSES; pass++) {
+        if (pass) sleep_s(0.03);
+        memset(probe, 0, sizeof probe);
+        if (reg_snapshot(fd, addr, m, probe) < 0) return -1;
+        for (int reg = m->lo; reg <= (int)m->hi; reg++) {
+            if (regmap_skips(m, (uint8_t)reg)) continue;
+            if (probe[reg] != ref[reg]) vol[reg] = true;
+        }
+    }
+
+    int n = 0;
+    for (int reg = m->lo; reg <= (int)m->hi; reg++) if (vol[reg]) n++;
+    return n;
+}
+
+/* `vol` may be NULL when no volatile scan was possible. */
 static int reg_diff(const uint8_t *before, const uint8_t *after,
-                    const imt_regmap_t *m, imt_regdiff_t *out, int cap)
+                    const imt_regmap_t *m, const bool *vol,
+                    imt_regdiff_t *out, int cap)
 {
     int n = 0;
     for (int reg = m->lo; reg <= (int)m->hi && n < cap; reg++) {
         if (regmap_skips(m, (uint8_t)reg)) continue;
+        if (vol && vol[reg]) continue;
         if (before[reg] != after[reg]) {
             out[n].reg    = (uint8_t)reg;
             out[n].before = before[reg];
@@ -459,6 +565,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
     /* ── init, with the register snapshot around it ──────────────────────── */
     const imt_regmap_t *rm = o->regdiff ? regmap_for(imu->name) : NULL;
     static uint8_t before[256], after[256], again[256];
+    static bool    volatile_imu[256];
     bool snapped = false;
 
     if (rm) {
@@ -500,7 +607,21 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
             skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
                        "the post-init snapshot could not be read");
         } else {
-            int n = reg_diff(before, after, rm, r->raw.regdiff_imu,
+            /* Find the registers that move on their own before diffing
+             * anything, so neither the diff nor the idempotency compare is
+             * dominated by sensor output, FIFO level and the timestamp. */
+            int nvol = reg_volatile_scan(fd, addr, rm, after, volatile_imu);
+            const bool *vol = nvol >= 0 ? volatile_imu : NULL;
+            r->raw.n_volatile_imu = nvol > 0 ? nvol : 0;
+
+            /* How many registers the idempotency compare actually covers. */
+            int nscan = 0;
+            for (int reg = rm->lo; reg <= (int)rm->hi; reg++)
+                if (!regmap_skips(rm, (uint8_t)reg) && !(vol && vol[reg]))
+                    nscan++;
+            r->raw.n_scanned_imu = nscan;
+
+            int n = reg_diff(before, after, rm, vol, r->raw.regdiff_imu,
                              IMT_MAX_REGDIFF);
             r->raw.n_regdiff_imu     = n;
             r->raw.regdiff_imu_mapped = true;
@@ -528,12 +649,19 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
                     skip_check(r, "imu.init.idempotent",
                                "IMU init() is idempotent",
                                "the second snapshot could not be read");
+                } else if (!vol) {
+                    skip_check(r, "imu.init.idempotent",
+                               "IMU init() is idempotent",
+                               "the volatile-register scan could not be read, "
+                               "so a compare would be dominated by live data");
                 } else {
                     /* Only the count matters here; the interesting diff is the
-                     * reset-to-init one already recorded above. */
+                     * reset-to-init one already recorded above.  Volatile
+                     * registers are excluded — without that this counts live
+                     * sensor output and reads as a state-dependent init(). */
                     int ndiff = 0;
                     for (int reg = rm->lo; reg <= (int)rm->hi; reg++)
-                        if (!regmap_skips(rm, (uint8_t)reg) &&
+                        if (!regmap_skips(rm, (uint8_t)reg) && !vol[reg] &&
                             after[reg] != again[reg]) ndiff++;
                     add_check(r, "imu.init.idempotent",
                               "IMU init() is idempotent",
@@ -542,10 +670,13 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
                                      ndiff, ndiff == 1 ? "" : "s"),
                               "0",
                               ndiff == 0
-                              ? "two consecutive inits leave an identical image"
+                              ? "two consecutive inits leave an identical image "
+                                "across %d non-volatile register%s"
                               : "a repeated init() lands on a different register "
-                                "image — init() depends on prior state (a bank "
-                                "left selected, or a latched enable).");
+                                "image across %d non-volatile register%s — "
+                                "init() depends on prior state (a bank left "
+                                "selected, or a latched enable).",
+                              nscan, nscan == 1 ? "" : "s");
                 }
             }
         }
@@ -595,8 +726,9 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
 
     const imt_regmap_t *mrm = o->regdiff ? regmap_for(mag->name) : NULL;
     static uint8_t mbefore[256], mafter[256];
+    static bool    volatile_mag[256];
     bool msnapped = false;
-    if (mrm) {
+    if (mrm && !mrm->ctrl_writeonly) {
         memset(mbefore, 0, sizeof mbefore);
         msnapped = (reg_snapshot(fd, maddr, mrm, mbefore) == 0);
     }
@@ -609,10 +741,26 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
     add_check(r, "mag.init.rc", "Mag init()", IMT_PASS, "0", "0",
               "%d Hz requested", mcfg->odr_hz);
 
-    if (mrm && msnapped) {
+    if (mrm && mrm->ctrl_writeonly) {
+        /*
+         * Not a finding about the driver: on this part the control registers
+         * are write-only, so a readback diff is empty no matter what init()
+         * wrote.  Grading it WARN blamed the driver for a property of the
+         * silicon, which is worse than not running the check.
+         */
+        r->raw.regdiff_mag_writeonly = true;
+        skip_check(r, "mag.init.regdiff", "Mag control-register diff",
+                   "this part's control registers are write-only, so a "
+                   "readback diff is structurally empty — the register writes "
+                   "are covered off-hardware by test_drivers instead");
+    } else if (mrm && msnapped) {
         memset(mafter, 0, sizeof mafter);
         if (reg_snapshot(fd, maddr, mrm, mafter) == 0) {
-            int n = reg_diff(mbefore, mafter, mrm, r->raw.regdiff_mag,
+            int nvol = reg_volatile_scan(fd, maddr, mrm, mafter, volatile_mag);
+            const bool *mvol = nvol >= 0 ? volatile_mag : NULL;
+            r->raw.n_volatile_mag = nvol > 0 ? nvol : 0;
+
+            int n = reg_diff(mbefore, mafter, mrm, mvol, r->raw.regdiff_mag,
                              IMT_MAX_REGDIFF);
             r->raw.n_regdiff_mag      = n;
             r->raw.regdiff_mag_mapped = true;
@@ -748,12 +896,23 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         if (st == IMT_FAIL && (starved || !imu->has_fifo)) st = IMT_WARN;
 
         if (st == IMT_PASS)
+            /*
+             * A pass inside the band can still be a real oscillator error, and
+             * imu.chipts.wall grades the same ratio against a tighter bound
+             * because the daemon's dt depends on it.  Point at it whenever the
+             * measurement is far enough off to matter there, so the two rows
+             * do not read as contradicting each other.
+             */
             add_check(r, "imu.odr", "Measured ODR against nearest_odr()",
                       IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
                       fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
-                      "%llu samples in %.3f s",
-                      (unsigned long long)d->total, span);
+                      "%llu samples in %.3f s%s",
+                      (unsigned long long)d->total, span,
+                      err > 0.02 && imu->has_hw_timestamp
+                      ? ", but off by more than 2% — see imu.chipts.wall, which "
+                        "grades the same timebase against what ts_tick_ns claims"
+                      : "");
         else if (best && best != eff_odr && fabs(hz - best) < fabs(hz - eff_odr))
             add_check(r, "imu.odr", "Measured ODR against nearest_odr()", st,
                       fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
@@ -886,25 +1045,57 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
 
         double err = fabs(med - expect) / expect;
         imt_status_t st = err <= 0.05 ? IMT_PASS : err <= 0.20 ? IMT_WARN : IMT_FAIL;
+        /* Both sides of this ratio come from the chip, so it cannot see an
+         * oscillator error — a counter running 4% fast still steps the
+         * declared number of ticks per sample.  Only imu.chipts.wall can,
+         * and it prints a different implied tick when that is what is wrong. */
         add_check(r, "imu.chipts.rate", "chip_ts tick period", st,
                   fmtbuf(mb, sizeof mb, "%.2f ticks/sample", med),
                   fmtbuf(eb, sizeof eb, "%.2f +/-5%%", expect),
-                  "implied ts_tick_ns = %.0f against the declared %u",
-                  implied, imu->ts_tick_ns);
+                  "implied ts_tick_ns = %.0f against the declared %u, against "
+                  "the nominal %d Hz — chip against chip, so see "
+                  "imu.chipts.wall for the timebase itself",
+                  implied, imu->ts_tick_ns, eff_odr);
 
         double elapsed_chip = (double)(uint32_t)(ts_last - ts_first)
                             * (double)imu->ts_tick_ns * 1e-9;
         double ratio = span > 0 ? elapsed_chip / span : 0.0;
         r->raw.ts_wall_ratio = ratio;
         double werr = fabs(ratio - 1.0);
-        imt_status_t wst = werr <= 0.02 ? IMT_PASS : werr <= 0.10 ? IMT_WARN : IMT_FAIL;
+        /*
+         * Deliberately tighter than imu.odr, which is the same ratio measured
+         * a second way.  They are graded differently because they test
+         * different claims: imu.odr asks whether init() programmed the rate it
+         * was asked for, an encoding question where 5% is plenty of room.
+         * This asks whether ts_tick_ns describes the counter, and imu.c
+         * multiplies that constant into every per-sample dt it hands the
+         * filter — so an error here scales integrated rotation one-for-one and
+         * a few percent is worth reading.  The note says so, because a report
+         * that grades the same number PASS in one row and WARN in another
+         * without explaining why reads as a contradiction.
+         */
+        imt_status_t wst = werr <= 0.02 ? IMT_PASS
+                         : werr <= 0.10 ? IMT_WARN : IMT_FAIL;
+        /*
+         * Direction matters for the diagnosis and the two causes are opposite.
+         * Short: chip time is missing, so the driver dropped a counter wrap.
+         * Long: chip time is running ahead of the wall, which a wrap cannot
+         * cause — the counter is ticking faster than the declared ts_tick_ns,
+         * and imu.c scales every per-sample dt by that constant.
+         */
+        double implied_tick = ratio > 0 ? (double)imu->ts_tick_ns / ratio : 0.0;
         add_check(r, "imu.chipts.wall", "chip_ts against wall clock", wst,
                   fmtbuf(mb, sizeof mb, "%.4f", ratio),
-                  "1.0000 +/-2%",
-                  "chip time %.3f s against %.3f s of wall clock over %d "
-                  "counter wrap%s. A short reading here is a lost wrap in the "
-                  "driver's unwrap.",
-                  elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s");
+                  "1.0000 +/-2% (tighter than imu.odr)",
+                  ratio < 1.0
+                  ? "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
+                    "%.0f ns, not %u. Short is chip time gone missing — a lost "
+                    "wrap in the driver's unwrap."
+                  : "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
+                    "%.0f ns, not %u. Long is no wrap: the counter runs fast "
+                    "and imu.c scales every dt by ts_tick_ns.",
+                  elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s",
+                  implied_tick, imu->ts_tick_ns);
     }
 }
 
@@ -975,13 +1166,23 @@ static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     if (wait < 0.02) wait = 0.02;
     if (wait > 0.5)  wait = 0.5;
 
-    /* Depth should grow roughly linearly with the wait. */
+    /*
+     * Depth should grow roughly linearly with the wait.  The probe buffer is
+     * deliberately much larger than the one used everywhere else: read() stops
+     * at `max`, so a 128-sample buffer made every step past the first report
+     * exactly 128 and the table measured the caller's array instead of the
+     * FIFO.  512 clears the deepest FIFO in the tree.
+     */
+    static imu_sample_t deep[512];
     int depth[3] = { 0, 0, 0 };
     for (int step = 0; step < 3 && !g_abort; step++) {
         drain_flush(d);
         double w = wait * (step + 1);
         sleep_s(w);
-        if (drain_once(d, buf, 128, &n) < 0) { depth[step] = -1; continue; }
+        if (drain_once(d, deep, (int)(sizeof deep / sizeof deep[0]), &n) < 0) {
+            depth[step] = -1;
+            continue;
+        }
         depth[step] = n;
         if (r->raw.fifo_steps < IMT_MAX_FIFO_STEPS) {
             r->raw.fifo_wait_s[r->raw.fifo_steps] = w;
@@ -1210,13 +1411,16 @@ static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     bool pow2 = ratio > 0.1 && fabs(ratio - round(ratio)) < 0.05 &&
                 (fabs(ratio - 2.0) < 0.05 || fabs(ratio - 4.0) < 0.05 ||
                  fabs(ratio - 8.0) < 0.05 || fabs(ratio - 0.5) < 0.05);
+    /* Both branches take (window, ratio) so the argument list matches whichever
+     * format string the ternary picks — see the note on add_check(). */
     add_check(r, "imu.rest.gravity", "Gravity magnitude at rest", st,
               fmtbuf(mb, sizeof mb, "%.4f m/s^2", r->raw.grav_mean),
               fmtbuf(eb, sizeof eb, "9.8066 +/-%.2f", o->grav_tol_warn),
-              pow2 ? "ratio to true g is %.2f — a power of two, so this "
-                     "full-scale branch's sensitivity constant is wrong."
+              pow2 ? "|a| averaged over %.0f s; ratio to true g is %.3f — a "
+                     "power of two, so this full-scale branch's sensitivity "
+                     "constant is wrong."
                    : "|a| averaged over %.0f s; ratio to true g is %.3f.",
-              pow2 ? ratio : ratio);
+              o->noise_window_s, ratio);
 
     /* Temperature */
     bool pinned = (tdistinct <= 1 && fabs(r->raw.temp_mean - 25.0) < 1e-3);
@@ -1334,7 +1538,8 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         double grav = 0;
         uint64_t gn = collect_stats(o, d, 1.0, "imu.fs", &acc, NULL, &grav);
 
-        imt_fs_row_t *row = &r->raw.fs_accel[r->raw.n_fs_accel];
+        if (r->raw.n_fs_accel >= IMT_MAX_FS_ROWS) continue;
+        imt_fs_row_t *row = &r->raw.fs_accel[r->raw.n_fs_accel++];
         row->fs        = c.accel_g;
         row->grav_mean = grav;
         row->ratio     = grav > 0.01 ? IMT_G_MS2 / grav : 0.0;
@@ -1345,7 +1550,6 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         row->status = gn < 10 ? IMT_SKIP
                     : err <= o->grav_tol_warn ? IMT_PASS
                     : err <= o->grav_tol_fail ? IMT_WARN : IMT_FAIL;
-        if (r->raw.n_fs_accel < IMT_MAX_FS_ROWS - 1) r->raw.n_fs_accel++;
 
         if (row->status == IMT_FAIL) { failed++; worst = c.accel_g; }
 
@@ -1397,35 +1601,49 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         collect_stats(o, d, 1.0, "imu.fs", NULL, &gy, NULL);
         double s = (gy.sigma[0] + gy.sigma[1] + gy.sigma[2]) / 3.0;
 
-        imt_fs_row_t *row = &r->raw.fs_gyro[r->raw.n_fs_gyro];
+        if (r->raw.n_fs_gyro >= IMT_MAX_FS_ROWS) continue;
+        imt_fs_row_t *row = &r->raw.fs_gyro[r->raw.n_fs_gyro++];
         row->fs = c.gyro_dps;
         for (int k = 0; k < 3; k++) row->sigma[k] = gy.sigma[k];
         row->status = IMT_INFO;
 
+        /*
+         * One-sided, and only for a large effect.  Sigma rising more slowly
+         * than the full scale is not evidence of anything: the proxy assumes
+         * quantisation dominates the noise floor, and on a good part it does
+         * not.  On an ISM330DHCX the +/-125 dps LSB is 4.375 mdps = 7.6e-5
+         * rad/s against a measured floor near 1.9e-3 — analogue noise is ~25x
+         * the quantisation step, so sigma stays flat across every range and a
+         * two-sided band around fsratio grades coin flips.  Sigma *falling*
+         * as the full scale rises has no benign reading, so that is what is
+         * graded; the numbers go in the appendix either way.
+         */
         if (prev_fs > 0 && prev_sigma > 0 && s > 0) {
             double sratio  = s / prev_sigma;
             double fsratio = (double)c.gyro_dps / (double)prev_fs;
-            /* Deliberately loose: this is a proxy, not a measurement. */
-            if (sratio > fsratio * 2.0 || sratio < fsratio / 2.0) {
+            row->ratio  = sratio;
+            row->status = IMT_INFO;
+            if (fsratio > 1.0 && sratio < 0.5) {
                 row->status = IMT_WARN;
                 gbad++;
-            } else {
-                row->status = IMT_PASS;
             }
-            row->ratio = sratio;
         }
         prev_sigma = s;
         prev_fs    = c.gyro_dps;
-        if (r->raw.n_fs_gyro < IMT_MAX_FS_ROWS - 1) r->raw.n_fs_gyro++;
     }
     add_check(r, "imu.fs.gyro", "Full-scale sweep, gyroscope",
-              ng < 2 ? IMT_SKIP : gbad ? IMT_WARN : IMT_PASS,
-              fmtbuf(mb, sizeof mb, "%d of %d steps off", gbad, ng ? ng - 1 : 0),
-              "noise scales with full scale",
-              "a stationary gyro reads ~0 at every range, so this compares "
-              "noise sigma between adjacent ranges as a proxy. Absolute gyro "
-              "scale is checked only by the guided rotation phase, and only "
-              "at the configured +/-%d dps.", base->gyro_dps);
+              ng < 2 ? IMT_SKIP : gbad ? IMT_WARN : IMT_INFO,
+              fmtbuf(mb, sizeof mb, "%d of %d steps dropped", gbad,
+                     ng ? ng - 1 : 0),
+              "sigma must not fall as full scale rises",
+              gbad ? "sigma fell by more than half when the range widened, "
+                     "which has no benign reading: one branch's sensitivity "
+                     "constant does not track its register. See +/-%d dps in "
+                     "the rotation phase."
+                   : "recorded, not graded: sigma tracks full scale only "
+                     "where quantisation dominates the noise floor, and here "
+                     "it does not. Absolute scale is graded by the rotation "
+                     "phase alone, at +/-%d dps.", base->gyro_dps);
 
     /* Everything after this depends on the configured setup being back. */
     bool ok = (imu->reset(fd, addr) == 0) && (imu->init(fd, addr, base) == 0);
@@ -1959,14 +2177,18 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
             sleep_s(0.002);
         }
 
-        imt_turn_row_t *row = &r->raw.turn[r->raw.n_turns];
+        /* One row per commanded turn.  The index is clamped before it is used,
+         * not after: a cap that trailed the write dropped the Z row out of the
+         * appendix while still letting phase C grade it. */
+        const int turn_cap = (int)(sizeof r->raw.turn / sizeof r->raw.turn[0]);
+        if (r->raw.n_turns >= turn_cap) continue;
+        imt_turn_row_t *row = &r->raw.turn[r->raw.n_turns++];
         row->axis    = axis;
         row->cmd_deg = o->turn_deg;
         row->dur_s   = now_s() - t0;
         row->n       = (int)count;
         row->used_chip_ts = use_ts;
         for (int k = 0; k < 3; k++) row->theta[k] = theta[k];
-        if (r->raw.n_turns < 2) r->raw.n_turns++;
 
         if (count < 10) {
             snprintf(id, sizeof id, "%s.sign", imt_turns[t].id);
@@ -2261,7 +2483,7 @@ static const char *imt_required_mag[] = {
     NULL
 };
 
-static void decide_verdict(imt_report_t *r)
+void imt_decide_verdict(imt_report_t *r)
 {
     const char *blocker = NULL;
 
@@ -2313,13 +2535,32 @@ static void decide_verdict(imt_report_t *r)
         snprintf(r->verdict, sizeof r->verdict,
                  "No failures, but only some phases were selected. Run with "
                  "--all to produce a report that can clear `experimental`.");
-    else
-        snprintf(r->verdict, sizeof r->verdict,
-                 "All required checks passed. RECOMMEND clearing "
-                 "`experimental` for `%s`%s%s.",
-                 r->imu_driver,
-                 r->have_mag ? " and " : "",
-                 r->have_mag ? r->mag_driver : "");
+    else {
+        /*
+         * Recommend clearing the flag only where it is actually set.  A report
+         * that tells the reader to clear a flag already clear reads as stale
+         * advice and undercuts the rest of it — and this report is written to
+         * be pasted into an issue, where that costs a round trip.
+         */
+        bool imu_exp = r->imu_experimental;
+        bool mag_exp = r->have_mag && r->mag_experimental;
+        if (imu_exp || mag_exp)
+            snprintf(r->verdict, sizeof r->verdict,
+                     "All required checks passed. RECOMMEND clearing "
+                     "`experimental` for `%s`%s%s.",
+                     imu_exp ? r->imu_driver : r->mag_driver,
+                     (imu_exp && mag_exp) ? " and " : "",
+                     (imu_exp && mag_exp) ? r->mag_driver : "");
+        else
+            snprintf(r->verdict, sizeof r->verdict,
+                     "All required checks passed. `%s`%s%s already "
+                     "%s `experimental` clear; this run re-confirms it on "
+                     "this hardware.",
+                     r->imu_driver,
+                     r->have_mag ? " and " : "",
+                     r->have_mag ? r->mag_driver : "",
+                     r->have_mag ? "have" : "has");
+    }
 }
 
 /* ── Entry points ─────────────────────────────────────────────────────────── */
@@ -2426,7 +2667,7 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
     bool mag_ok = false;
     if (check_bringup(r, opts, fd, imu, mag, cfg, &icfg, &mcfg, &mag_ok) < 0) {
         r->wall_duration_s = now_s() - t_start;
-        decide_verdict(r);
+        imt_decide_verdict(r);
         return 0;   /* the checks carry the verdict */
     }
 
@@ -2487,6 +2728,6 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
 
     if (g_abort) r->aborted = true;
     r->wall_duration_s = now_s() - t_start;
-    decide_verdict(r);
+    imt_decide_verdict(r);
     return 0;
 }

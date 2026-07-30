@@ -27,8 +27,10 @@ static uint8_t g_reg[NADDR][REGSZ];
 static uint8_t g_fifo[NADDR][FIFOSZ];
 static int     g_fifo_head[NADDR];   /* next byte to pop */
 static int     g_fifo_tail[NADDR];   /* next free slot */
-static int     g_fifo_reg[NADDR];    /* declared FIFO register, or -1 */
+static int     g_fifo_reg[NADDR];    /* first FIFO-port register, or -1 */
+static int     g_fifo_reg_hi[NADDR]; /* last FIFO-port register */
 static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
+static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
@@ -41,7 +43,8 @@ void i2cmock_reset(void)
     memset(g_fifo_head, 0, sizeof g_fifo_head);
     memset(g_fifo_tail, 0, sizeof g_fifo_tail);
     memset(g_selfclear, 0, sizeof g_selfclear);
-    for (int i = 0; i < NADDR; i++) g_fifo_reg[i] = -1;
+    memset(g_live, 0, sizeof g_live);
+    for (int i = 0; i < NADDR; i++) { g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1; }
     g_fail_next = 0;
     g_fail_all  = 0;
 }
@@ -49,6 +52,11 @@ void i2cmock_reset(void)
 void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask)
 {
     g_selfclear[addr & (NADDR - 1)][reg] |= mask;
+}
+
+void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step)
+{
+    g_live[addr & (NADDR - 1)][reg] = step;
 }
 
 void i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val)
@@ -69,7 +77,14 @@ uint8_t i2cmock_get_reg(uint8_t addr, uint8_t reg)
 
 void i2cmock_set_fifo_reg(uint8_t addr, uint8_t reg)
 {
-    g_fifo_reg[addr & (NADDR - 1)] = reg;
+    i2cmock_set_fifo_range(addr, reg, reg);
+}
+
+void i2cmock_set_fifo_range(uint8_t addr, uint8_t lo, uint8_t hi)
+{
+    int a = addr & (NADDR - 1);
+    g_fifo_reg[a]    = lo;
+    g_fifo_reg_hi[a] = hi < lo ? lo : hi;
 }
 
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len)
@@ -129,14 +144,26 @@ static int mock_dispatch(unsigned long request, void *arg)
 
         if (msg->flags & I2C_M_RD) {
             for (uint16_t i = 0; i < msg->len; i++) {
-                if (g_fifo_reg[a] >= 0 && reg_ptr == g_fifo_reg[a]) {
-                    msg->buf[i] = fifo_pop(a);   /* FIFO port: pointer stays put */
+                if (g_fifo_reg[a] >= 0 && reg_ptr >= g_fifo_reg[a] &&
+                    reg_ptr <= g_fifo_reg_hi[a]) {
+                    /* FIFO port: pointer stays put, and a read anywhere in the
+                     * window pops.  Real data ports are several registers wide
+                     * (the ST parts' FIFO_DATA_OUT is 0x78-0x7E) and popping on
+                     * a read of any of them is what makes a blind register
+                     * sweep destructive. */
+                    msg->buf[i] = fifo_pop(a);
                 } else {
                     uint8_t r = (uint8_t)reg_ptr;
                     msg->buf[i] = g_reg[a][r];
                     /* Self-clearing bits read back set once, then drop — the
                      * behaviour every reset()/trigger poll is waiting for. */
                     if (g_selfclear[a][r]) g_reg[a][r] &= (uint8_t)~g_selfclear[a][r];
+                    /* Live registers advance on their own, like a timestamp
+                     * counter or a FIFO level.  Stepping them on read is the
+                     * only hook available here, and it is enough: what the
+                     * code under test sees is a register whose value moves
+                     * with no write in between. */
+                    if (g_live[a][r]) g_reg[a][r] += g_live[a][r];
                     reg_ptr++;
                 }
             }

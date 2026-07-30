@@ -6,6 +6,76 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.7.1
+-----
+* Fixed: the IMU chip timer's declared period was trusted rather than measured,
+  so a part whose oscillator was off by a few percent put sample timestamps
+  seconds out and scaled all integrated rotation by the same factor. The
+  ISM330DHCX on the reference board measures **4.08% fast** — its 25 µs tick is
+  really about 24.02 µs — against a spec error budget that had assumed 100 ppm.
+  Because the daemon multiplied ticks by the nominal 25 µs, reported sample
+  time ran about **2.4 s ahead** over each 60 s anchor epoch and then jumped
+  backwards when the anchor refreshed, in the `ts_wall_ns` / `ts_tai_ns` fields
+  that reach the wire; and every per-sample `dt` handed to the fusion filter
+  was 4% long, which scales integrated rotation one-for-one. The timestamp
+  anchor now measures the counter's real period against `CLOCK_MONOTONIC`
+  across consecutive anchors and uses that instead, falling back to the
+  declared value until it has a measurement (the first 60 s) and rejecting any
+  measurement more than 10% from nominal, which is what a reset counter or a
+  lost wrap looks like. `imud` logs the measured period once at startup when it
+  is more than 1% off. Driver authors: `ts_tick_ns` may now be the datasheet's
+  nominal figure — what your driver has to get right is that the counter
+  advances monotonically at a rate independent of bus traffic, not the exact
+  duration of a tick.
+* Fixed: `imud-imutest` reported several things that were artefacts of the tool
+  rather than findings about the driver. A 1.7 report on an ISM330DHCX is still
+  readable, but four of its ten warnings were the tool's own, and one number in
+  it was garbage. Re-run rather than re-reading an old report.
+  - The register snapshot read into the FIFO data port and popped it. On the ST
+    6-axis parts `FIFO_DATA_OUT` is seven registers wide (0x78 tag, then X/Y/Z
+    low/high through 0x7E) and a read of any of them pops a word, but only 0x78
+    and 0x79 were excluded — so every snapshot ate five FIFO words, and
+    0x7A/0x7B/0x7D appeared in the control-register diff as though the driver
+    had written them. Affected `ism330dhcx`, `lsm6dso` and `lsm6dsox`.
+  - The control-register diff and `imu.init.idempotent` compared the whole
+    mapped range, including sensor output, status, FIFO level and the timestamp
+    counter, which change on their own. On an ISM330DHCX that made the diff 29
+    registers where only 9 were writes, and made a second `init()` look
+    state-dependent with "23 registers differ". Registers that move are now
+    found by reading the range several times with the part running and excluded
+    from both; every report prints how many were excluded and how many
+    compared. The filter is empirical rather than a hand-written table, so it
+    stays correct for drivers that do not exist yet, and its one blind spot —
+    a register that happens to hold the same value through every pass — is
+    stated in the report.
+  - `mag.init.regdiff` warned on the MMC5983MA for a property of the silicon:
+    its control registers are write-only, so no readback can show what `init()`
+    wrote. It now skips and says so.
+  - `imu.rest.gravity`'s note read "averaged over 1 s; ratio to true g is
+    0.000" because its format string had two conversions and was passed one
+    argument, so the second read off the end of the argument list. The window
+    and the ratio are now both real. `add_check()` and `fmtbuf()` carry printf
+    format attributes, so `-Wall` catches this class at build time.
+  - The gyro rotation appendix dropped the Z turn: three turns were graded but
+    the row cap was two, so the table had X and Y only.
+  - `imu.fs.gyro` is now INFO rather than graded. It asserted that noise scales
+    with full scale, which only holds where quantisation dominates the noise
+    floor — on an ISM330DHCX the ±125 dps step is 7.6e-5 rad/s against a
+    measured floor near 1.9e-3, so sigma is flat and the check graded coin
+    flips. Sigma *falling* as the range widens still warns.
+  - `imu.chipts.wall` says which direction the error is. Short is a lost
+    counter wrap; long cannot be, and means the counter runs faster than
+    `ts_tick_ns` claims — which matters because `imud` multiplies that constant
+    into every per-sample `dt`. The note now prints the implied tick, and
+    `imu.odr` cross-references it, so the two rows no longer read as
+    contradicting each other on the same number.
+  - The FIFO depth table measured the caller's buffer once the FIFO was deeper
+    than 128 sample-sets, so the second and third rows always read 128.
+  - Appendix section 5.6 vanished when there was nothing to show, leaving a gap
+    in the numbering; a "-0.00" was printed for the first full-scale row, which
+    has no previous range to compare against; and a clean run recommended
+    clearing `experimental` for drivers that already had it clear.
+
 1.7
 ---
 * Fixed: `imud-cal accel` printed the wrong physical instructions for all six

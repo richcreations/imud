@@ -66,7 +66,7 @@ run. Anything not listed is recorded as `INFO` for the record.
 | `imu.reset.rc` / `.ms` | `reset()` returns 0; elapsed time is recorded. Under 1 ms warns — the datasheet turn-on time is probably not being waited out. |
 | `imu.init.rc` | `init()` returns 0 for the configured rate and full scales. |
 | `imu.init.regdiff` | Control registers changed across `init()`. The diff is printed raw: decoding it needs the datasheet. |
-| `imu.init.idempotent` | A second `init()` lands on a byte-identical register image — catches a bank left selected or a latched enable. |
+| `imu.init.idempotent` | A second `init()` lands on a byte-identical register image — catches a bank left selected or a latched enable. Compared over non-volatile registers only; see *Which registers are read* below. |
 | `imu.odr` | Measured rate matches `nearest_odr()`. On failure the note names which `supported_odr_hz[]` entry the measurement actually matches. |
 | `imu.fifo.depth` | Depth grows with the wait, so `read()` drains a queue rather than one sample register. |
 | `imu.fifo.overflow` / `.recovers` | Not draining eventually returns rc 1, and reads return to rc 0 afterwards. |
@@ -77,11 +77,11 @@ run. Anything not listed is recorded as `INFO` for the record.
 | `imu.rest.gravity` | Mean \|a\| is 9.807 m/s². The note flags a power-of-two ratio, which is a wrong sensitivity constant. |
 | `imu.temp.plausible` / `.varies` | Temperature is in range and moves. Pinned at exactly 25.000 fails: that is the placeholder, so the word is never decoded. |
 | `imu.chipts.presence` | `chip_ts` is 0 if and only if `has_hw_timestamp` is false. |
-| `imu.chipts.monotonic` / `.rate` / `.wall` | The counter advances, its period matches `ts_tick_ns`, and chip time tracks wall time across counter wraps. The report always prints the *implied* tick, which is the fastest way to spot a wrong `ts_tick_ns`. |
+| `imu.chipts.monotonic` / `.rate` / `.wall` | The counter advances, its period matches `ts_tick_ns`, and chip time tracks wall time across counter wraps. The report always prints the *implied* tick, which is the fastest way to spot a wrong `ts_tick_ns`. `.rate` compares chip time against chip time and so cannot see an oscillator error; only `.wall` can. A ratio **below** 1.0 is a lost counter wrap in the driver's unwrap; **above** 1.0 cannot be — the counter is ticking faster than `ts_tick_ns` claims, which scales every per-sample `dt` the daemon derives from it. `.wall` is graded at ±2% against `imu.odr`'s ±5%, which is the same ratio measured a second way. That is deliberate, and both notes say so: `imu.odr` asks whether `init()` programmed the rate it was asked for, an encoding question with room to spare, while `.wall` asks whether `ts_tick_ns` describes the counter, and `imu.c` multiplies that constant into every `dt` it hands the filter. A part can legitimately pass the first and warn on the second; when it does, `imu.odr` points at `.wall` rather than leaving two verdicts on one number unexplained. |
 | `imu.drdy.edges` | The interrupt line produces edges at a rate matching either the per-sample or the watermark model; the report says which one fits. |
 | `imu.fs.accel` | Gravity still reads 9.807 after re-initialising at every advertised accelerometer range — catches one wrong constant in one branch. |
-| `imu.fs.gyro` | Noise scales with full scale between adjacent ranges. A proxy, stated as such: a stationary gyro reads ~0 at every range. |
-| `mag.*` | The magnetometer equivalents, plus `mag.nodata_not_error` (not-ready must return 1, not −1), `mag.field_magnitude` (25–65 µT), and `mag.wall_ns`. |
+| `imu.fs.gyro` | **INFO, not graded.** Records the noise floor at every advertised range. It does *not* assert that sigma scales with full scale: that only holds when quantisation dominates the noise floor, and on a good part it does not — an ISM330DHCX at ±125 dps has a 7.6e-5 rad/s quantisation step against a ~1.9e-3 rad/s measured floor, so sigma is flat across every range and a band around the full-scale ratio grades coin flips. The one direction that still WARNs is sigma *falling* by more than half as the range widens, which has no benign reading. |
+| `mag.*` | The magnetometer equivalents, plus `mag.nodata_not_error` (not-ready must return 1, not −1), `mag.field_magnitude` (25–65 µT), and `mag.wall_ns`. `mag.init.regdiff` SKIPs on a part whose control registers are write-only (the MMC5983MA): a readback diff is structurally empty there no matter what `init()` wrote, so grading it would blame the driver for a property of the silicon. |
 
 ### Phases B–D — guided
 
@@ -97,7 +97,44 @@ run. Anything not listed is recorded as `INFO` for the record.
 
 The tool never grades a WARN as blocking, and a `SKIP` in the required set
 suppresses the "clear experimental" recommendation and names which check was
-missing.
+missing. Where the flag is already clear, a clean run says so rather than
+recommending a change that has already been made.
+
+### Which registers are read
+
+`imu.init.regdiff` and `imu.init.idempotent` both rest on a register snapshot,
+and two kinds of register have to stay out of it.
+
+**Destructive to read** — a FIFO port, a read-to-clear status word. These
+cannot be found by experiment without corrupting the run, so `imt_regmaps[]`
+in `src/imutest.c` lists them per driver: `skip[]` for individual registers,
+`nrd_lo..nrd_hi` for a contiguous window. A FIFO port is usually a window, not
+one register: on the ST 6-axis parts `FIFO_DATA_OUT` spans 0x78–0x7E (tag,
+then X/Y/Z low/high), and listing only the first two left the sweep popping
+five FIFO words per snapshot. **When you add a driver, check how wide its data
+port is.**
+
+**Volatile** — sensor output, status, FIFO level, the timestamp counter. Safe
+to read, but they move on their own, so a diff across `init()` is swamped by
+them and an idempotency compare over them is meaningless. These are *not*
+listed. The tool finds them by reading the mapped range several times with the
+part running and no writes in between; anything that changes is volatile and is
+excluded from both checks. That needs no datasheet and stays correct for
+drivers that do not exist yet — which matters, because this tree ships no
+datasheets (see `docs/datasheets.md`) and a hand-written volatile table would
+be exactly the kind of unverified register knowledge it avoids.
+
+The filter is not perfect and the report says so: a volatile register that
+happens to hold the same value through every pass — a stationary
+accelerometer's high byte is the usual case — is not caught. Every report
+prints how many registers were excluded and how many were compared, so a
+narrower test never looks like a cleaner chip.
+
+**Write-only control registers** are a third case, and only a listed flag can
+express them: `ctrl_writeonly` on the MMC5983MA, whose CTRL0/1/2 the datasheet
+gives as W. There the check SKIPs, because no readback can say anything about
+what `init()` wrote. The register writes themselves are covered off-hardware by
+`test_drivers` against the mock bus.
 
 ## See also
 

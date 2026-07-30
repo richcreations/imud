@@ -236,6 +236,7 @@ void *ism_reader_thread(void *arg)
     int reset_failures = 0;
     bool anchor_valid = false;
     struct timespec anchor_last = {0, 0};
+    bool tick_reported = false;   /* one-shot log of the measured tick period */
     imud_config_t cfg;
     while (!ctx->stop) {
         if (ctx->imu_line) {
@@ -332,9 +333,35 @@ void *ism_reader_thread(void *arg)
                          || elapsed >= 60.0;
         if (do_anchor) {
             uint64_t wall_mid = (ts_ns(&t_before) + ts_ns(&t_after)) / 2;
-            anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_mid, ts_ns(&t_tai));
+            /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
+             * runs on; the REALTIME pair is only the absolute reference, and
+             * an NTP step in it must not be read as the oscillator drifting. */
+            anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_mid,
+                          ts_ns(&t_tai), ts_ns(&now),
+                          ctx->imu_ops->has_hw_timestamp
+                              ? ctx->imu_ops->ts_tick_ns : 0);
             anchor_last  = now;
             anchor_valid = true;
+
+            /*
+             * Say so once when the part's timer is materially off its declared
+             * period.  It is corrected from here on, but it is also the kind of
+             * thing worth knowing about a board: imud-imutest's imu.chipts.wall
+             * grades the same number, and a reading this far out is a hardware
+             * characteristic rather than a driver defect.
+             */
+            if (!tick_reported && ctx->imu_ops->has_hw_timestamp) {
+                double meas = anchor_measured_tick_ns(&ctx->anchor);
+                double nom  = (double)ctx->imu_ops->ts_tick_ns;
+                if (meas > 0.0 && nom > 0.0) {
+                    tick_reported = true;
+                    if (fabs(meas - nom) / nom > 0.01)
+                        LOG_I("[imu] chip timer measured at %.1f ns/tick "
+                              "against the declared %.0f (%+.1f%%); using the "
+                              "measured value for sample timestamps and dt\n",
+                              meas, nom, (meas - nom) / nom * 100.0);
+                }
+            }
         }
 
         /* Engine vibration detection: exponential moving average of (|a|-g)².
@@ -865,12 +892,23 @@ void *fusion_thread(void *arg)
         /* Speed over ground for the centripetal correction (0 = off). */
         f.speed_mps = cfg.pos_speed_valid ? cfg.pos_speed_mps : 0.0f;
 
-        /* Timestamps + per-sample dt. For hw-timestamp chips, chip_ts
-         * encodes the exact sample time; feeding the measured interval to
-         * the predict step keeps oscillator tolerance (a few % on the
-         * ISM330's internal clock) from scaling all integrated rotation.
-         * Clamped to [0.5×, 2×] nominal so FIFO-overflow gaps and anchor
-         * resets fall back to the nominal period. */
+        /*
+         * Timestamps + per-sample dt.  For hw-timestamp chips chip_ts encodes
+         * the exact sample time, and the interval between two of them is what
+         * the predict step wants.
+         *
+         * That interval is only as good as the tick period it is scaled by.
+         * Using the driver's declared ts_tick_ns did NOT remove the chip's
+         * oscillator tolerance — it preserved it exactly, because the interval
+         * is ticks times that constant, so a counter running a few percent
+         * fast made every dt a few percent long and scaled all integrated
+         * rotation by the same factor.  ts_anchor_t now measures the real
+         * period across consecutive anchors and chip_to_wall applies it, which
+         * is what makes this paragraph true rather than aspirational.
+         *
+         * Clamped to [0.5x, 2x] nominal so FIFO-overflow gaps and anchor
+         * resets fall back to the nominal period.
+         */
         uint64_t wall = 0, tai = 0;
         uint32_t gen  = 0;
         bool have_ts  = (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp);

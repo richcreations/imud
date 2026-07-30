@@ -46,6 +46,16 @@ uint8_t i2cmock_get_reg(uint8_t addr, uint8_t reg);
 /* Declare `reg` on `addr` as a FIFO port: reads from it pop from the byte queue
  * pushed with i2cmock_fifo_push, rather than from the register file. */
 void i2cmock_set_fifo_reg(uint8_t addr, uint8_t reg);
+
+/*
+ * The same, over a register window.  A real data port is usually several
+ * registers wide — the ST 6-axis parts' FIFO_DATA_OUT spans 0x78-0x7E — and a
+ * read of any of them pops.  Modelling only the first register would let a
+ * blind register sweep walk through the rest of the window and look harmless,
+ * which is exactly the bug this exists to catch.
+ */
+void i2cmock_set_fifo_range(uint8_t addr, uint8_t lo, uint8_t hi);
+
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
 
 /*
@@ -56,6 +66,16 @@ void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
  * register file.  Bits accumulate; i2cmock_reset() forgets them.
  */
 void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask);
+
+/*
+ * Declare `reg` on `addr` as live: every read returns the current value and
+ * then advances it by `step`.  Models the registers that move with no write in
+ * between — a timestamp counter, a FIFO level, a status word, sensor output —
+ * which is what imud-imutest's volatile scan has to detect and exclude before
+ * it can diff control registers across init().  `step` of 0 makes it static
+ * again; i2cmock_reset() forgets it.
+ */
+void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step);
 
 /* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
  * Drives the drivers' "I2C error" branches. */

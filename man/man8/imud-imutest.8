@@ -41,7 +41,11 @@ readback, measured output rate against
 FIFO depth, deliberate overflow and recovery, sequence-number monotonicity and
 gaps, the error-return contract, noise floor, gravity magnitude, temperature
 sanity, hardware-timestamp rate and wrap handling, interrupt edge counting, and
-a full-scale sweep that re-initialises the part at every advertised range.
+a full-scale sweep that re-initialises the part at every advertised range. The
+accelerometer arm of that sweep is graded against gravity; the gyroscope arm is
+recorded but not graded, because a stationary gyro reads about zero at every
+range and its noise floor only tracks full scale when quantisation dominates
+it.
 .TP
 .B Six-face
 Prompts for each of six orientations and checks that the axis pointing down
@@ -194,9 +198,14 @@ unavailable.
 .B INFO
 Recorded for the record, with no pass criterion.
 .PP
-Two limits are stated in every report rather than left implicit. The
+Three limits are stated in every report rather than left implicit. The
 control-register diff is raw and undecoded by design, because deciding whether
-those values are correct needs the datasheet. And the requirement that
+those values are correct needs the datasheet. The registers excluded from that
+diff as volatile are found by experiment \(em the mapped range is read several
+times with the part running and no writes in between \(em so a register that
+happens to hold the same value through every pass is not caught, and every
+report prints how many were excluded and how many compared. And the requirement
+that
 .B \-1
 is returned
 .I only

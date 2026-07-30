@@ -247,10 +247,19 @@ int imt_write_md(const imt_report_t *r, const char *path,
                "bus. That -1 is returned *only* on a genuine I2C fault is "
                "checked off-hardware by `test_imutest`, which injects ioctl "
                "failures through the mock bus.\n");
+    fprintf(f, "- **Volatile registers are found by experiment, and the filter "
+               "is not perfect.** Sensor output, status, FIFO level and the "
+               "timestamp counter are excluded from the diff and from the "
+               "idempotency compare by reading the mapped range several times "
+               "with the part running and no writes in between. A register "
+               "that happens to hold the same value through every pass — a "
+               "stationary accelerometer's high byte is the usual case — is "
+               "not caught and still appears above.\n");
     fprintf(f, "- **Absolute gyro scale is checked only in phase C**, and only "
-               "at the configured full scale. The full-scale sweep uses noise "
-               "scaling as a proxy, because a stationary gyro reads about zero "
-               "at every range.\n");
+               "at the configured full scale. `imu.fs.gyro` records the noise "
+               "floor at every range but does not grade it, because sigma only "
+               "tracks full scale when quantisation dominates the noise floor "
+               "and on a good part it does not.\n");
     if (!(r->phases_run & (IMT_PHASE_FACES | IMT_PHASE_GYRO | IMT_PHASE_SPIN)))
         fprintf(f, "- **No guided phase ran**, so nothing here says whether "
                    "the chip-to-board axis remap is correct — the most likely "
@@ -322,18 +331,25 @@ int imt_write_md(const imt_report_t *r, const char *path,
         if (w->n_fs_gyro > 0) {
             fprintf(f, "\n| gyro FS | mean sigma (rad/s) | sigma ratio to previous |\n");
             fprintf(f, "|---|---|---|\n");
-            for (int i = 0; i < w->n_fs_gyro; i++)
-                fprintf(f, "| +/-%d dps | %.5g | %s%.2f |\n",
+            for (int i = 0; i < w->n_fs_gyro; i++) {
+                char rb[16];
+                if (i == 0) snprintf(rb, sizeof rb, "-");
+                else        snprintf(rb, sizeof rb, "%.2f", w->fs_gyro[i].ratio);
+                fprintf(f, "| +/-%d dps | %.5g | %s |\n",
                         w->fs_gyro[i].fs,
                         (w->fs_gyro[i].sigma[0] + w->fs_gyro[i].sigma[1] +
-                         w->fs_gyro[i].sigma[2]) / 3.0,
-                        i == 0 ? "-" : "", i == 0 ? 0.0 : w->fs_gyro[i].ratio);
+                         w->fs_gyro[i].sigma[2]) / 3.0, rb);
+            }
         }
         fprintf(f, "\n");
     }
 
     if (w->regdiff_imu_mapped) {
         fprintf(f, "### 5.5 Control-register diff, IMU 0x%02X\n\n", r->imu_addr);
+        fprintf(f, "%d register%s excluded as volatile (they changed with no "
+                   "write between reads); %d compared.\n\n",
+                w->n_volatile_imu, w->n_volatile_imu == 1 ? "" : "s",
+                w->n_scanned_imu);
         if (w->n_regdiff_imu == 0) {
             fprintf(f, "No registers changed across `init()`.\n\n");
         } else {
@@ -345,14 +361,29 @@ int imt_write_md(const imt_report_t *r, const char *path,
             fprintf(f, "\n");
         }
     }
-    if (w->regdiff_mag_mapped && w->n_regdiff_mag > 0) {
+    /* Emitted whenever a magnetometer was under test, even with nothing to
+     * show: a section that vanishes leaves a hole in the numbering and reads
+     * as a bug in the tool. */
+    if (w->regdiff_mag_writeonly) {
         fprintf(f, "### 5.6 Control-register diff, mag 0x%02X\n\n", r->mag_addr);
-        fprintf(f, "| reg | after reset | after init |\n|---|---|---|\n");
-        for (int i = 0; i < w->n_regdiff_mag; i++)
-            fprintf(f, "| 0x%02X | 0x%02X | 0x%02X |\n",
-                    w->regdiff_mag[i].reg, w->regdiff_mag[i].before,
-                    w->regdiff_mag[i].after);
-        fprintf(f, "\n");
+        fprintf(f, "Not available: this part's control registers are "
+                   "write-only, so nothing `init()` wrote can be read back. "
+                   "The register writes are covered off-hardware by "
+                   "`test_drivers` against the mock bus.\n\n");
+    } else if (w->regdiff_mag_mapped) {
+        fprintf(f, "### 5.6 Control-register diff, mag 0x%02X\n\n", r->mag_addr);
+        fprintf(f, "%d register%s excluded as volatile.\n\n",
+                w->n_volatile_mag, w->n_volatile_mag == 1 ? "" : "s");
+        if (w->n_regdiff_mag == 0) {
+            fprintf(f, "No registers changed across `init()`.\n\n");
+        } else {
+            fprintf(f, "| reg | after reset | after init |\n|---|---|---|\n");
+            for (int i = 0; i < w->n_regdiff_mag; i++)
+                fprintf(f, "| 0x%02X | 0x%02X | 0x%02X |\n",
+                        w->regdiff_mag[i].reg, w->regdiff_mag[i].before,
+                        w->regdiff_mag[i].after);
+            fprintf(f, "\n");
+        }
     }
 
     if (r->have_mag && w->mag_n > 0) {

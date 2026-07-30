@@ -34,6 +34,10 @@
 
 #include "imutest.h"
 #include "i2c_mock.h"
+/* For the mock self-check below: the same single-byte read path the register
+ * sweep uses, so the harness is exercised exactly the way the tool exercises
+ * it. */
+#include "drivers/i2c_io.h"
 
 /* ── Test framework (matches the rest of the suite) ──────────────────────── */
 
@@ -158,7 +162,10 @@ static void mock_base(void)
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x3A, 0);          /* FIFO depth */
     i2cmock_set_reg(ISM_ADDR, 0x3B, 0);          /* no overflow */
-    i2cmock_set_fifo_reg(ISM_ADDR, 0x78);
+    /* FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high) and a read anywhere in
+     * that window pops a word, so a register sweep that enters it silently
+     * eats data.  Model the whole window, not just the first register. */
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
     /* CTRL3_C bit 0 is SW_RESET, which the chip clears when the reset lands;
      * imud-imutest always calls reset(), so the mock has to model that. */
     i2cmock_set_selfclear(ISM_ADDR, 0x12, 0x01);
@@ -365,6 +372,39 @@ static imt_report_t *run(imud_config_t *cfg, imt_opts_t *o)
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */
 
+/*
+ * The harness's own fidelity, asserted first because everything below leans on
+ * it.  test_fifo_port_window_not_swept can only catch a sweep that walks into
+ * the FIFO port if the mock actually pops on a read anywhere in the window; if
+ * the mock modelled only the first register, that test would keep passing
+ * while the defect it exists for went undetected.
+ */
+static void test_mock_models_the_whole_fifo_window(void)
+{
+    begin("test_mock_models_the_whole_fifo_window");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    const uint8_t staged[4] = { 0xA1, 0xB2, 0xC3, 0xD4 };
+    i2cmock_fifo_push(ISM_ADDR, staged, 4);
+
+    /* A single-byte read from the middle of the window must pop, not return
+     * the register file — that is what makes a blind sweep destructive. */
+    uint8_t v = 0;
+    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x7B, &v) == 0, "mid-window read succeeds");
+    EXPECT(v == 0xA1, "a read inside the window pops the queue");
+    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x7E, &v) == 0, "end-of-window read succeeds");
+    EXPECT(v == 0xB2, "the queue advanced, so the whole window is a port");
+
+    /* Just outside it is an ordinary register. */
+    i2cmock_set_reg(ISM_ADDR, 0x77, 0x5A);
+    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x77, &v) == 0, "outside-window read succeeds");
+    EXPECT(v == 0x5A, "0x77 is still the register file");
+
+    end(fb);
+}
+
 static void test_bringup_good(void)
 {
     begin("test_bringup_good");
@@ -390,6 +430,149 @@ static void test_bringup_good(void)
     EXPECT(status_of(r, "imu.init.idempotent") == IMT_PASS, "init is idempotent");
     EXPECT(r->imu_experimental == false, "ism330dhcx not flagged experimental");
     EXPECT(r->have_mag, "mag present");
+    /* Nothing moves in a plain register file, so nothing is filtered and the
+     * whole mapped range is compared. */
+    EXPECT(r->raw.n_volatile_imu == 0, "static mock has no volatile registers");
+    EXPECT(r->raw.n_scanned_imu > 100, "the mapped range was compared");
+    /*
+     * The ST FIFO port is seven registers wide (0x78 tag, then X/Y/Z low/high
+     * through 0x7E) and a single-byte read of any of them pops a word.  The
+     * sweep must not enter that window; when only 0x78/0x79 were excluded,
+     * 0x7A/0x7B/0x7D turned up in a shipped report's diff as though they were
+     * control registers.
+     */
+    EXPECT(r->raw.n_regdiff_imu > 0, "diff is over control registers");
+    for (int i = 0; i < r->raw.n_regdiff_imu; i++)
+        EXPECT(r->raw.regdiff_imu[i].reg < 0x78 || r->raw.regdiff_imu[i].reg > 0x7E,
+               "no FIFO-port register in the diff");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * The registers that move on their own must not reach either register check.
+ * Before the volatile scan existed, the whole live range — sensor output, FIFO
+ * level, the timestamp counter — landed in the diff and made a second init()
+ * look state-dependent: a shipped ISM330DHCX report showed 29 "changed"
+ * registers of which only 9 were writes, and 23 "differing" on the repeat.
+ */
+static void test_volatile_registers_filtered(void)
+{
+    begin("test_volatile_registers_filtered");
+    int fb = g_fail;
+
+    mock_base();
+    /*
+     * Registers the ISM driver never touches, so making them move exercises
+     * the scan without perturbing the FIFO level or the timestamp the driver
+     * itself reads.  On silicon these would be STATUS_REG and the output
+     * words; here they only have to change with no write in between.
+     */
+    i2cmock_set_live(ISM_ADDR, 0x1E, 3);
+    i2cmock_set_live(ISM_ADDR, 0x50, 7);
+    i2cmock_set_live(ISM_ADDR, 0x51, 1);
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(r->raw.n_volatile_imu >= 3, "the live registers were detected");
+    EXPECT(r->raw.n_volatile_imu < 16, "the scan did not over-match");
+    for (int i = 0; i < r->raw.n_regdiff_imu; i++) {
+        uint8_t g = r->raw.regdiff_imu[i].reg;
+        EXPECT(g != 0x1E && g != 0x50 && g != 0x51,
+               "a live register reached the diff");
+    }
+    /* The point of the filter: a moving register must not read as a
+     * state-dependent init(). */
+    EXPECT(status_of(r, "imu.init.idempotent") == IMT_PASS,
+           "live registers do not break idempotency");
+    EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
+           "control-register writes still show through the filter");
+    EXPECT(r->raw.n_scanned_imu + r->raw.n_volatile_imu > 100,
+           "excluded plus compared covers the mapped range");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * The register sweep must not enter the FIFO port window.  On the ST parts
+ * FIFO_DATA_OUT is 0x78-0x7E and a read of any of the seven pops a word; a skip
+ * list naming only 0x78 and 0x79 left the sweep eating five words per snapshot,
+ * and 0x7A/0x7B/0x7D turned up in a shipped report's diff as though they were
+ * control registers.
+ */
+static void test_fifo_port_window_not_swept(void)
+{
+    begin("test_fifo_port_window_not_swept");
+    int fb = g_fail;
+
+    mock_base();
+    /*
+     * Park a distinctive pattern in the FIFO and leave FIFO_STATUS at 0, so
+     * the driver itself never pops it.  Anything that reaches these bytes did
+     * so by sweeping the port window.  Every byte is nonzero and no two
+     * snapshots would see the same ones, so a sweep that entered the window
+     * shows up both as a "changed" register and as a volatile one.
+     */
+    for (int i = 0; i < 512; i++) {
+        uint8_t w[7] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                         (uint8_t)(0x80 + (i & 0x3F)) };
+        i2cmock_fifo_push(ISM_ADDR, w, 7);
+    }
+    i2cmock_set_reg(ISM_ADDR, 0x3A, 0);
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+    g_s.feed_imu = false;          /* nothing must top the FIFO up */
+
+    imt_report_t *r = run(&cfg, &o);
+
+    for (int i = 0; i < r->raw.n_regdiff_imu; i++)
+        EXPECT(r->raw.regdiff_imu[i].reg < 0x78 ||
+               r->raw.regdiff_imu[i].reg > 0x7E,
+               "a FIFO-port register reached the diff");
+    EXPECT(r->raw.n_volatile_imu == 0,
+           "nothing in the port window looked volatile, so nothing read it");
+    EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
+           "the control-register diff still ran");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * A write-only control register file cannot be diffed at all, and saying so is
+ * the only honest result.  Grading it WARN — which is what happened before —
+ * blamed the MMC5983MA driver for a property of the silicon.
+ */
+static void test_mag_writeonly_ctrl_skips(void)
+{
+    begin("test_mag_writeonly_ctrl_skips");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(status_of(r, "mag.init.regdiff") == IMT_SKIP,
+           "write-only control registers skip the diff");
+    EXPECT(note_contains(r, "mag.init.regdiff", "write-only"),
+           "the skip names the reason");
+    /* The IMU's registers do read back, so its diff must still run. */
+    EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
+           "the IMU diff is unaffected");
 
     free(r);
     end(fb);
@@ -511,6 +694,16 @@ static void test_gravity_and_stuck_axis(void)
     imt_report_t *r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.rest.gravity") == IMT_PASS, "gravity reads 9.807");
     EXPECT(fabs(r->raw.grav_mean - 9.80665) < 0.05, "grav_mean recorded");
+    /*
+     * The note's two conversions used to be fed one argument, so the second
+     * read off the end of the va_list and a shipped report printed "averaged
+     * over 1 s; ratio to true g is 0.000" for a 10 s window at ratio 0.995.
+     * Both numbers have to be the real ones.
+     */
+    EXPECT(note_contains(r, "imu.rest.gravity", "1.000"),
+           "the note carries the true ratio, not a garbage 0.000");
+    EXPECT(!note_contains(r, "imu.rest.gravity", "0.000"),
+           "no uninitialised value in the note");
     free(r);
 
     /* Half-scale gravity: the classic wrong-sensitivity bug.  The check must
@@ -712,6 +905,15 @@ static void test_gyro_sign(void)
     EXPECT(status_of(r, "gyro.x.sign") == IMT_PASS, "X sign correct");
     EXPECT(status_of(r, "gyro.y.sign") == IMT_PASS, "Y sign correct");
     EXPECT(status_of(r, "gyro.z.sign") == IMT_PASS, "Z sign correct");
+    /*
+     * All three turns must reach the appendix.  A row cap of 2 against a
+     * 3-slot array silently dropped Z: it was graded here but never printed,
+     * so the shipped report's rotation table had two rows and no sign of the
+     * third.
+     */
+    EXPECT(r->raw.n_turns == 3, "every turn recorded a row");
+    EXPECT(r->raw.turn[2].axis == 2, "the third row is the Z turn");
+    EXPECT(r->raw.turn[2].theta[2] > 0.0, "the Z row carries its integral");
     free(r);
 
     /* Inverted X gyro. */
@@ -799,10 +1001,14 @@ static void test_report_and_exit_codes(void)
     imud_config_t cfg; base_config(&cfg);
     imt_opts_t o;      fast_opts(&o);
     o.phases = IMT_PHASE_PASSIVE;
+    /* The sweep is on here because its two appendix tables are part of what
+     * this test checks the formatting of. */
+    o.fs_sweep = true;
     script_reset(&o);
     g_s.accel[2] = -9.80665;
 
     imt_report_t *r = run(&cfg, &o);
+    EXPECT(r->raw.n_fs_gyro > 1, "the gyro full-scale table has rows to format");
 
     /* Exit-code mapping, all four combinations. */
     imt_report_t t;
@@ -830,6 +1036,25 @@ static void test_report_and_exit_codes(void)
         EXPECT(strstr(buf, "## 7. How to read this") != NULL, "has the legend");
         EXPECT(strstr(buf, "PASS") != NULL, "reports statuses");
 
+        /*
+         * Appendix numbering must not skip.  5.6 used to be emitted only when
+         * the mag diff had rows, so a part whose control registers do not read
+         * back left a hole between 5.5 and 5.7 that read as a missing section.
+         */
+        EXPECT(strstr(buf, "### 5.5 Control-register diff, IMU") != NULL,
+               "5.5 present");
+        EXPECT(strstr(buf, "### 5.6 Control-register diff, mag") != NULL,
+               "5.6 present even with nothing to show");
+        EXPECT(strstr(buf, "write-only") != NULL,
+               "5.6 says why there is nothing to show");
+        /* The filtering has to be visible, or a narrower test reads as a
+         * cleaner chip. */
+        EXPECT(strstr(buf, "excluded as volatile") != NULL,
+               "the volatile count is reported");
+        /* "-0.00" was printed for the first gyro full-scale row, which has no
+         * previous range to compare against. */
+        EXPECT(strstr(buf, "-0.00") == NULL, "no negative-zero ratio cell");
+
         /* Every check must appear by id, or the report is lying by omission. */
         bool all_present = true;
         for (int i = 0; i < r->n_checks; i++)
@@ -854,6 +1079,21 @@ static void test_report_and_exit_codes(void)
         EXPECT(rows_checked > 0, "results rows were emitted");
         EXPECT(rows_ok, "no unescaped pipes broke a results row");
         unlink(path);
+    }
+
+    /*
+     * The note is the diagnosis, so losing its tail loses the part that says
+     * what to do about the number.  snprintf truncates silently, and a note
+     * written just over the buffer reads fine in review and arrives cut off:
+     * "the counter runs faster than ts_tick_ns say".  Nothing may fill the
+     * buffer exactly.
+     */
+    for (int i = 0; i < r->n_checks; i++) {
+        size_t len = strlen(r->check[i].note);
+        if (len >= sizeof r->check[i].note - 1) {
+            fprintf(stderr, "  note truncated: %s\n", r->check[i].id);
+            EXPECT(false, "a check note was truncated to the buffer");
+        }
     }
 
     free(r);
@@ -882,12 +1122,94 @@ static void test_sim_like_no_recommendation(void)
     end(fb);
 }
 
+/*
+ * imt_decide_verdict() must consult the experimental flags rather than assume
+ * they are set.  A shipped report told the reader to clear `experimental` for
+ * two drivers that had shipped with it clear for releases, which reads as
+ * stale advice in the issue the report gets pasted into.
+ *
+ * Driven directly rather than through a run: the clean branch needs every
+ * required check to PASS, which the mock bus cannot deliver, so a test that
+ * went through imt_run_ops would land in the blocker branch and pass whether
+ * or not this logic was right.
+ */
+static void stage_clean_report(imt_report_t *r, bool imu_exp, bool mag_exp)
+{
+    static const char *required[] = {
+        "imu.probe", "imu.probe.reject", "imu.reset.rc", "imu.init.rc",
+        "imu.odr", "imu.seq.monotonic", "imu.seq.gapless",
+        "imu.err.nodata_not_error", "imu.err.no_spurious",
+        "imu.noise.accel", "imu.noise.gyro", "imu.rest.gravity",
+        "imu.temp.plausible", "imu.chipts.presence", "imu.fs.accel",
+        "faces.frame", "gyro.x.sign", "gyro.y.sign", "gyro.z.sign",
+        "mag.probe", "mag.init.rc", "mag.rate", "mag.nodata_not_error",
+        "mag.field_magnitude", "mag.noise", "mag.wall_ns",
+        "spin.magnitude", "spin.frame_agreement",
+    };
+    memset(r, 0, sizeof *r);
+    snprintf(r->imu_driver, sizeof r->imu_driver, "ism330dhcx");
+    snprintf(r->mag_driver, sizeof r->mag_driver, "mmc5983ma");
+    r->have_mag          = true;
+    r->imu_experimental  = imu_exp;
+    r->mag_experimental  = mag_exp;
+    r->phases_requested  = IMT_PHASE_ALL;
+    r->phases_run        = IMT_PHASE_ALL;
+    for (size_t i = 0; i < sizeof required / sizeof required[0]; i++) {
+        imt_check_t *c = &r->check[r->n_checks++];
+        snprintf(c->id, sizeof c->id, "%s", required[i]);
+        c->status = IMT_PASS;
+        r->n_pass++;
+    }
+}
+
+static void test_verdict_respects_experimental_flag(void)
+{
+    begin("test_verdict_respects_experimental_flag");
+    int fb = g_fail;
+
+    static imt_report_t r;
+
+    /* Both flags already clear — the case that shipped wrong. */
+    stage_clean_report(&r, false, false);
+    imt_decide_verdict(&r);
+    EXPECT(r.recommend_clear_experimental, "a clean full run is recognised");
+    EXPECT(strstr(r.verdict, "RECOMMEND clearing") == NULL,
+           "no recommendation to clear a flag that is already clear");
+    EXPECT(strstr(r.verdict, "already") != NULL,
+           "the verdict says the flag was already clear");
+
+    /* Both set — the recommendation must still be made, and name both. */
+    stage_clean_report(&r, true, true);
+    imt_decide_verdict(&r);
+    EXPECT(strstr(r.verdict, "RECOMMEND clearing") != NULL,
+           "an experimental driver still gets the recommendation");
+    EXPECT(strstr(r.verdict, "ism330dhcx") != NULL &&
+           strstr(r.verdict, "mmc5983ma") != NULL,
+           "both experimental drivers are named");
+
+    /* Only the mag is experimental: the recommendation must name the mag, and
+     * must not name the IMU whose flag is already clear. */
+    stage_clean_report(&r, false, true);
+    imt_decide_verdict(&r);
+    EXPECT(strstr(r.verdict, "RECOMMEND clearing") != NULL,
+           "the experimental mag still gets the recommendation");
+    EXPECT(strstr(r.verdict, "mmc5983ma") != NULL, "the mag is named");
+    EXPECT(strstr(r.verdict, "ism330dhcx") == NULL,
+           "the already-clear IMU is not named");
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud-imutest checker tests (mock I2C) ===");
 
+    test_mock_models_the_whole_fifo_window();
     test_bringup_good();
     test_bringup_bad_whoami();
+    test_volatile_registers_filtered();
+    test_fifo_port_window_not_swept();
+    test_mag_writeonly_ctrl_skips();
     test_odr_and_seq();
     test_error_contract_both_ways();
     test_gravity_and_stuck_axis();
@@ -899,6 +1221,7 @@ int main(void)
     test_spin_frame_agreement();
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
+    test_verdict_respects_experimental_flag();
 
     /* If any test staged a value the int16 registers cannot hold, the counts
      * wrapped and whatever it "measured" was noise.  Fail loudly rather than

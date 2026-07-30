@@ -1229,7 +1229,18 @@ buf[i].chip_ts   /* see Hardware timestamps below */
 #### Hardware timestamps (`has_hw_timestamp`)
 
 Set `has_hw_timestamp = true` only if your chip has an internal sample timer
-that increments at a **fixed, known rate independent of the I²C clock**.
+that increments at a **fixed rate independent of the I²C clock**.
+
+`ts_tick_ns` is the datasheet's nominal period, and it is fine for it to be
+only nominal: the daemon measures the counter's real period against the host's
+`CLOCK_MONOTONIC` across consecutive 60 s anchors and uses the measurement in
+place of your constant (see `ts_anchor_t` in `include/imu_math.h`). That is not
+a refinement — a measured ISM330DHCX ran 4.08% fast, so trusting the constant
+put sample timestamps seconds out and scaled every integrated rotation by the
+same 4%. What the driver must get right is the *tick*, not its exact duration:
+the counter has to advance monotonically at a rate that does not depend on bus
+traffic or ODR. Get the period roughly right (within 10%, or the measurement is
+rejected as implausible) and the daemon handles the rest.
 
 The ISM330DHCX has a 32-bit counter at 40000 ticks/s (25 µs/tick). If your
 chip has an equivalent:

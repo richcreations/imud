@@ -27,11 +27,34 @@
 
 /* ── Timestamp anchor ───────────────────────────────────────────────────── */
 
+/*
+ * The chip counter's declared period is a nominal figure, and the oscillator
+ * driving it is not that accurate: a measured ISM330DHCX ran 4.1% fast, so
+ * 40000 ticks took 0.96 s of wall clock rather than 1.00 s.  Multiplying ticks
+ * by the declared ts_tick_ns therefore over-states elapsed time, and with a
+ * 60 s anchor interval that compounds: sample timestamps run ~2.4 s ahead by
+ * the end of an epoch and then jump backwards when the anchor is refreshed,
+ * and every per-sample dt handed to the filter is 4% long, which scales
+ * integrated rotation one-for-one.
+ *
+ * So the anchor measures the period instead of trusting it.  Two consecutive
+ * anchors give a tick count and the monotonic time it took; the quotient is
+ * the real period, and chip_to_wall() uses it in place of the nominal one.
+ * CLOCK_MONOTONIC rather than the stored CLOCK_REALTIME because an NTP step
+ * inside the window would otherwise be absorbed into the estimate.
+ */
 typedef struct {
     uint64_t        wall_ns;    /* CLOCK_REALTIME at anchor point, ns */
     uint64_t        tai_ns;     /* CLOCK_TAI at anchor point, ns */
+    uint64_t        mono_ns;    /* CLOCK_MONOTONIC at anchor point, ns */
     uint32_t        chip_ticks; /* IMU hardware counter at anchor point */
     uint32_t        gen;        /* incremented on each update */
+    /* Measured tick period in ns, 16-bit fraction.  0 until two anchors far
+     * enough apart have been seen; chip_to_wall() falls back to the caller's
+     * nominal value until then.  Fixed point, not float, to keep the timestamp
+     * path integer-exact. */
+    uint64_t        tick_q16;
+    bool            have_mono;  /* a previous anchor exists to measure against */
     pthread_mutex_t mtx;
 } ts_anchor_t;
 
@@ -61,11 +84,27 @@ static inline void ts_add_ns(struct timespec *ts, long ns)
     }
 }
 
+/*
+ * Re-anchor chip time to the host clocks, and refine the measured tick period
+ * from the interval since the last anchor.  `mono_ns` must come from
+ * CLOCK_MONOTONIC; `nominal_tick_ns` is imu_ops_t.ts_tick_ns, used both as the
+ * fallback and as the plausibility centre for the measurement.  Pass 0 for
+ * `nominal_tick_ns` on a part with no chip timer, which disables measurement.
+ */
 void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
-                   uint64_t wall_ns, uint64_t tai_ns);
+                   uint64_t wall_ns, uint64_t tai_ns,
+                   uint64_t mono_ns, uint32_t nominal_tick_ns);
 
-/* Convert a chip counter value to wall + TAI timestamps using 32-bit wrapping
- * arithmetic (see the definition for the wrap bounds). */
+/* The measured tick period in ns, or 0.0 while still using the nominal one.
+ * For logging and for `imud-status`; not needed to convert a timestamp. */
+double anchor_measured_tick_ns(ts_anchor_t *a);
+
+/*
+ * Convert a chip counter value to wall + TAI timestamps using 32-bit wrapping
+ * arithmetic (see the definition for the wrap bounds).  `tick_ns` is the
+ * driver's declared period, used only until the anchor has measured the real
+ * one.
+ */
 void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                   uint64_t *wall_out, uint64_t *tai_out, uint32_t *gen_out);
 

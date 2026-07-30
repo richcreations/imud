@@ -1556,11 +1556,24 @@ once at startup and re-anchored every 60 seconds:
 ```text
 Anchor procedure:
   t_wall_before  = clock_gettime(CLOCK_REALTIME)
+  t_mono         = clock_gettime(CLOCK_MONOTONIC)
   t_chip         = read ISM330 TIMESTAMP registers
   t_wall_after   = clock_gettime(CLOCK_REALTIME)
   anchor_wall_ns = (t_wall_before + t_wall_after) / 2
   anchor_chip    = t_chip
   anchor_gen    += 1
+
+  # Measure the counter's real period against the previous anchor, and keep
+  # using the declared one until there is a measurement.  MONOTONIC, so an NTP
+  # step inside the window is not read as the oscillator drifting.
+  if have_previous_anchor:
+      d_ticks = (t_chip - prev_chip) & 0xFFFFFFFF
+      d_mono  = t_mono - prev_mono
+      if d_ticks >= 1000 and d_mono >= 20e9:          # long enough to mean something
+          meas = d_mono / d_ticks
+          if 0.9 * 25_000 <= meas <= 1.1 * 25_000:    # else: reset counter, lost wrap
+              tick_ns = meas if tick_ns is None else tick_ns + (meas - tick_ns) / 4
+  prev_chip, prev_mono = t_chip, t_mono
 ```
 
 Per-sample wall timestamp:
@@ -1568,18 +1581,31 @@ Per-sample wall timestamp:
 ```python
 def chip_to_wall_ns(chip_ts: int) -> int:
     delta = (chip_ts - anchor_chip) & 0xFFFFFFFF  # 32-bit rollover safe (~29.8 hr)
-    return anchor_wall_ns + delta * 25_000         # 25 µs per tick → ns
+    return anchor_wall_ns + delta * (tick_ns or 25_000)
 ```
 
-**Total timestamp uncertainty budget:**
+**The declared 25 µs is nominal, and the oscillator is not that good.** A
+measured ISM330DHCX ran **4.08% fast** — 40800 ppm, not the 100 ppm this budget
+originally assumed. Scaling ticks by the declared period therefore ran sample
+timestamps ~2.4 s ahead over a 60 s anchor epoch before snapping back at the
+re-anchor, and made every per-sample `dt` 4% long, which scales integrated
+rotation by the same factor. Measuring the period rather than trusting it is
+what keeps the budget below correct; `imud-imutest`'s `imu.chipts.wall` grades
+the same quantity on a bench, and `imud` logs the measured period at startup
+when it is more than 1% off nominal.
+
+**Total timestamp uncertainty budget** (with the measured period in use):
 
 |Source                                                  |Contribution                   |
 |--------------------------------------------------------|-------------------------------|
 |GNSS+PPS clock discipline (each node)                   |< 5 µs typical, < 20 µs worst  |
 |Anchor I2C read half-width                              |~150–300 µs (dominant)         |
 |ISM330 timer resolution                                 |25 µs                          |
-|ISM330 oscillator drift between anchors (60 s × 100 ppm)|< 6 ms → corrected at re-anchor|
+|Residual period error after measurement (60 s × ~200 ppm)|< 12 ms → corrected at re-anchor|
 |**Total per-sample, steady state**                      |**~300–500 µs**                |
+
+Without the measurement that fourth row is 60 s × 40800 ppm ≈ **2.4 s**, which
+dominates everything above it by four orders of magnitude.
 
 ### Camera Timestamp Correlation
 

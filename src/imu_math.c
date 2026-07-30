@@ -59,31 +59,103 @@ uint64_t ts_ns(const struct timespec *t)
     return (uint64_t)t->tv_sec * 1000000000ULL + (uint64_t)t->tv_nsec;
 }
 
+/*
+ * Guards on the measurement.  The interval has to be long enough that the
+ * jitter in where inside the I2C read the anchor lands is negligible against
+ * it: the reader anchors every 60 s, a burst read is tens of milliseconds, and
+ * 20 s puts that jitter under 0.2% — well below the several percent of
+ * oscillator error this exists to catch.
+ */
+#define ANCHOR_MIN_INTERVAL_NS  20000000000ULL   /* 20 s */
+#define ANCHOR_MIN_TICKS        1000u
+
+/* Reject anything further than this from the declared period.  A measurement
+ * outside it is not a slow oscillator: it is a counter that was reset under
+ * us, a wrap the driver lost, or a reader that stalled for minutes. */
+#define ANCHOR_TOL_PCT          10
+
 void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
-                   uint64_t wall_ns, uint64_t tai_ns)
+                   uint64_t wall_ns, uint64_t tai_ns,
+                   uint64_t mono_ns, uint32_t nominal_tick_ns)
 {
     pthread_mutex_lock(&a->mtx);
+
+    /*
+     * have_mono, because the first anchor has nothing to measure against and
+     * a zeroed struct would otherwise be treated as an anchor at time zero —
+     * the daemon's first anchor lands at system uptime against a counter that
+     * has been running since power-on, and dividing one by the other would
+     * produce a confident nonsense.  nominal_tick_ns, because the
+     * plausibility band below is built from it and a zero band means nothing;
+     * on a part with no chip timer the tick delta is also always zero, so this
+     * is the clearer of two guards rather than the only one.
+     */
+    if (a->have_mono && nominal_tick_ns != 0 && mono_ns > a->mono_ns) {
+        uint32_t dticks = chip_ts - a->chip_ticks;      /* 32-bit wrapping */
+        uint64_t dmono  = mono_ns - a->mono_ns;
+
+        if (dticks >= ANCHOR_MIN_TICKS && dmono >= ANCHOR_MIN_INTERVAL_NS) {
+            /* ns per tick, 16-bit fraction.  dmono is at most hours, so the
+             * shift cannot overflow: 1 h << 16 is about 2.4e17. */
+            uint64_t meas = (dmono << 16) / dticks;
+            uint64_t nom  = (uint64_t)nominal_tick_ns << 16;
+            uint64_t lo   = nom * (100 - ANCHOR_TOL_PCT) / 100;
+            uint64_t hi   = nom * (100 + ANCHOR_TOL_PCT) / 100;
+
+            if (meas >= lo && meas <= hi) {
+                if (a->tick_q16 == 0) {
+                    /* Take the first good measurement whole rather than
+                     * filtering up to it: the error it corrects is systematic
+                     * and present from the first sample, so converging over
+                     * several minutes would leave it in place for no reason. */
+                    a->tick_q16 = meas;
+                } else {
+                    /* Then filter, so one noisy interval cannot swing dt. */
+                    int64_t err = (int64_t)meas - (int64_t)a->tick_q16;
+                    a->tick_q16 = (uint64_t)((int64_t)a->tick_q16 + err / 4);
+                }
+            }
+        }
+    }
+
     a->chip_ticks = chip_ts;
     a->wall_ns    = wall_ns;
     a->tai_ns     = tai_ns;
+    a->mono_ns    = mono_ns;
+    a->have_mono  = true;
     a->gen++;
     pthread_mutex_unlock(&a->mtx);
+}
+
+double anchor_measured_tick_ns(ts_anchor_t *a)
+{
+    pthread_mutex_lock(&a->mtx);
+    double v = a->tick_q16 ? (double)a->tick_q16 / 65536.0 : 0.0;
+    pthread_mutex_unlock(&a->mtx);
+    return v;
 }
 
 /*
  * Convert a chip counter value to wall + TAI timestamps.
  * Uses 32-bit wrapping arithmetic — safe up to 2^32 ticks between anchors
  * (~29.8 h at the ST parts' 25 µs/tick, ~71.6 min at the ICM-42688-P's
- * 1 µs/tick); the 60 s anchor refresh keeps deltas far below either bound.
- * tick_ns comes from imu_ops_t.ts_tick_ns (0 when !has_hw_timestamp, where
- * chip_ts is always 0 and the offset degenerates to 0 as intended).
+ * 1 µs/tick, which unwraps its 20-bit counter into 32); the 60 s anchor
+ * refresh keeps deltas far below either bound.
+ *
+ * The period used is the measured one once the anchor has it, falling back to
+ * the caller's `tick_ns` — imu_ops_t.ts_tick_ns — until then.  That fallback
+ * also covers !has_hw_timestamp, where tick_ns is 0, chip_ts is always 0, and
+ * the offset degenerates to 0 as intended.
  */
 void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                   uint64_t *wall_out, uint64_t *tai_out,
                   uint32_t *gen_out)
 {
     pthread_mutex_lock(&a->mtx);
-    uint64_t offset = (uint64_t)(chip_ts - a->chip_ticks) * tick_ns;
+    uint32_t dticks = chip_ts - a->chip_ticks;
+    uint64_t offset = a->tick_q16
+                    ? ((uint64_t)dticks * a->tick_q16) >> 16
+                    : (uint64_t)dticks * tick_ns;
     if (wall_out) *wall_out = a->wall_ns + offset;
     if (tai_out)  *tai_out  = a->tai_ns  + offset;
     if (gen_out)  *gen_out  = a->gen;

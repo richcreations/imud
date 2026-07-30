@@ -149,6 +149,10 @@ typedef struct {
     int           n_regdiff_imu;
     imt_regdiff_t regdiff_imu[IMT_MAX_REGDIFF];
     bool          regdiff_imu_mapped;   /* a safe-register map existed */
+    /* Registers the volatile scan excluded, and the number left to compare.
+     * Both are reported: filtering that happens silently reads as a cleaner
+     * chip rather than a narrower test. */
+    int           n_volatile_imu, n_scanned_imu;
 
     /* Magnetometer, passive */
     double        mag_rate_hz, mag_window_s;
@@ -159,6 +163,8 @@ typedef struct {
     int           n_regdiff_mag;
     imt_regdiff_t regdiff_mag[IMT_MAX_REGDIFF];
     bool          regdiff_mag_mapped;
+    bool          regdiff_mag_writeonly;  /* control registers do not read back */
+    int           n_volatile_mag;
 
     /* Guided phases */
     int            n_faces;
@@ -318,6 +324,17 @@ int         imt_exit_code(const imt_report_t *r);
 const char *imt_status_str(imt_status_t s);
 /* Look a check up by id — for tests and for the recommendation logic. */
 const imt_check_t *imt_find(const imt_report_t *r, const char *id);
+
+/*
+ * Fill in r->verdict and r->recommend_clear_experimental from the checks and
+ * flags already in `r`.  imt_run_ops() calls this at the end of every run; it
+ * is exposed because it is a pure function over the report and the branch that
+ * matters most — a clean run against a driver whose `experimental` flag is
+ * already clear — cannot be reached from the mock bus, where several passive
+ * checks have no way to pass.  A test that could only reach it by accident
+ * would pass whether or not the logic was right.
+ */
+void imt_decide_verdict(imt_report_t *r);
 
 /* ── GPIO edge counting (src/imutest_gpio.c) ───────────────────────────────── */
 
