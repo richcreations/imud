@@ -585,11 +585,14 @@ void *capture_thread(void *arg)
         pthread_mutex_unlock(&ctx->shared.lock);
     }
 
-    /* Drain what the readers pushed before stop, then close cleanly. */
+    /* Drain what the readers pushed before stop, then close cleanly.  The
+     * inner break only leaves the current batch, so `failed` has to gate the
+     * outer loop too — otherwise a write error keeps popping and retrying
+     * against storage that has already said no. */
     if (!failed) {
         cap_ring_rec_t recs[64];
         int n;
-        while ((n = cap_ring_pop(&ctx->cap_ring, recs, 64)) > 0)
+        while (!failed && (n = cap_ring_pop(&ctx->cap_ring, recs, 64)) > 0)
             for (int i = 0; i < n; i++)
                 if (cap_rot_write(&rot, &recs[i]) != 0) { failed = true; break; }
     }

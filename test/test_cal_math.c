@@ -317,6 +317,151 @@ static void test_ellipse_fit_degenerate(void)
     end(fb);
 }
 
+/* ── Centered extent + diagonal soft iron ────────────────────────────────── */
+
+/*
+ * Fill samps[n][3] with a Fibonacci lattice on a sphere of the given center
+ * and radius — the same construction run_sphere_test uses, kept separate here
+ * because these tests need the raw points, not just the accumulator.
+ */
+static void make_sphere_samples(double (*samps)[3], int n,
+                                const double c[3], double r)
+{
+    double golden = M_PI * (3.0 - sqrt(5.0));
+    for (int i = 0; i < n; i++) {
+        double y_unit = 1.0 - (2.0 * i) / (double)(n - 1);
+        double rho    = sqrt(1.0 - y_unit * y_unit);
+        double theta  = golden * i;
+        samps[i][0] = c[0] + r * rho * cos(theta);
+        samps[i][1] = c[1] + r * y_unit;
+        samps[i][2] = c[2] + r * rho * sin(theta);
+    }
+}
+
+/* A clean swing: the half-range is the sphere radius on every axis. */
+static void test_extent_full_sphere(void)
+{
+    begin("test_extent_full_sphere");
+    int fb = g_fail;
+
+    const double c[3] = { 12.5, -8.3, 3.1 };
+    const double r    = 40.0;
+    static double samps[256][3];
+    make_sphere_samples(samps, 256, c, r);
+
+    extent_accum_t acc = {0};
+    for (int i = 0; i < 256; i++)
+        extent_add(&acc, samps[i][0] - c[0], samps[i][1] - c[1],
+                         samps[i][2] - c[2]);
+
+    double half[3];
+    EXPECT(extent_half(&acc, half) == 0, "extent_half returns 0");
+    EXPECT(acc.n == 256, "all points counted");
+    for (int k = 0; k < 3; k++)
+        EXPECT_NEAR_D(half[k], r, 0.5, "half-range equals the radius");
+
+    /* An undistorted sphere needs no soft-iron correction at all. */
+    double si[3];
+    cal_softiron_diag(half, r, si);
+    for (int k = 0; k < 3; k++)
+        EXPECT_NEAR_D(si[k], 1.0, 0.02, "soft iron is unity on a true sphere");
+    end(fb);
+}
+
+/*
+ * Regression: the half-range must not depend on the hard-iron offset.
+ *
+ * cal_main.c used to seed mn[]/mx[] from the RAW first sample and then update
+ * them with CENTERED ones.  Wherever the raw seed fell outside the centered
+ * range it was never displaced, so half[] came out inflated by the hard iron —
+ * which under-scaled si[] and over-stated the radius handed to ellipse_fit.
+ * This reproduces the old seeding alongside the fixed path and pins both.
+ *
+ * Center Y is chosen positive so the lattice's first point (the pole, at
+ * y = cy + r = 65) lands outside the centered range: that is the swing that
+ * used to be mis-scaled by 24% on one axis.
+ */
+static void test_extent_ignores_hard_iron(void)
+{
+    begin("test_extent_ignores_hard_iron");
+    int fb = g_fail;
+
+    const double c[3] = { 12.5, 25.0, 3.1 };
+    const double r    = 40.0;
+    static double samps[256][3];
+    make_sphere_samples(samps, 256, c, r);
+
+    extent_accum_t acc = {0};
+    for (int i = 0; i < 256; i++)
+        extent_add(&acc, samps[i][0] - c[0], samps[i][1] - c[1],
+                         samps[i][2] - c[2]);
+
+    double half[3];
+    EXPECT(extent_half(&acc, half) == 0, "extent_half returns 0");
+    for (int k = 0; k < 3; k++)
+        EXPECT_NEAR_D(half[k], r, 0.5, "half-range unaffected by hard iron");
+
+    double si[3];
+    cal_softiron_diag(half, r, si);
+    EXPECT_NEAR_D(si[1], 1.0, 0.02, "Y soft iron stays unity");
+
+    /* The old seeding, verbatim — it has to be visibly wrong, or this test
+     * would pass just as happily against the bug it exists to catch. */
+    double mn[3] = { samps[0][0], samps[0][1], samps[0][2] };
+    double mx[3] = { samps[0][0], samps[0][1], samps[0][2] };
+    for (int i = 0; i < 256; i++)
+        for (int k = 0; k < 3; k++) {
+            double d = samps[i][k] - c[k];
+            if (d < mn[k]) mn[k] = d;
+            if (d > mx[k]) mx[k] = d;
+        }
+    double old_half_y = (mx[1] - mn[1]) / 2.0;
+    EXPECT(old_half_y > half[1] + 10.0,
+           "old seeding inflated the Y half-range (the bug)");
+    EXPECT(old_half_y > 50.0, "old seeding kept the raw pole value 65");
+    end(fb);
+}
+
+/* A genuinely distorted axis still produces the scale that corrects it. */
+static void test_softiron_diag_scales_distorted_axis(void)
+{
+    begin("test_softiron_diag_scales_distorted_axis");
+    int fb = g_fail;
+
+    /* X stretched 25% by soft iron; Y and Z clean. */
+    double half[3] = { 50.0, 40.0, 40.0 };
+    double si[3];
+    cal_softiron_diag(half, 40.0, si);
+    EXPECT_NEAR_D(si[0], 0.8, 1e-9, "stretched X scaled back to the radius");
+    EXPECT_NEAR_D(si[1], 1.0, 1e-9, "clean Y left alone");
+    EXPECT_NEAR_D(si[2], 1.0, 1e-9, "clean Z left alone");
+
+    /* Flat swing: no Z extent to fit, so Z must be left at 1.0 rather than
+     * amplified by a huge radius/half ratio. */
+    double flat[3] = { 40.0, 40.0, 2.0 };
+    cal_softiron_diag(flat, 40.0, si);
+    EXPECT_NEAR_D(si[2], 1.0, 1e-9, "no Z coverage leaves Z uncorrected");
+    EXPECT(si[2] != 40.0 / 2.0, "Z is not scaled 20x off noise");
+    end(fb);
+}
+
+static void test_extent_no_samples(void)
+{
+    begin("test_extent_no_samples");
+    int fb = g_fail;
+
+    extent_accum_t acc = {0};
+    double half[3] = { -1, -1, -1 };
+    EXPECT(extent_half(&acc, half) == -1, "empty accumulator returns -1");
+
+    /* A single point has zero extent, but it is a defined answer. */
+    extent_add(&acc, 5.0, -2.0, 1.0);
+    EXPECT(extent_half(&acc, half) == 0, "one point returns 0");
+    for (int k = 0; k < 3; k++)
+        EXPECT_NEAR_D(half[k], 0.0, 1e-12, "one point has zero half-range");
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 /* ── Heading-circle coverage (guided swing cal) ─────────────────────────── */
@@ -753,6 +898,10 @@ int main(void)
     test_ellipse_fit_noise();
     test_ellipse_fit_circle_identity();
     test_ellipse_fit_degenerate();
+    test_extent_full_sphere();
+    test_extent_ignores_hard_iron();
+    test_softiron_diag_scales_distorted_axis();
+    test_extent_no_samples();
     test_cov_full_circle();
     test_cov_half_circle();
     test_cov_wrong_center();

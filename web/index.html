@@ -28,7 +28,7 @@
   "applicationSubCategory": "System daemon, sensor fusion, marine navigation, robotics",
   "operatingSystem": "Linux, Raspberry Pi OS, Debian",
   "processorRequirements": "arm64, armhf",
-  "softwareVersion": "1.7",
+  "softwareVersion": "1.8",
   "license": "https://opensource.org/licenses/MIT",
   "codeRepository": "https://github.com/richcreations/imud",
   "programmingLanguage": "C",
@@ -388,8 +388,10 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     is the best-tested combination.</dd>
 
     <dt>Experimental drivers</dt>
-    <dd>ST LSM6DSO, TDK InvenSense ICM-20948 and ICM-42688-P;
-    magnetometers ST LIS2MDL and LIS3MDL, and AKM AK09916.</dd>
+    <dd>ST LSM6DSO, TDK InvenSense ICM-20948, ICM-42688-P, MPU-9250 and
+    MPU-9255; magnetometers ST LIS2MDL and LIS3MDL, and AKM AK09916 and
+    AK8963. <code>imud-imutest</code> is how one of these gets promoted:
+    run it against the part and attach the report.</dd>
 
     <dt>No hardware</dt>
     <dd>The <code>sim</code> driver runs the full pipeline from a synthetic
@@ -423,7 +425,9 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     <dt>Tools</dt>
     <dd><code>imud-cal</code> for gyro, accelerometer, and magnetometer
     calibration; <code>imud-status</code> to query a running daemon;
-    <code>imud-mon</code> for a live network view of the streams.</dd>
+    <code>imud-mon</code> for a live network view of the streams;
+    <code>imud-imutest</code> to validate a sensor driver against real
+    hardware and write a report worth attaching to an issue.</dd>
   </dl>
 </div>
 
@@ -463,8 +467,8 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
 </div>
 
 <div class="bar bottom">
-  <span>imud 1.7</span>
-  <span>2026-07-27</span>
+  <span>imud 1.8</span>
+  <span>2026-07-31</span>
   <span>IMUD(8)</span>
 </div>
 

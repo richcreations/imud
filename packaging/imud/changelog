@@ -1,3 +1,32 @@
+imud (1.8) unstable; urgency=medium
+
+  * New tool imud-imutest ships in the imud-utils package: validates a
+    sensor driver against real hardware and writes a Markdown report to
+    attach to an issue. Ten of imud's twelve drivers have never run on
+    physical silicon; a clean report is what clears an experimental flag.
+  * New drivers mpu9250 / mpu9255 (IMU) and ak8963 (magnetometer) for the
+    TDK InvenSense MPU-925x 9-axis breakouts, all experimental. The
+    magnetometer answers at 0x0C through the IMU's I2C bypass.
+  * Fix: the IMU chip timer's declared period was trusted rather than
+    measured. The ISM330DHCX on the reference board runs 4.08% fast, so
+    ts_wall_ns / ts_tai_ns ran about 2.4 s ahead over each 60 s anchor
+    epoch and every per-sample dt handed to the filter was 4% long. The
+    anchor now measures the counter's real period against CLOCK_MONOTONIC
+    and uses that, rejecting measurements more than 10% from nominal.
+  * Fix: imud-cal accel printed the wrong physical instructions for all
+    six positions, so the fit silently fell back to an identity scale.
+    Re-run it; a calibration saved by an earlier release does nothing.
+  * Fix: imud-cal mag over-stated the soft-iron correction on any board
+    with hard iron — the per-axis extent seeded its min/max from a raw
+    sample and then compared centered ones against it. Re-run it.
+  * Files created by the daemon and the tools (PID file, cal.json, .imucap
+    captures, imutest reports) now carry an explicit 0644 rather than
+    0666 narrowed by whatever umask the process was launched with.
+  * Build: the tree is warning-clean again on gcc, and the clang static
+    analyzer reports no bugs.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 31 Jul 2026 22:00:00 -0700
+
 imud (1.7) unstable; urgency=medium
 
   * WIRE FORMAT v17 (packet 260 -> 276 bytes): four new MEKF diagnostic

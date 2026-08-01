@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "capture.h"
+#include "fileio.h"
 
 /* ── Writer ──────────────────────────────────────────────────────────────── */
 
@@ -34,7 +35,7 @@ int cap_writer_open(cap_writer_t *w, const char *path,
 {
     memset(w, 0, sizeof(*w));
 
-    w->f = fopen(path, "wb");
+    w->f = fcreate(path, "wb", IMUD_FILE_MODE);
     if (!w->f) return -1;
     setvbuf(w->f, NULL, _IOFBF, CAP_WRITE_BUF);
 

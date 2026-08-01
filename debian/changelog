@@ -1,3 +1,27 @@
+imud (1.8-1) unstable; urgency=medium
+
+  * New tool imud-imutest, shipped in the imud-utils binary package:
+    validates a sensor driver against real hardware and writes a Markdown
+    report to attach to an issue. imud-utils therefore gains a libgpiod
+    dependency, since unlike imud-mon it talks to the sensor over I2C.
+  * New drivers mpu9250 / mpu9255 (IMU) and ak8963 (magnetometer) for the
+    TDK InvenSense MPU-925x 9-axis breakouts; all three experimental.
+  * Fix: the IMU chip timer's declared period was trusted rather than
+    measured. The reference ISM330DHCX runs 4.08% fast, so the wire's
+    ts_wall_ns / ts_tai_ns ran roughly 2.4 s ahead over each 60 s anchor
+    epoch and then stepped back, and every per-sample dt reaching the
+    fusion filter was 4% long. The timestamp anchor now measures the
+    counter's real period against CLOCK_MONOTONIC.
+  * Fix: imud-cal accel printed the wrong physical instructions for all
+    six positions and then silently fitted an identity scale. Re-run it.
+  * Fix: imud-cal mag inflated the per-axis half-range by the hard-iron
+    offset, biasing the soft-iron correction. Re-run it.
+  * Files created by the daemon and tools now carry an explicit 0644
+    instead of 0666 narrowed by the invoking process's umask.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Fri, 31 Jul 2026 22:00:00 -0700
+
 imud (1.7-1) unstable; urgency=medium
 
   * WIRE FORMAT v17 (packet 260 -> 276 bytes): four new MEKF diagnostic

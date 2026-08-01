@@ -101,7 +101,10 @@ static int replay(const char *path, const imud_config_t *cfg_in,
     imud_config_t cfg = *cfg_in;
     if (na > 0.0) cfg.mekf_accel_noise = na;
 
-    float odr = (float)(r.hdr.imu_odr_hz ? r.hdr.imu_odr_hz : cfg.imu_odr_hz);
+    /* The capture header's rate is uint32_t and the config's is int; compare
+     * them as double so the ?: does not silently change signedness. */
+    float odr = (float)(r.hdr.imu_odr_hz ? (double)r.hdr.imu_odr_hz
+                                         : (double)cfg.imu_odr_hz);
     if (odr <= 0.0f) odr = 833.0f;
 
     mekf_t f;

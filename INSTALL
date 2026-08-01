@@ -71,7 +71,7 @@ package with its own dependencies, config, and docs:
     sudo make install-influxdb                         # InfluxDB bridge
     sudo make install-mavlink                          # MAVLink bridge
     sudo make install-prometheus                       # Prometheus exporter
-    sudo make install-utils                            # imud-mon network monitor
+    sudo make install-utils                            # imud-mon monitor + imud-imutest
 
 Prebuilt arm64 and armhf .debs for Debian/Raspberry Pi OS bookworm and trixie are
 attached to GitHub releases (https://github.com/richcreations/imud/releases):

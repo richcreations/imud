@@ -781,7 +781,8 @@ clean:
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers test_imutest \
-	      fuzz_config fuzz_json fuzz_packet fuzz_capture mkseed_packet \
+	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
+	      mkseed_packet \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info coverage-html \
 	      etc/*.service imud-*.tar.gz

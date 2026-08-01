@@ -52,15 +52,15 @@ declination / iron cal), with the boot-heading-dependent component gone. Then a
 swing-circle recal with the new ellipse fit, and set lat/lon (or gpsd) so WMM
 declination is active.
 
-**This is now the gate on the 1.7 tag, not merely a queued bench task.** 1.7
-changed startup and the accelerometer update path in ways no hardware has seen:
-`align_window_sec` moved the alignment window ~1 s → 5 s, and the `m33_inv` fix
-took accel-update duty from ~13% to ~100% (both §10.5). Neither has run on real
-silicon, and `test_ring`, `test_concurrency`, `test_drivers` and
-`test_drivers_registry` cannot build on the macOS dev host and have never been
-built against this branch. A ready-to-run brief with a structured results
-template — so the outcome comes back rather than evaporating — is at
-`~/Desktop/imud-handoff-pi17/`.
+**Still owed from 1.7, and now overdue.** 1.7 changed startup and the
+accelerometer update path in ways no hardware has seen: `align_window_sec`
+moved the alignment window ~1 s → 5 s, and the `m33_inv` fix took accel-update
+duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
+— the chip timer's period is now measured rather than taken from
+`ts_tick_ns` — which only real silicon can confirm. `test_ring`,
+`test_concurrency`, `test_drivers`, `test_drivers_registry` and `test_imutest`
+cannot build on the macOS dev host, so CI and the Pi are the only places they
+have ever run.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
@@ -134,12 +134,11 @@ Still open:
   shareable browser demo: live 3-D horizon over the WebSocket bridge. First
   satellite client shipped 2026-07-19: **imud-arduino**
   (github.com/richcreations/imud-arduino), the Arduino/ESP32 wire client in
-  its own repository. **Action required for 1.7:** it pins wire v14 (260 B)
-  and its parser rejects any other version word, so against a 1.7 daemon it
-  receives *nothing* — silently. A handoff package with machine-verified
-  golden vectors for v17 is at `~/Desktop/imud-handoff-wire17/` on the dev
-  host. Separate repo, so not part of the imud tag, but it should ship
-  alongside it.
+  its own repository. It tracks the wire: updated to v17 (276 B) on
+  2026-07-26, so it decodes a 1.7+ daemon. Its parser rejects any other
+  version word outright, which is the point — but it means a wire bump has to
+  reach that repository too, and it is not part of an imud tag. Keep it in the
+  wire-change checklist.
 - **SPI transport.** Unlocks high-ODR modes (6.6 kHz ISM330) and lower jitter;
   pairs with the Pi 5 latency profiling item.
 - **Debian archive submission.** The self-hosted apt repo shipped (1.5

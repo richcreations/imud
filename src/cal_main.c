@@ -297,10 +297,9 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* ── Soft-iron: diagonal scale from per-axis half-range ─────────── */
 
-    double mn[3] = { samps[0][0], samps[0][1], samps[0][2] };
-    double mx[3] = { samps[0][0], samps[0][1], samps[0][2] };
     double rms = 0.0;
     ellipse_accum_t eacc = {0};
+    extent_accum_t  xacc = {0};
 
     for (int i = 0; i < n; i++) {
         double dx = samps[i][0] - center[0];
@@ -309,17 +308,17 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         double res = sqrt(dx*dx + dy*dy + dz*dz) - radius;
         rms += res * res;
         ellipse_add(&eacc, (float)dx, (float)dy);
-        for (int k = 0; k < 3; k++) {
-            if (samps[i][k] - center[k] < mn[k]) mn[k] = samps[i][k] - center[k];
-            if (samps[i][k] - center[k] > mx[k]) mx[k] = samps[i][k] - center[k];
-        }
+        extent_add(&xacc, dx, dy, dz);
     }
     rms = sqrt(rms / n);
     free(samps);
 
     /* Per-axis half-range after centering */
     double half[3];
-    for (int k = 0; k < 3; k++) half[k] = (mx[k] - mn[k]) / 2.0;
+    if (extent_half(&xacc, half) < 0) {
+        fprintf(stderr, "cal: no samples to measure\n");
+        if (fd >= 0) close(fd); return -1;
+    }
 
     /*
      * Horizontal soft iron: 2D ellipse fit on the centered X/Y samples.
@@ -339,8 +338,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
      * For horizontal boat data, half[2] << radius; forcing a correction
      * there would amplify noise rather than remove distortion. */
     double si[3];
-    for (int k = 0; k < 3; k++)
-        si[k] = (half[k] > 0.3 * radius) ? (radius / half[k]) : 1.0;
+    cal_softiron_diag(half, radius, si);
 
     /* ── Results ─────────────────────────────────────────────────────── */
 

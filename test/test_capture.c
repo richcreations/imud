@@ -164,6 +164,32 @@ static void test_roundtrip(void)
     end(fb);
 }
 
+/*
+ * A capture file must be created 0644 by its own choice, not by inheriting a
+ * umask.  cap_writer_open used to be a plain fopen(path, "wb") — mode 0666
+ * masked by whatever the invoking shell had, which under `umask 0` left the
+ * black box world-writable.  Force umask 0 so the file's own mode is what is
+ * being measured.
+ */
+static void test_file_mode(void)
+{
+    begin("test_file_mode");
+    int fb = g_fail;
+    const char *path = path_in_dir("mode.imucap");
+
+    mode_t prev = umask(0);
+    cap_writer_t w;
+    EXPECT(cap_writer_open(&w, path, 100, "sim", "sim", "1.5", 0, 0) == 0,
+           "writer open");
+    cap_writer_close(&w);
+    umask(prev);
+
+    struct stat st;
+    EXPECT(stat(path, &st) == 0, "capture file exists");
+    EXPECT((st.st_mode & 07777) == 0644, "capture file is 0644, not 0666");
+    end(fb);
+}
+
 static void test_open_rejects(void)
 {
     begin("test_open_rejects");
@@ -607,6 +633,7 @@ int main(void)
 
     test_sizes();
     test_roundtrip();
+    test_file_mode();
     test_open_rejects();
     test_truncated_tail();
     test_forward_compat();

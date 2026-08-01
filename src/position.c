@@ -320,8 +320,12 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
     LOG_I("[pos] gpsd connected %s:%d\n",
             ctx->cfg->pos_gpsd_host, ctx->cfg->pos_gpsd_port);
 
+    /* A failed WATCH shows up as an empty read loop below, which is handled;
+     * the result is consumed only because gcc ignores a (void) cast on
+     * glibc's warn_unused_result write(). */
     const char *watch = "?WATCH={\"enable\":true,\"json\":true}\n";
-    (void)write(fd, watch, strlen(watch));
+    ssize_t wr = write(fd, watch, strlen(watch));
+    (void)wr;
 
     line_reader_t rdr;
     line_reader_init(&rdr, fd);

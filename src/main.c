@@ -54,6 +54,7 @@
 
 #include "cal.h"
 #include "config.h"
+#include "fileio.h"
 #include "imu.h"
 #include "imu_math.h"    /* ts_add_ns */
 #include "log.h"
@@ -149,7 +150,7 @@ static int parse_args(int argc, char **argv, cli_args_t *a)
 
 static void pid_write(const char *path)
 {
-    FILE *f = fopen(path, "w");
+    FILE *f = fcreate(path, "w", IMUD_FILE_MODE);
     if (!f) { LOG_E("[main] cannot write PID file %s: %s\n",
                       path, strerror(errno)); return; }
     fprintf(f, "%d\n", (int)getpid());
@@ -362,8 +363,11 @@ static void write_status_response(int fd,
 
 #undef WS
 
-    /* Write all at once; ignore partial-write on client disconnect. */
-    (void)write(fd, buf, (size_t)(wp - buf));
+    /* Write all at once; ignore partial-write on client disconnect.  glibc
+     * marks write() warn_unused_result and gcc deliberately does not honour a
+     * (void) cast for that, so the result has to land somewhere. */
+    ssize_t nw = write(fd, buf, (size_t)(wp - buf));
+    (void)nw;
 }
 
 static void *health_thread(void *arg)
@@ -506,12 +510,12 @@ int main(int argc, char **argv)
 {
     g_start_time = time(NULL);
 
-    /* Every file this daemon creates goes through fopen(), which asks for
-     * mode 0666 and relies on the umask to narrow it.  Under systemd that
-     * is 0022 (so 0644), but a manual start inherits whatever the invoking
-     * shell had — umask 0 would make the PID file, cal.json and the .imucap
-     * captures world-WRITABLE.  Pin it here rather than depend on how the
-     * daemon was launched. */
+    /* The PID file, cal.json and the .imucap captures are created through
+     * fcreate() with an explicit 0644 (see include/fileio.h), so their mode
+     * no longer depends on how the daemon was launched.  This stays as a
+     * backstop for anything created by a library beneath us: a manual start
+     * inherits the invoking shell's umask, and umask 0 would leave such a
+     * file world-WRITABLE. */
     umask(022);
 
     /* ── 1. Args + config ───────────────────────────────────────────────── */

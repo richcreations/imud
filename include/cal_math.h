@@ -127,6 +127,36 @@ void ellipse_add(ellipse_accum_t *a, float x, float y);
  */
 int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2]);
 
+/*
+ * Per-axis extent of the CENTERED samples, used for the diagonal soft-iron
+ * fallback and for the horizontal radius handed to ellipse_fit.
+ *
+ * Feed the same centered values as ellipse_add.  Zero-initialising the
+ * accumulator is enough: the first point seeds both bounds, so the running
+ * min/max can never be contaminated by a value on a different scale.  (It
+ * was: the caller used to seed from a RAW sample and then compare centered
+ * ones against it, which inflated the half-range by the hard-iron offset.)
+ */
+typedef struct {
+    double mn[3], mx[3];
+    int    n;
+} extent_accum_t;
+
+/* Add one centered measurement. */
+void extent_add(extent_accum_t *a, double x, double y, double z);
+
+/* Half of the per-axis extent.  Returns 0, or -1 when no points were added. */
+int extent_half(const extent_accum_t *a, double half[3]);
+
+/*
+ * Diagonal soft-iron scale: the factor per axis that stretches the measured
+ * half-range onto the fitted sphere radius.  An axis with less than 30% of
+ * the radius in coverage is left at 1.0 — a boat swinging on the flat sees
+ * almost no Z extent, and "correcting" it would amplify noise rather than
+ * remove distortion.
+ */
+void cal_softiron_diag(const double half[3], double radius, double si[3]);
+
 /* ── Allan-variance sensor characterization (imud-cal characterize) ─────── */
 
 typedef struct {

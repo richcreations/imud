@@ -215,7 +215,7 @@ static void test_gpsd_tpv_full(void)
     EXPECT_NEAR_D(lat,  37.8697, 1e-9,  "lat = 37.8697");
     EXPECT(pos_json_double(tpv, "lon",  &lon),  "lon found");
     EXPECT_NEAR_D(lon, -122.3153, 1e-9, "lon = -122.3153");
-    EXPECT(!strstr(tpv, "\"class\":\"TPV\"") == 0, "class:TPV present");
+    EXPECT(strstr(tpv, "\"class\":\"TPV\"") != NULL, "class:TPV present");
     end(fb);
 }
 

@@ -290,10 +290,14 @@ jobs:
       # only defaults CC when $(origin CC) is `default` — so an environment
       # CC wins and plain `scan-build make` is analysed correctly.
       #
-      # Advisory for now: unlike cppcheck above, this has not been run
-      # against the tree yet (it needs a Linux build), so the finding count
-      # is unknown and a red CI on the first push would be noise.  Triage
-      # the uploaded report, then add --status-bugs to make it blocking.
+      # Still advisory, but no longer untriaged.  Its two findings as of 1.7
+      # were reviewed and both fixed for 1.8: a dead store in imu.c's capture
+      # drain (the write-error flag never gated the outer loop) and a
+      # false-positive garbage-value read in cal_main.c's mag fit (removed
+      # along with the real bug at the same site).  Apple clang's analyzer
+      # reports zero over the whole tree locally.  Once a CI run confirms
+      # "0 bugs found" on Linux/clang-18, add --status-bugs and drop the
+      # `|| true` so this becomes blocking like cppcheck above.
       - name: clang static analyzer (advisory)
         run: |
           make clean

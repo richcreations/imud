@@ -17,6 +17,7 @@
 #include <string.h>
 #include <errno.h>
 #include "cal.h"
+#include "fileio.h"
 #include "log.h"
 
 /* ── JSON float-array parser ─────────────────────────────────────────────── */
@@ -152,7 +153,7 @@ int cal_load(const char *path, imud_cal_t *cal)
 
 int cal_write(const char *path, const imud_cal_t *cal)
 {
-    FILE *f = fopen(path, "w");
+    FILE *f = fcreate(path, "w", IMUD_FILE_MODE);
     if (!f) {
         LOG_E("[cal] cannot write %s: %s\n", path, strerror(errno));
         return -1;

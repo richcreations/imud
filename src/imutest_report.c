@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "fileio.h"
 #include "imutest.h"
 
 /* ── Markdown escaping ─────────────────────────────────────────────────────── */
@@ -125,7 +126,7 @@ static void write_checks_for_phase(FILE *f, const imt_report_t *r,
 int imt_write_md(const imt_report_t *r, const char *path,
                  char *errbuf, size_t errbufsz)
 {
-    FILE *f = fopen(path, "w");
+    FILE *f = fcreate(path, "w", IMUD_FILE_MODE);
     if (!f) {
         snprintf(errbuf, errbufsz, "cannot write %s", path);
         return -1;

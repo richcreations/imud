@@ -76,6 +76,33 @@ void ellipse_add(ellipse_accum_t *a, float fx, float fy)
     a->n++;
 }
 
+void extent_add(extent_accum_t *a, double x, double y, double z)
+{
+    const double p[3] = { x, y, z };
+    if (a->n == 0) {
+        for (int k = 0; k < 3; k++) a->mn[k] = a->mx[k] = p[k];
+    } else {
+        for (int k = 0; k < 3; k++) {
+            if (p[k] < a->mn[k]) a->mn[k] = p[k];
+            if (p[k] > a->mx[k]) a->mx[k] = p[k];
+        }
+    }
+    a->n++;
+}
+
+int extent_half(const extent_accum_t *a, double half[3])
+{
+    if (a->n < 1) return -1;
+    for (int k = 0; k < 3; k++) half[k] = (a->mx[k] - a->mn[k]) / 2.0;
+    return 0;
+}
+
+void cal_softiron_diag(const double half[3], double radius, double si[3])
+{
+    for (int k = 0; k < 3; k++)
+        si[k] = (half[k] > 0.3 * radius) ? (radius / half[k]) : 1.0;
+}
+
 int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2])
 {
     if (a->n < 8 || radius <= 0.0) return -1;
