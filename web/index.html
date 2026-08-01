@@ -431,11 +431,52 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
   </dl>
 </div>
 
+<h2>Reporting bugs and contributing</h2>
+<div class="body">
+  <dl>
+    <dt>Report a bug or request a feature</dt>
+    <dd>Open an issue at
+    <a href="https://github.com/richcreations/imud/issues">github.com/richcreations/imud/issues</a>.
+    For a driver problem, attach an <code>imud-imutest --all</code> report —
+    it captures the hardware, the timing, and every check the daemon relies
+    on, which is most of what a diagnosis needs.</dd>
+
+    <dt>Report a security vulnerability</dt>
+    <dd>Please do <strong>not</strong> open a public issue. Use GitHub's
+    private vulnerability reporting, as described in
+    <a href="https://github.com/richcreations/imud/blob/main/SECURITY.md">SECURITY.md</a>,
+    which also states the supported versions and the response timeline.</dd>
+
+    <dt>Contribute code or documentation</dt>
+    <dd><a href="https://github.com/richcreations/imud/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
+    covers the build, the test suite (<code>make test</code>), the coding
+    conventions, and the doc-sync rules — this project keeps the same facts in
+    several places on purpose, so a change is not finished until its manual,
+    man page and spec entries agree. Pull requests are welcome; CI runs the
+    full suite on amd64, arm64 and armhf, under sanitizers, and against the
+    fuzzers.</dd>
+
+    <dt>Clearing an <em>experimental</em> driver flag</dt>
+    <dd>Ten of the twelve sensor drivers have never run on physical silicon.
+    If you have one of those parts, an <code>imud-imutest</code> report
+    attached to an issue is what clears its flag — see
+    <a href="https://github.com/richcreations/imud/blob/main/docs/ROADMAP.md">the roadmap</a>.</dd>
+
+    <dt>Code of conduct</dt>
+    <dd><a href="https://github.com/richcreations/imud/blob/main/CODE_OF_CONDUCT.md">Contributor
+    Covenant</a>.</dd>
+  </dl>
+</div>
+
 <h2>See also</h2>
 <div class="body">
   <ul>
     <li><a href="https://github.com/richcreations/imud">Source on GitHub</a>
         — the full repository, issues, and pull requests.</li>
+    <li><a href="https://github.com/richcreations/imud/issues">Issue tracker</a>
+        — bug reports and enhancement requests.</li>
+    <li><a href="https://github.com/richcreations/imud/blob/main/CONTRIBUTING.md">Contributing</a>
+        — how to build, test, and submit a change.</li>
     <li><a href="https://github.com/richcreations/imud/releases">Releases</a>
         — tagged versions and release notes.</li>
     <li><a href="https://github.com/richcreations/imud/blob/main/docs/manual.md">Manual</a>
