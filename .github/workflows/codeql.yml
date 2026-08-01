@@ -33,7 +33,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -53,7 +53,7 @@ jobs:
       # parsing config files, JSON, wire packets and captures — without the
       # style backlog.  Switch back deliberately if you ever want a
       # maintainability sweep, and expect the noise again.
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           languages: c-cpp
           build-mode: manual
@@ -64,6 +64,6 @@ jobs:
           make
           make bridges
 
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
           category: /language:c-cpp

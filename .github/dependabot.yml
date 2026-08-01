@@ -3,9 +3,15 @@
 # resolved by debian/control, and Dependabot has no ecosystem for those.
 #
 # Everything is grouped into a single PR so a routine v4 -> v5 bump is one
-# review, not six.  Action refs stay as major-version tags (@v4): every
-# action used is first-party actions/* or github/*, where tag hijack is not
-# a realistic threat and the readable tag is worth more than a SHA.
+# review, not six.
+#
+# Action refs are pinned to full commit SHAs with a `# vX.Y.Z` comment.
+# Dependabot understands that convention: it bumps the SHA and rewrites the
+# comment to the new version, so the PR still reads as "v7.0.1 -> v7.1.0"
+# even though the diff is a hash.  A tag is a moving pointer — pinning the
+# SHA is what makes a re-run of an old workflow reproducible, and it is what
+# Scorecard's Pinned-Dependencies check asks for.  Do not "tidy" these back
+# into @v7.
 version: 2
 updates:
   - package-ecosystem: github-actions

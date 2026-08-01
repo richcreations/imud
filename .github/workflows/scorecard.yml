@@ -29,14 +29,17 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Pinned to an EXACT version on purpose: unlike actions/* and
-      # github/*, ossf/scorecard-action publishes no floating major tag, so
-      # `@v2` does not resolve.  Dependabot bumps this line like any other.
-      - uses: ossf/scorecard-action@v2.4.4
+      # Every action in this repo is SHA-pinned (see .github/dependabot.yml).
+      # Worth knowing about this one specifically: ossf/scorecard-action
+      # publishes NO floating major tag, so if you ever unpin it, `@v2` will
+      # not resolve — it needs an exact vX.Y.Z.  Verify any new action ref
+      # with `git ls-remote --tags --refs https://github.com/<repo>` rather
+      # than assuming a major tag exists.
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard.sarif
           results_format: sarif
@@ -59,7 +62,7 @@ jobs:
       # Scorecard's posture results belong on the README badge and the
       # scorecard.dev viewer, which publish_results above still feeds.  The
       # Security tab stays a queue of actual code defects.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: scorecard.sarif
