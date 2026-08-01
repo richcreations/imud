@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -42,11 +43,22 @@
 float g_last_decl  = -999.0f;
 bool  g_last_valid = true;
 
+/*
+ * Update counter for the socket tests further down: they need to wait for the
+ * position thread to deliver a fix, and polling g_last_decl itself would be a
+ * genuine data race (a plain float written by one thread and read by another;
+ * `volatile` is not atomicity — TSan catches exactly this, and the daemon's
+ * own convention is _Atomic for anything crossing threads).  The float values
+ * are only read after the thread is joined.
+ */
+_Atomic int g_decl_updates = 0;
+
 void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
 {
     (void)ctx;
     g_last_decl  = decl_deg;
     g_last_valid = valid;
+    g_decl_updates++;
 }
 
 float g_last_mref_h = -1.0f, g_last_mref_z = -1.0f;
@@ -453,18 +465,23 @@ static void socket_test_cfg(imud_config_t *cfg)
     snprintf(cfg->pos_signalk_host, sizeof cfg->pos_signalk_host, "127.0.0.1");
 }
 
-/* Run position_thread until `want` becomes true, then stop and join. */
-static bool run_until(pos_ctx_t *ctx, volatile float *watch, float initial)
+/*
+ * Run position_thread until it delivers a declination update, then stop and
+ * join.  Waits on the _Atomic counter, never on the float values — those are
+ * read by the caller only after this has joined the thread.
+ */
+static bool run_until_fix(pos_ctx_t *ctx)
 {
+    int before = g_decl_updates;
     pthread_t tid;
     if (pthread_create(&tid, NULL, position_thread, ctx) != 0) return false;
-    bool moved = false;
-    for (int i = 0; i < 300 && !moved; i++) {     /* ≤ 3 s */
-        if (*watch != initial) moved = true; else usleep(10000);
+    bool got = false;
+    for (int i = 0; i < 300 && !got; i++) {        /* ≤ 3 s */
+        if (g_decl_updates != before) got = true; else usleep(10000);
     }
     ctx->stop = 1;
     pthread_join(tid, NULL);
-    return moved;
+    return got;
 }
 
 static void test_gpsd_live_session(void)
@@ -498,7 +515,7 @@ static void test_gpsd_live_session(void)
     snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
 
     g_last_decl = -999.0f; g_last_speed = -1.0f;
-    bool moved = run_until(&ctx, &g_last_decl, -999.0f);
+    bool moved = run_until_fix(&ctx);
     pthread_join(srv, NULL);
 
     EXPECT(g_srv_got_conn == 1, "position_thread connected to gpsd");
@@ -586,7 +603,7 @@ static void test_signalk_live_poll(void)
     snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
 
     g_last_decl = -999.0f;
-    bool moved = run_until(&ctx, &g_last_decl, -999.0f);
+    bool moved = run_until_fix(&ctx);
     pthread_join(srv, NULL);
 
     EXPECT(g_srv_got_conn == 1, "position_thread polled SignalK");
