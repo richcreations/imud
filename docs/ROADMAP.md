@@ -163,30 +163,42 @@ must work offline — keep vendoring.
 
 Duplication clusters found by the pre-tag full-repo audit, deferred so a
 refactor just before the release tag would not invalidate the testing 1.5
-had already had. Still open after 1.6 (which added the TCP outputs without
-touching these). None blocks anything; each is a mechanical extraction plus
+had already had. None blocks anything; each is a mechanical extraction plus
 a re-test.
 
-**Deferred again for 1.7, for the same reason.** The original argument —
-don't refactor immediately before a tag — applies verbatim to a release whose
-filter numbers were expensive to establish. The one item actioned in 1.7 was
-the Signal K UDP-open drift, and only because it is a *user-visible bug* that
-happens to delete a duplicate, not a refactor undertaken for tidiness.
+**Most of this section shipped in 1.6.2**, in a dedicated refactor commit
+whose whole point was that it landed *after* a tag rather than before one —
+zero behaviour change, −835 net lines, output verified byte-identical. What
+remains is listed as open below; the rest is struck through with the release
+that did it.
 
-- **`sd_notify_msg()` ×6** — byte-identical copies in `main.c` and all five
-  bridge mains (the copies even say "mirrors src/signalk_main.c"). Extract a
-  shared `src/sd_notify.c`.
-- **Driver I2C register wrappers ×7** — `burst_read`/`reg_write`/`reg_read`
-  are near-identical `I2C_RDWR` ioctl wrappers in seven drivers. A shared
-  helper needs an auto-increment flag (`lis3mdl` sets `0x80|reg`).
-- **`ism330dhcx.c` ↔ `lsm6dso.c` near-twin drivers** — FIFO-tag drain loop,
-  axis remap, and timestamp back-calculation are copy-paste; only WHO_AM_I
-  and a CTRL9_XL write differ by design. No drift observed yet, but a bug
-  fixed in one silently won't propagate to the other.
-- **Bridge stream-loop skeleton ×4–5** — the `while(!g_stop)` body
-  (watchdog ping → SIGHUP reload → reconnect → read → deadline-advance) is
-  structurally duplicated across the bridge mains; the deadline-advance
-  block is verbatim in three of them.
+The standing rule still holds for the items that are left: don't refactor
+immediately before a tag. The one item actioned in 1.7 was the Signal K
+UDP-open drift, and only because it is a *user-visible bug* that happens to
+delete a duplicate, not a refactor undertaken for tidiness.
+
+- ~~**`sd_notify_msg()` ×6**~~ — **DONE 1.6.2.** `include/sdnotify.h` +
+  `src/sdnotify.c`; the six byte-identical copies in `main.c` and the five
+  bridge mains are gone. The name was kept, so no call site changed.
+- ~~**Driver I2C register wrappers ×7**~~ — **DONE 1.6.2.**
+  `src/drivers/i2c_io.h` (header-only, driver-private) supplies
+  `i2c_burst_read`/`i2c_reg_write`/`i2c_reg_read` plus `i2c_s16le`/`i2c_s16be`;
+  all ten hardware drivers include it. `static inline` on purpose: each
+  driver still issues its own `ioctl(fd, I2C_RDWR, …)`, so `test_drivers`'
+  `--wrap` mock keeps working and no Makefile source list changed. `lis3mdl`'s
+  auto-increment became `reg | 0x80` at the call sites.
+- ~~**Bridge stream-loop skeleton ×4–5**~~ — **DONE 1.6.2.**
+  `include/bridge.h` + `src/bridge.c` — a helper library, not a framework:
+  CLI parsing, config load/reload, signal install, tick math, stream
+  connect/drop, `open_udp`, `write_all`. All five bridges converted. Each
+  bridge keeps its own reload middle and protocol specifics.
+- **`ism330dhcx.c` ↔ `lsm6dso.c` near-twin drivers** — *still open.* FIFO-tag
+  drain loop, axis remap, and timestamp back-calculation are copy-paste; only
+  WHO_AM_I and a CTRL9_XL write differ by design. No drift observed yet, but a
+  bug fixed in one silently won't propagate to the other. **Deliberately held
+  until `lsm6dso` is hardware-verified (§1)** — folding an unvalidated driver
+  onto a validated one's code path would make the reference driver's behaviour
+  depend on a merge nobody has tested on silicon.
 - ~~**UDP-open drift**~~ — **FIXED 1.7.** `signalk_main.c`'s `open_udp_dest()`
   is deleted; the bridge calls the existing `bridge_open_udp()` helper, so
   `dest_addr` now accepts hostnames and IPv6 like every other bridge. Its
@@ -219,9 +231,9 @@ happens to delete a duplicate, not a refactor undertaken for tidiness.
 
 ## 9. Small items
 
-- `ctx->stop` in imu.c stays `volatile int` (not `_Atomic`) because its address feeds
-  the `imu_ring_pop()` API; changing it means touching ring.h/ring.c/test_ring.
-  Cosmetic C11-cleanliness only.
+- ~~`ctx->stop` in imu.c stays `volatile int`~~ — **DONE.** It is `_Atomic int`
+  (`src/imu.c`), along with every other cross-thread stop flag; `test_concurrency`
+  under TSan is the guard. Never add a plain or `volatile` cross-thread flag back.
 - Heave settling: ~10·τ (≈2 min) after boot before heave is trustworthy. Could be
   shortened by initializing the integrators from the first seconds of data.
   Considered for 1.7 and deferred: it changes a settled estimator's startup

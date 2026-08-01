@@ -141,6 +141,22 @@ packaging-level record, and the git history holds the full detail.
     in the numbering; a "-0.00" was printed for the first full-scale row, which
     has no previous range to compare against; and a clean run recommended
     clearing `experimental` for drivers that already had it clear.
+* Release artifacts now carry a verifiable provenance attestation as a release
+  asset, `imud-X.Y.intoto.jsonl`. The attestation was already being recorded —
+  `gh attestation verify <file> --repo richcreations/imud` has worked since
+  1.7 — but it lived only in GitHub's attestation store, so nothing that saw
+  just the release could find it. It is now attached alongside the .debs and
+  the tarball, and can be checked offline with
+  `gh attestation verify <file> --bundle imud-1.8.intoto.jsonl`.
+* The source tarball no longer contains binaries. `make dist` had been
+  sweeping in the committed apt pool, so `imud-1.7.tar.gz` was 6.1 MB of which
+  most was the *previous three releases'* .deb files; it had grown from 1.86 MB
+  at 1.6 and would have kept growing. The apt pool moved to a separate branch
+  and `apt/` and `web/` are excluded from the archive, so 1.8's tarball is
+  0.79 MB and is source only. Nothing changes for apt users — same repository
+  URL, same packages, same signing key. Anyone who clones the git repository
+  will find it much smaller (75 MB to 5.5 MB); that involved rewriting history,
+  so an existing clone should be re-cloned rather than pulled.
 
 1.7
 ---
