@@ -69,11 +69,31 @@ jobs:
       # from the maintainer; this proves each deb came from this workflow
       # at this commit.
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             imud-*.tar.gz
             artifacts/*.deb
+
+      # The step above records the attestation in GitHub's attestation store,
+      # which is what `gh attestation verify` reads.  Nothing that sees only
+      # the release can find it there — including OpenSSF Scorecard's
+      # Signed-Releases check, which looks for a *.intoto.jsonl (or *.asc /
+      # *.sig) release ASSET and scored this project 0 while the provenance
+      # existed the whole time.  Attach the same bundle as an asset: identical
+      # bytes, second delivery route, verifiable offline with
+      #   gh attestation verify <file> --bundle imud-X.Y.intoto.jsonl
+      - name: Attach the provenance bundle to the release
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          bundle=$BUNDLE
+          if [ -z "$bundle" ] || [ ! -s "$bundle" ]; then
+            echo "::error::attest-build-provenance produced no bundle" >&2
+            exit 1
+          fi
+          cp "$bundle" "imud-${GITHUB_REF_NAME#v}.intoto.jsonl"
 
       # Draft, not published: the maintainer reviews, writes the notes, and
       # publishes — and that publish is what promotes these debs to apt.
@@ -87,4 +107,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
              --title "imud $GITHUB_REF_NAME" \
              --notes "Draft — see the NEWS file for user-visible changes." \
-             imud-*.tar.gz artifacts/*.deb
+             imud-*.tar.gz imud-*.intoto.jsonl artifacts/*.deb

@@ -290,21 +290,24 @@ jobs:
       # only defaults CC when $(origin CC) is `default` — so an environment
       # CC wins and plain `scan-build make` is analysed correctly.
       #
-      # Still advisory, but no longer untriaged.  Its two findings as of 1.7
-      # were reviewed and both fixed for 1.8: a dead store in imu.c's capture
-      # drain (the write-error flag never gated the outer loop) and a
-      # false-positive garbage-value read in cal_main.c's mag fit (removed
-      # along with the real bug at the same site).  Apple clang's analyzer
-      # reports zero over the whole tree locally.  Once a CI run confirms
-      # "0 bugs found" on Linux/clang-18, add --status-bugs and drop the
-      # `|| true` so this becomes blocking like cppcheck above.
-      - name: clang static analyzer (advisory)
+      # Blocking as of 1.8, like cppcheck above.  It had two findings at 1.7,
+      # both triaged and cleared: a dead store in imu.c's capture drain (which
+      # was really an ineffective break — the write-error flag never gated the
+      # outer loop) and a garbage-value read in cal_main.c's mag fit (a false
+      # positive that went away with the real bug at the same site).  Run
+      # 30685512158 on b1c134c reported "No bugs found", so a finding here is
+      # now a new finding.
+      #
+      # --status-bugs makes scan-build exit non-zero when it reports a bug;
+      # note that it then does NOT report the build's own exit status, which
+      # is fine because every other job builds this tree anyway.  On a clean
+      # run scan-build deletes its output directory, so the upload below is
+      # a no-op (if-no-files-found: ignore) and only failures leave a report.
+      - name: clang static analyzer
         run: |
           make clean
-          scan-build -o scan-out --keep-going make all bridges || true
-          echo "--- scan-build report ---"
-          find scan-out -name '*.html' 2>/dev/null | head -20
-          test -d scan-out || echo "::warning::scan-build produced no report directory"
+          scan-build -o scan-out --status-bugs --keep-going make all bridges
+          echo "scan-build clean"
 
       - name: Save scan-build report
         if: always()

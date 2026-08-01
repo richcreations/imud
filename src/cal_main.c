@@ -317,7 +317,8 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     double half[3];
     if (extent_half(&xacc, half) < 0) {
         fprintf(stderr, "cal: no samples to measure\n");
-        if (fd >= 0) close(fd); return -1;
+        if (fd >= 0) close(fd);
+        return -1;
     }
 
     /*
