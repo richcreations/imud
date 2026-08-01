@@ -456,7 +456,7 @@ packaging-level record, and the git history holds the full detail.
   ThreadSanitizer.
 
 
-1.5 (unreleased)
+1.5
 ----------------
 * Capture & replay — the black box: [capture] records every raw sensor
   sample (pre-mount, pre-calibration) to rotating .imucap files; the sim

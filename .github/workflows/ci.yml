@@ -223,7 +223,13 @@ jobs:
           make dist
           tar tzf imud-*.tar.gz | grep -q 'LICENSE'
           tar tzf imud-*.tar.gz | grep -q 'include/version.h'
-          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'
+          ! tar tzf imud-*.tar.gz | grep -E '\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'
+
+          # .github/ MUST be present, which is the opposite of what this guard
+          # used to assert.  GitHub's source tarball honours export-ignore and
+          # Scorecard analyses that tarball, so hiding the workflows from the
+          # archive hid them from Scorecard too — see .gitattributes.
+          tar tzf imud-*.tar.gz | grep -q '\.github/workflows/ci\.yml'
 
           # A source tarball for this project is well under a megabyte; an
           # order-of-magnitude jump means something binary got committed.

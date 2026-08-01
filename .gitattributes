@@ -2,7 +2,16 @@
 # apt/ and web/ are published-website content, not source: they belong on
 # GitHub Pages, not in a source release.  (ci.yml's dist guard also caps the
 # tarball at 2 MB — it reached 6.1 MB at v1.7 by shipping the apt pool.)
-.github/        export-ignore
+#
+# .github/ IS DELIBERATELY NOT LISTED HERE.  GitHub's own source tarball
+# (api.github.com/repos/.../tarball) honours export-ignore, and OpenSSF
+# Scorecard analyses the repository by fetching exactly that tarball — so
+# excluding .github/ made all eight workflow files invisible to it.  That cost
+# four checks at once: Dangerous-Workflow ("no workflows found", and it is the
+# single heaviest check), Token-Permissions ("No tokens found"),
+# Pinned-Dependencies ("no dependencies found") and SAST ("no SAST tool
+# detected", because CodeQL is detected by reading the workflow).  Shipping CI
+# configuration in a source tarball is normal and costs ~30 KB.
 .gitignore      export-ignore
 .gitattributes  export-ignore
 apt/            export-ignore
