@@ -1,7 +1,31 @@
 # Releasing imud
 
-Checklist for cutting release X.Y. The canonical version lives in ONE place —
+Checklist for cutting a release. The canonical version lives in ONE place —
 `include/version.h` — everything else follows it.
+
+## Version numbering
+
+**`MAJOR.MINOR.PATCH`, all three components, from 1.9.0 onward.** The patch is
+written out even when it is zero: `1.9.0`, not `1.9`. Releases up to and
+including 1.8 omitted a zero patch, which meant those tags were not valid
+SemVer strings; 1.8 is the switch point and the old tags stay as they shipped.
+`tools/bump-version.sh` refuses a two-component version, so this cannot lapse
+by accident.
+
+- **PATCH** — fixes only, no new interfaces.
+- **MINOR** — new drivers, tools, config keys, bridges; anything additive.
+- **MAJOR** — a break in the **libimud ABI**, which is the public API for
+  SemVer purposes. That has never happened and should not: `imud_data_t` is
+  append-only and `lib/libimud.map` only grows, so the SONAME stays
+  `libimud.so.0`. See "libimud ABI / soname discipline" below.
+
+**The wire protocol is versioned separately** and does not drive this number.
+`IMUD_VERSION` in `include/types.h` is bumped whenever the packet layout
+changes (v17 as of 1.8), and consumers reject a mismatch outright — so a wire
+change *is* breaking for anything speaking the raw packet, but it is not an
+imud major bump. That is the point of libimud: third-party consumers using the
+library survive a wire revision without recompiling, and only the daemon,
+bridges and `imud-mon` must be deployed together.
 
 CI enforces this: the **version-consistency** job in `.github/workflows/ci.yml`
 fails if `include/version.h`, `debian/changelog`, `packaging/imud/changelog` and
@@ -12,11 +36,11 @@ reach the apt repository.
 ## 1. Bump the version strings
 
 ```sh
-make bump-version VERSION=X.Y            # DATE=YYYY-MM-DD to override "today"
+make bump-version VERSION=X.Y.Z          # DATE=YYYY-MM-DD to override "today"
 ```
 
 `tools/bump-version.sh` rewrites `include/version.h`, every man page `.TH` line
-(version + date), the `imud X.Y` / date footers and JSON-LD `softwareVersion` in
+(version + date), the `imud X.Y.Z` / date footers and JSON-LD `softwareVersion` in
 `web/index.html` and `apt/index.html`, `web/sitemap.xml`'s `lastmod`, and the
 `**Version:**` header in `spec.md`. It then lists the changelogs that still need
 a stanza. It is idempotent, so re-running it is safe.
@@ -27,12 +51,12 @@ a stanza. It is idempotent, so re-running it is safe.
 
 ## 2. Write the prose — the part no script can do
 
-- **`NEWS`**: add an `X.Y` section at the top, user-visible changes only.
-- **`debian/changelog`**: add an `imud (X.Y-1) unstable; urgency=medium` stanza.
+- **`NEWS`**: add an `X.Y.Z` section at the top, user-visible changes only.
+- **`debian/changelog`**: add an `imud (X.Y.Z-1) unstable; urgency=medium` stanza.
   This drives the .deb version and **must** match `include/version.h`.
-  (`dch -v X.Y-1` writes the trailer for you.) The per-dist suffix
-  (`X.Y-1~bookworm1`) is added by CI, not committed.
-- **`packaging/imud/changelog`**: an `imud (X.Y)` stanza — always required.
+  (`dch -v X.Y.Z-1` writes the trailer for you.) The per-dist suffix
+  (`X.Y.Z-1~bookworm1`) is added by CI, not committed.
+- **`packaging/imud/changelog`**: an `imud (X.Y.Z)` stanza — always required.
 - **`packaging/imud-<bridge>/changelog`**: a stanza only for packages that
   actually changed. `packaging/imud-wmm-data/changelog` is exempt — it tracks
   the WMM epoch (2025.0), not the imud version.
@@ -54,7 +78,7 @@ both suites.
 ## 4. Tag
 
 ```sh
-git tag vX.Y && git push origin vX.Y
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 That fires `.github/workflows/release.yml`, which checks the tag against

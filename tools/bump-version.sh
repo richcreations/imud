@@ -7,8 +7,19 @@
 # half-bumped.  ci.yml's version-consistency job fails on exactly that; this
 # script is the other half, the thing that makes it pass.
 #
-# Usage:  make bump-version VERSION=1.8 [DATE=2026-08-01]
-#     or: tools/bump-version.sh 1.8 [2026-08-01]
+# Usage:  make bump-version VERSION=1.9.0 [DATE=2026-08-01]
+#     or: tools/bump-version.sh 1.9.0 [2026-08-01]
+#
+# Versions are MAJOR.MINOR.PATCH from 1.9.0 onward — full SemVer, including a
+# patch of 0.  Releases up to and including 1.8 omitted a zero patch (1.7,
+# 1.8), which meant those tags were not valid SemVer strings; 1.8 is the
+# switch point and the old tags stay as they shipped.  This script REFUSES a
+# two-component version so the convention cannot quietly lapse.
+#
+# The wire protocol is versioned separately (IMUD_VERSION in include/types.h)
+# and does NOT follow this: a wire break is not an imud major bump, because
+# the SemVer surface here is libimud's ABI, which has never broken (SONAME is
+# still libimud.so.0).
 #
 # What it does NOT do: write changelog prose.  debian/changelog and
 # packaging/<pkg>/changelog need a human-written stanza describing what
@@ -25,14 +36,23 @@ DATE="${2:-$(date +%Y-%m-%d)}"
 
 if [ -z "$VERSION" ]; then
     echo "usage: $0 <version> [YYYY-MM-DD]" >&2
-    echo "   e.g. $0 1.8" >&2
+    echo "   e.g. $0 1.9.0" >&2
     exit 1
 fi
 
+# MAJOR.MINOR.PATCH, all three, digits only.  A bare X.Y is rejected rather
+# than accepted-and-normalised: silently turning 1.9 into 1.9.0 would leave
+# the operator's tag command (git tag v1.9) disagreeing with version.h, and
+# release.yml would then refuse that tag at the very end of a 45-minute build.
 case "$VERSION" in
-    [0-9]*.[0-9]*) ;;
-    *) echo "error: '$VERSION' does not look like a version (expected X.Y or X.Y.Z)" >&2; exit 1 ;;
+    *[!0-9.]* | *..* | .* | *.)
+        echo "error: '$VERSION' is not a version number" >&2; exit 1 ;;
 esac
+if [ "$(printf '%s' "$VERSION" | tr -cd . | wc -c)" -ne 2 ]; then
+    echo "error: '$VERSION' must be MAJOR.MINOR.PATCH — imud writes the patch" >&2
+    echo "       out even when it is zero, so: 1.9.0, not 1.9." >&2
+    exit 1
+fi
 case "$DATE" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
     *) echo "error: '$DATE' is not an ISO date (YYYY-MM-DD)" >&2; exit 1 ;;

@@ -373,14 +373,14 @@ dist:
 # Propagate a new release version across include/version.h, the man page .TH
 # lines, the published pages and spec.md, then report which changelogs still
 # need a hand-written stanza. See docs/RELEASING.md.
-#   make bump-version VERSION=1.8 [DATE=2026-08-01]
+#   make bump-version VERSION=1.9.0 [DATE=2026-08-01]
 # VERSION already holds the CURRENT version (parsed from version.h above), so
 # require it to come from the command line — otherwise a bare `make
 # bump-version` would silently "bump" to the version already in the tree.
 .PHONY: bump-version
 bump-version:
 	@test "$(origin VERSION)" = "command line" || { \
-	    echo "usage: make bump-version VERSION=X.Y [DATE=YYYY-MM-DD]" >&2; \
+	    echo "usage: make bump-version VERSION=X.Y.Z [DATE=YYYY-MM-DD]" >&2; \
 	    echo "       (tree is currently at $(VERSION))" >&2; exit 1; }
 	@tools/bump-version.sh "$(VERSION)" "$(DATE)"
 
