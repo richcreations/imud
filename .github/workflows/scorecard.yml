@@ -47,9 +47,14 @@ jobs:
       # The SARIF is kept as a downloadable artifact, but deliberately NOT
       # uploaded to code scanning.  Doing so put 158 Scorecard rows into the
       # Security tab alongside CodeQL's — 154 of them a single check,
-      # Binary-Artifacts, firing once per committed .deb in apt/pool/.  Those
-      # debs ARE the apt repository; the finding is correct-by-design and
-      # unfixable, and it buried the 20 real CodeQL findings at 8:1.
+      # Binary-Artifacts, firing once per committed .deb in apt/pool/, and it
+      # buried the 20 real CodeQL findings at 8:1.
+      #
+      # That finding is now FIXED rather than merely noisy: the pool moved to
+      # the orphan `apt-pool` branch, so the default branch carries no
+      # binaries and Binary-Artifacts scores 10.  The upload stays off anyway
+      # — posture results belong on the badge and the scorecard.dev viewer,
+      # and the Security tab should stay a queue of actual code defects.
       #
       # Scorecard's posture results belong on the README badge and the
       # scorecard.dev viewer, which publish_results above still feeds.  The

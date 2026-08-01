@@ -1,14 +1,19 @@
 # Publish the self-hosted apt repository to GitHub Pages.
 #
-# Richard curates which packages go live by committing .deb files into
-# apt/pool/<suite>/ and pushing; this workflow regenerates the signed apt
-# index and redeploys the Pages site.  It is deliberately SEPARATE from
-# release.yml (which builds debs and attaches them to a GitHub Release) —
-# that is the build step; this is the manual publish gate.
+# This workflow regenerates the signed apt index and redeploys the Pages site.
+# It is deliberately SEPARATE from release.yml (which builds debs and attaches
+# them to a GitHub Release) — that is the build step; this is the publish gate.
+#
+# The .deb files do NOT live on main.  They live on the orphan `apt-pool`
+# branch, rebuilt as a single root commit by apt-publish.yml, and are checked
+# out here into pool-src/.  Keeping binaries off the default branch is what
+# lets main stay a source tree: it took the repository from 75 MB to 5.5 MB,
+# took the `make dist` tarball from 4.9 MB to 0.8 MB, and cleared OpenSSF
+# Scorecard's Binary-Artifacts check, which had been 0 with 114 findings.
 #
 # Served layout (https://richcreations.github.io/imud/):
-#   /            ← web/            (root site, reserved for a future page)
-#   /apt/        ← apt/ + generated dists/   (the apt repository)
+#   /            ← web/                                (root site)
+#   /apt/        ← apt/ + apt-pool:pool/ + generated dists/
 #
 # One-time setup: Settings → Pages → Source = GitHub Actions, and add the
 # ASCII-armored private signing key as the secret APT_GPG_PRIVATE_KEY
@@ -19,10 +24,14 @@ on:
   push:
     branches: [main]
     paths:
-      - 'apt/**'
+      - 'apt/**'          # KEY.gpg / index.html — the pool is not here
       - 'web/**'
       - '.github/workflows/apt-repo.yml'
   workflow_dispatch:
+    inputs:
+      pool_ref:
+        description: 'Branch holding pool/<suite>/*.deb'
+        default: apt-pool
 
 # Default is read-only; the Pages scopes are granted to the deploy job
 # alone.  The build job is the one that handles the private signing key,
@@ -44,6 +53,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
+
+      # The pool lives on its own orphan branch, not here.  Sparse + depth 1
+      # because that branch is deliberately a single commit holding nothing
+      # but pool/.
+      - name: Check out the deb pool
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pool_ref || 'apt-pool' }}
+          path: pool-src
+          sparse-checkout: pool
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Install apt-ftparchive + gpg
@@ -71,8 +92,15 @@ jobs:
           mkdir -p site
           cp -a web/. site/                 # root site
           mkdir -p site/apt
-          cp -a apt/pool site/apt/pool
+          cp -a pool-src/pool site/apt/pool # debs from the apt-pool branch
           cp    apt/KEY.gpg apt/index.html site/apt/
+
+          # A pool that arrived empty means the checkout above silently got
+          # the wrong ref; publishing that would take every package offline.
+          if ! ls site/apt/pool/*/*.deb >/dev/null 2>&1; then
+            echo "::error::no .deb files found in the pool — refusing to publish an empty repository" >&2
+            exit 1
+          fi
 
           cd site/apt
 
@@ -123,12 +151,23 @@ jobs:
 
   deploy:
     needs: build
-    # Only main is ever published.  `workflow_dispatch` accepts any ref, and
-    # apt-publish.yml kicks this workflow with --ref <its own branch> — so
-    # rehearsing a publish on a scratch branch would otherwise push that
-    # branch's pool to the live site.  The build above still runs on every
-    # ref, which is the useful half: it proves the index builds and signs.
-    if: github.ref == 'refs/heads/main'
+    # TWO conditions, and both matter.
+    #
+    #   github.ref == main   — workflow_dispatch accepts any ref, so this stops
+    #                          a scratch branch's copy of this workflow from
+    #                          deploying.
+    #   pool_ref == apt-pool — the pool is now an INPUT, so running on main is
+    #                          no longer sufficient: a rehearsal dispatched as
+    #                          `--ref main -f pool_ref=apt-pool-rehearsal`
+    #                          would otherwise publish the rehearsal pool to
+    #                          the live site. That is the whole point of
+    #                          rehearsing, so guard it here.
+    #
+    # The build above still runs for every ref and every pool, which is the
+    # useful half of a rehearsal: it proves the index builds, signs and verifies.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (inputs.pool_ref || 'apt-pool') == 'apt-pool'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

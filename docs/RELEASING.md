@@ -68,9 +68,14 @@ Review the draft release, write the notes, and click **Publish**.
 
 Publishing is what promotes the packages: it fires
 `.github/workflows/apt-publish.yml`, which routes the debs into
-`apt/pool/<suite>/`, prunes to the three most recent versions per suite,
-commits, and triggers `apt-repo.yml` to rebuild and GPG-sign the index and
-redeploy Pages. Nothing reaches users before this click.
+`pool/<suite>/` on the orphan **`apt-pool`** branch, prunes to the three most
+recent versions per suite, rebuilds that branch as a single root commit,
+force-pushes it, and triggers `apt-repo.yml` to rebuild and GPG-sign the index
+and redeploy Pages. Nothing reaches users before this click.
+
+The pool is deliberately **not** on `main`: binaries there are permanent, and
+by 1.7 they had made the repository 75 MB and the source tarball 6.1 MB. See
+`apt/README.md` for the full rationale and the rehearsal procedure.
 
 Automatic `-dbgsym` packages stay attached to the Release and are deliberately
 kept **out** of the apt pool — the same split Debian makes with its separate

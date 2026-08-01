@@ -1,19 +1,25 @@
 # Promote a published GitHub Release into the apt pool.
 #
 # This is the automated half of what used to be a hand routine (download the
-# debs from the draft release, sort 38 files into apt/pool/<suite>/ by eye,
-# commit, push).  The human gate did not go away — it MOVED: clicking
-# "Publish" on the draft release is now the gate.  Nothing reaches users
-# until you do that.
+# debs from the draft release, sort 38 files into the pool by eye, commit,
+# push).  The human gate did not go away — it MOVED: clicking "Publish" on the
+# draft release is now the gate.  Nothing reaches users until you do that.
 #
-#   git tag v1.7 && git push --tags
+#   git tag v1.8 && git push --tags
 #     → release.yml       builds 4× debs, opens a DRAFT release
 #     → [you review, click Publish]            ← THE GATE
-#     → apt-publish.yml   routes debs into apt/pool/, prunes, commits
+#     → apt-publish.yml   routes debs into the pool branch, prunes, commits
 #     → apt-repo.yml      regenerates the signed index, deploys Pages
 #
-# To rehearse safely, run this by hand with a `branch` other than main: it
-# will commit the pool change there and leave main and the live repo alone.
+# THE POOL IS NOT ON MAIN.  It lives on the orphan branch `apt-pool` as a
+# single root commit, rebuilt and force-pushed by this workflow every time.
+# main therefore never accumulates binaries: the branch holds exactly today's
+# pool and no history of it.  Pruned debs stay attached to their GitHub
+# Release, which is now the only archive of them.
+#
+# To rehearse safely, run this by hand with a `pool_branch` other than
+# apt-pool: it rebuilds that branch instead, and apt-repo.yml's deploy gate
+# refuses to publish any pool but apt-pool, so the live site is untouched.
 name: Publish to apt
 
 on:
@@ -22,11 +28,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish (e.g. v1.7)'
+        description: 'Release tag to publish (e.g. v1.8)'
         required: true
-      branch:
-        description: 'Branch to commit the pool change to'
-        default: main
+      pool_branch:
+        description: 'Orphan branch to rebuild with the pool'
+        default: apt-pool
       keep:
         description: 'How many upstream versions to keep per suite'
         default: '3'
@@ -49,16 +55,30 @@ jobs:
       actions: write   # dispatch apt-repo.yml (see the last step)
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      BRANCH: ${{ inputs.branch || 'main' }}
+      POOL_BRANCH: ${{ inputs.pool_branch || 'apt-pool' }}
       KEEP: ${{ inputs.keep || '3' }}
     steps:
-      # Check out the BRANCH, not the release tag: the tag commit is
-      # detached and we need somewhere to commit.  Full history so the push
-      # below can rebase if the branch moved while the arm builds ran.
+      # Check out the POOL branch, not main and not the release tag: the
+      # existing pool is what we merge the new debs into and prune.  depth 1
+      # is all there is — the branch is rebuilt as a single root commit each
+      # time, so it has no history to fetch.
+      #
+      # A first run (or a fresh rehearsal branch) has nothing to check out, so
+      # this is allowed to fail and the pool starts empty.
       - uses: actions/checkout@v7
+        id: pool
+        continue-on-error: true
         with:
-          ref: ${{ inputs.branch || 'main' }}
-          fetch-depth: 0
+          ref: ${{ inputs.pool_branch || 'apt-pool' }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Start from an empty pool if the branch does not exist yet
+        if: steps.pool.outcome == 'failure'
+        run: |
+          echo "::notice::$POOL_BRANCH does not exist yet — starting an empty pool"
+          git init -q .
+          mkdir -p pool
 
       - name: Download release .debs
         env:
@@ -81,7 +101,7 @@ jobs:
           # The bytes are identical (verified by sha256 against the pool) —
           # only the name is mangled.  So read the real identity out of the
           # control file and rebuild the canonical Debian filename, which is
-          # what apt/pool has held since 1.5.  Routing on the downloaded name
+          # what the pool has held since 1.5.  Routing on the downloaded name
           # instead would fail to match every single deb.
           dropped=0
           added=0
@@ -130,8 +150,8 @@ jobs:
             # single substitution and getting it wrong would be silent.
             base="${pkg}_${ver//:/%3a}_${arch}.deb"
 
-            mkdir -p "apt/pool/$suite"
-            cp "$f" "apt/pool/$suite/$base"
+            mkdir -p "pool/$suite"
+            cp "$f" "pool/$suite/$base"
             added=$((added + 1))
           done
 
@@ -153,13 +173,15 @@ jobs:
           }
 
           # --- prune to the newest $KEEP upstream versions per suite ------
-          # Committed binaries are permanent in git history, so the pool has
-          # to stay bounded or the clone grows without limit.  Anyone pinned
-          # to a pruned version loses their install source: that is the
-          # deliberate trade.
+          # The pool branch is rebuilt as a single root commit, so this is no
+          # longer about git history growing — it bounds the Pages payload and
+          # the size of the generated apt index instead.  Anyone pinned to a
+          # pruned version loses their install source: that is the deliberate
+          # trade, and their debs are still on the GitHub Release, which is
+          # now the ONLY archive of them.
           shopt -s nullglob
           for suite in bookworm trixie; do
-            pool=("apt/pool/$suite"/*.deb)
+            pool=("pool/$suite"/*.deb)
             [ "${#pool[@]}" -gt 0 ] || continue
 
             versions=""
@@ -178,21 +200,42 @@ jobs:
             done
           done
 
-      - name: Commit and push
+      # Rebuild the branch as a single ROOT commit and force-push it.  Not a
+      # normal commit on top: that would accumulate ~1.5 MB of deb blobs per
+      # release forever, which is exactly the problem moving the pool off main
+      # was meant to solve — it would just relocate the growth.  This way the
+      # branch holds today's pool and nothing else, permanently bounded.
+      #
+      # Nothing to rebase against: the `apt-publish` concurrency group
+      # serialises this workflow, and no human commits to the pool branch.
+      - name: Rebuild the pool branch and push
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          n=$(find pool -name '*.deb' | wc -l)
+          if [ "$n" -eq 0 ]; then
+            echo "::error::pool ended up empty — refusing to push" >&2
+            exit 1
+          fi
+          echo "pool now holds $n .deb file(s)"
+
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A apt/pool
 
-          if git diff --cached --quiet; then
-            echo "::notice::pool already matches $TAG — nothing to commit"
-            exit 0
-          fi
+          # Keep the directories present even when a suite has no packages.
+          for suite in bookworm trixie; do
+            mkdir -p "pool/$suite" && touch "pool/$suite/.gitkeep"
+          done
 
-          git commit -m "$TAG debs added to apt repo"
-          git pull --rebase --autostash origin "$BRANCH"
-          git push origin "HEAD:$BRANCH"
+          git checkout -q --orphan rebuilt
+          git rm -rq --cached . 2>/dev/null || true
+          git add -A pool
+          git commit -qm "apt pool @ ${TAG#v}"
+
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/$POOL_BRANCH"
 
       # REQUIRED, not belt-and-braces: a push made with GITHUB_TOKEN does
       # not trigger other workflows, so apt-repo.yml's `push` trigger will
@@ -200,7 +243,17 @@ jobs:
       # exception that does work with GITHUB_TOKEN — hence this explicit
       # kick.  Run unconditionally so re-running this workflow is also a
       # way to force an index rebuild.
+      #
+      # --ref is ALWAYS main, never the pool branch: apt-repo.yml's deploy
+      # gate keys off github.ref, so dispatching the pool branch would build
+      # the index and then silently skip deployment.  Which pool to read is
+      # passed as an input instead — and that input is the other half of the
+      # gate, so a rehearsal builds but does not publish.
       - name: Trigger the signed index rebuild
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run apt-repo.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
+        run: |
+          gh workflow run apt-repo.yml \
+             --ref main \
+             -f pool_ref="$POOL_BRANCH" \
+             --repo "$GITHUB_REPOSITORY"

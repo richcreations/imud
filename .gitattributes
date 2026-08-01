@@ -1,4 +1,9 @@
 # Files excluded from `git archive` release tarballs (make dist).
+# apt/ and web/ are published-website content, not source: they belong on
+# GitHub Pages, not in a source release.  (ci.yml's dist guard also caps the
+# tarball at 2 MB — it reached 6.1 MB at v1.7 by shipping the apt pool.)
 .github/        export-ignore
 .gitignore      export-ignore
 .gitattributes  export-ignore
+apt/            export-ignore
+web/            export-ignore

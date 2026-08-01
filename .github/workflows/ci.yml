@@ -211,13 +211,28 @@ jobs:
           echo "consumer OK"
 
       # The release tarball must contain the release and nothing repo-only:
-      # no .github, no bytecode, no OS litter, no vendor datasheets.
+      # no .github, no bytecode, no OS litter, no vendor datasheets, and above
+      # all NO BINARIES.  The apt pool used to ride along in here — every
+      # release shipped the previous three releases' .debs inside its own
+      # source tarball, which is how imud-1.7.tar.gz reached 6.1 MB from
+      # 1.86 MB at v1.6.  The pool now lives on the apt-pool branch; this
+      # guard and the size ceiling below stop it (or anything like it)
+      # creeping back.
       - name: Dist tarball content
         run: |
           make dist
           tar tzf imud-*.tar.gz | grep -q 'LICENSE'
           tar tzf imud-*.tar.gz | grep -q 'include/version.h'
-          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/'
+          ! tar tzf imud-*.tar.gz | grep -E '\.github|\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'
+
+          # A source tarball for this project is well under a megabyte; an
+          # order-of-magnitude jump means something binary got committed.
+          bytes=$(stat -c%s imud-*.tar.gz)
+          echo "tarball is $bytes bytes"
+          if [ "$bytes" -gt 2000000 ]; then
+            echo "::error::dist tarball is ${bytes} bytes (>2 MB) — something binary is being shipped" >&2
+            exit 1
+          fi
           echo "dist content OK"
 
       # Man pages must lint clean (warnings fail).
