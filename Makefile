@@ -229,7 +229,7 @@ test_cal_math: src/cal_math.c test/test_cal_math.c
 test_wmm: src/wmm.c src/log.c test/test_wmm.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-test_position: src/position.c src/wmm.c src/log.c test/test_position.c
+test_position: src/position.c src/wmm.c src/config.c src/log.c test/test_position.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Wire-format compatibility: daemon packet_build vs lib/imud_client.h.

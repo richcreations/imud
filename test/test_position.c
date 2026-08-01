@@ -7,10 +7,15 @@
 /*
  * test_position.c — unit tests for pos_json_double() and gpsd/SignalK parsing
  *
- * These tests exercise the JSON field extractor in isolation — no network
- * sockets, no GPS hardware, no WMM computation.  The test binary links
- * position.c and wmm.c but uses a stub imu_ctx_set_declination() so that
- * imu.c (and all its hardware dependencies) are not required.
+ * Two halves.  The first drives the JSON field extractor and the fix-TTL
+ * watchdog with string literals — no sockets, no hardware.  The second runs
+ * position_thread for real against a fake gpsd / SignalK server on loopback,
+ * covering tcp_connect_host, the line reader, run_gpsd and poll_signalk, which
+ * is the code an operator actually depends on.
+ *
+ * The binary links position.c and wmm.c but stubs imu_ctx_set_declination()
+ * and friends, so imu.c and its hardware dependencies are not required — and
+ * those stubs double as the assertion surface for the socket tests.
  */
 
 #include <stdio.h>
@@ -18,6 +23,13 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+#include "../include/config.h"
 #include "../include/position.h"
 #include "../include/imu.h"   /* for imu_ctx_t forward decl — no implementation */
 
@@ -365,6 +377,253 @@ static void test_check_fix_ttl(void)
     end(fb);
 }
 
+/* ── Live socket tests: the gpsd and SignalK clients end to end ──────────── */
+
+/*
+ * Everything above drives the parsers with string literals.  These drive the
+ * real client paths — tcp_connect_host, line_reader, read_line's select loop,
+ * run_gpsd, poll_signalk and position_thread itself — against a fake server on
+ * loopback, because that is the half of position.c an operator actually
+ * depends on and none of it was covered.
+ *
+ * The imu_ctx_* stubs at the top of this file are the assertion surface: if a
+ * fix travelled the whole way through, g_last_decl and g_last_speed move.
+ */
+
+/* Bind 127.0.0.1:0, listen, and report the kernel-assigned port. */
+static int fake_server_open(int *port_out)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port        = 0;
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 1) != 0) {
+        close(fd); return -1;
+    }
+    socklen_t alen = sizeof a;
+    if (getsockname(fd, (struct sockaddr *)&a, &alen) != 0) { close(fd); return -1; }
+    *port_out = ntohs(a.sin_port);
+    return fd;
+}
+
+/* What the fake server should send once a client connects. */
+static const char *g_srv_reply;
+static int         g_srv_listen  = -1;
+static char        g_srv_request[512];
+static _Atomic int g_srv_got_conn;
+
+/* Accept one client, record what it sent us, reply, close. */
+static void *fake_server_thread(void *arg)
+{
+    (void)arg;
+    int c = accept(g_srv_listen, NULL, NULL);
+    if (c < 0) return NULL;
+    g_srv_got_conn = 1;
+
+    /* The client speaks first in both protocols: gpsd gets ?WATCH, SignalK
+     * gets an HTTP GET.  Capture it so the test can assert on it. */
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    ssize_t n = recv(c, g_srv_request, sizeof g_srv_request - 1, 0);
+    if (n > 0) g_srv_request[n] = '\0';
+
+    if (g_srv_reply) {
+        ssize_t w = write(c, g_srv_reply, strlen(g_srv_reply));
+        (void)w;
+    }
+    /* Closing ends run_gpsd's read loop / completes the HTTP/1.0 body. */
+    close(c);
+    return NULL;
+}
+
+/* Config shared by the socket tests: WMM on, so a fix produces a declination. */
+static void socket_test_cfg(imud_config_t *cfg)
+{
+    config_defaults(cfg);
+    cfg->pos_gpsd_enabled    = false;
+    cfg->pos_signalk_enabled = false;
+    cfg->pos_fix_max_age_h   = 0.0f;   /* watchdog off: not what we measure */
+    snprintf(cfg->pos_gpsd_host,    sizeof cfg->pos_gpsd_host,    "127.0.0.1");
+    snprintf(cfg->pos_signalk_host, sizeof cfg->pos_signalk_host, "127.0.0.1");
+}
+
+/* Run position_thread until `want` becomes true, then stop and join. */
+static bool run_until(pos_ctx_t *ctx, volatile float *watch, float initial)
+{
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, position_thread, ctx) != 0) return false;
+    bool moved = false;
+    for (int i = 0; i < 300 && !moved; i++) {     /* ≤ 3 s */
+        if (*watch != initial) moved = true; else usleep(10000);
+    }
+    ctx->stop = 1;
+    pthread_join(tid, NULL);
+    return moved;
+}
+
+static void test_gpsd_live_session(void)
+{
+    begin("test_gpsd_live_session");
+    int fb = g_fail;
+
+    int port = 0;
+    g_srv_listen = fake_server_open(&port);
+    EXPECT(g_srv_listen >= 0, "fake gpsd listening on loopback");
+    if (g_srv_listen < 0) { end(fb); return; }
+
+    g_srv_got_conn = 0;
+    g_srv_request[0] = '\0';
+    g_srv_reply =
+        "{\"class\":\"TPV\",\"mode\":3,\"lat\":37.8697,\"lon\":-122.3153,"
+        "\"altMSL\":5.0,\"speed\":3.5}\n";
+
+    pthread_t srv;
+    pthread_create(&srv, NULL, fake_server_thread, NULL);
+
+    imud_config_t cfg;
+    socket_test_cfg(&cfg);
+    cfg.pos_gpsd_enabled = true;
+    cfg.pos_gpsd_port    = port;
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.imu = (imu_ctx_t *)0x1;          /* only the stubs above touch it */
+    snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
+
+    g_last_decl = -999.0f; g_last_speed = -1.0f;
+    bool moved = run_until(&ctx, &g_last_decl, -999.0f);
+    pthread_join(srv, NULL);
+
+    EXPECT(g_srv_got_conn == 1, "position_thread connected to gpsd");
+    EXPECT(strstr(g_srv_request, "?WATCH=") != NULL,
+           "client subscribed with ?WATCH");
+    EXPECT(strstr(g_srv_request, "\"json\":true") != NULL,
+           "WATCH requested JSON");
+    EXPECT(moved, "a TPV fix reached imu_ctx_set_declination");
+    /* San Francisco: declination is easterly and single-digit. */
+    EXPECT(g_last_decl > 0.0f && g_last_decl < 25.0f,
+           "declination is plausible for the fix location");
+    EXPECT_NEAR_D(g_last_speed, 3.5, 1e-4, "speed over ground propagated");
+    EXPECT(g_last_mref_h > 0.0f, "magnetic reference H set from the fix");
+
+    close(g_srv_listen); g_srv_listen = -1;
+    end(fb);
+}
+
+/* A refused connection must not kill the thread: it retries, and a stop
+ * request during the retry backoff still exits promptly. */
+static void test_gpsd_connection_refused(void)
+{
+    begin("test_gpsd_connection_refused");
+    int fb = g_fail;
+
+    /* Bind then immediately close: that port is now almost certainly free,
+     * which is what we want — connect() should be refused, not hang. */
+    int port = 0;
+    int probe = fake_server_open(&port);
+    EXPECT(probe >= 0, "got a port to abandon");
+    if (probe >= 0) close(probe);
+
+    imud_config_t cfg;
+    socket_test_cfg(&cfg);
+    cfg.pos_gpsd_enabled = true;
+    cfg.pos_gpsd_port    = port;
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.imu = (imu_ctx_t *)0x1;
+    snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
+
+    pthread_t tid;
+    EXPECT(pthread_create(&tid, NULL, position_thread, &ctx) == 0,
+           "position_thread starts against a dead port");
+    usleep(200000);
+    ctx.stop = 1;
+    EXPECT(pthread_join(tid, NULL) == 0,
+           "thread exits cleanly after a refused connection");
+    end(fb);
+}
+
+static void test_signalk_live_poll(void)
+{
+    begin("test_signalk_live_poll");
+    int fb = g_fail;
+
+    int port = 0;
+    g_srv_listen = fake_server_open(&port);
+    EXPECT(g_srv_listen >= 0, "fake SignalK listening on loopback");
+    if (g_srv_listen < 0) { end(fb); return; }
+
+    g_srv_got_conn = 0;
+    g_srv_request[0] = '\0';
+    g_srv_reply =
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "\r\n"
+        "{\"value\":{\"longitude\":-122.3153,\"latitude\":37.8697},"
+        "\"timestamp\":\"2026-05-01T12:00:00.000Z\"}";
+
+    pthread_t srv;
+    pthread_create(&srv, NULL, fake_server_thread, NULL);
+
+    imud_config_t cfg;
+    socket_test_cfg(&cfg);
+    cfg.pos_signalk_enabled = true;
+    cfg.pos_signalk_port    = port;
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.imu = (imu_ctx_t *)0x1;
+    snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
+
+    g_last_decl = -999.0f;
+    bool moved = run_until(&ctx, &g_last_decl, -999.0f);
+    pthread_join(srv, NULL);
+
+    EXPECT(g_srv_got_conn == 1, "position_thread polled SignalK");
+    EXPECT(strncmp(g_srv_request, "GET ", 4) == 0, "issued an HTTP GET");
+    EXPECT(strstr(g_srv_request, "HTTP/1.0") != NULL,
+           "HTTP/1.0 so the server closes to signal end of body");
+    EXPECT(moved, "the REST fix reached imu_ctx_set_declination");
+    EXPECT(g_last_decl > 0.0f && g_last_decl < 25.0f,
+           "declination is plausible for the fix location");
+
+    close(g_srv_listen); g_srv_listen = -1;
+    end(fb);
+}
+
+/* Neither source enabled: the thread must return immediately rather than
+ * spinning. */
+static void test_position_thread_disabled(void)
+{
+    begin("test_position_thread_disabled");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    socket_test_cfg(&cfg);          /* both sources left disabled */
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.imu = (imu_ctx_t *)0x1;
+    snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
+
+    pthread_t tid;
+    EXPECT(pthread_create(&tid, NULL, position_thread, &ctx) == 0,
+           "thread starts");
+    EXPECT(pthread_join(tid, NULL) == 0, "and returns without being stopped");
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -388,6 +647,10 @@ int main(void)
     test_json_multiple_keys();
     test_fix_ttl_arithmetic();
     test_check_fix_ttl();
+    test_position_thread_disabled();
+    test_gpsd_live_session();
+    test_gpsd_connection_refused();
+    test_signalk_live_poll();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

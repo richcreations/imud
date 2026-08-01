@@ -18,12 +18,19 @@
  *   - the TCP listener ([stream] tcp_*) serves the same framed packets
  *     alongside the AF_UNIX path, and its subscribers get the final
  *     FLAG_SHUTDOWN packet on stop
+ *
+ * It also covers the other two output threads, which share this file because
+ * they share out_ctx: nmea_out_thread and hirate_out_thread sending to real
+ * loopback UDP receivers (which is the only coverage open_udp_out has), the
+ * [hot] rate change through out_ctx_reload, and out_ctx_send_shutdown's final
+ * FLAG_SHUTDOWN packet on the hi-rate socket.
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -137,6 +144,176 @@ static int connect_tcp_subscriber(int port)
         return -1;
     }
     return fd;
+}
+
+/* ── UDP outputs: nmea_out_thread + hirate_out_thread ────────────────────── */
+
+/*
+ * The stream tests above cover stream_out_thread; these cover the other two
+ * output threads and open_udp_out, which had no coverage at all.  Both send
+ * to a real loopback UDP socket we bind first, so the assertions are on
+ * datagrams that actually crossed the stack rather than on internal state.
+ */
+
+/* Bind a UDP receiver on loopback and report its port. */
+static int udp_receiver(int *port_out)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port        = 0;
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0) { close(fd); return -1; }
+    socklen_t alen = sizeof a;
+    if (getsockname(fd, (struct sockaddr *)&a, &alen) != 0) { close(fd); return -1; }
+    *port_out = ntohs(a.sin_port);
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    return fd;
+}
+
+static void test_udp_outputs(void)
+{
+    puts("test_udp_outputs");
+    int fb = g_fail;
+
+    int nmea_port = 0, hi_port = 0;
+    int nmea_rx = udp_receiver(&nmea_port);
+    int hi_rx   = udp_receiver(&hi_port);
+    EXPECT(nmea_rx >= 0 && hi_rx >= 0, "UDP receivers bound on loopback");
+    if (nmea_rx < 0 || hi_rx < 0) { puts(g_fail == fb ? "OK" : "FAIL"); return; }
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    cfg.stream_enabled     = false;
+    cfg.nmea_enabled       = true;
+    cfg.nmea_rate_hz       = 100;          /* fast so the test finishes */
+    cfg.nmea_dest_port     = nmea_port;
+    cfg.nmea_tcp_enabled   = false;
+    snprintf(cfg.nmea_dest_addr, sizeof cfg.nmea_dest_addr, "127.0.0.1");
+    cfg.highrate_enabled   = true;
+    cfg.highrate_rate_hz   = 100;
+    cfg.highrate_dest_port = hi_port;
+    snprintf(cfg.highrate_dest_addr, sizeof cfg.highrate_dest_addr, "127.0.0.1");
+
+    out_ctx_t *out = NULL;
+    EXPECT(out_ctx_open(&out, &cfg, (imu_ctx_t *)0x1) == 0,
+           "out_ctx_open opens both UDP sockets");
+
+    pthread_t nt, ht;
+    EXPECT(pthread_create(&nt, NULL, nmea_out_thread, out) == 0,
+           "nmea_out_thread starts");
+    EXPECT(pthread_create(&ht, NULL, hirate_out_thread, out) == 0,
+           "hirate_out_thread starts");
+
+    /* NMEA: a sentence must arrive, start with '$' and carry a *checksum. */
+    char sentence[1024];
+    ssize_t n = recv(nmea_rx, sentence, sizeof sentence - 1, 0);
+    EXPECT(n > 0, "an NMEA datagram arrived");
+    if (n > 0) {
+        sentence[n] = '\0';
+        EXPECT(sentence[0] == '$', "NMEA sentence starts with '$'");
+        EXPECT(strchr(sentence, '*') != NULL, "NMEA sentence carries a checksum");
+        EXPECT(strstr(sentence, "\r\n") != NULL, "NMEA sentence is CRLF-terminated");
+    }
+
+    /* Highrate: a full binary packet with the right magic and version. */
+    unsigned char pkt[sizeof(imu_packet_t) + 8];
+    ssize_t pn = recv(hi_rx, pkt, sizeof pkt, 0);
+    EXPECT(pn == (ssize_t)sizeof(imu_packet_t),
+           "highrate datagram is exactly one wire packet");
+    if (pn == (ssize_t)sizeof(imu_packet_t)) {
+        uint32_t magic;   memcpy(&magic,   pkt,     4);
+        uint16_t version; memcpy(&version, pkt + 4, 2);
+        EXPECT(magic == IMUD_MAGIC, "highrate packet magic");
+        EXPECT(version == IMUD_VERSION, "highrate packet wire version");
+    }
+
+    out_ctx_stop(out);
+    EXPECT(pthread_join(nt, NULL) == 0, "nmea_out_thread joins cleanly");
+    EXPECT(pthread_join(ht, NULL) == 0, "hirate_out_thread joins cleanly");
+    out_ctx_free(out);
+    close(nmea_rx); close(hi_rx);
+
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
+/* out_ctx_reload picks up [hot] rate changes; out_ctx_send_shutdown emits the
+ * final highrate packet with FLAG_SHUTDOWN set. */
+static void test_reload_and_shutdown(void)
+{
+    puts("test_reload_and_shutdown");
+    int fb = g_fail;
+
+    int hi_port = 0;
+    int hi_rx = udp_receiver(&hi_port);
+    EXPECT(hi_rx >= 0, "UDP receiver bound");
+    if (hi_rx < 0) { puts(g_fail == fb ? "OK" : "FAIL"); return; }
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    cfg.stream_enabled     = false;
+    cfg.nmea_enabled       = false;
+    cfg.highrate_enabled   = true;
+    cfg.highrate_rate_hz   = 100;
+    cfg.highrate_dest_port = hi_port;
+    snprintf(cfg.highrate_dest_addr, sizeof cfg.highrate_dest_addr, "127.0.0.1");
+
+    out_ctx_t *out = NULL;
+    EXPECT(out_ctx_open(&out, &cfg, (imu_ctx_t *)0x1) == 0, "out_ctx_open");
+
+    pthread_t ht;
+    EXPECT(pthread_create(&ht, NULL, hirate_out_thread, out) == 0,
+           "hirate_out_thread starts");
+
+    unsigned char pkt[sizeof(imu_packet_t) + 8];
+    EXPECT(recv(hi_rx, pkt, sizeof pkt, 0) == (ssize_t)sizeof(imu_packet_t),
+           "streaming at the original rate");
+
+    /* A [hot] rate change must be picked up without a restart. */
+    cfg.highrate_rate_hz = 50;
+    out_ctx_reload(out, &cfg);
+    EXPECT(recv(hi_rx, pkt, sizeof pkt, 0) == (ssize_t)sizeof(imu_packet_t),
+           "still streaming after out_ctx_reload");
+
+    out_ctx_stop(out);
+    pthread_join(ht, NULL);
+
+    /*
+     * Drain first.  The thread was streaming at 100 Hz into a kernel receive
+     * buffer, so several datagrams are already queued; without this the next
+     * recv() returns a stale streaming packet and the FLAG_SHUTDOWN assertion
+     * below fails for the wrong reason.  Safe to drain only now that the
+     * thread has joined and nothing further can be queued.
+     */
+    {
+        int fl = fcntl(hi_rx, F_GETFL, 0);
+        fcntl(hi_rx, F_SETFL, fl | O_NONBLOCK);
+        unsigned char drop[sizeof(imu_packet_t) + 8];
+        int drained = 0;
+        while (recv(hi_rx, drop, sizeof drop, 0) > 0) drained++;
+        fcntl(hi_rx, F_SETFL, fl);
+        EXPECT(drained >= 0, "receive queue drained before the shutdown check");
+    }
+
+    /* The shutdown packet is sent after the thread has stopped, by the
+     * daemon's exit path — consumers use it to distinguish a clean stop
+     * from a crash. */
+    out_ctx_send_shutdown(out);
+    ssize_t sn = recv(hi_rx, pkt, sizeof pkt, 0);
+    EXPECT(sn == (ssize_t)sizeof(imu_packet_t), "a final packet was sent");
+    if (sn == (ssize_t)sizeof(imu_packet_t)) {
+        imu_packet_t p;
+        memcpy(&p, pkt, sizeof p);
+        EXPECT((p.flags & FLAG_SHUTDOWN) != 0,
+               "final packet carries FLAG_SHUTDOWN");
+    }
+
+    out_ctx_free(out);
+    close(hi_rx);
+    puts(g_fail == fb ? "OK" : "FAIL");
 }
 
 /* The [stream] TCP listener serves the same framed packets as AF_UNIX. */
@@ -278,6 +455,8 @@ int main(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 
     test_stream_tcp();
+    test_udp_outputs();
+    test_reload_and_shutdown();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
