@@ -3,6 +3,7 @@
 [![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/richcreations/imud/badge)](https://scorecard.dev/viewer/?uri=github.com/richcreations/imud)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13917/badge)](https://www.bestpractices.dev/projects/13917)
 [![Latest release](https://img.shields.io/github/v/release/richcreations/imud?sort=semver)](https://github.com/richcreations/imud/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
