@@ -392,6 +392,67 @@ jobs:
   # the gpsd/Signal K JSON, the wire packet decode, and the .imucap capture
   # reader.  Seed corpora live in test/fuzz/corpus/; -close_fd_mask silences
   # the parsers' own error logging so the runs stay fast.
+  # Line/function/branch coverage over the WHOLE suite, which is the point:
+  # test_ring, test_concurrency, test_drivers, test_drivers_registry and
+  # test_imutest cannot build on the macOS dev box, so imu.c, ring.c and the
+  # twelve drivers can only be measured here.  A local run on the portable
+  # subset alone reports ~92% and is silent about those files entirely.
+  #
+  # Deliberately NOT gated on a threshold.  A coverage floor mostly produces
+  # tests written to move a number, and the useful signal — "which functions
+  # have never been executed" — is in the report, not in the percentage. The
+  # job still fails if the build or a test fails, because that is a real
+  # failure; it just never fails for being a few tenths lower than yesterday.
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev lcov
+
+      - name: Build and run the suite with coverage
+        run: make coverage
+
+      # Put the totals in the run summary so the number is visible without
+      # downloading anything, and list whatever still has never been executed.
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            if [ -f coverage.info ]; then
+              echo '```'
+              lcov --summary coverage.info 2>&1 | grep -E 'lines|functions|branches' || true
+              echo '```'
+              echo
+              echo "<details><summary>Per-file</summary>"
+              echo
+              echo '```'
+              lcov --list coverage.info 2>/dev/null | tail -n +2
+              echo '```'
+              echo
+              echo "</details>"
+            else
+              echo "No coverage.info was produced — see the step above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the HTML report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-html
+          path: coverage-html
+          if-no-files-found: ignore
+          retention-days: 14
+
   fuzz:
     runs-on: ubuntu-latest
     # Six harnesses now: ~6 min of fuzzing plus six ASan+UBSan builds.
