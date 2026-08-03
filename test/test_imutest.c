@@ -243,7 +243,8 @@ typedef struct {
     int    ticks;
     int    done_after;       /* poll_done returns 1 after this many ticks */
     bool   skip_all;
-    bool   abort_now;
+    bool   abort_now;         /* prompt returns -1: the operator declined */
+    bool   sigint_now;        /* prompt raises SIGINT's abort, then continues */
     /* Phase B: per-face vectors, indexed by the "face.N" id. */
     double face_vec[6][3];
     bool   use_face_vecs;
@@ -272,6 +273,9 @@ static int s_prompt(void *user, const char *id, const char *title,
     s->ticks = 0;
 
     if (s->abort_now) return -1;
+    /* Ctrl-C while the operator is at a prompt: the signal handler calls
+     * imt_request_abort() and the prompt still returns normally. */
+    if (s->sigint_now) { imt_request_abort(); return 0; }
     if (s->skip_all)  return 1;
 
     if (strncmp(id, "face.", 5) == 0) {
@@ -1200,6 +1204,108 @@ static void test_verdict_respects_experimental_flag(void)
     end(fb);
 }
 
+/*
+ * imt_print writes the short terminal digest — what an operator actually reads
+ * when the run finishes, as opposed to the Markdown file they attach to an
+ * issue.  It takes a FILE*, so no stdout juggling is needed.
+ */
+static void test_terminal_digest(void)
+{
+    begin("test_terminal_digest");
+    int fb = g_fail;
+
+    imt_report_t r;
+    memset(&r, 0, sizeof r);
+    snprintf(r.imud_version, sizeof r.imud_version, "1.8");
+    snprintf(r.imu_driver,   sizeof r.imu_driver,   "ism330dhcx");
+    snprintf(r.mag_driver,   sizeof r.mag_driver,   "mmc5983ma");
+    r.have_mag = true;
+    r.n_pass = 20; r.n_warn = 2; r.n_fail = 1; r.n_skip = 3; r.n_info = 4;
+    r.wall_duration_s = 42.0;
+    r.n_checks = 2;
+    r.check[0].status = IMT_FAIL;
+    snprintf(r.check[0].id,   sizeof r.check[0].id,   "imu.odr");
+    snprintf(r.check[0].name, sizeof r.check[0].name, "measured output rate");
+    r.check[1].status = IMT_PASS;
+    snprintf(r.check[1].id,   sizeof r.check[1].id,   "imu.probe");
+    snprintf(r.check[1].name, sizeof r.check[1].name, "WHO_AM_I");
+    snprintf(r.verdict, sizeof r.verdict, "One check failed.");
+
+    char buf[8192] = "";
+    FILE *f = tmpfile();
+    EXPECT(f != NULL, "tmpfile for the digest");
+    if (f) {
+        imt_print(&r, f);
+        rewind(f);
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = '\0';
+        fclose(f);
+    }
+
+    EXPECT(strstr(buf, "ism330dhcx") != NULL, "names the IMU driver");
+    EXPECT(strstr(buf, "mmc5983ma")  != NULL, "names the magnetometer");
+    EXPECT(strstr(buf, "1.8")        != NULL, "carries the imud version");
+    EXPECT(strstr(buf, "20 PASS")    != NULL, "reports the pass count");
+    EXPECT(strstr(buf, "imu.odr")    != NULL, "lists the failing check");
+    EXPECT(strstr(buf, "imu.probe")  == NULL,
+           "does NOT list passing checks — the digest is the exceptions only");
+    EXPECT(strstr(buf, "One check failed.") != NULL, "prints the verdict");
+
+    /* The sim and daemon-running warnings are the two that change how a
+     * reader should weigh everything else, so they must be prominent. */
+    r.is_sim = true;
+    r.daemon_was_running = true;
+    f = tmpfile();
+    if (f) {
+        imt_print(&r, f);
+        rewind(f);
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = '\0';
+        fclose(f);
+    }
+    EXPECT(strstr(buf, "sim") != NULL, "flags a sim run as not-hardware");
+    EXPECT(strstr(buf, "imud was running") != NULL,
+           "warns that a running daemon makes the timings untrustworthy");
+    end(fb);
+}
+
+/*
+ * SIGINT arrives as imt_request_abort() while the run is live — the handler in
+ * imutest_main.c does exactly that.  imt_run_ops clears the flag on entry (so
+ * a stale one cannot poison the next run) and folds it back into r->aborted at
+ * the end, which is what makes imt_exit_code return 130 instead of a clean 0.
+ * A half-finished report exiting 0 would read as a pass.
+ */
+static void test_abort_stops_the_run(void)
+{
+    begin("test_abort_stops_the_run");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE | IMT_PHASE_FACES;
+    script_reset(&o);
+    g_s.accel[2] = -9.80665;
+    g_s.sigint_now = true;          /* Ctrl-C at the first prompt */
+
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(r->aborted, "the report is marked aborted");
+    EXPECT(imt_exit_code(r) == 130, "and the exit code says so (130)");
+    free(r);
+
+    /* The flag must not survive into the next run, or one Ctrl-C would taint
+     * every later invocation in the same process. */
+    g_s.sigint_now = false;
+    script_reset(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    g_s.accel[2] = -9.80665;
+    imt_report_t *r2 = run(&cfg, &o);
+    EXPECT(!r2->aborted, "a later run starts with the abort flag cleared");
+    free(r2);
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud-imutest checker tests (mock I2C) ===");
@@ -1222,6 +1328,9 @@ int main(void)
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
     test_verdict_respects_experimental_flag();
+
+    test_terminal_digest();
+    test_abort_stops_the_run();   /* LAST: g_abort never resets (see below) */
 
     /* If any test staged a value the int16 registers cannot hold, the counts
      * wrapped and whatever it "measured" was noise.  Fail loudly rather than

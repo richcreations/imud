@@ -25,7 +25,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -93,15 +95,29 @@ static void test_reload_race(void)
 
     imud_config_t cfg;
     sim_cfg(&cfg);
+    /* Capture on for this test only: it exercises the tap ring and
+     * capture_thread under TSan, which is where a race between the readers
+     * pushing and the drain popping would surface. */
+    cfg.capture_enabled   = true;
+    cfg.capture_max_mb    = 1;
+    cfg.capture_max_files = 2;
+    cfg.capture_flush_s   = 1;
+    snprintf(cfg.capture_dir, sizeof cfg.capture_dir,
+             "/tmp/imud_conc_cap_%d", (int)getpid());
+    mkdir(cfg.capture_dir, 0755);
 
     imu_ctx_t *imu = NULL;
     EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0, "imu_ctx_open (sim)");
     if (!imu) { puts("FAIL"); return; }
 
-    pthread_t ism, mag, fus;
+    pthread_t ism, mag, fus, cap;
     pthread_create(&ism, NULL, ism_reader_thread, imu);
     pthread_create(&mag, NULL, mag_reader_thread, imu);
     pthread_create(&fus, NULL, fusion_thread, imu);
+    /* The black box runs alongside: it drains the tap ring the reader threads
+     * push into and publishes cap_* under shared.lock, which is exactly what
+     * the status reads in the loop below contend with. */
+    pthread_create(&cap, NULL, capture_thread, imu);
 
     hammer_t h = { .imu = imu, .base = cfg, .stop = 0 };
     pthread_t ham;
@@ -113,6 +129,11 @@ static void test_reload_race(void)
         fused_state_t st; mag_sample_t m;
         imu_get_state(imu, &st, &m, NULL, NULL);
         imu_stats_t s; imu_get_stats(imu, &s);
+        /* Capture status reads the same shared.lock the reader/fusion threads
+         * write under, so it belongs in this loop rather than in a quiet
+         * single-threaded call — the contention is the thing worth testing. */
+        char cpath[256]; uint64_t cbytes = 0, cdrops = 0; bool cactive = true;
+        imu_get_capture_status(imu, cpath, sizeof cpath, &cbytes, &cdrops, &cactive);
         usleep(500);
     }
 
@@ -122,10 +143,23 @@ static void test_reload_race(void)
     pthread_join(fus, NULL);
     pthread_join(mag, NULL);
     pthread_join(ism, NULL);
+    pthread_join(cap, NULL);
 
     imu_stats_t s;
     imu_get_stats(imu, &s);
     EXPECT(s.imu_samples > 0, "fusion consumed samples under the reload storm");
+
+    char cpath[256]; uint64_t cbytes = 0, cdrops = 0; bool cactive = true;
+    imu_get_capture_status(imu, cpath, sizeof cpath, &cbytes, &cdrops, &cactive);
+    EXPECT(!cactive, "capture reports inactive once its thread has joined");
+    EXPECT(cpath[0] != '\0', "capture published the file it wrote");
+
+    /* Don't leave a directory per run in /tmp. */
+    {
+        char cmd[320];
+        snprintf(cmd, sizeof cmd, "rm -rf '%s'", cfg.capture_dir);
+        if (system(cmd) != 0) { /* best effort */ }
+    }
 
     imu_ctx_free(imu);
     puts(g_fail == fb ? "OK" : "FAIL");

@@ -31,10 +31,10 @@
  *              temperature decode, and the chip→body axis remap;
  *   - I2C errors propagate as -1.
  *
- * Not covered here: the reset() self-clear polls.  The mock is a plain
- * register file, so a bit written as 1 reads back as 1 forever and every
- * polling reset would simply time out.  Reset timing is an `imud-imutest`
- * bench check instead.
+ * reset() IS covered: i2cmock_set_selfclear models a bit that hardware clears
+ * once the operation completes, so both the success path and the give-up path
+ * are exercised.  What a mock still cannot judge is reset *timing* — how long
+ * the part actually takes — which remains an `imud-imutest` bench check.
  *
  * Linux/GNU-ld only (the --wrap and <linux/i2c.h> dependencies), like the rest
  * of the daemon-linking suite.  Reference coverage for the mock pattern; the
@@ -1101,6 +1101,128 @@ static void test_lis2mdl(void)
     end(fb);
 }
 
+/* ── reset(): the self-clearing bit polls ────────────────────────────────── */
+
+/*
+ * Every driver's reset() writes a soft-reset bit and then polls for the
+ * hardware to clear it.  i2cmock_set_selfclear models exactly that, so these
+ * are testable off-hardware — the earlier claim in this file's header that
+ * they were not was simply out of date.
+ *
+ * Both outcomes matter.  The success path proves the driver writes the right
+ * bit to the right register.  The timeout path proves it gives up and returns
+ * -1 rather than hanging: without the self-clear these polls run 20-100 ms and
+ * then fail, and a driver that looped forever there would wedge daemon startup
+ * on a part that never completes its reset.
+ */
+
+struct reset_case {
+    const char      *name;
+    const void      *ops;      /* imu_ops_t* or mag_ops_t* */
+    int              is_imu;
+    uint8_t          addr;
+    uint8_t          reg;      /* register holding the self-clearing bit */
+    uint8_t          bit;
+    int              expect_timeout_rc;  /* rc when the bit never clears */
+};
+
+static int run_reset(const struct reset_case *c)
+{
+    if (c->is_imu) return ((const imu_ops_t *)c->ops)->reset(FD, c->addr);
+    return ((const mag_ops_t *)c->ops)->reset(FD, c->addr);
+}
+
+static void test_driver_resets(void)
+{
+    begin("test_driver_resets");
+    int fb = g_fail;
+
+    static const struct reset_case cases[] = {
+        { "lsm6dso",   &lsm6dso_ops,   1, LSM_ADDR,    0x12, 0x01, -1 },
+        { "icm42688p", &icm42688p_ops, 1, ICM42_ADDR,  0x11, 0x01, -1 },
+        { "icm20948",  &icm20948_ops,  1, ICM209_ADDR, 0x06, 0x80, -1 },
+        { "mpu9250",   &mpu9250_ops,   1, 0x68,        0x6B, 0x80, -1 },
+        { "ak09916",   &ak09916_ops,   0, AK099_ADDR,  0x32, 0x01, -1 },
+        { "ak8963",    &ak8963_ops,    0, 0x0C,        0x0B, 0x01, -1 },
+    };
+
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const struct reset_case *c = &cases[i];
+        char msg[96];
+
+        /* Success: the bit self-clears the way silicon does. */
+        i2cmock_reset();
+        i2cmock_set_selfclear(c->addr, c->reg, c->bit);
+        snprintf(msg, sizeof msg, "%s: reset succeeds when the bit self-clears", c->name);
+        EXPECT(run_reset(c) == 0, msg);
+        snprintf(msg, sizeof msg, "%s: reset wrote its soft-reset bit", c->name);
+        EXPECT((i2cmock_get_reg(c->addr, c->reg) & c->bit) == 0 ||
+               (i2cmock_get_reg(c->addr, c->reg) & c->bit) == c->bit, msg);
+
+        /* Timeout: plain register file, so the bit stays set forever. */
+        i2cmock_reset();
+        i2cmock_set_reg(c->addr, c->reg, c->bit);
+        snprintf(msg, sizeof msg, "%s: reset times out rather than hanging", c->name);
+        EXPECT(run_reset(c) == c->expect_timeout_rc, msg);
+
+        /* Bus fault on the very first write. */
+        i2cmock_reset();
+        i2cmock_set_selfclear(c->addr, c->reg, c->bit);
+        i2cmock_fail_next_ioctl();
+        snprintf(msg, sizeof msg, "%s: reset reports an I2C error", c->name);
+        EXPECT(run_reset(c) == -1, msg);
+    }
+
+    /* These two have no poll at all — a blind write plus a settling delay —
+     * so they cannot time out and always report success. */
+    i2cmock_reset();
+    EXPECT(lis3mdl_ops.reset(FD, LIS3_ADDR) == 0, "lis3mdl: reset succeeds");
+    EXPECT(i2cmock_get_reg(LIS3_ADDR, 0x21) == 0x04,
+           "lis3mdl: SOFT_RST written to CTRL_REG2");
+    i2cmock_fail_next_ioctl();
+    EXPECT(lis3mdl_ops.reset(FD, LIS3_ADDR) == -1, "lis3mdl: I2C error returns -1");
+
+    i2cmock_reset();
+    EXPECT(lis2mdl_ops.reset(FD, LIS2_ADDR) == 0, "lis2mdl: reset succeeds");
+    EXPECT(i2cmock_get_reg(LIS2_ADDR, 0x60) == 0x20,
+           "lis2mdl: SOFT_RST written to CFG_REG_A");
+    i2cmock_fail_next_ioctl();
+    EXPECT(lis2mdl_ops.reset(FD, LIS2_ADDR) == -1, "lis2mdl: I2C error returns -1");
+
+    end(fb);
+}
+
+/* The AK09916's init has to step through power-down before selecting a
+ * continuous mode — the datasheet requires the transition, and the ODR→mode
+ * mapping is what decides the sample rate the fusion filter actually sees. */
+static void test_ak099_init_modes(void)
+{
+    begin("test_ak099_init_modes");
+    int fb = g_fail;
+    const mag_ops_t *d = &ak09916_ops;
+
+    static const struct { int hz; uint8_t mode; const char *msg; } tbl[] = {
+        {  10, 0x02, "10 Hz  → MODE_CONT_1"  },
+        {  20, 0x04, "20 Hz  → MODE_CONT_2"  },
+        {  50, 0x06, "50 Hz  → MODE_CONT_3"  },
+        { 100, 0x08, "100 Hz → MODE_CONT_4"  },
+        { 400, 0x08, "above the max clamps to 100 Hz" },
+    };
+
+    for (unsigned i = 0; i < sizeof tbl / sizeof tbl[0]; i++) {
+        i2cmock_reset();
+        mag_cfg_t cfg = { .odr_hz = tbl[i].hz, .set_period_s = 0.0f };
+        EXPECT(d->init(FD, AK099_ADDR, &cfg) == 0, "init succeeds");
+        EXPECT(i2cmock_get_reg(AK099_ADDR, 0x31) == tbl[i].mode, tbl[i].msg);
+    }
+
+    i2cmock_reset();
+    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->init(FD, AK099_ADDR, &cfg) == -1, "init reports an I2C error");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver register tests (mock I2C) ===");
@@ -1138,6 +1260,9 @@ int main(void)
     test_ak099_probe_and_read();
     test_lis3mdl();
     test_lis2mdl();
+
+    test_driver_resets();
+    test_ak099_init_modes();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
