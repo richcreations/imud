@@ -220,13 +220,21 @@ jobs:
           # verify resolves ExecStart= under --root too.
           root="${RUNNER_TEMP:-/tmp}/unitlint"
           rm -rf "$root"
-          mkdir -p "$root/usr/lib/systemd" "$root/usr"
+          mkdir -p "$root/usr/lib/systemd" "$root/usr/bin" "$root/bin"
           cp -r stage/lib/systemd/system "$root/usr/lib/systemd/system"
-          cp -r stage/usr/bin            "$root/usr/bin"
+          cp    stage/usr/bin/*          "$root/usr/bin/"
+
+          # ExecReload=/bin/kill needs to resolve too.  Our own binaries are
+          # the staged, real ones, so "does ExecStart point at something we
+          # actually install" stays a genuine check; /bin/kill is a base-system
+          # utility this repo neither ships nor controls, so a stub is enough.
+          # A typo'd path still fails — it would not match this path either.
+          printf '#!/bin/sh\n' > "$root/bin/kill"
+          chmod +x "$root/bin/kill"
 
           units=$(cd "$root/usr/lib/systemd/system" && echo *.service)
           echo "checking: $units"
-          systemd-analyze --root="$root" unit-paths || true
+          echo "lint root:"; (cd "$root" && find . -mindepth 1 | sort | sed 's/^/  /')
 
           # --recursive-errors=no keeps this about our units, not about
           # network-online.target and friends being absent on a runner.  It
