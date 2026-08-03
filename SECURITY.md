@@ -49,7 +49,10 @@ is a worse outcome than a rejected file.
 
 Command-line arguments are deliberately **not** fuzzed: `argv` is supplied by
 whoever launches the process, at that user's privilege, so it crosses no trust
-boundary. The CLI parsers are covered by unit tests instead.
+boundary. The CLI parsers are covered by unit tests instead — `test_cli` for
+the five tool front-ends and `test_bridge` for the bridges' shared parser.
+Every flag that consumes the argument after it is driven as the final
+argument, so each `i + 1 < argc` guard is asserted individually.
 
 Also in scope: the `libimud` client library (a bad packet must never
 compromise a consuming application), privilege or permission errors in the

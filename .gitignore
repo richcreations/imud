@@ -21,6 +21,7 @@ src/drivers/*.d
 /test_fusion
 /test_fit_ra
 /test_config
+/test_cli
 /test_nmea
 /test_packet
 /test_capture
