@@ -130,7 +130,7 @@ imud-status: src/cli.o src/status_main.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
-imud-mon: src/cli.o src/config.o src/log.o src/mon_main.o
+imud-mon: src/cli.o src/config.o src/log.o src/mon_parse.o src/mon_main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.
@@ -204,6 +204,11 @@ test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fi
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_config: src/config.c src/log.c test/test_config.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+# imud-mon's stream decoding (src/mon_parse.c): packet CRC, NMEA field
+# extraction, flag summary.  Pure — no sockets, no config.
+test_mon: src/mon_parse.c test/test_mon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-status report text (src/status_fmt.c): the gated lines, and the WS()
@@ -350,7 +355,7 @@ test_imutest: src/imutest.c src/imutest_report.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
-test: test_fusion test_fit_ra test_config test_cli test_status test_nmea test_packet test_capture test_ring \
+test: test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
@@ -361,6 +366,7 @@ test: test_fusion test_fit_ra test_config test_cli test_status test_nmea test_pa
 	./test_config
 	./test_cli
 	./test_status
+	./test_mon
 	./test_nmea
 	./test_packet
 	./test_capture
@@ -855,7 +861,7 @@ clean:
 	      imud imud-cal imud-imutest imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
       imud-prometheus \
 	      libimud.so libimud.so.* libimud.pc \
-	      test_fusion test_fit_ra test_config test_cli test_status test_nmea test_packet test_ring test_mount \
+	      test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_capture test_concurrency \

@@ -23,6 +23,7 @@ src/drivers/*.d
 /test_config
 /test_cli
 /test_status
+/test_mon
 /test_nmea
 /test_packet
 /test_capture

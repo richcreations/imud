@@ -35,6 +35,7 @@
 
 #include "cli.h"
 #include "config.h"
+#include "mon_parse.h"
 #include "types.h"
 
 #ifndef M_PI
@@ -92,113 +93,7 @@ static int open_recv_sock(int port, const char *dest_addr)
     return fd;
 }
 
-/* ── CRC32 (IEEE 802.3) ──────────────────────────────────────────────────── */
-
-static uint32_t crc32_ieee(const uint8_t *data, size_t len)
-{
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-/* ── Snapshot state ──────────────────────────────────────────────────────── */
-
-#define NMEA_MAX 512
-
-typedef struct {
-    /* NMEA — most recent burst, parsed fields */
-    char  nmea_raw[NMEA_MAX];
-    float nmea_hdg, nmea_roll, nmea_pitch, nmea_rot;
-    float nmea_true_hdg;
-    bool  have_nmea;
-    bool  nmea_has_true_hdg;
-
-    /* Binary — most recent valid packet */
-    imu_packet_t bin_pkt;
-    bool         have_binary;
-} mon_state_t;
-
-/* ── NMEA helpers ────────────────────────────────────────────────────────── */
-
-/* Extract a float from field N (0-based) of a single NMEA sentence. */
-static bool nmea_get_field(const char *sentence, int field, float *out)
-{
-    const char *p = strchr(sentence, ',');
-    for (int i = 0; i < field; i++) {
-        if (!p) return false;
-        p = strchr(p + 1, ',');
-    }
-    if (!p) return false;
-    p++;
-    if (!*p || *p == ',' || *p == '*') return false;
-    *out = strtof(p, NULL);
-    return true;
-}
-
-/*
- * Parse a received NMEA buffer that may contain up to 6 sentences.
- * Extracts heading/roll/pitch from $PASHR and rate-of-turn from $TIROT.
- *
- * PASHR layout: $PASHR,hdg,M,roll,pitch,...
- *   field 0 = heading, field 2 = roll, field 3 = pitch
- */
-static void parse_nmea(mon_state_t *st, const char *buf, size_t len)
-{
-    if (len >= NMEA_MAX) len = NMEA_MAX - 1;
-    memcpy(st->nmea_raw, buf, len);
-    st->nmea_raw[len] = '\0';
-    st->have_nmea = true;
-    st->nmea_has_true_hdg = false;   /* cleared each burst; set below if $HCHDT present */
-
-    const char *pas = strstr(st->nmea_raw, "$PASHR,");
-    if (pas) {
-        float hdg = 0, roll = 0, pitch = 0;
-        if (sscanf(pas + 7, "%f,M,%f,%f", &hdg, &roll, &pitch) == 3) {
-            st->nmea_hdg   = hdg;
-            st->nmea_roll  = roll;
-            st->nmea_pitch = pitch;
-        }
-    }
-
-    const char *rot = strstr(st->nmea_raw, "$TIROT,");
-    if (rot) {
-        float r = 0;
-        if (nmea_get_field(rot, 0, &r))
-            st->nmea_rot = r;
-    }
-
-    const char *hdt = strstr(st->nmea_raw, "$HCHDT,");
-    if (hdt) {
-        float h = 0;
-        if (nmea_get_field(hdt, 0, &h)) {
-            st->nmea_true_hdg    = h;
-            st->nmea_has_true_hdg = true;
-        }
-    }
-}
-
 /* ── Display ─────────────────────────────────────────────────────────────── */
-
-static void flag_str(uint16_t flags, char *buf, size_t sz)
-{
-    /* Compact flag summary: C=converged V=mag-valid A=accel-cal G=gyro-cal M=mag-cal */
-    int n = snprintf(buf, sz, "0x%04X [", flags);
-    if (n < 0 || (size_t)n >= sz) return;
-    char *p = buf + n; size_t r = sz - (size_t)n;
-    if (flags & FLAG_FUSION_CONVERGED)  { snprintf(p, r, "C");  p++; r--; }
-    if (flags & FLAG_MAG_VALID)         { snprintf(p, r, "V");  p++; r--; }
-    if (flags & FLAG_ACCEL_CAL)         { snprintf(p, r, "A");  p++; r--; }
-    if (flags & FLAG_GYRO_CAL)          { snprintf(p, r, "G");  p++; r--; }
-    if (flags & FLAG_MAG_CAL)           { snprintf(p, r, "M");  p++; r--; }
-    if (flags & FLAG_DECLINATION_VALID) { snprintf(p, r, "D");  p++; r--; }
-    if (flags & FLAG_STARTUP)           { snprintf(p, r, "S");  p++; r--; }
-    if (flags & FLAG_FIFO_OVERFLOW)     { snprintf(p, r, "!"); }
-    strncat(buf, "]", sz - strlen(buf) - 1);
-}
 
 static void print_snapshot(const mon_state_t *st,
                             bool want_nmea, bool want_binary)
@@ -234,7 +129,7 @@ static void print_snapshot(const mon_state_t *st,
             float roll_d    = p->roll  * (float)(180.0 / M_PI);
             float cov_trace = p->cov[0] + p->cov[4] + p->cov[8];
             char  fstr[32];
-            flag_str(p->flags, fstr, sizeof fstr);
+            mon_flag_str(p->flags, fstr, sizeof fstr);
             /* Line 1: fused attitude */
             printf("Binary  hdg=%6.1f°  pitch=%+6.1f°  roll=%+6.1f°"
                    "  rot=%+7.1f dpm  seq=%-8u  cov=%.1e  %s\n",
@@ -353,14 +248,14 @@ int main(int argc, char **argv)
 
         if (nmea_fd >= 0 && FD_ISSET(nmea_fd, &rfds)) {
             while ((n = recv(nmea_fd, dgram, sizeof dgram - 1, MSG_DONTWAIT)) > 0)
-                parse_nmea(&st, dgram, (size_t)n);
+                mon_parse_nmea(&st, dgram, (size_t)n);
         }
         if (bin_fd >= 0 && FD_ISSET(bin_fd, &rfds)) {
             while ((n = recv(bin_fd, dgram, sizeof dgram, MSG_DONTWAIT)) > 0) {
                 if (!st.have_binary && (size_t)n == sizeof(imu_packet_t)) {
                     imu_packet_t *p = (imu_packet_t *)(void *)dgram;
                     if (p->magic == IMUD_MAGIC &&
-                        crc32_ieee((const uint8_t *)p, offsetof(imu_packet_t, crc32)) == p->crc32) {
+                        mon_crc32_ieee((const uint8_t *)p, offsetof(imu_packet_t, crc32)) == p->crc32) {
                         st.bin_pkt     = *p;
                         st.have_binary = true;
                     }
