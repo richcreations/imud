@@ -86,7 +86,7 @@ __pycache__/
 
 # Local agent guidance (not shipped)
 AGENTS.md
-
+audit.md
 # Cal file (machine-specific, not for version control)
 cal.json
 
