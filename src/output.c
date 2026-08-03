@@ -46,6 +46,7 @@
 #endif
 
 #include "output.h"
+#include "fileio.h"      /* bind_unix_mode */
 #include "imu_math.h"    /* ts_add_ns */
 #include "nmea.h"
 #include "packet.h"
@@ -421,7 +422,8 @@ void *stream_out_thread(void *arg)
 
 /*
  * Open the AF_UNIX listen socket for the subscription stream.
- * Unlinks a stale socket first; mode 0660 to match the status socket.
+ * Unlinks a stale socket first; mode 0660 to match the status socket, applied
+ * from creation by bind_unix_mode() so the socket is never briefly wider.
  */
 static int open_stream_listener(const char *path)
 {
@@ -451,11 +453,11 @@ static int open_stream_listener(const char *path)
     addr.sun_family = AF_UNIX;
     memcpy(addr.sun_path, path, plen);   /* addr is zeroed → NUL-terminated */
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG_E("[output] stream bind(%s): %s\n", path, strerror(errno));
+    if (bind_unix_mode(fd, (struct sockaddr *)&addr, sizeof(addr),
+                       path, 0660) < 0) {
+        LOG_E("[output] stream bind/chmod(%s): %s\n", path, strerror(errno));
         close(fd); return -1;
     }
-    chmod(path, 0660);
     if (listen(fd, 4) < 0) {
         LOG_E("[output] stream listen(): %s\n", strerror(errno));
         close(fd); unlink(path); return -1;

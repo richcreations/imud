@@ -198,6 +198,30 @@ jobs:
           if id -u imud >/dev/null 2>&1; then echo "useradd ran under DESTDIR"; exit 1; fi
           echo "staged layout OK"
 
+      # The units are generated from etc/*.service.in, so the staged copies are
+      # what ships.  `verify` is a hard gate: systemd only *warns* about an
+      # unknown or misspelled directive at runtime, in a log nobody reads, so a
+      # typo in the hardening block would silently un-harden a unit.
+      #
+      # `security` is printed, not thresholded — it mis-scores units that use
+      # more than one SystemCallFilter= line (systemd#23663), which is exactly
+      # imud.service's shape (it re-allows adjtimex after ~@privileged).  What
+      # actually proves those filters is running the daemon on real hardware.
+      - name: systemd unit lint
+        run: |
+          systemd-analyze --version | head -1
+          units=$(cd stage/lib/systemd/system && echo *.service)
+          echo "checking: $units"
+          # --recursive-errors=no keeps this about our units, not about
+          # network-online.target and friends being absent on a runner;
+          # --man=no skips resolving the Documentation= man pages, which are
+          # staged under DESTDIR rather than installed.
+          systemd-analyze verify --root="$PWD/stage" \
+                                 --recursive-errors=no --man=no $units
+          for u in $units; do
+            systemd-analyze security --offline=true --root="$PWD/stage" "$u" || true
+          done
+
       # A third-party consumer must build against the staged tree using only
       # pkg-config — proves header, .pc, and link path end to end.
       - name: pkg-config consumer compile

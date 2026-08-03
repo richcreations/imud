@@ -15,6 +15,8 @@
  *   - packet content reflects the fused state (heading roundtrip)
  *   - a disconnected subscriber is pruned and a new one can join
  *   - clean thread stop and socket unlink
+ *   - the AF_UNIX listener is 0660 whatever umask the daemon was started
+ *     under, and opening it leaves that umask untouched (audit L5)
  *   - the TCP listener ([stream] tcp_*) serves the same framed packets
  *     alongside the AF_UNIX path, and its subscribers get the final
  *     FLAG_SHUTDOWN packet on stop
@@ -33,12 +35,14 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <math.h>
 #include "../include/types.h"
 #include "../include/config.h"
+#include "../include/fileio.h"   /* umask_for — the L5 socket-mode helper */
 #include "../include/output.h"
 
 #define TEST_SOCK "/tmp/imud_test_stream.sock"
@@ -316,6 +320,64 @@ static void test_reload_and_shutdown(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/*
+ * The AF_UNIX listener's permission mode does not depend on the umask it was
+ * started under (audit L5).
+ *
+ * The window this closes — between bind() and chmod(), where the socket sat at
+ * 0777 & ~umask — is not observable from outside the process, so no test here
+ * can prove it gone; that rests on bind_unix_mode() in include/fileio.h being
+ * the only path to a bound socket.  What these assertions do hold is the
+ * contract around it: the resulting mode is 0660 whatever the umask was, the
+ * helper's mask arithmetic is right, and the process umask survives the call.
+ * That last one matters most — a helper that set the umask and failed to put
+ * it back would silently widen every file the daemon created afterwards.
+ */
+static void test_socket_mode(void)
+{
+    int fb = g_fail;
+    printf("%-52s", "test_stream_socket_mode");
+    fflush(stdout);
+
+    EXPECT(umask_for(0660) == 0117, "umask_for(0660) is 0117");
+    EXPECT(umask_for(0600) == 0177, "umask_for(0600) is 0177");
+    EXPECT(umask_for(0666) == 0111, "umask_for(0666) leaves the x bits");
+
+    /* Permissive, default and restrictive: the socket must land on 0660 from
+     * all three, and the umask must come back unchanged from all three. */
+    const mode_t masks[] = { 0, 022, 0077 };
+
+    for (size_t i = 0; i < sizeof masks / sizeof masks[0]; i++) {
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        cfg.nmea_enabled     = false;
+        cfg.highrate_enabled = false;
+        cfg.stream_enabled   = true;
+        snprintf(cfg.stream_socket, sizeof cfg.stream_socket, TEST_SOCK);
+
+        unlink(TEST_SOCK);
+
+        mode_t entry = umask(masks[i]);
+        out_ctx_t *out = NULL;
+        int rc = out_ctx_open(&out, &cfg, (imu_ctx_t *)0x1);
+        mode_t after = umask(entry);      /* restore, and read back what we left */
+
+        EXPECT(rc == 0, "out_ctx_open under a non-default umask");
+        EXPECT(after == masks[i], "out_ctx_open leaves the process umask alone");
+
+        struct stat st;
+        EXPECT(stat(TEST_SOCK, &st) == 0, "stream socket exists");
+        EXPECT((st.st_mode & 0777) == 0660,
+               "stream socket is 0660 regardless of the umask");
+        EXPECT(S_ISSOCK(st.st_mode), "and it really is a socket");
+
+        if (rc == 0) out_ctx_free(out);
+        unlink(TEST_SOCK);
+    }
+
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 /* The [stream] TCP listener serves the same framed packets as AF_UNIX. */
 static void test_stream_tcp(void)
 {
@@ -454,6 +516,7 @@ int main(void)
 
     puts(g_fail == fb ? "OK" : "FAIL");
 
+    test_socket_mode();
     test_stream_tcp();
     test_udp_outputs();
     test_reload_and_shutdown();

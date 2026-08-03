@@ -185,6 +185,28 @@ The unit is `Type=notify` and hardened (`ProtectSystem=strict`,
 Raspberry Pi 5, uncomment the `gpiochip4` `DeviceAllow` line in
 `etc/imud.service` and set `device.gpio_chip = "gpiochip4"` in the config.
 
+All six units — the daemon and the five bridges — additionally carry an empty
+`CapabilityBoundingSet=`, `SystemCallArchitectures=native`, a
+`SystemCallFilter=@system-service` allow-list minus `@privileged` and
+`@resources`, `RestrictNamespaces`, `LockPersonality`, `RestrictSUIDSGID`,
+`ProtectHostname`, and `ProtectProc=invisible` with `ProcSubset=pid`. Together
+those put every unit at OK under `systemd-analyze security`.
+
+One deliberate exception: **`imud.service` does not set `ProtectClock=`**, and
+re-allows `adjtimex` after its `~@privileged` line. The daemon calls `adjtimex`
+read-only at startup to report the CLOCK_TAI offset; `ProtectClock=` blocks that
+call outright, with no way to allow it back, which would turn the check into a
+false "chrony has not set tai_offset" warning on every boot. Setting the clock
+is already impossible without CAP_SYS_TIME, which the empty
+`CapabilityBoundingSet=` removes. The five bridges never call `adjtimex` and do
+set `ProtectClock=true`.
+
+`imud.service` runs at `UMask=0027` and the bridges at `0077`; the daemon
+tightens an inherited umask but never loosens it. Both AF_UNIX sockets
+(`/run/imud/imud.sock` and the stream socket) are created at mode 0660 rather
+than chmod'd down after `bind()`, so they are never momentarily wider — however
+`imud` was launched, systemd or not.
+
 ### Command-line options
 
 ```

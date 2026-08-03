@@ -33,6 +33,26 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ProtectHostname=true
+# The bridge never sets the clock, and — unlike imud — never reads the TAI
+# offset either, so ProtectClock= costs it nothing.
+ProtectClock=true
+# The bridge reads nothing under /proc or /sys.
+ProtectProc=invisible
+ProcSubset=pid
+# No capabilities: serial output is by dialout group membership (above), not
+# by CAP_DAC_OVERRIDE.
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+# @system-service covers ioctl(), which is what the serial termios setup uses.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# The bridge creates no files; 0077 costs nothing and covers anything a future
+# addition might create.
+UMask=0077
 # UDP out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # No hardware except serial/tty devices (for serial output).

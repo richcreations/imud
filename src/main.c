@@ -183,10 +183,20 @@ static void clock_health_check(void)
     }
 
 #ifdef __linux__
+    /* adjtimex(2) is in systemd's @clock set, hence in @privileged, and
+     * ProtectClock= blocks it outright — even this read-only modes = 0 call.
+     * imud.service therefore sets no ProtectClock= and re-allows adjtimex
+     * after its ~@privileged line.  Test the return anyway: without it a
+     * blocked call lands in the tx.tai == 0 branch below and blames chrony
+     * for a filter the operator installed. */
     struct timex tx;
     memset(&tx, 0, sizeof(tx));
-    adjtimex(&tx);
-    if (tx.tai == 0) {
+    if (adjtimex(&tx) < 0) {
+        LOG_W("[clock] WARNING: cannot query the TAI offset (%s) — "
+                "ts_tai_ns cannot be checked. A unit override dropping "
+                "adjtimex from SystemCallFilter= will do this.\n",
+                strerror(errno));
+    } else if (tx.tai == 0) {
         LOG_W("[clock] WARNING: CLOCK_TAI offset is 0 — "
                 "chrony has not set tai_offset (leapsectz right/UTC?). "
                 "ts_tai_ns will be unreliable.\n");
@@ -200,8 +210,10 @@ static void clock_health_check(void)
 
 /*
  * Open the AF_UNIX stream socket that imud-status connects to.
- * chmod 0660 so only members of the daemon's group — imud, the primary group
- * of the user in the shipped unit — can query it.
+ * Mode 0660 so only members of the daemon's group — imud, the primary group
+ * of the user in the shipped unit — can query it.  bind_unix_mode() applies
+ * that from creation rather than chmod'ing down afterwards, so the socket is
+ * never briefly wider than the umask happened to allow.
  * Returns listening fd, or -1 on error.
  */
 static int status_sock_open(const char *path)
@@ -220,11 +232,11 @@ static int status_sock_open(const char *path)
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG_E("[health] bind(%s): %s\n", path, strerror(errno));
+    if (bind_unix_mode(fd, (struct sockaddr *)&addr, sizeof(addr),
+                       path, 0660) < 0) {
+        LOG_E("[health] bind/chmod(%s): %s\n", path, strerror(errno));
         close(fd); return -1;
     }
-    chmod(path, 0660);
     listen(fd, 4);
     return fd;
 }
@@ -516,8 +528,13 @@ int main(int argc, char **argv)
      * no longer depends on how the daemon was launched.  This stays as a
      * backstop for anything created by a library beneath us: a manual start
      * inherits the invoking shell's umask, and umask 0 would leave such a
-     * file world-WRITABLE. */
-    umask(022);
+     * file world-WRITABLE.
+     *
+     * Tighten-only, never loosen: 022 is a floor, not a setting.  The shipped
+     * unit asks for UMask=0027, and overwriting that with 022 would hand back
+     * the "other" bits systemd had just taken away. */
+    mode_t inherited_umask = umask(022);
+    umask(inherited_umask | 022);
 
     /* ── 1. Args + config ───────────────────────────────────────────────── */
 

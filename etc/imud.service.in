@@ -57,9 +57,45 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ProtectHostname=true
+
+# The daemon reads nothing under /proc or /sys.
+ProtectProc=invisible
+ProcSubset=pid
 
 # UDP output (AF_INET) and the status socket (AF_UNIX) only.
 RestrictAddressFamilies=AF_INET AF_UNIX
+
+# No capabilities at all: hardware access is by supplementary group (above),
+# and systemd — not the daemon — creates the runtime and state directories.
+# This is also what makes the clock unsettable: adjtimex(2) and settimeofday(2)
+# need CAP_SYS_TIME, which cannot be acquired from an empty bounding set under
+# NoNewPrivileges=.
+CapabilityBoundingSet=
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# The first non-~ line above makes this an allow-list; later lines add to or
+# subtract from it in order, so this re-allows what ~@privileged just removed.
+#
+# adjtimex(2) is in @clock and therefore in @privileged, but the daemon only
+# ever calls it read-only (modes = 0) to report the CLOCK_TAI offset at
+# startup.  Blocking it makes that check log a false "chrony has not set
+# tai_offset" on every boot.  Setting the clock stays impossible via the empty
+# CapabilityBoundingSet= above, so ProtectClock= — which would block adjtimex
+# outright, with no way to allow it back — is deliberately NOT set here.  The
+# five bridge units do set it; none of them calls adjtimex.
+SystemCallFilter=adjtimex
+
+# 0027, not 0077: the daemon's own files carry explicit modes (fileio.h), but
+# /var/log/imud.log is opened 0640 so imud-group members can tail it, and 0077
+# would mask that down to 0600.  main() tightens this further if it inherits
+# something stricter, and never loosens it.
+UMask=0027
 
 # Restrict hardware access to exactly the devices the daemon uses.
 # Pi 4 defaults below.  For Pi 5, comment out gpiochip0 and uncomment gpiochip4.

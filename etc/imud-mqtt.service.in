@@ -32,6 +32,26 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ProtectHostname=true
+# The bridge never sets the clock, and — unlike imud — never reads the TAI
+# offset either, so ProtectClock= costs it nothing.
+ProtectClock=true
+# The bridge itself reads nothing under /proc or /sys.  If a TLS handshake ever
+# fails here and nowhere else, ProcSubset= is the first line to drop: OpenSSL,
+# reached through libmosquitto, is the one dependency that may probe /proc.
+ProtectProc=invisible
+ProcSubset=pid
+# No capabilities: it reads one socket and writes to the network.
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# The bridge creates no files; 0077 costs nothing and covers anything a future
+# addition might create.
+UMask=0077
 # MQTT/TLS out (AF_INET/AF_INET6) + the imud stream socket (AF_UNIX) only.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # No device access — the bridge touches no hardware.

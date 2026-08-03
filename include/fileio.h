@@ -5,7 +5,7 @@
  */
 
 /*
- * fileio.h — create a file with an explicit permission mode
+ * fileio.h — create a file or an AF_UNIX socket with an explicit permission mode
  *
  * fopen(path, "w") creates the file 0666 and leaves the process umask to
  * narrow it.  main() sets umask(022) so the daemon's files land 0644 however
@@ -14,6 +14,10 @@
  * file imud writes — PID file, cal.json, the .imucap black box, an imutest
  * report — is meant to be world-readable and owner-writable, so say so at the
  * point of creation instead of inferring it.
+ *
+ * bind(2) on an AF_UNIX socket is the same story with a sharper edge: the
+ * inode it creates takes 0777 & ~umask, so a bind-then-chmod leaves the socket
+ * briefly as wide as the umask allowed.  bind_unix_mode() closes that.
  *
  * Header-only and static inline on purpose: the callers sit in translation
  * units with four different link sets (daemon, imud-cal, imud-imutest, the
@@ -26,6 +30,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -52,6 +57,40 @@ static inline FILE *fcreate(const char *path, const char *stdio_mode,
         errno = saved;
     }
     return f;
+}
+
+/* The umask that makes a newly created object land at exactly `perm`. */
+static inline mode_t umask_for(mode_t perm)
+{
+    return (mode_t)(0777 & ~perm);
+}
+
+/*
+ * bind() an AF_UNIX socket that is never wider than `perm`, at any instant.
+ *
+ * The bare idiom is bind() then chmod(), which is correct in the end but leaves
+ * the socket at 0777 & ~umask in between — connectable by anyone if the umask
+ * happens to be permissive.  Binding under umask_for(perm) means the socket is
+ * born at `perm` instead.  The chmod stays because it is what still delivers
+ * `perm` when the caller's umask was *narrower*: the umask can only take bits
+ * away, never add them back.
+ *
+ * umask(2) is process-global and not thread-safe, so this must be called before
+ * any thread is created.  Both callers are daemon startup, ahead of every
+ * pthread_create().
+ *
+ * Returns 0, or -1 with errno set from whichever call failed.
+ */
+static inline int bind_unix_mode(int fd, const struct sockaddr *addr,
+                                 socklen_t len, const char *path, mode_t perm)
+{
+    mode_t saved = umask(umask_for(perm));
+    int    rc    = bind(fd, addr, len);
+    int    err   = errno;
+    umask(saved);
+
+    if (rc < 0) { errno = err; return -1; }
+    return chmod(path, perm);
 }
 
 #endif /* IMUD_FILEIO_H */
