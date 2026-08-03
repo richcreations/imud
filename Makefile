@@ -67,6 +67,7 @@ IMUD_SRCS   = src/cal.c \
               src/packet.c \
               src/position.c \
               src/sdnotify.c \
+              src/status_fmt.c \
               src/wmm.c \
               src/drivers.c \
               $(DRIVER_SRCS)
