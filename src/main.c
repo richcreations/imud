@@ -62,6 +62,7 @@
 #include "output.h"
 #include "position.h"
 #include "sdnotify.h"
+#include "status_fmt.h"
 #include "types.h"
 #include "wmm.h"
 
@@ -199,134 +200,35 @@ static void write_status_response(int fd,
                                   const imud_config_t *cfg,
                                   imu_ctx_t *imu)
 {
-    fused_state_t state;
-    mag_sample_t  mag;
-    imu_get_state(imu, &state, &mag, NULL, NULL);
+    status_input_t in;
+    memset(&in, 0, sizeof in);
+    in.cfg = cfg;
 
-    imu_stats_t st;
-    imu_get_stats(imu, &st);
+    mag_sample_t mag;
+    imu_get_state(imu, &in.state, &mag, NULL, NULL);
+    imu_get_stats(imu, &in.stats);
 
-    float pitch_deg   = state.pitch * (float)(180.0 / M_PI);
-    float roll_deg    = state.roll  * (float)(180.0 / M_PI);
-    float cov_trace   = state.cov[0] + state.cov[4] + state.cov[8];
-    bool  converged   = (state.flags & FLAG_FUSION_CONVERGED) != 0;
+    in.uptime_s = time(NULL) - g_start_time;
 
-    time_t elapsed = time(NULL) - g_start_time;
-    int    hh = (int)(elapsed / 3600);
-    int    mm = (int)((elapsed % 3600) / 60);
-    int    ss = (int)(elapsed % 60);
-
-    /* Build the response into a stack buffer and write in one call.
-     * WS() tracks (wp, wr) so snprintf truncation never advances wp past
-     * the buffer end — safe even if a single line exceeds remaining space. */
-    char   buf[STATUS_BUF];
-    char  *wp  = buf;
-    size_t wr  = sizeof(buf);
-
-#define WS(fmt, ...) do { \
-        if (wr > 1) { \
-            int _r = snprintf(wp, wr, fmt, ##__VA_ARGS__); \
-            if (_r > 0 && (size_t)_r < wr) { wp += _r; wr -= (size_t)_r; } \
-            else if (_r > 0)                { wp += wr - 1; wr = 1; } \
-        } } while (0)
-
-    WS("Chip IDs:       %s 0x%02X   %s 0x%02X\n",
-        cfg->imu_driver, cfg->imu_addr,
-        cfg->mag_driver, cfg->mag_addr);
-
-    WS("IMU ODR:        %d Hz  (FIFO watermark: %d sample-sets)\n",
-        cfg->imu_odr_hz, cfg->imu_fifo_wm);
-
-    WS("Mag ODR:        %d Hz  (SET every %.0f s%s)\n",
-        cfg->mag_odr_hz, cfg->mag_set_period_s,
-        cfg->mag_set_period_s > 0 ? "" : ", disabled");
-
-    WS("Fusion:         MEKF %s  cov_trace=%.2e rad2\n",
-        converged ? "converged" : "converging",
-        cov_trace);
-
-    WS("Calibration:    accel %s  gyro %s  mag %s\n",
-        (state.flags & FLAG_ACCEL_CAL) ? "yes" : "no",
-        (state.flags & FLAG_GYRO_CAL)  ? "yes" : "no",
-        (state.flags & FLAG_MAG_CAL)   ? "yes" : "no");
-
-    WS("Attitude:       pitch=%.1f  roll=%.1f  heading=%.1f M\n",
-        pitch_deg, roll_deg, state.heading_deg);
-
-    if (state.flags & FLAG_DECLINATION_VALID) {
-        float true_hdg = fmodf(state.heading_deg + state.declination_deg
-                               + 360.0f, 360.0f);
-        WS("Declination:    %+.2f E  (true heading %.1f T)\n",
-            state.declination_deg, true_hdg);
-    } else {
-        WS("Declination:    unknown  (no true heading output)\n");
-    }
-
-    if (cfg->heave_tau_s > 0.0f)
-        WS("Heave:          %+.2f m\n", state.heave_m);
-
-    if (cfg->heave_tau_s > 0.0f && cfg->wave_tau_s > 0.0f) {
-        if (state.flags & FLAG_WAVE_VALID)
-            WS("Sea state:      Hs %.2f m  Tz %.1f s  roll period %.1f s\n",
-                state.wave_height_m, state.wave_period_s, state.roll_period_s);
-        else
-            WS("Sea state:      settling\n");
-    }
-
+    char cpath[320] = "";
     if (cfg->capture_enabled) {
-        char     cpath[320];
-        uint64_t cbytes, cdrops;
-        bool     cactive;
         imu_get_capture_status(imu, cpath, sizeof(cpath),
-                               &cbytes, &cdrops, &cactive);
-        if (cactive)
-            WS("Capture:        %s  (%.1f MB, %llu dropped)\n",
-                cpath, (double)cbytes / (1024.0 * 1024.0),
-                (unsigned long long)cdrops);
-        else
-            WS("Capture:        stopped (see log)\n");
+                               &in.capture_bytes, &in.capture_drops,
+                               &in.capture_active);
+        in.capture_path = cpath;
     }
 
-    if (cfg->nmea_enabled && cfg->nmea_tcp_enabled) {
-        WS("NMEA out:       %d Hz  (UDP port %d, TCP port %d)\n",
-            cfg->nmea_rate_hz, cfg->nmea_dest_port, cfg->nmea_tcp_port);
-    } else if (cfg->nmea_enabled) {
-        WS("NMEA out:       %d Hz  (port %d)\n",
-            cfg->nmea_rate_hz, cfg->nmea_dest_port);
-    } else if (cfg->nmea_tcp_enabled) {
-        WS("NMEA out:       %d Hz  (TCP port %d)\n",
-            cfg->nmea_rate_hz, cfg->nmea_tcp_port);
-    } else {
-        WS("NMEA out:       disabled\n");
-    }
+    char recent[1200];
+    if (log_recent(recent, sizeof recent) > 0)
+        in.recent = recent;
 
-    if (cfg->highrate_enabled) {
-        WS("Hi-rate out:    %d Hz  (port %d, %s)\n",
-            cfg->highrate_rate_hz, cfg->highrate_dest_port,
-            cfg->highrate_coord_frame);
-    } else {
-        WS("Hi-rate out:    disabled\n");
-    }
-
-    WS("IMU samples:    %llu  overflows: %llu\n",
-        (unsigned long long)st.imu_samples,
-        (unsigned long long)st.fifo_overflows);
-
-    WS("Uptime:         %02d:%02d:%02d\n", hh, mm, ss);
-
-    /* Last few WARN/ERROR lines — what went wrong while unattended. */
-    {
-        char recent[1200];
-        if (log_recent(recent, sizeof recent) > 0)
-            WS("Recent warnings:\n%s", recent);
-    }
-
-#undef WS
+    char   buf[STATUS_BUF];
+    size_t n = status_format(buf, sizeof buf, &in);
 
     /* Write all at once; ignore partial-write on client disconnect.  glibc
      * marks write() warn_unused_result and gcc deliberately does not honour a
      * (void) cast for that, so the result has to land somewhere. */
-    ssize_t nw = write(fd, buf, (size_t)(wp - buf));
+    ssize_t nw = write(fd, buf, n);
     (void)nw;
 }
 

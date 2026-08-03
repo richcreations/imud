@@ -206,6 +206,12 @@ test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fi
 test_config: src/config.c src/log.c test/test_config.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# imud-status report text (src/status_fmt.c): the gated lines, and the WS()
+# truncation bound at every buffer size.  Pure formatter — config.c is here
+# only for config_defaults() in the fixtures.
+test_status: src/status_fmt.c src/config.c src/log.c test/test_status.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 # argv parsing for the five non-bridge entry points (src/cli.c).  This is what
 # SECURITY.md means by "the CLI parsers are covered by unit tests instead" —
 # the bridges' shared parser is covered by test_bridge.  cli.c deliberately
@@ -344,7 +350,7 @@ test_imutest: src/imutest.c src/imutest_report.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
-test: test_fusion test_fit_ra test_config test_cli test_nmea test_packet test_capture test_ring \
+test: test_fusion test_fit_ra test_config test_cli test_status test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
@@ -354,6 +360,7 @@ test: test_fusion test_fit_ra test_config test_cli test_nmea test_packet test_ca
 	./test_fit_ra
 	./test_config
 	./test_cli
+	./test_status
 	./test_nmea
 	./test_packet
 	./test_capture
@@ -848,7 +855,7 @@ clean:
 	      imud imud-cal imud-imutest imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
       imud-prometheus \
 	      libimud.so libimud.so.* libimud.pc \
-	      test_fusion test_fit_ra test_config test_cli test_nmea test_packet test_ring test_mount \
+	      test_fusion test_fit_ra test_config test_cli test_status test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_capture test_concurrency \
