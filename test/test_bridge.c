@@ -20,9 +20,12 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "bridge.h"
 #include "sdnotify.h"
@@ -350,6 +353,137 @@ static void test_stream_ensure(void)
     end(fb);
 }
 
+/* ── UDP output, blocking write, and the remaining lifecycle helpers ─────── */
+
+/*
+ * bridge_open_udp is the one every bridge sends through, and bridge_write_all
+ * is what the HTTP/socket bridges push bytes with; neither had any coverage.
+ * Both are exercised against real sockets rather than mocked.
+ */
+static void test_open_udp(void)
+{
+    begin("test_open_udp");
+    int fb = g_fail;
+
+    /* Bind a receiver first so there is something to send to. */
+    int rx = socket(AF_INET, SOCK_DGRAM, 0);
+    EXPECT(rx >= 0, "receiver socket");
+    struct sockaddr_in ra;
+    memset(&ra, 0, sizeof ra);
+    ra.sin_family      = AF_INET;
+    ra.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ra.sin_port        = 0;
+    EXPECT(bind(rx, (struct sockaddr *)&ra, sizeof ra) == 0, "receiver bound");
+    socklen_t ralen = sizeof ra;
+    getsockname(rx, (struct sockaddr *)&ra, &ralen);
+    int port = ntohs(ra.sin_port);
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    struct sockaddr_storage dst;
+    socklen_t dlen = 0;
+    int fd = bridge_open_udp("127.0.0.1", port, "test", &dst, &dlen);
+    EXPECT(fd >= 0, "bridge_open_udp resolves and opens");
+    EXPECT(dlen > 0, "destination length filled in");
+
+    if (fd >= 0) {
+        const char *msg = "imud-test-datagram";
+        ssize_t s = sendto(fd, msg, strlen(msg), 0,
+                           (struct sockaddr *)&dst, dlen);
+        EXPECT(s == (ssize_t)strlen(msg), "datagram sent to the resolved dest");
+
+        char got[64];
+        ssize_t n = recv(rx, got, sizeof got - 1, 0);
+        EXPECT(n == (ssize_t)strlen(msg), "receiver got it");
+        if (n > 0) { got[n] = '\0'; EXPECT(strcmp(got, msg) == 0, "bytes match"); }
+        close(fd);
+    }
+
+    /* A name that cannot resolve must fail cleanly, not return a live fd.
+     * ".invalid" is reserved by RFC 2606 precisely so it never resolves. */
+    struct sockaddr_storage bad_dst;
+    socklen_t bad_len = 0;
+    EXPECT(bridge_open_udp("no-such-host.invalid", 1234, "test",
+                           &bad_dst, &bad_len) < 0,
+           "unresolvable host → -1");
+
+    close(rx);
+    end(fb);
+}
+
+static void test_write_all(void)
+{
+    begin("test_write_all");
+    int fb = g_fail;
+
+    int sv[2];
+    EXPECT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair");
+
+    const char *payload = "line one\nline two\n";
+    int n = (int)strlen(payload);
+    EXPECT(bridge_write_all(sv[0], payload, n) == 0, "full write returns 0");
+
+    char got[64];
+    ssize_t r = recv(sv[1], got, sizeof got - 1, 0);
+    EXPECT(r == n, "every byte arrived");
+    if (r > 0) { got[r] = '\0'; EXPECT(strcmp(got, payload) == 0, "content matches"); }
+
+    /* Peer gone: the write must report failure rather than spin.  SIGPIPE is
+     * ignored by bridge_install_signals, which test_signals already ran. */
+    close(sv[1]);
+    EXPECT(bridge_write_all(sv[0], payload, n) == -1,
+           "write to a closed peer → -1");
+    close(sv[0]);
+    end(fb);
+}
+
+/* The sleep must return early when a signal flag is raised, or a bridge would
+ * take its full retry interval to notice SIGTERM. */
+static void test_sleep_interruptible(void)
+{
+    begin("test_sleep_interruptible");
+    int fb = g_fail;
+
+    bridge_stop = 1;
+    time_t t0 = time(NULL);
+    bridge_sleep_interruptible(30);
+    EXPECT(difftime(time(NULL), t0) < 2.0, "stop flag cuts the sleep short");
+    bridge_stop = 0;
+
+    bridge_reload = 1;
+    t0 = time(NULL);
+    bridge_sleep_interruptible(30);
+    EXPECT(difftime(time(NULL), t0) < 2.0, "reload flag cuts the sleep short");
+    bridge_reload = 0;
+
+    /* Zero and negative durations must not sleep at all. */
+    t0 = time(NULL);
+    bridge_sleep_interruptible(0);
+    bridge_sleep_interruptible(-1);
+    EXPECT(difftime(time(NULL), t0) < 2.0, "0 and negative return immediately");
+    end(fb);
+}
+
+/*
+ * bridge_exit_disabled does NOT exit despite the name — it logs and signals
+ * READY=1 so systemd records a clean start instead of restart-looping a
+ * deliberately disabled bridge.  The caller does the exiting.  Pinning that
+ * here because the name invites someone to "fix" it into an exit() call.
+ */
+static void test_disabled_and_reload_done(void)
+{
+    begin("test_disabled_and_reload_done");
+    int fb = g_fail;
+
+    unsetenv("NOTIFY_SOCKET");     /* sd_notify_msg no-ops without it */
+    bridge_exit_disabled(&TBI);
+    EXPECT(1, "bridge_exit_disabled returns to its caller");
+
+    bridge_reload_done(&TBI);
+    EXPECT(1, "bridge_reload_done returns");
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -366,6 +500,10 @@ int main(void)
     test_signals();
     test_sd_notify();
     test_stream_ensure();
+    test_open_udp();
+    test_write_all();
+    test_sleep_interruptible();
+    test_disabled_and_reload_done();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

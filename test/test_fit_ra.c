@@ -366,6 +366,111 @@ static void test_fitra_rejects_bad_input(void)
     end(fb);
 }
 
+/* ── The report itself ───────────────────────────────────────────────────── */
+
+/*
+ * fitra_print is the entire user-visible output of `imud-cal fit-ra`, and its
+ * advice branches on the report: whether the wave state was configured,
+ * whether the residual is time-correlated, whether the NIS bisection
+ * converged.  Picking the wrong arm tells an operator to tune the wrong knob,
+ * so both arms of each branch are exercised here against a captured stdout.
+ */
+static char *capture_print(const fitra_report_t *r, const char *path)
+{
+    static char buf[16384];
+    char tmp[128];
+    snprintf(tmp, sizeof tmp, "/tmp/imud_fitra_out_%d.txt", (int)getpid());
+
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *f = freopen(tmp, "w", stdout);
+    if (f) fitra_print(r, path);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+
+    buf[0] = '\0';
+    FILE *in = fopen(tmp, "r");
+    if (in) {
+        size_t n = fread(buf, 1, sizeof buf - 1, in);
+        buf[n] = '\0';
+        fclose(in);
+    }
+    remove(tmp);
+    return buf;
+}
+
+static void test_fitra_print_wave_enabled(void)
+{
+    begin("test_fitra_print_wave_enabled");
+    int fb = g_fail;
+
+    fitra_report_t r;
+    memset(&r, 0, sizeof r);
+    r.duration_s = 90.0; r.n_imu = 74970; r.n_mag = 9000;
+    r.n_accel_upd = 60000; r.n_skipped = 15000;
+    r.resid_var[0] = r.resid_var[1] = r.resid_var[2] = 1e-4;
+    r.resid_var_total = 1e-4;
+    r.nis_mean = 1.05;
+    r.resid_tau_s = 0.01;              /* white → the "absorbed" arm */
+    r.wave_configured = true;
+    r.wave_sigma_cfg = 0.8; r.wave_tau_cfg = 0.5;
+    r.wave_sigma_suggest = 0.9; r.wave_tau_suggest = 0.6;
+    r.na_raw = 0.0022; r.na_consistent = 0.0025; r.na_consistent_ok = true;
+    r.na_configured = 0.0022;
+
+    const char *out = capture_print(&r, "/tmp/session.imucap");
+    EXPECT(strstr(out, "/tmp/session.imucap") != NULL, "names the capture");
+    EXPECT(strstr(out, "wave state has absorbed") != NULL,
+           "white residual → the wave state absorbed it");
+    EXPECT(strstr(out, "mekf_wave_accel = 0.80") != NULL ||
+           strstr(out, "mekf_wave_accel = 0.8") != NULL,
+           "reports the configured wave sigma");
+    EXPECT(strstr(out, "suggested") != NULL, "offers a suggestion");
+    EXPECT(strstr(out, "SHOULD be near 1") != NULL,
+           "wave-on guidance, not the wave-off guidance");
+    EXPECT(strstr(out, "did not converge") == NULL,
+           "no bisection warning when it converged");
+    EXPECT(strstr(out, "nothing is written") != NULL,
+           "states that it writes no calibration");
+    end(fb);
+}
+
+static void test_fitra_print_wave_disabled(void)
+{
+    begin("test_fitra_print_wave_disabled");
+    int fb = g_fail;
+
+    fitra_report_t r;
+    memset(&r, 0, sizeof r);
+    r.duration_s = 90.0;
+    r.n_accel_upd = 0; r.n_skipped = 0;      /* exercises the /0 guard */
+    r.resid_var_total = 4e-3;
+    r.nis_mean = 19.3;
+    r.resid_tau_s = 0.4;                     /* correlated → the warning arm */
+    r.wave_configured = false;
+    r.wave_sigma_suggest = 0.0;              /* no suggestion available */
+    r.na_consistent_ok = false;              /* bisection failed arm */
+    r.na_consistent = 0.031;
+
+    const char *out = capture_print(&r, "rough.imucap");
+    EXPECT(strstr(out, "strongly time-correlated") != NULL,
+           "correlated residual is called out");
+    EXPECT(strstr(out, "DISABLED") != NULL, "reports the wave state as disabled");
+    EXPECT(strstr(out, "did not converge") != NULL,
+           "reports a failed NIS bisection rather than a bogus number");
+    EXPECT(strstr(out, "10-30 is NORMAL") != NULL,
+           "wave-off guidance explains the high NIS");
+    EXPECT(strstr(out, "ROADMAP 10.5") != NULL, "points at the roadmap item");
+    EXPECT(strstr(out, "suggested           mekf_wave_accel") == NULL,
+           "no suggestion when sigma_suggest is 0");
+    /* The n_accel_upd + n_skipped == 0 guard must not produce nan/inf. */
+    EXPECT(strstr(out, "nan") == NULL && strstr(out, "inf") == NULL,
+           "zero-update capture prints no nan/inf");
+    end(fb);
+}
+
 int main(void)
 {
     printf("=== imud fit-ra tests ===\n");
@@ -377,6 +482,8 @@ int main(void)
     test_fitra_suggests_wave_knobs();
     test_fitra_detects_time_correlation();
     test_fitra_rejects_bad_input();
+    test_fitra_print_wave_enabled();
+    test_fitra_print_wave_disabled();
 
     remove(g_cap);
 

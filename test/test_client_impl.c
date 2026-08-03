@@ -16,6 +16,7 @@
  */
 
 #define IMUD_CLIENT_IMPLEMENTATION
+#include <sys/time.h>
 #include "../lib/imud_client.h"
 
 bool client_packet_valid(const void *buf, size_t len)
@@ -50,4 +51,44 @@ float client_true_heading(const void *buf)
 {
     imud_packet_t p = client_copy(buf);
     return imud_true_heading(&p);
+}
+
+/* ── Socket helpers ──────────────────────────────────────────────────────── */
+
+/*
+ * imud_open/imud_recv/imud_close are the half of the single header a vendoring
+ * consumer actually runs, and they had no coverage.  Wrapped here for the same
+ * reason as everything above: test_client.c drives them without the client's
+ * struct definition in scope.
+ */
+
+int client_open(int port, const char *dest_addr)
+{
+    return imud_open(port, dest_addr);
+}
+
+/* Receive one valid packet into `out`, which must have room for a whole one. */
+int client_recv_raw(int fd, void *out)
+{
+    imud_packet_t p;
+    int rc = imud_recv(fd, &p);
+    if (rc == 0) memcpy(out, &p, sizeof p);
+    return rc;
+}
+
+/*
+ * Bound the blocking recv so a regression in imud_packet_valid cannot hang
+ * CI: imud_recv loops until a datagram validates, so without a timeout a
+ * rejected-but-valid packet would wedge the test forever rather than fail it.
+ * Also gives the test a way to exercise imud_recv's error return.
+ */
+int client_set_rcvtimeo(int fd, int secs)
+{
+    struct timeval tv = { .tv_sec = secs, .tv_usec = 0 };
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+}
+
+void client_close(int fd)
+{
+    imud_close(fd);
 }
