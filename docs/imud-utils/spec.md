@@ -67,7 +67,7 @@ run. Anything not listed is recorded as `INFO` for the record.
 | `imu.init.rc` | `init()` returns 0 for the configured rate and full scales. |
 | `imu.init.regdiff` | Control registers changed across `init()`. The diff is printed raw: decoding it needs the datasheet. |
 | `imu.init.idempotent` | A second `init()` lands on a byte-identical register image — catches a bank left selected or a latched enable. Compared over non-volatile registers only; see *Which registers are read* below. |
-| `imu.odr` | Measured rate matches `nearest_odr()`. On failure the note names which `supported_odr_hz[]` entry the measurement actually matches. |
+| `imu.odr` | Measured rate matches the rate the driver reports it will program (`odr_actual_imu()`, the same resolution the daemon uses). On failure the note names which `supported_odr_hz[]` entry the measurement actually matches. |
 | `imu.fifo.depth` | Depth grows with the wait, so `read()` drains a queue rather than one sample register. |
 | `imu.fifo.overflow` / `.recovers` | Not draining eventually returns rc 1, and reads return to rc 0 afterwards. |
 | `imu.seq.monotonic` / `.gapless` | `seq` never repeats or reverses, and gaps appear only where an overflow was reported. Deltas are unsigned, so the 32-bit wrap is handled. |

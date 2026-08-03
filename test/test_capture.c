@@ -566,7 +566,7 @@ static void test_end_to_end_replay(void)
 
     mekf_t f;
     float  bias0[3] = {0, 0, 0};
-    mekf_init(&f, &cfg, (float)odr, bias0);
+    mekf_init(&f, &cfg, (float)odr, (float)cfg.mag_odr_hz, bias0);
 
     cap_record_t rec;
     bool         aligned  = false;

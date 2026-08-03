@@ -267,7 +267,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `driver` | string | `"ism330dhcx"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
 | `i2c_addr` | int | `0x6B` | I²C address. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
 | `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to use a 10 ms polling timer instead of a hardware interrupt. |
-| `odr_hz` | int | `833` | Output data rate in Hz. The driver rounds to the nearest supported rate. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`. |
+| `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms. |
@@ -281,7 +281,7 @@ Magnetometer driver settings. **[restart]**
 | `driver` | string | `"mmc5983ma"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
 | `i2c_addr` | int | `0x30` | I²C address. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both. |
 | `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
-| `odr_hz` | int | `100` | Output data rate in Hz. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
+| `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
 
 ### `[fusion]`
@@ -340,7 +340,7 @@ details.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Enable the NMEA UDP output stream. |
-| `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP). Hot-reloadable. |
+| `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host. |
 | `dest_port` | int | `10110` | Destination UDP port. Standard NMEA-over-UDP port is 10110. |
 | `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon. |
@@ -357,7 +357,7 @@ Consumer libraries are in `lib/`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Enable the high-rate binary stream. Opt in for machine vision, ROS2, or any consumer needing quaternion + covariance at high rate. |
-| `rate_hz` | int | `500` | Publish rate in Hz. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
+| `rate_hz` | int | `500` | Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
 | `dest_addr` | string | `"239.255.0.1"` | Destination IP. Default is an IPv4 multicast group (TTL=1, link-local). Consumers join with `IP_ADD_MEMBERSHIP`. Use `255.255.255.255` for broadcast or a unicast IP for point-to-point. |
 | `dest_port` | int | `10111` | Destination UDP port. |
 | `coord_frame` | string | `"NED"` | Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. |
@@ -378,7 +378,7 @@ machine (`imud_connect_tcp` / `ImudClient.connect_tcp`). **[restart]**:
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660, owner `imud:imud` — a consumer needs `adduser <user> imud`). |
-| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP). Hot-reloadable. |
+| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be greater than zero. Hot-reloadable. |
 | `tcp_enabled` | bool | `false` | TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10112` | Listener TCP port. |
@@ -1197,8 +1197,10 @@ done:
 
 Configure ODR, full-scale range, FIFO mode (if applicable), and interrupt
 routing. Save the resulting sensitivity values to the static `s` struct.
-`cfg->odr_hz` is the requested rate — round it to the nearest value your chip
-supports.
+`cfg->odr_hz` is already resolved: the daemon asks your driver what rate it
+will really program (see [`actual_odr_hz`](#the-actual_odr_hz-hook) below) and
+passes that value back here, so your own rounding is a no-op on it. Round the
+same way `actual_odr_hz` reports — by default, up to the next supported rate.
 
 ```c
 static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
@@ -1334,8 +1336,8 @@ is no interrupt pin (e.g. AK09916 in bypass mode); the reader falls back to a
 ### The `supported_*` tables
 
 Zero-terminated ascending integer arrays telling the daemon which rates your
-chip supports. The nearest-match logic in `imu.c` rounds the user's requested
-rate to a real chip rate.
+chip supports. `imu.c` resolves the operator's requested rate against these
+before it reaches your `init()` — see the next section.
 
 ```c
 const imu_ops_t myimu_ops = {
@@ -1350,6 +1352,46 @@ const imu_ops_t myimu_ops = {
 ```
 
 The last element must be `0` (sentinel); keep the list ascending.
+
+### The `actual_odr_hz` hook
+
+```c
+int (*actual_odr_hz)(int requested);
+```
+
+The rate your driver will really program for `requested`, in Hz. The daemon
+calls this **before** `init()` and passes the answer back as `cfg->odr_hz`, so
+one configured rate means one rate everywhere: the chip samples at it, the
+MEKF's noise variances are sized for it, and `imud-imutest` measures against
+it. Getting this wrong tunes the filter for a rate the hardware is not
+running at.
+
+**Leave it `NULL` if your chip has a fixed rate table** — which is the usual
+case. The default rule is then the lowest entry in `supported_odr_hz` at or
+above `requested`, clamped to the highest, and your `odr_encode()` chain must
+round the same way (a `hz <= X` ladder over the same values does exactly
+this).
+
+**Implement it if your chip is divider-based**, where the reachable rates are
+not the table:
+
+```c
+/* ODR = 1000 / (1 + SMPLRT_DIV): the DIVIDER is what rounds, so this part
+ * reaches rates that are in no table — 137 Hz becomes 1000/7 = 142. */
+static int myimu_actual_odr_hz(int requested)
+{
+    return odr_actual(smplrt_div_encode(requested));
+}
+```
+
+Also implement it — as the identity — if your driver honours whatever rate it
+is handed rather than snapping to a grid, as the `sim` driver does.
+
+Resolve through `odr_actual_imu()` / `odr_actual_mag()` in `imu_math.h` rather
+than calling the hook directly; that is where the `NULL` default lives.
+`nearest_odr()` still exists but answers a different question — "which
+advertised rate did the operator probably mean" — and must not be used to
+decide tuning.
 
 ### Registering the driver
 
@@ -1427,6 +1469,8 @@ heading      increases ~6°/s from a 60° start
 - [ ] `chip_ts = 0` and `has_hw_timestamp = false` if there is no hardware
       timer.
 - [ ] `supported_odr_hz[]` is zero-terminated and ascending.
+- [ ] `odr_encode()` rounds **up** over exactly `supported_odr_hz[]` — or
+      `actual_odr_hz` is implemented and reports what the chip really programs.
 - [ ] Driver added to the `src/drivers.c` registry and the `Makefile`.
 - [ ] Logs use `LOG_*`, not bare `fprintf`.
 - [ ] Tested with `driver = "sim"` and `make test` passes.

@@ -55,7 +55,7 @@ transports are enabled require a restart.
 | `version` | int | `2` | MAVLink protocol version (1 or 2). |
 | `system_id` | int | `1` | MAVLink system id. |
 | `component_id` | int | `1` | MAVLink component id (raise, e.g. 191, on a shared autopilot bus). |
-| `rate_hz` | int | `10` | ATTITUDE/quaternion rate (heartbeat is fixed 1 Hz). |
+| `rate_hz` | int | `10` | ATTITUDE/quaternion rate; must be greater than zero (heartbeat is fixed 1 Hz). |
 | `send_attitude` | bool | `true` | Emit ATTITUDE (#30). |
 | `send_attitude_quaternion` | bool | `true` | Emit ATTITUDE_QUATERNION (#31). |
 | `udp_enabled` | bool | `false` | Enable UDP output. |

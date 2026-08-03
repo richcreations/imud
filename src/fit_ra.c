@@ -109,7 +109,7 @@ static int replay(const char *path, const imud_config_t *cfg_in,
 
     mekf_t f;
     float bias0[3] = {0, 0, 0};
-    mekf_init(&f, &cfg, odr, bias0);
+    mekf_init(&f, &cfg, odr, (float)cfg.mag_odr_hz, bias0);
 
     memset(a, 0, sizeof *a);
     *n_imu = *n_mag = *n_skip = 0;

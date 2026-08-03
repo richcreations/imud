@@ -39,7 +39,10 @@ typedef struct {
     char  imu_driver[32];       /* "ism330dhcx" */
     int   imu_addr;             /* 0x6B default, 0x6A via jumper */
     int   imu_int_gpio;         /* BCM GPIO for FIFO watermark interrupt */
-    int   imu_odr_hz;           /* 833; driver rounds to nearest supported */
+    int   imu_odr_hz;           /* 833, must be > 0; the rate REQUESTED — the
+                                 * driver reports what it will really program
+                                 * (odr_actual_imu), normally the next
+                                 * supported rate at or above this */
     int   imu_accel_g;          /* 2 | 4 | 8 | 16 */
     int   imu_gyro_dps;         /* 125 | 250 | 500 | 1000 | 2000 | 4000 */
     int   imu_fifo_wm;          /* watermark in sample-sets */
@@ -48,7 +51,7 @@ typedef struct {
     char  mag_driver[32];       /* "mmc5983ma" */
     int   mag_addr;             /* 0x30 fixed */
     int   mag_int_gpio;         /* BCM GPIO for measurement-done interrupt */
-    int   mag_odr_hz;           /* 100 */
+    int   mag_odr_hz;           /* 100, must be > 0; requested, as imu_odr_hz */
     float mag_set_period_s;     /* degauss interval seconds; 0 = disable */
 
     /* [fusion]  [hot]: gains and thresholds */

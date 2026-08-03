@@ -67,7 +67,7 @@ level live; `enabled`, `socket`, and the `udp_*`/`tcp_*` keys require a restart.
 | `udp_enabled` | bool | `false` | Emit deltas over UDP to `dest_addr`:`dest_port`. |
 | `dest_addr` | string | `"127.0.0.1"` | Signal K server host: a hostname, a numeric IPv4 or IPv6 address, or a broadcast address. Resolved with `getaddrinfo(3)`, as in the other bridges. Before 1.7 this key accepted numeric IPv4 only. |
 | `dest_port` | int | `10113` | UDP port — must match the Signal K server's UDP input connection. |
-| `rate_hz` | int | `10` | Delta emit rate in Hz. |
+| `rate_hz` | int | `10` | Delta emit rate in Hz; must be greater than zero. |
 | `source_label` | string | `"imud"` | Signal K delta `source.label` value. |
 | `publish_heave` | bool | `true` | Emit `environment.heave`, withheld until the estimator settles (~10·τ) so no startup transient is sent (set false if imud's heave estimator is off). |
 | `tcp_enabled` | bool | `false` | Serve the same deltas newline-framed on a TCP listener (the SK server connects as a TCP client). Up to 8 clients; independent of `udp_enabled`. |

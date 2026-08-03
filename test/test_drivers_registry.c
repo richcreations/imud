@@ -24,6 +24,7 @@
 #include <stdbool.h>
 
 #include "drivers.h"
+#include "imu_math.h"   /* odr_actual_imu / odr_actual_mag / snap_odr_up */
 
 /* ── Test framework (matches the rest of the suite) ──────────────────────── */
 
@@ -63,6 +64,46 @@ static void check_table(const int *tab, int cap, const char *what)
         EXPECT(tab[i] > tab[i - 1], what); /* strictly ascending */
 }
 
+/*
+ * Every driver must resolve every plausible request to a usable rate.
+ *
+ * imud hands the resolved rate straight to the driver AND to mekf_init, where
+ * it becomes 1/dt and the noise variances, so a zero or negative here is a
+ * division by zero in the filter. When the driver takes the NULL default the
+ * answer must additionally be one of its own advertised rates — that is the
+ * default rule's entire contract, and it is what lets imu.c pass the resolved
+ * value back to the driver and get a no-op rounding.
+ *
+ * The spread deliberately straddles table boundaries and runs off both ends.
+ */
+static void check_odr_resolution(const int *tab, bool has_hook,
+                                 int (*resolve)(const void *, int),
+                                 const void *ops, const char *what)
+{
+    static const int requests[] = {
+        1, 7, 12, 13, 60, 99, 100, 137, 225, 500, 833, 900, 1125, 5000, 100000
+    };
+    for (size_t i = 0; i < sizeof requests / sizeof requests[0]; i++) {
+        int got = resolve(ops, requests[i]);
+        EXPECT(got > 0, what);
+        if (has_hook) continue;   /* divider parts reach off-table rates */
+        bool in_table = false;
+        for (int j = 0; tab[j] != 0; j++)
+            if (tab[j] == got) { in_table = true; break; }
+        EXPECT(in_table, what);
+        EXPECT(got == snap_odr_up(tab, requests[i]), what);
+    }
+}
+
+static int resolve_imu(const void *o, int hz)
+{
+    return odr_actual_imu((const imu_ops_t *)o, hz);
+}
+static int resolve_mag(const void *o, int hz)
+{
+    return odr_actual_mag((const mag_ops_t *)o, hz);
+}
+
 /* ── Per-struct invariants ───────────────────────────────────────────────── */
 
 static void check_imu_ops(const imu_ops_t *o, const char *key)
@@ -81,6 +122,8 @@ static void check_imu_ops(const imu_ops_t *o, const char *key)
      * chip_to_wall offset math silently collapses to zero. */
     if (o->has_hw_timestamp)
         EXPECT(o->ts_tick_ns != 0, "has_hw_timestamp implies ts_tick_ns != 0");
+    check_odr_resolution(o->supported_odr_hz, o->actual_odr_hz != NULL,
+                         resolve_imu, o, "imu ODR resolves to a usable rate");
 }
 
 static void check_mag_ops(const mag_ops_t *o, const char *key)
@@ -96,6 +139,8 @@ static void check_mag_ops(const mag_ops_t *o, const char *key)
     /* A coil-bearing chip must expose the SET-pulse op it claims. */
     if (o->has_set_reset)
         EXPECT(o->set_reset != NULL, "has_set_reset implies set_reset != NULL");
+    check_odr_resolution(o->supported_odr_hz, o->actual_odr_hz != NULL,
+                         resolve_mag, o, "mag ODR resolves to a usable rate");
 }
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */

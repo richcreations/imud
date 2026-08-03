@@ -24,6 +24,7 @@
 #include "types.h"
 #include "cal.h"
 #include "config.h"
+#include "drivers.h"
 
 /* ── Timestamp anchor ───────────────────────────────────────────────────── */
 
@@ -110,8 +111,33 @@ void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
-/* Nearest value in a 0-terminated ascending table to `requested`. */
+/*
+ * Nearest value in a 0-terminated ascending table to `requested`.
+ *
+ * This answers "which advertised rate did the operator probably mean", which
+ * is what imutest reports as advice. It is NOT what the hardware does — use
+ * odr_actual_imu() / odr_actual_mag() for anything that has to agree with the
+ * rate actually programmed.
+ */
 int nearest_odr(const int supported[], int requested);
+
+/*
+ * Lowest value in a 0-terminated ascending table that is >= `requested`,
+ * clamped to the last entry. This is the rounding every register-table
+ * driver's odr_encode() chain performs.
+ */
+int snap_odr_up(const int supported[], int requested);
+
+/*
+ * The rate the driver will really program for `requested`: its actual_odr_hz
+ * hook when it has one, else snap_odr_up() over its supported_odr_hz table.
+ *
+ * The single source of truth for the sample rate. imu.c passes the result to
+ * both the driver and the filter, and imutest measures against it, so the
+ * three cannot disagree.
+ */
+int odr_actual_imu(const imu_ops_t *ops, int requested);
+int odr_actual_mag(const mag_ops_t *ops, int requested);
 
 /* Apply mount rotation (board -> body) if configured. In-place on v. */
 void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);

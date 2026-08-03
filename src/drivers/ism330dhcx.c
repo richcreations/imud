@@ -84,7 +84,16 @@ static uint8_t odr_encode(int hz)
     return 0x8;  /* 1660 Hz */
 }
 
-/* Nearest supported ODR for ticks_per_sample calculation. */
+/*
+ * The rate odr_encode() above will actually select, for the ticks_per_sample
+ * calculation: the lowest supported rate >= hz, clamped to 1660. Rounds UP,
+ * not to nearest — it has to mirror odr_encode() exactly or the chip-timer
+ * tick arithmetic would be scaled for a rate the part is not running at.
+ *
+ * Kept local rather than calling snap_odr_up() from imu_math.h so the drivers
+ * stay free of daemon-side dependencies; the steps[] table below must match
+ * ism330dhcx_ops.supported_odr_hz, which test_drivers_registry pins.
+ */
 static int odr_actual(int hz)
 {
     static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660 };

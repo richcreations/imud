@@ -138,6 +138,16 @@ static int odr_actual(uint8_t div)
     return 1000 / (1 + (int)div);
 }
 
+/*
+ * imu_ops_t::actual_odr_hz. This part is divider-based, so it reaches rates
+ * that are not in supported_odr_hz at all and the shared snap-up default in
+ * odr_actual_imu() would be wrong for it.
+ */
+static int mpu_actual_odr_hz(int requested)
+{
+    return odr_actual(smplrt_div_encode(requested));
+}
+
 static uint8_t gyro_fs_encode(int dps, float *scale)
 {
     /* PS Table 1: 131 / 65.5 / 32.8 / 16.4 LSB per °/s. */
@@ -407,9 +417,11 @@ static int mpu_read(int fd, uint8_t addr,
 /* ── Driver descriptors ────────────────────────────────────────────────────── */
 
 /*
- * supported_odr_hz holds the exact 1000/(1+SMPLRT_DIV) values, so nearest_odr()
- * in imu.c reports the rate the chip will really produce.  imud's shipped
- * default of 833 Hz is not on this grid and rounds to 1000 Hz.
+ * supported_odr_hz lists representative 1000/(1+SMPLRT_DIV) values, but the
+ * divider reaches many rates that are not in it, so actual_odr_hz is what
+ * reports the rate the chip will really produce — the table is advice for the
+ * operator, not the grid.  imud's shipped default of 833 Hz is not on the
+ * divider grid either and lands on 1000 Hz (SMPLRT_DIV = 0).
  */
 const imu_ops_t mpu9250_ops = {
     .name             = "mpu9250",
@@ -423,6 +435,7 @@ const imu_ops_t mpu9250_ops = {
     .supported_odr_hz   = { 100, 125, 200, 250, 333, 500, 1000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
+    .actual_odr_hz      = mpu_actual_odr_hz,
 };
 
 const imu_ops_t mpu9255_ops = {
@@ -437,4 +450,5 @@ const imu_ops_t mpu9255_ops = {
     .supported_odr_hz   = { 100, 125, 200, 250, 333, 500, 1000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
+    .actual_odr_hz      = mpu_actual_odr_hz,
 };

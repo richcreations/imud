@@ -462,6 +462,14 @@ static int sim_imu_read(int fd, uint8_t addr,
 
 /* ── IMU driver descriptor ──────────────────────────────────────────────── */
 
+/*
+ * imu_ops_t / mag_ops_t ::actual_odr_hz. The sim paces itself at exactly the
+ * rate it is handed (sim_imu_init above) rather than snapping to the table it
+ * advertises, so identity is the honest answer — anything else would make the
+ * filter tune for a rate the sim is not producing.
+ */
+static int sim_actual_odr_hz(int requested) { return requested; }
+
 const imu_ops_t sim_imu_ops = {
     .name               = "sim",
     .experimental       = false,
@@ -475,6 +483,7 @@ const imu_ops_t sim_imu_ops = {
     .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
+    .actual_odr_hz      = sim_actual_odr_hz,
 };
 
 /* ── Mag sim state ──────────────────────────────────────────────────────── */
@@ -517,4 +526,5 @@ const mag_ops_t sim_mag_ops = {
     .has_interrupt    = false,
     .has_set_reset    = false,
     .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
+    .actual_odr_hz    = sim_actual_odr_hz,
 };

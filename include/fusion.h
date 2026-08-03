@@ -62,6 +62,11 @@ typedef struct {
 
     /* ── Tuning (set by mekf_init, not changed at runtime) ────────────── */
     float dt;            /* predict step period = 1/imu_odr_hz, s */
+    float mag_odr_hz;    /* magnetometer rate actually being sampled, Hz.
+                          * Stored rather than re-read from cfg because cfg
+                          * holds the operator's request, which the driver may
+                          * not be able to program — dt carries the IMU's real
+                          * rate the same way. */
     float Qg;            /* gyro angle noise var per step, rad² */
     float Qb;            /* gyro bias noise var per step, (rad/s)² */
     float Ra;            /* accel meas noise var (normalised units) */
@@ -144,10 +149,18 @@ typedef struct {
  * mekf_init — initialise filter state from config.
  *   gyro_bias_init: pre-computed bias from startup still window (may be zero).
  *   odr_hz:         IMU output data rate (determines dt).
+ *   mag_odr_hz:     magnetometer output data rate.
+ *
+ * Both rates must be the rates the drivers actually programmed
+ * (imu_ctx_open resolves them with odr_actual_imu / odr_actual_mag), not the
+ * cfg->*_odr_hz requests — every noise variance and EMA gain derived from
+ * them would otherwise be sized for a rate the hardware is not running at.
+ * Both must be > 0; config rejects anything else at parse time.
  */
 void mekf_init(mekf_t *f,
                const imud_config_t *cfg,
                float odr_hz,
+               float mag_odr_hz,
                const float gyro_bias_init[3]);
 
 /*

@@ -226,7 +226,7 @@ TEST(test_quat_norm_preserved)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     imu_sample_t s = make_gyro(0.1f, -0.2f, 0.3f);
@@ -244,7 +244,7 @@ TEST(test_predict_static_no_drift)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     /* Flat board pointing North */
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
@@ -273,7 +273,7 @@ TEST(test_predict_known_rotation_yaw)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     float wz = 90.0f * DEG;  /* rad/s around Z (yaw) */
@@ -297,7 +297,7 @@ TEST(test_predict_known_rotation_roll)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     float wx = 45.0f * DEG;
@@ -318,7 +318,7 @@ TEST(test_align_flat_north)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     /* Z-down flat board: specific force = [0,0,−g].
      * Mag in body frame pointing +X (North in NED when flat). */
@@ -348,7 +348,7 @@ TEST(test_align_30deg_roll)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     float phi = 30.0f * DEG;
     /*
@@ -381,7 +381,7 @@ TEST(test_accel_update_corrects_roll)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Inject 10° roll error by directly rotating q */
@@ -419,7 +419,7 @@ TEST(test_accel_reject_linear_acceleration)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Inject 10° roll error */
@@ -454,7 +454,7 @@ TEST(test_mag_update_corrects_yaw)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     float mag_gauss[3] = {0.2f, 0.0f, 0.05f};  /* Gauss, for make_mag */
     float mag_ut[3]    = {20.0f, 0.0f, 5.0f};   /* µT, for mekf_align */
@@ -494,7 +494,7 @@ TEST(test_mag_reject_anomaly)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     float q_before[4]; memcpy(q_before, f.q, sizeof f.q);
@@ -518,7 +518,7 @@ TEST(test_covariance_decreases_with_updates)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     float p0 = p_att_trace(&f);
@@ -541,7 +541,7 @@ TEST(test_convergence_flag)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     EXPECT(!f.converged, "not converged immediately after init");
@@ -577,7 +577,7 @@ TEST(test_precomputed_bias_used)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float known_bias[3] = {0.005f, -0.003f, 0.002f};  /* rad/s, pre-estimated */
-    mekf_init(&f, &cfg, 833.0f, known_bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, known_bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Verify bias is stored */
@@ -615,7 +615,7 @@ TEST(test_get_state_euler_extraction)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Manually set q to a 30° pitch quaternion */
@@ -643,7 +643,7 @@ TEST(test_get_state_heading_wrap)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Set q to a −10° yaw (= 350° heading) */
@@ -667,7 +667,7 @@ TEST(test_align_accel_too_weak)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     float weak = 0.4f * G;   /* 0.4 g < 0.5 g threshold */
     mekf_align(&f, (float[]){0, 0, -weak}, (float[]){20.0f, 0.0f, 5.0f});
@@ -685,7 +685,7 @@ TEST(test_mag_update_skips_invalid)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
 
     float q0[4]; memcpy(q0, f.q, sizeof q0);
@@ -715,7 +715,7 @@ TEST(test_mag_ratio_gate)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     /* Align: m_ref set to ~[0.20, 0, 0.05] Gauss → |m_ref| ≈ 0.206 Gauss */
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
     float q0[4]; memcpy(q0, f.q, sizeof q0);
@@ -742,7 +742,7 @@ TEST(test_mekf_reconfigure)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0.001f, -0.002f, 0.003f};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
 
     float q_before[4]; memcpy(q_before, f.q, sizeof q_before);
@@ -774,31 +774,75 @@ TEST(test_mekf_reconfigure)
 }
 
 /*
- * mref_alpha depends on mag_odr_hz, and so does Rm. Reconfigure used to
- * rebuild Rm while leaving mref_alpha at its init value, so a mag_odr_hz
- * change left the m_ref EMA running at the wrong rate indefinitely. Both are
- * now derived in one shared helper, so they cannot drift apart again.
+ * Rm and mref_alpha are derived in one shared helper. Reconfigure used to
+ * rebuild Rm while leaving mref_alpha at its init value, so a retune left the
+ * m_ref EMA running at the wrong gain indefinitely; deriving both in one place
+ * is what stops them drifting apart again. Driven here through mekf_mag_noise,
+ * which is [hot] and moves Rm alone — the mag RATE is [restart] and no longer
+ * reaches this path at all (see the next test).
  */
-TEST(test_reconfigure_updates_mref_alpha)
+TEST(test_reconfigure_rederives_mag_tuning)
 {
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     float alpha_before = f.mref_alpha;
     float rm_before    = f.Rm;
     EXPECT(alpha_before > 0.0f, "mref_alpha non-zero at init");
 
     imud_config_t new_cfg = cfg;
-    new_cfg.mag_odr_hz = 200;    /* was 100 */
+    new_cfg.mekf_mag_noise = cfg.mekf_mag_noise * 2.0;
     mekf_reconfigure(&f, &new_cfg);
 
-    EXPECT(f.Rm != rm_before, "Rm tracks mag_odr_hz change");
-    EXPECT(f.mref_alpha != alpha_before,
-           "mref_alpha tracks mag_odr_hz change (was stale)");
-    EXPECT_NEAR(f.mref_alpha, alpha_before * 0.5f, 1e-9f,
-                "mref_alpha halves when mag ODR doubles");
+    EXPECT_NEAR(f.Rm, rm_before * 4.0f, 1e-12f,
+                "Rm follows mekf_mag_noise squared");
+    EXPECT_NEAR(f.mref_alpha, alpha_before, 1e-9f,
+                "mref_alpha is re-derived, not left stale or zeroed");
+    EXPECT_NEAR(f.nis_mag_alpha, 1.0f / (30.0f * 100.0f), 1e-9f,
+                "nis_mag_alpha is re-derived from the programmed mag rate");
+}
+
+/*
+ * Every mag-rate-derived value comes from the rate handed to mekf_init — the
+ * rate the driver said it would actually program — and NOT from
+ * cfg->mag_odr_hz, which is only the operator's request.
+ *
+ * Rm used to be Nm² × cfg->mag_odr_hz, so an off-grid request (137 Hz on a
+ * part whose grid is 1/10/20/50/100/200/1000) sized the magnetometer's noise
+ * variance for a rate the chip was not sampling at. mref_alpha and
+ * nis_mag_alpha had the same source. The second half pins the [restart]
+ * contract: SIGHUP does not re-init the driver, so a changed request must not
+ * retune the filter for a rate the hardware is not running at.
+ */
+TEST(test_mag_tuning_uses_the_programmed_rate)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mag_odr_hz = 137;          /* requested — not on any real grid */
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, 200.0f, bias);   /* what the driver programs */
+
+    float Nm = (float)cfg.mekf_mag_noise;
+    EXPECT_NEAR(f.Rm, Nm * Nm * 200.0f, 1e-12f,
+                "Rm is sized for the programmed 200 Hz, not the 137 requested");
+    EXPECT_NEAR(f.mref_alpha, 1.0f / (300.0f * 200.0f), 1e-12f,
+                "mref_alpha uses the programmed rate");
+    EXPECT_NEAR(f.nis_mag_alpha, 1.0f / (30.0f * 200.0f), 1e-12f,
+                "nis_mag_alpha uses the programmed rate");
+
+    /* [mag] odr_hz is [restart]: a reload must not move any of the three. */
+    float rm = f.Rm, mref = f.mref_alpha, nis = f.nis_mag_alpha;
+    imud_config_t new_cfg = cfg;
+    new_cfg.mag_odr_hz = 50;
+    mekf_reconfigure(&f, &new_cfg);
+
+    EXPECT_NEAR(f.Rm, rm, 1e-12f,
+                "reconfigure ignores a changed mag odr_hz request (restart key)");
+    EXPECT_NEAR(f.mref_alpha, mref, 1e-12f, "mref_alpha unchanged by reload");
+    EXPECT_NEAR(f.nis_mag_alpha, nis, 1e-12f,
+                "nis_mag_alpha unchanged by reload");
 }
 
 /*
@@ -814,7 +858,7 @@ TEST(test_reconfigure_resets_skip_window)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     /* Simulate the fusion thread having entered engine mode. */
     f.accel_skip_lo = 1.0f - 0.20f;
@@ -847,7 +891,7 @@ TEST(test_sim_gyro_heading)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     /* Flat board, pointing North; sim initial mag = [25, 0, -40] µT */
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){25.0f, 0.0f, -40.0f});
 
@@ -873,7 +917,7 @@ TEST(test_sim_heading_wraps)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){25.0f, 0.0f, -40.0f});
 
     imu_sample_t sg = make_gyro(0, 0, SIM_YAW_DEG_S * DEG);
@@ -897,7 +941,7 @@ TEST(test_sim_full_fusion)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0, 0, -G}, (float[]){25.0f, 0.0f, -40.0f});
 
     float wz_rad = SIM_YAW_DEG_S * DEG;
@@ -945,7 +989,7 @@ TEST(test_joseph_symmetry_psd)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     uint32_t rng = 42;
@@ -995,7 +1039,7 @@ TEST(test_reset_jacobian_rotates_P)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Snapshot P and bias, then take one large-correction update. */
@@ -1110,7 +1154,7 @@ TEST(test_wave_disabled_inert)
     imud_config_t cfg = make_cfg_nowave();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     EXPECT(!f.wave_enabled, "wave state reports disabled with both knobs 0");
@@ -1151,17 +1195,17 @@ TEST(test_wave_needs_both_knobs)
     float bias[3] = {0};
 
     imud_config_t c1 = make_cfg();  c1.mekf_wave_accel_tau_s = 0.0;
-    mekf_init(&f, &c1, 833.0f, bias);
+    mekf_init(&f, &c1, 833.0f, (float)c1.mag_odr_hz, bias);
     EXPECT(!f.wave_enabled, "sigma without tau leaves the wave state off");
     EXPECT(f.P[6][6] == 0.0f, "sigma without tau seeds no wave covariance");
 
     imud_config_t c2 = make_cfg();  c2.mekf_wave_accel = 0.0;
-    mekf_init(&f, &c2, 833.0f, bias);
+    mekf_init(&f, &c2, 833.0f, (float)c2.mag_odr_hz, bias);
     EXPECT(!f.wave_enabled, "tau without sigma leaves the wave state off");
     EXPECT(f.P[6][6] == 0.0f, "tau without sigma seeds no wave covariance");
 
     imud_config_t c3 = make_cfg();
-    mekf_init(&f, &c3, 833.0f, bias);
+    mekf_init(&f, &c3, 833.0f, (float)c3.mag_odr_hz, bias);
     EXPECT(f.wave_enabled, "both knobs positive enables the wave state");
     EXPECT_NEAR(f.P[6][6], (c3.mekf_wave_accel/9.80665)*(c3.mekf_wave_accel/9.80665),
                 1e-9f, "wave block seeded at its steady-state variance");
@@ -1185,7 +1229,7 @@ static void wave_track_run(bool enabled, float *att_err_deg, float *aw_rms_err,
     imud_config_t cfg = enabled ? make_cfg() : make_cfg_nowave();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     const float fs = 833.0f, dt = 1.0f/fs;
@@ -1269,7 +1313,7 @@ static float white_nis_run(double wave_sigma)
     cfg.mekf_wave_accel_tau_s = wave_sigma > 0.0 ? 0.5 : 0.0;
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Per-sample accel noise the filter expects: σ = Na·√odr = 0.0635 m/s². */
@@ -1321,7 +1365,7 @@ TEST(test_wave_reconfigure_transitions)
     float bias[3] = {0};
 
     /* Start enabled, run a little so cross-covariances build up. */
-    mekf_init(&f, &on, 833.0f, bias);
+    mekf_init(&f, &on, 833.0f, (float)on.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     for (int i = 0; i < 5000; i++) {
         imu_sample_t s = make_accel(0.3f, 0.0f, -G);
@@ -1376,7 +1420,7 @@ static void dip_run(double dip_sigma_deg, float dip_err_deg, float mag_noise_g,
     cfg.mekf_mag_dip_sigma_deg = dip_sigma_deg;
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     /* Field: 0.47 G total at 62° dip, pointing north. */
     const float H = 0.2206f, Z = 0.4149f;
@@ -1503,8 +1547,8 @@ TEST(test_mag_dip_sigma_inert_in_yaw_only)
 
     mekf_t f0, f1;
     float bias[3] = {0};
-    mekf_init(&f0, &c0, 833.0f, bias);
-    mekf_init(&f1, &c1, 833.0f, bias);
+    mekf_init(&f0, &c0, 833.0f, (float)c0.mag_odr_hz, bias);
+    mekf_init(&f1, &c1, 833.0f, (float)c1.mag_odr_hz, bias);
     mekf_align(&f0, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     mekf_align(&f1, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
@@ -1553,7 +1597,7 @@ TEST(test_mref_quiet_gate_stays_tight)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* A modest seaway: |a| swinging a few percent around g. */
@@ -1582,7 +1626,7 @@ TEST(test_gate_health_emas)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     EXPECT_NEAR(f.innov_weight_ema, 1.0f, 1e-6f, "weight EMA starts at 1.0");
@@ -1636,7 +1680,7 @@ TEST(test_nis_consistency_emas)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     EXPECT_NEAR(f.nis_accel_ema, 1.0f, 1e-6f, "accel NIS starts at 1.0");
     EXPECT_NEAR(f.nis_mag_ema,   1.0f, 1e-6f, "mag NIS starts at 1.0");
@@ -1691,7 +1735,7 @@ TEST(test_reconfigure_preserves_nis)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Drive the accumulators somewhere clearly away from their seed value. */
@@ -1706,15 +1750,16 @@ TEST(test_reconfigure_preserves_nis)
     EXPECT(nis_a > 2.0f, "accel NIS moved off its seed before reconfigure");
 
     cfg.mekf_accel_noise = 0.05;    /* the kind of change an A/B would make */
-    cfg.mag_odr_hz       = 50;
+    cfg.mag_odr_hz       = 50;      /* [restart] — must not reach the gain */
     mekf_reconfigure(&f, &cfg);
 
     EXPECT_NEAR(f.nis_accel_ema, nis_a, 1e-6f,
                 "reconfigure preserves accumulated accel NIS");
     EXPECT_NEAR(f.nis_mag_ema, nis_m, 1e-6f,
                 "reconfigure preserves accumulated mag NIS");
-    EXPECT_NEAR(f.nis_mag_alpha, 1.0f/(30.0f*50.0f), 1e-9f,
-                "reconfigure retunes the mag NIS gain to the new mag ODR");
+    EXPECT_NEAR(f.nis_mag_alpha, 1.0f/(30.0f*100.0f), 1e-9f,
+                "the mag NIS gain stays on the programmed rate, not the "
+                "reloaded request");
 }
 
 /*
@@ -1727,7 +1772,7 @@ TEST(test_accel_innovation_capped)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Converge on clean data. */
@@ -1762,7 +1807,7 @@ TEST(test_mref_ema_heals_dip)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     /* Corrupt the reference the way a mid-swing alignment does: right
@@ -1802,7 +1847,7 @@ TEST(test_yaw_only_leaves_tilt)
     cfg.mag_yaw_only = true;
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
     imu_sample_t zg = make_gyro(0, 0, 0);
@@ -1834,7 +1879,7 @@ TEST(test_mref_invariants)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
 
     /* Before alignment: no-op. */
     mekf_set_mref_invariants(&f, 0.25f, 0.45f);
@@ -1861,7 +1906,7 @@ static float turn_roll_error(float speed_for_filter)
     imud_config_t cfg = make_cfg();
     mekf_t f;
     float bias[3] = {0};
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     f.speed_mps = speed_for_filter;
 
@@ -2065,7 +2110,7 @@ TEST(test_mag_health)
 
     /* Clean field: both metrics stay ~0. */
     mekf_t f;
-    mekf_init(&f, &cfg, 833.0f, bias);
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     mag_sample_t m = make_mag(0.20f, 0.0f, 0.05f);   /* Gauss (make_mag scales) */
     for (int i = 0; i < 2000; i++) mekf_update_mag(&f, &m);
@@ -2075,7 +2120,7 @@ TEST(test_mag_health)
     /* Magnitude anomaly: same direction, 1.5x strength (inside the hard
      * 0.5-2.0 gate). EMA (alpha=1/3000) reaches 63% of the 0.5 step. */
     mekf_t fa;
-    mekf_init(&fa, &cfg, 833.0f, bias);
+    mekf_init(&fa, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&fa, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     mag_sample_t ma = make_mag(0.30f, 0.0f, 0.075f);
     for (int i = 0; i < 3000; i++) mekf_update_mag(&fa, &ma);
@@ -2085,7 +2130,7 @@ TEST(test_mag_health)
     /* Heading anomaly with updates REJECTED (converged + tight gate): the
      * metric must rise precisely while the filter refuses the data. */
     mekf_t fr;
-    mekf_init(&fr, &cfg, 833.0f, bias);
+    mekf_init(&fr, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
     mekf_align(&fr, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     fr.converged = true;   /* arm the tight anomaly gate */
     float q_before[4]; memcpy(q_before, fr.q, sizeof fr.q);
@@ -2276,7 +2321,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
     imud_config_t cfg = make_cfg();
     cfg.mag_yaw_only = yaw_only;
     mekf_t f;
-    mekf_init(&f, &cfg, fs, bias_init);
+    mekf_init(&f, &cfg, fs, (float)cfg.mag_odr_hz, bias_init);
     bench_rng_state = bench_seed;
 
     const float warmup_s = 60.0f, measure_s = 120.0f;
@@ -2896,7 +2941,8 @@ int main(void)
     RUN(test_mag_update_skips_invalid);
     RUN(test_mag_ratio_gate);
     RUN(test_mekf_reconfigure);
-    RUN(test_reconfigure_updates_mref_alpha);
+    RUN(test_reconfigure_rederives_mag_tuning);
+    RUN(test_mag_tuning_uses_the_programmed_rate);
     RUN(test_reconfigure_resets_skip_window);
     RUN(test_sim_gyro_heading);
     RUN(test_sim_heading_wraps);

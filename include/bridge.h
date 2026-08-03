@@ -95,7 +95,11 @@ void bridge_reload_done(const bridge_info_t *bi);
 
 /* ── Emit-tick timing (pure timespec math) ───────────────────────────────── */
 
-/* 1e9/rate_hz, or fallback_ns when rate_hz <= 0. */
+/* 1e9/rate_hz, or fallback_ns when rate_hz <= 0. Config can no longer deliver
+ * a non-positive rate — every rate_hz key is parsed with NEED_POS_INT, which
+ * makes zero or negative a fatal parse error — so the fallback is now only
+ * reachable from a caller that builds an imud_config_t by hand. Kept as
+ * defence in depth against a division by zero. */
 long bridge_period_ns(int rate_hz, long fallback_ns);
 
 /* Milliseconds from now until next, rounded up (never negative) so a

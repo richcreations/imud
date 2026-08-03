@@ -273,6 +273,65 @@ static void test_load_noise_density_must_be_positive(void)
     end_test(fb);
 }
 
+/*
+ * Every sample and publish rate must be positive, for the same reason as the
+ * noise densities above: a rate divides into a period, and the two sensor
+ * rates additionally size the filter's noise variances. [mag] odr_hz = 0 gave
+ * Rm = Nm² × 0 = 0 — a magnetometer Kalman gain of exactly 1, so the filter
+ * snapped its heading onto every raw mag sample. A negative put a negative
+ * variance into the innovation covariance. Rejected at parse time rather than
+ * clamped, so the typo cannot hide behind plausible-looking output.
+ *
+ * The bridge rate_hz keys are covered too: bridge_period_ns() has a <= 0
+ * fallback, but reaching it from a config file was always a mistake rather
+ * than a way to ask for the default.
+ */
+static void test_load_rates_must_be_positive(void)
+{
+    begin_test("test_load_rates_must_be_positive");
+    int fb = g_fail;
+
+    static const struct { const char *section, *key; } rates[] = {
+        { "imu",            "odr_hz"  },
+        { "mag",            "odr_hz"  },
+        { "nmea",           "rate_hz" },
+        { "highrate",       "rate_hz" },
+        { "stream",         "rate_hz" },
+        { "imud-signalk",   "rate_hz" },
+        { "imud-mqtt",      "rate_hz" },
+        { "imud-influxdb",  "rate_hz" },
+        { "imud-mavlink",   "rate_hz" },
+    };
+    for (unsigned i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        for (int neg = 0; neg < 2; neg++) {
+            char body[128];
+            snprintf(body, sizeof body, "[%s]\n%s = %s\n",
+                     rates[i].section, rates[i].key, neg ? "-1" : "0");
+            const char *path = write_tmpconf(90 + i * 2 + neg, body);
+            imud_config_t cfg;
+            config_defaults(&cfg);
+            int rc = config_load(path, &cfg);
+            EXPECT(rc == CONFIG_ERR_PARSE,
+                   neg ? "negative rate rejected" : "zero rate rejected");
+            remove(path);
+        }
+    }
+
+    /* Positive values on the same keys still load, including a rate of 1. */
+    const char *ok = write_tmpconf(89,
+        "[mag]\n"
+        "odr_hz = 200\n"
+        "[nmea]\n"
+        "rate_hz = 1\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(ok, &cfg) == 0, "positive rates accepted");
+    EXPECT(cfg.mag_odr_hz == 200,      "positive mag odr_hz applied");
+    EXPECT(cfg.nmea_rate_hz == 1,      "a rate of 1 Hz is legal");
+    remove(ok);
+    end_test(fb);
+}
+
 /* Bad boolean value: same continue-and-report contract as bad int. */
 static void test_load_bad_bool(void)
 {
@@ -869,6 +928,7 @@ int main(void)
     test_load_missing_file();
     test_load_bad_int();
     test_load_noise_density_must_be_positive();
+    test_load_rates_must_be_positive();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();

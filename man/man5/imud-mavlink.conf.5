@@ -57,7 +57,8 @@ autopilot).
 .TP
 .B rate_hz
 .RI ( int ,\ default:\ 10 )\ [hot]
-ATTITUDE / ATTITUDE_QUATERNION rate in Hz (HEARTBEAT is fixed at 1 Hz).
+ATTITUDE / ATTITUDE_QUATERNION rate in Hz; must be greater than zero
+(HEARTBEAT is fixed at 1 Hz).
 .TP
 .B send_attitude
 .RI ( bool ,\ default:\ true )\ [hot]

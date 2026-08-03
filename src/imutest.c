@@ -880,7 +880,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     r->raw.odr_best_table_hz = best;
 
     if (d->total < 10) {
-        add_check(r, "imu.odr", "Measured ODR against nearest_odr()", IMT_FAIL,
+        add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", IMT_FAIL,
                   fmtbuf(mb, sizeof mb, "%llu samples",
                          (unsigned long long)d->total),
                   fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
@@ -903,7 +903,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
              * measurement is far enough off to matter there, so the two rows
              * do not read as contradicting each other.
              */
-            add_check(r, "imu.odr", "Measured ODR against nearest_odr()",
+            add_check(r, "imu.odr", "Measured ODR against the rate the driver reports",
                       IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
                       fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
@@ -914,7 +914,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                         "grades the same timebase against what ts_tick_ns claims"
                       : "");
         else if (best && best != eff_odr && fabs(hz - best) < fabs(hz - eff_odr))
-            add_check(r, "imu.odr", "Measured ODR against nearest_odr()", st,
+            add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", st,
                       fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
                       fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
@@ -922,7 +922,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                       "%d Hz instead — check the rate encoding in init().",
                       err * 100, best);
         else
-            add_check(r, "imu.odr", "Measured ODR against nearest_odr()", st,
+            add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", st,
                       fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
                       fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
@@ -2629,14 +2629,20 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
         memcpy(r->mag_odr_tab, mag->supported_odr_hz, sizeof r->mag_odr_tab);
     }
 
+    /*
+     * Resolve exactly as imud does (odr_actual_*, not nearest_odr), so this
+     * tool programs the rate the daemon would program and measures against
+     * that rate. Using nearest_odr here would have it check the hardware
+     * against a rate the daemon never selects.
+     */
     r->req_odr_hz = cfg->imu_odr_hz;
-    r->eff_odr_hz = nearest_odr(imu->supported_odr_hz, cfg->imu_odr_hz);
+    r->eff_odr_hz = odr_actual_imu(imu, cfg->imu_odr_hz);
     r->accel_g    = cfg->imu_accel_g;
     r->gyro_dps   = cfg->imu_gyro_dps;
     r->fifo_wm    = cfg->imu_fifo_wm;
     if (mag) {
         r->mag_req_odr_hz = cfg->mag_odr_hz;
-        r->mag_eff_odr_hz = nearest_odr(mag->supported_odr_hz, cfg->mag_odr_hz);
+        r->mag_eff_odr_hz = odr_actual_mag(mag, cfg->mag_odr_hz);
     }
     r->phases_requested = opts->phases;
 
@@ -2654,14 +2660,27 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
     {
         char rb[56];
         add_check(r, "imu.odr.rounding",
-                  "Requested ODR rounds to a supported rate", IMT_INFO,
+                  "Requested ODR resolves to a programmable rate", IMT_INFO,
                   fmtbuf(rb, sizeof rb, "%d -> %d Hz",
                          r->req_odr_hz, r->eff_odr_hz),
                   "-",
                   r->req_odr_hz == r->eff_odr_hz
                   ? "the configured rate is on this chip's grid"
-                  : "the configured rate is not reachable; nearest_odr() picked "
-                    "the closest entry in supported_odr_hz[]");
+                  : "the configured rate is not reachable; the driver reports "
+                    "it will program this rate instead, and imud tunes the "
+                    "filter for it");
+        if (mag)
+            add_check(r, "mag.odr.rounding",
+                      "Requested mag ODR resolves to a programmable rate",
+                      IMT_INFO,
+                      fmtbuf(rb, sizeof rb, "%d -> %d Hz",
+                             r->mag_req_odr_hz, r->mag_eff_odr_hz),
+                      "-",
+                      r->mag_req_odr_hz == r->mag_eff_odr_hz
+                      ? "the configured rate is on this chip's grid"
+                      : "the configured rate is not reachable; the driver "
+                        "reports it will program this rate instead, and imud "
+                        "sizes the mag noise variance for it");
     }
 
     bool mag_ok = false;

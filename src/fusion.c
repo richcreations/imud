@@ -849,8 +849,16 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
  */
 static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
 {
-    float dt     = f->dt;
-    float odr_hz = 1.0f / dt;
+    /*
+     * Both rates come from the filter, not from cfg: f->dt and f->mag_odr_hz
+     * hold the rates the drivers actually programmed, which is not necessarily
+     * what cfg->{imu,mag}_odr_hz asked for. Reading cfg->mag_odr_hz here is
+     * what used to size Rm for a rate the magnetometer was not running at.
+     * Both odr_hz keys are [restart], so neither can go stale on SIGHUP.
+     */
+    float dt         = f->dt;
+    float odr_hz     = 1.0f / dt;
+    float mag_odr_hz = f->mag_odr_hz;
 
     /*
      * Discrete-time process noise (Solà §4.1):
@@ -868,12 +876,12 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
      *   Ra: accel noise density Na m/s²/√Hz → normalised to gravity units,
      *       variance at odr_hz = (Na/g)² × odr_hz
      *   Rm: mag noise density Nm Gauss/√Hz → variance at mag_odr_hz
-     *       = Nm² × mag_odr_hz  (use 100 Hz default)
+     *       = Nm² × mag_odr_hz  (100 Hz by default)
      */
     float Na = (float)cfg->mekf_accel_noise;
     float Nm = (float)cfg->mekf_mag_noise;
     f->Ra = (Na / G_MS2) * (Na / G_MS2) * odr_hz;
-    f->Rm = Nm * Nm * (float)cfg->mag_odr_hz;
+    f->Rm = Nm * Nm * mag_odr_hz;
 
     /*
      * Gauss–Markov wave-acceleration state (ROADMAP §10.5).
@@ -914,8 +922,8 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
 
     f->mag_yaw_only = cfg->mag_yaw_only;
 
-    f->mref_alpha = (cfg->mag_odr_hz > 0 && MREF_TAU_S < 1e9f)
-        ? 1.0f / (MREF_TAU_S * (float)cfg->mag_odr_hz)
+    f->mref_alpha = (mag_odr_hz > 0.0f && MREF_TAU_S < 1e9f)
+        ? 1.0f / (MREF_TAU_S * mag_odr_hz)
         : 0.0f;
 
     /* Gate health is fed by every eskf update; accel at odr_hz dominates.
@@ -925,8 +933,8 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
     /* The mag NIS channel is fed at the MAG rate, so it needs its own gain:
      * reusing gate_alpha (sized for 833 Hz) at ~104 Hz would stretch its time
      * constant from 30 s to about four minutes. */
-    f->nis_mag_alpha = (cfg->mag_odr_hz > 0)
-        ? 1.0f / (GATE_TAU_S * (float)cfg->mag_odr_hz)
+    f->nis_mag_alpha = (mag_odr_hz > 0.0f)
+        ? 1.0f / (GATE_TAU_S * mag_odr_hz)
         : f->gate_alpha;
 
     /*
@@ -960,6 +968,7 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
 void mekf_init(mekf_t *f,
                const imud_config_t *cfg,
                float odr_hz,
+               float mag_odr_hz,
                const float gyro_bias_init[3])
 {
     memset(f, 0, sizeof *f);
@@ -982,7 +991,9 @@ void mekf_init(mekf_t *f,
     for (int i = 0; i < 3; i++) f->P[i][i] = init_att;
     for (int i = 3; i < 6; i++) f->P[i][i] = init_bias;
 
-    f->dt = 1.0f / odr_hz;
+    /* Both sample rates, stored before mekf_derive_tuning reads them back. */
+    f->dt         = 1.0f / odr_hz;
+    f->mag_odr_hz = mag_odr_hz;
 
     mekf_derive_tuning(f, cfg);
 

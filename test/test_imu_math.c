@@ -68,6 +68,89 @@ static void test_nearest_odr(void)
     end(fb);
 }
 
+/* ── snap_odr_up ─────────────────────────────────────────────────────────── */
+
+/*
+ * The rounding every register-table driver's odr_encode() chain performs, and
+ * therefore the rate the chip really runs at. It differs from nearest_odr for
+ * every request that falls in the lower half of a gap — which is the whole
+ * reason this function exists: the daemon used to tune the filter with
+ * nearest_odr while the driver programmed the snap-up rate.
+ */
+static void test_snap_odr_up(void)
+{
+    begin("test_snap_odr_up");
+    int fb = g_fail;
+
+    static const int ism[] = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 };
+    EXPECT(snap_odr_up(ism, 208) == 208, "exact match");
+    EXPECT(snap_odr_up(ism, 60)  == 104, "between entries rounds UP");
+    EXPECT(snap_odr_up(ism, 1)   == 12,  "below min gives the first entry");
+    EXPECT(snap_odr_up(ism, 5000) == 1660, "above max clamps to last");
+
+    /* The regression this whole change is about, on the MMC5983MA grid:
+     * the driver programs 200 Hz while nearest_odr() said 100. */
+    static const int mmc[] = { 1, 10, 20, 50, 100, 200, 1000, 0 };
+    EXPECT(snap_odr_up(mmc, 137) == 200, "137 -> 200 (driver), not 100");
+    EXPECT(nearest_odr(mmc, 137) == 100, "nearest_odr still answers 100");
+
+    /* Same disagreement on the IMU side, which the daemon had too:
+     * imu_odr_hz = 900 tuned the filter for 833 and ran the chip at 1660. */
+    EXPECT(snap_odr_up(ism, 900) == 1660, "900 -> 1660 (driver), not 833");
+    EXPECT(nearest_odr(ism, 900) == 833,  "nearest_odr still answers 833");
+
+    static const int one[] = { 100, 0 };
+    EXPECT(snap_odr_up(one, 5)    == 100, "single entry, low request");
+    EXPECT(snap_odr_up(one, 9999) == 100, "single entry, high request");
+
+    end(fb);
+}
+
+/* ── odr_actual_imu / odr_actual_mag ─────────────────────────────────────── */
+
+static int stub_hook_calls;
+static int stub_hook(int requested) { stub_hook_calls++; return requested * 2; }
+
+/*
+ * The resolver picks the driver's hook when it has one and falls back to
+ * snap_odr_up otherwise. Divider-based parts (mpu925x, icm20948) rely on the
+ * hook winning; every register-table driver relies on the NULL default.
+ */
+static void test_odr_actual_resolver(void)
+{
+    begin("test_odr_actual_resolver");
+    int fb = g_fail;
+
+    imu_ops_t imu_no_hook = {
+        .supported_odr_hz = { 12, 26, 52, 104, 0 },
+        .actual_odr_hz    = NULL,
+    };
+    EXPECT(odr_actual_imu(&imu_no_hook, 60) == 104,
+           "NULL hook falls back to snap_odr_up");
+
+    imu_ops_t imu_hook = imu_no_hook;
+    imu_hook.actual_odr_hz = stub_hook;
+    stub_hook_calls = 0;
+    EXPECT(odr_actual_imu(&imu_hook, 60) == 120,
+           "hook wins over the table");
+    EXPECT(stub_hook_calls == 1, "hook called exactly once");
+
+    mag_ops_t mag_no_hook = {
+        .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
+        .actual_odr_hz    = NULL,
+    };
+    EXPECT(odr_actual_mag(&mag_no_hook, 137) == 200,
+           "mag NULL hook falls back to snap_odr_up");
+
+    mag_ops_t mag_hook = mag_no_hook;
+    mag_hook.actual_odr_hz = stub_hook;
+    stub_hook_calls = 0;
+    EXPECT(odr_actual_mag(&mag_hook, 137) == 274, "mag hook wins");
+    EXPECT(stub_hook_calls == 1, "mag hook called exactly once");
+
+    end(fb);
+}
+
 /* ── timestamp reconstruction ────────────────────────────────────────────── */
 
 static void anchor_init(ts_anchor_t *a)
@@ -549,6 +632,8 @@ int main(void)
     puts("=== imud imu_math tests ===");
 
     test_nearest_odr();
+    test_snap_odr_up();
+    test_odr_actual_resolver();
     test_timestamp_basic();
     test_timestamp_wraparound();
     test_timestamp_no_hw_timer();

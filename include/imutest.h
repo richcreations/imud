@@ -66,7 +66,7 @@ typedef struct {
      * imt_find() matches on the whole string, so this must be wide enough for
      * the longest id or lookups silently miss. */
     char         id[32];
-    char         name[64];     /* "Measured ODR against nearest_odr()" */
+    char         name[64];     /* "Measured ODR against the rate the driver reports" */
     imt_status_t status;
     char         measured[56]; /* "831.4 Hz", "-9.803 m/s^2", "0x6B" */
     char         expected[56]; /* "833 Hz +/-5%", "0x6B" */

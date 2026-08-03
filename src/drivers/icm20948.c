@@ -135,6 +135,18 @@ static uint16_t accel_smplrt_div(int odr_hz)
     return (uint16_t)div;
 }
 
+/*
+ * imu_ops_t::actual_odr_hz. This part is divider-based, so it reaches rates
+ * that are not in supported_odr_hz at all and the shared snap-up default in
+ * odr_actual_imu() would be wrong for it. The gyro divider sets the pace —
+ * accel_smplrt_div() uses the same formula over a wider range, so the two
+ * agree for every rate the gyro can reach.
+ */
+static int icm_actual_odr_hz(int requested)
+{
+    return 1125 / (1 + (int)gyro_smplrt_div(requested));
+}
+
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
 static int icm_probe(int fd, uint8_t addr)
@@ -326,4 +338,7 @@ const imu_ops_t icm20948_ops = {
     .supported_odr_hz   = { 225, 281, 375, 562, 1125, 0 },  /* 1125/(1+div) */
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
+    /* Divider-based: reaches rates outside the table above, so it must report
+     * its own actual rate rather than take the shared snap-up default. */
+    .actual_odr_hz      = icm_actual_odr_hz,
 };

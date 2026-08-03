@@ -20,8 +20,14 @@
 
 /* ── IMU driver configuration ──────────────────────────────────────────────── */
 
+/*
+ * odr_hz here is already resolved: imu.c passes the rate the driver said it
+ * would program (see actual_odr_hz below), not the operator's raw request, so
+ * the driver's own rounding is a no-op and the filter, the driver and imutest
+ * cannot disagree about the sample rate.
+ */
 typedef struct {
-    int odr_hz;     /* requested; driver rounds to nearest in supported_odr_hz */
+    int odr_hz;     /* resolved sample rate in Hz */
     int accel_g;    /* full-scale: 2 | 4 | 8 | 16 */
     int gyro_dps;   /* full-scale: 125 | 250 | 500 | 1000 | 2000 | 4000 */
     int fifo_wm;    /* watermark in sample-sets; ignored if !has_fifo */
@@ -30,9 +36,29 @@ typedef struct {
 /* ── Magnetometer driver configuration ────────────────────────────────────── */
 
 typedef struct {
-    int   odr_hz;        /* requested ODR */
+    int   odr_hz;        /* resolved ODR in Hz, as for imu_cfg_t */
     float set_period_s;  /* degauss pulse interval in seconds; 0 = disable */
 } mag_cfg_t;
+
+/*
+ * ── The actual_odr_hz hook, shared by both ops structs ─────────────────────
+ *
+ * Both imu_ops_t and mag_ops_t carry:
+ *
+ *     int (*actual_odr_hz)(int requested);
+ *
+ * the rate this driver will really program for `requested`, in Hz.
+ *
+ * NULL means the default rule — the lowest entry in supported_odr_hz that is
+ * >= requested, clamped to the highest — which is what every register-table
+ * driver's odr_encode() chain does. Divider-based parts (mpu925x, icm20948)
+ * derive the rate from a base clock and reach values that are not in their
+ * advertised table at all, so they must implement this; so must any driver
+ * that honours the request verbatim (sim).
+ *
+ * Resolve through odr_actual_imu() / odr_actual_mag() in imu_math.h rather
+ * than calling the hook directly, so the NULL default lives in one place.
+ */
 
 /* ── IMU driver operations ─────────────────────────────────────────────────── */
 
@@ -63,6 +89,8 @@ typedef struct {
     int  supported_odr_hz[16];   /* ascending, 0-terminated */
     int  supported_accel_g[8];   /* ascending, 0-terminated */
     int  supported_gyro_dps[8];  /* ascending, 0-terminated */
+
+    int (*actual_odr_hz)(int requested);  /* NULL → snap up the table; see above */
 } imu_ops_t;
 
 /* ── Magnetometer driver operations ───────────────────────────────────────── */
@@ -82,6 +110,8 @@ typedef struct {
     bool has_interrupt;
     bool has_set_reset;
     int  supported_odr_hz[16];  /* ascending, 0-terminated */
+
+    int (*actual_odr_hz)(int requested);  /* NULL → snap up the table; see above */
 } mag_ops_t;
 
 /* ── Registry lookup — implemented in drivers.c ────────────────────────────── */

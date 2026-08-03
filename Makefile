@@ -283,8 +283,11 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # Driver registry + ops-table sanity for every registered chip (no hardware).
 # Links every driver: sim.c pulls in capture.c for its .imucap playback path,
 # and the drivers reference log_emit (LOG_E) on their error branches.
-# Linux-only (the drivers include <linux/i2c.h>), like the rest of `test`.
-test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c test/test_drivers_registry.c
+# imu_math.c is here for odr_actual_imu/odr_actual_mag — the ODR resolution
+# invariant has to hold for every registered driver, which is exactly this
+# suite's job.  Linux-only (the drivers include <linux/i2c.h>), like `test`.
+test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
+                       src/imu_math.c test/test_drivers_registry.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
@@ -300,12 +303,15 @@ test_imu_math: src/imu_math.c test/test_imu_math.c
 # Also wrap __ioctl_time64: on 32-bit glibc with -D_TIME_BITS=64 (Debian armhf)
 # ioctl() is redirected to that symbol, so wrapping plain ioctl alone misses
 # every call there.
+# src/imu_math.c is linked for snap_odr_up / odr_actual_*: test_odr_agreement
+# checks each driver's own ODR encoding against the shared default rule, which
+# is the invariant that lets imu.c hand the resolved rate back to the driver.
 test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/mpu925x.c src/drivers/ak8963.c \
               src/drivers/lsm6dso.c src/drivers/icm42688p.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c src/log.c \
-              test/i2c_mock.c test/test_drivers.c
+              src/imu_math.c test/i2c_mock.c test/test_drivers.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 

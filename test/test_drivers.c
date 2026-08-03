@@ -48,6 +48,7 @@
 #include <math.h>
 
 #include "drivers.h"
+#include "imu_math.h"   /* odr_actual_imu / odr_actual_mag — see test_odr_agreement */
 #include "i2c_mock.h"
 
 #ifndef M_PI
@@ -1223,6 +1224,103 @@ static void test_ak099_init_modes(void)
     end(fb);
 }
 
+/* ── ODR resolution agrees with what the driver programs ─────────────────── */
+
+/*
+ * imud resolves the configured rate with odr_actual_* and hands the RESULT to
+ * the driver, so the driver's own rounding must be a no-op on it. If the two
+ * disagree, the filter is tuned for one rate while the chip samples at
+ * another — which is exactly what happened before this was pinned:
+ * nearest_odr() decided the tuning while every register-table driver rounded
+ * UP, so [imu] odr_hz = 900 tuned for 833 Hz and ran the part at 1660.
+ *
+ * The check: initialise once at an off-grid request and once at the resolved
+ * rate, and require identical control registers. That holds only if the
+ * driver's encode chain rounds the same way the shared default does.
+ */
+static uint8_t init_imu_reg(const imu_ops_t *d, uint8_t addr, uint8_t reg,
+                            int odr_hz, int accel_g, int gyro_dps)
+{
+    i2cmock_reset();
+    /* ISM/LSM read OUT_TEMP during init; a zeroed mock reads back fine. */
+    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = accel_g,
+                      .gyro_dps = gyro_dps, .fifo_wm = 64 };
+    d->init(FD, addr, &cfg);
+    return i2cmock_get_reg(addr, reg);
+}
+
+static uint8_t init_mag_reg(const mag_ops_t *d, uint8_t addr, uint8_t reg,
+                            int odr_hz)
+{
+    i2cmock_reset();
+    mag_cfg_t cfg = { .odr_hz = odr_hz, .set_period_s = 0.0f };
+    d->init(FD, addr, &cfg);
+    return i2cmock_get_reg(addr, reg);
+}
+
+static void test_odr_agreement(void)
+{
+    begin("test_odr_agreement");
+    int fb = g_fail;
+
+    /* ── The register-table drivers: the NULL-hook snap-up default. ──── */
+
+    /* ISM330DHCX CTRL1_XL. 900 is between 833 and 1660: nearest_odr() would
+     * have said 833, the driver programs 1660. */
+    EXPECT(odr_actual_imu(ism, 900) == 1660, "ism 900 resolves to 1660");
+    EXPECT(init_imu_reg(ism, ISM_ADDR, 0x10, 900,  4, 500) ==
+           init_imu_reg(ism, ISM_ADDR, 0x10, 1660, 4, 500),
+           "ism programs the resolved rate for an off-grid request");
+
+    /* LSM6DSO CTRL1_XL, same ST encoding, off-grid 60 → 104. */
+    EXPECT(odr_actual_imu(&lsm6dso_ops, 60) == 104, "lsm 60 resolves to 104");
+    EXPECT(init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 60,  4, 500) ==
+           init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 104, 4, 500),
+           "lsm programs the resolved rate for an off-grid request");
+
+    /* MMC5983MA CTRL2 (Cmm_en|CM_Freq). 137 is the case the audit found:
+     * nearest_odr() said 100, the driver programs 200. */
+    EXPECT(odr_actual_mag(mmc, 137) == 200, "mmc 137 resolves to 200");
+    EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==
+           init_mag_reg(mmc, MMC_ADDR, 0x0B, 200),
+           "mmc programs the resolved rate for an off-grid request");
+
+    /* ── The divider-based parts: the hook, not the table. ───────────── */
+
+    /* MPU-925x: ODR = 1000/(1+SMPLRT_DIV), and the divider — not the rate —
+     * is what gets rounded to nearest, so it reaches rates that are in no
+     * table at all. 137 Hz becomes 1000/7 = 142, which is neither the 100 the
+     * snap-up default would give nor the 125 the table's own grid holds. */
+    EXPECT(mpu->actual_odr_hz != NULL, "mpu implements actual_odr_hz");
+    EXPECT(odr_actual_imu(mpu, 137) == 142, "mpu 137 -> 142 (divider 6)");
+    EXPECT(odr_actual_imu(mpu, 1000) == 1000, "mpu 1000 -> 1000 (divider 0)");
+    EXPECT(odr_actual_imu(mpu, 5000) == 1000, "mpu clamps above the base rate");
+    EXPECT(odr_actual_imu(mpu, 1) == 1000 / 256, "mpu clamps at divider 255");
+    /* And the resolved rate is a fixed point — the register is the same. */
+    EXPECT(init_imu_reg(mpu, MPU_ADDR, 0x19, 137, 8, 2000) ==
+           init_imu_reg(mpu, MPU_ADDR, 0x19, 142, 8, 2000),
+           "mpu SMPLRT_DIV is the same for 137 and its resolved 142");
+
+    /* ICM-20948: ODR = 1125/(1+divider). */
+    EXPECT(icm20948_ops.actual_odr_hz != NULL, "icm20948 implements actual_odr_hz");
+    EXPECT(odr_actual_imu(&icm20948_ops, 1125) == 1125, "icm 1125 -> 1125");
+    EXPECT(odr_actual_imu(&icm20948_ops, 500) == 562, "icm 500 -> 562 (divider 1)");
+    EXPECT(odr_actual_imu(&icm20948_ops, 5000) == 1125, "icm clamps to base rate");
+
+    /* ── The resolved rate is always a fixed point of resolution. ────── */
+    static const int probe[] = { 1, 13, 60, 137, 500, 900, 5000 };
+    for (size_t i = 0; i < sizeof probe / sizeof probe[0]; i++) {
+        int a = odr_actual_imu(ism, probe[i]);
+        EXPECT(odr_actual_imu(ism, a) == a, "ism resolution is idempotent");
+        int m = odr_actual_mag(mmc, probe[i]);
+        EXPECT(odr_actual_mag(mmc, m) == m, "mmc resolution is idempotent");
+        int p = odr_actual_imu(mpu, probe[i]);
+        EXPECT(odr_actual_imu(mpu, p) == p, "mpu resolution is idempotent");
+    }
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver register tests (mock I2C) ===");
@@ -1263,6 +1361,7 @@ int main(void)
 
     test_driver_resets();
     test_ak099_init_modes();
+    test_odr_agreement();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

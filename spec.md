@@ -218,6 +218,11 @@ typedef struct {
     int   supported_odr_hz[16];     /* ascending list, 0-terminated */
     int   supported_accel_g[8];
     int   supported_gyro_dps[8];
+
+    /* Rate this driver will really program for `requested`, in Hz.
+       NULL → the default rule: lowest supported_odr_hz entry >= requested,
+       clamped to the highest.  Divider-based parts must implement it. */
+    int (*actual_odr_hz)(int requested);
 } imu_ops_t;
 ```
 
@@ -236,6 +241,7 @@ typedef struct {
     bool  has_interrupt;
     bool  has_set_reset;
     int   supported_odr_hz[16];
+    int (*actual_odr_hz)(int requested);    /* as imu_ops_t */
 } mag_ops_t;
 ```
 
@@ -858,7 +864,7 @@ gpio_chip      = "gpiochip0"     # Pi 4 = gpiochip0; Pi 5 (RP1) = gpiochip4
 driver         = "ism330dhcx"    # ism330dhcx | icm20948 | icm42688p | lsm6dso | lsm6dsox | sim
 i2c_addr       = 0x6B            # 0x6A via jumper
 int_gpio       = 17              # BCM GPIO for FIFO watermark interrupt; 0 = timer fallback
-odr_hz         = 833             # driver rounds to nearest: 12/26/52/104/208/416/833/1660
+odr_hz         = 833             # > 0; rounds UP: 12/26/52/104/208/416/833/1660
 accel_g        = 8               # full-scale: 2 | 4 | 8 | 16
 gyro_dps       = 2000            # full-scale: 125 | 250 | 500 | 1000 | 2000 | 4000
 fifo_wm        = 64              # FIFO watermark in sample-sets (ignored if no FIFO)
@@ -873,7 +879,7 @@ fifo_wm        = 64              # FIFO watermark in sample-sets (ignored if no 
 driver         = "mmc5983ma"     # mmc5983ma | ak09916 | lis3mdl | lis2mdl | sim
 i2c_addr       = 0x30
 int_gpio       = 27              # BCM GPIO for measurement-done interrupt; 0 = timer fallback
-odr_hz         = 100             # driver rounds to nearest: 1/10/20/50/100/200/1000
+odr_hz         = 100             # > 0; rounds UP: 1/10/20/50/100/200/1000
 set_period_s   = 5.0             # degauss pulse interval, seconds (0 = disable)
 
 # driver       = "sim"
@@ -1290,7 +1296,8 @@ imud-imutest [--config PATH] [--report PATH]
 
 Four phases. **Passive** needs no operator: probe and bogus-address rejection,
 reset timing, a control-register snapshot diff around `init()` plus an
-idempotency check, measured ODR against `nearest_odr()`, FIFO depth and
+idempotency check, measured ODR against the rate the driver reports it will
+program, FIFO depth and
 deliberate overflow and recovery, `seq` monotonicity and gap accounting, the
 error-return contract, noise floor and stuck-axis detection, gravity
 magnitude, temperature plausibility, `chip_ts` presence/rate/wrap handling,

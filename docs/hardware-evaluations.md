@@ -141,8 +141,11 @@ ISM330DHCX's much larger FIFO.
 
 **2. The default ODR is not on the grid.** Output rate is
 `1000/(1 + SMPLRT_DIV)` with the DLPF enabled, giving 1000 / 500 / 333 / 250 /
-200 / 125 / 100 Hz. imud's default of **833 Hz is not reachable**; the nearest
-supported value is 1000 Hz, which also costs somewhat more CPU on a Pi.
+200 / 125 / 100 Hz. imud's default of **833 Hz is not reachable**; the divider
+rounds to 0, so the part runs at 1000 Hz, which also costs somewhat more CPU
+on a Pi. Because the divider — not the rate — is what rounds, this driver
+reports its own rate through `actual_odr_hz` rather than taking the shared
+snap-up-the-table default, and the filter is tuned for whatever it answers.
 
 **3. Do not copy the datasheet noise figure into `mekf_accel_noise`.** This is
 the most likely way a user would break their own install after fitting one of
@@ -185,9 +188,9 @@ startup message is most of the support cost avoided up front.
   9250 and the 9255 — only `WHO_AM_I` differs — the same one-driver-two-parts
   pattern already used for `lsm6dso` / `lsm6dsox`.
 - **Clamp and round, logging both once at init:** clamp `fifo_wm` to the
-  chip's real capacity and round the requested ODR to the nearest supported
-  value (833 → 1000 Hz), logging each adjustment so a surprised user can see
-  why the daemon is not running at the rate their config asked for.
+  chip's real capacity and resolve the requested ODR onto the divider grid
+  (833 → 1000 Hz), logging each adjustment so a surprised user can see why the
+  daemon is not running at the rate their config asked for.
 - `experimental = true`; register in `src/drivers.c`; add to `imu_names[]` and
   `mag_names[]` in `test/test_drivers_registry.c`; extend the mock-I²C harness
   (`test/test_drivers.c` with `test/i2c_mock.c`) to cover probe / init / read

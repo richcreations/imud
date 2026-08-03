@@ -174,6 +174,28 @@ int nearest_odr(const int supported[], int requested)
     return best;
 }
 
+int snap_odr_up(const int supported[], int requested)
+{
+    int last = supported[0];
+    for (int i = 0; supported[i] != 0; i++) {
+        if (supported[i] >= requested) return supported[i];
+        last = supported[i];
+    }
+    return last;   /* above the top of the table — clamp to the highest */
+}
+
+int odr_actual_imu(const imu_ops_t *ops, int requested)
+{
+    if (ops->actual_odr_hz) return ops->actual_odr_hz(requested);
+    return snap_odr_up(ops->supported_odr_hz, requested);
+}
+
+int odr_actual_mag(const mag_ops_t *ops, int requested)
+{
+    if (ops->actual_odr_hz) return ops->actual_odr_hz(requested);
+    return snap_odr_up(ops->supported_odr_hz, requested);
+}
+
 /* Apply mount rotation (board -> body) if configured. In-place on v. */
 void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3])
 {
