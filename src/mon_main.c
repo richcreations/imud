@@ -33,6 +33,7 @@
 #include <sys/select.h>
 #include <netinet/in.h>
 
+#include "cli.h"
 #include "config.h"
 #include "types.h"
 
@@ -265,51 +266,19 @@ static void print_snapshot(const mon_state_t *st,
 
 /* ── Entry point ─────────────────────────────────────────────────────────── */
 
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-        "Usage: %s [--config PATH] [nmea] [binary]\n"
-        "\n"
-        "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
-        "\n"
-        "  nmea    Monitor NMEA 0183 stream (UDP port 10110)\n"
-        "  binary  Monitor binary stream    (UDP port 10111)\n"
-        "\n"
-        "  With no stream arguments both streams are shown.\n"
-        "  Port numbers and multicast addresses are read from the config file.\n",
-        prog);
-}
-
 int main(int argc, char **argv)
 {
-    char config_path[256];
-    snprintf(config_path, sizeof config_path, "/etc/imud/imud.conf");
+    cli_mon_t args;
+    int cli_rc = cli_parse_mon(argc, argv, &args);
+    if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --help */
 
-    bool want_nmea = false, want_binary = false;
-    bool any_stream = false;
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof config_path, "%s", argv[++i]);
-        } else if (strcmp(argv[i], "nmea") == 0) {
-            want_nmea   = true; any_stream = true;
-        } else if (strcmp(argv[i], "binary") == 0) {
-            want_binary = true; any_stream = true;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]); return 0;
-        } else {
-            fprintf(stderr, "unknown argument: %s\n", argv[i]);
-            usage(argv[0]); return 1;
-        }
-    }
-
-    if (!any_stream)
-        want_nmea = want_binary = true;
+    const bool want_nmea   = args.want_nmea;
+    const bool want_binary = args.want_binary;
 
     /* Load config — ignore failure, defaults have the right port numbers */
     imud_config_t cfg;
     config_defaults(&cfg);
-    config_load(config_path, &cfg);
+    config_load(args.config_path, &cfg);
 
     /* Open receive sockets */
     int nmea_fd = -1, bin_fd = -1;

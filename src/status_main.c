@@ -17,28 +17,14 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#define DEFAULT_STATUS_SOCK "/run/imud/imud.sock"
-
-static void usage(const char *p)
-{
-    fprintf(stderr, "Usage: %s [--socket PATH]\n", p);
-}
+#include "cli.h"
 
 int main(int argc, char **argv)
 {
-    const char *sockpath = DEFAULT_STATUS_SOCK;
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
-            sockpath = argv[++i];
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else {
-            usage(argv[0]);
-            return 1;
-        }
-    }
+    cli_status_t args;
+    int cli_rc = cli_parse_status(argc, argv, &args);
+    if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --help */
+    const char *sockpath = args.sockpath;
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {

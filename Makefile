@@ -54,6 +54,7 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \
               src/capture.c \
+              src/cli.c \
               src/log.c \
               src/config.c \
               src/ring.c \
@@ -73,6 +74,7 @@ IMUD_SRCS   = src/cal.c \
 # Calibration tool: hardware access + config; no threads or output
 CAL_SRCS    = src/cal.c \
               src/capture.c \
+              src/cli.c \
               src/log.c \
               src/cal_math.c \
               src/config.c \
@@ -85,7 +87,8 @@ CAL_SRCS    = src/cal.c \
 # Driver-validation tool: hardware access, config, the driver registry, and the
 # swing-coverage helper shared with imud-cal.  src/capture.c is here only
 # because the sim driver's .imucap playback needs it.
-IMUTEST_SRCS = src/config.c \
+IMUTEST_SRCS = src/cli.c \
+               src/config.c \
                src/log.c \
                src/capture.c \
                src/cal_math.c \
@@ -121,12 +124,13 @@ imud-cal: $(CAL_OBJS) src/cal_main.o
 imud-imutest: $(IMUTEST_OBJS) src/imutest_main.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
 
-# imud-status is a plain socket client: no hardware libs
-imud-status: src/status_main.o
+# imud-status is a plain socket client: no hardware libs.  src/cli.c stays off
+# log.c precisely so this link line does not grow a pthread dependency.
+imud-status: src/cli.o src/status_main.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
-imud-mon: src/config.o src/log.o src/mon_main.o
+imud-mon: src/cli.o src/config.o src/log.o src/mon_main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.

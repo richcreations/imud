@@ -42,6 +42,7 @@
 #include "cal.h"
 #include "cal_math.h"
 #include "capture.h"
+#include "cli.h"
 #include "config.h"
 #include "imu.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag */
@@ -931,87 +932,28 @@ static int do_fit_ra(const imud_config_t *cfg, const imud_cal_t *cal,
     return 0;
 }
 
-static void usage(const char *prog)
-{
-    fprintf(stderr,
-        "Usage: %s [--config PATH] [--output PATH] <mode>\n"
-        "\n"
-        "Modes:\n"
-        "  mag          Magnetometer calibration (vessel swing, daemon stopped)\n"
-        "  gyro         Gyroscope bias capture   (hold still, daemon stopped)\n"
-        "  accel        Accelerometer 6-position (bench, daemon stopped)\n"
-        "  characterize Allan-variance noise analysis of a stationary capture\n"
-        "               (requires --from FILE; record with [capture] enabled)\n"
-        "  fit-temp     Gyro bias/temperature fit from a warm-up capture\n"
-        "               (requires --from FILE)\n"
-        "  fit-ra       Check the MEKF accel measurement model against a\n"
-        "               rough-water capture (requires --from FILE).\n"
-        "               Reports only; writes nothing.\n"
-        "\n"
-        "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
-        "  --output PATH   Override cal.json output path from config\n"
-        "  --from FILE     .imucap capture to analyze (offline modes)\n",
-        prog);
-}
-
 int main(int argc, char **argv)
 {
-    char        config_path[256];
-    const char *output_path = NULL;
-    const char *from_path   = NULL;
-    const char *mode        = NULL;
+    cli_cal_t args;
+    int cli_rc = cli_parse_cal(argc, argv, &args);
+    if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;
 
-    snprintf(config_path, sizeof(config_path), "/etc/imud/imud.conf");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof(config_path), "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
-            output_path = argv[++i];
-        } else if (strcmp(argv[i], "--from") == 0 && i + 1 < argc) {
-            from_path = argv[++i];
-        } else if (!mode && argv[i][0] != '-') {
-            mode = argv[i];
-        } else {
-            fprintf(stderr, "unknown option: %s\n", argv[i]);
-            usage(argv[0]); return 1;
-        }
-    }
-
-    if (!mode) { usage(argv[0]); return 1; }
-
-    if (strcmp(mode, "mag")          != 0 &&
-        strcmp(mode, "gyro")         != 0 &&
-        strcmp(mode, "accel")        != 0 &&
-        strcmp(mode, "characterize") != 0 &&
-        strcmp(mode, "fit-temp")     != 0 &&
-        strcmp(mode, "fit-ra")       != 0) {
-        fprintf(stderr, "unknown mode '%s'\n", mode);
-        usage(argv[0]); return 1;
-    }
-    if ((strcmp(mode, "characterize") == 0 || strcmp(mode, "fit-temp") == 0 ||
-         strcmp(mode, "fit-ra") == 0)
-        && !from_path) {
-        fprintf(stderr, "%s requires --from FILE (an .imucap capture)\n", mode);
-        usage(argv[0]); return 1;
-    }
+    const char *mode      = args.mode;
+    const char *from_path = args.from_path;
 
     /* Load config.  The offline analysis modes only need it for the
      * cal.json path, so a MISSING file falls back to defaults there;
      * sensor modes stay strict (defaults could probe the wrong bus). */
-    bool offline = strcmp(mode, "characterize") == 0 ||
-                   strcmp(mode, "fit-temp")     == 0 ||
-                   strcmp(mode, "fit-ra")       == 0;
     imud_config_t cfg;
     config_defaults(&cfg);
-    int crc = config_load(config_path, &cfg);
-    if (crc == CONFIG_ERR_PARSE || (crc < 0 && !offline)) {
-        fprintf(stderr, "cal: cannot load config from %s\n", config_path);
+    int crc = config_load(args.config_path, &cfg);
+    if (crc == CONFIG_ERR_PARSE || (crc < 0 && !args.offline)) {
+        fprintf(stderr, "cal: cannot load config from %s\n", args.config_path);
         return 1;
     }
 
-    if (output_path)
-        snprintf(cfg.cal_file, sizeof(cfg.cal_file), "%s", output_path);
+    if (args.output_path)
+        snprintf(cfg.cal_file, sizeof(cfg.cal_file), "%s", args.output_path);
 
     /* Load existing cal.json so we preserve sections we're not updating */
     imud_cal_t cal;

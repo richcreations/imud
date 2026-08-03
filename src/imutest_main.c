@@ -28,67 +28,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "cli.h"
 #include "config.h"
 #include "imutest.h"
 #include "version.h"
-
-static void usage(const char *prog)
-{
-    printf(
-"Usage: %s [OPTIONS]\n"
-"\n"
-"Exercises a registered IMU/magnetometer driver against real silicon and\n"
-"writes a Markdown report suitable for pasting into a GitHub issue.\n"
-"\n"
-"Stop the daemon first: imud and imud-imutest both open the same I2C device,\n"
-"and both would drain the same FIFO.\n"
-"\n"
-"  --config PATH        Config file (default: /etc/imud/imud.conf)\n"
-"  --report PATH        Report output\n"
-"                       (default: ./imud-imutest-<imu>-<YYYYmmdd-HHMMSS>.md)\n"
-"\n"
-"Device overrides (default: whatever imud.conf says)\n"
-"  --imu-driver NAME    [imu] driver\n"
-"  --mag-driver NAME    [mag] driver; \"none\" for an IMU-only board\n"
-"  --imu-addr HEX       [imu] i2c_addr, e.g. 0x6A\n"
-"  --mag-addr HEX       [mag] i2c_addr, e.g. 0x0C\n"
-"  --i2c-bus PATH       [device] i2c_bus\n"
-"  --gpio-chip NAME     [device] gpio_chip\n"
-"  --int-gpio N         [imu] int_gpio; 0 skips the interrupt check\n"
-"  --odr HZ             [imu] odr_hz\n"
-"  --accel-g N          [imu] accel_g\n"
-"  --gyro-dps N         [imu] gyro_dps\n"
-"  --fifo-wm N          [imu] fifo_wm\n"
-"\n"
-"Phases (default: all four)\n"
-"  --passive            Automatic checks only; no operator action\n"
-"  --faces              Guided six-face accelerometer / axis-sign test\n"
-"  --gyro               Guided gyro rotation test\n"
-"  --spin               Guided magnetometer spin test\n"
-"  --all                All four (the default)\n"
-"  --non-interactive    Passive only, never prompt. Implied when stdin is\n"
-"                       not a terminal.\n"
-"\n"
-"Tuning\n"
-"  --odr-window S       ODR / seq / chip_ts window, s   (default 5, min 3)\n"
-"  --noise-window S     Noise and temperature window, s (default 10)\n"
-"  --drdy-window S      Interrupt edge-count window, s  (default 3)\n"
-"  --turn-deg N         Commanded angle for --gyro      (default 90)\n"
-"  --grav-tol M         Gravity warn tolerance, m/s^2   (default 0.25)\n"
-"  --odr-tol PCT        ODR warn tolerance, percent     (default 5)\n"
-"  --no-fs-sweep        Skip the full-scale re-init sweep\n"
-"  --no-overflow        Do not deliberately overflow the FIFO\n"
-"  --no-regdiff         Do not read control registers back\n"
-"\n"
-"  --force              Run even if imud appears to be running\n"
-"  --quiet              Digest only; no live progress lines\n"
-"  --version            Print version and exit\n"
-"  -h, --help           This message\n"
-"\n"
-"Exit: 0 all pass  1 usage/config/I-O error  2 a check FAILed\n"
-"      3 warnings only  130 aborted\n",
-    prog);
-}
 
 /* ── Terminal implementation of imt_ui_t ──────────────────────────────────── */
 
@@ -224,83 +167,31 @@ static bool daemon_running(const imud_config_t *cfg)
 
 int main(int argc, char **argv)
 {
-    char config_path[256] = "/etc/imud/imud.conf";
-    char report_path[512] = "";
-    bool have_config_arg = false;
-    bool force = false, quiet = false, non_interactive = false;
-    unsigned phases = 0;
+    cli_imutest_t args;
+    int cli_rc = cli_parse_imutest(argc, argv, &args);
+    if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --version/--help */
 
-    /* Device overrides, applied after the config file is loaded. */
-    const char *ov_imu = NULL, *ov_mag = NULL, *ov_bus = NULL, *ov_chip = NULL;
-    int ov_imu_addr = -1, ov_mag_addr = -1, ov_int_gpio = -1;
-    int ov_odr = -1, ov_accel = -1, ov_gyro = -1, ov_wm = -1;
-    double ov_odr_win = -1, ov_noise_win = -1, ov_drdy_win = -1;
-    double ov_turn = -1, ov_grav_tol = -1, ov_odr_tol = -1;
-    bool no_fs = false, no_ovf = false, no_regdiff = false;
+    /* Names the rest of main() already used; args owns the storage.  Only
+     * report_path and phases are written below, so those two stay writable. */
+    const char *config_path     = args.config_path;
+    char       *report_path     = args.report_path;
+    const bool  have_config_arg = args.have_config_arg;
+    const bool  force = args.force, quiet = args.quiet;
+    unsigned    phases = args.phases;
 
-    for (int i = 1; i < argc; i++) {
-        const char *a = argv[i];
-        if      (strcmp(a, "--config") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof config_path, "%s", argv[++i]);
-            have_config_arg = true;
-        }
-        else if (strcmp(a, "--report") == 0 && i + 1 < argc)
-            snprintf(report_path, sizeof report_path, "%s", argv[++i]);
-        else if (strcmp(a, "--imu-driver") == 0 && i + 1 < argc) ov_imu = argv[++i];
-        else if (strcmp(a, "--mag-driver") == 0 && i + 1 < argc) ov_mag = argv[++i];
-        else if (strcmp(a, "--i2c-bus") == 0 && i + 1 < argc)    ov_bus = argv[++i];
-        else if (strcmp(a, "--gpio-chip") == 0 && i + 1 < argc)  ov_chip = argv[++i];
-        else if (strcmp(a, "--imu-addr") == 0 && i + 1 < argc)
-            ov_imu_addr = (int)strtol(argv[++i], NULL, 0);
-        else if (strcmp(a, "--mag-addr") == 0 && i + 1 < argc)
-            ov_mag_addr = (int)strtol(argv[++i], NULL, 0);
-        else if (strcmp(a, "--int-gpio") == 0 && i + 1 < argc)
-            ov_int_gpio = atoi(argv[++i]);
-        else if (strcmp(a, "--odr") == 0 && i + 1 < argc)       ov_odr = atoi(argv[++i]);
-        else if (strcmp(a, "--accel-g") == 0 && i + 1 < argc)   ov_accel = atoi(argv[++i]);
-        else if (strcmp(a, "--gyro-dps") == 0 && i + 1 < argc)  ov_gyro = atoi(argv[++i]);
-        else if (strcmp(a, "--fifo-wm") == 0 && i + 1 < argc)   ov_wm = atoi(argv[++i]);
-        else if (strcmp(a, "--passive") == 0) phases |= IMT_PHASE_PASSIVE;
-        else if (strcmp(a, "--faces") == 0)   phases |= IMT_PHASE_FACES;
-        else if (strcmp(a, "--gyro") == 0)    phases |= IMT_PHASE_GYRO;
-        else if (strcmp(a, "--spin") == 0)    phases |= IMT_PHASE_SPIN;
-        else if (strcmp(a, "--all") == 0)     phases  = IMT_PHASE_ALL;
-        else if (strcmp(a, "--non-interactive") == 0) non_interactive = true;
-        else if (strcmp(a, "--odr-window") == 0 && i + 1 < argc)
-            ov_odr_win = atof(argv[++i]);
-        else if (strcmp(a, "--noise-window") == 0 && i + 1 < argc)
-            ov_noise_win = atof(argv[++i]);
-        else if (strcmp(a, "--drdy-window") == 0 && i + 1 < argc)
-            ov_drdy_win = atof(argv[++i]);
-        else if (strcmp(a, "--turn-deg") == 0 && i + 1 < argc)
-            ov_turn = atof(argv[++i]);
-        else if (strcmp(a, "--grav-tol") == 0 && i + 1 < argc)
-            ov_grav_tol = atof(argv[++i]);
-        else if (strcmp(a, "--odr-tol") == 0 && i + 1 < argc)
-            ov_odr_tol = atof(argv[++i]) / 100.0;
-        else if (strcmp(a, "--no-fs-sweep") == 0) no_fs = true;
-        else if (strcmp(a, "--no-overflow") == 0) no_ovf = true;
-        else if (strcmp(a, "--no-regdiff") == 0)  no_regdiff = true;
-        else if (strcmp(a, "--force") == 0) force = true;
-        else if (strcmp(a, "--quiet") == 0) quiet = true;
-        else if (strcmp(a, "--version") == 0) {
-            printf("imud-imutest %s\n", IMUD_VERSION_STR);
-            return 0;
-        }
-        else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
-            usage(argv[0]);
-            return 0;
-        }
-        else {
-            fprintf(stderr, "unknown option: %s\n", a);
-            usage(argv[0]);
-            return 1;
-        }
-    }
+    const char *ov_imu = args.ov_imu, *ov_mag  = args.ov_mag;
+    const char *ov_bus = args.ov_bus, *ov_chip = args.ov_chip;
+    const int ov_imu_addr = args.ov_imu_addr, ov_mag_addr = args.ov_mag_addr;
+    const int ov_int_gpio = args.ov_int_gpio;
+    const int ov_odr = args.ov_odr, ov_accel = args.ov_accel;
+    const int ov_gyro = args.ov_gyro, ov_wm = args.ov_wm;
+    const double ov_odr_win = args.ov_odr_win, ov_noise_win = args.ov_noise_win;
+    const double ov_drdy_win = args.ov_drdy_win, ov_turn = args.ov_turn;
+    const double ov_grav_tol = args.ov_grav_tol, ov_odr_tol = args.ov_odr_tol;
+    const bool no_fs = args.no_fs, no_ovf = args.no_ovf;
+    const bool no_regdiff = args.no_regdiff;
 
-    if (phases == 0) phases = IMT_PHASE_ALL;
-
-    bool interactive = isatty(0) && !non_interactive;
+    bool interactive = isatty(0) && !args.non_interactive;
     if (!interactive) phases = IMT_PHASE_PASSIVE;
 
     /* ── Config ──────────────────────────────────────────────────────────── */

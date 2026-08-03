@@ -1,0 +1,350 @@
+/*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * cli.c — argv parsing for imud, imud-cal, imud-mon, imud-status, imud-imutest
+ *
+ * See include/cli.h for why these live outside their main()s and for the
+ * 0 / 1 / -1 return convention.  Every usage() body and every error line here
+ * is the text the corresponding tool printed before the move, unchanged and
+ * on the same stream — imud/cal/mon/status write usage to stderr, imutest to
+ * stdout.  test_cli pins that.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cli.h"
+#include "imutest.h"   /* IMT_PHASE_* */
+#include "version.h"
+
+/* ── imud ────────────────────────────────────────────────────────────────── */
+
+static void usage_imud(const char *prog)
+{
+    /* CLI help is user-requested output, never level-gated or prefixed. */
+    fprintf(stderr, "Usage: %s [OPTIONS]\n"
+        "  --config PATH      Config file (default: /etc/imud/imud.conf)\n"
+        "  --skip-bias-cal    Skip startup gyro bias estimation\n"
+        "  --replay FILE      Replay an .imucap capture through the sim driver\n"
+        "  --no-nmea          Disable NMEA output stream\n"
+        "  --no-highrate      Disable high-rate binary stream\n"
+        "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
+        "  --version          Print version and exit\n",
+        prog);
+}
+
+int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
+{
+    memset(a, 0, sizeof(*a));
+    snprintf(a->config_path, sizeof(a->config_path), "/etc/imud/imud.conf");
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
+            snprintf(a->replay_path, sizeof(a->replay_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--skip-bias-cal") == 0) {
+            a->skip_bias_cal = 1;
+        } else if (strcmp(argv[i], "--no-nmea") == 0) {
+            a->no_nmea = 1;
+        } else if (strcmp(argv[i], "--no-highrate") == 0) {
+            a->no_hirate = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("imud %s\n", IMUD_VERSION_STR);
+            return 1;
+        } else if (strcmp(argv[i], "--foreground") == 0) {
+            /* always foreground under systemd — accepted, ignored */
+        } else {
+            fprintf(stderr, "unknown option: %s\n", argv[i]);
+            usage_imud(argv[0]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* ── imud-cal ────────────────────────────────────────────────────────────── */
+
+static void usage_cal(const char *prog)
+{
+    fprintf(stderr,
+        "Usage: %s [--config PATH] [--output PATH] <mode>\n"
+        "\n"
+        "Modes:\n"
+        "  mag          Magnetometer calibration (vessel swing, daemon stopped)\n"
+        "  gyro         Gyroscope bias capture   (hold still, daemon stopped)\n"
+        "  accel        Accelerometer 6-position (bench, daemon stopped)\n"
+        "  characterize Allan-variance noise analysis of a stationary capture\n"
+        "               (requires --from FILE; record with [capture] enabled)\n"
+        "  fit-temp     Gyro bias/temperature fit from a warm-up capture\n"
+        "               (requires --from FILE)\n"
+        "  fit-ra       Check the MEKF accel measurement model against a\n"
+        "               rough-water capture (requires --from FILE).\n"
+        "               Reports only; writes nothing.\n"
+        "\n"
+        "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
+        "  --output PATH   Override cal.json output path from config\n"
+        "  --from FILE     .imucap capture to analyze (offline modes)\n",
+        prog);
+}
+
+int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
+{
+    memset(a, 0, sizeof(*a));
+    snprintf(a->config_path, sizeof(a->config_path), "/etc/imud/imud.conf");
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+            a->output_path = argv[++i];
+        } else if (strcmp(argv[i], "--from") == 0 && i + 1 < argc) {
+            a->from_path = argv[++i];
+        } else if (!a->mode && argv[i][0] != '-') {
+            a->mode = argv[i];
+        } else {
+            fprintf(stderr, "unknown option: %s\n", argv[i]);
+            usage_cal(argv[0]); return -1;
+        }
+    }
+
+    if (!a->mode) { usage_cal(argv[0]); return -1; }
+
+    if (strcmp(a->mode, "mag")          != 0 &&
+        strcmp(a->mode, "gyro")         != 0 &&
+        strcmp(a->mode, "accel")        != 0 &&
+        strcmp(a->mode, "characterize") != 0 &&
+        strcmp(a->mode, "fit-temp")     != 0 &&
+        strcmp(a->mode, "fit-ra")       != 0) {
+        fprintf(stderr, "unknown mode '%s'\n", a->mode);
+        usage_cal(argv[0]); return -1;
+    }
+
+    /* The offline analysis modes read an .imucap instead of the sensors, so
+     * they need --from, and they only need the config for the cal.json path
+     * (which is why cal_main lets a MISSING config fall back to defaults for
+     * them, and stays strict for the sensor modes). */
+    a->offline = strcmp(a->mode, "characterize") == 0 ||
+                 strcmp(a->mode, "fit-temp")     == 0 ||
+                 strcmp(a->mode, "fit-ra")       == 0;
+
+    if (a->offline && !a->from_path) {
+        fprintf(stderr, "%s requires --from FILE (an .imucap capture)\n",
+                a->mode);
+        usage_cal(argv[0]); return -1;
+    }
+    return 0;
+}
+
+/* ── imud-mon ────────────────────────────────────────────────────────────── */
+
+static void usage_mon(const char *prog)
+{
+    fprintf(stderr,
+        "Usage: %s [--config PATH] [nmea] [binary]\n"
+        "\n"
+        "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
+        "\n"
+        "  nmea    Monitor NMEA 0183 stream (UDP port 10110)\n"
+        "  binary  Monitor binary stream    (UDP port 10111)\n"
+        "\n"
+        "  With no stream arguments both streams are shown.\n"
+        "  Port numbers and multicast addresses are read from the config file.\n",
+        prog);
+}
+
+int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
+{
+    memset(a, 0, sizeof(*a));
+    snprintf(a->config_path, sizeof a->config_path, "/etc/imud/imud.conf");
+
+    bool any_stream = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            snprintf(a->config_path, sizeof a->config_path, "%s", argv[++i]);
+        } else if (strcmp(argv[i], "nmea") == 0) {
+            a->want_nmea   = true; any_stream = true;
+        } else if (strcmp(argv[i], "binary") == 0) {
+            a->want_binary = true; any_stream = true;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage_mon(argv[0]); return 1;
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            usage_mon(argv[0]); return -1;
+        }
+    }
+
+    if (!any_stream)
+        a->want_nmea = a->want_binary = true;
+
+    return 0;
+}
+
+/* ── imud-status ─────────────────────────────────────────────────────────── */
+
+static void usage_status(const char *p)
+{
+    fprintf(stderr, "Usage: %s [--socket PATH]\n", p);
+}
+
+int cli_parse_status(int argc, char **argv, cli_status_t *a)
+{
+    memset(a, 0, sizeof(*a));
+    a->sockpath = CLI_DEFAULT_STATUS_SOCK;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
+            a->sockpath = argv[++i];
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage_status(argv[0]);
+            return 1;
+        } else {
+            usage_status(argv[0]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* ── imud-imutest ────────────────────────────────────────────────────────── */
+
+static void usage_imutest(const char *prog)
+{
+    printf(
+"Usage: %s [OPTIONS]\n"
+"\n"
+"Exercises a registered IMU/magnetometer driver against real silicon and\n"
+"writes a Markdown report suitable for pasting into a GitHub issue.\n"
+"\n"
+"Stop the daemon first: imud and imud-imutest both open the same I2C device,\n"
+"and both would drain the same FIFO.\n"
+"\n"
+"  --config PATH        Config file (default: /etc/imud/imud.conf)\n"
+"  --report PATH        Report output\n"
+"                       (default: ./imud-imutest-<imu>-<YYYYmmdd-HHMMSS>.md)\n"
+"\n"
+"Device overrides (default: whatever imud.conf says)\n"
+"  --imu-driver NAME    [imu] driver\n"
+"  --mag-driver NAME    [mag] driver; \"none\" for an IMU-only board\n"
+"  --imu-addr HEX       [imu] i2c_addr, e.g. 0x6A\n"
+"  --mag-addr HEX       [mag] i2c_addr, e.g. 0x0C\n"
+"  --i2c-bus PATH       [device] i2c_bus\n"
+"  --gpio-chip NAME     [device] gpio_chip\n"
+"  --int-gpio N         [imu] int_gpio; 0 skips the interrupt check\n"
+"  --odr HZ             [imu] odr_hz\n"
+"  --accel-g N          [imu] accel_g\n"
+"  --gyro-dps N         [imu] gyro_dps\n"
+"  --fifo-wm N          [imu] fifo_wm\n"
+"\n"
+"Phases (default: all four)\n"
+"  --passive            Automatic checks only; no operator action\n"
+"  --faces              Guided six-face accelerometer / axis-sign test\n"
+"  --gyro               Guided gyro rotation test\n"
+"  --spin               Guided magnetometer spin test\n"
+"  --all                All four (the default)\n"
+"  --non-interactive    Passive only, never prompt. Implied when stdin is\n"
+"                       not a terminal.\n"
+"\n"
+"Tuning\n"
+"  --odr-window S       ODR / seq / chip_ts window, s   (default 5, min 3)\n"
+"  --noise-window S     Noise and temperature window, s (default 10)\n"
+"  --drdy-window S      Interrupt edge-count window, s  (default 3)\n"
+"  --turn-deg N         Commanded angle for --gyro      (default 90)\n"
+"  --grav-tol M         Gravity warn tolerance, m/s^2   (default 0.25)\n"
+"  --odr-tol PCT        ODR warn tolerance, percent     (default 5)\n"
+"  --no-fs-sweep        Skip the full-scale re-init sweep\n"
+"  --no-overflow        Do not deliberately overflow the FIFO\n"
+"  --no-regdiff         Do not read control registers back\n"
+"\n"
+"  --force              Run even if imud appears to be running\n"
+"  --quiet              Digest only; no live progress lines\n"
+"  --version            Print version and exit\n"
+"  -h, --help           This message\n"
+"\n"
+"Exit: 0 all pass  1 usage/config/I-O error  2 a check FAILed\n"
+"      3 warnings only  130 aborted\n",
+    prog);
+}
+
+int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
+{
+    memset(a, 0, sizeof(*a));
+    snprintf(a->config_path, sizeof a->config_path, "/etc/imud/imud.conf");
+
+    /* Sentinels: "not given" for every override, so imutest_main can tell an
+     * explicit value from an absent flag. */
+    a->ov_imu_addr = a->ov_mag_addr = a->ov_int_gpio = -1;
+    a->ov_odr = a->ov_accel = a->ov_gyro = a->ov_wm = -1;
+    a->ov_odr_win = a->ov_noise_win = a->ov_drdy_win = -1;
+    a->ov_turn = a->ov_grav_tol = a->ov_odr_tol = -1;
+
+    for (int i = 1; i < argc; i++) {
+        const char *s = argv[i];
+        if      (strcmp(s, "--config") == 0 && i + 1 < argc) {
+            snprintf(a->config_path, sizeof a->config_path, "%s", argv[++i]);
+            a->have_config_arg = true;
+        }
+        else if (strcmp(s, "--report") == 0 && i + 1 < argc)
+            snprintf(a->report_path, sizeof a->report_path, "%s", argv[++i]);
+        else if (strcmp(s, "--imu-driver") == 0 && i + 1 < argc) a->ov_imu = argv[++i];
+        else if (strcmp(s, "--mag-driver") == 0 && i + 1 < argc) a->ov_mag = argv[++i];
+        else if (strcmp(s, "--i2c-bus") == 0 && i + 1 < argc)    a->ov_bus = argv[++i];
+        else if (strcmp(s, "--gpio-chip") == 0 && i + 1 < argc)  a->ov_chip = argv[++i];
+        else if (strcmp(s, "--imu-addr") == 0 && i + 1 < argc)
+            a->ov_imu_addr = (int)strtol(argv[++i], NULL, 0);
+        else if (strcmp(s, "--mag-addr") == 0 && i + 1 < argc)
+            a->ov_mag_addr = (int)strtol(argv[++i], NULL, 0);
+        else if (strcmp(s, "--int-gpio") == 0 && i + 1 < argc)
+            a->ov_int_gpio = atoi(argv[++i]);
+        else if (strcmp(s, "--odr") == 0 && i + 1 < argc)       a->ov_odr = atoi(argv[++i]);
+        else if (strcmp(s, "--accel-g") == 0 && i + 1 < argc)   a->ov_accel = atoi(argv[++i]);
+        else if (strcmp(s, "--gyro-dps") == 0 && i + 1 < argc)  a->ov_gyro = atoi(argv[++i]);
+        else if (strcmp(s, "--fifo-wm") == 0 && i + 1 < argc)   a->ov_wm = atoi(argv[++i]);
+        else if (strcmp(s, "--passive") == 0) a->phases |= IMT_PHASE_PASSIVE;
+        else if (strcmp(s, "--faces") == 0)   a->phases |= IMT_PHASE_FACES;
+        else if (strcmp(s, "--gyro") == 0)    a->phases |= IMT_PHASE_GYRO;
+        else if (strcmp(s, "--spin") == 0)    a->phases |= IMT_PHASE_SPIN;
+        else if (strcmp(s, "--all") == 0)     a->phases  = IMT_PHASE_ALL;
+        else if (strcmp(s, "--non-interactive") == 0) a->non_interactive = true;
+        else if (strcmp(s, "--odr-window") == 0 && i + 1 < argc)
+            a->ov_odr_win = atof(argv[++i]);
+        else if (strcmp(s, "--noise-window") == 0 && i + 1 < argc)
+            a->ov_noise_win = atof(argv[++i]);
+        else if (strcmp(s, "--drdy-window") == 0 && i + 1 < argc)
+            a->ov_drdy_win = atof(argv[++i]);
+        else if (strcmp(s, "--turn-deg") == 0 && i + 1 < argc)
+            a->ov_turn = atof(argv[++i]);
+        else if (strcmp(s, "--grav-tol") == 0 && i + 1 < argc)
+            a->ov_grav_tol = atof(argv[++i]);
+        else if (strcmp(s, "--odr-tol") == 0 && i + 1 < argc)
+            a->ov_odr_tol = atof(argv[++i]) / 100.0;
+        else if (strcmp(s, "--no-fs-sweep") == 0) a->no_fs = true;
+        else if (strcmp(s, "--no-overflow") == 0) a->no_ovf = true;
+        else if (strcmp(s, "--no-regdiff") == 0)  a->no_regdiff = true;
+        else if (strcmp(s, "--force") == 0) a->force = true;
+        else if (strcmp(s, "--quiet") == 0) a->quiet = true;
+        else if (strcmp(s, "--version") == 0) {
+            printf("imud-imutest %s\n", IMUD_VERSION_STR);
+            return 1;
+        }
+        else if (strcmp(s, "-h") == 0 || strcmp(s, "--help") == 0) {
+            usage_imutest(argv[0]);
+            return 1;
+        }
+        else {
+            fprintf(stderr, "unknown option: %s\n", s);
+            usage_imutest(argv[0]);
+            return -1;
+        }
+    }
+
+    if (a->phases == 0) a->phases = IMT_PHASE_ALL;
+
+    return 0;
+}

@@ -53,6 +53,7 @@
 #endif
 
 #include "cal.h"
+#include "cli.h"
 #include "config.h"
 #include "fileio.h"
 #include "imu.h"
@@ -91,60 +92,6 @@ static time_t g_start_time;
  * threads instead read their own _Atomic rate copies (out_ctx_reload); the
  * fusion/reader threads have their own live_lock snapshot (imu_ctx). */
 static pthread_mutex_t g_cfg_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* ── CLI args ────────────────────────────────────────────────────────────── */
-
-typedef struct {
-    char config_path[256];
-    char replay_path[256];
-    int  skip_bias_cal;
-    int  no_nmea;
-    int  no_hirate;
-    int  version;
-} cli_args_t;
-
-static void usage(const char *prog)
-{
-    /* CLI help is user-requested output, never level-gated or prefixed. */
-    fprintf(stderr, "Usage: %s [OPTIONS]\n"
-        "  --config PATH      Config file (default: /etc/imud/imud.conf)\n"
-        "  --skip-bias-cal    Skip startup gyro bias estimation\n"
-        "  --replay FILE      Replay an .imucap capture through the sim driver\n"
-        "  --no-nmea          Disable NMEA output stream\n"
-        "  --no-highrate      Disable high-rate binary stream\n"
-        "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
-        "  --version          Print version and exit\n",
-        prog);
-}
-
-static int parse_args(int argc, char **argv, cli_args_t *a)
-{
-    memset(a, 0, sizeof(*a));
-    snprintf(a->config_path, sizeof(a->config_path), "/etc/imud/imud.conf");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
-            snprintf(a->replay_path, sizeof(a->replay_path), "%s", argv[++i]);
-        } else if (strcmp(argv[i], "--skip-bias-cal") == 0) {
-            a->skip_bias_cal = 1;
-        } else if (strcmp(argv[i], "--no-nmea") == 0) {
-            a->no_nmea = 1;
-        } else if (strcmp(argv[i], "--no-highrate") == 0) {
-            a->no_hirate = 1;
-        } else if (strcmp(argv[i], "--version") == 0) {
-            a->version = 1;
-        } else if (strcmp(argv[i], "--foreground") == 0) {
-            /* always foreground under systemd — accepted, ignored */
-        } else {
-            LOG_E("unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            return -1;
-        }
-    }
-    return 0;
-}
 
 /* ── PID file ────────────────────────────────────────────────────────────── */
 
@@ -538,13 +485,9 @@ int main(int argc, char **argv)
 
     /* ── 1. Args + config ───────────────────────────────────────────────── */
 
-    cli_args_t args;
-    if (parse_args(argc, argv, &args) < 0) return 1;
-
-    if (args.version) {
-        printf("imud %s\n", VERSION_STR);
-        return 0;
-    }
+    cli_imud_t args;
+    int cli_rc = cli_parse_imud(argc, argv, &args);
+    if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --version */
 
     /* Try --config path, then /etc/imud/imud.conf, then ~/.config/imud/imud.conf */
     imud_config_t cfg;
