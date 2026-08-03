@@ -200,7 +200,8 @@ static void clock_health_check(void)
 
 /*
  * Open the AF_UNIX stream socket that imud-status connects to.
- * chmod 0660 so only members of the daemon's group can query it.
+ * chmod 0660 so only members of the daemon's group — imud, the primary group
+ * of the user in the shipped unit — can query it.
  * Returns listening fd, or -1 on error.
  */
 static int status_sock_open(const char *path)
@@ -541,6 +542,14 @@ int main(int argc, char **argv)
                 args.config_path);
         return 1;
     }
+    /* Existing-but-unreadable is fatal for the same reason, and must not fall
+     * through to the alt path below: silently running on defaults when the
+     * operator has written a config is the worst of both. */
+    if (cfg_rc == CONFIG_ERR_PERM) {
+        LOG_E("[main] %s exists but cannot be read (see above) — refusing to "
+                "start\n", args.config_path);
+        return 1;
+    }
     if (cfg_rc == CONFIG_ERR_OPEN) {
         /* Fallback: try the other default */
         char alt[256];
@@ -550,11 +559,18 @@ int main(int argc, char **argv)
         else
             snprintf(alt, sizeof(alt), "/etc/imud/imud.conf");
 
-        if (strcmp(args.config_path, alt) != 0 &&
-            config_load(alt, &cfg) == CONFIG_ERR_PARSE) {
-            LOG_E("[main] %s has errors (see above) — refusing to start\n",
-                    alt);
-            return 1;
+        if (strcmp(args.config_path, alt) != 0) {
+            int alt_rc = config_load(alt, &cfg);
+            if (alt_rc == CONFIG_ERR_PARSE) {
+                LOG_E("[main] %s has errors (see above) — refusing to start\n",
+                        alt);
+                return 1;
+            }
+            if (alt_rc == CONFIG_ERR_PERM) {
+                LOG_E("[main] %s exists but cannot be read (see above) — "
+                        "refusing to start\n", alt);
+                return 1;
+            }
         }
         /* Neither file existing is fine — defaults remain. */
     }

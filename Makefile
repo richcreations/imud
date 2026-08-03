@@ -434,7 +434,8 @@ coverage:
 	fi
 
 # ── Install ───────────────────────────────────────────────────────────────────
-# Packagers: pass PREFIX=/usr SVCDIR=/usr/lib/systemd/system DESTDIR=<stage>.
+# Packagers: pass PREFIX=/usr SVCDIR=/usr/lib/systemd/system
+# UDEVDIR=/usr/lib/udev/rules.d DESTDIR=<stage>.
 # When DESTDIR is set the install is a pure file copy: no useradd, no
 # systemctl — those belong to the package's maintainer scripts.
 
@@ -444,6 +445,11 @@ SVCDIR  ?= /etc/systemd/system
 LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc
+# udev reads rules from /etc/udev/rules.d, /run/udev/rules.d and
+# /usr/lib/udev/rules.d only — never from $(PREFIX) — so a source install must
+# land in /etc or the rule is inert.  Packagers override this to
+# /usr/lib/udev/rules.d (/etc is reserved for the admin's own overrides).
+UDEVDIR ?= /etc/udev/rules.d
 
 # pkg-config metadata, generated with the configured paths/version.
 libimud.pc: lib/libimud.pc.in .FORCE
@@ -460,12 +466,20 @@ etc/%.service: etc/%.service.in .FORCE
 install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud imud-cal imud-status $(DESTDIR)$(PREFIX)/bin/
-	# ── System user (skipped for staged/packaged installs: DESTDIR set) ────
-	@if [ -z "$(DESTDIR)" ] && ! id -u imud >/dev/null 2>&1; then \
-	    useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
-	    usermod -aG gpio imud 2>/dev/null || true; \
-	    usermod -aG i2c  imud 2>/dev/null || true; \
-	    echo "Created system user 'imud'"; \
+	# ── System user + hardware groups (skipped for staged installs: DESTDIR set) ─
+	# The groups are created, not just joined: Raspberry Pi OS ships gpio and
+	# i2c, stock Debian ships neither, and imud.service's SupplementaryGroups=
+	# refuses to start without them.  Done on every install, not only when the
+	# user is created, so an upgrade repairs a host that was missing them.
+	@if [ -z "$(DESTDIR)" ]; then \
+	    if ! id -u imud >/dev/null 2>&1; then \
+	        useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
+	        echo "Created system user 'imud'"; \
+	    fi; \
+	    for grp in gpio i2c; do \
+	        getent group "$$grp" >/dev/null 2>&1 || groupadd --system "$$grp" 2>/dev/null || true; \
+	        usermod -aG "$$grp" imud 2>/dev/null || true; \
+	    done; \
 	fi
 	# ── Config + calibration (all in /etc/imud) ────────────────────────────
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
@@ -485,6 +499,13 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -m 644 etc/imud.service         $(DESTDIR)$(SVCDIR)/imud.service
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
+	fi
+	# ── udev rule: group access to /dev/i2c-* and /dev/gpiochip* ───────────
+	install -d -m 0755 $(DESTDIR)$(UDEVDIR)
+	install -m 644 etc/60-imud.rules $(DESTDIR)$(UDEVDIR)/60-imud.rules
+	@if [ -z "$(DESTDIR)" ] && command -v udevadm >/dev/null 2>&1; then \
+	    udevadm control --reload-rules || true; \
+	    udevadm trigger --subsystem-match=i2c-dev --subsystem-match=gpio || true; \
 	fi
 	# ── Client libraries ───────────────────────────────────────────────────
 	# imud_client.h is DEPRECATED and no longer installed (vendor from the
@@ -601,12 +622,24 @@ install-mqtt: imud-mqtt etc/imud-mqtt.service
 	install -m 755 imud-mqtt $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-mqtt.service $(DESTDIR)$(SVCDIR)/imud-mqtt.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	# 0640, not 0644: this file can hold a plaintext broker password.
 	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-mqtt.conf" ]; then \
-	    install -m 644 config/imud-mqtt.conf $(DESTDIR)$(ETCDIR)/imud-mqtt.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
-	    echo "  NOTE: if you set a broker password, restrict it (chmod 640 + service group)."; \
+	    install -m 640 config/imud-mqtt.conf $(DESTDIR)$(ETCDIR)/imud-mqtt.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mqtt.conf (0640)"; \
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
+	fi
+	# Outside the block above on purpose: an upgrade over an existing 0644 file
+	# is the common case and must be repaired too.  Never leave the file
+	# unreadable by the daemon — without the group, fall back to 0644 and say so.
+	@if [ -z "$(DESTDIR)" ] && [ -f "$(ETCDIR)/imud-mqtt.conf" ]; then \
+	    if getent group imud >/dev/null 2>&1; then \
+	        chgrp imud "$(ETCDIR)/imud-mqtt.conf" && chmod 640 "$(ETCDIR)/imud-mqtt.conf"; \
+	    else \
+	        chmod 644 "$(ETCDIR)/imud-mqtt.conf"; \
+	        echo "WARNING: group 'imud' missing — left $(ETCDIR)/imud-mqtt.conf 0644."; \
+	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
+	    fi; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9nc man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
@@ -631,12 +664,24 @@ install-influxdb: imud-influxdb etc/imud-influxdb.service
 	install -m 755 imud-influxdb $(DESTDIR)$(PREFIX)/bin/
 	install -m 644 etc/imud-influxdb.service $(DESTDIR)$(SVCDIR)/imud-influxdb.service
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
+	# 0640, not 0644: this file can hold a plaintext InfluxDB API token.
 	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-influxdb.conf" ]; then \
-	    install -m 644 config/imud-influxdb.conf $(DESTDIR)$(ETCDIR)/imud-influxdb.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-influxdb.conf"; \
-	    echo "  NOTE: if you set an HTTP token, restrict it (chmod 640 + service group)."; \
+	    install -m 640 config/imud-influxdb.conf $(DESTDIR)$(ETCDIR)/imud-influxdb.conf; \
+	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-influxdb.conf (0640)"; \
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-influxdb.conf"; \
+	fi
+	# Outside the block above on purpose: an upgrade over an existing 0644 file
+	# is the common case and must be repaired too.  Never leave the file
+	# unreadable by the daemon — without the group, fall back to 0644 and say so.
+	@if [ -z "$(DESTDIR)" ] && [ -f "$(ETCDIR)/imud-influxdb.conf" ]; then \
+	    if getent group imud >/dev/null 2>&1; then \
+	        chgrp imud "$(ETCDIR)/imud-influxdb.conf" && chmod 640 "$(ETCDIR)/imud-influxdb.conf"; \
+	    else \
+	        chmod 644 "$(ETCDIR)/imud-influxdb.conf"; \
+	        echo "WARNING: group 'imud' missing — left $(ETCDIR)/imud-influxdb.conf 0644."; \
+	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
+	    fi; \
 	fi
 	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
 	gzip -9nc man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
@@ -739,6 +784,7 @@ uninstall:
 	      $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(PREFIX)/share/imud/WMM.COF \
+	      $(DESTDIR)$(UDEVDIR)/60-imud.rules \
 	      $(DESTDIR)$(SVCDIR)/imud.service \
 	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \

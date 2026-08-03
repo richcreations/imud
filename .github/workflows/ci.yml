@@ -154,7 +154,8 @@ jobs:
         run: |
           make install install-utils install-wmm-data install-signalk install-mqtt \
                install-influxdb install-mavlink install-prometheus \
-               DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system
+               DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system \
+               UDEVDIR=/usr/lib/udev/rules.d
           test -x stage/usr/bin/imud
           test -x stage/usr/bin/imud-mavlink
           test -x stage/usr/bin/imud-prometheus
@@ -166,6 +167,18 @@ jobs:
           test -f stage/usr/share/doc/imud-mqtt/copyright
           test -f stage/usr/share/man/man8/imud.8.gz
           test -f stage/etc/imud/imud.conf
+          # The udev rule is what makes the gpio/i2c groups useful on a distro
+          # that ships no equivalent of Pi OS's 99-com.rules.
+          test -f stage/usr/lib/udev/rules.d/60-imud.rules
+          # Configs that can hold a broker password / API token must not stage
+          # world-readable.  dh_fixperms would undo this; debian/rules excludes
+          # them.  Modes only — a staged install deliberately does no chgrp.
+          test "$(stat -c%a stage/etc/imud/imud-mqtt.conf)"     = 640
+          test "$(stat -c%a stage/etc/imud/imud-influxdb.conf)" = 640
+          # ...while imud.conf and the pristine doc examples stay 0644.
+          test "$(stat -c%a stage/etc/imud/imud.conf)" = 644
+          test "$(stat -c%a stage/usr/share/doc/imud-mqtt/examples/imud-mqtt.conf)" = 644
+          test "$(stat -c%a stage/usr/share/doc/imud-influxdb/examples/imud-influxdb.conf)" = 644
           test -f stage/usr/lib/libimud.so.0.0
           test -L stage/usr/lib/libimud.so.0
           test -L stage/usr/lib/libimud.so

@@ -104,8 +104,20 @@ int bridge_load_config(const bridge_info_t *bi, const char *path,
                        imud_config_t *cfg)
 {
     config_defaults(cfg);
-    if (config_load(path, cfg) == CONFIG_ERR_PARSE) {
+    int rc = config_load(path, cfg);
+    if (rc == CONFIG_ERR_PARSE) {
         LOG_E("[%s] %s has errors (see above) — refusing to start\n",
+              bi->tag, path);
+        return -1;
+    }
+    /* Not merely "no config, use defaults": the file is there and we cannot
+     * read it.  Carrying on would run with every output disabled and exit
+     * saying "disabled in config", which points the operator at the wrong
+     * thing entirely.  The config installs 0640 root:imud — a bridge that is
+     * not in the imud group lands here. */
+    if (rc == CONFIG_ERR_PERM) {
+        LOG_E("[%s] %s exists but cannot be read (see above) — refusing to "
+              "start; check that it is readable by the service user\n",
               bi->tag, path);
         return -1;
     }
@@ -130,7 +142,8 @@ int bridge_reload_begin(const bridge_info_t *bi, const char *path,
     bridge_reload = 0;
 
     config_defaults(nc);
-    if (config_load(path, nc) == CONFIG_ERR_PARSE) {
+    int rc = config_load(path, nc);
+    if (rc == CONFIG_ERR_PARSE || rc == CONFIG_ERR_PERM) {
         LOG_W("[%s] reload failed — keeping current config\n", bi->tag);
         return 0;
     }

@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/time.h>
 #include <netinet/in.h>
@@ -230,6 +231,23 @@ static void test_load_config(void)
 
     /* Parse error refuses to start (error lines above are expected output). */
     EXPECT(bridge_load_config(&TBI, bad, &cfg) == -1, "parse error refuses");
+
+    /* Present-but-unreadable is NOT the missing-file case: the bridge configs
+     * install 0640 root:imud, so a bridge outside the group would otherwise
+     * run on defaults and exit claiming it was disabled in config.
+     * Root ignores the mode bits, so this can only be checked unprivileged. */
+    if (geteuid() != 0) {
+        char noperm[128];
+        snprintf(noperm, sizeof noperm, "/tmp/imud_tb_noperm_%d.conf",
+                 (int)getpid());
+        write_file(noperm, "[stream]\nrate_hz = 25\n");
+        if (chmod(noperm, 0) == 0)
+            EXPECT(bridge_load_config(&TBI, noperm, &cfg) == -1,
+                   "unreadable file refuses to start");
+        unlink(noperm);
+    } else {
+        printf("  (skipped unreadable-config case: running as root)\n");
+    }
 
     /* Reload: nothing pending → 0. */
     bridge_reload = 0;

@@ -17,10 +17,10 @@ TimeoutStartSec=15
 # Main loop pets the watchdog every tick; a hung exporter is restarted.
 WatchdogSec=10
 
-# Runs as the imud user so it can read the 0660 imud:gpio stream socket in
-# /run/imud/.  No hardware access is needed.
+# Runs as the imud user and group so it can read the 0660 imud:imud stream
+# socket in /run/imud/.  No hardware access is needed, so no gpio/i2c here.
 User=imud
-Group=gpio
+Group=imud
 
 # ── Security hardening ────────────────────────────────────────────────────
 NoNewPrivileges=true

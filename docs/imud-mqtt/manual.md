@@ -67,7 +67,7 @@ broker/client/topic changes need a restart.
 | `publish_heave` | bool | `true` | Publish the heave family: `environment/heave`, `environment/heaveRate` (m/s), plus the sea-state topics `environment/waveHeight` (m), `wavePeriod`/`rollPeriod`/`pitchPeriod` (s), and `rollAmplitude`/`pitchAmplitude` (angles, follow `units`). State topics are withheld until the respective estimator settles (heave ~10·τ; sea state ~2·`wave_tau_s` after that); HA discovery is still advertised on this flag alone. |
 | `ha_discovery` | bool | `true` | Publish Home Assistant discovery configs. |
 | `ha_prefix` | string | `"homeassistant"` | HA discovery topic prefix. |
-| `username` / `password` | string | `""` | Broker auth (plaintext password — protect the file). |
+| `username` / `password` | string | `""` | Broker auth. The password is stored in plaintext, so `/etc/imud/imud-mqtt.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file. |
 | `tls` | bool | `false` | Enable TLS (empty `tls_cafile` = system CA store). |
 | `tls_cafile` | string | `""` | CA certificate path for TLS. |
 

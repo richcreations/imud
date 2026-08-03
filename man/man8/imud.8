@@ -126,6 +126,51 @@ overrides the packaged data when present.
 Unix domain socket used by
 .BR imud-status (1)
 to query daemon health.
+Mode 0660, owner
+.IR imud:imud .
+.TP
+.I /usr/lib/udev/rules.d/60\-imud.rules
+udev rule granting the
+.I i2c
+and
+.I gpio
+groups access to
+.I /dev/i2c\-*
+and
+.IR /dev/gpiochip* .
+Raspberry Pi OS ships equivalent rules in
+.IR 99\-com.rules ;
+this file is what makes a stock Debian install work.
+A source install places it in
+.IR /etc/udev/rules.d .
+.SH USERS AND GROUPS
+The daemon runs as the system user
+.I imud
+with primary group
+.IR imud ,
+which owns
+.I /run/imud
+and both Unix domain sockets.
+Hardware access comes from the supplementary groups
+.I gpio
+.RI ( /dev/gpiochip* )
+and
+.I i2c
+.RI ( /dev/i2c\-* ).
+All three are created at install time if absent; the service refuses to start
+without
+.I gpio
+and
+.IR i2c .
+.PP
+To connect to the stream socket or run
+.BR imud-status (1)
+as an ordinary user, join the
+.I imud
+group \(em not
+.I gpio
+\(em with
+.BR "adduser <user> imud" .
 .SH SUPPORTED HARDWARE
 .TP
 IMUs

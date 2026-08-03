@@ -1059,7 +1059,8 @@ fix_max_age_h    = 24.0          # hours; 0 = never expire
 
 ## 10. Output Stream C — Local AF_UNIX subscription stream + TCP listener
 
-**Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660)
+**Socket:** `/run/imud/imud-stream.sock` (configurable, mode 0660,
+owner `imud:imud` — a consumer joins the `imud` group to connect)
 **TCP listener (optional):** `stream.tcp_bind_addr`:`stream.tcp_port`
 (default `0.0.0.0:10112`), enabled by `stream.tcp_enabled` (off by default)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
@@ -1159,15 +1160,23 @@ Restart=on-failure
 RestartSec=3
 WatchdogSec=10
 User=imud
-Group=gpio
-SupplementaryGroups=i2c
+Group=imud
+SupplementaryGroups=gpio i2c
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Setup: `sudo useradd -r -s /sbin/nologin -G i2c,gpio imud`
+The primary group is `imud` — it owns `/run/imud` and both Unix domain
+sockets, so a consumer joins `imud` rather than a hardware group. `gpio` and
+`i2c` are supplementary, for `/dev/gpiochip*` and `/dev/i2c-*`; the unit will
+not start if either is missing, so the installer creates them.
+
+Setup: `sudo groupadd -r gpio; sudo groupadd -r i2c;
+sudo useradd -r -s /sbin/nologin -G i2c,gpio imud`, plus the shipped udev rule
+`60-imud.rules` granting those groups the device nodes (Raspberry Pi OS
+provides equivalents in `99-com.rules`).
 
 -----
 

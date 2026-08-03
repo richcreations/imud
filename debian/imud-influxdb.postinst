@@ -1,0 +1,21 @@
+#!/bin/sh
+# postinst for imud-influxdb — the config can hold a plaintext InfluxDB API
+# token, so it ships 0640 and is given to the imud group here.  dpkg unpacks
+# everything root:root, so ownership cannot come from the .deb itself.  The imud
+# group is created by the imud package's postinst, which dpkg configures first
+# (imud-influxdb Depends: imud).  Run on every configure, so an upgrade from a
+# release that installed the file 0644 repairs it.
+set -e
+
+case "$1" in
+    configure)
+        conf=/etc/imud/imud-influxdb.conf
+        if [ -e "$conf" ] && getent group imud >/dev/null; then
+            chgrp imud "$conf" && chmod 640 "$conf"
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

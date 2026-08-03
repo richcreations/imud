@@ -1,0 +1,20 @@
+# udev rules for imud — Copyright (c) 2026 Richard Simpson
+# SPDX-License-Identifier: MIT
+#
+# Give the i2c and gpio groups access to the character devices imud opens:
+# /dev/i2c-* (the IMU and magnetometer bus) and /dev/gpiochip* (the data-ready
+# interrupt lines, via libgpiod).  Without this the nodes are root-owned and
+# imud.service — which runs unprivileged as imud with gpio/i2c as supplementary
+# groups — cannot open them.
+#
+# Raspberry Pi OS already ships equivalent rules in 99-com.rules; this file is
+# what makes a stock Debian install work.  It is numbered 60 deliberately: udev
+# reads rule files in lexical order and the last matching assignment wins, so on
+# Pi OS the distribution's own 99-com.rules still has the final say.  Both set
+# the same group and mode, so the outcome is identical either way.
+#
+# The groups themselves are created by the imud package's maintainer scripts
+# (or by `make install`).
+
+SUBSYSTEM=="i2c-dev",                   GROUP="i2c",  MODE="0660"
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"

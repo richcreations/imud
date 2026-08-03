@@ -56,6 +56,15 @@ compromise a consuming application), privilege or permission errors in the
 packaging (the daemon must not need root at runtime), and anything that lets a
 network peer affect the daemon beyond the documented outputs.
 
+Two bridge configs can hold credentials — an MQTT broker `password` in
+`/etc/imud/imud-mqtt.conf` and an InfluxDB `http_token` in
+`/etc/imud/imud-influxdb.conf`. Both install **mode 0640 owned `root:imud`**,
+readable only by root and by the `imud` user the bridges run as; the staged
+install layout is checked in CI so it cannot regress to 0644. Every other file
+under `/etc/imud/` holds no secrets and is world-readable by design. imud has
+no other credential storage: it accepts no passwords of its own and writes none
+to its logs or captures.
+
 ## What is out of scope
 
 - The binary UDP broadcast and the AF_UNIX stream are **unauthenticated by

@@ -126,6 +126,11 @@ sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud
 ```
 
+The package creates the `imud` user and the `gpio`/`i2c` groups, and installs a
+udev rule granting those groups the I²C and GPIO device nodes — so this works on
+a stock Debian, not only on Raspberry Pi OS. To read the stream socket or run
+`imud-status` as yourself, join the `imud` group: `sudo adduser "$USER" imud`.
+
 If you added `/etc/apt/sources.list.d/imud.list` under earlier instructions,
 remove it (`sudo rm -f /etc/apt/sources.list.d/imud.list`) so apt does not see
 the repository twice.

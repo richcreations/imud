@@ -258,16 +258,23 @@ typedef struct {
 } imud_config_t;
 
 /* config_load return codes */
-#define CONFIG_ERR_OPEN  (-1)  /* file could not be opened; cfg untouched */
+#define CONFIG_ERR_OPEN  (-1)  /* file does not exist; cfg untouched */
 #define CONFIG_ERR_PARSE (-2)  /* file read, but one or more values were bad */
+#define CONFIG_ERR_PERM  (-3)  /* file exists but could not be read (EACCES &c) */
 
 /*
  * config_load: parse TOML file at path into cfg.
- * Returns 0 on success, CONFIG_ERR_OPEN or CONFIG_ERR_PARSE on failure.
+ * Returns 0 on success, CONFIG_ERR_OPEN, CONFIG_ERR_PERM or CONFIG_ERR_PARSE
+ * on failure.
  * A bad value does not stop the parse: every error in the file is logged
  * to stderr and all valid lines are applied, but CONFIG_ERR_PARSE is
  * returned so the caller can treat the file as unfit to run on.
  * Unknown keys/sections are warned but not fatal.
+ *
+ * CONFIG_ERR_OPEN (a missing file) is deliberately survivable — running on
+ * defaults is the documented behaviour.  CONFIG_ERR_PERM is not: a file that
+ * exists but cannot be read means the operator wrote a config we are silently
+ * ignoring, which for a bridge would look exactly like "disabled in config".
  */
 int  config_load(const char *path, imud_config_t *cfg);
 

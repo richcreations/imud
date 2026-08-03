@@ -128,12 +128,31 @@ This installs `WMM.COF` → `/usr/share/imud/WMM.COF`. To use a newer model
 before the package updates, drop it at `/etc/imud/WMM.COF` — imud prefers
 that path when it exists.
 
-`make install` also creates a dedicated system user `imud` (in the `gpio`
-and `i2c` groups) that the service runs as. `sudo make uninstall` reverses
-the install but preserves `/etc/imud/` (your config and calibration).
+`make install` also creates the dedicated system user `imud` that the service
+runs as. Its **primary group is `imud`**, which owns `/run/imud/` and both
+AF_UNIX sockets; hardware access comes from the supplementary groups `gpio`
+(for `/dev/gpiochip*`) and `i2c` (for `/dev/i2c-*`). Those two groups are
+**created** if missing — Raspberry Pi OS ships them, stock Debian does not, and
+`imud.service` will not start without them. A udev rule
+(`/etc/udev/rules.d/60-imud.rules`, or `/usr/lib/udev/rules.d/` from the `.deb`)
+gives those groups access to the device nodes, which is what Raspberry Pi OS
+provides in its own `99-com.rules`.
+
+To read the stream socket or run `imud-status` as an ordinary user, join the
+`imud` group — not `gpio`:
+
+```bash
+sudo adduser "$USER" imud     # log out and back in for it to take effect
+```
+
+`sudo make uninstall` reverses the install but preserves `/etc/imud/` (your
+config and calibration).
 
 Override install locations with the usual variables, e.g.
-`sudo make install PREFIX=/opt/imud ETCDIR=/opt/imud/etc`.
+`sudo make install PREFIX=/opt/imud ETCDIR=/opt/imud/etc`. Packagers also
+override `UDEVDIR` (default `/etc/udev/rules.d`) — udev reads rules only from
+`/etc/udev/rules.d`, `/run/udev/rules.d` and `/usr/lib/udev/rules.d`, never from
+`PREFIX`.
 
 ---
 
@@ -358,7 +377,7 @@ machine (`imud_connect_tcp` / `ImudClient.connect_tcp`). **[restart]**:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it). |
-| `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660). |
+| `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660, owner `imud:imud` — a consumer needs `adduser <user> imud`). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP). Hot-reloadable. |
 | `tcp_enabled` | bool | `false` | TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |

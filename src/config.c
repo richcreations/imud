@@ -855,9 +855,14 @@ int config_load(const char *path, imud_config_t *cfg)
 {
     FILE *f = fopen(path, "r");
     if (!f) {
-        LOG_E("config: cannot open '%s': %s\n", path, strerror(errno));
+        /* A missing file is survivable — defaults are the documented
+         * behaviour.  Anything else (EACCES on a 0640 file the daemon is not
+         * in the group for, EIO, ...) means a config exists that we would be
+         * silently ignoring; report it separately so callers can refuse. */
+        int err = errno;
+        LOG_E("config: cannot open '%s': %s\n", path, strerror(err));
         resolve_wmm_file(cfg);   /* daemon proceeds on defaults */
-        return CONFIG_ERR_OPEN;
+        return (err == ENOENT) ? CONFIG_ERR_OPEN : CONFIG_ERR_PERM;
     }
 
     section_t sec = SEC_NONE;

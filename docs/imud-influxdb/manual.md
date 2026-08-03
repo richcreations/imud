@@ -59,6 +59,6 @@ HTTP target need a restart.
 | `http_host` | string | `"127.0.0.1"` | HTTP host. |
 | `http_port` | int | `8086` | HTTP port. |
 | `http_path` | string | `"/write?db=imud&precision=ns"` | Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`). |
-| `http_token` | string | `""` | InfluxDB 2.x API token (plaintext — protect the file). |
+| `http_token` | string | `""` | InfluxDB 2.x API token. Stored in plaintext, so `/etc/imud/imud-influxdb.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file. |
 
 See also `imud-influxdb(8)` and `imud-influxdb.conf(5)`.

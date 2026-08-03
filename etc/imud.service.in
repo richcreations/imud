@@ -17,20 +17,26 @@ TimeoutStartSec=30
 # 10 s window and systemd restarts it (counts as failure → Restart=).
 WatchdogSec=10
 
-# Dedicated system user; I2C and GPIO access via group membership.
-# Created by `make install` (or the package's maintainer scripts).
+# Dedicated system user and its own group; created by `make install` (or the
+# package's maintainer scripts).  The imud group owns the runtime directory and
+# both AF_UNIX sockets, so a consumer needs only `adduser <user> imud` — not
+# membership of a hardware group.
 User=imud
-Group=gpio
-SupplementaryGroups=i2c
+Group=imud
+# Hardware access is by supplementary group: gpio for /dev/gpiochip*, i2c for
+# /dev/i2c-*.  Both groups are created by the installer (they already exist on
+# Raspberry Pi OS), and 60-imud.rules grants the group access to the device
+# nodes on distributions shipping no equivalent of Pi OS's 99-com.rules.
+SupplementaryGroups=gpio i2c
 
-# systemd creates /run/imud/ (mode 0750, owned by imud:gpio) before the
+# systemd creates /run/imud/ (mode 0750, owned by imud:imud) before the
 # service starts and removes it on stop.  The daemon writes its PID file
 # and status socket here.
 RuntimeDirectory=imud
 RuntimeDirectoryMode=0750
 PIDFile=/run/imud/imud.pid
 
-# systemd creates /var/lib/imud/ (mode 0750, owned by imud:gpio) and keeps
+# systemd creates /var/lib/imud/ (mode 0750, owned by imud:imud) and keeps
 # it across restarts.  The daemon reads/writes the calibration file here.
 StateDirectory=imud
 StateDirectoryMode=0750

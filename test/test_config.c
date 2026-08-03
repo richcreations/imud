@@ -19,6 +19,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "config.h"
 
 /* ── Minimal test framework ─────────────────────────────────────────────── */
@@ -164,7 +166,10 @@ static void test_load_real_conf(void)
     end_test(fb);
 }
 
-/* Missing file must return -1. */
+/* Missing file must return CONFIG_ERR_OPEN — survivable, the daemon runs on
+ * defaults.  A file that EXISTS but cannot be read is a different failure and
+ * must be distinguishable, or callers cannot refuse to start on it: the bridge
+ * configs install 0640, so a service outside the imud group hits exactly this. */
 static void test_load_missing_file(void)
 {
     begin_test("test_load_missing_file");
@@ -172,7 +177,31 @@ static void test_load_missing_file(void)
     imud_config_t cfg;
     config_defaults(&cfg);
     int rc = config_load("/tmp/imud_no_such_file_xyz.conf", &cfg);
-    EXPECT(rc == -1, "missing file returns -1");
+    EXPECT(rc == CONFIG_ERR_OPEN, "missing file returns CONFIG_ERR_OPEN");
+
+    /* Root ignores the mode bits, so this half only means something as a
+     * normal user (the .deb build containers run as root).  Own path rather
+     * than write_tmpconf's fixed name: this file is chmod 0 for a moment, and
+     * a crash in between must not leave a stale unwritable name behind for the
+     * next run to trip over. */
+    if (geteuid() != 0) {
+        char noperm[64];
+        snprintf(noperm, sizeof noperm, "/tmp/imud_test_noperm_%d.conf",
+                 (int)getpid());
+        FILE *nf = fopen(noperm, "w");
+        if (nf) {
+            fputs("[stream]\nrate_hz = 25\n", nf);
+            fclose(nf);
+            if (chmod(noperm, 0) == 0) {
+                config_defaults(&cfg);
+                EXPECT(config_load(noperm, &cfg) == CONFIG_ERR_PERM,
+                       "unreadable file returns CONFIG_ERR_PERM");
+            }
+            remove(noperm);
+        }
+    } else {
+        printf("  (skipped unreadable-file case: running as root)\n");
+    }
     end_test(fb);
 }
 

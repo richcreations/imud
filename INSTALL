@@ -44,13 +44,25 @@ packaging root, with the standard variables:
     sudo make install PREFIX=/usr
     make install DESTDIR=/tmp/stage PREFIX=/usr        # staged, no root needed
 
+Users and groups: `make install` creates the system user imud, whose primary
+group imud owns /run/imud and both AF_UNIX sockets. Hardware access is by the
+supplementary groups gpio and i2c, which are CREATED if absent — Raspberry Pi
+OS ships them, stock Debian does not, and imud.service will not start without
+them. The installed udev rule 60-imud.rules grants those groups the /dev/i2c-*
+and /dev/gpiochip* nodes, which is what Raspberry Pi OS provides in its own
+99-com.rules. To read the stream socket or run imud-status as an ordinary
+user, join the imud group: sudo adduser "$USER" imud.
+
 Packaging notes: when DESTDIR is set the install is a pure file copy — no
-system user is created and systemctl/ldconfig are never invoked (those belong
-to a package's maintainer scripts). Packagers should also set
-SVCDIR=/lib/systemd/system (systemd units are generated from
-etc/*.service.in with the chosen bin dir), and CC/CFLAGS/CPPFLAGS/LDFLAGS
-from the environment (e.g. dpkg-buildflags) are respected. `make dist`
-produces the upstream release tarball from git HEAD. See packaging/README.
+system user is created, no groups are made, and systemctl/udevadm/ldconfig are
+never invoked (those belong to a package's maintainer scripts). Packagers
+should also set SVCDIR=/lib/systemd/system (systemd units are generated from
+etc/*.service.in with the chosen bin dir) and UDEVDIR=/usr/lib/udev/rules.d
+(the default /etc/udev/rules.d is right for a source install but is reserved
+for the admin in a package; udev never reads rules from PREFIX). CC/CFLAGS/
+CPPFLAGS/LDFLAGS from the environment (e.g. dpkg-buildflags) are respected.
+`make dist` produces the upstream release tarball from git HEAD. See
+packaging/README.
 
 Client development: `make install` ships libimud (libimud.so.0 + imud.h +
 pkg-config metadata). Third-party apps build with

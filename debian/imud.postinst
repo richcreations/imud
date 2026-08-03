@@ -10,11 +10,21 @@ case "$1" in
             adduser --system --group --no-create-home \
                     --home /var/lib/imud --quiet imud
         fi
+        # Raspberry Pi OS ships both groups; stock Debian ships neither, and
+        # the unit's SupplementaryGroups= refuses to start without them.
+        # Creating them is harmless where they already exist.
         for grp in gpio i2c; do
-            if getent group "$grp" >/dev/null; then
-                adduser --quiet imud "$grp" || true
+            if ! getent group "$grp" >/dev/null; then
+                addgroup --system "$grp" || true
             fi
+            adduser --quiet imud "$grp" || true
         done
+        # Device nodes need the group bits too — 60-imud.rules provides them on
+        # distributions with no equivalent of Pi OS's 99-com.rules.
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=i2c-dev --subsystem-match=gpio || true
+        fi
         ;;
 esac
 

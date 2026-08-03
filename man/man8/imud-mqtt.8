@@ -109,7 +109,11 @@ section); the keys are documented in
 .SH FILES
 .TP
 .I /etc/imud/imud-mqtt.conf
-Default configuration file.
+Default configuration file, installed mode 0640 owner
+.I root:imud
+because it can hold a plaintext broker password.
+A file that exists but cannot be read is fatal \(em the bridge refuses to start
+rather than run on defaults.
 .SH EXAMPLES
 Run in the foreground against a local broker and watch the topics:
 .PP

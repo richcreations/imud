@@ -108,9 +108,10 @@ Home Assistant discovery topic prefix.
 .TP
 .BR username ", " password
 .RI ( string ,\ default:\ \(dq\(dq )\ [restart]
-Broker authentication.  A plaintext
+Broker authentication.  A
 .B password
-here should be protected with restrictive file permissions.
+here is stored in plaintext, which is why this file installs mode 0640 owned
+.IR root:imud .
 .TP
 .B tls
 .RI ( bool ,\ default:\ false )\ [restart]
@@ -125,6 +126,16 @@ CA certificate path for TLS.
 .TP
 .I /etc/imud/imud-mqtt.conf
 This file.
+Installed mode 0640, owner
+.IR root:imud ,
+because it can hold a plaintext broker password: readable by root and by the
+.I imud
+user the bridge runs as, and by nobody else.
+The bridge refuses to start if the file exists but cannot be read, rather than
+falling back to defaults.
+.TP
+.I /usr/share/doc/imud-mqtt/examples/imud-mqtt.conf
+Pristine template, mode 0644.
 .SH SEE ALSO
 .BR imud-mqtt (8),
 .BR imud.conf (5),

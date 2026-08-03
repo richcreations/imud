@@ -42,6 +42,23 @@ instead of the default
 on success,
 .B 1
 if the daemon is not reachable.
+.SH PERMISSIONS
+The status socket is mode 0660, owner
+.IR imud:imud ,
+so an ordinary user must be in the
+.I imud
+group to query it:
+.PP
+.RS 4
+.EX
+sudo adduser "$USER" imud
+.EE
+.RE
+.PP
+Log out and back in for the new group to take effect, or run
+.B imud-status
+under
+.BR sudo .
 .SH EXAMPLES
 .EX
 imud-status

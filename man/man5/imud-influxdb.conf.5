@@ -121,11 +121,23 @@ with
 .TP
 .B http_token
 .RI ( string ,\ default:\ \(dq\(dq )\ [restart]
-InfluxDB 2.x API token (plaintext \(em protect the file).
+InfluxDB 2.x API token.  Stored in plaintext, which is why this file installs
+mode 0640 owned
+.IR root:imud .
 .SH FILES
 .TP
 .I /etc/imud/imud-influxdb.conf
 This file.
+Installed mode 0640, owner
+.IR root:imud ,
+because it can hold a plaintext API token: readable by root and by the
+.I imud
+user the bridge runs as, and by nobody else.
+The bridge refuses to start if the file exists but cannot be read, rather than
+falling back to defaults.
+.TP
+.I /usr/share/doc/imud-influxdb/examples/imud-influxdb.conf
+Pristine template, mode 0644.
 .SH SEE ALSO
 .BR imud-influxdb (8),
 .BR imud.conf (5),

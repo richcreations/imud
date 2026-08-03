@@ -26,6 +26,7 @@ override_dh_auto_install:
 	        install-signalk install-mqtt install-influxdb \
 	        install-mavlink install-prometheus \
 	        PREFIX=/usr SVCDIR=/usr/lib/systemd/system \
+	        UDEVDIR=/usr/lib/udev/rules.d \
 	        LIBDIR=/usr/lib/$(DEB_HOST_MULTIARCH)
 	# This is a non-native package (3.0 (quilt), version X.Y-N), so the
 	# per-package Debian changelog belongs at changelog.Debian.gz — Policy
@@ -37,6 +38,13 @@ override_dh_auto_install:
 	        mv "$$d/changelog.gz" "$$d/changelog.Debian.gz"; \
 	    fi; \
 	done
+
+# imud-mqtt.conf can hold a plaintext broker password and imud-influxdb.conf an
+# InfluxDB API token, so both install 0640 (group set to imud by each package's
+# postinst — dpkg unpacks everything root:root).  dh_fixperms would reset them
+# to 0644 and put the credentials back in every local user's reach.
+override_dh_fixperms:
+	dh_fixperms -Xetc/imud/imud-mqtt.conf -Xetc/imud/imud-influxdb.conf
 
 # The upstream install targets already lay out /usr/share/doc/<pkg>/
 # (DEP-5 copyright + the per-package changelog, renamed above) per package;
