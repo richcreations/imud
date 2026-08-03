@@ -10,8 +10,16 @@ Standards-Version: 4.6.2
 Homepage: https://github.com/richcreations/imud
 Rules-Requires-Root: no
 
+# Architecture: the little-endian Debian release architectures, not "any".
+# The binary wire packet is transmitted as an in-memory packed struct with no
+# byte-order conversion, and include/types.h + lib/imud_client.h both #error
+# on a big-endian host — so "any" promised a build that cannot succeed on
+# s390x, ppc64, sparc64 or hppa. Declaring the real set turns that into
+# "architecture not supported" at the start instead of a compile error deep
+# in the build. Keep this list and those two #error guards in step; adding a
+# new little-endian port is a one-line change here.
 Package: imud
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
 Recommends: imud-wmm-data
 Suggests: imud-utils
@@ -29,9 +37,12 @@ Description: IMU daemon — attitude, heading, and heave for boats ("gpsd for IM
  network monitor ships as imud-utils; protocol bridges are packaged
  separately: imud-signalk, imud-mqtt, imud-influxdb, imud-mavlink,
  imud-prometheus.
+ .
+ Requires a little-endian host: the binary wire packet is sent as a packed
+ struct with no byte-order conversion.
 
 Package: imud-utils
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: diagnostic tools for the imud IMU daemon
  Operator tools that are not part of the running system.
@@ -49,7 +60,7 @@ Description: diagnostic tools for the imud IMU daemon
  daemon stopped.
 
 Package: libimud0
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Section: libs
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: ABI-stable client library for the imud IMU daemon
@@ -62,7 +73,7 @@ Description: ABI-stable client library for the imud IMU daemon
  to build against it (imud.h, pkg-config metadata, and libimud(3)).
 
 Package: libimud-dev
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Section: libdevel
 Depends: libimud0 (= ${binary:Version}), ${misc:Depends}
 Description: ABI-stable client library for the imud IMU daemon (development)
@@ -71,7 +82,7 @@ Description: ABI-stable client library for the imud IMU daemon (development)
  ABI-stable client library for imud's binary telemetry stream.
 
 Package: imud-signalk
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: Signal K bridge for the imud IMU daemon
  imud-signalk connects to imud's local binary stream socket and emits Signal K
@@ -81,7 +92,7 @@ Description: Signal K bridge for the imud IMU daemon
  automatically.
 
 Package: imud-mqtt
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
  imud-mqtt connects to imud's local binary stream socket and publishes scalar
@@ -92,7 +103,7 @@ Description: MQTT bridge for the imud IMU daemon (with Home Assistant discovery)
  last-will.
 
 Package: imud-influxdb
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: InfluxDB bridge for the imud IMU daemon
  imud-influxdb connects to imud's local binary stream socket and writes one
@@ -102,7 +113,7 @@ Description: InfluxDB bridge for the imud IMU daemon
  dashboards. Pure C, no external dependencies.
 
 Package: imud-mavlink
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: MAVLink bridge for the imud IMU daemon
  imud-mavlink connects to imud's local binary stream socket and emits MAVLink
@@ -112,7 +123,7 @@ Description: MAVLink bridge for the imud IMU daemon
  Pure C with a hand-rolled encoder — no MAVLink library dependency.
 
 Package: imud-prometheus
-Architecture: any
+Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 Depends: ${shlibs:Depends}, ${misc:Depends}, imud
 Description: Prometheus exporter for the imud IMU daemon
  imud-prometheus connects to imud's local binary stream socket and serves the
