@@ -5,18 +5,28 @@
  */
 
 /*
- * test_prometheus.c — unit tests for the Prometheus metrics builder
- * (src/prom_metrics.c). Drives prom_build_metrics() with crafted
- * imud_data_t views and asserts on metric names, SI values, flag gauges,
- * HELP/TYPE self-description, and truncation handling.
+ * test_prometheus.c — unit tests for imud-prometheus's two pure pieces
+ *
+ * src/prom_metrics.c: prom_build_metrics() driven with crafted imud_data_t
+ * views — metric names, SI values, flag gauges, HELP/TYPE self-description,
+ * truncation handling.
+ *
+ * src/prom_http.c: the scrape connection state machine, over a socketpair.
+ * `now_ms` is an argument to every entry point precisely so these tests can
+ * step past a deadline instead of sleeping through one.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/socket.h>
 
 #include "../include/prom_metrics.h"
+#include "../include/prom_http.h"
 
 static int g_pass, g_fail;
 
@@ -189,14 +199,202 @@ static void test_buffer_too_small(void)
     end(fb);
 }
 
+/* ── src/prom_http.c — the scrape connection (audit L6) ──────────────────── */
+
+/* A connected pair standing in for accept()'s result and the scraper. */
+static int pair_open(int *srv, int *cli)
+{
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;
+    *srv = sv[0];
+    *cli = sv[1];
+    return 0;
+}
+
+static bool fd_is_open(int fd) { return fcntl(fd, F_GETFD) >= 0; }
+
+/* Write a whole string; true on success. Length comes from strlen rather
+ * than a hand-counted literal — miscounting one is how this test first
+ * "failed". */
+static bool send_str(int fd, const char *s)
+{
+    size_t n = strlen(s);
+    return write(fd, s, n) == (ssize_t)n;
+}
+
+static void test_http_request_shapes(void)
+{
+    begin("test_http_request_shapes");
+    int fb = g_fail;
+
+    prom_conn_t c;
+    prom_conn_init(&c);
+    EXPECT(!prom_conn_busy(&c), "starts idle");
+    EXPECT(prom_conn_service(&c, 0) == 0, "service on an idle conn is a no-op");
+    EXPECT(prom_conn_timeout_ms(&c, 0) == -1, "idle imposes no poll timeout");
+
+    /* Whole request in one write. */
+    int srv, cli;
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 1000, 2000) == 0, "adopt");
+    EXPECT(prom_conn_busy(&c), "busy after adopt");
+    EXPECT(send_str(cli, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n"),
+           "client sends a complete request");
+    EXPECT(prom_conn_service(&c, 1000) == 1, "complete request → serve");
+    EXPECT(strncmp(c.req, "GET /metrics", 12) == 0, "request text captured");
+    prom_conn_close(&c);
+    EXPECT(!prom_conn_busy(&c), "idle after close");
+    close(cli);
+
+    /* Split across two writes: the first must not look complete. */
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 1000, 2000) == 0, "adopt");
+    send_str(cli, "GET /metrics HTTP/1.1\r\n");
+    EXPECT(prom_conn_service(&c, 1000) == 0, "partial request → keep reading");
+    EXPECT(prom_conn_busy(&c), "still holding the connection");
+    send_str(cli, "\r\n");
+    EXPECT(prom_conn_service(&c, 1000) == 1, "terminator completes it");
+    prom_conn_close(&c);
+    close(cli);
+
+    /* A bare LFLF request, which is what `nc` and curl --http0.9 produce. */
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 0, 2000) == 0, "adopt");
+    send_str(cli, "GET /metrics\n\n");
+    EXPECT(prom_conn_service(&c, 0) == 1, "LFLF also terminates a request");
+    prom_conn_close(&c);
+    close(cli);
+
+    end(fb);
+}
+
+/*
+ * The finding itself: a client that connects and sends nothing must not be
+ * able to hold the loop. Before this, serve_scrape() did a blocking recv()
+ * under a 2 s SO_RCVTIMEO, so the stream reader stopped for 2 s per
+ * iteration; the header comment claimed the opposite.
+ */
+static void test_http_silent_client_is_bounded(void)
+{
+    begin("test_http_silent_client_is_bounded");
+    int fb = g_fail;
+
+    prom_conn_t c;
+    prom_conn_init(&c);
+
+    int srv, cli;
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 10000, 2000) == 0, "adopt at t=10000");
+
+    /* Silent client: service returns "still reading" and never blocks. */
+    EXPECT(prom_conn_service(&c, 10000) == 0, "silent at t=10000 → keep waiting");
+    EXPECT(prom_conn_service(&c, 11999) == 0, "still inside the deadline");
+
+    /* And poll can never be told to wait past the deadline — that bound is
+     * what keeps the imud stream drain running on schedule. */
+    EXPECT(prom_conn_timeout_ms(&c, 10000) == 2000, "full budget at adopt time");
+    EXPECT(prom_conn_timeout_ms(&c, 11500) == 500,  "budget shrinks with time");
+    EXPECT(prom_conn_timeout_ms(&c, 12000) == 0,    "0 once due, never negative");
+    EXPECT(prom_conn_timeout_ms(&c, 99999) == 0,    "0 well past the deadline");
+
+    EXPECT(prom_conn_service(&c, 12000) == -1, "dropped at the deadline");
+    EXPECT(!prom_conn_busy(&c), "connection released");
+    EXPECT(!fd_is_open(srv), "and its fd closed");
+
+    close(cli);
+    end(fb);
+}
+
+static void test_http_drop_paths(void)
+{
+    begin("test_http_drop_paths");
+    int fb = g_fail;
+
+    prom_conn_t c;
+    prom_conn_init(&c);
+
+    /* Peer hangs up mid-request. */
+    int srv, cli;
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 0, 2000) == 0, "adopt");
+    send_str(cli, "GET /metrics HTTP/1.1\r\n");
+    close(cli);
+    EXPECT(prom_conn_service(&c, 0) == -1, "EOF mid-request → drop");
+    EXPECT(!fd_is_open(srv), "fd closed on EOF");
+
+    /* A head larger than PROM_REQ_MAX with no terminator is not a scraper. */
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 0, 60000) == 0, "adopt");
+    static char flood[PROM_REQ_MAX * 2];
+    memset(flood, 'A', sizeof flood);
+    (void)!write(cli, flood, sizeof flood);
+    int rc = 0;
+    for (int i = 0; i < 8 && rc == 0; i++) rc = prom_conn_service(&c, 0);
+    EXPECT(rc == -1, "oversize request head → drop");
+    EXPECT(!fd_is_open(srv), "fd closed on oversize");
+    close(cli);
+
+    /* Adopting while busy must reject the newcomer and close its fd, not
+     * evict the connection already being served. */
+    int srv2, cli2;
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(pair_open(&srv2, &cli2) == 0, "second socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 0, 2000) == 0, "first adopt succeeds");
+    EXPECT(prom_conn_adopt(&c, srv2, 0, 2000) == -1, "second adopt rejected");
+    EXPECT(!fd_is_open(srv2), "rejected fd is closed by adopt, not leaked");
+    EXPECT(c.fd == srv, "the incumbent connection is untouched");
+    EXPECT(fd_is_open(srv), "and still open");
+    prom_conn_close(&c);
+    close(cli); close(cli2);
+
+    /* close() is idempotent and adopt(-1) is refused. */
+    prom_conn_close(&c);
+    EXPECT(!prom_conn_busy(&c), "double close is safe");
+    EXPECT(prom_conn_adopt(&c, -1, 0, 2000) == -1, "adopting -1 is refused");
+
+    end(fb);
+}
+
+/* The adopted fd must be non-blocking (else service() would stall, which is
+ * the whole finding) and close-on-exec (audit L3), and the page write must be
+ * able to put it back to blocking for bridge_write_all. */
+static void test_http_fd_flags(void)
+{
+    begin("test_http_fd_flags");
+    int fb = g_fail;
+
+    prom_conn_t c;
+    prom_conn_init(&c);
+
+    int srv, cli;
+    EXPECT(pair_open(&srv, &cli) == 0, "socketpair");
+    EXPECT(prom_conn_adopt(&c, srv, 0, 2000) == 0, "adopt");
+    EXPECT((fcntl(srv, F_GETFL, 0) & O_NONBLOCK) != 0, "adopted fd is non-blocking");
+    EXPECT((fcntl(srv, F_GETFD) & FD_CLOEXEC) != 0, "adopted fd is close-on-exec");
+
+    EXPECT(prom_conn_ready_to_write(&c) == 0, "ready_to_write succeeds");
+    EXPECT((fcntl(srv, F_GETFL, 0) & O_NONBLOCK) == 0,
+           "blocking again so the page goes out under SO_SNDTIMEO");
+    EXPECT(prom_conn_busy(&c), "still holding the connection to write on");
+
+    prom_conn_close(&c);
+    EXPECT(prom_conn_ready_to_write(&c) == -1, "ready_to_write on idle fails");
+    close(cli);
+    end(fb);
+}
+
 int main(void)
 {
-    puts("=== imud prometheus builder tests ===");
+    puts("=== imud prometheus tests ===");
     test_no_packet();
     test_values_si();
     test_flags_and_gating();
     test_help_type();
     test_buffer_too_small();
+    test_http_request_shapes();
+    test_http_silent_client_is_bounded();
+    test_http_drop_paths();
+    test_http_fd_flags();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

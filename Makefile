@@ -163,7 +163,7 @@ imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/brid
 # imud-prometheus serves the fused state as Prometheus /metrics gauges. Pure
 # C — no external dependencies beyond libimud; the first bridge built purely
 # on the ABI-stable imud_data_t (no wire pinning).
-imud-prometheus: src/prom_metrics.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/prom_main.o $(LIBIMUD)
+imud-prometheus: src/prom_metrics.o src/prom_http.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/prom_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
@@ -282,7 +282,7 @@ test_mqtt: src/mqtt_publish.c test/test_mqtt.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 # Prometheus metrics encoder (pure function)
-test_prometheus: src/prom_metrics.c test/test_prometheus.c
+test_prometheus: src/prom_metrics.c src/prom_http.c test/test_prometheus.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_influxdb: src/influx_line.c test/test_influxdb.c

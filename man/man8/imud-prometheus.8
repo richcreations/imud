@@ -31,7 +31,11 @@ until the statistics settle; periods also read 0.0 when becalmed or not
 rolling \(em that is the measurement, not an error.
 .PP
 The exporter is pull-based: scrapes are answered from the cached newest
-sample, so a slow scraper never wedges the stream reader. It reconnects to
+sample, and the request is read non-blocking from the same
+.BR poll (2)
+that watches the imud stream, so a slow scraper never wedges the stream
+reader. A client that connects and sends nothing is dropped after 2 seconds.
+One scrape is served at a time. It reconnects to
 imud automatically and answers scrapes with
 .B imud_up 0
 while imud is away. Built on the ABI-stable

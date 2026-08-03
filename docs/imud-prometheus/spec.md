@@ -45,6 +45,17 @@ periods also read 0.0 when becalmed / not rolling — that is the measurement.
 ## Transport
 
 Minimal embedded HTTP/1.1 responder: any GET returns the metrics page,
-`Connection: close`, 2 s socket timeouts (a stalled scraper cannot wedge the
-stream reader — scrapes are served from the cached newest sample). Bind
-address/port via `imud-prometheus.conf` (default `127.0.0.1:9815`).
+`Connection: close`. Bind address/port via `imud-prometheus.conf` (default
+`127.0.0.1:9815`).
+
+A stalled scraper cannot wedge the stream reader. The request is read
+non-blocking from inside the same `poll()` that watches the imud stream
+socket, so no scraper can delay a frame; a client that connects and then goes
+quiet is dropped 2 s later; and the page is served from the cached newest
+sample, so answering never touches the stream socket at all. The response
+itself is written once under a 2 s `SO_SNDTIMEO`.
+
+One scrape is served at a time — Prometheus scrapes are serial, and the
+listener leaves the poll set while a request is in flight, so a second
+concurrent scraper waits in the listen backlog rather than being accepted and
+starved.

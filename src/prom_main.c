@@ -14,9 +14,11 @@
  *
  * Prometheus is pull-based, so unlike the push bridges there is no emit
  * rate: a single poll() loop watches the imud fd (refreshing the cached
- * data view on every frame) and the HTTP listener (answering scrapes from
- * the cache). A slow scraper cannot wedge the stream reader — responses
- * are written once with a short send timeout and the connection closed.
+ * data view on every frame), the HTTP listener, and the one scrape
+ * connection in flight (see prom_http.c). A slow scraper cannot wedge the
+ * stream reader: the request is read non-blocking from inside the same
+ * poll(), a client that goes quiet is dropped at its deadline, and the
+ * response is written once with a short send timeout before the close.
  *
  * This is the first bridge built purely on libimud's ABI-stable imud_data_t
  * (no imud_client.h, no wire pinning): it needs no rebuild across wire
@@ -44,6 +46,7 @@
 #include <netinet/tcp.h>
 
 #include "prom_metrics.h"
+#include "prom_http.h"
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "bridge.h"             /* shared bridge scaffolding */
 #include "sdnotify.h"
@@ -92,25 +95,21 @@ static int open_listener(const char *addr, int port)
     return fd;
 }
 
-/*
- * Serve one scrape: read (and discard) the request line, write the metrics
- * page, close. Short socket timeouts bound a stalled scraper; the loop's
- * cached view means this never touches the stream socket.
- */
-static void serve_scrape(int cfd, const imud_data_t *d, uint64_t packets)
-{
-    struct timeval tv = { 2, 0 };
-    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+/* Seconds a scraper gets to send its request, and to accept the page. */
+#define SCRAPE_TIMEOUT_S 2
 
-    char req[1024];
-    ssize_t r = recv(cfd, req, sizeof req - 1, 0);
-    if (r <= 0) { close(cfd); return; }
-    req[r] = '\0';
+/*
+ * Answer the scrape whose request prom_conn_service() has just completed:
+ * write the page from the loop's cached view, then drop the connection.
+ * Never touches the stream socket.
+ */
+static void serve_scrape(prom_conn_t *c, const imud_data_t *d, uint64_t packets)
+{
+    if (prom_conn_ready_to_write(c) < 0) return;
 
     static char body[METRICS_BUF];
     int blen = prom_build_metrics(body, sizeof body, d, packets);
-    if (blen < 0) { close(cfd); return; }
+    if (blen < 0) { prom_conn_close(c); return; }
 
     char hdr[256];
     int hn = snprintf(hdr, sizeof hdr,
@@ -119,9 +118,21 @@ static void serve_scrape(int cfd, const imud_data_t *d, uint64_t packets)
         "Content-Length: %d\r\n"
         "Connection: close\r\n\r\n", blen);
     if (hn > 0 && hn < (int)sizeof hdr &&
-        bridge_write_all(cfd, hdr, hn) == 0)
-        (void)bridge_write_all(cfd, body, blen);
-    close(cfd);
+        bridge_write_all(c->fd, hdr, hn) == 0)
+        (void)bridge_write_all(c->fd, body, blen);
+    prom_conn_close(c);
+}
+
+/* Adopt a freshly accepted scrape, with the send timeout the page write
+ * relies on. Rejections (one already in flight, or a fd we cannot
+ * configure) close the fd inside prom_conn_adopt. */
+static void adopt_scrape(prom_conn_t *c, int lfd)
+{
+    int cfd = ACCEPT_CLOEXEC(lfd);
+    if (cfd < 0) return;
+    struct timeval tv = { SCRAPE_TIMEOUT_S, 0 };
+    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    (void)prom_conn_adopt(c, cfd, prom_now_ms(), SCRAPE_TIMEOUT_S * 1000);
 }
 
 int main(int argc, char **argv)
@@ -156,6 +167,9 @@ int main(int argc, char **argv)
     imud_data_t  latest;
     bool         have_pkt = false;
     uint64_t     packets  = 0;
+    prom_conn_t  conn;
+
+    prom_conn_init(&conn);
 
     while (!bridge_stop) {
         sd_notify_msg("WATCHDOG=1");
@@ -175,10 +189,25 @@ int main(int argc, char **argv)
             have_pkt = false;
             /* Keep answering scrapes (imud_up 0) while imud is away. */
             if (lfd >= 0) {
-                struct pollfd pw = { .fd = lfd, .events = POLLIN };
-                if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
-                    int cfd = ACCEPT_CLOEXEC(lfd);
-                    if (cfd >= 0) serve_scrape(cfd, NULL, packets);
+                /* Watch the listener, or the scrape being read — never both:
+                 * one connection is served at a time, and accept() must never
+                 * be called with nowhere to put the result. */
+                bool busy = prom_conn_busy(&conn);
+                struct pollfd pw = { .fd = busy ? conn.fd : lfd,
+                                     .events = POLLIN };
+
+                int wait = prom_conn_timeout_ms(&conn, prom_now_ms());
+                if (wait < 0 || wait > 2000) wait = 2000;
+
+                if (poll(&pw, 1, wait) < 0) {
+                    if (errno != EINTR) break;
+                    continue;
+                }
+                if (busy) {
+                    if (prom_conn_service(&conn, prom_now_ms()) == 1)
+                        serve_scrape(&conn, NULL, packets);
+                } else if (pw.revents & POLLIN) {
+                    adopt_scrape(&conn, lfd);
                 }
             } else {
                 bridge_sleep_interruptible(2);
@@ -186,12 +215,22 @@ int main(int argc, char **argv)
             continue;
         }
 
+        /* imud fd always; then the listener OR the scrape being read — never
+         * both, because only one connection is served at a time. */
         struct pollfd pfds[2] = {
             { .fd = imud_fd(stream), .events = POLLIN },
-            { .fd = lfd,             .events = POLLIN },
+            { .fd = -1,              .events = POLLIN },
         };
-        nfds_t nfds = (lfd >= 0) ? 2 : 1;   /* omit the listener when off */
-        int pr = poll(pfds, nfds, 1000);
+        nfds_t nfds = 1;
+        if (prom_conn_busy(&conn))      { pfds[1].fd = conn.fd; nfds = 2; }
+        else if (lfd >= 0)              { pfds[1].fd = lfd;     nfds = 2; }
+
+        /* Never wait past a scrape's deadline: that is what keeps a client
+         * which connects and then goes silent from delaying the drain below. */
+        int wait = prom_conn_timeout_ms(&conn, prom_now_ms());
+        if (wait < 0 || wait > 1000) wait = 1000;
+
+        int pr = poll(pfds, nfds, wait);
         if (pr < 0) {
             if (errno == EINTR) continue;
             LOG_E("[prom] poll: %s\n", strerror(errno));
@@ -214,14 +253,18 @@ int main(int argc, char **argv)
             }
         }
 
-        if (lfd >= 0 && (pfds[1].revents & POLLIN)) {
-            int cfd = ACCEPT_CLOEXEC(lfd);
-            if (cfd >= 0)
-                serve_scrape(cfd, have_pkt ? &latest : NULL, packets);
+        if (prom_conn_busy(&conn)) {
+            /* Called whether or not poll flagged it: the deadline has to be
+             * enforced on a timeout too. */
+            if (prom_conn_service(&conn, prom_now_ms()) == 1)
+                serve_scrape(&conn, have_pkt ? &latest : NULL, packets);
+        } else if (lfd >= 0 && nfds == 2 && (pfds[1].revents & POLLIN)) {
+            adopt_scrape(&conn, lfd);
         }
     }
 
     LOG_I("[prom] shutting down\n");
+    prom_conn_close(&conn);
     imud_free(stream);
     if (lfd >= 0) close(lfd);
     return 0;
