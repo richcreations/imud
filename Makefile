@@ -106,7 +106,7 @@ IMUD_OBJS    = $(IMUD_SRCS:.c=.o)
 CAL_OBJS     = $(CAL_SRCS:.c=.o)
 IMUTEST_OBJS = $(IMUTEST_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test check check-docs coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-imutest imud-status imud-mon
 
@@ -436,6 +436,15 @@ fuzz-seeds:
 
 # GNU-convention alias
 check: test
+
+# ── Documentation cross-check ─────────────────────────────────────────────────
+# Every config key src/config.c parses must appear in the shipped template,
+# the man page and the manual — and nothing a template still sets may have
+# lost its parser.  Pure text analysis, no build, so it runs anywhere python3
+# does.  See tools/check-docs.py for the surfaces and the exception list.
+.PHONY: check-docs
+check-docs:
+	@python3 tools/check-docs.py
 
 # ── Coverage ──────────────────────────────────────────────────────────────────
 # Rebuild and run the whole host test suite instrumented with gcov, then

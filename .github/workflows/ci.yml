@@ -79,6 +79,12 @@ jobs:
           [ "$rc" -eq 0 ] && echo "all version strings agree ($ver)"
           exit "$rc"
 
+      # Audit D1/D3 were the same bug twice: a key that parses and works but
+      # never reached the shipped template or the bridge manual.  Nothing
+      # checked it, so nothing complained.
+      - name: Every parsed config key reached its docs
+        run: make check-docs
+
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
   build-and-test:
