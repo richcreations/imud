@@ -79,6 +79,25 @@ jobs:
           [ "$rc" -eq 0 ] && echo "all version strings agree ($ver)"
           exit "$rc"
 
+      # The wire revision is a different number from the release version and
+      # moves on a different schedule, so the check above does not cover it.
+      # Three copies exist because the two client libraries are standalone by
+      # design; a consumer reading a stale one silently rejects every packet.
+      - name: Wire revision agrees across the C and Python clients
+        run: |
+          h=$(sed -n 's/^#define IMUD_VERSION  *\([0-9][0-9]*\).*/\1/p' include/types.h)
+          c=$(sed -n 's/^#define IMUD_VERSION  *\([0-9][0-9]*\).*/\1/p' lib/imud_client.h)
+          p=$(sed -n 's/^IMUD_VERSION *= *\([0-9][0-9]*\).*/\1/p' lib/imud_client.py)
+          echo "types.h=$h imud_client.h=$c imud_client.py=$p"
+          for v in "$h" "$c" "$p"; do
+            [ -n "$v" ] || { echo "::error::a wire revision could not be parsed" >&2; exit 1; }
+          done
+          if [ "$h" != "$c" ] || [ "$h" != "$p" ]; then
+            echo "::error::IMUD_VERSION disagrees: types.h=$h imud_client.h=$c imud_client.py=$p" >&2
+            exit 1
+          fi
+          echo "wire revision $h agrees across all three"
+
       # Audit D1/D3 were the same bug twice: a key that parses and works but
       # never reached the shipped template or the bridge manual.  Nothing
       # checked it, so nothing complained.

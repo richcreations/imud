@@ -85,7 +85,7 @@ to its logs or captures.
 Packages from the apt repository are covered by two independent mechanisms:
 
 - **The repository index is GPG-signed.** `apt` verifies it against
-  `/etc/apt/keyrings/imud.gpg`; see the [apt repository page](apt/README.md).
+  `/usr/share/keyrings/imud.gpg`; see the [apt repository page](apt/README.md).
 - **Release artifacts carry build provenance.** Every `.deb` and source
   tarball attached to a GitHub Release is attested to this repository's
   release workflow, so you can confirm a package really was built here:

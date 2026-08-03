@@ -36,7 +36,13 @@ from typing import Iterator, Optional, Tuple
 # ── Protocol constants ────────────────────────────────────────────────────────
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
-IMUD_VERSION     = 17    # 1.7 — encoded as decimal: major*10 + minor
+# Wire-layout revision, NOT the release version.  Encoded as major*10 + minor
+# of the release that last CHANGED the packet layout — 17 = the layout
+# introduced in 1.7 (update-gate health fields); 14 was the 1.4 layout, which
+# 1.5 and 1.6 shipped unchanged.  A 1.8 daemon still speaks 17.
+# Must equal IMUD_VERSION in include/types.h and lib/imud_client.h; CI's
+# version-consistency job checks all three agree.
+IMUD_VERSION     = 17
 IMUD_PACKET_SIZE = 276
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
