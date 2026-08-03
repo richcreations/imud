@@ -18,6 +18,15 @@
  * On Linux APPLY_CLOEXEC is ((void)0) — not (0) — so a call site is never a
  * bare no-effect statement under -Wunused-value.
  *
+ * APPLY_CLOEXEC is therefore ONLY valid on an fd that was just created by a
+ * socket() call carrying SOCK_CLOEXEC — it finishes a job Linux already did.
+ * For an fd of any other provenance (accept, socketpair, dup, or one handed
+ * in by a caller) it does nothing at all on Linux, and the code silently
+ * ships without close-on-exec. Those need an unconditional
+ * fcntl(fd, F_SETFD, FD_CLOEXEC). This is not hypothetical: prom_conn_adopt()
+ * used APPLY_CLOEXEC on an accepted fd, passed its own assertion on macOS,
+ * and failed it on every Linux job in CI.
+ *
  * open() needs none of this: O_CLOEXEC is in POSIX.1-2008 and present on
  * both platforms, so those sites just pass the flag.
  *

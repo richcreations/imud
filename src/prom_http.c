@@ -29,7 +29,6 @@
 #include <sys/socket.h>
 
 #include "prom_http.h"
-#include "cloexec.h"
 
 uint64_t prom_now_ms(void)
 {
@@ -66,7 +65,18 @@ int prom_conn_adopt(prom_conn_t *c, int fd, uint64_t now_ms, int timeout_ms)
         close(fd);
         return -1;
     }
-    APPLY_CLOEXEC(fd);
+    /* Deliberately NOT APPLY_CLOEXEC: that macro is ((void)0) wherever
+     * SOCK_CLOEXEC exists, because it assumes the fd was born close-on-exec
+     * at socket() time. This fd was born at accept(), and POSIX does not
+     * propagate FD_CLOEXEC across accept() — the exact trap audit L3 found in
+     * netserv.c, which this file then walked straight into: the assertion
+     * passed on macOS (where the macro is a real fcntl) and failed on Linux.
+     * Callers use ACCEPT_CLOEXEC, so it is normally set already; set it
+     * unconditionally so the contract in prom_http.h holds for any fd. */
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        close(fd);
+        return -1;
+    }
 
     c->fd          = fd;
     c->deadline_ms = now_ms + (timeout_ms > 0 ? (uint64_t)timeout_ms : 0u);
