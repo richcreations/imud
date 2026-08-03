@@ -30,11 +30,8 @@
 #include <sys/socket.h>
 
 #include "config.h"
+#include "cloexec.h"
 #include "../lib/imud.h"
-
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
 
 /* ── Per-bridge identity (parameterizes all shared log/usage text) ───────── */
 

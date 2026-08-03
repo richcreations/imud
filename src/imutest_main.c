@@ -29,6 +29,7 @@
 #include <sys/un.h>
 
 #include "cli.h"
+#include "cloexec.h"
 #include "config.h"
 #include "imutest.h"
 #include "version.h"
@@ -147,8 +148,9 @@ static void term_coverage(void *user, const int *sectors, int nsec, int cur,
  */
 static bool daemon_running(const imud_config_t *cfg)
 {
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return false;
+    APPLY_CLOEXEC(fd);
 
     struct sockaddr_un addr;
     size_t plen = strlen(cfg->stream_socket);

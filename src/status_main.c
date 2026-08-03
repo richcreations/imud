@@ -18,6 +18,7 @@
 #include <sys/un.h>
 
 #include "cli.h"
+#include "cloexec.h"
 
 int main(int argc, char **argv)
 {
@@ -26,11 +27,12 @@ int main(int argc, char **argv)
     if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --help */
     const char *sockpath = args.sockpath;
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         fprintf(stderr, "socket: %s\n", strerror(errno));
         return 2;
     }
+    APPLY_CLOEXEC(fd);
 
     struct sockaddr_un addr;
     size_t plen = strlen(sockpath);

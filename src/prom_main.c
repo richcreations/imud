@@ -177,7 +177,7 @@ int main(int argc, char **argv)
             if (lfd >= 0) {
                 struct pollfd pw = { .fd = lfd, .events = POLLIN };
                 if (poll(&pw, 1, 2000) == 1 && (pw.revents & POLLIN)) {
-                    int cfd = accept(lfd, NULL, NULL);
+                    int cfd = ACCEPT_CLOEXEC(lfd);
                     if (cfd >= 0) serve_scrape(cfd, NULL, packets);
                 }
             } else {
@@ -215,7 +215,7 @@ int main(int argc, char **argv)
         }
 
         if (lfd >= 0 && (pfds[1].revents & POLLIN)) {
-            int cfd = accept(lfd, NULL, NULL);
+            int cfd = ACCEPT_CLOEXEC(lfd);
             if (cfd >= 0)
                 serve_scrape(cfd, have_pkt ? &latest : NULL, packets);
         }

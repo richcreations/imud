@@ -129,7 +129,7 @@ static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
 
 static int open_i2c(const imud_config_t *cfg)
 {
-    int fd = open(cfg->i2c_bus, O_RDWR);
+    int fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
     if (fd < 0)
         fprintf(stderr, "cal: cannot open %s: %s\n",
                 cfg->i2c_bus, strerror(errno));

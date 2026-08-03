@@ -33,6 +33,7 @@
 #include "../include/config.h"
 #include "../include/position.h"
 #include "../include/imu.h"   /* for imu_ctx_t forward decl — no implementation */
+#include "fdsweep.h"
 
 /* ── Stub ────────────────────────────────────────────────────────────────── */
 
@@ -402,6 +403,19 @@ static void test_check_fix_ttl(void)
  * fix travelled the whole way through, g_last_decl and g_last_speed move.
  */
 
+/*
+ * Audit L3 — position.c's client socket must be close-on-exec.
+ *
+ * It lives inside pos_ctx_t and is closed again the moment position_thread
+ * stops, so the only instant it can be observed from outside is between the
+ * fake server's accept() returning and the session ending. The sweep
+ * therefore runs on the server thread; the main thread reads the verdict
+ * after the join. The baseline is taken once the listener exists, so the
+ * test's own descriptors are never counted.
+ */
+static fdsweep_t   g_srv_sweep;
+static _Atomic int g_srv_cloexec_leaks = -1;
+
 /* Bind 127.0.0.1:0, listen, and report the kernel-assigned port. */
 static int fake_server_open(int *port_out)
 {
@@ -421,6 +435,8 @@ static int fake_server_open(int *port_out)
     socklen_t alen = sizeof a;
     if (getsockname(fd, (struct sockaddr *)&a, &alen) != 0) { close(fd); return -1; }
     *port_out = ntohs(a.sin_port);
+    fdsweep_begin(&g_srv_sweep);   /* after the listener exists: it is ours */
+    g_srv_cloexec_leaks = -1;
     return fd;
 }
 
@@ -436,6 +452,8 @@ static void *fake_server_thread(void *arg)
     (void)arg;
     int c = accept(g_srv_listen, NULL, NULL);
     if (c < 0) return NULL;
+    fcntl(c, F_SETFD, FD_CLOEXEC);   /* ours, not under test — keep the floor at 0 */
+    g_srv_cloexec_leaks = fdsweep_leaks(&g_srv_sweep);
     g_srv_got_conn = 1;
 
     /* The client speaks first in both protocols: gpsd gets ?WATCH, SignalK
@@ -529,6 +547,8 @@ static void test_gpsd_live_session(void)
            "declination is plausible for the fix location");
     EXPECT_NEAR_D(g_last_speed, 3.5, 1e-4, "speed over ground propagated");
     EXPECT(g_last_mref_h > 0.0f, "magnetic reference H set from the fix");
+    EXPECT(g_srv_cloexec_leaks == 0,
+           "gpsd client socket is close-on-exec (audit L3)");
 
     close(g_srv_listen); g_srv_listen = -1;
     end(fb);
@@ -613,6 +633,8 @@ static void test_signalk_live_poll(void)
     EXPECT(moved, "the REST fix reached imu_ctx_set_declination");
     EXPECT(g_last_decl > 0.0f && g_last_decl < 25.0f,
            "declination is plausible for the fix location");
+    EXPECT(g_srv_cloexec_leaks == 0,
+           "SignalK client socket is close-on-exec (audit L3)");
 
     close(g_srv_listen); g_srv_listen = -1;
     end(fb);

@@ -29,14 +29,7 @@
 
 #include "netserv.h"
 #include "log.h"
-
-#ifndef SOCK_CLOEXEC
-/* macOS: set close-on-exec via fcntl after socket creation. */
-# define SOCK_CLOEXEC 0
-# define APPLY_CLOEXEC(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
-#else
-# define APPLY_CLOEXEC(fd) ((void)0)
-#endif
+#include "cloexec.h"
 
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0    /* macOS: callers ignore SIGPIPE instead */
@@ -108,9 +101,8 @@ void netserv_accept(netserv_t *s)
 {
     if (s->listen_fd < 0) return;
     for (;;) {
-        int c = accept(s->listen_fd, NULL, NULL);
+        int c = ACCEPT_CLOEXEC(s->listen_fd);
         if (c < 0) break;
-        APPLY_CLOEXEC(c);
         fcntl(c, F_SETFL, O_NONBLOCK);
         if (s->nclients >= NETSRV_MAX_CLIENTS) {
             LOG_E("[%s] client limit (%d) reached — rejecting\n",

@@ -1138,7 +1138,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Open I2C bus ────────────────────────────────────────────────────── */
 
-    ctx->i2c_fd = open(cfg->i2c_bus, O_RDWR);
+    ctx->i2c_fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
     if (ctx->i2c_fd < 0) {
         LOG_E("[imu] cannot open %s: %s\n", cfg->i2c_bus, strerror(errno));
         goto fail;

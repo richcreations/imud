@@ -34,6 +34,7 @@
 #include <netinet/in.h>
 
 #include "cli.h"
+#include "cloexec.h"
 #include "config.h"
 #include "mon_parse.h"
 #include "types.h"
@@ -55,8 +56,9 @@ static void on_sig(int s) { (void)s; g_stop = 1; }
  */
 static int open_recv_sock(int port, const char *dest_addr)
 {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
+    APPLY_CLOEXEC(fd);
 
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);

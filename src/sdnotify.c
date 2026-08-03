@@ -18,10 +18,7 @@
 #include <sys/un.h>
 
 #include "sdnotify.h"
-
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
+#include "cloexec.h"
 
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0    /* macOS: callers ignore SIGPIPE instead */

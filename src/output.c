@@ -52,19 +52,9 @@
 #include "packet.h"
 #include "netserv.h"
 #include "log.h"
+#include "cloexec.h"
 
 /* ── Portability stubs (Linux-only features used at runtime on Pi) ───────── */
-
-#ifndef SOCK_CLOEXEC
-/* macOS: set close-on-exec via fcntl after socket creation. */
-# define SOCK_CLOEXEC 0
-# include <fcntl.h>
-# define APPLY_CLOEXEC(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
-#else
-/* Linux: SOCK_CLOEXEC is passed to socket() directly, so this is a no-op.
- * ((void)0) rather than (0) so the call sites aren't bare no-effect statements. */
-# define APPLY_CLOEXEC(fd) ((void)0)
-#endif
 
 #ifndef TIMER_ABSTIME
 # define TIMER_ABSTIME 1
@@ -347,9 +337,8 @@ void *stream_out_thread(void *arg)
         /* Accept pending subscribers (listen fds are non-blocking).
          * stream_fd is -1 when only the TCP listener is enabled. */
         if (ctx->stream_fd >= 0) for (;;) {
-            int c = accept(ctx->stream_fd, NULL, NULL);
+            int c = ACCEPT_CLOEXEC(ctx->stream_fd);
             if (c < 0) break;
-            APPLY_CLOEXEC(c);
             fcntl(c, F_SETFL, O_NONBLOCK);
             if (ctx->stream_nclients >= STREAM_MAX_CLIENTS) {
                 LOG_E("[stream_out] subscriber limit (%d) reached "

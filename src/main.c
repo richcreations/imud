@@ -54,6 +54,7 @@
 
 #include "cal.h"
 #include "cli.h"
+#include "cloexec.h"
 #include "config.h"
 #include "fileio.h"
 #include "imu.h"
@@ -65,15 +66,6 @@
 #include "status_fmt.h"
 #include "types.h"
 #include "wmm.h"
-
-/* ── Portability ─────────────────────────────────────────────────────────── */
-
-#ifndef SOCK_CLOEXEC
-# define SOCK_CLOEXEC 0
-#endif
-#ifndef SOCK_NONBLOCK
-# define SOCK_NONBLOCK 0
-#endif
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 
@@ -265,7 +257,7 @@ static void *health_thread(void *arg)
             ctx->status_fd >= 0 &&
             FD_ISSET(ctx->status_fd, &rfds)) {
 
-            int client = accept(ctx->status_fd, NULL, NULL);
+            int client = ACCEPT_CLOEXEC(ctx->status_fd);
             if (client >= 0) {
                 /* 1 s receive timeout so a stalled client can't block us. */
                 struct timeval rto = { .tv_sec = 1, .tv_usec = 0 };

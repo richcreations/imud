@@ -40,6 +40,7 @@
 #include <netinet/in.h>
 
 #include "position.h"
+#include "cloexec.h"
 #include "imu.h"
 #include "wmm.h"
 #include "log.h"
@@ -127,8 +128,10 @@ static int tcp_connect_host(const char *host, int port)
 
     int fd = -1, err = EHOSTUNREACH;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC,
+                    ai->ai_protocol);
         if (fd < 0) { err = errno; continue; }
+        APPLY_CLOEXEC(fd);
 
         /* Non-blocking connect so we can impose a timeout. */
         fcntl(fd, F_SETFL, O_NONBLOCK);

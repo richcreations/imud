@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 
 #include "../include/netserv.h"
+#include "fdsweep.h"
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
 
@@ -50,10 +51,13 @@ static void end_test(int fail_before)
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
+/* The test's own client sockets are close-on-exec so that fdsweep_leaks()
+ * has a zero noise floor — any fd it reports then belongs to netserv. */
 static int connect_client(int port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
 
@@ -93,6 +97,37 @@ static void test_open_ephemeral(void)
            "open on port 0 succeeds");
     EXPECT(s.port > 0, "bound port reported back");
     EXPECT(netserv_nclients(&s) == 0, "no clients after open");
+    netserv_close(&s);
+    end_test(fb);
+}
+
+/*
+ * Audit L3: every fd netserv creates must be close-on-exec.
+ *
+ * The accepted clients are the point. POSIX does not carry FD_CLOEXEC across
+ * accept(), so the listener's flag says nothing about theirs — before
+ * ACCEPT_CLOEXEC() they were plain on Linux, where the fcntl fallback in
+ * APPLY_CLOEXEC compiles to ((void)0).
+ */
+static void test_cloexec(void)
+{
+    begin_test("test_cloexec");
+    int fb = g_fail;
+
+    fdsweep_t sw;
+    fdsweep_begin(&sw);
+
+    netserv_t s;
+    EXPECT(netserv_open(&s, "127.0.0.1", 0, "test") == 0, "server opens");
+    EXPECT(fdsweep_leaks(&sw) == 0, "listen fd is close-on-exec");
+
+    int c = connect_client(s.port);
+    EXPECT(c >= 0, "client connects");
+    netserv_accept(&s);
+    EXPECT(netserv_nclients(&s) == 1, "client accepted");
+    EXPECT(fdsweep_leaks(&sw) == 0, "accepted client fd is close-on-exec too");
+
+    if (c >= 0) close(c);
     netserv_close(&s);
     end_test(fb);
 }
@@ -240,6 +275,7 @@ int main(void)
     signal(SIGPIPE, SIG_IGN);   /* dead-client sends must not kill the test */
 
     test_open_ephemeral();
+    test_cloexec();
     test_bad_bind_addr();
     test_broadcast_to_all();
     test_client_limit();

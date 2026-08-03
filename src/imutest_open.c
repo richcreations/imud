@@ -43,7 +43,7 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
         }
     }
 
-    int fd = open(cfg->i2c_bus, O_RDWR);
+    int fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         snprintf(errbuf, errbufsz, "cannot open %s: %s",
                  cfg->i2c_bus, strerror(errno));

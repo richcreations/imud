@@ -258,10 +258,23 @@ void imud_close(int fd);
 
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+/* Close-on-exec: Linux takes it atomically in socket(), macOS needs the
+ * fcntl. Kept inline rather than shared with include/cloexec.h because this
+ * header must compile standalone against nothing but libc — a consumer drops
+ * it into their own tree with no imud sources alongside it. */
+#ifndef SOCK_CLOEXEC
+#  define IMUD__SOCK_CLOEXEC 0
+#  define IMUD__APPLY_CLOEXEC(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
+#else
+#  define IMUD__SOCK_CLOEXEC SOCK_CLOEXEC
+#  define IMUD__APPLY_CLOEXEC(fd) ((void)0)
+#endif
 
 /* ── CRC32 (IEEE 802.3 polynomial 0xEDB88320) ────────────────────────────── */
 
@@ -313,9 +326,10 @@ bool imud_packet_valid(const void *buf, size_t len)
 
 int imud_open(int port, const char *dest_addr)
 {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET, SOCK_DGRAM | IMUD__SOCK_CLOEXEC, 0);
     if (fd < 0)
         return -1;
+    IMUD__APPLY_CLOEXEC(fd);
 
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
