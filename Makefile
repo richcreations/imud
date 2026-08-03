@@ -826,6 +826,11 @@ uninstall:
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
+# The second rm needs -r: rm -f silently skips directories. coverage-html is
+# genhtml's output tree; the .dSYM bundles are debug symbols that the macOS
+# clang driver produces by running dsymutil whenever a compile-and-link
+# invocation carries -g — the shape of every test recipe here, so `make
+# coverage` leaves one per suite. The glob matches nothing on Linux.
 clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d lib/*.o lib/*.d \
 	      imud imud-cal imud-imutest imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
@@ -839,5 +844,6 @@ clean:
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      mkseed_packet \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
-	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info coverage-html \
+	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
 	      etc/*.service imud-*.tar.gz
+	rm -rf coverage-html *.dSYM
