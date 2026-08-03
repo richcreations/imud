@@ -757,20 +757,19 @@ int main(int argc, char **argv)
             imud_config_t new_cfg = cfg;
             if (config_load(args.config_path, &new_cfg) == 0) {
                 apply_wmm_if_configured(&new_cfg);
-                /* Publish hot-reloadable fields to the shared cfg under the
-                 * lock (the health thread reads cfg concurrently); the
-                 * per-consumer setters below push them to the threads that
-                 * keep their own copies. */
+                /* Publish the hot fields to the shared cfg under the lock (the
+                 * health thread reads cfg concurrently).  The field list is
+                 * config_apply_hot(), beside the struct it partitions, so a
+                 * new [hot] key is one edit next to its own declaration and
+                 * test_config's partition test fails if it is forgotten. */
                 pthread_mutex_lock(&g_cfg_lock);
-                cfg.nmea_rate_hz        = new_cfg.nmea_rate_hz;
-                cfg.highrate_rate_hz    = new_cfg.highrate_rate_hz;
-                cfg.stream_rate_hz      = new_cfg.stream_rate_hz;
-                cfg.log_stats_hz        = new_cfg.log_stats_hz;
-                /* Log level is hot; the log file is reopened so logrotate
-                 * can move the old one (postrotate: systemctl reload imud). */
+                config_apply_hot(&cfg, &new_cfg);
+                pthread_mutex_unlock(&g_cfg_lock);
+
+                /* Effects that go with the copy, not part of it.  Log level is
+                 * hot; the log file is reopened so logrotate can move the old
+                 * one (postrotate: systemctl reload imud). */
                 log_set_level_str(new_cfg.log_level);
-                snprintf(cfg.log_level, sizeof cfg.log_level, "%s",
-                         new_cfg.log_level);
                 if (cfg.log_file[0]) {
                     int lfd = open(cfg.log_file,
                                    O_WRONLY | O_CREAT | O_APPEND, 0640);
@@ -779,34 +778,6 @@ int main(int argc, char **argv)
                         close(lfd);
                     }
                 }
-                /* Fusion noise params + declination — push into running filter */
-                cfg.mag_yaw_only        = new_cfg.mag_yaw_only;
-                cfg.heave_tau_s         = new_cfg.heave_tau_s;
-                cfg.wave_tau_s          = new_cfg.wave_tau_s;
-                cfg.mekf_gyro_noise     = new_cfg.mekf_gyro_noise;
-                cfg.mekf_gyro_bias      = new_cfg.mekf_gyro_bias;
-                cfg.mekf_accel_noise    = new_cfg.mekf_accel_noise;
-                cfg.mekf_mag_noise      = new_cfg.mekf_mag_noise;
-                cfg.mekf_wave_accel       = new_cfg.mekf_wave_accel;
-                cfg.mekf_wave_accel_tau_s = new_cfg.mekf_wave_accel_tau_s;
-                cfg.mekf_mag_dip_sigma_deg = new_cfg.mekf_mag_dip_sigma_deg;
-                cfg.mag_reject_gauss           = new_cfg.mag_reject_gauss;
-                cfg.accel_skip_thresh          = new_cfg.accel_skip_thresh;
-                cfg.engine_vibration_g2        = new_cfg.engine_vibration_g2;
-                cfg.engine_accel_skip_thresh   = new_cfg.engine_accel_skip_thresh;
-                snprintf(cfg.pos_wmm_file, sizeof cfg.pos_wmm_file,
-                         "%s", new_cfg.pos_wmm_file);
-                cfg.pos_declination_deg        = new_cfg.pos_declination_deg;
-                cfg.pos_declination_valid      = new_cfg.pos_declination_valid;
-                /* WMM field-magnitude invariants recomputed by
-                 * apply_wmm_if_configured above — without this copy the
-                 * MEKF would keep the startup m_ref after a lat/lon or
-                 * wmm_file reload (imu_ctx_update_config applies them only
-                 * when pos_mref_valid and no live position source). */
-                cfg.pos_mref_h_gauss           = new_cfg.pos_mref_h_gauss;
-                cfg.pos_mref_z_gauss           = new_cfg.pos_mref_z_gauss;
-                cfg.pos_mref_valid             = new_cfg.pos_mref_valid;
-                pthread_mutex_unlock(&g_cfg_lock);
                 /* Push to the threads that hold private copies. */
                 imu_ctx_update_config(imu, &cfg);
                 out_ctx_reload(out, &cfg);

@@ -320,6 +320,54 @@ bool config_apply_influx_transport_compat(imud_config_t *cfg)
     return false;
 }
 
+void config_apply_hot(imud_config_t *dst, const imud_config_t *src)
+{
+    /* Output rates and the stats heartbeat.  The output threads keep their own
+     * _Atomic copies; out_ctx_reload() pushes these across after the call. */
+    dst->nmea_rate_hz     = src->nmea_rate_hz;
+    dst->highrate_rate_hz = src->highrate_rate_hz;
+    dst->stream_rate_hz   = src->stream_rate_hz;
+    dst->log_stats_hz     = src->log_stats_hz;
+
+    /* Level only.  log_file is [restart]: reopening it is what lets logrotate
+     * move the old file, and the caller does that — the path itself must not
+     * change under a running daemon. */
+    snprintf(dst->log_level, sizeof dst->log_level, "%s", src->log_level);
+
+    /* Fusion gains and thresholds — pushed into the running filter by
+     * imu_ctx_update_config(). */
+    dst->mag_yaw_only              = src->mag_yaw_only;
+    dst->heave_tau_s               = src->heave_tau_s;
+    dst->wave_tau_s                = src->wave_tau_s;
+    dst->mekf_gyro_noise           = src->mekf_gyro_noise;
+    dst->mekf_gyro_bias            = src->mekf_gyro_bias;
+    dst->mekf_accel_noise          = src->mekf_accel_noise;
+    dst->mekf_mag_noise            = src->mekf_mag_noise;
+    dst->mekf_wave_accel           = src->mekf_wave_accel;
+    dst->mekf_wave_accel_tau_s     = src->mekf_wave_accel_tau_s;
+    dst->mekf_mag_dip_sigma_deg    = src->mekf_mag_dip_sigma_deg;
+    dst->mag_reject_gauss          = src->mag_reject_gauss;
+    dst->accel_skip_thresh         = src->accel_skip_thresh;
+    dst->engine_vibration_g2       = src->engine_vibration_g2;
+    dst->engine_accel_skip_thresh  = src->engine_accel_skip_thresh;
+
+    /* Declination and the WMM-derived field invariants.  The caller runs the
+     * WMM recomputation over `src` before calling, so these are results, not
+     * raw keys — which is why pos_lat_deg / pos_lon_deg are NOT copied.  They
+     * have no other reader in the daemon: everything downstream consumes the
+     * derived values below, and the next SIGHUP re-reads the file anyway.
+     * Copying pos_mref_* is not optional — without it the MEKF keeps the
+     * startup m_ref after a lat/lon or wmm_file change, because
+     * imu_ctx_update_config() only applies them when pos_mref_valid. */
+    snprintf(dst->pos_wmm_file, sizeof dst->pos_wmm_file, "%s",
+             src->pos_wmm_file);
+    dst->pos_declination_deg   = src->pos_declination_deg;
+    dst->pos_declination_valid = src->pos_declination_valid;
+    dst->pos_mref_h_gauss      = src->pos_mref_h_gauss;
+    dst->pos_mref_z_gauss      = src->pos_mref_z_gauss;
+    dst->pos_mref_valid        = src->pos_mref_valid;
+}
+
 /* ── Mount rotation helper ──────────────────────────────────────────────── */
 
 /*

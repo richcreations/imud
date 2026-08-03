@@ -296,4 +296,23 @@ void config_defaults(imud_config_t *cfg);
  */
 bool config_apply_influx_transport_compat(imud_config_t *cfg);
 
+/*
+ * config_apply_hot: copy the [hot] fields of src over dst, leaving every
+ * [restart] field of dst untouched.  This is the field list SIGHUP applies —
+ * the daemon's reload path calls it with the freshly parsed config as src and
+ * the live one as dst, under the lock that guards dst from the health thread.
+ *
+ * It is only the copy.  The effects that go with a reload — taking the lock,
+ * log_set_level_str(), reopening the log file, recomputing the WMM, and
+ * pushing the result into the running filter and the output threads — belong
+ * to the caller (src/main.c), not here.
+ *
+ * A field missing from this list is an invisible bug: the key parses, the
+ * reload logs success, and nothing changes.  test_config's hot/restart
+ * partition test is what catches that, and it also catches the reverse — a
+ * [restart] field copied here would be applied to a running daemon that
+ * cannot honour it.  Adding a config key means choosing a side.
+ */
+void config_apply_hot(imud_config_t *dst, const imud_config_t *src);
+
 #endif /* IMUD_CONFIG_H */

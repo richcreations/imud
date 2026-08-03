@@ -903,6 +903,255 @@ static void test_bridge_output_enables(void)
     end_test(fb);
 }
 
+/* ── config_apply_hot: the SIGHUP [hot] / [restart] partition ─────────────── */
+
+/*
+ * config_apply_hot() is the field list SIGHUP applies to a running daemon.  A
+ * field missing from it is invisible in production: the key parses, the reload
+ * logs success, and nothing changes.  main.c carries a comment recording that
+ * this already happened once, to pos_mref_*.
+ *
+ * The test is a partition, checked from both sides:
+ *
+ *   1. Every [hot] field of dst must equal src after the call — catches a
+ *      forgotten copy.  The list below is written out by hand precisely so it
+ *      is a SECOND, independent statement of the partition; if it and
+ *      config.c's list drift apart, step 2 fails.
+ *
+ *   2. Nothing else may change.  `expect` is the pre-call dst with exactly the
+ *      hot fields overwritten from src, and the whole struct is memcmp'd
+ *      against it — catches a [restart] field being copied, which would apply
+ *      a key to a running daemon that cannot honour it.
+ *
+ * For step 2 to have teeth, src must differ from dst in EVERY field, so a
+ * stray copy of any one of them shows up.  fill_distinct() does that; it was
+ * generated from the struct in include/config.h and must gain a line when a
+ * field is added (AGENTS.md's add-a-config-key checklist says so).
+ */
+
+static void fill_distinct(imud_config_t *c)
+{
+    config_defaults(c);
+    snprintf(c->i2c_bus, sizeof c->i2c_bus, "distinct-1");
+    snprintf(c->gpio_chip, sizeof c->gpio_chip, "distinct-2");
+    snprintf(c->sim_file, sizeof c->sim_file, "distinct-3");
+    c->sim_loop = !c->sim_loop;
+    c->sim_speed = 5.5;
+    c->capture_enabled = !c->capture_enabled;
+    snprintf(c->capture_dir, sizeof c->capture_dir, "distinct-7");
+    c->capture_max_mb = 15;
+    c->capture_max_files = 16;
+    c->capture_flush_s = 17;
+    snprintf(c->imu_driver, sizeof c->imu_driver, "distinct-11");
+    c->imu_addr = 19;
+    c->imu_int_gpio = 20;
+    c->imu_odr_hz = 21;
+    c->imu_accel_g = 22;
+    c->imu_gyro_dps = 23;
+    c->imu_fifo_wm = 24;
+    snprintf(c->mag_driver, sizeof c->mag_driver, "distinct-18");
+    c->mag_addr = 26;
+    c->mag_int_gpio = 27;
+    c->mag_odr_hz = 28;
+    c->mag_set_period_s = 22.5;
+    c->mag_yaw_only = !c->mag_yaw_only;
+    c->heave_tau_s = 24.5;
+    c->wave_tau_s = 25.5;
+    c->mekf_gyro_noise = 26.5;
+    c->mekf_gyro_bias = 27.5;
+    c->mekf_accel_noise = 28.5;
+    c->mekf_mag_noise = 29.5;
+    c->mekf_wave_accel = 30.5;
+    c->mekf_wave_accel_tau_s = 31.5;
+    c->mekf_mag_dip_sigma_deg = 32.5;
+    c->mag_reject_gauss = 33.5;
+    c->accel_skip_thresh = 34.5;
+    c->engine_vibration_g2 = 35.5;
+    c->engine_accel_skip_thresh = 36.5;
+    snprintf(c->cal_file, sizeof c->cal_file, "distinct-37");
+    c->startup_settle_sec = 38.5;
+    c->gyro_bias_sec = 39.5;
+    c->align_window_sec = 40.5;
+    c->nmea_enabled = !c->nmea_enabled;
+    c->nmea_rate_hz = 49;
+    snprintf(c->nmea_dest_addr, sizeof c->nmea_dest_addr, "distinct-43");
+    c->nmea_dest_port = 51;
+    c->nmea_tcp_enabled = !c->nmea_tcp_enabled;
+    snprintf(c->nmea_tcp_bind_addr, sizeof c->nmea_tcp_bind_addr, "distinct-46");
+    c->nmea_tcp_port = 54;
+    c->highrate_enabled = !c->highrate_enabled;
+    c->highrate_rate_hz = 56;
+    snprintf(c->highrate_dest_addr, sizeof c->highrate_dest_addr, "distinct-50");
+    c->highrate_dest_port = 58;
+    snprintf(c->highrate_coord_frame, sizeof c->highrate_coord_frame, "distinct-52");
+    c->stream_enabled = !c->stream_enabled;
+    snprintf(c->stream_socket, sizeof c->stream_socket, "distinct-54");
+    c->stream_rate_hz = 62;
+    c->stream_tcp_enabled = !c->stream_tcp_enabled;
+    snprintf(c->stream_tcp_bind_addr, sizeof c->stream_tcp_bind_addr, "distinct-57");
+    c->stream_tcp_port = 65;
+    c->sk_enabled = !c->sk_enabled;
+    c->sk_udp_enabled = !c->sk_udp_enabled;
+    snprintf(c->sk_dest_addr, sizeof c->sk_dest_addr, "distinct-61");
+    c->sk_dest_port = 69;
+    c->sk_rate_hz = 70;
+    snprintf(c->sk_source_label, sizeof c->sk_source_label, "distinct-64");
+    c->sk_tcp_enabled = !c->sk_tcp_enabled;
+    snprintf(c->sk_tcp_bind_addr, sizeof c->sk_tcp_bind_addr, "distinct-66");
+    c->sk_tcp_port = 74;
+    c->publish_heave = !c->publish_heave;
+    c->mqtt_enabled = !c->mqtt_enabled;
+    c->mqtt_broker_enabled = !c->mqtt_broker_enabled;
+    snprintf(c->mqtt_broker_addr, sizeof c->mqtt_broker_addr, "distinct-71");
+    c->mqtt_broker_port = 79;
+    snprintf(c->mqtt_client_id, sizeof c->mqtt_client_id, "distinct-73");
+    snprintf(c->mqtt_topic_prefix, sizeof c->mqtt_topic_prefix, "distinct-74");
+    c->mqtt_rate_hz = 82;
+    c->mqtt_qos = 83;
+    c->mqtt_retain = !c->mqtt_retain;
+    snprintf(c->mqtt_units, sizeof c->mqtt_units, "distinct-78");
+    snprintf(c->mqtt_username, sizeof c->mqtt_username, "distinct-79");
+    snprintf(c->mqtt_password, sizeof c->mqtt_password, "distinct-80");
+    c->mqtt_tls = !c->mqtt_tls;
+    snprintf(c->mqtt_tls_cafile, sizeof c->mqtt_tls_cafile, "distinct-82");
+    c->mqtt_keepalive_s = 90;
+    c->mqtt_ha_discovery = !c->mqtt_ha_discovery;
+    snprintf(c->mqtt_ha_prefix, sizeof c->mqtt_ha_prefix, "distinct-85");
+    c->influx_enabled = !c->influx_enabled;
+    snprintf(c->influx_transport, sizeof c->influx_transport, "distinct-87");
+    c->influx_rate_hz = 95;
+    snprintf(c->influx_measurement, sizeof c->influx_measurement, "distinct-89");
+    snprintf(c->influx_source_label, sizeof c->influx_source_label, "distinct-90");
+    snprintf(c->influx_units, sizeof c->influx_units, "distinct-91");
+    c->influx_udp_enabled = !c->influx_udp_enabled;
+    snprintf(c->influx_udp_addr, sizeof c->influx_udp_addr, "distinct-93");
+    c->influx_udp_port = 101;
+    c->influx_http_enabled = !c->influx_http_enabled;
+    snprintf(c->influx_http_host, sizeof c->influx_http_host, "distinct-96");
+    c->influx_http_port = 104;
+    snprintf(c->influx_http_path, sizeof c->influx_http_path, "distinct-98");
+    snprintf(c->influx_http_token, sizeof c->influx_http_token, "distinct-99");
+    c->prom_enabled = !c->prom_enabled;
+    c->prom_http_enabled = !c->prom_http_enabled;
+    snprintf(c->prom_listen_addr, sizeof c->prom_listen_addr, "distinct-102");
+    c->prom_listen_port = 110;
+    c->mav_enabled = !c->mav_enabled;
+    c->mav_version = 112;
+    c->mav_system_id = 113;
+    c->mav_component_id = 114;
+    c->mav_rate_hz = 115;
+    c->mav_send_attitude = !c->mav_send_attitude;
+    c->mav_send_attitude_quaternion = !c->mav_send_attitude_quaternion;
+    c->mav_udp_enabled = !c->mav_udp_enabled;
+    snprintf(c->mav_udp_addr, sizeof c->mav_udp_addr, "distinct-112");
+    c->mav_udp_port = 120;
+    c->mav_serial_enabled = !c->mav_serial_enabled;
+    snprintf(c->mav_serial_device, sizeof c->mav_serial_device, "distinct-115");
+    c->mav_serial_baud = 123;
+    c->mav_tcp_enabled = !c->mav_tcp_enabled;
+    snprintf(c->mav_tcp_bind_addr, sizeof c->mav_tcp_bind_addr, "distinct-118");
+    c->mav_tcp_port = 126;
+    snprintf(c->log_level, sizeof c->log_level, "distinct-120");
+    snprintf(c->log_file, sizeof c->log_file, "distinct-121");
+    c->log_stats_hz = 129;
+    c->pos_declination_deg = 123.5;
+    c->pos_declination_valid = !c->pos_declination_valid;
+    c->pos_mref_h_gauss = 125.5;
+    c->pos_mref_z_gauss = 126.5;
+    c->pos_mref_valid = !c->pos_mref_valid;
+    c->pos_speed_mps = 128.5;
+    c->pos_speed_valid = !c->pos_speed_valid;
+    c->pos_lat_deg = 130.5;
+    c->pos_lon_deg = 131.5;
+    snprintf(c->pos_wmm_file, sizeof c->pos_wmm_file, "distinct-132");
+    c->pos_gpsd_enabled = !c->pos_gpsd_enabled;
+    snprintf(c->pos_gpsd_host, sizeof c->pos_gpsd_host, "distinct-134");
+    c->pos_gpsd_port = 142;
+    c->pos_signalk_enabled = !c->pos_signalk_enabled;
+    snprintf(c->pos_signalk_host, sizeof c->pos_signalk_host, "distinct-137");
+    c->pos_signalk_port = 145;
+    snprintf(c->pos_signalk_path, sizeof c->pos_signalk_path, "distinct-139");
+    c->pos_fix_max_age_h = 140.5;
+    c->mount_set = !c->mount_set;
+    for (int i = 0; i < 3; i++) c->mount_euler_deg[i] = 142.5 + i;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) c->mount_rot[i][j] = 143.5 + i * 3 + j;
+    snprintf(c->mount_preset, sizeof c->mount_preset, "distinct-144");
+}
+
+/* The hot set, stated independently of src/config.c. */
+#define HOT_FIELDS(X) \
+    X(nmea_rate_hz) X(highrate_rate_hz) X(stream_rate_hz) X(log_stats_hz) \
+    X(log_level) \
+    X(mag_yaw_only) X(heave_tau_s) X(wave_tau_s) \
+    X(mekf_gyro_noise) X(mekf_gyro_bias) X(mekf_accel_noise) X(mekf_mag_noise) \
+    X(mekf_wave_accel) X(mekf_wave_accel_tau_s) X(mekf_mag_dip_sigma_deg) \
+    X(mag_reject_gauss) X(accel_skip_thresh) \
+    X(engine_vibration_g2) X(engine_accel_skip_thresh) \
+    X(pos_wmm_file) X(pos_declination_deg) X(pos_declination_valid) \
+    X(pos_mref_h_gauss) X(pos_mref_z_gauss) X(pos_mref_valid)
+
+static void test_apply_hot_partition(void)
+{
+    begin_test("test_apply_hot_partition");
+    int fb = g_fail;
+
+    imud_config_t dst, src, expect;
+
+    config_defaults(&dst);
+    fill_distinct(&src);
+
+    /* fill_distinct must actually differ from the defaults, or the whole test
+     * passes vacuously. */
+    EXPECT(memcmp(&dst, &src, sizeof dst) != 0, "fill_distinct differs from defaults");
+
+    expect = dst;
+    config_apply_hot(&dst, &src);
+
+    /* 1. every hot field arrived */
+#define CHECK_COPIED(f) \
+    EXPECT(memcmp(&dst.f, &src.f, sizeof dst.f) == 0, #f " is [hot], must be copied");
+    HOT_FIELDS(CHECK_COPIED)
+#undef CHECK_COPIED
+
+    /* 2. and nothing else did */
+#define BUILD_EXPECT(f) memcpy(&expect.f, &src.f, sizeof expect.f);
+    HOT_FIELDS(BUILD_EXPECT)
+#undef BUILD_EXPECT
+    EXPECT(memcmp(&dst, &expect, sizeof dst) == 0,
+           "config_apply_hot copied exactly the [hot] set and nothing else");
+
+    /* A few [restart] fields named explicitly, so a failure above reads as
+     * something more useful than one memcmp.  These are the keys where a
+     * silent hot-apply would be worst: the sensor is already open at the old
+     * ODR, and the sockets are already bound to the old ports. */
+    EXPECT(dst.imu_odr_hz     != src.imu_odr_hz,     "imu_odr_hz stays [restart]");
+    EXPECT(dst.mag_odr_hz     != src.mag_odr_hz,     "mag_odr_hz stays [restart]");
+    EXPECT(dst.nmea_dest_port != src.nmea_dest_port, "nmea_dest_port stays [restart]");
+    EXPECT(dst.stream_enabled != src.stream_enabled, "stream_enabled stays [restart]");
+    EXPECT(strcmp(dst.log_file, src.log_file) != 0,  "log_file stays [restart]");
+    EXPECT(strcmp(dst.i2c_bus, src.i2c_bus)   != 0,  "i2c_bus stays [restart]");
+    EXPECT(dst.capture_enabled != src.capture_enabled,
+           "capture_enabled stays [restart]");
+    EXPECT(dst.mount_set != src.mount_set, "mount_set stays [restart]");
+
+    /* pos_lat_deg / pos_lon_deg are deliberately NOT in the hot set: main.c
+     * runs the WMM recomputation over the freshly parsed config and copies
+     * only the derived results, so the live copy has no reader.  Pinned here
+     * because it looks like an omission and is not. */
+    EXPECT(dst.pos_lat_deg != src.pos_lat_deg,
+           "pos_lat_deg not copied (only its WMM result is)");
+    EXPECT(dst.pos_lon_deg != src.pos_lon_deg,
+           "pos_lon_deg not copied (only its WMM result is)");
+
+    /* Applying the same source twice must land in the same place. */
+    imud_config_t once = dst;
+    config_apply_hot(&dst, &src);
+    EXPECT(memcmp(&dst, &once, sizeof dst) == 0, "config_apply_hot is idempotent");
+
+    end_test(fb);
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -937,6 +1186,7 @@ int main(void)
     test_load_partial_override();
     test_position_keys_load();
     test_sim_conf_loads();
+    test_apply_hot_partition();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
