@@ -210,16 +210,35 @@ jobs:
       - name: systemd unit lint
         run: |
           systemd-analyze --version | head -1
-          units=$(cd stage/lib/systemd/system && echo *.service)
+
+          # --root= searches the compiled-in unit path, /usr/lib/systemd/system.
+          # The staged tree puts units in /lib/systemd/system because that is
+          # where the Debian packages place them, and on a real system /lib is
+          # a symlink to /usr/lib — but DESTDIR has no such symlink, so
+          # systemd-analyze finds nothing there.  Assemble a root that looks
+          # like an installed system instead.  The binaries come along because
+          # verify resolves ExecStart= under --root too.
+          root="${RUNNER_TEMP:-/tmp}/unitlint"
+          rm -rf "$root"
+          mkdir -p "$root/usr/lib/systemd" "$root/usr"
+          cp -r stage/lib/systemd/system "$root/usr/lib/systemd/system"
+          cp -r stage/usr/bin            "$root/usr/bin"
+
+          units=$(cd "$root/usr/lib/systemd/system" && echo *.service)
           echo "checking: $units"
+          systemd-analyze --root="$root" unit-paths || true
+
           # --recursive-errors=no keeps this about our units, not about
-          # network-online.target and friends being absent on a runner;
-          # --man=no skips resolving the Documentation= man pages, which are
-          # staged under DESTDIR rather than installed.
-          systemd-analyze verify --root="$PWD/stage" \
+          # network-online.target and friends being absent on a runner.  It
+          # still fails on a syntax warning in the units named here, which is
+          # the misspelled-directive case this gate exists for.
+          # --man=no skips resolving Documentation=, whose man pages are staged
+          # under DESTDIR rather than installed.
+          systemd-analyze verify --root="$root" \
                                  --recursive-errors=no --man=no $units
+
           for u in $units; do
-            systemd-analyze security --offline=true --root="$PWD/stage" "$u" || true
+            systemd-analyze security --offline=true --root="$root" "$u" || true
           done
 
       # A third-party consumer must build against the staged tree using only
