@@ -8,9 +8,18 @@
  * test_drivers.c — register-level decode/encode tests over the mock I2C bus
  * (test/i2c_mock.c, --wrap=ioctl).
  *
- * Covers the two hardware-validated drivers (ism330dhcx, mmc5983ma) plus the
- * MPU-925x pair, whose magnetometer axis mapping and fuse-ROM sensitivity
- * correction are easy to get wrong and cheap to pin down here.
+ * Covers ALL TEN hardware drivers: the two hardware-validated ones
+ * (ism330dhcx, mmc5983ma), the MPU-925x pair, and the six that until now had
+ * no functional coverage at all — lsm6dso, icm42688p, icm20948, ak09916,
+ * lis3mdl, lis2mdl.  Those six are also the ones still flagged
+ * `experimental`, so before this nothing had ever executed a line of them and
+ * a transposed register or a sign error would have waited for silicon that
+ * may never arrive.
+ *
+ * A mock cannot replace bench validation (ROADMAP §1) — it cannot tell you
+ * the chip→board axis remap matches the physical part.  What it does catch is
+ * everything transcribed from a datasheet: register addresses, full-scale
+ * encoding, byte order, and the return-code contract.
  *
  * These paths were previously only ever exercised on a wired-up Raspberry Pi.
  * The tests verify, off-hardware:
@@ -596,6 +605,502 @@ static void test_ak_read_decode(void)
     end(fb);
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+ * The six drivers that had NO functional coverage
+ *
+ * Before this, only ism330dhcx/mmc5983ma/mpu925x/ak8963 were exercised; the
+ * CI coverage job put src/drivers/ at 48% with these six at literally 0.0%.
+ * They are also the six still flagged `experimental` and awaiting bench
+ * validation, so until now nothing had ever executed a line of them — a
+ * transposed register or a sign error would have waited for hardware.
+ *
+ * These do not replace hardware validation (ROADMAP §1): a mock cannot tell
+ * you the chip-to-board axis remap matches the physical part. What it does
+ * catch is the register map, the full-scale encoding, the byte order, and the
+ * return-code contract — the parts that are transcribed from a datasheet and
+ * therefore the parts most likely to be wrong.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+extern const imu_ops_t lsm6dso_ops;
+extern const imu_ops_t icm42688p_ops;
+extern const imu_ops_t icm20948_ops;
+extern const mag_ops_t ak09916_ops;
+extern const mag_ops_t lis3mdl_ops;
+extern const mag_ops_t lis2mdl_ops;
+
+/* ── LSM6DSO (near-twin of the ISM330DHCX) ───────────────────────────────── */
+
+#define LSM_ADDR 0x6A
+
+static void lsm_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
+{
+    uint8_t w[7] = {
+        (uint8_t)(tag << 3),
+        (uint8_t)(x & 0xFF), (uint8_t)((x >> 8) & 0xFF),
+        (uint8_t)(y & 0xFF), (uint8_t)((y >> 8) & 0xFF),
+        (uint8_t)(z & 0xFF), (uint8_t)((z >> 8) & 0xFF),
+    };
+    i2cmock_fifo_push(LSM_ADDR, w, 7);
+}
+
+static void test_lsm_probe(void)
+{
+    begin("test_lsm_probe");
+    int fb = g_fail;
+    const imu_ops_t *d = &lsm6dso_ops;
+
+    i2cmock_reset();
+    /* This driver backs BOTH registry names, so it must accept either
+     * WHO_AM_I — rejecting 0x6D would silently break the lsm6dsox entry. */
+    i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
+    EXPECT(d->probe(FD, LSM_ADDR) == 0, "probe accepts LSM6DSO (0x6C)");
+    i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6D);
+    EXPECT(d->probe(FD, LSM_ADDR) == 0, "probe accepts LSM6DSOX (0x6D)");
+
+    i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6B);   /* ISM330DHCX's ID */
+    EXPECT(d->probe(FD, LSM_ADDR) != 0, "probe rejects a different ST part");
+
+    i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->probe(FD, LSM_ADDR) != 0, "probe fails on I2C error");
+    end(fb);
+}
+
+static void test_lsm_init_registers(void)
+{
+    begin("test_lsm_init_registers");
+    int fb = g_fail;
+    const imu_ops_t *d = &lsm6dso_ops;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
+    EXPECT(d->init(FD, LSM_ADDR, &cfg) == 0, "init succeeds");
+
+    /* ODR 833 → 0x7; ±8 g → 0x0C; the 0x02 bit is LPF2_XL_EN. */
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x10) == (uint8_t)((0x7 << 4) | 0x0C | 0x02),
+           "CTRL1_XL = odr|accel FS|LPF2");
+    /* ±2000 dps → 0x0C. */
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x11) == (uint8_t)((0x7 << 4) | 0x0C),
+           "CTRL2_G = odr|gyro FS");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x12) == 0x44, "CTRL3_C = BDU|IF_INC");
+
+    /* Watermark is in FIFO WORDS and one sample-set is two words (accel+gyro),
+     * so the register holds 2x the configured sample watermark. */
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x07) == (uint8_t)(128 & 0xFF),
+           "FIFO_CTRL1 = watermark*2 low byte");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x08) == 0, "FIFO_CTRL2 high bit clear at 128");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x0A) == 0x26,
+           "FIFO_CTRL4 = continuous + 12.5 Hz temp batching");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x0D) == 0x08, "INT1_CTRL = FIFO threshold");
+
+    /* A watermark past the 511-word cap must clamp, not wrap. */
+    i2cmock_reset();
+    imu_cfg_t big = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 400 };
+    EXPECT(d->init(FD, LSM_ADDR, &big) == 0, "init with an oversized watermark");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x07) == (uint8_t)(511 & 0xFF) &&
+           i2cmock_get_reg(LSM_ADDR, 0x08) == 0x01,
+           "watermark clamps to 511 words");
+
+    i2cmock_reset();
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->init(FD, LSM_ADDR, &cfg) != 0, "init fails on I2C error");
+    end(fb);
+}
+
+static void test_lsm_read_decode(void)
+{
+    begin("test_lsm_read_decode");
+    int fb = g_fail;
+    const imu_ops_t *d = &lsm6dso_ops;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(FD, LSM_ADDR, &cfg);
+
+    i2cmock_set_reg(LSM_ADDR, 0x3A, 3);      /* three words queued */
+    i2cmock_set_reg(LSM_ADDR, 0x3B, 0);      /* no overflow */
+    i2cmock_set_fifo_range(LSM_ADDR, 0x78, 0x7E);
+
+    lsm_push_word(0x03, 1280, 0, 0);         /* temp: 1280/256 + 25 = 30 °C */
+    lsm_push_word(0x02, 100, 200, 300);      /* accel */
+    lsm_push_word(0x01, 10, 20, 30);         /* gyro  */
+
+    imu_sample_t buf[8];
+    int n = -1;
+    EXPECT(d->read(FD, LSM_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(n == 1, "one sample from the accel+gyro pair");
+
+    const float as = 0.122e-3f * 9.80665f;
+    const float gs = 17.5f * (float)(M_PI / 180.0 / 1000.0);
+    EXPECT_NEAR(buf[0].accel[0],  100 * as, 1e-4, "accel X");
+    EXPECT_NEAR(buf[0].accel[1], -200 * as, 1e-4, "accel Y flipped to starboard");
+    EXPECT_NEAR(buf[0].accel[2], -300 * as, 1e-4, "accel Z flipped to down");
+    EXPECT_NEAR(buf[0].gyro[0],   10 * gs, 1e-6, "gyro X");
+    EXPECT_NEAR(buf[0].gyro[1],  -20 * gs, 1e-6, "gyro Y flipped");
+    EXPECT_NEAR(buf[0].gyro[2],  -30 * gs, 1e-6, "gyro Z flipped");
+    EXPECT_NEAR(buf[0].temp_c, 30.0f, 1e-3, "temperature from the FIFO temp word");
+    end(fb);
+}
+
+static void test_lsm_read_overflow_and_errors(void)
+{
+    begin("test_lsm_read_overflow_and_errors");
+    int fb = g_fail;
+    const imu_ops_t *d = &lsm6dso_ops;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(FD, LSM_ADDR, &cfg);
+
+    /* Empty FIFO with the overflow flag set: 1 (not an error), zero samples. */
+    i2cmock_set_reg(LSM_ADDR, 0x3A, 0);
+    i2cmock_set_reg(LSM_ADDR, 0x3B, 0x40);
+    imu_sample_t buf[4];
+    int n = -1;
+    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == 1, "overflow reports 1, not -1");
+    EXPECT(n == 0, "and produces no samples");
+
+    /* Plain empty FIFO: 0 samples, success. */
+    i2cmock_set_reg(LSM_ADDR, 0x3B, 0x00);
+    n = -1;
+    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == 0, "empty FIFO returns 0");
+    EXPECT(n == 0, "no samples");
+
+    /* A bus fault is the ONLY thing allowed to return -1: the reader counts
+     * those toward its error-reset threshold. */
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+/* ── ICM-42688-P ─────────────────────────────────────────────────────────── */
+
+#define ICM42_ADDR 0x68
+
+/* One 16-byte FIFO packet: header, big-endian accel/gyro, temp at [13]. */
+static void icm42_push_packet(uint8_t hdr, int16_t ax, int16_t ay, int16_t az,
+                              int16_t gx, int16_t gy, int16_t gz, int8_t temp)
+{
+    uint8_t p[16];
+    memset(p, 0, sizeof p);
+    p[0] = hdr;
+    const int16_t v[6] = { ax, ay, az, gx, gy, gz };
+    for (int i = 0; i < 6; i++) {
+        p[1 + i * 2] = (uint8_t)((v[i] >> 8) & 0xFF);   /* big endian */
+        p[2 + i * 2] = (uint8_t)(v[i] & 0xFF);
+    }
+    p[13] = (uint8_t)temp;
+    i2cmock_fifo_push(ICM42_ADDR, p, 16);
+}
+
+static void test_icm42_probe_and_init(void)
+{
+    begin("test_icm42_probe_and_init");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm42688p_ops;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ICM42_ADDR, 0x75, 0x47);
+    EXPECT(d->probe(FD, ICM42_ADDR) == 0, "probe accepts WHO_AM_I 0x47");
+    i2cmock_set_reg(ICM42_ADDR, 0x75, 0x67);   /* ICM-42605 */
+    EXPECT(d->probe(FD, ICM42_ADDR) != 0, "probe rejects a sibling part");
+    i2cmock_set_reg(ICM42_ADDR, 0x75, 0x47);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->probe(FD, ICM42_ADDR) != 0, "probe fails on I2C error");
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
+    EXPECT(d->init(FD, ICM42_ADDR, &cfg) == 0, "init succeeds");
+
+    /* FS bits live in [7:5]: ±2000 dps → 0x0, ±8 g → 0x1. */
+    EXPECT((i2cmock_get_reg(ICM42_ADDR, 0x4F) >> 5) == 0x0, "GYRO_CONFIG0 FS = 2000 dps");
+    EXPECT((i2cmock_get_reg(ICM42_ADDR, 0x50) >> 5) == 0x1, "ACCEL_CONFIG0 FS = 8 g");
+    EXPECT(i2cmock_get_reg(ICM42_ADDR, 0x4E) == 0x0F, "PWR_MGMT0 = accel+gyro low-noise");
+    EXPECT(i2cmock_get_reg(ICM42_ADDR, 0x54) == 0x11, "TMST_CONFIG = timestamp to regs");
+    EXPECT(i2cmock_get_reg(ICM42_ADDR, 0x64) == 0x00,
+           "INT_ASYNC_RESET cleared after reset (datasheet 12.6)");
+    EXPECT(i2cmock_get_reg(ICM42_ADDR, 0x60) == 64, "FIFO watermark low byte");
+    EXPECT(i2cmock_get_reg(ICM42_ADDR, 0x65) == 0x04, "INT_SOURCE0 = FIFO threshold");
+    end(fb);
+}
+
+static void test_icm42_read_decode(void)
+{
+    begin("test_icm42_read_decode");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm42688p_ops;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(FD, ICM42_ADDR, &cfg);
+
+    /* FIFO_COUNT is BIG endian here (COUNTH first): 32 bytes = 2 packets. */
+    i2cmock_set_reg(ICM42_ADDR, 0x2E, 0x00);
+    i2cmock_set_reg(ICM42_ADDR, 0x2F, 32);
+    i2cmock_set_fifo_reg(ICM42_ADDR, 0x30);
+
+    /* header bit6 = accel present, bit5 = gyro present. */
+    icm42_push_packet(0x60, 100, 200, 300, 10, 20, 30, 5);
+    icm42_push_packet(0x60, 1, 2, 3, 4, 5, 6, 5);
+
+    imu_sample_t buf[8];
+    int n = -1;
+    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(n == 2, "two packets decoded");
+
+    const float as = 4.0f * 9.80665f / 32768.0f;
+    const float gs = 500.0f * (float)(M_PI / 180.0) / 32768.0f;
+    EXPECT_NEAR(buf[0].accel[0],  100 * as, 1e-4, "accel X (big-endian decode)");
+    EXPECT_NEAR(buf[0].accel[1], -200 * as, 1e-4, "accel Y flipped");
+    EXPECT_NEAR(buf[0].accel[2], -300 * as, 1e-4, "accel Z flipped");
+    EXPECT_NEAR(buf[0].gyro[0],   10 * gs, 1e-6, "gyro X");
+    EXPECT_NEAR(buf[0].gyro[1],  -20 * gs, 1e-6, "gyro Y flipped");
+    EXPECT_NEAR(buf[0].gyro[2],  -30 * gs, 1e-6, "gyro Z flipped");
+    EXPECT_NEAR(buf[0].temp_c, 30.0f, 1e-3, "temp = int8 + 25");
+    EXPECT(buf[1].seq == buf[0].seq + 1, "seq increments across packets");
+
+    /* Empty FIFO. */
+    i2cmock_set_reg(ICM42_ADDR, 0x2E, 0);
+    i2cmock_set_reg(ICM42_ADDR, 0x2F, 0);
+    n = -1;
+    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == 0 && n == 0, "empty FIFO → 0");
+
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+/* ── ICM-20948 ───────────────────────────────────────────────────────────── */
+
+#define ICM209_ADDR 0x68
+
+static void test_icm209_probe(void)
+{
+    begin("test_icm209_probe");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm20948_ops;
+
+    i2cmock_reset();
+    /* probe selects bank 0 first, then reads WHO_AM_I at 0x00. */
+    i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
+    EXPECT(d->probe(FD, ICM209_ADDR) == 0, "probe accepts WHO_AM_I 0xEA");
+    EXPECT(i2cmock_get_reg(ICM209_ADDR, 0x7F) == 0x00, "probe selected bank 0");
+
+    i2cmock_set_reg(ICM209_ADDR, 0x00, 0x12);
+    EXPECT(d->probe(FD, ICM209_ADDR) != 0, "probe rejects wrong WHO_AM_I");
+
+    i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->probe(FD, ICM209_ADDR) != 0, "probe fails on I2C error");
+    end(fb);
+}
+
+static void test_icm209_read_decode(void)
+{
+    begin("test_icm209_read_decode");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm20948_ops;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
+    imu_cfg_t cfg = { .odr_hz = 225, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(FD, ICM209_ADDR, &cfg);
+
+    /* FIFO count is 13-bit big-endian at 0x70/0x71; 24 bytes = 2 samples of 12. */
+    i2cmock_set_reg(ICM209_ADDR, 0x70, 0x00);
+    i2cmock_set_reg(ICM209_ADDR, 0x71, 24);
+
+    /* The driver burst-reads from FIFO_R_W (0x72) through the register file,
+     * so lay the two 12-byte samples out from there.  Big-endian throughout. */
+    uint8_t s[24];
+    memset(s, 0, sizeof s);
+    const int16_t v0[6] = { 100, 200, 300, 10, 20, 30 };
+    const int16_t v1[6] = { 1, 2, 3, 4, 5, 6 };
+    for (int i = 0; i < 6; i++) {
+        s[i * 2]      = (uint8_t)((v0[i] >> 8) & 0xFF);
+        s[i * 2 + 1]  = (uint8_t)(v0[i] & 0xFF);
+        s[12 + i * 2] = (uint8_t)((v1[i] >> 8) & 0xFF);
+        s[13 + i * 2] = (uint8_t)(v1[i] & 0xFF);
+    }
+    i2cmock_set_regs(ICM209_ADDR, 0x72, s, 24);
+
+    imu_sample_t buf[8];
+    int n = -1;
+    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(n == 2, "two 12-byte samples decoded");
+
+    const float as = 9.80665f / 8192.0f;              /* ±4 g  */
+    const float gs = (1.0f / 65.5f) * (float)(M_PI / 180.0);  /* ±500 dps */
+    EXPECT_NEAR(buf[0].accel[0],  100 * as, 1e-4, "accel X");
+    EXPECT_NEAR(buf[0].accel[1], -200 * as, 1e-4, "accel Y flipped");
+    EXPECT_NEAR(buf[0].accel[2], -300 * as, 1e-4, "accel Z flipped");
+    EXPECT_NEAR(buf[0].gyro[0],   10 * gs, 1e-6, "gyro X");
+    EXPECT_NEAR(buf[0].gyro[1],  -20 * gs, 1e-6, "gyro Y flipped");
+    EXPECT_NEAR(buf[0].gyro[2],  -30 * gs, 1e-6, "gyro Z flipped");
+    EXPECT(buf[0].chip_ts == 0, "no hardware timestamp on this part");
+
+    /* Fewer than one whole sample in the FIFO: nothing to produce. */
+    i2cmock_set_reg(ICM209_ADDR, 0x71, 8);
+    n = -1;
+    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == 0 && n == 0,
+           "a partial sample yields none");
+
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+/* ── AK09916 (compass inside the ICM-20948) ──────────────────────────────── */
+
+#define AK099_ADDR 0x0C
+
+static void test_ak099_probe_and_read(void)
+{
+    begin("test_ak099_probe_and_read");
+    int fb = g_fail;
+    const mag_ops_t *d = &ak09916_ops;
+
+    i2cmock_reset();
+    i2cmock_set_reg(AK099_ADDR, 0x01, 0x09);
+    EXPECT(d->probe(FD, AK099_ADDR) == 0, "probe accepts WIA2 0x09");
+    i2cmock_set_reg(AK099_ADDR, 0x01, 0x48);   /* AK8963's value */
+    EXPECT(d->probe(FD, AK099_ADDR) != 0, "probe rejects the AK8963 ID");
+    i2cmock_set_reg(AK099_ADDR, 0x01, 0x09);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->probe(FD, AK099_ADDR) != 0, "probe fails on I2C error");
+
+    /* Data ready, no overflow. */
+    i2cmock_reset();
+    i2cmock_set_reg(AK099_ADDR, 0x10, 0x01);            /* ST1: DRDY */
+    uint8_t raw[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };  /* 100, 200, 300 LE */
+    i2cmock_set_regs(AK099_ADDR, 0x11, raw, 6);
+    i2cmock_set_reg(AK099_ADDR, 0x18, 0x00);            /* ST2: no HOFL */
+
+    mag_sample_t m;
+    memset(&m, 0, sizeof m);
+    EXPECT(d->read(FD, AK099_ADDR, &m) == 0, "read returns 0 when DRDY is set");
+    EXPECT(m.valid, "sample marked valid");
+    EXPECT_NEAR(m.field[0],  100 * 0.15f, 1e-3, "X = +chip X");
+    EXPECT_NEAR(m.field[1], -200 * 0.15f, 1e-3, "Y flipped to starboard");
+    EXPECT_NEAR(m.field[2],  300 * 0.15f, 1e-3, "Z already down, not flipped");
+
+    /* Magnetic overflow: the sample is unusable but the bus is fine, so this
+     * must be 1 (skip) rather than -1 (which counts toward an error reset). */
+    i2cmock_set_reg(AK099_ADDR, 0x18, 0x08);
+    EXPECT(d->read(FD, AK099_ADDR, &m) == 1, "HOFL overflow returns 1, not -1");
+
+    /*
+     * DRDY never asserts.  Same contract, and this is the exact bug fixed
+     * before 1.5 across the experimental drivers: returning -1 here made a
+     * merely-not-ready sensor look like a bus fault and trip the reset path.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(AK099_ADDR, 0x10, 0x00);
+    EXPECT(d->read(FD, AK099_ADDR, &m) == 1, "no DRDY returns 1 (no data yet)");
+
+    i2cmock_set_reg(AK099_ADDR, 0x10, 0x01);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, AK099_ADDR, &m) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+/* ── LIS3MDL / LIS2MDL ───────────────────────────────────────────────────── */
+
+#define LIS3_ADDR 0x1C
+#define LIS2_ADDR 0x1E
+
+static void test_lis3mdl(void)
+{
+    begin("test_lis3mdl");
+    int fb = g_fail;
+    const mag_ops_t *d = &lis3mdl_ops;
+
+    i2cmock_reset();
+    i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x3D);
+    EXPECT(d->probe(FD, LIS3_ADDR) == 0, "probe accepts WHO_AM_I 0x3D");
+    i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x40);   /* LIS2MDL's value */
+    EXPECT(d->probe(FD, LIS3_ADDR) != 0, "probe rejects the LIS2MDL ID");
+    i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x3D);
+
+    mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
+    EXPECT(d->init(FD, LIS3_ADDR, &mcfg) == 0, "init succeeds");
+    EXPECT((i2cmock_get_reg(LIS3_ADDR, 0x22) & 0x03) == 0x00,
+           "CTRL_REG3 selects continuous-conversion mode");
+
+    /* No new data: ZYXDA clear must be "not ready" (1), not a bus error. */
+    i2cmock_set_reg(LIS3_ADDR, 0x27, 0x00);
+    mag_sample_t m;
+    memset(&m, 0, sizeof m);
+    EXPECT(d->read(FD, LIS3_ADDR, &m) == 1, "ZYXDA clear returns 1");
+
+    /*
+     * Data ready.  This part needs 0x80|reg on the sub-address to enable
+     * address auto-increment (datasheet §6.1.1); drop that bit and a burst
+     * read returns OUT_X_L six times instead of walking the output registers,
+     * which decodes to a plausible-looking but wrong field.
+     *
+     * The mock is a flat register file and does not implement ST's
+     * auto-increment MSB, so the driver's read lands at the raw pointer it
+     * sends.  That is turned into the assertion: real data at 0xA8 (0x28|0x80)
+     * and decoy data at the plain 0x28, so decoding the decoys means the
+     * driver forgot the bit.
+     */
+    i2cmock_set_reg(LIS3_ADDR, 0x27, 0x08);
+    uint8_t decoy[6] = { 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F };   /* 32767 x3 */
+    i2cmock_set_regs(LIS3_ADDR, 0x28, decoy, 6);
+    uint8_t raw[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };     /* 100, 200, 300 */
+    i2cmock_set_regs(LIS3_ADDR, 0x28 | 0x80, raw, 6);
+
+    EXPECT(d->read(FD, LIS3_ADDR, &m) == 0, "read returns 0 when data is ready");
+    EXPECT(m.valid, "sample marked valid");
+    const float s3 = 100.0f / 6842.0f;
+    EXPECT_NEAR(m.field[0],  200 * s3, 1e-3, "X = +chip Y (bow)");
+    EXPECT_NEAR(m.field[1], -100 * s3, 1e-3, "Y = -chip X (starboard)");
+    EXPECT_NEAR(m.field[2], -300 * s3, 1e-3, "Z = -chip Z (down)");
+
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, LIS3_ADDR, &m) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+static void test_lis2mdl(void)
+{
+    begin("test_lis2mdl");
+    int fb = g_fail;
+    const mag_ops_t *d = &lis2mdl_ops;
+
+    i2cmock_reset();
+    i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x40);
+    EXPECT(d->probe(FD, LIS2_ADDR) == 0, "probe accepts WHO_AM_I 0x40");
+    i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x3D);   /* LIS3MDL's value */
+    EXPECT(d->probe(FD, LIS2_ADDR) != 0, "probe rejects the LIS3MDL ID");
+    i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x40);
+
+    mag_cfg_t mcfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    EXPECT(d->init(FD, LIS2_ADDR, &mcfg) == 0, "init succeeds");
+    EXPECT((i2cmock_get_reg(LIS2_ADDR, 0x60) & 0x03) == 0x00,
+           "CFG_REG_A selects continuous mode");
+
+    i2cmock_set_reg(LIS2_ADDR, 0x67, 0x00);
+    mag_sample_t m;
+    memset(&m, 0, sizeof m);
+    EXPECT(d->read(FD, LIS2_ADDR, &m) == 1, "ZYXDA clear returns 1");
+
+    i2cmock_set_reg(LIS2_ADDR, 0x67, 0x08);
+    uint8_t raw[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };
+    i2cmock_set_regs(LIS2_ADDR, 0x68, raw, 6);
+
+    EXPECT(d->read(FD, LIS2_ADDR, &m) == 0, "read returns 0 when data is ready");
+    const float s2 = 0.15f;
+    EXPECT_NEAR(m.field[0],  200 * s2, 1e-3, "X = +chip Y (bow)");
+    EXPECT_NEAR(m.field[1], -100 * s2, 1e-3, "Y = -chip X (starboard)");
+    EXPECT_NEAR(m.field[2], -300 * s2, 1e-3, "Z = -chip Z (down)");
+
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(FD, LIS2_ADDR, &m) == -1, "I2C error returns -1");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver register tests (mock I2C) ===");
@@ -618,6 +1123,21 @@ int main(void)
     test_ak_probe();
     test_ak_init_and_fuse_rom();
     test_ak_read_decode();
+
+    test_lsm_probe();
+    test_lsm_init_registers();
+    test_lsm_read_decode();
+    test_lsm_read_overflow_and_errors();
+
+    test_icm42_probe_and_init();
+    test_icm42_read_decode();
+
+    test_icm209_probe();
+    test_icm209_read_decode();
+
+    test_ak099_probe_and_read();
+    test_lis3mdl();
+    test_lis2mdl();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

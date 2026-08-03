@@ -301,7 +301,10 @@ test_imu_math: src/imu_math.c test/test_imu_math.c
 # ioctl() is redirected to that symbol, so wrapping plain ioctl alone misses
 # every call there.
 test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
-              src/drivers/mpu925x.c src/drivers/ak8963.c src/log.c \
+              src/drivers/mpu925x.c src/drivers/ak8963.c \
+              src/drivers/lsm6dso.c src/drivers/icm42688p.c \
+              src/drivers/icm20948.c src/drivers/ak09916.c \
+              src/drivers/lis3mdl.c src/drivers/lis2mdl.c src/log.c \
               test/i2c_mock.c test/test_drivers.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
