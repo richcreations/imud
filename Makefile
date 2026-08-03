@@ -73,6 +73,7 @@ IMUD_SRCS   = src/cal.c \
 
 # Calibration tool: hardware access + config; no threads or output
 CAL_SRCS    = src/cal.c \
+              src/cal_capture.c \
               src/capture.c \
               src/cli.c \
               src/log.c \
@@ -242,7 +243,7 @@ test_ring: src/ring.c test/test_ring.c
 test_mount: src/config.c src/log.c test/test_mount.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-test_cal: src/cal.c src/log.c test/test_cal.c
+test_cal: src/cal.c src/cal_capture.c src/capture.c src/log.c test/test_cal.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
 test_cal_math: src/cal_math.c test/test_cal_math.c
@@ -302,6 +303,8 @@ test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c test/test_bridge.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# cal_capture.c is here for the .imucap loading behind `imud-cal characterize`
+# and `fit-temp`; capture.c is its reader.
 # Driver registry + ops-table sanity for every registered chip (no hardware).
 # Links every driver: sim.c pulls in capture.c for its .imucap playback path,
 # and the drivers reference log_emit (LOG_E) on their error branches.

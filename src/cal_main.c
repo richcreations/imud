@@ -41,6 +41,7 @@
 
 #include "cal.h"
 #include "cal_math.h"
+#include "cal_capture.h"
 #include "capture.h"
 #include "cli.h"
 #include "config.h"
@@ -679,133 +680,59 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
 /* ── Offline capture analysis (characterize / fit-temp) ──────────────────── */
 
 /*
- * Load the IMU records of an .imucap into block-averaged double arrays.
- * Long overnight records are decimated to at most CAP_ANALYZE_MAX samples
- * per axis — block-averaging leaves the Allan deviation at the surviving
- * cluster times untouched (θ at block boundaries is exact).
- * Returns sample count, 0 when the file has no IMU records, -1 on error.
+ * Load an .imucap and report what was loaded.  The reading and the arithmetic
+ * live in src/cal_capture.c (testable); this is the operator-facing half.
+ * Returns the sample count, or <= 0 after printing why.
  */
-#define CAP_ANALYZE_MAX (1u << 22)
-
-static void free_capture(double *gyro[3], double *accel[3], double *temp);
-
 static long load_capture(const char *path, double settle_sec, double *fs_out,
                          double *gyro[3], double *accel[3], double **temp)
 {
-    cap_reader_t r;
-    int rc = cap_reader_open(&r, path);
-    if (rc != 0) {
+    cal_capture_stats_t cs;
+    int  cap_rc;
+    long n = cal_capture_load(path, settle_sec, 0, gyro, accel, temp,
+                              &cs, &cap_rc);
+
+    if (n < 0 && cap_rc != 0) {
         fprintf(stderr, "cal: cannot open %s (%s)\n", path,
-                rc == CAP_ERR_FORMAT ? "not an .imucap / wrong version"
-                                     : strerror(errno));
+                cap_rc == CAP_ERR_FORMAT ? "not an .imucap / wrong version"
+                                         : strerror(errno));
         return -1;
     }
-
-    /* Pass 1: count IMU records and measure the time span. */
-    cap_record_t rec;
-    uint64_t first_mono = 0, last_mono = 0;
-    size_t   count = 0;
-    while (cap_reader_next(&r, &rec) == 1) {
-        if (rec.type != CAP_REC_IMU) continue;
-        if (count == 0) first_mono = rec.mono_ns;
-        last_mono = rec.mono_ns;
-        count++;
+    if (n < 0) {
+        fprintf(stderr, "cal: out of memory (%zu samples)\n", cs.count);
+        return -1;
     }
-    if (count < 16 || last_mono <= first_mono) {
+    if (n == 0) {
         fprintf(stderr, "cal: %s holds too little IMU data (%zu records)\n",
-                path, count);
-        cap_reader_close(&r);
+                path, cs.count);
         return 0;
     }
 
-    double span_s = (double)(last_mono - first_mono) * 1e-9;
-    double fs_raw = (double)(count - 1) / span_s;
-    size_t decim  = count / CAP_ANALYZE_MAX + 1;
-    size_t n      = count / decim;
-
-    for (int a = 0; a < 3; a++) {
-        gyro[a]  = calloc(n, sizeof(double));
-        accel[a] = calloc(n, sizeof(double));
-    }
-    *temp = calloc(n, sizeof(double));
-    if (!gyro[0] || !gyro[1] || !gyro[2] ||
-        !accel[0] || !accel[1] || !accel[2] || !*temp) {
-        fprintf(stderr, "cal: out of memory (%zu samples)\n", n);
-        free_capture(gyro, accel, *temp);
-        *temp = NULL;
-        cap_reader_close(&r);
-        return -1;
-    }
-
-    /* Pass 2: block-average into the arrays.  Skip the first settle_sec of
-     * data, exactly as the daemon's fusion discards startup_settle_sec: the
-     * gyro needs ~5 s to settle after power-on, and those transient samples
-     * both trip the motion gate and inflate the Allan noise floor. */
-    cap_reader_rewind(&r);
-    uint64_t settle_ns = (uint64_t)(settle_sec > 0.0 ? settle_sec * 1e9 : 0.0);
-    size_t in_block = 0, out = 0, n_skip = 0;
-    double acc_g[3] = {0}, acc_a[3] = {0}, acc_t = 0;
-    while (cap_reader_next(&r, &rec) == 1 && out < n) {
-        if (rec.type != CAP_REC_IMU) continue;
-        if (rec.mono_ns - first_mono < settle_ns) { n_skip++; continue; }
-        for (int a = 0; a < 3; a++) {
-            acc_g[a] += rec.imu.gyro[a];
-            acc_a[a] += rec.imu.accel[a];
-        }
-        acc_t += rec.imu.temp_c;
-        if (++in_block == decim) {
-            for (int a = 0; a < 3; a++) {
-                gyro[a][out]  = acc_g[a] / (double)decim;
-                accel[a][out] = acc_a[a] / (double)decim;
-                acc_g[a] = acc_a[a] = 0;
-            }
-            (*temp)[out] = acc_t / (double)decim;
-            acc_t = 0;
-            in_block = 0;
-            out++;
-        }
-    }
-    cap_reader_close(&r);
-
-    *fs_out = fs_raw / (double)decim;
+    *fs_out = cs.fs_out;
     printf("Loaded %s: %zu samples over %.1f min (%.1f Hz",
-           path, count, span_s / 60.0, fs_raw);
-    if (decim > 1)
-        printf(", analyzed at %.1f Hz after %zux averaging", *fs_out, decim);
+           path, cs.count, cs.span_s / 60.0, cs.fs_raw);
+    if (cs.decim > 1)
+        printf(", analyzed at %.1f Hz after %zux averaging", cs.fs_out, cs.decim);
     printf(")\n");
-    if (n_skip)
+    if (cs.n_skip)
         printf("Skipped first %.1f s startup settle (%zu samples)\n",
-               settle_sec, n_skip);
-    return (long)out;
+               settle_sec, cs.n_skip);
+    return n;
 }
 
 static void free_capture(double *gyro[3], double *accel[3], double *temp)
 {
-    for (int a = 0; a < 3; a++) { free(gyro[a]); free(accel[a]); }
-    free(temp);
+    cal_capture_free(gyro, accel, temp);
 }
 
 /* Warn when the record was not stationary — both analyses assume it. */
 static void motion_gate(double *gyro[3], double *accel[3], size_t n)
 {
-    double gmin = gyro[0][0], gmax = gmin;
-    double asum = 0, asum2 = 0;
-    for (size_t i = 0; i < n; i++) {
-        for (int a = 0; a < 3; a++) {
-            if (gyro[a][i] < gmin) gmin = gyro[a][i];
-            if (gyro[a][i] > gmax) gmax = gyro[a][i];
-        }
-        double m = sqrt(accel[0][i] * accel[0][i] +
-                        accel[1][i] * accel[1][i] +
-                        accel[2][i] * accel[2][i]);
-        asum += m; asum2 += m * m;
-    }
-    double amean = asum / (double)n;
-    double astd  = sqrt(asum2 / (double)n - amean * amean);
-    if (gmax - gmin > 0.1 || astd > 0.2)
+    double gpp, astd;
+    if (!cal_capture_motion_ok(gyro, accel, n, &gpp, &astd))
         printf("WARNING: capture does not look stationary "
                "(gyro p-p %.3f rad/s, |a| std %.3f m/s^2) — "
-               "results will be pessimistic\n", gmax - gmin, astd);
+               "results will be pessimistic\n", gpp, astd);
 }
 
 static int do_characterize(imud_cal_t *cal, const char *from, double settle_sec)

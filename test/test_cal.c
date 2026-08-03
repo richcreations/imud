@@ -18,7 +18,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 #include "cal.h"
+#include "cal_capture.h"
+#include "capture.h"
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
 
@@ -32,6 +35,9 @@ static int g_pass, g_fail;
 
 #define EXPECT_NEAR(a, b, eps, msg) \
     EXPECT(fabsf((float)(a) - (float)(b)) < (float)(eps), msg)
+
+#define EXPECT_NEAR_D(a, b, eps, msg) \
+    EXPECT(fabs((double)(a) - (double)(b)) < (double)(eps), msg)
 
 static void begin(const char *name) { printf("%-52s", name); fflush(stdout); }
 static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
@@ -287,6 +293,256 @@ static void test_round_trip_noise_temp(void)
     end(fb);
 }
 
+/* ── cal_capture: .imucap loading for the offline analysis modes ─────────── */
+
+/*
+ * `imud-cal characterize` and `imud-cal fit-temp` both begin here: count the
+ * IMU records, measure the span, block-average into per-axis arrays and skip a
+ * startup settle window.  It is a file parser with arithmetic in it, and until
+ * it moved to src/cal_capture.c it lived in cal_main.c where no test binary
+ * could reach it.
+ *
+ * Fixtures are built with the real cap_writer, exactly as test_capture does —
+ * the point is to exercise the reader against files the daemon could actually
+ * have produced.
+ */
+
+static const char *cappath(int id)
+{
+    static char path[80];
+    snprintf(path, sizeof path, "/tmp/imud_test_calcap_%d_%d.imucap",
+             (int)getpid(), id);
+    return path;
+}
+
+/*
+ * n IMU records at `hz`, gyro X = gyro_of(i) on every axis, |accel| = 9.80665
+ * straight down, temperature ramping 20 °C + i * temp_step.
+ */
+static void write_cap(const char *path, int n, double hz,
+                      double (*gyro_of)(int), double temp_step)
+{
+    cap_writer_t w;
+    if (cap_writer_open(&w, path, (int)hz, "sim", "sim", "1.9", 0, 0) != 0) {
+        fprintf(stderr, "  (could not create %s)\n", path);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        imu_sample_t s;
+        memset(&s, 0, sizeof s);
+        double g = gyro_of ? gyro_of(i) : 0.0;
+        for (int a = 0; a < 3; a++) s.gyro[a] = (float)g;
+        s.accel[0] = 0.0f; s.accel[1] = 0.0f; s.accel[2] = 9.80665f;
+        s.temp_c   = (float)(20.0 + i * temp_step);
+        cap_writer_imu(&w, &s, (uint64_t)((double)i / hz * 1e9));
+    }
+    cap_writer_close(&w);
+}
+
+static double gyro_zero(int i)  { (void)i; return 0.0; }
+static double gyro_alt(int i)   { return (i % 2) ? -1.0 : 1.0; }
+static double gyro_ramp(int i)  { return i * 0.01; }
+
+static void test_calcap_basic(void)
+{
+    begin("test_calcap_basic");
+    int fb = g_fail;
+
+    const char *path = cappath(1);
+    write_cap(path, 100, 100.0, gyro_zero, 0.0);
+
+    double *gyro[3], *accel[3], *temp;
+    cal_capture_stats_t st;
+    int cap_rc = 0;
+    long n = cal_capture_load(path, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+
+    EXPECT(n == 100, "100 records in, 100 samples out");
+    EXPECT(st.count == 100, "record count reported");
+    EXPECT(st.decim == 1, "no decimation needed");
+    EXPECT(st.n_skip == 0, "nothing skipped without a settle window");
+    /* fs is (count - 1) / span: 99 intervals over 0.99 s. */
+    EXPECT_NEAR_D(st.fs_raw, 100.0, 0.01, "sample rate recovered");
+    EXPECT_NEAR_D(st.fs_out, st.fs_raw, 1e-9, "fs_out == fs_raw when decim is 1");
+    EXPECT_NEAR_D(st.span_s, 0.99, 0.01, "span measured");
+    EXPECT(cap_rc == 0, "no reader error");
+
+    /* The payload actually arrived, not just the count. */
+    EXPECT_NEAR_D(accel[2][0], 9.80665, 1e-4, "accel Z carried through");
+    EXPECT_NEAR_D(temp[0], 20.0, 1e-4, "temperature carried through");
+
+    cal_capture_free(gyro, accel, temp);
+    remove(path);
+    end(fb);
+}
+
+static void test_calcap_settle(void)
+{
+    begin("test_calcap_settle");
+    int fb = g_fail;
+
+    /* 200 records at 100 Hz = 2 s; skip the first second.  Temperature ramps
+     * 0.5 °C per sample, so which records survived is checkable by value. */
+    const char *path = cappath(2);
+    write_cap(path, 200, 100.0, gyro_zero, 0.5);
+
+    double *gyro[3], *accel[3], *temp;
+    cal_capture_stats_t st;
+    int cap_rc = 0;
+    long n = cal_capture_load(path, 1.0, 0, gyro, accel, &temp, &st, &cap_rc);
+
+    EXPECT(st.n_skip == 100, "one second of records skipped");
+    EXPECT(n == 100, "the rest are returned");
+    /* Record 100 has temp 20 + 100*0.5 = 70 — the samples kept are the LATER
+     * ones, which is the whole point of the settle window. */
+    EXPECT_NEAR_D(temp[0], 70.0, 1e-3, "first surviving sample is post-settle");
+
+    cal_capture_free(gyro, accel, temp);
+
+    /* A settle window longer than the record leaves nothing.  n_out is 0 and
+     * the arrays are still safe to free. */
+    n = cal_capture_load(path, 10.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(n == 0, "settle longer than the record yields nothing");
+    cal_capture_free(gyro, accel, temp);
+
+    remove(path);
+    end(fb);
+}
+
+static void test_calcap_decimation(void)
+{
+    begin("test_calcap_decimation");
+    int fb = g_fail;
+
+    /* Gyro alternates +1 / -1, so a block average over an even factor is
+     * exactly zero — which is what proves the averaging runs rather than the
+     * samples merely being subsampled. */
+    const char *path = cappath(3);
+    write_cap(path, 100, 100.0, gyro_alt, 0.0);
+
+    double *gyro[3], *accel[3], *temp;
+    cal_capture_stats_t st;
+    int cap_rc = 0;
+    /* max_samples 25 → decim = 100/25 + 1 = 5. */
+    long n = cal_capture_load(path, 0.0, 25, gyro, accel, &temp, &st, &cap_rc);
+
+    EXPECT(st.decim == 5, "decimation factor from max_samples");
+    EXPECT(n == 20, "count / decim samples out");
+    EXPECT_NEAR_D(st.fs_out, st.fs_raw / 5.0, 1e-6, "fs_out scaled by decim");
+    /* Blocks of 5 from +1,-1,... average to +1/5. */
+    EXPECT_NEAR_D(gyro[0][0], 0.2, 1e-9, "block average, not subsample");
+    EXPECT_NEAR_D(accel[2][0], 9.80665, 1e-4, "constant survives averaging");
+
+    cal_capture_free(gyro, accel, temp);
+
+    /* max_samples 0 selects the production cap, which no test file reaches. */
+    n = cal_capture_load(path, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(n == 100 && st.decim == 1, "max_samples 0 → CAP_ANALYZE_MAX");
+    cal_capture_free(gyro, accel, temp);
+
+    remove(path);
+    end(fb);
+}
+
+static void test_calcap_rejects(void)
+{
+    begin("test_calcap_rejects");
+    int fb = g_fail;
+
+    double *gyro[3], *accel[3], *temp;
+    cal_capture_stats_t st;
+    int cap_rc = 0;
+
+    /* A file that does not exist. */
+    long n = cal_capture_load("/nonexistent/imud_no_such.imucap", 0.0, 0,
+                              gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(n == -1 && cap_rc != 0, "missing file → error with a reader code");
+    cal_capture_free(gyro, accel, temp);   /* must be safe after the error */
+
+    /* Something that is not an .imucap at all. */
+    const char *junk = cappath(4);
+    FILE *f = fopen(junk, "wb");
+    if (f) { fputs("this is not a capture file at all, not even close", f); fclose(f); }
+    n = cal_capture_load(junk, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(n == -1 && cap_rc == CAP_ERR_FORMAT, "not an .imucap → CAP_ERR_FORMAT");
+    cal_capture_free(gyro, accel, temp);
+    remove(junk);
+
+    /* Fewer than 16 IMU records is "too little data", not an error: the
+     * distinction is what lets cal_main print a useful message. */
+    const char *few = cappath(5);
+    write_cap(few, 8, 100.0, gyro_zero, 0.0);
+    n = cal_capture_load(few, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(n == 0 && cap_rc == 0, "under 16 records → 0, not -1");
+    EXPECT(st.count == 8, "and the count is reported so the caller can say so");
+    cal_capture_free(gyro, accel, temp);
+    remove(few);
+
+    /* A valid capture holding only MAG records — the count-is-zero path. */
+    const char *magonly = cappath(6);
+    cap_writer_t w;
+    if (cap_writer_open(&w, magonly, 100, "sim", "sim", "1.9", 0, 0) == 0) {
+        for (int i = 0; i < 50; i++) {
+            mag_sample_t m;
+            memset(&m, 0, sizeof m);
+            cap_writer_mag(&w, &m, (uint64_t)i * 10000000ULL);
+        }
+        cap_writer_close(&w);
+        n = cal_capture_load(magonly, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+        EXPECT(n == 0 && st.count == 0, "mag-only capture → no IMU data");
+        cal_capture_free(gyro, accel, temp);
+    }
+    remove(magonly);
+
+    end(fb);
+}
+
+static void test_calcap_motion_gate(void)
+{
+    begin("test_calcap_motion_gate");
+    int fb = g_fail;
+
+    const char *path = cappath(7);
+    double *gyro[3], *accel[3], *temp;
+    cal_capture_stats_t st;
+    int cap_rc = 0;
+    double gpp, astd;
+
+    /* Stationary: gyro flat, |a| constant at 1 g. */
+    write_cap(path, 100, 100.0, gyro_zero, 0.0);
+    cal_capture_load(path, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(cal_capture_motion_ok(gyro, accel, 100, &gpp, &astd), "flat record is stationary");
+    EXPECT_NEAR_D(gpp,  0.0, 1e-9, "gyro peak-to-peak is zero");
+    EXPECT_NEAR_D(astd, 0.0, 1e-3, "|a| standard deviation is zero");
+    cal_capture_free(gyro, accel, temp);
+    remove(path);
+
+    /* Moving: the gyro ramps well past the 0.1 rad/s peak-to-peak threshold. */
+    write_cap(path, 100, 100.0, gyro_ramp, 0.0);
+    cal_capture_load(path, 0.0, 0, gyro, accel, &temp, &st, &cap_rc);
+    EXPECT(!cal_capture_motion_ok(gyro, accel, 100, &gpp, &astd), "ramped gyro is not stationary");
+    EXPECT_NEAR_D(gpp, 0.99, 1e-6, "peak-to-peak reported for the message");
+    cal_capture_free(gyro, accel, temp);
+    remove(path);
+
+    /* Right at the threshold: p-p of exactly 0.1 must pass (the test is >). */
+    double *g2[3], *a2[3];
+    double buf_g[3][2] = { { 0.0, 0.1 }, { 0.0, 0.1 }, { 0.0, 0.1 } };
+    double buf_a[3][2] = { { 0, 0 }, { 0, 0 }, { 9.80665, 9.80665 } };
+    for (int a = 0; a < 3; a++) { g2[a] = buf_g[a]; a2[a] = buf_a[a]; }
+    EXPECT(cal_capture_motion_ok(g2, a2, 2, &gpp, &astd),
+           "exactly 0.1 rad/s p-p is still stationary");
+    buf_g[0][1] = 0.1001;
+    EXPECT(!cal_capture_motion_ok(g2, a2, 2, &gpp, &astd),
+           "just over 0.1 rad/s p-p is not");
+
+    /* The peak-to-peak spans all three axes, not just X. */
+    buf_g[0][1] = 0.0; buf_g[2][1] = 0.5;
+    EXPECT(!cal_capture_motion_ok(g2, a2, 2, &gpp, &astd) && gpp > 0.49,
+           "motion on Z alone is detected");
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud cal tests ===");
@@ -298,6 +554,12 @@ int main(void)
     test_round_trip_all_sections();
     test_partial_section_defaults();
     test_round_trip_noise_temp();
+
+    test_calcap_basic();
+    test_calcap_settle();
+    test_calcap_decimation();
+    test_calcap_rejects();
+    test_calcap_motion_gate();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
