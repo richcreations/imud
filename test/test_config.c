@@ -1079,6 +1079,93 @@ static void fill_distinct(imud_config_t *c)
     snprintf(c->mount_preset, sizeof c->mount_preset, "distinct-144");
 }
 
+/*
+ * [mount] preset — the eight quarter-turn shortcuts and their aliases.
+ *
+ * Untested until audit D1 sent me to look at it: the key is parsed, and it
+ * is the one mount key that can be set with a typo. An unrecognised name is
+ * deliberately fatal, because starting with a silently wrong mount rotation
+ * biases every sample for the life of the run.
+ */
+static void test_mount_preset(void)
+{
+    begin_test("test_mount_preset");
+    int fb = g_fail;
+
+    static const struct { const char *name; double r, p, y; } cases[] = {
+        { "identity",      0,  0,   0 }, { "board_forward", 0,  0,   0 },
+        { "yaw_90",        0,  0,  90 }, { "rot_z_90",      0,  0,  90 },
+        { "yaw_180",       0,  0, 180 }, { "rot_z_180",     0,  0, 180 },
+        { "yaw_270",       0,  0, 270 }, { "rot_z_270",     0,  0, 270 },
+        { "roll_90",      90,  0,   0 }, { "rot_x_90",     90,  0,   0 },
+        { "roll_270",    270,  0,   0 }, { "rot_x_270",   270,  0,   0 },
+        { "pitch_90",      0, 90,   0 }, { "rot_y_90",      0, 90,   0 },
+        { "pitch_270",     0,270,   0 }, { "rot_y_270",     0,270,   0 },
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char body[128];
+        snprintf(body, sizeof body, "[mount]\npreset = \"%s\"\n", cases[i].name);
+        const char *path = write_tmpconf(91, body);
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) == 0, cases[i].name);
+        EXPECT(cfg.mount_set, "preset sets mount_set");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[0], cases[i].r, 1e-9, "roll");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[1], cases[i].p, 1e-9, "pitch");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[2], cases[i].y, 1e-9, "yaw");
+        EXPECT(strcmp(cfg.mount_preset, cases[i].name) == 0,
+               "the name as written is recorded");
+        remove(path);
+    }
+
+    /* Case-insensitive, per strcasecmp in apply_kv. */
+    {
+        const char *path = write_tmpconf(91, "[mount]\npreset = \"YAW_180\"\n");
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) == 0, "preset names are case-insensitive");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 180.0, 1e-9, "YAW_180 → yaw 180");
+        remove(path);
+    }
+
+    /* Last mount key wins, in both directions. */
+    {
+        const char *path = write_tmpconf(91,
+            "[mount]\nrotation_euler_deg = [0.0, 0.0, 90.0]\n"
+            "preset = \"yaw_180\"\n");
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) == 0, "euler then preset loads");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 180.0, 1e-9, "preset wins when last");
+        remove(path);
+
+        path = write_tmpconf(91,
+            "[mount]\npreset = \"yaw_180\"\n"
+            "rotation_euler_deg = [0.0, 0.0, 90.0]\n");
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) == 0, "preset then euler loads");
+        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 90.0, 1e-9, "euler wins when last");
+        remove(path);
+    }
+
+    /* A typo must stop the daemon, not silently keep the default. */
+    {
+        const char *path = write_tmpconf(91, "[mount]\npreset = \"yaw_45\"\n");
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) != 0, "unknown preset name is fatal");
+        remove(path);
+
+        path = write_tmpconf(91, "[mount]\npreset = \"\"\n");
+        config_defaults(&cfg);
+        EXPECT(config_load(path, &cfg) != 0, "empty preset name is fatal");
+        remove(path);
+    }
+
+    end_test(fb);
+}
+
 /* The hot set, stated independently of src/config.c. */
 #define HOT_FIELDS(X) \
     X(nmea_rate_hz) X(highrate_rate_hz) X(stream_rate_hz) X(log_stats_hz) \
@@ -1186,6 +1273,7 @@ int main(void)
     test_load_partial_override();
     test_position_keys_load();
     test_sim_conf_loads();
+    test_mount_preset();
     test_apply_hot_partition();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

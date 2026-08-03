@@ -59,6 +59,7 @@ broker/client/topic changes need a restart.
 | `broker_addr` | string | `"127.0.0.1"` | Broker host (name or IP). |
 | `broker_port` | int | `1883` | Broker TCP port. |
 | `client_id` | string | `"imud"` | MQTT client id; also the Home Assistant device/node id. |
+| `keepalive_s` | int | `30` | MQTT keepalive interval in seconds. |
 | `topic_prefix` | string | `"imud"` | Prefix for all published topics. |
 | `rate_hz` | int | `5` | Publish rate in Hz; must be greater than zero. |
 | `qos` | int | `0` | Publish QoS (0/1/2). |
