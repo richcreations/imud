@@ -539,9 +539,16 @@ driver, see [§11 Writing a driver](#11-writing-a-driver).
 
 If you have one of these parts, you can clear its experimental flag for
 everyone: run [`imud-imutest`](imud-utils/manual.md) against it and open an
-issue with the report it writes.
+issue with the report it writes. For the MPU-925x there is a step-by-step
+bench guide — wiring, `config.txt`, `imud.conf`, and what each test phase asks
+you to do: [validating-mpu925x.md](validating-mpu925x.md).
 
 ### Fitting an MPU-9250 or MPU-9255
+
+Wiring, the `config.txt` I²C settings, a ready-made `imud.conf`, and a walk
+through validating the driver on your bench are collected in
+[validating-mpu925x.md](validating-mpu925x.md). The rest of this section is the
+short version.
 
 Three things about this part differ from imud's shipped defaults, and all
 three are worth knowing before you wire one up.
