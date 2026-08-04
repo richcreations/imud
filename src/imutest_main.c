@@ -298,7 +298,12 @@ int main(int argc, char **argv)
         localtime_r(&now, &tm);
         char stamp[32];
         strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
-        snprintf(report_path, sizeof report_path, "imud-imutest-%s-%s.md",
+        /* sizeof args.report_path, NOT sizeof report_path: report_path is a
+         * char* alias for that char[512] (see the declaration above), so the
+         * latter is sizeof(char*) = 8 and the name truncates to "imud-im".
+         * gcc catches it twice (-Wsizeof-pointer-memaccess, -Wformat-truncation);
+         * clang is silent, which is why it survived on the macOS dev box. */
+        snprintf(report_path, sizeof args.report_path, "imud-imutest-%s-%s.md",
                  cfg.imu_driver, stamp);
     }
 
