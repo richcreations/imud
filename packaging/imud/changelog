@@ -1,3 +1,65 @@
+imud (1.8.1) unstable; urgency=medium
+
+  * Fix: imud did not start on stock Debian. The unit hardcoded
+    Group=gpio, but nothing ever created the gpio or i2c groups —
+    Raspberry Pi OS ships them, plain bookworm/trixie ships neither, and
+    systemd refuses to start a unit whose groups cannot be resolved, so
+    `systemctl start imud` failed with 216/GROUP. Both groups are now
+    created if absent, on every install rather than only when the user is
+    first created, so an upgrade repairs a host that was missing them.
+    New udev rule 60-imud.rules grants them access to /dev/i2c-* and
+    /dev/gpiochip*, numbered 60 so Pi OS's own 99-com.rules still wins.
+  * BEHAVIOUR CHANGE: the daemon runs with imud as its primary group and
+    keeps gpio and i2c as supplementary groups; the stream socket,
+    /run/imud and /var/lib/imud are now imud:imud. Anything that read the
+    stream socket or ran imud-status by virtue of gpio membership must
+    join imud instead — on Pi OS the default user is in gpio, so
+    imud-status reports the daemon unreachable until
+    `sudo adduser "$USER" imud`. Deliberate: reading telemetry should not
+    require a group that also grants raw GPIO and I2C access.
+  * Fix: one configured ODR now means one rate everywhere. The filter was
+    tuned from a rate rounded to nearest while every register-table
+    driver programs the chip rounding up, so [imu] odr_hz = 900 tuned the
+    MEKF for 833 Hz while the ISM330DHCX ran at 1660. The magnetometer
+    rate was never snapped at all — [mag] odr_hz = 137 sized Rm for
+    137 Hz while the MMC5983MA sampled at 200. The driver is now the
+    authority: the rate is resolved once, up front, and the resolved
+    value reaches the chip and the filter's noise model alike. Startup
+    logs "N Hz requested, M Hz actual" when they differ. Numerically
+    unchanged with the shipped defaults (833 and 100 are already on their
+    grids); the wave benchmark is bit-identical.
+  * BEHAVIOUR CHANGE: odr_hz and the seven rate_hz keys now reject 0 and
+    negative values. [mag] odr_hz = 0 produced Rm = 0 and hence a
+    magnetometer Kalman gain of exactly 1. A config setting any of them
+    non-positive started before and now refuses to start.
+  * Fix: a config file that exists but cannot be read is now a fatal
+    error instead of falling through to defaults. A missing file still
+    means defaults, as documented.
+  * Harden: tier-2 systemd sandboxing — empty CapabilityBoundingSet,
+    SystemCallArchitectures=native, a @system-service syscall allow-list,
+    RestrictNamespaces, LockPersonality, RestrictSUIDSGID,
+    ProtectHostname, ProtectProc=invisible, ProcSubset=pid and UMask=0027
+    (0027 rather than 0077 so imud-group members can still tail
+    /var/log/imud.log). ProtectClock= is deliberately absent and
+    adjtimex(2) re-allowed, so the startup CLOCK_TAI check keeps working;
+    setting the clock is already impossible without CAP_SYS_TIME. The
+    reasoning is recorded in the unit file itself.
+  * Harden: the AF_UNIX stream and status sockets are born 0660 rather
+    than created at 0777 & ~umask and chmod'd a moment later, and a
+    failed chmod is now fatal instead of ignored.
+  * Harden: every fd is close-on-exec. Accepted sockets were the real
+    gap — POSIX does not carry FD_CLOEXEC across accept(), so every
+    NMEA/high-rate TCP client, every stream subscriber and every
+    imud-status connection was inheritable on Linux.
+  * Fix: `make install DESTDIR=<root>` no longer captures a local
+    config/cal.json into the packaging root. A real install is unchanged.
+  * Fix: the log level is now atomic. SIGHUP writes it from the signal
+    thread while every other thread reads it on each log call, which was
+    a data race by the C memory model.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud (1.8) unstable; urgency=medium
 
   * New tool imud-imutest ships in the imud-utils package: validates a

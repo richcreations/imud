@@ -1,3 +1,23 @@
+libimud (1.8.1) unstable; urgency=medium
+
+  * Harden: the socket imud_open() creates is now close-on-exec, so a
+    consumer that forks and execs no longer leaks its imud socket into
+    the child. Taken atomically via SOCK_CLOEXEC where the platform has
+    it. The macro is kept inline rather than shared with the rest of the
+    tree because this header must compile standalone against nothing but
+    libc, which is the point of it.
+  * Documented: IMUD_VERSION in the Python client is the wire-layout
+    revision, NOT the release version — it is 17 because 1.7 was the
+    release that last changed the packet layout, and a 1.8 daemon still
+    speaks 17. The C headers already said so; the Python one did not, so
+    a consumer read it as stale and went looking for a protocol change
+    that never happened. CI now checks the constant agrees across
+    include/types.h, lib/imud_client.h and lib/imud_client.py.
+  * No ABI change: imud_data_t is unchanged and the SONAME stays
+    libimud.so.0. Existing binaries do not need recompiling.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 libimud (1.7) unstable; urgency=medium
 
   * imud_data_t gains the wire-v17 MEKF diagnostic fields (append-only,

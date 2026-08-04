@@ -1,3 +1,26 @@
+imud-signalk (1.8.1) unstable; urgency=medium
+
+  * BEHAVIOUR CHANGE: the bridge now runs with imud as its primary group
+    and no longer belongs to gpio. It carried Group=gpio only to reach
+    the stream socket — it touches no hardware — and the socket is now
+    imud:imud. The bridge connects as the socket's owner either way, so
+    this needs no coordinated upgrade and nothing in the bridge's own
+    configuration changes.
+  * Fix: a config file that exists but cannot be read is now fatal. It
+    previously fell through to defaults, and since enabled defaults to
+    false the bridge exited reporting "disabled in config
+    ([imud-signalk] enabled = false)" — naming the wrong cause entirely
+    for what is a permissions problem.
+  * Harden: tier-2 systemd sandboxing (empty CapabilityBoundingSet, a
+    @system-service syscall allow-list, RestrictNamespaces,
+    LockPersonality, RestrictSUIDSGID, ProtectHostname, ProtectClock,
+    ProtectProc=invisible, ProcSubset=pid, UMask=0077), and every fd is
+    close-on-exec.
+  * Requires wire format v17 (packet 276 bytes), unchanged since 1.7.
+    Delta output, config keys and CLI are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud-signalk (1.7) unstable; urgency=medium
 
   * Fix: dest_addr accepted a numeric IPv4 address only, while every

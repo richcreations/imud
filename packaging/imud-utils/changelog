@@ -1,3 +1,24 @@
+imud-utils (1.8.1) unstable; urgency=medium
+
+  * Fix: imud-imutest wrote its report to a file literally named
+    "imud-im", and reported that name, whenever --report was not given.
+    The auto-generated default path was built against the size of a
+    pointer rather than the buffer, truncating it to seven characters.
+    An explicit --report <path> was never affected.
+  * imud-imutest now resolves the sample rate the same way the daemon
+    does, so it measures the part against the rate the daemon would
+    actually program rather than one the daemon never selects. See the
+    imud changelog for the ODR fix this belongs to.
+  * BEHAVIOUR CHANGE: imud-mon and imud-status reach the daemon through
+    the imud group, not gpio. On Raspberry Pi OS the default user is in
+    gpio and will now find the daemon unreachable until
+    `sudo adduser "$USER" imud`.
+  * Harden: every fd both tools open is close-on-exec, including
+    accepted sockets, which POSIX does not carry FD_CLOEXEC across.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud-utils (1.8) unstable; urgency=medium
 
   * New tool imud-imutest: validates a sensor driver against real hardware

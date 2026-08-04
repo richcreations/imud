@@ -1,3 +1,30 @@
+imud-mavlink (1.8.1) unstable; urgency=medium
+
+  * BEHAVIOUR CHANGE: the bridge now runs with imud as its primary group
+    and no longer belongs to gpio. It carried Group=gpio only to reach
+    the stream socket — it touches no hardware — and the socket is now
+    imud:imud. The bridge connects as the socket's owner either way, so
+    this needs no coordinated upgrade. Serial output is unaffected:
+    dialout remains a supplementary group on this unit.
+  * BEHAVIOUR CHANGE: a rate_hz of 0 or less is now a fatal config error
+    rather than a silent fall back to the default period. Reaching that
+    fallback from a config file was always a mistake, not a way to
+    request the default.
+  * Fix: a config file that exists but cannot be read is now fatal. It
+    previously fell through to defaults, and since enabled defaults to
+    false the bridge exited reporting "disabled in config
+    ([imud-mavlink] enabled = false)" — naming the wrong cause entirely
+    for what is a permissions problem.
+  * Harden: tier-2 systemd sandboxing (empty CapabilityBoundingSet, a
+    @system-service syscall allow-list, RestrictNamespaces,
+    LockPersonality, RestrictSUIDSGID, ProtectHostname, ProtectClock,
+    ProtectProc=invisible, ProcSubset=pid, UMask=0077), and every fd is
+    close-on-exec.
+  * Requires wire format v17 (packet 276 bytes), unchanged since 1.7.
+    Messages, rates, transports, config keys and CLI are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud-mavlink (1.7) unstable; urgency=medium
 
   * Rebuilt for wire format v17 (packet 260 -> 276 bytes); must be

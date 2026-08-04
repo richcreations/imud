@@ -6,6 +6,99 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.8.1
+-----
+A fix release. No wire-format change: the packet stays v17 / 276 bytes. Three
+things change behaviour, and the first one will be noticed on Raspberry Pi OS —
+read it before upgrading.
+
+* **Behaviour change: access is now governed by the `imud` group, not `gpio`.**
+  The daemon and all five bridges run with `imud` as their primary group, and
+  the stream socket, `/run/imud` and `/var/lib/imud` become `imud:imud`. Only
+  `imud.service` keeps `gpio` and `i2c`, as supplementary groups, because only
+  the daemon touches hardware. **Anything that read the stream socket or ran
+  `imud-status` by virtue of `gpio` membership must join `imud` instead** — on
+  Pi OS the default user is in `gpio`, so `imud-status` will report the daemon
+  unreachable until you run `sudo adduser "$USER" imud` and log back in. This
+  is deliberate: reading telemetry should not require a group that also grants
+  raw GPIO and I²C access.
+* Fixed: **imud did not start on stock Debian.** Every unit hardcoded
+  `Group=gpio`, but nothing ever created the `gpio` or `i2c` groups —
+  Raspberry Pi OS ships them, plain bookworm/trixie ships neither, and systemd
+  refuses to start a unit whose groups cannot be resolved. `systemctl start
+  imud` therefore failed outright (216/GROUP) on any machine that had never had
+  Raspberry Pi packages installed, while README and INSTALL both advertise
+  Debian. Both groups are now created if absent, on every install rather than
+  only when the user is first created, so an upgrade repairs an affected host.
+  A new udev rule (`60-imud.rules`) grants them access to `/dev/i2c-*` and
+  `/dev/gpiochip*`, which is what Pi OS supplies in its own `99-com.rules`; it
+  is numbered 60 so the distribution's file still wins where there is one.
+* Fixed: **the two bridge configs that hold credentials were world-readable.**
+  `imud-mqtt.conf` carries a broker password and `imud-influxdb.conf` an
+  InfluxDB API token, both with a SECURITY comment telling the operator to
+  restrict the file — and both installed mode 0644, in the .deb as well as from
+  `make install`. They are now 0640 `root:imud`, including when upgrading over
+  an existing 0644 file, which is the common case. The pristine templates under
+  `/usr/share/doc/*/examples/` stay 0644.
+* Fixed: an unreadable config was reported as "disabled in config". A config
+  file that exists but cannot be read fell through to defaults, and since
+  `enabled` defaults to false for the bridges, the bridge exited announcing it
+  was disabled — naming the wrong cause entirely for what is a permissions
+  problem. A permission failure is now distinct from a missing file and is
+  fatal for both the daemon and the bridges. A genuinely missing config still
+  means defaults, as documented.
+* Fixed: **one configured ODR now means one rate everywhere.** The filter was
+  tuned from a rate rounded to *nearest*, while every register-table driver
+  programs the chip by rounding *up*, so the rate the MEKF was tuned for was
+  not the rate the hardware ran at. `[imu] odr_hz = 900` tuned the filter for
+  833 Hz while an ISM330DHCX sampled at 1660. The magnetometer was worse: its
+  rate was never snapped at all, so `[mag] odr_hz = 137` sized Rm for 137 Hz
+  while an MMC5983MA sampled at 200, and `imud-imutest` measured the part
+  against a third answer again. The driver is now the authority — the rate is
+  resolved once, up front, and the resolved value is what reaches the chip, the
+  filter's noise model and `imud-imutest` alike. Startup now logs "N Hz
+  requested, M Hz actual" whenever the two differ, a diagnostic that was
+  missing entirely for the magnetometer. **Nothing changes with the shipped
+  defaults**: 833 and 100 are both already on their grids, and the wave
+  benchmark is bit-identical. If you set an off-grid rate, the filter is now
+  tuned for the rate your hardware actually runs.
+* **Behaviour change: a rate of zero is now a fatal config error.** `odr_hz`
+  and the seven `rate_hz` keys accepted 0 and negative values. `[mag] odr_hz =
+  0` produced Rm = 0 and hence a magnetometer Kalman gain of exactly 1 — the
+  same degeneracy that is already fatal for the noise densities. A config
+  setting any of these to a non-positive value started before and now refuses
+  to start.
+* Fixed: a silent scraper could stall `imud-prometheus`. A client that
+  connected to the metrics port and then sent nothing froze the bridge's single
+  loop — the stream reader included — for a full 2 s per iteration. Measured
+  against a 50 Hz stream while holding one silent connection open for 2.6 s,
+  the bridge consumed 47 packets before the fix and 112 after. The request is
+  now read incrementally inside the loop's own poll and a client that goes
+  quiet is dropped at its deadline. One scrape is still served at a time; the
+  man page and spec said otherwise and now describe the real mechanism.
+* Fixed: `imud-imutest` wrote its report to a file literally named `imud-im`,
+  and said so, when `--report` was not given. Only the auto-generated default
+  path was affected.
+* Hardening: all six units gain tier-2 systemd sandboxing — an empty
+  `CapabilityBoundingSet=`, a `@system-service` syscall allow-list, namespace
+  and personality restrictions, `ProtectProc=invisible`, `ProcSubset=pid` and
+  an explicit `UMask=`. `imud.service` deliberately does *not* set
+  `ProtectClock=`, because that blocks even the read-only `adjtimex()` call the
+  startup CLOCK_TAI check uses; setting the clock remains impossible without
+  `CAP_SYS_TIME`, which the empty capability set removes. The reasoning is
+  recorded in the unit itself. The AF_UNIX sockets are also now *born* 0660
+  rather than created wide and narrowed a moment later.
+* Hardening: every file descriptor the daemon, tools and client libraries open
+  is now close-on-exec. Accepted sockets were the real gap — POSIX does not
+  carry `FD_CLOEXEC` across `accept()`, so every NMEA/high-rate TCP client,
+  every binary stream subscriber and every `imud-status` connection was
+  inheritable by any child process on Linux.
+* Packaging: the binary packages now declare the little-endian architectures
+  they can actually build for (`amd64 arm64 armel armhf i386 ppc64el riscv64`)
+  instead of `any`. The wire packet is a packed struct sent without byte-order
+  conversion and the source refuses to compile on a big-endian host, so `any`
+  promised a build that cannot succeed. dpkg now says so up front.
+
 1.8
 ---
 * New tool `imud-imutest` (in the imud-utils package): validates a sensor

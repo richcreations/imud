@@ -1,3 +1,36 @@
+imud-mqtt (1.8.1) unstable; urgency=medium
+
+  * Fix: /etc/imud/imud-mqtt.conf carries a broker password and installed
+    mode 0644, so every local user could read it — despite the SECURITY
+    comment in the file telling the operator to restrict it. It is now
+    0640 root:imud, on upgrade over an existing 0644 file as well as on
+    first install. The pristine template under
+    /usr/share/doc/imud-mqtt/examples/ stays 0644.
+  * Fix: a config file that exists but cannot be read is now fatal. It
+    previously fell through to defaults, and since enabled defaults to
+    false the bridge exited reporting "disabled in config
+    ([imud-mqtt] enabled = false)" — naming the wrong cause entirely for
+    what is a permissions problem, and the 0640 change above makes that
+    the failure an operator is most likely to hit.
+  * BEHAVIOUR CHANGE: the bridge now runs with imud as its primary group
+    and no longer belongs to gpio. It carried Group=gpio only to reach
+    the stream socket — it touches no hardware — and the socket is now
+    imud:imud. The bridge connects as the socket's owner either way, so
+    this needs no coordinated upgrade. It does mean the bridge can read
+    its own 0640 root:imud config, which under Group=gpio it could not.
+  * Harden: tier-2 systemd sandboxing (empty CapabilityBoundingSet, a
+    @system-service syscall allow-list, RestrictNamespaces,
+    LockPersonality, RestrictSUIDSGID, ProtectHostname, ProtectClock,
+    ProtectProc=invisible, ProcSubset=pid, UMask=0077), and every fd is
+    close-on-exec.
+  * Documented: keepalive_s reaches the manual's key table, and
+    username/password reach the config template.
+  * Requires wire format v17 (packet 276 bytes), unchanged since 1.7.
+    Topics, units, Home Assistant discovery, config keys and CLI are
+    unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud-mqtt (1.7) unstable; urgency=medium
 
   * Rebuilt for wire format v17 (packet 260 -> 276 bytes); must be

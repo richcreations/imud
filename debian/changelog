@@ -1,3 +1,73 @@
+imud (1.8.1-1) unstable; urgency=medium
+
+  * Fix: imud did not start on stock Debian. Every unit hardcoded
+    Group=gpio, but nothing created the gpio or i2c groups; Raspberry Pi
+    OS ships them and plain bookworm/trixie ships neither, so systemd
+    refused to start the unit (216/GROUP). Both groups are now created if
+    absent, on every install rather than only when the user is first
+    created, so an upgrade repairs an affected host. New udev rule
+    etc/60-imud.rules grants them /dev/i2c-* and /dev/gpiochip* access.
+  * BEHAVIOUR CHANGE: the daemon and all five bridges now run with imud
+    as their primary group, and the stream socket, /run/imud and
+    /var/lib/imud are imud:imud. Only imud.service keeps gpio and i2c, as
+    supplementary groups. Anything that read the stream socket or ran
+    imud-status by virtue of gpio membership must join imud instead --
+    on Pi OS that includes the default user: sudo adduser "$USER" imud.
+  * Fix: config/imud-mqtt.conf (broker password) and
+    config/imud-influxdb.conf (API token) installed mode 0644 despite
+    carrying a SECURITY comment telling the operator to restrict them.
+    Both are now 0640 root:imud, on upgrade over an existing 0644 file as
+    well as on first install. The templates under
+    /usr/share/doc/*/examples/ stay 0644.
+  * Fix: a config that exists but cannot be read fell through to
+    defaults, so a bridge exited reporting "disabled in config" for what
+    was a permissions problem. EACCES is now distinct from ENOENT and
+    fatal in the daemon and the bridges; a missing file still means
+    defaults.
+  * Fix: one configured ODR now means one rate everywhere. The filter was
+    tuned from a round-to-nearest rate while every register-table driver
+    programs the chip rounding up, so [imu] odr_hz = 900 tuned the MEKF
+    for 833 Hz while the ISM330DHCX ran at 1660. The magnetometer rate
+    was never snapped at all: [mag] odr_hz = 137 sized Rm for 137 Hz
+    while the MMC5983MA sampled at 200. The driver is now the authority
+    and the resolved rate reaches the chip, the filter and imud-imutest
+    alike; startup logs "N Hz requested, M Hz actual" when they differ.
+    Numerically unchanged with the shipped defaults, which are both
+    already on their grids.
+  * BEHAVIOUR CHANGE: odr_hz and the seven rate_hz keys now reject 0 and
+    negative values. [mag] odr_hz = 0 gave Rm = 0 and a magnetometer
+    Kalman gain of exactly 1. A config setting any of them non-positive
+    started before and now refuses to start.
+  * Fix: a client that connected to imud-prometheus and sent nothing
+    stalled the bridge's single loop, stream reader included, for 2 s per
+    iteration. The request is now read incrementally inside the loop's
+    own poll and a quiet client is dropped at its deadline.
+  * Fix: imud-imutest wrote its report to a file named "imud-im" when
+    --report was not given.
+  * Harden: tier-2 systemd sandboxing on all six units (empty
+    CapabilityBoundingSet, @system-service syscall allow-list,
+    RestrictNamespaces, LockPersonality, RestrictSUIDSGID,
+    ProtectHostname, ProtectProc=invisible, ProcSubset=pid, UMask).
+    imud.service deliberately omits ProtectClock= so the startup
+    CLOCK_TAI check can call adjtimex(2) read-only. The AF_UNIX sockets
+    are now born 0660 instead of being created wide and chmod'd after.
+  * Harden: every fd is close-on-exec. Accepted sockets were the gap --
+    POSIX does not carry FD_CLOEXEC across accept(), so NMEA/high-rate
+    TCP clients, stream subscribers and imud-status connections were all
+    inheritable on Linux.
+  * Packaging: Architecture is now the little-endian release
+    architectures (amd64 arm64 armel armhf i386 ppc64el riscv64) rather
+    than any. The wire packet is a packed struct sent without byte-order
+    conversion and the source #errors on a big-endian host, so any
+    promised a build that cannot succeed.
+  * Fix: make install DESTDIR=<root> captured config/cal.json into the
+    packaging root when the build tree happened to have one, which made
+    dpkg-buildpackage fail under dh_missing. A staged install now skips
+    it; a real install is unchanged.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 03 Aug 2026 12:00:00 -0700
+
 imud (1.8-1) unstable; urgency=medium
 
   * New tool imud-imutest, shipped in the imud-utils binary package:
