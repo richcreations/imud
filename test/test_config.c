@@ -929,27 +929,44 @@ static void test_bridge_output_enables(void)
  * field is added (AGENTS.md's add-a-config-key checklist says so).
  */
 
+/*
+ * A value that does not fit is a SILENT collision, not a truncation warning:
+ * four char[8] fields (highrate_coord_frame, mqtt_units, influx_transport,
+ * influx_units) all used to receive "distinct-NN" and all ended up holding
+ * "distinc". The whole point of this helper is one distinct value per field —
+ * the two-sided memcmp partition test can pass while the code under test has
+ * swapped two fields that hold the same bytes. So assert the fit at the write.
+ */
+#define SET_STR(field, value) do { \
+    if (strlen(value) >= sizeof(field)) { \
+        fprintf(stderr, "  FAIL  %s:%d  fill_distinct: '%s' truncates in %zu bytes\n", \
+                __FILE__, __LINE__, (value), sizeof(field)); \
+        g_fail++; \
+    } \
+    snprintf((field), sizeof(field), "%s", (value)); \
+} while (0)
+
 static void fill_distinct(imud_config_t *c)
 {
     config_defaults(c);
-    snprintf(c->i2c_bus, sizeof c->i2c_bus, "distinct-1");
-    snprintf(c->gpio_chip, sizeof c->gpio_chip, "distinct-2");
-    snprintf(c->sim_file, sizeof c->sim_file, "distinct-3");
+    SET_STR(c->i2c_bus, "distinct-1");
+    SET_STR(c->gpio_chip, "distinct-2");
+    SET_STR(c->sim_file, "distinct-3");
     c->sim_loop = !c->sim_loop;
     c->sim_speed = 5.5;
     c->capture_enabled = !c->capture_enabled;
-    snprintf(c->capture_dir, sizeof c->capture_dir, "distinct-7");
+    SET_STR(c->capture_dir, "distinct-7");
     c->capture_max_mb = 15;
     c->capture_max_files = 16;
     c->capture_flush_s = 17;
-    snprintf(c->imu_driver, sizeof c->imu_driver, "distinct-11");
+    SET_STR(c->imu_driver, "distinct-11");
     c->imu_addr = 19;
     c->imu_int_gpio = 20;
     c->imu_odr_hz = 21;
     c->imu_accel_g = 22;
     c->imu_gyro_dps = 23;
     c->imu_fifo_wm = 24;
-    snprintf(c->mag_driver, sizeof c->mag_driver, "distinct-18");
+    SET_STR(c->mag_driver, "distinct-18");
     c->mag_addr = 26;
     c->mag_int_gpio = 27;
     c->mag_odr_hz = 28;
@@ -968,72 +985,72 @@ static void fill_distinct(imud_config_t *c)
     c->accel_skip_thresh = 34.5;
     c->engine_vibration_g2 = 35.5;
     c->engine_accel_skip_thresh = 36.5;
-    snprintf(c->cal_file, sizeof c->cal_file, "distinct-37");
+    SET_STR(c->cal_file, "distinct-37");
     c->startup_settle_sec = 38.5;
     c->gyro_bias_sec = 39.5;
     c->align_window_sec = 40.5;
     c->nmea_enabled = !c->nmea_enabled;
     c->nmea_rate_hz = 49;
-    snprintf(c->nmea_dest_addr, sizeof c->nmea_dest_addr, "distinct-43");
+    SET_STR(c->nmea_dest_addr, "distinct-43");
     c->nmea_dest_port = 51;
     c->nmea_tcp_enabled = !c->nmea_tcp_enabled;
-    snprintf(c->nmea_tcp_bind_addr, sizeof c->nmea_tcp_bind_addr, "distinct-46");
+    SET_STR(c->nmea_tcp_bind_addr, "distinct-46");
     c->nmea_tcp_port = 54;
     c->highrate_enabled = !c->highrate_enabled;
     c->highrate_rate_hz = 56;
-    snprintf(c->highrate_dest_addr, sizeof c->highrate_dest_addr, "distinct-50");
+    SET_STR(c->highrate_dest_addr, "distinct-50");
     c->highrate_dest_port = 58;
-    snprintf(c->highrate_coord_frame, sizeof c->highrate_coord_frame, "distinct-52");
+    SET_STR(c->highrate_coord_frame, "d52");
     c->stream_enabled = !c->stream_enabled;
-    snprintf(c->stream_socket, sizeof c->stream_socket, "distinct-54");
+    SET_STR(c->stream_socket, "distinct-54");
     c->stream_rate_hz = 62;
     c->stream_tcp_enabled = !c->stream_tcp_enabled;
-    snprintf(c->stream_tcp_bind_addr, sizeof c->stream_tcp_bind_addr, "distinct-57");
+    SET_STR(c->stream_tcp_bind_addr, "distinct-57");
     c->stream_tcp_port = 65;
     c->sk_enabled = !c->sk_enabled;
     c->sk_udp_enabled = !c->sk_udp_enabled;
-    snprintf(c->sk_dest_addr, sizeof c->sk_dest_addr, "distinct-61");
+    SET_STR(c->sk_dest_addr, "distinct-61");
     c->sk_dest_port = 69;
     c->sk_rate_hz = 70;
-    snprintf(c->sk_source_label, sizeof c->sk_source_label, "distinct-64");
+    SET_STR(c->sk_source_label, "distinct-64");
     c->sk_tcp_enabled = !c->sk_tcp_enabled;
-    snprintf(c->sk_tcp_bind_addr, sizeof c->sk_tcp_bind_addr, "distinct-66");
+    SET_STR(c->sk_tcp_bind_addr, "distinct-66");
     c->sk_tcp_port = 74;
     c->publish_heave = !c->publish_heave;
     c->mqtt_enabled = !c->mqtt_enabled;
     c->mqtt_broker_enabled = !c->mqtt_broker_enabled;
-    snprintf(c->mqtt_broker_addr, sizeof c->mqtt_broker_addr, "distinct-71");
+    SET_STR(c->mqtt_broker_addr, "distinct-71");
     c->mqtt_broker_port = 79;
-    snprintf(c->mqtt_client_id, sizeof c->mqtt_client_id, "distinct-73");
-    snprintf(c->mqtt_topic_prefix, sizeof c->mqtt_topic_prefix, "distinct-74");
+    SET_STR(c->mqtt_client_id, "distinct-73");
+    SET_STR(c->mqtt_topic_prefix, "distinct-74");
     c->mqtt_rate_hz = 82;
     c->mqtt_qos = 83;
     c->mqtt_retain = !c->mqtt_retain;
-    snprintf(c->mqtt_units, sizeof c->mqtt_units, "distinct-78");
-    snprintf(c->mqtt_username, sizeof c->mqtt_username, "distinct-79");
-    snprintf(c->mqtt_password, sizeof c->mqtt_password, "distinct-80");
+    SET_STR(c->mqtt_units, "d78");
+    SET_STR(c->mqtt_username, "distinct-79");
+    SET_STR(c->mqtt_password, "distinct-80");
     c->mqtt_tls = !c->mqtt_tls;
-    snprintf(c->mqtt_tls_cafile, sizeof c->mqtt_tls_cafile, "distinct-82");
+    SET_STR(c->mqtt_tls_cafile, "distinct-82");
     c->mqtt_keepalive_s = 90;
     c->mqtt_ha_discovery = !c->mqtt_ha_discovery;
-    snprintf(c->mqtt_ha_prefix, sizeof c->mqtt_ha_prefix, "distinct-85");
+    SET_STR(c->mqtt_ha_prefix, "distinct-85");
     c->influx_enabled = !c->influx_enabled;
-    snprintf(c->influx_transport, sizeof c->influx_transport, "distinct-87");
+    SET_STR(c->influx_transport, "d87");
     c->influx_rate_hz = 95;
-    snprintf(c->influx_measurement, sizeof c->influx_measurement, "distinct-89");
-    snprintf(c->influx_source_label, sizeof c->influx_source_label, "distinct-90");
-    snprintf(c->influx_units, sizeof c->influx_units, "distinct-91");
+    SET_STR(c->influx_measurement, "distinct-89");
+    SET_STR(c->influx_source_label, "distinct-90");
+    SET_STR(c->influx_units, "d91");
     c->influx_udp_enabled = !c->influx_udp_enabled;
-    snprintf(c->influx_udp_addr, sizeof c->influx_udp_addr, "distinct-93");
+    SET_STR(c->influx_udp_addr, "distinct-93");
     c->influx_udp_port = 101;
     c->influx_http_enabled = !c->influx_http_enabled;
-    snprintf(c->influx_http_host, sizeof c->influx_http_host, "distinct-96");
+    SET_STR(c->influx_http_host, "distinct-96");
     c->influx_http_port = 104;
-    snprintf(c->influx_http_path, sizeof c->influx_http_path, "distinct-98");
-    snprintf(c->influx_http_token, sizeof c->influx_http_token, "distinct-99");
+    SET_STR(c->influx_http_path, "distinct-98");
+    SET_STR(c->influx_http_token, "distinct-99");
     c->prom_enabled = !c->prom_enabled;
     c->prom_http_enabled = !c->prom_http_enabled;
-    snprintf(c->prom_listen_addr, sizeof c->prom_listen_addr, "distinct-102");
+    SET_STR(c->prom_listen_addr, "distinct-102");
     c->prom_listen_port = 110;
     c->mav_enabled = !c->mav_enabled;
     c->mav_version = 112;
@@ -1043,16 +1060,16 @@ static void fill_distinct(imud_config_t *c)
     c->mav_send_attitude = !c->mav_send_attitude;
     c->mav_send_attitude_quaternion = !c->mav_send_attitude_quaternion;
     c->mav_udp_enabled = !c->mav_udp_enabled;
-    snprintf(c->mav_udp_addr, sizeof c->mav_udp_addr, "distinct-112");
+    SET_STR(c->mav_udp_addr, "distinct-112");
     c->mav_udp_port = 120;
     c->mav_serial_enabled = !c->mav_serial_enabled;
-    snprintf(c->mav_serial_device, sizeof c->mav_serial_device, "distinct-115");
+    SET_STR(c->mav_serial_device, "distinct-115");
     c->mav_serial_baud = 123;
     c->mav_tcp_enabled = !c->mav_tcp_enabled;
-    snprintf(c->mav_tcp_bind_addr, sizeof c->mav_tcp_bind_addr, "distinct-118");
+    SET_STR(c->mav_tcp_bind_addr, "distinct-118");
     c->mav_tcp_port = 126;
-    snprintf(c->log_level, sizeof c->log_level, "distinct-120");
-    snprintf(c->log_file, sizeof c->log_file, "distinct-121");
+    SET_STR(c->log_level, "distinct-120");
+    SET_STR(c->log_file, "distinct-121");
     c->log_stats_hz = 129;
     c->pos_declination_deg = 123.5;
     c->pos_declination_valid = !c->pos_declination_valid;
@@ -1063,20 +1080,20 @@ static void fill_distinct(imud_config_t *c)
     c->pos_speed_valid = !c->pos_speed_valid;
     c->pos_lat_deg = 130.5;
     c->pos_lon_deg = 131.5;
-    snprintf(c->pos_wmm_file, sizeof c->pos_wmm_file, "distinct-132");
+    SET_STR(c->pos_wmm_file, "distinct-132");
     c->pos_gpsd_enabled = !c->pos_gpsd_enabled;
-    snprintf(c->pos_gpsd_host, sizeof c->pos_gpsd_host, "distinct-134");
+    SET_STR(c->pos_gpsd_host, "distinct-134");
     c->pos_gpsd_port = 142;
     c->pos_signalk_enabled = !c->pos_signalk_enabled;
-    snprintf(c->pos_signalk_host, sizeof c->pos_signalk_host, "distinct-137");
+    SET_STR(c->pos_signalk_host, "distinct-137");
     c->pos_signalk_port = 145;
-    snprintf(c->pos_signalk_path, sizeof c->pos_signalk_path, "distinct-139");
+    SET_STR(c->pos_signalk_path, "distinct-139");
     c->pos_fix_max_age_h = 140.5;
     c->mount_set = !c->mount_set;
     for (int i = 0; i < 3; i++) c->mount_euler_deg[i] = 142.5 + i;
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++) c->mount_rot[i][j] = 143.5 + i * 3 + j;
-    snprintf(c->mount_preset, sizeof c->mount_preset, "distinct-144");
+    SET_STR(c->mount_preset, "distinct-144");
 }
 
 /*
