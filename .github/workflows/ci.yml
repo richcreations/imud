@@ -104,6 +104,20 @@ jobs:
       - name: Every parsed config key reached its docs
         run: make check-docs
 
+      # Audit N2: the shipped config named a gpiochip the shipped unit
+      # forbade, so no combination of the two was correct on any board.
+      # systemd-analyze verify passes either way — the mismatch only bites at
+      # device-open time on real hardware, which no CI job has.
+      - name: Every configured device node is allowed by the unit
+        run: make check-devices
+
+      # Same reasoning as the wire revision above, one field over: four
+      # independent copies of the flags word. A drifted flag fails quietly —
+      # the packet still parses and the wrong bit is read under the right
+      # name — which is indistinguishable from a sensor misreporting.
+      - name: Packet flag bits agree across all four definitions
+        run: make check-flags
+
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
   build-and-test:

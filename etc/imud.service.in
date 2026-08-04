@@ -97,12 +97,31 @@ SystemCallFilter=adjtimex
 # something stricter, and never loosens it.
 UMask=0027
 
-# Restrict hardware access to exactly the devices the daemon uses.
-# Pi 4 defaults below.  For Pi 5, comment out gpiochip0 and uncomment gpiochip4.
+# Restrict hardware access to exactly the devices the daemon can use.
+#
+# Every supported node is listed rather than one board's, and there is no
+# "comment out the other one" step: a DeviceAllow= for a node that does not
+# exist on this board is inert, so one unit is correct on both a Pi 4 and a
+# Pi 5.  The alternative shipped a config template naming gpiochip4 (right for
+# a Pi 5) alongside a unit allowing only gpiochip0, which under
+# DevicePolicy=closed meant the daemon was blocked from the very chip its own
+# default config asked for — a pairing no operator could get right without
+# editing two files.
+#
+# Keep this list in step with the [device] section of config/imud.conf;
+# tools/check-devices.py (make check-devices) fails the build if it drifts.
+# NO trailing comments on the DeviceAllow= lines below.  systemd parses the
+# rest of the line as the device rights, so "rw  # Pi 4" is invalid rights and
+# the whole line is IGNORED — which under DevicePolicy=closed silently allows
+# nothing at all.  It logs at info level and `systemd-analyze verify` is the
+# only thing that says so.
 DevicePolicy=closed
+# /dev/i2c-1: Pi 4 and Pi 5 default header pins.  /dev/i2c-3: Pi 5 alternate.
 DeviceAllow=/dev/i2c-1 rw
+DeviceAllow=/dev/i2c-3 rw
+# gpiochip0: Pi 4.  gpiochip4: Pi 5 (RP1).
 DeviceAllow=/dev/gpiochip0 rw
-#DeviceAllow=/dev/gpiochip4 rw
+DeviceAllow=/dev/gpiochip4 rw
 
 # Memory ceiling (spec target: <14 MB RSS; 32 MB allows headroom).
 MemoryMax=32M

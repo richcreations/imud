@@ -248,10 +248,29 @@ static void q_mul(const float a[4], const float b[4], float c[4])
     c[3] = a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0];
 }
 
+/*
+ * The isfinite test is not redundant with the epsilon.  `n > 1e-10f` is a
+ * guard against dividing by ZERO; a NaN fails it too, and the quaternion is
+ * then passed through completely untouched — which is the opposite of what
+ * the epsilon's presence suggests.  That is the mechanism by which a single
+ * non-finite value became permanent: nothing downstream re-normalises, so the
+ * NaN survived every subsequent step.
+ *
+ * Identity is the right fallback here rather than "leave it alone": the
+ * caller's alternative is to keep propagating a value that is not a rotation
+ * at all.  Callers holding a mekf_t get the louder treatment — see
+ * mekf_sanitize, which resets the whole state and raises FLAG_STATE_RESET.
+ * This function also serves three local-quaternion sites that have no filter
+ * to flag.
+ */
 static void q_normalize(float q[4])
 {
     float n = sqrtf(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
-    if (n > 1e-10f) { q[0]/=n; q[1]/=n; q[2]/=n; q[3]/=n; }
+    if (isfinite(n) && n > 1e-10f) {
+        q[0]/=n; q[1]/=n; q[2]/=n; q[3]/=n;
+    } else if (!isfinite(n)) {
+        q[0] = 1.0f; q[1] = q[2] = q[3] = 0.0f;
+    }
 }
 
 /*
@@ -965,21 +984,23 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
     f->conv_thresh = 3.0f * fsq(conv_deg * (float)(M_PI/180.0));
 }
 
-void mekf_init(mekf_t *f,
-               const imud_config_t *cfg,
-               float odr_hz,
-               float mag_odr_hz,
-               const float gyro_bias_init[3])
+/*
+ * Nominal state and covariance back to their starting values, leaving every
+ * tuning field alone.
+ *
+ * Shared by mekf_init and mekf_sanitize so the P0 constants exist once.  It
+ * must run AFTER mekf_derive_tuning, because the wave block of P is sized
+ * from wave_sig2/wave_enabled, which that function sets.  Nothing here is
+ * read by mekf_derive_tuning in return — it looks only at cfg — so the
+ * ordering is a one-way dependency rather than a cycle.
+ */
+static void mekf_reset_state(mekf_t *f)
 {
-    memset(f, 0, sizeof *f);
-
-    /* Nominal state: identity attitude, pre-estimated bias */
+    /* Nominal state: identity attitude, zero bias and wave acceleration. */
     f->q[0] = 1.0f;
-    if (gyro_bias_init) {
-        f->bias[0] = gyro_bias_init[0];
-        f->bias[1] = gyro_bias_init[1];
-        f->bias[2] = gyro_bias_init[2];
-    }
+    f->q[1] = f->q[2] = f->q[3] = 0.0f;
+    f->bias[0] = f->bias[1] = f->bias[2] = 0.0f;
+    f->wave_acc[0] = f->wave_acc[1] = f->wave_acc[2] = 0.0f;
 
     /*
      * Initial covariance: generous values so the filter accepts early
@@ -988,8 +1009,23 @@ void mekf_init(mekf_t *f,
      */
     float init_att  = fsq(0.175f);    /* ~10° per axis */
     float init_bias = fsq(0.001f);    /* 1 mdps/s residual bias uncertainty */
+    memset(f->P, 0, sizeof f->P);
     for (int i = 0; i < 3; i++) f->P[i][i] = init_att;
     for (int i = 3; i < 6; i++) f->P[i][i] = init_bias;
+
+    /* Wave block starts at its steady state — the GM process is stationary,
+     * so there is no acquisition transient to model. Stays 0 when disabled. */
+    if (f->wave_enabled)
+        for (int i = 6; i < 9; i++) f->P[i][i] = f->wave_sig2;
+}
+
+void mekf_init(mekf_t *f,
+               const imud_config_t *cfg,
+               float odr_hz,
+               float mag_odr_hz,
+               const float gyro_bias_init[3])
+{
+    memset(f, 0, sizeof *f);
 
     /* Both sample rates, stored before mekf_derive_tuning reads them back. */
     f->dt         = 1.0f / odr_hz;
@@ -997,10 +1033,16 @@ void mekf_init(mekf_t *f,
 
     mekf_derive_tuning(f, cfg);
 
-    /* Wave block starts at its steady state — the GM process is stationary,
-     * so there is no acquisition transient to model. Stays 0 when disabled. */
-    if (f->wave_enabled)
-        for (int i = 6; i < 9; i++) f->P[i][i] = f->wave_sig2;
+    /* After derive_tuning: the wave block of P is sized from wave_sig2. */
+    mekf_reset_state(f);
+
+    /* Pre-estimated bias from the startup still window, if the caller has one.
+     * Applied after the reset, which zeroes it. */
+    if (gyro_bias_init) {
+        f->bias[0] = gyro_bias_init[0];
+        f->bias[1] = gyro_bias_init[1];
+        f->bias[2] = gyro_bias_init[2];
+    }
 
     f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
     f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
@@ -1782,6 +1824,36 @@ void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
     }
 }
 
+bool mekf_sanitize(mekf_t *f)
+{
+    bool ok = true;
+    for (int i = 0; i < 4 && ok; i++) if (!isfinite(f->q[i]))        ok = false;
+    for (int i = 0; i < 3 && ok; i++) if (!isfinite(f->bias[i]))     ok = false;
+    for (int i = 0; i < 3 && ok; i++) if (!isfinite(f->wave_acc[i])) ok = false;
+    /* The diagonal is enough: P is symmetric and every off-diagonal term is
+     * built from products that pass through it, so a non-finite covariance
+     * reaches the diagonal within one propagation step. */
+    for (int i = 0; i < MEKF_N && ok; i++) if (!isfinite(f->P[i][i])) ok = false;
+
+    if (ok) return false;
+
+    /* Counted, not logged: fusion.c is deliberately free of every dependency
+     * but libm, which is what lets test_fusion link it alone.  The caller owns
+     * the message and the rate limiting; the count is here because it belongs
+     * to the filter's own state. */
+    if (f->reset_count < UINT32_MAX) f->reset_count++;
+
+    mekf_reset_state(f);
+
+    /* Re-align from the next good accel/mag pair rather than carrying on from
+     * an identity attitude that means nothing. */
+    f->initialized  = false;
+    f->converged    = false;
+    f->m_ref_valid  = false;
+    f->state_reset  = true;
+    return true;
+}
+
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
 {
     memcpy(out->q,         f->q,    sizeof f->q);
@@ -1831,5 +1903,10 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
     uint16_t flags = flags_in;
     if (f->converged)    flags |= FLAG_FUSION_CONVERGED;
     if (!f->initialized) flags |= FLAG_STARTUP;
+    /* Latched, not a pulse: the bit stays up from the reset until the filter
+     * has re-converged, so a consumer sampling far below the output rate can
+     * still see that it happened.  Reading it off `converged` rather than
+     * clearing the field keeps mekf_get_state const. */
+    if (f->state_reset && !f->converged) flags |= FLAG_STATE_RESET;
     out->flags = flags;
 }

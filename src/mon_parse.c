@@ -114,6 +114,7 @@ void mon_flag_str(uint16_t flags, char *buf, size_t sz)
         { FLAG_DECLINATION_VALID, 'D' },
         { FLAG_STARTUP,           'S' },
         { FLAG_FIFO_OVERFLOW,     '!' },
+        { FLAG_STATE_RESET,       'R' },
     };
 
     int n = snprintf(buf, sz, "0x%04X [", flags);

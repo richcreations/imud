@@ -1,0 +1,21 @@
+[imu]
+odr_hz = 833
+
+[fusion]
+mekf_gyro_noise       = inf
+mekf_gyro_bias        = nan
+mekf_accel_noise      = 1e999
+mekf_mag_noise        = -inf
+accel_skip_thresh     = nan
+mag_reject_gauss      = inf
+wave_tau_s            = 1e999
+heave_tau_s           = -nan
+mekf_wave_accel       = inf
+mekf_wave_accel_tau_s = nan
+
+[position]
+lat_deg = nan
+lon_deg = inf
+
+[mag]
+set_period_s = 1e999

@@ -100,11 +100,23 @@ static bool parse_int(const char *val, int *out)
     return true;
 }
 
+/*
+ * The finiteness test is not belt-and-braces: strtod converts "nan" and "inf"
+ * happily, and overflows "1e999" to HUGE_VAL with ERANGE, so without it any
+ * float key could be set non-finite from a config file.  NEED_POS_DBL was no
+ * defence — its only test is `dv > 0.0`, which infinity passes; it rejected
+ * NaN by accident, since every comparison against NaN is false.
+ *
+ * This is the one chokepoint every float key routes through, so guarding it
+ * here covers NEED_FLT, NEED_DBL and NEED_POS_DBL at once.  Fatal rather than
+ * clamped, for the reason NEED_POS_INT is: a plausible substitute would hide
+ * the typo.
+ */
 static bool parse_double(const char *val, double *out)
 {
     char *end;
     *out = strtod(val, &end);
-    return (end != val && *end == '\0');
+    return (end != val && *end == '\0' && isfinite(*out));
 }
 
 /* ── Defaults (spec §9) ─────────────────────────────────────────────────── */

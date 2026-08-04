@@ -293,6 +293,134 @@ static void test_round_trip_noise_temp(void)
     end(fb);
 }
 
+/*
+ * Write raw JSON text.  Every other cal.json test round-trips through
+ * cal_write, which by construction can only produce well-formed files — so
+ * malformed input needs its own helper.
+ */
+static const char *write_tmpjson(int id, const char *content)
+{
+    const char *path = tmppath(id);
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen tmp"); exit(1); }
+    fputs(content, f);
+    fclose(f);
+    return path;
+}
+
+/*
+ * A cal.json value must be finite.
+ *
+ * parse_float_array and parse_scalar used strtof and checked only that some
+ * digits were consumed, and strtof converts "nan" and "inf" without complaint.
+ * cal->gyro_bias goes straight into mekf_init's f->bias, so a single "nan"
+ * here made w = gyro - bias non-finite on every predict step.  q_normalize
+ * cannot repair that — NaN fails its `n > 1e-10f` test, so the quaternion is
+ * left exactly as it arrived — and nothing downstream re-aligns.  Measured:
+ * 1000 perfectly level, noiseless samples later, the published roll, pitch,
+ * yaw and quaternion were still all NaN.
+ *
+ * A calibration file is operator-owned, so this is not an attack surface; the
+ * realistic trigger is imud's own tooling.  cal_write formats with %.8f, which
+ * renders a NaN as the literal "nan", so a degenerate fit wrote a file the
+ * daemon then loaded without complaint.  Both halves of that loop are closed:
+ * this test covers the read side, test_write_rejects_non_finite the write.
+ */
+static void test_load_rejects_non_finite(void)
+{
+    begin("test_load_rejects_non_finite");
+    int fb = g_fail;
+
+    /* Hoisted out of the table below: written inline it spans two literals,
+     * which -Wstring-concatenation reads as a missing comma. */
+    static const char soft_iron_nan[] =
+        "{\"mag\": {\"hard_iron\": [0,0,0], "
+        "\"soft_iron\": [[1,0,0],[0,nan,0],[0,0,1]]}}\n";
+
+    /* One case per parse path: every array-valued section, plus the one
+     * scalar (gyro_temp.ref_c), plus the 9-element nested soft-iron. */
+    static const char *bodies[] = {
+        "{\"gyro\": {\"bias\": [nan, 0.0, 0.0]}}\n",
+        "{\"gyro\": {\"bias\": [0.0, inf, 0.0]}}\n",
+        "{\"accel\": {\"offset\": [0.0, 0.0, -inf], \"scale\": [1,1,1]}}\n",
+        "{\"accel\": {\"offset\": [0,0,0], \"scale\": [1, nan, 1]}}\n",
+        "{\"mag\": {\"hard_iron\": [1e999, 0.0, 0.0]}}\n",
+        soft_iron_nan,
+        "{\"noise\": {\"gyro_density\": [nan, 1e-5, 1e-5]}}\n",
+        "{\"gyro_temp\": {\"coeff\": [0,0,0], \"ref_c\": nan}}\n",
+    };
+
+    int id = 20;
+    for (unsigned i = 0; i < sizeof bodies / sizeof bodies[0]; i++) {
+        const char *path = write_tmpjson(id++, bodies[i]);
+        imud_cal_t cal;
+        EXPECT(cal_load(path, &cal) < 0, "non-finite cal.json rejected");
+        remove(path);
+    }
+
+    /* The same shapes with finite values still load. */
+    const char *ok = write_tmpjson(id,
+        "{\"gyro\": {\"bias\": [0.001, -0.002, 0.003]},\n"
+        " \"gyro_temp\": {\"coeff\": [1e-5, 2e-5, 3e-5], \"ref_c\": 25.0}}\n");
+    imud_cal_t cal;
+    EXPECT(cal_load(ok, &cal) == 0, "finite cal.json accepted");
+    EXPECT(cal.has_gyro,            "finite gyro section applied");
+    EXPECT_NEAR(cal.gyro_bias[1], -0.002f, 1e-6f, "finite bias value landed");
+    EXPECT_NEAR(cal.gyro_temp_ref_c, 25.0f, 1e-6f, "finite scalar landed");
+    remove(ok);
+    end(fb);
+}
+
+/*
+ * cal_write must refuse to emit a non-finite value, and must leave any
+ * existing file untouched when it does.
+ *
+ * The ordering is the whole point: fcreate opens "w", which truncates.  A
+ * check placed after the open would destroy a good calibration on its way to
+ * reporting the failure — the operator would lose the file that was still
+ * correct.  So the validation runs first, before anything is opened.
+ */
+static void test_write_rejects_non_finite(void)
+{
+    begin("test_write_rejects_non_finite");
+    int fb = g_fail;
+    const char *path = tmppath(30);
+
+    /* A known-good calibration on disk first. */
+    imud_cal_t good;
+    memset(&good, 0, sizeof(good));
+    good.gyro_bias[0] = 0.00125f;
+    good.gyro_bias[1] = 0.00250f;
+    good.gyro_bias[2] = 0.00375f;
+    good.has_gyro = true;
+    EXPECT(cal_write(path, &good) == 0, "good calibration written");
+
+    /* Now a fit that produced a NaN — as allan_characterize can, since its
+     * minimum search uses < and every comparison against NaN is false. */
+    imud_cal_t bad = good;
+    bad.gyro_bias[1] = NAN;
+    EXPECT(cal_write(path, &bad) < 0, "cal_write refuses a NaN field");
+
+    imud_cal_t inf_cal = good;
+    inf_cal.gyro_bias[2] = INFINITY;
+    EXPECT(cal_write(path, &inf_cal) < 0, "cal_write refuses an inf field");
+
+    /* Only fields belonging to a section with has_* set are inspected. */
+    imud_cal_t inert = good;
+    inert.mag_hard_iron[0] = NAN;   /* has_mag is false */
+    EXPECT(cal_write(path, &inert) == 0,
+           "a NaN in an unwritten section is not an error");
+
+    /* The file on disk must still be the good one, not truncated. */
+    imud_cal_t back;
+    EXPECT(cal_load(path, &back) == 0, "existing file still loads");
+    EXPECT(back.has_gyro,              "existing file still has its section");
+    EXPECT_NEAR(back.gyro_bias[1], 0.00250f, 1e-7f,
+                "rejected write left the good value intact");
+    remove(path);
+    end(fb);
+}
+
 /* ── cal_capture: .imucap loading for the offline analysis modes ─────────── */
 
 /*
@@ -554,6 +682,8 @@ int main(void)
     test_round_trip_all_sections();
     test_partial_section_defaults();
     test_round_trip_noise_temp();
+    test_load_rejects_non_finite();
+    test_write_rejects_non_finite();
 
     test_calcap_basic();
     test_calcap_settle();

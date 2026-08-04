@@ -332,6 +332,71 @@ static void test_load_rates_must_be_positive(void)
     end_test(fb);
 }
 
+/*
+ * No float key may be non-finite.  strtod() happily converts "nan", "inf" and
+ * "1e999" (the last via ERANGE to HUGE_VAL), and parse_double only ever
+ * checked that the whole token converted — so a typo or a corrupted file put
+ * a NaN or an infinity straight into the filter's tuning.
+ *
+ * NEED_POS_DBL did not save us: its only test is `dv > 0.0`, and infinity
+ * passes that.  It rejected NaN purely by accident, since every comparison
+ * against NaN is false.  So "mekf_gyro_noise = inf" was accepted, and the
+ * variance it sizes went to infinity.
+ *
+ * The stakes are the same as the positivity checks above, one row over: the
+ * value parses, is accepted, and then makes the filter degenerate.  A NaN
+ * reaching the quaternion is worse than degenerate — it never washes out, so
+ * every packet, NMEA sentence and bridge delta for the life of the process
+ * carries "nan".  Fatal at parse time, where the operator can still be told
+ * which line is wrong.
+ */
+static void test_load_rejects_non_finite(void)
+{
+    begin_test("test_load_rejects_non_finite");
+    int fb = g_fail;
+
+    /* One key per macro that routes through parse_double, so a regression in
+     * any one of the three is caught: NEED_POS_DBL, NEED_DBL, NEED_FLT. */
+    static const struct { const char *section, *key; } keys[] = {
+        { "fusion", "mekf_gyro_noise"   },  /* NEED_POS_DBL — inf passed > 0 */
+        { "fusion", "accel_skip_thresh" },  /* NEED_DBL                      */
+        { "fusion", "wave_tau_s"        },  /* NEED_FLT                      */
+    };
+    /* "1e999" overflows to infinity rather than parsing as one, which is the
+     * form a corrupted or hand-edited file is most likely to contain. */
+    static const char *vals[] = { "nan", "inf", "-inf", "1e999" };
+
+    int id = 120;
+    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        for (unsigned v = 0; v < sizeof vals / sizeof vals[0]; v++) {
+            char body[128];
+            snprintf(body, sizeof body, "[%s]\n%s = %s\n",
+                     keys[i].section, keys[i].key, vals[v]);
+            const char *path = write_tmpconf(id++, body);
+            imud_config_t cfg;
+            config_defaults(&cfg);
+            EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+                   "non-finite float rejected");
+            remove(path);
+        }
+    }
+
+    /* Ordinary finite values on the same three keys still load and land. */
+    const char *ok = write_tmpconf(id,
+        "[fusion]\n"
+        "mekf_gyro_noise   = 0.007\n"
+        "accel_skip_thresh = 0.15\n"
+        "wave_tau_s        = 12.0\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(ok, &cfg) == 0,             "finite floats accepted");
+    EXPECT(cfg.mekf_gyro_noise == 0.007,           "finite NEED_POS_DBL applied");
+    EXPECT(cfg.accel_skip_thresh == 0.15,          "finite NEED_DBL applied");
+    EXPECT_NEAR_D(cfg.wave_tau_s, 12.0, 1e-6,      "finite NEED_FLT applied");
+    remove(ok);
+    end_test(fb);
+}
+
 /* Bad boolean value: same continue-and-report contract as bad int. */
 static void test_load_bad_bool(void)
 {
@@ -1282,6 +1347,7 @@ int main(void)
     test_load_bad_int();
     test_load_noise_density_must_be_positive();
     test_load_rates_must_be_positive();
+    test_load_rejects_non_finite();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();

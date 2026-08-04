@@ -101,6 +101,7 @@ Values are fixed by the wire protocol.
 | `IMUD_FLAG_HEAVE_VALID` | 11 | heave estimator settled |
 | `IMUD_FLAG_WAVE_VALID` | 12 | sea-state stats settled |
 | `IMUD_FLAG_ENGINE_ON` | 13 | engine-vibration detector asserting |
+| `IMUD_FLAG_STATE_RESET` | 14 | MEKF found a non-finite value in its own state and reset itself. Latched until it re-converges, so a consumer polling below the packet rate still sees it; `IMUD_FLAG_FUSION_CONVERGED` is clear for the same span. Attitude stays readable — unconverged, not invalid. |
 
 ## ABI contract
 

@@ -136,6 +136,9 @@ int prom_build_metrics(char *buf, size_t sz, const imud_data_t *d,
                IMUD_FLAG_WAVE_VALID);
     FLAG_GAUGE("imud_engine_on",   "Engine-vibration detector asserting.",
                IMUD_FLAG_ENGINE_ON);
+    FLAG_GAUGE("imud_state_reset", "MEKF reset itself after a non-finite state; "
+                                   "clears when it re-converges.",
+               IMUD_FLAG_STATE_RESET);
 
     if (pos >= (int)sz) return -1;   /* truncated */
     return pos;

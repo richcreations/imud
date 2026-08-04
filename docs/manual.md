@@ -180,10 +180,17 @@ journalctl -u imud -f                # follow the log
 ```
 
 The unit is `Type=notify` and hardened (`ProtectSystem=strict`,
-`NoNewPrivileges`, `DevicePolicy=closed` with explicit `DeviceAllow` for
-`/dev/i2c-1` and the gpiochip, `MemoryMax=32M`, a 10 s systemd watchdog). On
-Raspberry Pi 5, uncomment the `gpiochip4` `DeviceAllow` line in
-`etc/imud.service` and set `device.gpio_chip = "gpiochip4"` in the config.
+`NoNewPrivileges`, `DevicePolicy=closed` with explicit `DeviceAllow` lines,
+`MemoryMax=32M`, a 10 s systemd watchdog). The shipped unit allows every
+supported node — `/dev/i2c-1`, `/dev/i2c-3`, `/dev/gpiochip0` and
+`/dev/gpiochip4` — so it needs no edit on either a Pi 4 or a Pi 5; an allow for
+a node the board does not have is inert. Only the config needs to match your
+board (`device.gpio_chip`, `device.i2c_bus`).
+
+If you point `i2c_bus` or `gpio_chip` at a node outside that list, add a
+matching `DeviceAllow=` line to the unit — under `DevicePolicy=closed` the open
+is refused otherwise, and the failure looks like a permissions problem rather
+than a policy one.
 
 All six units — the daemon and the five bridges — additionally carry an empty
 `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, a
@@ -1020,6 +1027,8 @@ matching output enable with a warning.)
 | Sensors not detected | I²C enabled? `i2cdetect -y 1` should list `0x6b` (ISM330DHCX) and `0x30` (MMC5983MA). Check wiring and the `i2c_addr` values. |
 | `WHO_AM_I` mismatch at startup | Wrong `imu.driver`/`mag.driver`, or a wrong `i2c_addr` (e.g. SA0 jumper → 0x6A vs 0x6B). |
 | GPIO open/permission errors | `gpio_chip` must match the Pi model (`gpiochip0` on Pi 4, `gpiochip4` on Pi 5). Run as the `imud` service user or a member of the `gpio`/`i2c` groups. |
+| I²C or GPIO open fails only under systemd, but works when run by hand | The unit's `DevicePolicy=closed` allows a fixed list of nodes. The shipped list covers `/dev/i2c-1`, `/dev/i2c-3`, `/dev/gpiochip0` and `/dev/gpiochip4`; anything else needs its own `DeviceAllow=` line. `systemd-analyze verify` will not catch this — it only bites at device-open time. |
+| Filter reports `R` in `imud-mon`, or `imud_state_reset` is 1 | The MEKF found a non-finite value in its own state and reset itself; it re-aligns automatically and the flag clears when it re-converges. Repeated resets are a bug — capture the log line (`[fusion] non-finite filter state`) and the `.imucap` that produced it. |
 | Fusion never converges | Magnetometer uncalibrated, or a strong local magnetic disturbance. Run `imud-cal mag`; check the fit residual. |
 | Heading is off by a constant | Mount rotation. Set `mount.rotation_euler_deg` yaw to the chip-X-to-bow angle. |
 | No true heading output | Declination not configured. Set `position.lat_deg`/`lon_deg`, or `declination_deg`, or enable gpsd/SignalK. |

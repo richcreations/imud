@@ -62,6 +62,10 @@ class Flags:
     HEAVE_VALID          = 1 << 11  # heave estimator settled (heave_m/heave_rate valid)
     WAVE_VALID           = 1 << 12  # sea-state stats settled (wave/roll/pitch fields valid)
     ENGINE_ON            = 1 << 13  # engine-vibration detector asserting
+    # MEKF found a non-finite value in its own state and reset itself.
+    # Latched until the filter re-converges, so a slow poller still sees it;
+    # FUSION_CONVERGED is clear for the same span.
+    STATE_RESET          = 1 << 14  # MEKF reset itself after non-finite state
 
     @staticmethod
     def describe(flags: int) -> str:
@@ -77,6 +81,7 @@ class Flags:
             Flags.STARTUP:           'S',
             Flags.FIFO_OVERFLOW:     '!',
             Flags.SHUTDOWN:          'X',
+            Flags.STATE_RESET:       'R',
         }
         return ''.join(c for f, c in chars.items() if flags & f)
 

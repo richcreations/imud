@@ -16,9 +16,61 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 #include "cal.h"
 #include "fileio.h"
 #include "log.h"
+
+/* ── Non-finite guard ────────────────────────────────────────────────────── */
+
+/*
+ * Return the name of the first non-finite calibration field, or NULL.
+ *
+ * strtof converts "nan", "inf" and "1e999" without complaint, and every value
+ * here is applied to a live sample: cal->gyro_bias in particular goes straight
+ * into mekf_init's f->bias, which makes w = gyro - bias non-finite on every
+ * predict step.  The filter has no way back from that — q_normalize cannot
+ * repair a NaN, since NaN fails its `n > 1e-10f` test and the quaternion is
+ * passed through untouched — so the published attitude stays NaN for the life
+ * of the process, and %.4f renders that into an NMEA sentence as "nan".
+ *
+ * The loop closes inside imud's own tooling: cal_write formats with %.8f,
+ * which round-trips a NaN back out as the literal "nan".  So the same guard
+ * runs in both directions.
+ *
+ * gated: when true, inspect only sections whose has_* flag is set — that is
+ * exactly what cal_write emits, so a stale NaN in a section that will not be
+ * written is not an error.  The loader passes false: a number that appeared
+ * in the file is rejected wherever it appeared, and sections the file did not
+ * mention still hold the finite identity defaults cal_load set up front.
+ */
+static const char *cal_first_non_finite(const imud_cal_t *cal, bool gated)
+{
+    const struct {
+        const char  *name;
+        const float *v;
+        int          n;
+        bool         has;
+    } fields[] = {
+        { "mag.hard_iron",          cal->mag_hard_iron,         3, cal->has_mag       },
+        { "mag.soft_iron",          &cal->mag_soft_iron[0][0],  9, cal->has_mag       },
+        { "gyro.bias",              cal->gyro_bias,             3, cal->has_gyro      },
+        { "accel.offset",           cal->accel_offset,          3, cal->has_accel     },
+        { "accel.scale",            cal->accel_scale,           3, cal->has_accel     },
+        { "noise.gyro_density",     cal->gyro_noise_density,    3, cal->has_noise     },
+        { "noise.gyro_instability", cal->gyro_bias_instability, 3, cal->has_noise     },
+        { "noise.accel_density",    cal->accel_noise_density,   3, cal->has_noise     },
+        { "gyro_temp.coeff",        cal->gyro_temp_coeff,       3, cal->has_gyro_temp },
+        { "gyro_temp.ref_c",        &cal->gyro_temp_ref_c,      1, cal->has_gyro_temp },
+    };
+
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+        if (gated && !fields[i].has) continue;
+        for (int k = 0; k < fields[i].n; k++)
+            if (!isfinite(fields[i].v[k])) return fields[i].name;
+    }
+    return NULL;
+}
 
 /* ── JSON float-array parser ─────────────────────────────────────────────── */
 
@@ -141,6 +193,16 @@ int cal_load(const char *path, imud_cal_t *cal)
             cal->has_gyro_temp = true;
     }
 
+    /* Before anything reports success: a non-finite value here would reach
+     * the filter and never wash out.  Fatal, not clamped — substituting a
+     * plausible default would hide the corruption that produced it. */
+    const char *bad = cal_first_non_finite(cal, false);
+    if (bad) {
+        LOG_E("[cal] %s: %s is not a finite number — refusing to start on a "
+                "calibration that would put NaN into the filter\n", path, bad);
+        return -1;
+    }
+
     LOG_I("[cal] loaded %s  accel:%s  gyro:%s  mag:%s  noise:%s  temp:%s\n",
             path,
             cal->has_accel     ? "yes" : "no",
@@ -153,6 +215,20 @@ int cal_load(const char *path, imud_cal_t *cal)
 
 int cal_write(const char *path, const imud_cal_t *cal)
 {
+    /*
+     * Before the open, not after: fcreate takes "w", which truncates.  A check
+     * placed below would destroy a calibration that was still good on its way
+     * to reporting that the new one is not — losing the operator the file that
+     * was correct.  A fit that produced a NaN is a failed fit; say so and
+     * leave what is on disk alone.
+     */
+    const char *bad = cal_first_non_finite(cal, true);
+    if (bad) {
+        LOG_E("[cal] refusing to write %s: %s is not a finite number — "
+                "the calibration on disk is unchanged\n", path, bad);
+        return -1;
+    }
+
     FILE *f = fcreate(path, "w", IMUD_FILE_MODE);
     if (!f) {
         LOG_E("[cal] cannot write %s: %s\n", path, strerror(errno));

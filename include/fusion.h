@@ -59,6 +59,9 @@ typedef struct {
     /* ── Filter state ─────────────────────────────────────────────────── */
     bool  initialized;   /* true once tilt-init from accel has run */
     bool  converged;     /* true when trace(P[0:3][0:3]) < conv_thresh */
+    bool  state_reset;   /* mekf_sanitize reset the state; latched until the
+                          * filter next converges (see FLAG_STATE_RESET) */
+    uint32_t reset_count;/* resets since startup, for the rate-limited log */
 
     /* ── Tuning (set by mekf_init, not changed at runtime) ────────────── */
     float dt;            /* predict step period = 1/imu_odr_hz, s */
@@ -215,6 +218,27 @@ bool mekf_accel_probe(const mekf_t *f, const imu_sample_t *s,
  * Expects mag in calibrated body frame, µT (Z sign already flipped by driver).
  */
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m);
+
+/*
+ * mekf_sanitize — reject a non-finite filter state before it can be published.
+ *
+ * Checks q, the gyro bias, the wave acceleration and P's diagonal.  If any is
+ * non-finite the nominal state and covariance go back to their initial values,
+ * `initialized` clears so the filter re-aligns from the next good accel/mag
+ * pair, and FLAG_STATE_RESET is raised until it re-converges.  Tuning is left
+ * alone — it comes from a validated config and cannot be the source.
+ *
+ * Returns true if it acted, false if the state was already finite.
+ *
+ * Call once per sample AFTER the predict and update steps and BEFORE
+ * mekf_get_state: that ordering is what guarantees no packet can carry a
+ * non-finite attitude, since all three producers have run by then.
+ *
+ * This is a backstop for arithmetic, not for input.  Non-finite values from
+ * cal.json and imud.conf are rejected by their loaders, which is where an
+ * operator can still be told which line is wrong.
+ */
+bool mekf_sanitize(mekf_t *f);
 
 /*
  * mekf_get_state — extract nominal state into fused_state_t for output.

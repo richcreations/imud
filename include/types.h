@@ -59,6 +59,13 @@
 #define FLAG_HEAVE_VALID       (1u << 11) /* heave estimator has settled (heave_m/heave_rate valid) */
 #define FLAG_WAVE_VALID        (1u << 12) /* sea-state stats settled (wave/roll/pitch fields valid) */
 #define FLAG_ENGINE_ON         (1u << 13) /* engine-vibration detector currently asserting */
+/* The MEKF found a non-finite value in its own state and reset itself.
+ * Latched from the reset until the filter next converges, NOT a single-packet
+ * pulse: at up to 500 Hz a momentary bit is invisible to a 1 Hz consumer, and
+ * a fault nobody can observe is not worth a bit of the wire format.  While it
+ * is set the filter is re-aligning, so the attitude is valid but unconverged —
+ * FLAG_FUSION_CONVERGED is clear for the same span. */
+#define FLAG_STATE_RESET       (1u << 14) /* MEKF reset itself after non-finite state */
 
 /* ── IMU sample — one calibrated sample from the configured IMU ────────────── */
 

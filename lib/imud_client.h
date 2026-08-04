@@ -83,6 +83,11 @@
 #define IMUD_FLAG_HEAVE_VALID          (1u << 11) /* heave estimator settled (heave_m/heave_rate valid) */
 #define IMUD_FLAG_WAVE_VALID           (1u << 12) /* sea-state stats settled (wave/roll/pitch fields valid) */
 #define IMUD_FLAG_ENGINE_ON            (1u << 13) /* engine-vibration detector asserting */
+/* The MEKF found a non-finite value in its own state and reset itself.
+ * Latched from the reset until the filter next converges, so a consumer
+ * polling well below the packet rate can still see it.  While it is set the
+ * filter is re-aligning and IMUD_FLAG_FUSION_CONVERGED is clear. */
+#define IMUD_FLAG_STATE_RESET          (1u << 14) /* MEKF reset itself after non-finite state */
 
 /* ── Wire packet — 276 bytes, little-endian ─────────────────────────────── */
 

@@ -636,6 +636,99 @@ TEST(test_get_state_euler_extraction)
 }
 
 /*
+ * A non-finite state must never reach a packet, and must not be permanent.
+ *
+ * The audit case: a gyro bias of NaN — which reached f->bias straight from
+ * cal.json — made w = gyro - bias non-finite on every predict step.
+ * q_from_rotvec then takes its else branch (NaN < 1e-7f is false) and
+ * q_normalize declines to repair the result, because NaN fails its
+ * `n > 1e-10f` test and the quaternion is passed through untouched.  There
+ * was no path back: 1000 perfectly level, noiseless samples later the
+ * published attitude was still NaN, and %.4f renders that as "nan" into an
+ * NMEA sentence.
+ *
+ * The loaders now reject a non-finite bias, so this can no longer arrive from
+ * a file.  mekf_sanitize is the backstop for arithmetic that produces one
+ * anyway, and it is what this test drives.
+ */
+TEST(test_sanitize_recovers_from_non_finite)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* Poison the bias directly — the same shape as the cal.json case, but
+     * reached the way the other guard-path tests here reach a branch. */
+    f.bias[0] = NAN;
+
+    imu_sample_t s = make_gyro(0.0f, 0.0f, 0.0f);
+    s.accel[0] = 0.0f; s.accel[1] = 0.0f; s.accel[2] = -G;
+    mekf_predict(&f, &s, f.dt);
+
+    EXPECT(!isfinite(f.q[0]) || !isfinite(f.bias[0]),
+           "a NaN bias does reach the state (the bug being guarded)");
+
+    EXPECT(mekf_sanitize(&f), "sanitize reports it acted");
+    EXPECT(isfinite(f.q[0]) && isfinite(f.q[1]) &&
+           isfinite(f.q[2]) && isfinite(f.q[3]), "q is finite after reset");
+    EXPECT(isfinite(f.bias[0]) && isfinite(f.bias[1]) && isfinite(f.bias[2]),
+           "bias is finite after reset");
+    EXPECT(!f.initialized, "filter re-aligns rather than carrying on");
+
+    /* Whatever the caller does next, nothing non-finite may be published. */
+    fused_state_t out;
+    mekf_get_state(&f, &out, 0);
+    EXPECT(isfinite(out.roll) && isfinite(out.pitch) && isfinite(out.yaw),
+           "published euler angles are finite");
+    EXPECT(isfinite(out.heading_deg), "published heading is finite");
+    EXPECT(isfinite(out.q[0]) && isfinite(out.q[3]), "published q is finite");
+    EXPECT(out.flags & FLAG_STATE_RESET, "FLAG_STATE_RESET is published");
+}
+
+/*
+ * The flag latches until the filter reconverges, rather than appearing in a
+ * single packet.  At up to 500 Hz a momentary flag is invisible to a 1 Hz
+ * consumer — imud-mon, a Prometheus scrape — and a fault nobody can observe
+ * is not worth a bit of the wire format.
+ */
+TEST(test_state_reset_flag_latches_until_converged)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_hz, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    f.bias[0] = NAN;
+    imu_sample_t s = make_gyro(0.0f, 0.0f, 0.0f);
+    s.accel[0] = 0.0f; s.accel[1] = 0.0f; s.accel[2] = -G;
+    mekf_predict(&f, &s, f.dt);
+    EXPECT(mekf_sanitize(&f), "sanitize acted");
+
+    fused_state_t out;
+    mekf_get_state(&f, &out, 0);
+    EXPECT(out.flags & FLAG_STATE_RESET, "flag set on the reset packet");
+
+    /* Still set several packets later, while the filter re-converges. */
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    for (int i = 0; i < 50; i++) {
+        mekf_predict(&f, &s, f.dt);
+        mekf_update_accel(&f, &s);
+        mekf_sanitize(&f);
+    }
+    mekf_get_state(&f, &out, 0);
+    EXPECT(out.flags & FLAG_STATE_RESET, "flag still set while re-converging");
+
+    /* Once converged, it clears — a recovered filter must read as recovered. */
+    f.converged = true;
+    mekf_get_state(&f, &out, 0);
+    EXPECT(!(out.flags & FLAG_STATE_RESET), "flag clears on reconvergence");
+    EXPECT(out.flags & FLAG_FUSION_CONVERGED, "converged flag takes over");
+}
+
+/*
  * get_state: heading wraps correctly at 0° / 360° boundary.
  */
 TEST(test_get_state_heading_wrap)
@@ -2936,6 +3029,8 @@ int main(void)
     RUN(test_convergence_flag);
     RUN(test_precomputed_bias_used);
     RUN(test_get_state_euler_extraction);
+    RUN(test_sanitize_recovers_from_non_finite);
+    RUN(test_state_reset_flag_latches_until_converged);
     RUN(test_get_state_heading_wrap);
     RUN(test_align_accel_too_weak);
     RUN(test_mag_update_skips_invalid);

@@ -232,12 +232,12 @@ static void test_flag_str(void)
     mon_flag_str(FLAG_FUSION_CONVERGED, b, sizeof b);
     EXPECT(strcmp(b, "0x0004 [C]") == 0, "one flag, hex value included");
 
-    /* Order is fixed: C V A G M D S ! */
+    /* Order is fixed: C V A G M D S ! R */
     uint16_t all = FLAG_FUSION_CONVERGED | FLAG_MAG_VALID | FLAG_ACCEL_CAL |
                    FLAG_GYRO_CAL | FLAG_MAG_CAL | FLAG_DECLINATION_VALID |
-                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW;
+                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET;
     mon_flag_str(all, b, sizeof b);
-    EXPECT(strstr(b, "[CVAGMDS!]") != NULL, "all eight, in order");
+    EXPECT(strstr(b, "[CVAGMDS!R]") != NULL, "all nine, in order");
 
     /* Bits 0 and 4, but printed in the table's order (V before G), not the
      * bit order — the label sequence is a display choice, not the flags word. */
@@ -248,7 +248,7 @@ static void test_flag_str(void)
      * it must not truncate. */
     char real[32];
     mon_flag_str(0xFFFF, real, sizeof real);
-    EXPECT(strlen(real) == 17, "the 32-byte call-site buffer is not tight");
+    EXPECT(strlen(real) == 18, "the 32-byte call-site buffer is not tight");
     EXPECT(real[strlen(real) - 1] == ']', "and the summary is closed");
 
     end(fb);
@@ -266,7 +266,7 @@ static void test_flag_str_truncation(void)
 
     uint16_t all = FLAG_FUSION_CONVERGED | FLAG_MAG_VALID | FLAG_ACCEL_CAL |
                    FLAG_GYRO_CAL | FLAG_MAG_CAL | FLAG_DECLINATION_VALID |
-                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW;
+                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET;
 
     char full[64];
     mon_flag_str(all, full, sizeof full);

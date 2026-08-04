@@ -509,6 +509,25 @@ check: test
 check-docs:
 	@python3 tools/check-docs.py
 
+# ── Config ↔ systemd unit device cross-check ─────────────────────────────────
+# Every /dev node config/imud.conf names must be one etc/imud.service.in
+# allows, or DevicePolicy=closed refuses the open.  Audit N2: the template
+# asked for gpiochip4 while the unit allowed only gpiochip0, and nothing
+# compared them — systemd-analyze cannot see it, since it only bites at
+# device-open time.  Text only, like check-docs.
+.PHONY: check-devices
+check-devices:
+	@python3 tools/check-devices.py
+
+# ── Packet flag cross-check ──────────────────────────────────────────────────
+# The flags word is wire format with four independent definitions (the daemon,
+# both standalone client headers and the Python client).  CI already refuses a
+# disagreement on IMUD_VERSION; a drifted flag is worse, because the packet
+# still parses and the wrong bit is read under the right name.
+.PHONY: check-flags
+check-flags:
+	@python3 tools/check-flags.py
+
 # ── Coverage ──────────────────────────────────────────────────────────────────
 # Rebuild and run the whole host test suite instrumented with gcov, then
 # summarise with lcov.  A measuring tool for finding residual line/branch gaps

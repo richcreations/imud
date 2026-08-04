@@ -980,6 +980,24 @@ void *fusion_thread(void *arg)
 
         mekf_update_accel(&f, &s);
 
+        /*
+         * Last gate before anything is published.  It sits here, rather than
+         * inside mekf_predict, because all three producers of filter state
+         * have now run — predict, the mag updates and the accel update — so a
+         * non-finite value from any of them is caught in the same sample it
+         * appeared, and no packet can carry one.  It is also ahead of
+         * heave_update below, which reads f.q directly.
+         *
+         * Rate-limited because at 833 Hz arithmetic that produced one
+         * non-finite value will likely produce the next few thousand too, and
+         * the first message — the one that says when it started — is the one
+         * worth keeping.
+         */
+        if (mekf_sanitize(&f) &&
+            (f.reset_count == 1 || (f.reset_count % 1000) == 0))
+            LOG_E("[fusion] non-finite filter state — reset and re-aligning "
+                    "(occurrence %u)\n", f.reset_count);
+
         /* Extract fused state and fill fields mekf_get_state leaves as stubs. */
         fused_state_t state;
         mekf_get_state(&f, &state, cal_flags);
