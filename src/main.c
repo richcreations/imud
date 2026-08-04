@@ -71,8 +71,17 @@
 
 #include "version.h"                         /* IMUD_VERSION_STR — canonical */
 #define VERSION_STR   IMUD_VERSION_STR
-#define PID_FILE      "/run/imud/imud.pid"   /* inside RuntimeDirectory=imud */
-#define STATUS_SOCK   "/run/imud/imud.sock"
+/* Overridable only so test_daemon can run the real daemon without fighting a
+ * live one for /run/imud: the suite must be safe to run on the Pi that is
+ * currently serving, and these two paths are the only process-wide singletons
+ * main() owns.  Nothing in the shipping build defines them — the .deb, the
+ * unit file and RuntimeDirectory=imud all use the values below. */
+#ifndef PID_FILE
+# define PID_FILE     "/run/imud/imud.pid"   /* inside RuntimeDirectory=imud */
+#endif
+#ifndef STATUS_SOCK
+# define STATUS_SOCK  "/run/imud/imud.sock"
+#endif
 #define STATS_BUF     512
 #define STATUS_BUF    4096   /* status text + recent-warnings section */
 

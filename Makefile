@@ -195,6 +195,18 @@ src/%.o: src/%.c
 src/drivers/%.o: src/drivers/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
+# Entry points compiled as callable functions, for the end-to-end suites: the
+# real main() of a daemon under the name <base>_entry.  Audit L2's remaining
+# dark code is the WIRING inside these main()s — config → sockets → poll →
+# reload → emit → reconnect — every ingredient of which is unit-tested already
+# while the joining of them never was.  Renaming at compile time tests exactly
+# what ships, with no seam invented to hold it.
+#
+# It needs its own object rule rather than -Dmain= on the test's link line,
+# because the test file has a main() of its own that must stay main().
+src/%.entry.o: src/%.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -Dmain=$*_entry -c -o $@ $<
+
 -include $(wildcard src/*.d src/drivers/*.d lib/*.d)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -297,6 +309,54 @@ test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
+# The bridge daemons end to end, main() included (audit L2).  Links each real
+# entry point renamed to <base>_entry by the src/%.entry.o rule, and drives it
+# against test/fakestream.h — so the config→sockets→poll→reload→emit→reconnect
+# wiring, which exists nowhere but inside main(), is finally executed.  Portable:
+# AF_UNIX, UDP and threads only.
+# All five in one binary rather than five: each shared source is then compiled
+# exactly once for the whole suite, which is what keeps lcov able to attribute
+# it (a source compiled into several test binaries hits lcov's stamp-mismatch
+# skip and vanishes from the report).
+test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
+                 src/mavlink_main.entry.o src/prom_main.entry.o \
+                 src/mqtt_main.entry.o \
+                 src/sk_delta.c src/influx_line.c src/mavlink_encode.c \
+                 src/prom_metrics.c src/prom_http.c src/mqtt_publish.c \
+                 src/config.c src/log.c src/netserv.c \
+                 src/bridge.c src/sdnotify.c src/packet.c lib/libimud.c \
+                 test/test_bridge_e2e.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
+
+# The daemon end to end, main() included (audit L2 + L1): startup with no
+# sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
+# restart contract, and shutdown ordering.  Linux-only, like test_concurrency —
+# it links the daemon objects and -lgpiod.
+#
+# PID_FILE/STATUS_SOCK are redirected into the build directory for this copy of
+# main.c only: /run/imud/imud.sock is a process-wide singleton, and the suite
+# has to be safe to run on a Pi that is currently serving from it.
+src/main.entry.o: CPPFLAGS += -DPID_FILE='"/tmp/imud_e2e_daemon.pid"' \
+                              -DSTATUS_SOCK='"/tmp/imud_e2e_daemon.sock"'
+
+# The Makefile is a prerequisite of the object, not decoration: those two -D
+# values live here, and make does not consider a target-specific flag change a
+# reason to recompile.  Without this line, editing a path above silently leaves
+# the previous one compiled in — which cost a debugging round already.
+src/main.entry.o: Makefile
+
+test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+
+# imud-status and imud-mon end to end, main() included (audit L2).  Their pure
+# halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
+# what only main() holds is the socket work and the render loop, so this drives
+# the real entry points against sockets the test binds and captures stdout.
+test_tools_e2e: src/status_main.entry.o src/mon_main.entry.o \
+                src/cli.c src/config.c src/log.c src/mon_parse.c src/packet.c \
+                test/test_tools_e2e.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
 # Bridge scaffolding (src/bridge.c + src/sdnotify.c): CLI matrix, emit-tick
 # timespec math (period/wait/due/advance/earlier), config load / reload /
 # disabled flows, and sd_notify delivery over a test-bound NOTIFY_SOCKET.
@@ -363,7 +423,7 @@ test: test_fusion test_fit_ra test_config test_cli test_status test_mon test_nme
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
-      test_mavlink test_libimud test_bridge test_prometheus \
+      test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
       test_drivers_registry test_imu_math test_drivers test_imutest
 	./test_fusion
 	./test_fit_ra
@@ -392,6 +452,9 @@ test: test_fusion test_fit_ra test_config test_cli test_status test_mon test_nme
 	./test_mavlink
 	./test_libimud
 	./test_bridge
+	./test_bridge_e2e
+	./test_tools_e2e
+	./test_daemon
 	./test_drivers_registry
 	./test_imu_math
 	./test_drivers
@@ -465,6 +528,7 @@ coverage:
 	         --ignore-errors mismatch,source,graph,empty,unused \
 	         --exclude '*/test/*' --exclude '*/fuzz/*' --exclude '/usr/*'; \
 	    lcov --list coverage.info; \
+	    python3 tools/coverage-gaps.py coverage.info; \
 	    if command -v genhtml >/dev/null 2>&1; then \
 	        genhtml coverage.info --output-directory coverage-html \
 	            --ignore-errors source >/dev/null 2>&1 && \
@@ -885,7 +949,7 @@ clean:
 	      test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
-      test_libimud test_bridge test_prometheus test_capture test_concurrency \
+      test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers test_imutest \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      mkseed_packet \
