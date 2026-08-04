@@ -19,7 +19,7 @@
 #include <time.h>
 #include <pthread.h>
 
-int g_log_level = LOG_INFO;
+_Atomic int g_log_level = LOG_INFO;
 
 static int             g_style = LOG_STYLE_PLAIN;
 static pthread_mutex_t g_mtx   = PTHREAD_MUTEX_INITIALIZER;

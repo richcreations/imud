@@ -48,7 +48,13 @@
 #define LOG_STYLE_JOURNAL  1
 #define LOG_STYLE_FILE     2
 
-extern int g_log_level;
+/* _Atomic, not plain int: SIGHUP rewrites the level from the daemon's sigwait
+ * thread (main.c's reload block) while every other thread reads it on each
+ * log_emit().  A plain int there is a data race by the C memory model — benign
+ * on real hardware, but undefined, and TSan fails the build over it.  It
+ * survived this long because nothing executed main()'s reload path under a
+ * sanitizer until test_daemon existed.  Same rule as the stop flags. */
+extern _Atomic int g_log_level;
 
 #if defined(__GNUC__) || defined(__clang__)
 void log_emit(int lvl, const char *fmt, ...)
