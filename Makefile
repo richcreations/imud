@@ -533,7 +533,15 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud.conf"; \
 	fi
-	@if [ -f "config/cal.json" ]; then \
+	# Never into a staged (packaging) root: cal.json is one machine's
+	# calibration, and capturing a developer's copy into a .deb would ship it
+	# to every user.  It also breaks the build outright — nothing in
+	# debian/*.install claims etc/imud/cal.json, so dh_missing aborts with
+	# "missing files".  CI never sees that because a fresh checkout has no
+	# cal.json; anyone who runs imud-cal before dpkg-buildpackage does.
+	@if [ -n "$(DESTDIR)" ]; then \
+	    echo "Staged install: skipping config/cal.json (machine-specific)"; \
+	elif [ -f "config/cal.json" ]; then \
 	    install -m 644 config/cal.json $(DESTDIR)$(ETCDIR)/cal.json; \
 	    echo "Installed calibration:  $(DESTDIR)$(ETCDIR)/cal.json"; \
 	else \

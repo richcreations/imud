@@ -55,6 +55,9 @@ src/drivers/*.d
 /test_imu_math
 /test_drivers
 /test_imutest
+/test_bridge_e2e
+/test_tools_e2e
+/test_daemon
 
 # Coverage artifacts (make coverage)
 *.gcno
@@ -90,6 +93,11 @@ __pycache__/
 # Local agent guidance (not shipped)
 AGENTS.md
 audit.md
+
+# Local Debian build/test container for the macOS dev box (devbox/README.md).
+# Nothing in the build, the packaging or CI refers to it — it only exists so the
+# 5 suites and the .deb/systemd checks macOS cannot run have a home before a push.
+devbox
 # Cal file (machine-specific, not for version control)
 cal.json
 
@@ -113,6 +121,10 @@ docs/*.pdf
 /debian/files
 /debian/*.substvars
 /debian/*.debhelper
+# dh_installdeb writes <pkg>.debhelper.log, which /debian/*.debhelper does NOT
+# match.  Only appears when the packages are built in-tree — CI builds them in
+# a container, so nothing caught this until a local dpkg-buildpackage run.
+/debian/*.debhelper.log
 /debian/debhelper-build-stamp
 /debian/imud/
 /debian/imud-utils/
