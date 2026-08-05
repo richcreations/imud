@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include "config.h"
 
@@ -394,6 +395,182 @@ static void test_load_rejects_non_finite(void)
     EXPECT(cfg.accel_skip_thresh == 0.15,          "finite NEED_DBL applied");
     EXPECT_NEAR_D(cfg.wave_tau_s, 12.0, 1e-6,      "finite NEED_FLT applied");
     remove(ok);
+    end_test(fb);
+}
+
+/* Fill buf with exactly n 'x' characters and NUL-terminate. */
+static const char *xstr(char *buf, size_t n)
+{
+    memset(buf, 'x', n);
+    buf[n] = '\0';
+    return buf;
+}
+
+/*
+ * stderr capture, same idiom as test_cli.c's cap_begin/cap_end.  Needed here
+ * because for the length failures the *message* is half the fix: several of
+ * them are indistinguishable by return code alone — an over-long [mount]
+ * preset and a misspelled one are both CONFIG_ERR_PARSE — so an assertion on
+ * the code cannot tell whether the right guard fired.
+ */
+static int  g_saved_err = -1;
+static char g_cap_path[128];
+
+static void cap_begin(void)
+{
+    snprintf(g_cap_path, sizeof g_cap_path, "/tmp/imud_tcfg_%d.txt",
+             (int)getpid());
+    fflush(stderr);
+    g_saved_err = dup(STDERR_FILENO);
+    int fd = open(g_cap_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd >= 0) { dup2(fd, STDERR_FILENO); close(fd); }
+}
+
+static const char *cap_end(void)
+{
+    static char buf[4096];
+    fflush(stderr);
+    if (g_saved_err >= 0) { dup2(g_saved_err, STDERR_FILENO); close(g_saved_err); }
+    g_saved_err = -1;
+
+    buf[0] = '\0';
+    FILE *f = fopen(g_cap_path, "r");
+    if (f) {
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = '\0';
+        fclose(f);
+    }
+    unlink(g_cap_path);
+    return buf;
+}
+
+/*
+ * An over-long string value must be fatal, not a warning.
+ *
+ * copy_str has always said the caller surfaces truncation — "a silently
+ * shortened path (a socket, a cal file) binds or opens something the user
+ * never asked for" — and NEED_STR logged LOG_W and carried on anyway.  So a
+ * [stream] socket of 130 characters became a *different, perfectly valid*
+ * 107-character path, the daemon bound that, and every bridge and libimud
+ * client connected to the path written in the config file and found nothing.
+ *
+ * The rejected field must also keep its default, not the truncated value:
+ * imud-mon ignores config_load's return on purpose ("defaults have the right
+ * port numbers"), which makes it the one consumer that runs on a config the
+ * daemon refused to start on.
+ */
+static void test_load_rejects_too_long_string(void)
+{
+    begin_test("test_load_rejects_too_long_string");
+    int fb = g_fail;
+
+    imud_config_t def, cfg;
+    config_defaults(&def);
+    char big[512], body[1024];
+
+    /* stream_socket is char[108], sized to sun_path — 107 usable. */
+    snprintf(body, sizeof body, "[stream]\nsocket = \"%s\"\n"
+                                "[imu]\ngyro_dps = 500\n",
+             xstr(big, sizeof def.stream_socket));
+    const char *path = write_tmpconf(140, body);
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+           "over-long socket path rejected");
+    EXPECT_STR(cfg.stream_socket, def.stream_socket,
+           "rejected socket path keeps its default");
+    EXPECT(cfg.imu_gyro_dps == 500,
+           "line after the over-long one still applied");
+    remove(path);
+
+    /* A second length class, so the max is read from the field and not
+     * hardcoded to one of them: cal_file is char[256]. */
+    snprintf(body, sizeof body, "[calibration]\nfile = \"%s\"\n",
+             xstr(big, sizeof def.cal_file));
+    path = write_tmpconf(141, body);
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+           "over-long cal file path rejected");
+    EXPECT_STR(cfg.cal_file, def.cal_file,
+           "rejected cal file path keeps its default");
+    remove(path);
+
+    /*
+     * The off-by-one pin, and the reason it is not optional: rejecting one
+     * character early would break every operator with a long-but-legal socket
+     * path, and that failure shows up only at their site.
+     */
+    snprintf(body, sizeof body, "[stream]\nsocket = \"%s\"\n",
+             xstr(big, sizeof def.stream_socket - 1));
+    path = write_tmpconf(142, body);
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0, "socket path at exactly the max accepted");
+    EXPECT(strlen(cfg.stream_socket) == sizeof def.stream_socket - 1,
+           "socket path at exactly the max applied whole");
+    remove(path);
+
+    /*
+     * A value that fits but whose ~/ expansion does not.  expand_tilde used to
+     * decline silently and copy_str could not see it, because it measured the
+     * unexpanded value: the field kept a literal "~/..." that is then opened
+     * relative to the cwd.  Same class as the truncation above.
+     */
+    const char *home_env = getenv("HOME");
+    char home_save[512];
+    snprintf(home_save, sizeof home_save, "%s", home_env ? home_env : "");
+    setenv("HOME", xstr(big, sizeof def.cal_file - 6), 1);
+
+    path = write_tmpconf(143, "[calibration]\nfile = \"~/cal.json\"\n");
+    config_defaults(&cfg);
+    cap_begin();
+    int trc = config_load(path, &cfg);
+    const char *tmsg = cap_end();
+    EXPECT(trc == CONFIG_ERR_PARSE,
+           "value rejected when ~/ expansion would overflow");
+    EXPECT_STR(cfg.cal_file, def.cal_file,
+           "rejected tilde value keeps its default");
+    /* The value is 10 characters; reporting it as "too long" would send the
+     * operator shortening the wrong string. */
+    EXPECT(strstr(tmsg, "$HOME") != NULL,
+           "tilde overflow reported as an expansion problem, not a long value");
+    remove(path);
+
+    /* Positive control under the SAME long $HOME: only what actually
+     * overflows is refused, not every tilde value. */
+    path = write_tmpconf(144, "[calibration]\nfile = \"~/c\"\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0, "tilde value that still fits accepted");
+    EXPECT(cfg.cal_file[0] != '~',       "tilde value that still fits expanded");
+    remove(path);
+
+    if (home_env) setenv("HOME", home_save, 1);
+    else          unsetenv("HOME");
+
+    /*
+     * [mount] preset does not go through NEED_STR — the name is matched, not
+     * stored — but it must still not read the buffer copy_str declined to
+     * write.  Fatal, and reported as a length error rather than as an unknown
+     * preset, which would send the operator hunting a name spelled right.
+     */
+    snprintf(body, sizeof body, "[mount]\npreset = \"%s\"\n",
+             xstr(big, sizeof def.mount_preset + 8));
+    path = write_tmpconf(145, body);
+    config_defaults(&cfg);
+    cap_begin();
+    int prc = config_load(path, &cfg);
+    const char *pmsg = cap_end();
+    EXPECT(prc == CONFIG_ERR_PARSE, "over-long mount preset rejected");
+    EXPECT(!cfg.mount_set,          "rejected preset does not set the mount");
+    /*
+     * The return code alone cannot tell the guard from its absence: without
+     * it the uninitialised buffer matches no known name and the parse fails
+     * anyway, as "unknown mount preset". Asserting the message is what makes
+     * a regression here visible — verified by removing the guard and watching
+     * this line, and only this line, fail.
+     */
+    EXPECT(strstr(pmsg, "too long") != NULL,
+           "over-long preset reported as a length error, not an unknown name");
+    remove(path);
+
     end_test(fb);
 }
 
@@ -1348,6 +1525,7 @@ int main(void)
     test_load_noise_density_must_be_positive();
     test_load_rates_must_be_positive();
     test_load_rejects_non_finite();
+    test_load_rejects_too_long_string();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();

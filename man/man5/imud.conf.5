@@ -45,6 +45,12 @@ Paths beginning with
 .B ~/
 are expanded to
 .IR $HOME/ .
+A value longer than the field it sets is a fatal configuration error, as is one
+that fits only until
+.B ~/
+expands; the error names the key, the line and the maximum length. imud does not
+shorten it and carry on, because a truncated socket or file path is a valid path
+to the wrong place.
 .TP
 Integers
 Decimal or hexadecimal

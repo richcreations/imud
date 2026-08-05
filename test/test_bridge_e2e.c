@@ -581,9 +581,27 @@ static void test_mavlink_tcp_listener(void)
 #define PR_SOCK "/tmp/imud_e2e_prom.sock"
 #define PR_CONF "/tmp/imud_e2e_prom.conf"
 
-/* GET /metrics, with retries while the daemon is still coming up. */
-static ssize_t scrape(int port, char *buf, size_t bufsz)
+/*
+ * GET /metrics, retrying while the exporter comes up — and, when `want` is
+ * given, until the page actually contains it.
+ *
+ * Retrying only the connect is not enough, and the gap is not theoretical.
+ * The exporter answers a valid 200 carrying `imud_up 1` as soon as it has
+ * connected to the stream socket, but the gauges themselves only exist once
+ * it has consumed a packet. A scrape that wins that race gets a well-formed
+ * page with no imud_heading_degrees in it, so `HTTP 200` and `imud_up 1`
+ * passed while `serves the gauges` failed — about one run in five under
+ * TSan's slowdown, reddening the whole suite for a reason that had nothing
+ * to do with threading. Making the caller's expectation the loop's exit
+ * condition removes the race rather than widening a sleep.
+ *
+ * On exhaustion it returns the LAST response rather than -1, so the caller's
+ * own assertions report what was actually served instead of a bare failure.
+ */
+static ssize_t scrape(int port, char *buf, size_t bufsz, const char *want)
 {
+    ssize_t last = -1;
+
     for (int attempt = 0; attempt < 200; attempt++) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) return -1;
@@ -607,16 +625,22 @@ static ssize_t scrape(int port, char *buf, size_t bufsz)
                     if (got >= bufsz - 1) break;
                 }
                 buf[got] = '\0';
-                close(fd);
-                if (got > 0) return (ssize_t)got;
-                return 0;
+                if (got > 0) {
+                    last = (ssize_t)got;
+                    if (!want || strstr(buf, want) != NULL) {
+                        close(fd);
+                        return last;
+                    }
+                } else if (last < 0) {
+                    last = 0;
+                }
             }
         }
         close(fd);
         struct timespec t = { 0, 10 * 1000 * 1000 };
         nanosleep(&t, NULL);
     }
-    return -1;
+    return last;
 }
 
 static void test_prometheus_scrape(void)
@@ -644,7 +668,8 @@ static void test_prometheus_scrape(void)
     bridge_start(&r, prom_main_entry, PR_CONF);
 
     char buf[16384];
-    ssize_t n = scrape(port, buf, sizeof buf);
+    /* Wait for a page that has actually seen a packet — see scrape(). */
+    ssize_t n = scrape(port, buf, sizeof buf, "imud_heading_degrees");
     EXPECT(n > 0, "the exporter answered a scrape");
     EXPECT(n > 0 && strstr(buf, "200 OK") != NULL, "HTTP 200");
     EXPECT(n > 0 && strstr(buf, "imud_heading_degrees") != NULL, "serves the gauges");
@@ -680,7 +705,9 @@ static void test_prometheus_up_zero_without_daemon(void)
     bridge_start(&r, prom_main_entry, PR_CONF);
 
     char buf[16384];
-    ssize_t n = scrape(port, buf, sizeof buf);
+    /* No daemon, so imud_up 0 is served from the first response — but make it
+     * the exit condition anyway, so this cannot acquire the same race later. */
+    ssize_t n = scrape(port, buf, sizeof buf, "imud_up 0");
     EXPECT(n > 0, "answered a scrape with no daemon present");
     EXPECT(n > 0 && strstr(buf, "imud_up 0") != NULL, "reports imud_up 0");
 

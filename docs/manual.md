@@ -271,6 +271,11 @@ imud is configured with a single TOML-like text file.
 - Booleans: `true` / `false`.
 - Arrays: `[0.0, 0.0, 0.0]` (used by `rotation_euler_deg` and `rotation_matrix`). The element count is checked exactly.
 - `~/` paths are expanded to `$HOME/`.
+- A string value longer than the field it sets is a fatal error, and so is one
+  that fits only until `~/` expands. imud never shortens a value and continues:
+  a truncated socket or file path is a perfectly valid path to the wrong place,
+  and every client would then connect to the path you actually wrote and find
+  nothing there.
 
 The annotated reference file at `config/imud.conf` documents every key inline
 and is the fastest way to see a working configuration.

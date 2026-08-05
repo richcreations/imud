@@ -417,8 +417,18 @@ void *stream_out_thread(void *arg)
 static int open_stream_listener(const char *path)
 {
     struct sockaddr_un addr;
-    if (strlen(path) >= sizeof(addr.sun_path)) {
-        LOG_E("[output] stream socket path too long: %s\n", path);
+    /*
+     * Fail loudly rather than silently binding a truncated path.  Since
+     * config.c's NEED_STR became fatal this cannot fire from a config-sourced
+     * path on Linux, where cfg->stream_socket is char[108] — exactly
+     * sizeof(sun_path) — so anything that fits the field fits here too.  It is
+     * not dead everywhere: macOS sun_path is 104, and it remains the only
+     * thing between a non-config caller and a truncated bind.
+     */
+    size_t plen = strlen(path);
+    if (plen >= sizeof(addr.sun_path)) {
+        LOG_E("[output] stream socket path too long (%zu bytes, max %zu): %s\n",
+              plen, sizeof(addr.sun_path) - 1, path);
         return -1;
     }
 
@@ -428,14 +438,6 @@ static int open_stream_listener(const char *path)
         return -1;
     }
     APPLY_CLOEXEC(fd);
-
-    /* Fail loudly rather than silently binding a truncated path. */
-    size_t plen = strlen(path);
-    if (plen >= sizeof(addr.sun_path)) {
-        LOG_E("[output] stream socket path too long (%zu bytes, max %zu): %s\n",
-              plen, sizeof(addr.sun_path) - 1, path);
-        close(fd); return -1;
-    }
 
     unlink(path);   /* remove stale socket from a previous run */
     memset(&addr, 0, sizeof(addr));

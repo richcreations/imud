@@ -49,7 +49,14 @@ static void strip_comment(char *s)
     }
 }
 
-/* Replace a leading ~/ with $HOME/. */
+/*
+ * Replace a leading ~/ with $HOME/.
+ *
+ * The overflow guard below is unreachable from copy_str(), which rejects a
+ * value whose expansion would not fit before it writes anything.  It stays
+ * because this is a standalone helper and a silent non-expansion — a literal
+ * "~/..." opened relative to the cwd — is the failure it exists to prevent.
+ */
 static void expand_tilde(char *buf, size_t bufsz)
 {
     if (buf[0] != '~' || buf[1] != '/') return;
@@ -64,24 +71,63 @@ static void expand_tilde(char *buf, size_t bufsz)
 }
 
 /*
- * Copy TOML string value into out: strip surrounding quotes, expand tilde.
- * Returns false if the value did not fit and was truncated — callers surface
- * that, because a silently shortened path (a socket, a cal file) binds or
- * opens something the user never asked for.
+ * Why copy_str reports two distinct failures rather than a bool: the message is
+ * half the fix.  "value too long" is a lie for a value that fits perfectly well
+ * and only overflows once ~/ becomes $HOME, and an operator told the wrong
+ * thing shortens the wrong string.
  */
-static bool copy_str(const char *val, char *out, size_t outsz)
+typedef enum {
+    COPY_OK = 0,
+    COPY_TOO_LONG,          /* the value itself does not fit the field       */
+    COPY_TILDE_TOO_LONG     /* it fits, but not once ~/ expands to $HOME     */
+} copy_rc_t;
+
+/*
+ * Copy TOML string value into out: strip surrounding quotes, expand tilde.
+ *
+ * Returns non-OK if the value did not fit — callers must surface that, because
+ * a silently shortened path (a socket, a cal file) binds or opens something the
+ * user never asked for.  NEED_STR makes it fatal.
+ *
+ * On failure out is left UNTOUCHED, so a rejected key keeps its default.  That
+ * matters beyond tidiness: imud-mon deliberately ignores config_load's return
+ * ("defaults have the right port numbers"), so it is the one consumer that runs
+ * on a config the daemon refused, and leaving the truncated value behind would
+ * point it at a socket nobody is listening on.
+ *
+ * Hence the fit is decided before anything is written — including the tilde
+ * case, which the old snprintf-then-measure form could not see at all: it
+ * measured the unexpanded value, and expand_tilde then declined silently.
+ */
+static copy_rc_t copy_str(const char *val, char *out, size_t outsz)
 {
-    int n;
-    if (*val == '"') {
-        val++;
-        size_t len = strlen(val);
-        if (len > 0 && val[len - 1] == '"') len--;
-        n = snprintf(out, outsz, "%.*s", (int)len, val);
+    const char *s = val;
+    size_t len;
+
+    if (*s == '"') {
+        s++;
+        len = strlen(s);
+        if (len > 0 && s[len - 1] == '"') len--;
     } else {
-        n = snprintf(out, outsz, "%s", val);
+        len = strlen(s);
     }
+
+    if (len >= outsz) return COPY_TOO_LONG;
+
+    /* Same arithmetic expand_tilde uses: $HOME replaces the '~', so the result
+     * is strlen(home) + the length of the "/rest/of/path" that follows it.
+     * No $HOME set means no expansion happens at all — a documented behaviour,
+     * and not a length failure. */
+    if (len >= 2 && s[0] == '~' && s[1] == '/') {
+        const char *home = getenv("HOME");
+        if (home && strlen(home) + (len - 1) >= outsz)
+            return COPY_TILDE_TOO_LONG;
+    }
+
+    memcpy(out, s, len);
+    out[len] = '\0';
     expand_tilde(out, outsz);
-    return n >= 0 && (size_t)n < outsz;
+    return COPY_OK;
 }
 
 static bool parse_bool(const char *val, bool *out)
@@ -609,10 +655,31 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         return -1; } \
         (field) = iv; } while (0)
 
+/*
+ * A value that does not fit is fatal, not a warning.  This used to log LOG_W
+ * and carry on, which is the worst of both: a [stream] socket of 130 characters
+ * became a *different, perfectly valid* 107-character path, the daemon bound
+ * that, and every bridge and libimud client then connected to the path written
+ * in the config file and found nothing there.  A truncated [calibration] file
+ * or [logging] file is the same shape.
+ *
+ * Fatal matches every other NEED_* macro, copy_str's own documented contract,
+ * and main.c's policy that a config which parses badly must not start: a
+ * plausible substitute hides the mistake, exactly as with NEED_POS_INT.
+ */
 #define NEED_STR(field) \
-    do { if (!copy_str(val, (field), sizeof(field))) \
-        LOG_W("%s:%d: '%s': value too long (max %zu chars) — truncated\n", \
-              path, lineno, key, sizeof(field) - 1); } while (0)
+    do { switch (copy_str(val, (field), sizeof(field))) { \
+         case COPY_OK: break; \
+         case COPY_TOO_LONG: \
+            LOG_E("%s:%d: '%s': value too long (max %zu chars)\n", \
+                  path, lineno, key, sizeof(field) - 1); \
+            return -1; \
+         case COPY_TILDE_TOO_LONG: \
+            LOG_E("%s:%d: '%s': too long once '~/' expands to $HOME " \
+                  "(max %zu chars after expansion)\n", \
+                  path, lineno, key, sizeof(field) - 1); \
+            return -1; \
+         } } while (0)
 
     switch (sec) {
 
@@ -648,7 +715,17 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
              * whatever angles happened to be in the struct. A silently wrong
              * mount rotation biases every sample, so it is fatal. */
             char preset[32];
-            copy_str(val, preset, sizeof(preset));
+            /* Not NEED_STR — a preset name is matched, not stored — but the
+             * return cannot be ignored either: copy_str leaves the buffer
+             * alone when the value does not fit, and the strcasecmp chain
+             * below would then read it uninitialised.  Reported as the length
+             * error it is rather than as an unknown preset, which would send
+             * the operator looking for a name that is in fact spelled right. */
+            if (copy_str(val, preset, sizeof(preset)) != COPY_OK) {
+                LOG_E("%s:%d: '%s': preset name too long (max %zu chars)\n",
+                      path, lineno, key, sizeof(preset) - 1);
+                return -1;
+            }
             double e[3] = {0.0, 0.0, 0.0};
             if (strcasecmp(preset, "identity") == 0 || strcasecmp(preset, "board_forward") == 0) {
                 e[0] = 0.0; e[1] = 0.0; e[2] = 0.0;

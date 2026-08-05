@@ -38,6 +38,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,13 +154,18 @@ static bool fetch_status(char *buf, size_t bufsz)
     return got > 0;
 }
 
-typedef struct { int rc; pthread_t tid; } daemon_run_t;
+/* `done` is how a caller can tell "still running" from "returned" without
+ * pthread_kill(tid, 0), which is undefined once the thread has exited — the id
+ * may already have been reused.  _Atomic per the project's rule for every
+ * cross-thread flag; its release also makes `rc` safe to read after it reads 1. */
+typedef struct { int rc; pthread_t tid; _Atomic int done; } daemon_run_t;
 
 static void *daemon_thread(void *arg)
 {
     daemon_run_t *d = (daemon_run_t *)arg;
     char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF, NULL };
     d->rc = main_entry(3, argv);
+    d->done = 1;
     return NULL;
 }
 
@@ -260,6 +266,81 @@ static void test_daemon_refuses_bad_config(void)
     end(fb);
 }
 
+/*
+ * The end-to-end half of the same contract, for an over-long string value.
+ *
+ * This is the finding stated as a behaviour rather than a return code: a
+ * [stream] socket one character too long used to be truncated to a
+ * *different, perfectly valid* path, which the daemon then bound and served,
+ * while every bridge and libimud client connected to the path written in the
+ * config file and found nothing there.  So the assertion that matters is not
+ * only that the start is refused — it is that the truncated path is not on
+ * disk afterwards.
+ */
+static void test_daemon_refuses_overlong_socket(void)
+{
+    begin("test_daemon_refuses_overlong_socket");
+    int fb = g_fail;
+
+    /* stream_socket is char[108]: 107 usable, so 108 is one past. */
+    char sock[160];
+    int n = snprintf(sock, sizeof sock, "/tmp/imud_e2e_long_");
+    memset(sock + n, 'x', 108 - (size_t)n);
+    sock[108] = '\0';
+
+    FILE *f = fopen(T_CONF, "w");
+    if (!f) { perror("fopen"); exit(1); }
+    fprintf(f,
+        "[device]\ni2c_bus = \"/dev/null\"\n"
+        "[imu]\ndriver = \"sim\"\nint_gpio = 0\n"
+        "[mag]\ndriver = \"sim\"\nint_gpio = 0\nset_period_s = 0.0\n"
+        "[nmea]\nenabled = false\n"
+        "[highrate]\nenabled = false\n"
+        "[stream]\nenabled = true\nsocket = \"%s\"\n"
+        "[logging]\nlevel = \"error\"\n", sock);
+    fclose(f);
+
+    char trunc[128];
+    snprintf(trunc, sizeof trunc, "%.107s", sock);
+    unlink(trunc);
+
+    /*
+     * Run it on a thread rather than calling main_entry() straight.  A
+     * regression here does not return a bad code — it *succeeds*, binds the
+     * truncated path and blocks in the daemon's main loop forever, so a
+     * direct call would hang the suite instead of failing it.  Verified by
+     * reverting both halves of the fix: the daemon came up and
+     * `ls` showed a live socket at the 107-character path while it ran.
+     */
+    sigset_t set, old;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &set, &old);
+
+    daemon_run_t d = { .rc = -999 };
+    EXPECT(pthread_create(&d.tid, NULL, daemon_thread, &d) == 0,
+           "daemon thread started");
+
+    bool exited = false;
+    for (int waited = 0; waited < 5000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        if (access(trunc, F_OK) == 0) break;   /* it bound the wrong path */
+        msleep(50);
+    }
+
+    EXPECT(access(trunc, F_OK) != 0, "did not bind the truncated path");
+    EXPECT(exited, "refuses to start on an over-long socket path");
+
+    if (!exited) pthread_kill(d.tid, SIGTERM);  /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc != 0, "exits non-zero");
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(trunc);
+    unlink(T_CONF);
+    end(fb);
+}
+
 /* --version is handled before any hardware or socket work. */
 static void test_daemon_version_flag(void)
 {
@@ -278,6 +359,7 @@ int main(void)
 {
     test_daemon_version_flag();
     test_daemon_refuses_bad_config();
+    test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
