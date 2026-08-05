@@ -101,6 +101,16 @@ devbox
 # Cal file (machine-specific, not for version control)
 cal.json
 
+# libFuzzer reproducers, dropped in the CWD when a harness is run from the repo
+# root.  They are findings, not test data: the ones worth keeping get committed
+# under test/fuzz/corpus/<target>/ with a name that says what they reproduce
+# (see cal_overflow_finite).  Left ungitignored they sit in `git status`
+# forever and invite being staged by a wildcard.
+crash-*
+timeout-*
+oom-*
+leak-*
+
 # macOS debug-symbol bundles from -g builds (never commit build artifacts)
 *.dSYM/
 *.imucap
