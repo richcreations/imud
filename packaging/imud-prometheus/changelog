@@ -1,3 +1,30 @@
+imud-prometheus (1.8.2) unstable; urgency=medium
+
+  * New gauge imud_state_reset: the daemon's MEKF found a non-finite
+    value in its own state and reset itself. It is latched until the
+    filter re-converges rather than being a single-packet pulse, so it
+    survives a scrape interval; imud_fusion_converged is 0 for the same
+    span. Alert on it — the daemon is publishing attitude that has not
+    settled, and the cause is usually a bad calibration file.
+  * BEHAVIOUR CHANGE: a bad value in imud-prometheus.conf is now fatal,
+    where it was previously accepted with no message at any log level.
+    A value too long for its field — the bind address or the stream
+    socket path — was truncated and used, so the bridge listened
+    somewhere the operator never wrote. An out-of-range integer wrapped,
+    so a listen_port of 4294977414 became port 10118. And nan, inf and
+    1e999 loaded cleanly into any float key. listen_port is also now
+    bounded to 1..65535, because 70000 fits an int perfectly well and
+    then becomes port 4464 the moment htons() truncates it.
+  * The daemon no longer leaves the binary stream socket bound with
+    nothing behind it, so a bridge that connects is either served or
+    refused. Previously a daemon whose stream thread failed to start
+    still had the socket bound: the bridge connected successfully, into
+    the backlog, and then waited forever — serving imud_up 1 with no
+    gauges behind it, since it had connected. See the imud changelog.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 05 Aug 2026 12:00:00 -0700
+
 imud-prometheus (1.8.1) unstable; urgency=medium
 
   * Fix: a scraper that connected and then sent nothing stalled the

@@ -1,3 +1,45 @@
+imud-utils (1.8.2) unstable; urgency=medium
+
+  * Fix: imud-cal could write, and would load, a calibration that made
+    the filter useless. strtof converts "nan", "inf" and "1e999" without
+    complaint and the loader looked no further than "did any digits
+    convert", so a gyro bias of nan loaded clean and left the daemon
+    publishing NaN attitude forever. The loop closed entirely inside
+    imud's own tooling: cal_write formats with %.8f, which round-trips
+    a NaN straight back out, so a degenerate fit wrote a file the daemon
+    then reloaded. Loading now names the offending field, and writing
+    refuses -- validating BEFORE the file is opened for truncation, so a
+    rejected write leaves the previous calibration intact on disk.
+  * Fix: a calibration that is finite but enormous is refused too. A
+    soft_iron element of 3.33e37 is finite, so the check above accepted
+    it, and soft_iron x (sample - hard_iron) for a sample of ZERO is
+    -3.8e38, which overflows a float. imud-cal now asks only whether the
+    calibration arithmetic survives an ordinary sample, never whether a
+    value is physically sensible: the probes are 0 and +/-1000, above
+    the full scale of every sensor in the tree, so a calibration has to
+    be some thirty-five orders of magnitude out before it trips and a
+    legitimate fit cannot be rejected.
+  * Fix: imud-imutest accepted garbage in its numeric options. --odr,
+    --imu-addr, --int-gpio and the rest used atoi/atof, which report no
+    error, and they failed three different ways: a bad --odr was
+    silently discarded, a bad --imu-addr became 0 and TOOK, probing I2C
+    address 0, and a bad --int-gpio became 0 -- which the man page
+    documents as "skips the interrupt check", so the check the operator
+    asked for was skipped while the report still said PASS. All twelve
+    conversions now reject a bad value as a usage error.
+  * imud-mon shows the new FLAG_STATE_RESET (bit 14) as R: the daemon's
+    filter found a non-finite value in its own state and reset itself.
+    It stays set until the filter re-converges, so it is visible at
+    imud-mon's refresh rate rather than for a single packet.
+  * imud-mon and imud-imutest inherit the config parser's new strictness
+    (see the imud changelog): an over-long, out-of-range or non-finite
+    value is refused rather than truncated or wrapped. imud-mon still
+    runs on defaults when its config cannot be parsed, and the rejected
+    key now genuinely keeps its default rather than a truncated value.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 05 Aug 2026 12:00:00 -0700
+
 imud-utils (1.8.1) unstable; urgency=medium
 
   * Fix: imud-imutest wrote its report to a file literally named

@@ -1,3 +1,82 @@
+imud (1.8.2-1) unstable; urgency=medium
+
+  * BEHAVIOUR CHANGE: a bad value in a config file is now fatal for the
+    daemon and all five bridges, where it was previously accepted with
+    no message at any log level. Three classes: a value too long for its
+    field was truncated and used, so a 130-character [stream] socket
+    became a different, valid 107-character path that the daemon bound
+    and served while every bridge and libimud client connected to the
+    path in the config file and found nothing; an out-of-range integer
+    wrapped, so dest_port = 4294977414 landed as port 10118 and
+    odr_hz = 4294968129 as 833; and nan, inf and 1e999 loaded cleanly
+    into any float key. 18 integer keys also gained semantic bounds --
+    ports 1..65535, int_gpio 0..255, i2c_addr 0x00..0x7F -- because
+    dest_port = 70000 fits an int and then becomes port 4464 when
+    htons() truncates it.
+  * BEHAVIOUR CHANGE: imud --config PATH now names one file. The
+    $HOME/.config/imud/imud.conf fallback ran whether or not --config
+    was given, so a mistyped path silently started the daemon on someone
+    else's config, while imud(8) has documented --config as replacing
+    the search path since the beginning. A missing PATH now means
+    built-in defaults, with a warning. A daemon started without --config
+    still searches /etc/imud/imud.conf then $HOME.
+  * Fix: a non-finite calibration poisoned the filter permanently. A
+    cal.json holding {"gyro":{"bias":[nan,0,0]}} loaded without
+    complaint and w = gyro - bias was then non-finite on every predict
+    step; q_normalize could not repair it, because NaN fails its
+    n > 1e-10 test and the quaternion passed through untouched. 1000
+    level, noiseless samples later the published roll, pitch, yaw and
+    quaternion were still all NaN, rendered as "nan" into NMEA. Both
+    loaders now reject non-finite values and name the field, imud-cal
+    refuses to write one, and the MEKF sanitises its own state once per
+    fusion loop as a backstop.
+  * Fix: a calibration that is finite but enormous is refused too. A
+    soft_iron element of 3.33e37 is finite, and soft_iron x (sample -
+    hard_iron) for a sample of zero is -3.8e38, which overflows a float.
+    imud-cal now checks that the arithmetic survives ordinary samples
+    (probes of 0 and +/-1000, above the full scale of every supported
+    sensor) rather than bounding what a calibration may physically be.
+  * New flag bit FLAG_STATE_RESET (bit 14): the MEKF found a non-finite
+    value in its own state and reset itself. Latched until the filter
+    re-converges, since at up to 500 Hz a momentary bit is invisible to
+    a 1 Hz consumer. Shown as R by imud-mon and as imud_state_reset by
+    the Prometheus bridge. No wire-format change: the packet stays
+    v17 / 276 bytes and a reserved bit simply gained a meaning.
+  * Fix: SIGHUP reload only ever failed on a daemon started from the
+    $HOME config. Reload re-read the path the daemon was asked for
+    rather than the one it read, so such a daemon answered every
+    systemctl reload with "config reload failed" and named no path.
+    Packaged installs always have /etc/imud/imud.conf and were
+    unaffected; source installs had no working hot reload at all.
+  * Fix: deleting a key from the config and reloading kept the old
+    value. Reload seeded from the running config rather than the
+    defaults, so removing [nmea] rate_hz left the previous rate in place
+    while the daemon logged "config reloaded". Reload now matches a
+    restart for the hot fields. A config file that has been deleted
+    still keeps the running config, deliberately unlike startup.
+  * Fix: a failed output thread left its socket bound with nothing
+    behind it. Listeners are bound before any thread exists, so a
+    pthread_create failure left a socket that nobody would accept() from
+    and a client connected into the backlog and waited forever. Losing
+    the binary stream is now fatal, since the bridges and every libimud
+    consumer read it and the unit is Restart=on-failure/RestartSec=3.
+    The opt-in nmea, hirate and position threads still warn and carry
+    on, but close what they had bound, so a client gets ECONNREFUSED.
+    READY=1 now means threads running, not sockets bound.
+  * Fix: imud.service forbade the gpiochip config/imud.conf asked for.
+    The config shipped gpio_chip = "gpiochip4" for a Pi 5 while the unit
+    allowed only /dev/gpiochip0 under DevicePolicy=closed, so no
+    combination of the two shipped files was correct on any board. The
+    unit now lists all four supported nodes; an allow for a node the
+    board does not have is inert, so one unit serves Pi 4 and Pi 5.
+  * Fix: imud-imutest accepted garbage in its numeric options. --odr and
+    friends used atoi/atof, which report nothing: a bad --odr was
+    silently discarded, a bad --imu-addr became 0 and took, probing I2C
+    address 0, and a bad --int-gpio became 0, documented as "skips the
+    interrupt check". All twelve conversions are now usage errors.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 05 Aug 2026 12:00:00 -0700
+
 imud (1.8.1-1) unstable; urgency=medium
 
   * Fix: imud did not start on stock Debian. Every unit hardcoded

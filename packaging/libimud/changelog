@@ -1,3 +1,20 @@
+libimud (1.8.2) unstable; urgency=medium
+
+  * New flag bit IMUD_FLAG_STATE_RESET (1u << 14), in imud.h, the
+    standalone imud_client.h and imud_client.py alike: the daemon's MEKF
+    found a non-finite value in its own state and reset itself. It is
+    latched from the reset until the filter re-converges rather than
+    being a single-packet pulse, so a consumer polling well below the
+    packet rate can still see it, and IMUD_FLAG_FUSION_CONVERGED is
+    clear for the same span. The Python client renders it as R in
+    Flags.describe().
+  * No ABI change and no wire-format change. imud_data_t is untouched,
+    lib/libimud.map is unchanged, the SONAME stays libimud.so.0, and the
+    packet stays v17 / 276 bytes — bit 14 was reserved and simply gained
+    a meaning, so a consumer built against 1.8.1 needs no rebuild.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 05 Aug 2026 12:00:00 -0700
+
 libimud (1.8.1) unstable; urgency=medium
 
   * Harden: the socket imud_open() creates is now close-on-exec, so a

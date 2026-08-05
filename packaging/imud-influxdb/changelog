@@ -1,3 +1,25 @@
+imud-influxdb (1.8.2) unstable; urgency=medium
+
+  * BEHAVIOUR CHANGE: a bad value in imud-influxdb.conf is now fatal,
+    where it was previously accepted with no message at any log level.
+    A value too long for its field — host, bucket, org, API token,
+    measurement name or the stream socket path — was truncated and used,
+    so the bridge wrote to a different bucket, or presented a shortened
+    token, without saying so. An out-of-range integer wrapped, so a
+    udp_port of 4294977414 became port 10118. And nan, inf and 1e999
+    loaded cleanly into any float key. udp_port and http_port are also
+    now bounded to 1..65535, because 70000 fits an int perfectly well
+    and then becomes port 4464 the moment htons() truncates it.
+  * The daemon no longer leaves the binary stream socket bound with
+    nothing behind it, so a bridge that connects is either served or
+    refused. Previously a daemon whose stream thread failed to start
+    still had the socket bound: the bridge connected successfully, into
+    the backlog, and then waited forever with no diagnostic at either
+    end. See the imud changelog.
+  * No wire-format change: the packet stays v17 / 276 bytes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 05 Aug 2026 12:00:00 -0700
+
 imud-influxdb (1.8.1) unstable; urgency=medium
 
   * Fix: /etc/imud/imud-influxdb.conf carries an InfluxDB API token and
