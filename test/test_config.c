@@ -574,6 +574,102 @@ static void test_load_rejects_too_long_string(void)
     end_test(fb);
 }
 
+/*
+ * An out-of-range integer must be rejected, not silently wrapped.
+ *
+ * parse_int never cleared or read errno, and the long -> int conversion of an
+ * out-of-range value is implementation-defined — on every target imud ships
+ * to, it wraps. So "dest_port = 4294977414" became 10118, a different and
+ * entirely valid port, and config_load returned 0. The middle case is the one
+ * to sit with: "odr_hz = 4294968129" wrapped to 833, which is POSITIVE, so
+ * NEED_POS_INT — whose whole purpose is to stop a nonsense rate reaching the
+ * filter — was satisfied by a value the operator never wrote.
+ */
+static void test_load_rejects_out_of_range_int(void)
+{
+    begin_test("test_load_rejects_out_of_range_int");
+    int fb = g_fail;
+
+    imud_config_t def, cfg;
+    config_defaults(&def);
+
+    /* The three rows the audit reproduced, one per failure mode. */
+    const char *path = write_tmpconf(160,
+        "[nmea]\ndest_port = 4294977414\n"
+        "[imu]\ngyro_dps = 500\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+           "int that wraps mod 2^32 rejected");
+    EXPECT(cfg.nmea_dest_port == def.nmea_dest_port,
+           "wrapped port keeps its default (would have been 10118)");
+    EXPECT(cfg.imu_gyro_dps == 500, "line after the wrapped one still applied");
+    remove(path);
+
+    path = write_tmpconf(161, "[imu]\nodr_hz = 4294968129\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+           "int that wraps to a POSITIVE value still rejected");
+    EXPECT(cfg.imu_odr_hz == def.imu_odr_hz,
+           "wrapped odr keeps its default (would have been 833)");
+    remove(path);
+
+    /* strtol saturates to LONG_MAX and sets ERANGE; the cast then gave -1,
+     * and htons((uint16_t)-1) is port 65535. Only the errno test catches it. */
+    path = write_tmpconf(162, "[imud-mqtt]\nbroker_port = 99999999999999999999\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
+           "int beyond LONG_MAX rejected (ERANGE)");
+    EXPECT(cfg.mqtt_broker_port == def.mqtt_broker_port,
+           "saturated port keeps its default (would have been -1)");
+    remove(path);
+
+    /*
+     * Semantic bounds. These are NOT covered by the range check above:
+     * dest_port = 70000 fits an int perfectly well, and htons() then
+     * truncates it to port 4464. Same failure, different door.
+     */
+    static const struct { int id; const char *body, *name; } bad[] = {
+        { 163, "[nmea]\ndest_port = 70000\n",   "port above 65535 rejected"     },
+        { 164, "[nmea]\ndest_port = 0\n",       "port 0 rejected"               },
+        { 165, "[nmea]\ndest_port = -1\n",      "negative port rejected"        },
+        { 166, "[imu]\nint_gpio = 256\n",       "GPIO above 255 rejected"       },
+        { 167, "[imu]\nint_gpio = -1\n",        "negative GPIO rejected"        },
+        { 168, "[imu]\ni2c_addr = 0x80\n",      "I2C address above 0x7F rejected" },
+        { 169, "[imu]\ni2c_addr = -1\n",        "negative I2C address rejected" },
+    };
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        const char *p = write_tmpconf(bad[i].id, bad[i].body);
+        config_defaults(&cfg);
+        EXPECT(config_load(p, &cfg) == CONFIG_ERR_PARSE, bad[i].name);
+        remove(p);
+    }
+
+    /*
+     * The boundary accepts, which are the half that protects real configs. A
+     * bound one step too tight rejects a working setup, and that shows up at
+     * the operator's site, not here. i2c_addr = 0x00 is the one that matters
+     * most: config/sim.conf ships it on both sensors, so the textbook
+     * "valid 7-bit" range of 0x08..0x77 would have broken the shipped sim
+     * configuration. int_gpio = 0 is likewise documented — imu.c reads
+     * `int_gpio > 0` as "this sensor has no interrupt line".
+     */
+    const char *ok = write_tmpconf(170,
+        "[nmea]\ndest_port = 1\ntcp_port = 65535\n"
+        "[imu]\nint_gpio = 0\ni2c_addr = 0x00\n"
+        "[mag]\nint_gpio = 255\ni2c_addr = 0x7F\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(ok, &cfg) == 0,          "values at both bounds accepted");
+    EXPECT(cfg.nmea_dest_port == 1,             "port 1 applied");
+    EXPECT(cfg.nmea_tcp_port  == 65535,         "port 65535 applied");
+    EXPECT(cfg.imu_int_gpio   == 0,             "GPIO 0 applied (no interrupt line)");
+    EXPECT(cfg.imu_addr       == 0x00,          "I2C address 0x00 applied (sim)");
+    EXPECT(cfg.mag_int_gpio   == 255,           "GPIO 255 applied");
+    EXPECT(cfg.mag_addr       == 0x7F,          "I2C address 0x7F applied");
+    remove(ok);
+
+    end_test(fb);
+}
+
 /* Bad boolean value: same continue-and-report contract as bad int. */
 static void test_load_bad_bool(void)
 {
@@ -1526,6 +1622,7 @@ int main(void)
     test_load_rates_must_be_positive();
     test_load_rejects_non_finite();
     test_load_rejects_too_long_string();
+    test_load_rejects_out_of_range_int();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();

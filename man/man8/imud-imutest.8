@@ -67,6 +67,16 @@ check \(em that the magnetometer's heading turns the same way and by the same
 amount as the gyroscope's Z integral. A disagreement there means the mag axes
 are inverted or swapped relative to the IMU.
 .SH OPTIONS
+Options taking a number reject a value that is not one, or that is out of
+range, with a usage error. They are not silently treated as zero: a mistyped
+.B \-\-int\-gpio
+used to become
+.BR 0 ,
+which means
+.IR "skip the interrupt check" ,
+so the run skipped a check that had been explicitly asked for and still
+reported PASS. The window and tolerance options must additionally be positive
+and finite.
 .TP
 .BI \-\-config " PATH"
 Configuration file. Default

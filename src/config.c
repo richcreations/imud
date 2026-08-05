@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <unistd.h>
 #include <math.h>
 #ifndef M_PI
@@ -137,13 +138,46 @@ static bool parse_bool(const char *val, bool *out)
     return false;
 }
 
-static bool parse_int(const char *val, int *out)
+/*
+ * Range matters as much as syntax, and it used to be unchecked: errno was
+ * never cleared or read, and the long → int conversion of an out-of-range
+ * value is implementation-defined (C17 6.3.1.3p3) — on every target imud ships
+ * to, it wraps.  So "dest_port = 4294977414" became 10118, *a different and
+ * entirely valid port*, with config_load returning 0 and no message at any log
+ * level.  "odr_hz = 4294968129" wrapped to 833, landing positive, so even
+ * NEED_POS_INT waved it through — its guard tests the post-cast value.
+ *
+ * Fatal rather than clamped, for the reason NEED_POS_INT and NEED_STR are: a
+ * plausible substitute hides the typo behind output that looks fine.
+ *
+ * Two distinct failures, because the message is half the fix — the same
+ * reasoning as copy_str's: reporting "expected integer" for 4294977414 tells
+ * the operator to check the syntax of a value whose syntax is perfectly good.
+ *
+ * The #if is not decoration.  On LP64 the range test is the one that fires;
+ * on armhf long is 32-bit, INT_MAX == LONG_MAX, and `v > INT_MAX` is always
+ * false — which -Wtype-limits (in -Wextra) reports, and CI builds armhf.  It
+ * is also why the round-trip idiom `(int)v != v` is not used here: that would
+ * lean on the very implementation-defined conversion this guards against.
+ */
+typedef enum {
+    INT_OK = 0,
+    INT_MALFORMED,      /* not an integer at all                             */
+    INT_UNREPRESENTABLE /* an integer, but too large or small for an int     */
+} parse_int_rc_t;
+
+static parse_int_rc_t parse_int(const char *val, int *out)
 {
     char *end;
+    errno = 0;
     long v = strtol(val, &end, 0);   /* base 0: accepts 0x hex */
-    if (end == val || *end != '\0') return false;
+    if (end == val || *end != '\0') return INT_MALFORMED;
+    if (errno == ERANGE) return INT_UNREPRESENTABLE;
+#if LONG_MAX > INT_MAX
+    if (v < INT_MIN || v > INT_MAX) return INT_UNREPRESENTABLE;
+#endif
     *out = (int)v;
-    return true;
+    return INT_OK;
 }
 
 /*
@@ -593,10 +627,24 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 #define WARN_UNKNOWN() \
     LOG_W("%s:%d: unknown key '%s' — ignored\n", path, lineno, key)
 
+/* Shared by every int macro: parse into iv, or report and bail.  Split out so
+ * the two messages exist once — an unrepresentable value is not a malformed
+ * one, and saying so is the difference between an operator checking the digits
+ * and checking the magnitude. */
+#define PARSE_INT_OR_FAIL() \
+    do { switch (parse_int(val, &iv)) { \
+         case INT_OK: break; \
+         case INT_MALFORMED: \
+            LOG_E("%s:%d: '%s': expected integer\n", path, lineno, key); \
+            return -1; \
+         case INT_UNREPRESENTABLE: \
+            LOG_E("%s:%d: '%s': integer out of range for this platform " \
+                  "(%d..%d)\n", path, lineno, key, INT_MIN, INT_MAX); \
+            return -1; \
+         } } while (0)
+
 #define NEED_INT(field) \
-    do { if (!parse_int(val, &iv)) { \
-        LOG_E("%s:%d: '%s': expected integer\n", path, lineno, key); \
-        return -1; } \
+    do { PARSE_INT_OR_FAIL(); \
         (field) = iv; } while (0)
 
 #define NEED_FLT(field) \
@@ -645,13 +693,69 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
  * plausible default would hide the typo.
  */
 #define NEED_POS_INT(field) \
-    do { if (!parse_int(val, &iv)) { \
-        LOG_E("%s:%d: '%s': expected integer\n", path, lineno, key); \
-        return -1; } \
+    do { PARSE_INT_OR_FAIL(); \
         if (iv <= 0) { \
         LOG_E("%s:%d: '%s': must be greater than zero (got %d) — " \
               "a rate of zero or less is not a valid sample or publish rate\n", \
               path, lineno, key, iv); \
+        return -1; } \
+        (field) = iv; } while (0)
+
+/*
+ * Semantic bounds, for the keys where an in-range int is still nonsense.
+ * parse_int's range check above stops a value wrapping into a plausible one;
+ * it cannot stop "dest_port = 70000", which fits an int perfectly well and
+ * then becomes port 4464 the moment htons() truncates it to uint16_t. Same
+ * failure — a listener nobody asked for — through a different door.
+ *
+ * The bounds and why they are where they are:
+ *
+ *   ports      1..65535  the wire range. Port 0 is a sentinel nowhere in this
+ *                        tree (the bridges gate on their own *_enabled flags),
+ *                        so it is a typo rather than a request.
+ *   int_gpio   0..255    ZERO IS LEGAL AND DOCUMENTED — imu.c gates on
+ *                        `int_gpio > 0` to mean "no interrupt line", which is
+ *                        how config/sim.conf runs without hardware. The
+ *                        ceiling is deliberately loose: imud is general-purpose
+ *                        Linux, not Pi-only, and other boards expose gpiochips
+ *                        with far more lines than a Pi's ~58. libgpiod already
+ *                        gives a clear error for a line the chip lacks.
+ *   i2c_addr   0x00..0x7F the 7-bit address space, NOT the textbook "valid"
+ *                        0x08..0x77. That narrower range would reject
+ *                        `i2c_addr = 0x00`, which config/sim.conf ships on
+ *                        both sensors and which imud.conf documents for the
+ *                        sim driver. Rejecting a shipped config to enforce a
+ *                        convention the daemon does not rely on would be a
+ *                        worse bug than the one this guards.
+ *
+ * Keys with a natural range but no wrap-into-plausible failure (mqtt qos,
+ * mavlink version/system_id/component_id, serial_baud) are deliberately left
+ * on plain NEED_INT: each bound would be a judgement call able to reject a
+ * legitimate setup, which is the more expensive mistake.
+ */
+#define NEED_RANGE_INT(field, lo, hi, what) \
+    do { PARSE_INT_OR_FAIL(); \
+        if (iv < (lo) || iv > (hi)) { \
+        LOG_E("%s:%d: '%s': %s must be %d..%d (got %d)\n", \
+              path, lineno, key, (what), (lo), (hi), iv); \
+        return -1; } \
+        (field) = iv; } while (0)
+
+#define NEED_PORT(field)     NEED_RANGE_INT((field), 1, 65535, "a TCP/UDP port")
+#define NEED_GPIO(field)     NEED_RANGE_INT((field), 0, 255, "a GPIO line")
+
+/* Its own macro rather than NEED_RANGE_INT(0x00, 0x7F, …) so the message is in
+ * the base the operator wrote: every i2c_addr in the shipped configs is hex,
+ * and "must be 0..127 (got 128)" makes them convert 0x80 in their head. */
+#define NEED_I2C_ADDR(field) \
+    do { PARSE_INT_OR_FAIL(); \
+        if (iv < 0x00 || iv > 0x7F) { \
+        if (iv < 0) \
+            LOG_E("%s:%d: '%s': a 7-bit I2C address must be 0x00..0x7F " \
+                  "(got %d)\n", path, lineno, key, iv); \
+        else \
+            LOG_E("%s:%d: '%s': a 7-bit I2C address must be 0x00..0x7F " \
+                  "(got 0x%X)\n", path, lineno, key, (unsigned)iv); \
         return -1; } \
         (field) = iv; } while (0)
 
@@ -785,8 +889,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_IMU:
         if      (strcmp(key, "driver")   == 0) NEED_STR(cfg->imu_driver);
-        else if (strcmp(key, "i2c_addr") == 0) NEED_INT(cfg->imu_addr);
-        else if (strcmp(key, "int_gpio") == 0) NEED_INT(cfg->imu_int_gpio);
+        else if (strcmp(key, "i2c_addr") == 0) NEED_I2C_ADDR(cfg->imu_addr);
+        else if (strcmp(key, "int_gpio") == 0) NEED_GPIO(cfg->imu_int_gpio);
         else if (strcmp(key, "odr_hz")   == 0) NEED_POS_INT(cfg->imu_odr_hz);
         else if (strcmp(key, "accel_g")  == 0) NEED_INT(cfg->imu_accel_g);
         else if (strcmp(key, "gyro_dps") == 0) NEED_INT(cfg->imu_gyro_dps);
@@ -796,8 +900,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_MAG:
         if      (strcmp(key, "driver")       == 0) NEED_STR(cfg->mag_driver);
-        else if (strcmp(key, "i2c_addr")     == 0) NEED_INT(cfg->mag_addr);
-        else if (strcmp(key, "int_gpio")     == 0) NEED_INT(cfg->mag_int_gpio);
+        else if (strcmp(key, "i2c_addr")     == 0) NEED_I2C_ADDR(cfg->mag_addr);
+        else if (strcmp(key, "int_gpio")     == 0) NEED_GPIO(cfg->mag_int_gpio);
         else if (strcmp(key, "odr_hz")       == 0) NEED_POS_INT(cfg->mag_odr_hz);
         else if (strcmp(key, "set_period_s") == 0) NEED_FLT(cfg->mag_set_period_s);
         else WARN_UNKNOWN();
@@ -834,10 +938,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled")   == 0) NEED_BOOL(cfg->nmea_enabled);
         else if (strcmp(key, "rate_hz")   == 0) NEED_POS_INT(cfg->nmea_rate_hz);
         else if (strcmp(key, "dest_addr") == 0) NEED_STR(cfg->nmea_dest_addr);
-        else if (strcmp(key, "dest_port") == 0) NEED_INT(cfg->nmea_dest_port);
+        else if (strcmp(key, "dest_port") == 0) NEED_PORT(cfg->nmea_dest_port);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->nmea_tcp_enabled);
         else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->nmea_tcp_bind_addr);
-        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->nmea_tcp_port);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_PORT(cfg->nmea_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -845,7 +949,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled")     == 0) NEED_BOOL(cfg->highrate_enabled);
         else if (strcmp(key, "rate_hz")     == 0) NEED_POS_INT(cfg->highrate_rate_hz);
         else if (strcmp(key, "dest_addr")   == 0) NEED_STR(cfg->highrate_dest_addr);
-        else if (strcmp(key, "dest_port")   == 0) NEED_INT(cfg->highrate_dest_port);
+        else if (strcmp(key, "dest_port")   == 0) NEED_PORT(cfg->highrate_dest_port);
         else if (strcmp(key, "coord_frame") == 0) NEED_STR(cfg->highrate_coord_frame);
         else WARN_UNKNOWN();
         break;
@@ -856,7 +960,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "rate_hz") == 0) NEED_POS_INT(cfg->stream_rate_hz);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->stream_tcp_enabled);
         else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->stream_tcp_bind_addr);
-        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->stream_tcp_port);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_PORT(cfg->stream_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -865,13 +969,13 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "udp_enabled")  == 0) NEED_BOOL(cfg->sk_udp_enabled);
         else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "dest_addr")    == 0) NEED_STR(cfg->sk_dest_addr);
-        else if (strcmp(key, "dest_port")    == 0) NEED_INT(cfg->sk_dest_port);
+        else if (strcmp(key, "dest_port")    == 0) NEED_PORT(cfg->sk_dest_port);
         else if (strcmp(key, "rate_hz")      == 0) NEED_POS_INT(cfg->sk_rate_hz);
         else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
         else if (strcmp(key, "publish_heave")== 0) NEED_BOOL(cfg->publish_heave);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->sk_tcp_enabled);
         else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->sk_tcp_bind_addr);
-        else if (strcmp(key, "tcp_port")      == 0) NEED_INT(cfg->sk_tcp_port);
+        else if (strcmp(key, "tcp_port")      == 0) NEED_PORT(cfg->sk_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -880,7 +984,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "broker_enabled")== 0) NEED_BOOL(cfg->mqtt_broker_enabled);
         else if (strcmp(key, "socket")        == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "broker_addr")   == 0) NEED_STR(cfg->mqtt_broker_addr);
-        else if (strcmp(key, "broker_port")   == 0) NEED_INT(cfg->mqtt_broker_port);
+        else if (strcmp(key, "broker_port")   == 0) NEED_PORT(cfg->mqtt_broker_port);
         else if (strcmp(key, "client_id")     == 0) NEED_STR(cfg->mqtt_client_id);
         else if (strcmp(key, "topic_prefix")  == 0) NEED_STR(cfg->mqtt_topic_prefix);
         else if (strcmp(key, "rate_hz")       == 0) NEED_POS_INT(cfg->mqtt_rate_hz);
@@ -909,10 +1013,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
         else if (strcmp(key, "udp_enabled")   == 0) NEED_BOOL(cfg->influx_udp_enabled);
         else if (strcmp(key, "udp_addr")      == 0) NEED_STR(cfg->influx_udp_addr);
-        else if (strcmp(key, "udp_port")      == 0) NEED_INT(cfg->influx_udp_port);
+        else if (strcmp(key, "udp_port")      == 0) NEED_PORT(cfg->influx_udp_port);
         else if (strcmp(key, "http_enabled")  == 0) NEED_BOOL(cfg->influx_http_enabled);
         else if (strcmp(key, "http_host")     == 0) NEED_STR(cfg->influx_http_host);
-        else if (strcmp(key, "http_port")     == 0) NEED_INT(cfg->influx_http_port);
+        else if (strcmp(key, "http_port")     == 0) NEED_PORT(cfg->influx_http_port);
         else if (strcmp(key, "http_path")     == 0) NEED_STR(cfg->influx_http_path);
         else if (strcmp(key, "http_token")    == 0) NEED_STR(cfg->influx_http_token);
         else WARN_UNKNOWN();
@@ -923,7 +1027,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "http_enabled") == 0) NEED_BOOL(cfg->prom_http_enabled);
         else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "listen_addr")  == 0) NEED_STR(cfg->prom_listen_addr);
-        else if (strcmp(key, "listen_port")  == 0) NEED_INT(cfg->prom_listen_port);
+        else if (strcmp(key, "listen_port")  == 0) NEED_PORT(cfg->prom_listen_port);
         else WARN_UNKNOWN();
         break;
 
@@ -938,13 +1042,13 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "send_attitude_quaternion") == 0) NEED_BOOL(cfg->mav_send_attitude_quaternion);
         else if (strcmp(key, "udp_enabled")    == 0) NEED_BOOL(cfg->mav_udp_enabled);
         else if (strcmp(key, "udp_addr")       == 0) NEED_STR(cfg->mav_udp_addr);
-        else if (strcmp(key, "udp_port")       == 0) NEED_INT(cfg->mav_udp_port);
+        else if (strcmp(key, "udp_port")       == 0) NEED_PORT(cfg->mav_udp_port);
         else if (strcmp(key, "serial_enabled") == 0) NEED_BOOL(cfg->mav_serial_enabled);
         else if (strcmp(key, "serial_device")  == 0) NEED_STR(cfg->mav_serial_device);
         else if (strcmp(key, "serial_baud")    == 0) NEED_INT(cfg->mav_serial_baud);
         else if (strcmp(key, "tcp_enabled")    == 0) NEED_BOOL(cfg->mav_tcp_enabled);
         else if (strcmp(key, "tcp_bind_addr")  == 0) NEED_STR(cfg->mav_tcp_bind_addr);
-        else if (strcmp(key, "tcp_port")       == 0) NEED_INT(cfg->mav_tcp_port);
+        else if (strcmp(key, "tcp_port")       == 0) NEED_PORT(cfg->mav_tcp_port);
         else WARN_UNKNOWN();
         break;
 
@@ -967,10 +1071,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "wmm_file")          == 0) NEED_STR(cfg->pos_wmm_file);
         else if (strcmp(key, "gpsd_enabled")      == 0) NEED_BOOL(cfg->pos_gpsd_enabled);
         else if (strcmp(key, "gpsd_host")         == 0) NEED_STR(cfg->pos_gpsd_host);
-        else if (strcmp(key, "gpsd_port")         == 0) NEED_INT(cfg->pos_gpsd_port);
+        else if (strcmp(key, "gpsd_port")         == 0) NEED_PORT(cfg->pos_gpsd_port);
         else if (strcmp(key, "signalk_enabled")   == 0) NEED_BOOL(cfg->pos_signalk_enabled);
         else if (strcmp(key, "signalk_host")      == 0) NEED_STR(cfg->pos_signalk_host);
-        else if (strcmp(key, "signalk_port")      == 0) NEED_INT(cfg->pos_signalk_port);
+        else if (strcmp(key, "signalk_port")      == 0) NEED_PORT(cfg->pos_signalk_port);
         else if (strcmp(key, "signalk_path")      == 0) NEED_STR(cfg->pos_signalk_path);
         else if (strcmp(key, "fix_max_age_h")    == 0) NEED_FLT(cfg->pos_fix_max_age_h);
         else WARN_UNKNOWN();

@@ -267,7 +267,12 @@ imud is configured with a single TOML-like text file.
 **Syntax:**
 - Comments start with `#` and may appear inline.
 - Strings must be double-quoted: `driver = "ism330dhcx"`.
-- Integers may be decimal (`833`) or hex (`0x6B`).
+- Integers may be decimal (`833`) or hex (`0x6B`). An integer too large for the
+  platform's `int` is a fatal error, not silently wrapped — `dest_port =
+  4294977414` is refused rather than becoming port 10118. Keys with a
+  meaningful range are checked against it: ports `1`–`65535`, `int_gpio`
+  `0`–`255` (`0` means the sensor has no interrupt line), `i2c_addr`
+  `0x00`–`0x7F`.
 - Booleans: `true` / `false`.
 - Arrays: `[0.0, 0.0, 0.0]` (used by `rotation_euler_deg` and `rotation_matrix`). The element count is checked exactly.
 - `~/` paths are expanded to `$HOME/`.

@@ -1,0 +1,30 @@
+# Seed for N3: integers that are syntactically fine and semantically wrong.
+# Three failure modes, since each is caught by a different guard.
+
+# 1. wraps mod 2^32 into a different, entirely valid value
+[nmea]
+dest_port = 4294977414
+tcp_port = 4294977414
+
+# 2. wraps POSITIVE, so NEED_POS_INT was satisfied by a value nobody wrote
+[imu]
+odr_hz = 4294968129
+i2c_addr = 0x80
+int_gpio = 256
+
+# 3. beyond long entirely: strtol saturates and sets ERANGE
+[imud-mqtt]
+broker_port = 99999999999999999999
+qos = -99999999999999999999
+
+# in-range for an int, out of range for the key
+[imud-prometheus]
+listen_port = 70000
+
+[mag]
+i2c_addr = -1
+int_gpio = 100000
+
+[position]
+gpsd_port = 0
+signalk_port = 65536

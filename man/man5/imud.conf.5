@@ -55,6 +55,20 @@ to the wrong place.
 Integers
 Decimal or hexadecimal
 .RB ( 0x6B ).
+A value too large for the platform's
+.B int
+is a fatal configuration error rather than being wrapped: it is reported with
+its key and line. Keys with a meaningful range are checked against it —
+TCP/UDP ports must be
+.BR 1 \- 65535 ,
+.B int_gpio
+must be
+.BR 0 \- 255
+.RB ( 0
+meaning the sensor has no interrupt line), and
+.B i2c_addr
+must be
+.BR 0x00 \- 0x7F .
 .TP
 Booleans
 .B true

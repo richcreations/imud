@@ -14,6 +14,8 @@
  * stdout.  test_cli pins that.
  */
 
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,72 @@
 #include "cli.h"
 #include "imutest.h"   /* IMT_PHASE_* */
 #include "version.h"
+
+/* ── Checked numeric conversion for argv ─────────────────────────────────── */
+
+/*
+ * These replace atoi/atof, which carry no error signal at all — atoi("abc") is
+ * 0, and either function on a value that cannot be represented is undefined by
+ * the letter (C17 7.22.1.2p3).  The practical failures were worse than the UB,
+ * and split three ways in imutest_main's override guards:
+ *
+ *   - --odr, --accel-g, --gyro-dps, --fifo-wm and the six window/tolerance
+ *     flags are applied only `if (ov > 0)`, so garbage became 0 and the
+ *     override was SILENTLY DISCARDED. The tool ran on the config value and
+ *     told the operator nothing.
+ *   - --imu-addr and --mag-addr are applied `if (ov >= 0)`, so garbage became
+ *     0 and TOOK EFFECT: imud-imutest probed I2C address 0 and reported a
+ *     device fault, for a typo.
+ *   - --int-gpio is the one that matters most. Also `>= 0`, and 0 is
+ *     documented in the help as "skips the interrupt check" — so a mistyped
+ *     argument silently skipped the very check the operator asked for, and the
+ *     report still said PASS.
+ *
+ * A bad numeric value is now a usage error, like any other bad argument.
+ */
+static bool cli_int(const char *s, int *out)
+{
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 0);          /* base 0: accepts 0x hex */
+    if (end == s || *end != '\0') return false;
+    if (errno == ERANGE) return false;
+#if LONG_MAX > INT_MAX
+    if (v < INT_MIN || v > INT_MAX) return false;   /* see config.c parse_int */
+#endif
+    *out = (int)v;
+    return true;
+}
+
+/*
+ * Positive, finite and not absurd.
+ *
+ * The upper bound is what lets this reject inf and NaN WITHOUT <math.h>: every
+ * comparison against NaN is false, and infinity fails the < test. That matters
+ * because cli.c is deliberately libm-free — imud-status links src/cli.o with
+ * no -lm, which is what keeps it a two-object link.
+ *
+ * Requiring > 0 rather than merely finite matches what imutest_main does with
+ * these six anyway: it applies each only `if (ov > 0)`. The difference is that
+ * a non-positive value is now reported instead of quietly ignored.
+ */
+static bool cli_pos_dbl(const char *s, double *out)
+{
+    char *end;
+    double v = strtod(s, &end);
+    if (end == s || *end != '\0') return false;
+    if (!(v > 0.0 && v < 1e9)) return false;
+    *out = v;
+    return true;
+}
+
+static int cli_bad_num(const char *prog, const char *flag, const char *val,
+                       void (*usage)(const char *))
+{
+    fprintf(stderr, "invalid value for %s: %s\n", flag, val);
+    usage(prog);
+    return -1;
+}
 
 /* ── imud ────────────────────────────────────────────────────────────────── */
 
@@ -296,34 +364,66 @@ int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
         else if (strcmp(s, "--mag-driver") == 0 && i + 1 < argc) a->ov_mag = argv[++i];
         else if (strcmp(s, "--i2c-bus") == 0 && i + 1 < argc)    a->ov_bus = argv[++i];
         else if (strcmp(s, "--gpio-chip") == 0 && i + 1 < argc)  a->ov_chip = argv[++i];
-        else if (strcmp(s, "--imu-addr") == 0 && i + 1 < argc)
-            a->ov_imu_addr = (int)strtol(argv[++i], NULL, 0);
-        else if (strcmp(s, "--mag-addr") == 0 && i + 1 < argc)
-            a->ov_mag_addr = (int)strtol(argv[++i], NULL, 0);
-        else if (strcmp(s, "--int-gpio") == 0 && i + 1 < argc)
-            a->ov_int_gpio = atoi(argv[++i]);
-        else if (strcmp(s, "--odr") == 0 && i + 1 < argc)       a->ov_odr = atoi(argv[++i]);
-        else if (strcmp(s, "--accel-g") == 0 && i + 1 < argc)   a->ov_accel = atoi(argv[++i]);
-        else if (strcmp(s, "--gyro-dps") == 0 && i + 1 < argc)  a->ov_gyro = atoi(argv[++i]);
-        else if (strcmp(s, "--fifo-wm") == 0 && i + 1 < argc)   a->ov_wm = atoi(argv[++i]);
+        else if (strcmp(s, "--imu-addr") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_imu_addr))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--mag-addr") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_mag_addr))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--int-gpio") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_int_gpio))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--odr") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_odr))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--accel-g") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_accel))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--gyro-dps") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_gyro))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--fifo-wm") == 0 && i + 1 < argc) {
+            if (!cli_int(argv[++i], &a->ov_wm))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
         else if (strcmp(s, "--passive") == 0) a->phases |= IMT_PHASE_PASSIVE;
         else if (strcmp(s, "--faces") == 0)   a->phases |= IMT_PHASE_FACES;
         else if (strcmp(s, "--gyro") == 0)    a->phases |= IMT_PHASE_GYRO;
         else if (strcmp(s, "--spin") == 0)    a->phases |= IMT_PHASE_SPIN;
         else if (strcmp(s, "--all") == 0)     a->phases  = IMT_PHASE_ALL;
         else if (strcmp(s, "--non-interactive") == 0) a->non_interactive = true;
-        else if (strcmp(s, "--odr-window") == 0 && i + 1 < argc)
-            a->ov_odr_win = atof(argv[++i]);
-        else if (strcmp(s, "--noise-window") == 0 && i + 1 < argc)
-            a->ov_noise_win = atof(argv[++i]);
-        else if (strcmp(s, "--drdy-window") == 0 && i + 1 < argc)
-            a->ov_drdy_win = atof(argv[++i]);
-        else if (strcmp(s, "--turn-deg") == 0 && i + 1 < argc)
-            a->ov_turn = atof(argv[++i]);
-        else if (strcmp(s, "--grav-tol") == 0 && i + 1 < argc)
-            a->ov_grav_tol = atof(argv[++i]);
-        else if (strcmp(s, "--odr-tol") == 0 && i + 1 < argc)
-            a->ov_odr_tol = atof(argv[++i]) / 100.0;
+        else if (strcmp(s, "--odr-window") == 0 && i + 1 < argc) {
+            if (!cli_pos_dbl(argv[++i], &a->ov_odr_win))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--noise-window") == 0 && i + 1 < argc) {
+            if (!cli_pos_dbl(argv[++i], &a->ov_noise_win))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--drdy-window") == 0 && i + 1 < argc) {
+            if (!cli_pos_dbl(argv[++i], &a->ov_drdy_win))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--turn-deg") == 0 && i + 1 < argc) {
+            if (!cli_pos_dbl(argv[++i], &a->ov_turn))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--grav-tol") == 0 && i + 1 < argc) {
+            if (!cli_pos_dbl(argv[++i], &a->ov_grav_tol))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+        }
+        else if (strcmp(s, "--odr-tol") == 0 && i + 1 < argc) {
+            double pct;
+            if (!cli_pos_dbl(argv[++i], &pct))
+                return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+            a->ov_odr_tol = pct / 100.0;   /* the flag is a percentage */
+        }
         else if (strcmp(s, "--no-fs-sweep") == 0) a->no_fs = true;
         else if (strcmp(s, "--no-overflow") == 0) a->no_ovf = true;
         else if (strcmp(s, "--no-regdiff") == 0)  a->no_regdiff = true;

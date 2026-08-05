@@ -450,6 +450,61 @@ static void test_imutest(void)
                a.ov_grav_tol == 0.5, "double overrides");
     }
 
+    /*
+     * A bad numeric argument is a usage error, not a silent 0.
+     *
+     * cli_parse_imutest is the only one of the five parsers that reads
+     * numbers, and it used atoi/atof — no error signal at all, and undefined
+     * by the letter for an unrepresentable value (C17 7.22.1.2p3). The
+     * practical failures were worse than the UB and split three ways:
+     *
+     *   --odr and friends are applied `if (ov > 0)`, so garbage became 0 and
+     *   the override was silently discarded — the tool ran on the config value
+     *   and said nothing. --imu-addr is applied `if (ov >= 0)`, so garbage
+     *   became 0 and TOOK, probing I2C address 0. And --int-gpio, also `>= 0`,
+     *   documents 0 as "skips the interrupt check" — so a typo skipped the
+     *   check the operator asked for while the report still said PASS.
+     *
+     * Every numeric flag, both malformed and out of range, so a regression in
+     * any one of them is caught rather than the first.
+     */
+    static const char *num_flags[] = {
+        "--imu-addr", "--mag-addr", "--int-gpio",
+        "--odr", "--accel-g", "--gyro-dps", "--fifo-wm",
+        "--odr-window", "--noise-window", "--drdy-window",
+        "--turn-deg", "--grav-tol", "--odr-tol",
+    };
+    static const char *bad_vals[] = {
+        "abc",          /* not a number at all — the old atoi(…) == 0 case  */
+        "12x",          /* trailing garbage: strtol stops, we must not      */
+        "",             /* empty                                            */
+        "99999999999999999999",  /* beyond long: ERANGE                     */
+        "4294977414",   /* fits a long, wraps an int — the config-side bug  */
+    };
+    for (unsigned f = 0; f < sizeof num_flags / sizeof num_flags[0]; f++) {
+        for (unsigned b = 0; b < sizeof bad_vals / sizeof bad_vals[0]; b++) {
+            char *v[] = { (char *)"imud-imutest", (char *)num_flags[f],
+                          (char *)bad_vals[b], NULL };
+            cap_begin();
+            rc = cli_parse_imutest(argc_of(v), v, &a);
+            const char *out = cap_end();
+            EXPECT(rc == -1, "bad numeric argument is a usage error");
+            EXPECT(has(out, num_flags[f]),
+                   "the error names the offending flag");
+        }
+    }
+
+    /* The float flags additionally reject non-finite and non-positive values.
+     * "nan" and "inf" both parse fine through strtod, and each would have
+     * flowed into a measurement window or tolerance. */
+    static const char *bad_dbls[] = { "nan", "inf", "-inf", "0", "-1" };
+    for (unsigned b = 0; b < sizeof bad_dbls / sizeof bad_dbls[0]; b++) {
+        char *v[] = { (char *)"imud-imutest", (char *)"--turn-deg",
+                      (char *)bad_dbls[b], NULL };
+        cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == -1, "non-finite or non-positive window rejected");
+    }
+
     {   char *v[] = { "imud-imutest", "--passive", NULL };
         cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && a.phases == IMT_PHASE_PASSIVE, "--passive alone");
