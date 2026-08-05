@@ -37,6 +37,11 @@ permissions:
 jobs:
   debs:
     strategy:
+      # One bad CDN node must not cost the other three legs.  At v1.8.2 a
+      # truncated download in bookworm/arm64 cancelled the remaining three
+      # 20 seconds in, so a re-run had to redo all four; with fail-fast off a
+      # flake costs one job and `gh run rerun --failed` redoes only that one.
+      fail-fast: false
       matrix:
         dist: [bookworm, trixie]
         arch: [arm64, armhf]
@@ -76,10 +81,42 @@ jobs:
             -e "DEBFULLNAME=Richard Simpson" \
             -e "LINTIAN=$LINTIAN" \
             debian:${{ matrix.dist }} bash -euo pipefail -c '
-              apt-get update
-              apt-get install -y build-essential debhelper devscripts \
-                                 pkgconf libgpiod-dev libmosquitto-dev
-              if [ "$LINTIAN" = "true" ]; then apt-get install -y lintian; fi
+              # Two different fetch failures, two different mitigations, and
+              # they are NOT interchangeable.
+              #
+              # Acquire::Retries covers CONNECTION-level failure — refused,
+              # timed out.  Measured against a dead port: Retries=0 makes one
+              # attempt, Retries=3 makes three.  Same config devbox carries.
+              printf "%s\n" "Acquire::Retries \"5\";" \
+                            "Acquire::http::Timeout \"60\";" \
+                            "Acquire::https::Timeout \"60\";" \
+                  > /etc/apt/apt.conf.d/99retries
+
+              # It does NOT cover what broke the v1.8.2 release build, which
+              # was a COMPLETED transfer of the wrong bytes: deb.debian.org
+              # served a 22 KB truncation of a 1 MB font package, and apt said
+              # "File has unexpected size (22732 != 1067728). Mirror sync in
+              # progress?" then exited 100.  apt treats a size/hash mismatch as
+              # a corrupt mirror rather than a transient error, so Retries never
+              # engages — reproduced with a deliberately truncated .deb, and
+              # Retries=5 and Retries=0 both issue exactly ONE GET.
+              #
+              # A fresh apt-get DOES issue a new request (3 GETs across 3
+              # invocations, same test), and a new request is what can reach a
+              # different CDN edge.  So the retry that matters has to be out
+              # here, around the whole command.
+              apt_retry() {
+                  for i in 1 2 3; do
+                      "$@" && return 0
+                      echo "apt attempt $i failed; retrying in $((i * 10))s" >&2
+                      sleep $((i * 10))
+                  done
+                  return 1
+              }
+              apt_retry apt-get update
+              apt_retry apt-get install -y build-essential debhelper devscripts \
+                                          pkgconf libgpiod-dev libmosquitto-dev
+              if [ "$LINTIAN" = "true" ]; then apt_retry apt-get install -y lintian; fi
               dch --local "~${{ matrix.dist }}" \
                   "Automated CI build for Debian ${{ matrix.dist }}."
               dpkg-buildpackage -us -uc ${{ matrix.binary_flag }}

@@ -390,9 +390,24 @@ jobs:
             -e DEBIAN_FRONTEND=noninteractive \
             -e UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             debian:trixie bash -euo pipefail -c '
-              apt-get update
-              apt-get install -y build-essential pkgconf libgpiod-dev \
-                                 libmosquitto-dev python3
+              # Acquire::Retries for connection failures, apt_retry for a
+              # truncated download — Retries does not cover the latter.  The
+              # reasoning, and the measurements behind it, are in build-debs.yml.
+              printf "%s\n" "Acquire::Retries \"5\";" \
+                            "Acquire::http::Timeout \"60\";" \
+                            "Acquire::https::Timeout \"60\";" \
+                  > /etc/apt/apt.conf.d/99retries
+              apt_retry() {
+                  for i in 1 2 3; do
+                      "$@" && return 0
+                      echo "apt attempt $i failed; retrying in $((i * 10))s" >&2
+                      sleep $((i * 10))
+                  done
+                  return 1
+              }
+              apt_retry apt-get update
+              apt_retry apt-get install -y build-essential pkgconf libgpiod-dev \
+                                          libmosquitto-dev python3
               uname -m
               make clean
               make
@@ -753,7 +768,22 @@ jobs:
             -v "$PWD/debs:/debs:ro" \
             -e DEBIAN_FRONTEND=noninteractive \
             debian:${{ matrix.dist }} bash -euo pipefail -c '
-              apt-get update
+              # This job fetches from the archive too: apt-get install of a
+              # local .deb still resolves its shlibs dependencies over the
+              # network.  Same two mitigations, same reasoning as build-debs.yml.
+              printf "%s\n" "Acquire::Retries \"5\";" \
+                            "Acquire::http::Timeout \"60\";" \
+                            "Acquire::https::Timeout \"60\";" \
+                  > /etc/apt/apt.conf.d/99retries
+              apt_retry() {
+                  for i in 1 2 3; do
+                      "$@" && return 0
+                      echo "apt attempt $i failed; retrying in $((i * 10))s" >&2
+                      sleep $((i * 10))
+                  done
+                  return 1
+              }
+              apt_retry apt-get update
               mkdir -p /tmp/d
               cp /debs/*.deb /tmp/d/
               # dbgsym packages belong to a separate archive (Debian keeps
@@ -767,7 +797,7 @@ jobs:
               # apt, not dpkg -i: only apt resolves the shlibs dependencies
               # (libgpiod, libmosquitto) out of the archive.
               echo "=== install ==="
-              apt-get install -y /tmp/d/*.deb
+              apt_retry apt-get install -y /tmp/d/*.deb
 
               # Every binary package in debian/control must end up CONFIGURED,
               # not merely unpacked — a postinst that exits non-zero leaves the
