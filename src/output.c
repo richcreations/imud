@@ -568,6 +568,31 @@ void out_ctx_stop(out_ctx_t *ctx)
     if (ctx) ctx->stop = 1;
 }
 
+/*
+ * See the header for why these exist (audit N6).  Both are only reached when
+ * pthread_create failed, so no thread owns these fds and closing them here
+ * races with nothing.
+ */
+void out_ctx_disable_nmea(out_ctx_t *ctx)
+{
+    if (!ctx) return;
+    if (ctx->nmea_fd >= 0) { close(ctx->nmea_fd); ctx->nmea_fd = -1; }
+    netserv_close(&ctx->nmea_tcp);
+}
+
+/*
+ * The high-rate output is connectionless — there is no listener to refuse a
+ * connection on, so this is not the "silent accept" case its sibling is.
+ * Closing still has one visible effect: out_ctx_send_shutdown returns early on
+ * hirate_fd < 0, so a stream whose thread never ran no longer emits a final
+ * FLAG_SHUTDOWN packet at exit, announcing the end of data that never came.
+ */
+void out_ctx_disable_hirate(out_ctx_t *ctx)
+{
+    if (!ctx) return;
+    if (ctx->hirate_fd >= 0) { close(ctx->hirate_fd); ctx->hirate_fd = -1; }
+}
+
 /* Publish hot-reloaded output rates (SIGHUP). The threads read these
  * atomics each tick; the immutable fields stay on the shared ->cfg. */
 void out_ctx_reload(out_ctx_t *ctx, const imud_config_t *cfg)

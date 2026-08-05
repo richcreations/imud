@@ -28,6 +28,12 @@
  * is serving. The tradeoff is that the default path constants are not
  * themselves exercised here.
  *
+ * THREAD FAILURE (audit N6): the Makefile links this suite with
+ * -Wl,--wrap=pthread_create, so __wrap_pthread_create below can fail one named
+ * thread and leave every other one alone. Without that seam main()'s four
+ * warn-and-continue output arms and its one fatal one are unreachable from a
+ * test — nothing an outside process can do makes pthread_create return EAGAIN.
+ *
  * Linux-only, like test_concurrency: it links the daemon objects and -lgpiod.
  */
 
@@ -45,13 +51,39 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 
 #include "types.h"
+#include "output.h"     /* the three output thread entry points, for the wrap */
 
 int main_entry(int argc, char **argv);
+
+/* ── the pthread_create seam ─────────────────────────────────────────────── */
+
+/* Typed as the entry point rather than void *: casting between function and
+ * object pointers is not something C guarantees, and there is no reason to. */
+typedef void *(*thread_fn_t)(void *);
+
+/* NULL — the default and what every other case in this suite runs with — means
+ * pass every thread straight through. */
+static thread_fn_t _Atomic g_fail_fn;
+
+int __real_pthread_create(pthread_t *restrict, const pthread_attr_t *restrict,
+                          thread_fn_t, void *restrict);
+
+int __wrap_pthread_create(pthread_t *restrict tid,
+                          const pthread_attr_t *restrict attr,
+                          thread_fn_t fn, void *restrict arg)
+{
+    thread_fn_t target = atomic_load(&g_fail_fn);
+    if (target != NULL && fn == target)
+        return EAGAIN;   /* what the real one returns under resource limits */
+    return __real_pthread_create(tid, attr, fn, arg);
+}
 
 /* Kept in step with the -D flags in the Makefile's test_daemon rule.
  *
@@ -64,6 +96,11 @@ int main_entry(int argc, char **argv);
 #define T_STATUS_SOCK "/tmp/imud_e2e_daemon.sock"
 #define T_STREAM_SOCK "/tmp/imud_e2e_daemon_stream.sock"
 #define T_CONF        "/tmp/imud_e2e_daemon.conf"
+
+/* Ports the N6 cases need a listener or a receiver on, in the same 27xxx block
+ * as the NMEA dest_port the lifecycle test already uses. */
+#define T_NMEA_TCP_PORT 27111
+#define T_HIRATE_PORT   27112
 
 static int g_pass, g_fail;
 
@@ -82,10 +119,16 @@ static void msleep(int ms)
     nanosleep(&t, NULL);
 }
 
-/* nmea rate_hz is a [hot] key and imu odr_hz is a [restart] key; both are
- * printed by the status report, which is what makes the reload contract
- * observable from outside the process. */
-static void write_conf(int nmea_rate_hz, int imu_odr_hz)
+/* The optional outputs only the N6 cases want: each one is a listener or a
+ * destination the test can then observe from outside the daemon. */
+typedef struct {
+    int  nmea_rate_hz;
+    int  imu_odr_hz;
+    bool nmea_tcp;   /* [nmea] tcp_enabled  → a listener on T_NMEA_TCP_PORT */
+    bool hirate;     /* [highrate] enabled  → UDP to 127.0.0.1:T_HIRATE_PORT */
+} conf_opt_t;
+
+static void write_conf_opt(conf_opt_t o)
 {
     FILE *f = fopen(T_CONF, "w");
     if (!f) { perror("fopen"); exit(1); }
@@ -108,16 +151,34 @@ static void write_conf(int nmea_rate_hz, int imu_odr_hz)
         "rate_hz = %d\n"
         "dest_addr = \"127.0.0.1\"\n"
         "dest_port = 27110\n"
+        "tcp_enabled = %s\n"
+        "tcp_bind_addr = \"127.0.0.1\"\n"
+        "tcp_port = %d\n"
         "[highrate]\n"
-        "enabled = false\n"
+        "enabled = %s\n"
+        "rate_hz = 50\n"
+        "dest_addr = \"127.0.0.1\"\n"
+        "dest_port = %d\n"
         "[stream]\n"
         "enabled = true\n"
         "socket = \"%s\"\n"
         "rate_hz = 50\n"
         "[logging]\n"
         "level = \"error\"\n",
-        imu_odr_hz, nmea_rate_hz, T_STREAM_SOCK);
+        o.imu_odr_hz, o.nmea_rate_hz,
+        o.nmea_tcp ? "true" : "false", T_NMEA_TCP_PORT,
+        o.hirate   ? "true" : "false", T_HIRATE_PORT,
+        T_STREAM_SOCK);
     fclose(f);
+}
+
+/* The plain form: no optional outputs. nmea rate_hz is a [hot] key and imu
+ * odr_hz is a [restart] key; both are printed by the status report, which is
+ * what makes the reload contract observable from outside the process. */
+static void write_conf(int nmea_rate_hz, int imu_odr_hz)
+{
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = nmea_rate_hz,
+                                 .imu_odr_hz   = imu_odr_hz });
 }
 
 /* Connect to an AF_UNIX path, retrying while the daemon starts up. */
@@ -341,6 +402,233 @@ static void test_daemon_refuses_overlong_socket(void)
     end(fb);
 }
 
+/* ── audit N6 — a thread that fails to start leaves nothing bound ────────── */
+
+/* One connect attempt, no retry — the opposite of connect_unix, whose timeout
+ * is a budget for waiting on a socket that is expected to appear. Here the
+ * question is whether something is listening *right now*. */
+static int try_connect_unix(const char *path)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) return fd;
+    close(fd);
+    return -1;
+}
+
+/* Connect to 127.0.0.1:port. Returns the fd, or -errno on failure, so a caller
+ * can tell ECONNREFUSED (what it wants) from ETIMEDOUT (what it does not). */
+static int connect_tcp(int port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -errno;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port   = htons((uint16_t)port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) return fd;
+    int e = errno;
+    close(fd);
+    return -e;
+}
+
+/* Start the daemon on a thread with SIGTERM blocked here first, so its sigwait
+ * is the only consumer. Every N6 case needs the same four lines. */
+static void daemon_start(daemon_run_t *d, sigset_t *old)
+{
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGHUP);
+    pthread_sigmask(SIG_BLOCK, &set, old);
+    /* `done` must be cleared BEFORE the thread exists: a caller polling it to
+     * decide whether the daemon exited on its own reads a stale non-zero as
+     * "already finished" and then blocks forever in pthread_join.  Found the
+     * hard way — an uninitialised d.done wedged the suite under a mutation. */
+    d->rc = -999;
+    atomic_store(&d->done, 0);
+    EXPECT(pthread_create(&d->tid, NULL, daemon_thread, d) == 0,
+           "daemon thread started");
+}
+
+/*
+ * The stream output is the one enabled by default and the one every bridge and
+ * libimud client reads. Its thread failing is fatal — the alternative is a
+ * daemon that systemd reports active while producing nothing at all.
+ *
+ * The assertion that matters is not the return code on its own: it is that the
+ * AF_UNIX node is gone afterwards. Before the fix the daemon warned, kept
+ * running, and left the socket bound with nobody calling accept(), so a client
+ * connected successfully into the backlog and then waited forever.
+ */
+static void test_daemon_stream_thread_failure_is_fatal(void)
+{
+    begin("test_daemon_stream_thread_failure_is_fatal");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    unlink(T_PID_FILE);
+    write_conf(10, 833);
+    atomic_store(&g_fail_fn, stream_out_thread);
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    /*
+     * Poll rather than join outright: a regression here does not return a bad
+     * code, it blocks in sigwait forever, so a straight join would hang the
+     * suite instead of failing it.
+     *
+     * Probing the socket only makes sense AFTER that wait, never during it.
+     * out_ctx_open binds the listener in step 7 and the threads start in step
+     * 10, so on any healthy start there is a window where the socket is bound
+     * with nothing accepting yet — a connect() inside the loop succeeds and
+     * proves nothing. (Invisible at -O2, wide open under TSan, which is how
+     * this was caught.) Once the daemon has failed to exit, that window is
+     * long past and a socket still accepting is the finding itself.
+     */
+    bool exited = false;
+    for (int waited = 0; waited < 15000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "refuses to run without its stream thread");
+
+    if (!exited) {
+        /* Still up. Say why, rather than leaving a bare timeout: this is the
+         * finding stated as a behaviour — a subscriber accepted into a backlog
+         * nobody will ever accept() from, which reads to the client as a
+         * successful connect followed by permanent silence. */
+        int c = try_connect_unix(T_STREAM_SOCK);
+        EXPECT(c < 0, "never accepts a subscriber it cannot serve");
+        if (c >= 0) close(c);
+        pthread_kill(d.tid, SIGTERM);            /* don't wedge the suite */
+    }
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc == 1, "exits 1, so Restart=on-failure retries it");
+
+    struct stat st;
+    EXPECT(stat(T_STREAM_SOCK, &st) != 0, "the stream socket is not left on disk");
+    EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
+
+    atomic_store(&g_fail_fn, NULL);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    end(fb);
+}
+
+/*
+ * NMEA is opt-in, so its thread failing stays a warning — but the TCP listener
+ * out_ctx_open already bound has to go with it. Before the fix connect()
+ * SUCCEEDED and then delivered nothing, which is the worst diagnostic shape
+ * available; ECONNREFUSED tells the client the truth immediately.
+ */
+static void test_daemon_nmea_thread_failure_closes_listener(void)
+{
+    begin("test_daemon_nmea_thread_failure_closes_listener");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 833,
+                                 .nmea_tcp = true });
+    atomic_store(&g_fail_fn, nmea_out_thread);
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    /* Waiting on the stream socket is the synchronisation: step 10 starts nmea
+     * BEFORE stream, so a stream that accepts proves the nmea arm has run. */
+    int sfd = connect_unix(T_STREAM_SOCK, 10000);
+    EXPECT(sfd >= 0, "the daemon still runs — nmea is opt-in, not fatal");
+    if (sfd >= 0) close(sfd);
+
+    int rc = connect_tcp(T_NMEA_TCP_PORT);
+    EXPECT(rc < 0, "the nmea TCP listener does not accept");
+    EXPECT(rc == -ECONNREFUSED, "and refuses rather than hanging a client");
+    if (rc >= 0) close(rc);
+
+    /* The flag is cleared too, so imud-status agrees with the socket. */
+    char rep[8192];
+    EXPECT(fetch_status(rep, sizeof rep), "status socket still answers");
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM delivered");
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc == 0, "and it still shuts down clean");
+
+    atomic_store(&g_fail_fn, NULL);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
+/*
+ * The high-rate output is connectionless, so there is no listener to refuse on
+ * and the finding's "silent accept" shape does not apply. What closing its fd
+ * does fix is the exit: out_ctx_send_shutdown returns early on hirate_fd < 0,
+ * so a stream whose thread never ran no longer announces the end of data that
+ * never came. Before the fix exactly one FLAG_SHUTDOWN datagram arrived here.
+ */
+static void test_daemon_hirate_thread_failure_sends_nothing(void)
+{
+    begin("test_daemon_hirate_thread_failure_sends_nothing");
+    int fb = g_fail;
+
+    /* Bind the receiver before the daemon starts, so nothing can be missed. */
+    int rx = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port   = htons(T_HIRATE_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    EXPECT(rx >= 0 && bind(rx, (struct sockaddr *)&a, sizeof a) == 0,
+           "udp receiver bound on the hirate destination");
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(rx, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 833,
+                                 .hirate = true });
+    atomic_store(&g_fail_fn, hirate_out_thread);
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    /* Same ordering trick: hirate is started before stream. */
+    int sfd = connect_unix(T_STREAM_SOCK, 10000);
+    EXPECT(sfd >= 0, "the daemon still runs — highrate is opt-in, not fatal");
+    if (sfd >= 0) close(sfd);
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM delivered");
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc == 0, "shuts down clean");
+
+    /* Everything the daemon could ever have sent is queued by now. */
+    char buf[512];
+    ssize_t n = recv(rx, buf, sizeof buf, MSG_DONTWAIT);
+    EXPECT(n < 0, "no packet on a stream whose thread never started");
+    close(rx);
+
+    atomic_store(&g_fail_fn, NULL);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
 /* --version is handled before any hardware or socket work. */
 static void test_daemon_version_flag(void)
 {
@@ -361,6 +649,9 @@ int main(void)
     test_daemon_refuses_bad_config();
     test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();
+    test_daemon_stream_thread_failure_is_fatal();
+    test_daemon_nmea_thread_failure_closes_listener();
+    test_daemon_hirate_thread_failure_sends_nothing();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

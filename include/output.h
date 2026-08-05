@@ -50,6 +50,22 @@ void out_ctx_send_shutdown(out_ctx_t *ctx);
 /* Signal output threads to stop. */
 void out_ctx_stop(out_ctx_t *ctx);
 
+/*
+ * Disown the sockets belonging to an output thread that FAILED TO START.
+ *
+ * out_ctx_open binds everything before any thread exists, so a pthread_create
+ * that fails leaves a listener up with nothing behind it: a client connects
+ * successfully into the backlog and then waits forever, because the thread
+ * that would accept() is the one that failed.  Silence is the worst
+ * diagnostic available; ECONNREFUSED is the honest answer.  (audit N6)
+ *
+ * Call INSTEAD OF starting the thread, never alongside a running one — these
+ * close fds the thread would otherwise own.  Safe before out_ctx_free: the fds
+ * are set to -1 and netserv_close tolerates a second call.
+ */
+void out_ctx_disable_nmea  (out_ctx_t *ctx);   /* UDP fd + [nmea] tcp listener */
+void out_ctx_disable_hirate(out_ctx_t *ctx);   /* UDP fd (no listener exists)  */
+
 /* Republish hot-reloadable output rates after a SIGHUP config reload. */
 void out_ctx_reload(out_ctx_t *ctx, const imud_config_t *cfg);
 

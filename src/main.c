@@ -527,13 +527,17 @@ int main(int argc, char **argv)
     int status_fd = status_sock_open(STATUS_SOCK);
     /* Not fatal if this fails — imud-status won't work but the daemon runs. */
 
-    /* ── 9. PID file + systemd notification ─────────────────────────────── */
+    /* ── 9. PID file ─────────────────────────────────────────────────────── */
 
     pid_write(PID_FILE);
-    sd_notify_ready();
+    /* READY=1 is deliberately NOT sent here.  Sockets being bound is not the
+     * daemon being up: step 10 can still fail, and a unit reported active with
+     * no threads behind it is the systemd half of audit N6.  It goes out once
+     * the threads are running. */
 
     /* ── 10. Start threads ───────────────────────────────────────────────── */
 
+    int exit_rc = 0;
     _Atomic int stop = 0;
 
     /* Reader threads first — must be running before fusion blocks on ring. */
@@ -599,8 +603,19 @@ int main(int argc, char **argv)
         prc = pthread_create(&nmea_tid, NULL, nmea_out_thread, out);
         if (prc != 0) {
             LOG_W("[main] warning: cannot create nmea_out thread: %s\n", strerror(prc));
+            /* Clearing the flags keeps imud-status honest; disabling closes the
+             * listener that flag no longer describes.  Both are needed.
+             *
+             * Under the lock, for the same reason the SIGHUP block below takes
+             * it: health_thread is ALREADY RUNNING by now (it is started above)
+             * and snapshots *cfg under g_cfg_lock to build the status report.
+             * These stores raced with that read — pre-existing, and invisible
+             * until test_daemon could reach this arm.  TSan on src/main.c:277. */
+            pthread_mutex_lock(&g_cfg_lock);
             cfg.nmea_enabled     = false;
             cfg.nmea_tcp_enabled = false;
+            pthread_mutex_unlock(&g_cfg_lock);
+            out_ctx_disable_nmea(out);
         } else {
             nmea_started = true;
         }
@@ -609,20 +624,31 @@ int main(int argc, char **argv)
         prc = pthread_create(&hirate_tid, NULL, hirate_out_thread, out);
         if (prc != 0) {
             LOG_W("[main] warning: cannot create hirate_out thread: %s\n", strerror(prc));
+            pthread_mutex_lock(&g_cfg_lock);   /* see the nmea arm above */
             cfg.highrate_enabled = false;
+            pthread_mutex_unlock(&g_cfg_lock);
+            out_ctx_disable_hirate(out);
         } else {
             hirate_started = true;
         }
     }
+    /*
+     * The stream is the exception, and it is fatal (audit N6).  Since 1.6 the
+     * AF_UNIX stream is the one output enabled by default: the five bridges and
+     * every libimud consumer read it and nothing else.  A daemon that cannot
+     * run it produces nothing while reporting active, which is worse than not
+     * running — and imud.service is Restart=on-failure/RestartSec=3, so exit 1
+     * is a retry in three seconds.  nmea/hirate/position above are opt-in, and
+     * warn-and-continue is right for them.
+     */
     if (cfg.stream_enabled || cfg.stream_tcp_enabled) {
         prc = pthread_create(&stream_tid, NULL, stream_out_thread, out);
         if (prc != 0) {
-            LOG_W("[main] warning: cannot create stream_out thread: %s\n", strerror(prc));
-            cfg.stream_enabled     = false;
-            cfg.stream_tcp_enabled = false;
-        } else {
-            stream_started = true;
+            LOG_E("[main] fatal: cannot create stream_out thread: %s\n", strerror(prc));
+            exit_rc = 1;
+            goto teardown;   /* §12 is the full unwind already; don't duplicate it */
         }
+        stream_started = true;
     }
 
     /* Position thread — optional; only runs when gpsd or signalk is enabled. */
@@ -634,12 +660,18 @@ int main(int argc, char **argv)
     if (cfg.pos_gpsd_enabled || cfg.pos_signalk_enabled) {
         prc = pthread_create(&pos_tid, NULL, position_thread, &pos_ctx);
         if (prc != 0) {
+            /* No out_ctx_disable_* counterpart: position binds nothing.  It is
+             * a CLIENT of gpsd/Signal K (an outbound connect in position.c), so
+             * a failure here leaves no listener behind. */
             LOG_W("[main] warning: cannot create position thread: %s\n",
                     strerror(prc));
         } else {
             pos_started = true;
         }
     }
+
+    /* Threads are up: NOW the unit is ready.  See step 9. */
+    sd_notify_ready();
 
     LOG_I("[main] imud %s running (pid %d)\n",
             VERSION_STR, (int)getpid());
@@ -694,6 +726,10 @@ int main(int argc, char **argv)
 
     /* ── 12. Shutdown ────────────────────────────────────────────────────── */
 
+    /* Also the failure path for step 10's fatal stream case, which jumps here
+     * rather than repeating the unwind: every step below is already guarded by
+     * the *_started flags, so a partial startup tears down correctly. */
+teardown:
     stop = 1;  /* health thread exits */
 
     /* Emit shutdown packet before stopping output threads. */
@@ -730,5 +766,5 @@ int main(int argc, char **argv)
     pid_remove(PID_FILE);
 
     LOG_I("[main] exit\n");
-    return 0;
+    return exit_rc;
 }

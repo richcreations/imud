@@ -345,8 +345,15 @@ src/main.entry.o: CPPFLAGS += -DPID_FILE='"/tmp/imud_e2e_daemon.pid"' \
 # the previous one compiled in — which cost a debugging round already.
 src/main.entry.o: Makefile
 
+# --wrap=pthread_create is the seam for audit N6: main()'s four warn-and-continue
+# output threads (and the one fatal one) are otherwise unreachable, since nothing
+# a test can do from outside makes pthread_create fail.  The wrapper in
+# test_daemon.c passes every thread through untouched unless the test has named
+# its entry point, so the other cases in the suite are unaffected.  GNU ld only,
+# like test_drivers — this suite is already Linux-only.
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	    -Wl,--wrap=pthread_create -o $@ $^ -lgpiod -lm
 
 # imud-status and imud-mon end to end, main() included (audit L2).  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);

@@ -835,6 +835,16 @@ or any libimud program (`imud_connect_tcp`, see `libimud(3)`) on a laptop
 against a daemon elsewhere on the network, with the same lossless framing as
 the local socket. Both listeners are fed by one thread at `rate_hz`.
 
+**If that thread cannot be started, imud exits 1** rather than running without
+it — a daemon reporting active while producing nothing at all is worse than one
+that is plainly down, and `imud.service` is `Restart=on-failure` with
+`RestartSec=3`. The optional outputs (`[nmea]`, `[highrate]`, and the position
+thread) are the other way round: they warn and the daemon carries on. In that
+case whatever they had already bound is closed and unlinked, so a client gets
+`ECONNREFUSED` immediately instead of connecting successfully to a listener
+nobody is serving and then waiting forever. `READY=1` is sent to systemd only
+once the threads are actually running, not when the sockets are bound.
+
 ### NMEA 2000 — via Signal K (recipe, no imud code involved)
 
 imud has no direct N2K output by design: the Signal K server already owns the
