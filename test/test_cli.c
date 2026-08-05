@@ -112,6 +112,10 @@ static void test_imud(void)
         cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); out = cap_end();
         EXPECT(rc == 0, "no args → run");
         EXPECT(strcmp(a.config_path, "/etc/imud/imud.conf") == 0, "default config");
+        /* config_path is pre-filled either way, so this flag is the only thing
+         * that distinguishes the default from an operator naming that exact
+         * path — and imud gives only the latter a $HOME fallback (audit N5). */
+        EXPECT(!a.config_explicit, "the pre-filled default is not 'explicit'");
         EXPECT(a.replay_path[0] == '\0', "no replay by default");
         EXPECT(!a.skip_bias_cal && !a.no_nmea && !a.no_hirate, "no flags set");
         EXPECT(out[0] == '\0', "silent on a clean parse");
@@ -120,6 +124,15 @@ static void test_imud(void)
     {   char *v[] = { "imud", "--config", "/tmp/x.conf", NULL };
         cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && strcmp(a.config_path, "/tmp/x.conf") == 0, "--config");
+        EXPECT(a.config_explicit, "--config marks the path explicit");
+    }
+
+    /* The awkward one: naming the default path is still explicit, so it too
+     * gets no fallback.  A strcmp against the default would get this wrong. */
+    {   char *v[] = { "imud", "--config", "/etc/imud/imud.conf", NULL };
+        cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.config_explicit,
+               "--config with the default path is explicit too");
     }
 
     {   char *v[] = { "imud", "--replay", "/tmp/r.imucap", NULL };

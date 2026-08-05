@@ -13,18 +13,26 @@ which sensors to use, MEKF filter parameters, output stream destinations,
 magnetic declination, and logging.
 .PP
 .B imud
-searches for the configuration file in this order:
+takes the path given on the command line with
+.BR \-\-config ,
+and otherwise searches:
 .PP
 .RS 4
-1. Path given on the command line with
-.B \-\-config
-.br
-2.
+1.
 .I /etc/imud/imud.conf
 .br
-3.
+2.
 .I ~/.config/imud/imud.conf
 .RE
+.PP
+The two are alternatives, not a single list:
+.B \-\-config
+replaces the search, so a path named there that does not exist means built-in
+defaults (with a warning) rather than a fall back to
+.IR ~/.config/imud/imud.conf .
+Without
+.BR \-\-config ,
+neither file existing is not an error \(em the daemon runs on defaults.
 .SS Syntax
 .TP
 Sections
@@ -89,6 +97,18 @@ are applied live by sending
 .B SIGHUP
 to the daemon
 .RB ( "sudo systemctl reload imud" ).
+.PP
+A reload re-reads the file the daemon actually loaded at startup \(em including
+the
+.I ~/.config/imud/imud.conf
+fallback \(em and starts from the built-in defaults before applying it, exactly
+as startup does.
+Removing a
+.B [hot]
+key from the file therefore restores its default on the next reload, rather than
+leaving the running value in place until a restart.
+If the file has since been deleted the running configuration is kept: a deleted
+config does not revert a running daemon to defaults.
 .SH SECTIONS
 .SS [device]
 Hardware bus selection.

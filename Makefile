@@ -336,8 +336,15 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
 # PID_FILE/STATUS_SOCK are redirected into the build directory for this copy of
 # main.c only: /run/imud/imud.sock is a process-wide singleton, and the suite
 # has to be safe to run on a Pi that is currently serving from it.
+#
+# SYS_CONF is redirected for a different reason (audit N5): an explicit --config
+# now skips the $HOME fallback, so the ONLY way a test can reach that branch is
+# to run the daemon with no --config at all — which means the system config has
+# to be a path the suite can rely on being absent.  /etc/imud/imud.conf is not:
+# it exists on any machine where `make install` has been run, including the Pi.
 src/main.entry.o: CPPFLAGS += -DPID_FILE='"/tmp/imud_e2e_daemon.pid"' \
-                              -DSTATUS_SOCK='"/tmp/imud_e2e_daemon.sock"'
+                              -DSTATUS_SOCK='"/tmp/imud_e2e_daemon.sock"' \
+                              -DSYS_CONF='"/tmp/imud_e2e_sysconf.conf"'
 
 # The Makefile is a prerequisite of the object, not decoration: those two -D
 # values live here, and make does not consider a target-specific flag change a

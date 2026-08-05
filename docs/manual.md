@@ -249,10 +249,15 @@ Reload with `sudo systemctl reload imud` or `kill -HUP $(pidof imud)`.
 
 imud is configured with a single TOML-like text file.
 
-**Default locations** (first match wins):
-1. Path given on the command line: `imud --config /path/to/imud.conf`
-2. `/etc/imud/imud.conf` (installed by `make install`)
-3. `~/.config/imud/imud.conf`
+**Default locations.** `--config /path/to/imud.conf` names the file outright;
+without it the daemon searches, first match wins:
+1. `/etc/imud/imud.conf` (installed by `make install`)
+2. `~/.config/imud/imud.conf`
+
+`--config` *replaces* the search rather than heading it. A path named there that
+does not exist means built-in defaults and a warning — not a quiet fall back to
+`~/.config/imud/imud.conf`, which would let a typo start the daemon on a
+different configuration. Without `--config`, neither file existing is fine.
 
 **Reload behaviour:**
 - Keys marked **[restart]** take effect only after restarting the daemon
@@ -263,6 +268,13 @@ imud is configured with a single TOML-like text file.
   ```
   Unknown keys and bad values in a SIGHUP reload are logged as warnings; the
   previously loaded values are kept.
+- A reload re-reads **the file startup actually loaded**, including when that was
+  the `~/.config/imud/imud.conf` fallback, and it starts from the built-in
+  defaults before applying that file — exactly as startup does. So **deleting a
+  [hot] key from the file restores its default** on the next reload, instead of
+  leaving the running value in place until a restart; reload and restart agree.
+- If the config file has since been deleted, the running configuration is kept.
+  A deleted config does not revert a running daemon to defaults.
 
 **Syntax:**
 - Comments start with `#` and may appear inline.

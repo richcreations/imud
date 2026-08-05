@@ -114,6 +114,7 @@ int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
+            a->config_explicit = true;
         } else if (strcmp(argv[i], "--replay") == 0 && i + 1 < argc) {
             snprintf(a->replay_path, sizeof(a->replay_path), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--skip-bias-cal") == 0) {

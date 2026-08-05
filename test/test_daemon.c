@@ -96,6 +96,17 @@ int __wrap_pthread_create(pthread_t *restrict tid,
 #define T_STATUS_SOCK "/tmp/imud_e2e_daemon.sock"
 #define T_STREAM_SOCK "/tmp/imud_e2e_daemon_stream.sock"
 #define T_CONF        "/tmp/imud_e2e_daemon.conf"
+/* The redirected SYS_CONF.  The N5 cases need it ABSENT — it is what the daemon
+ * reads when no --config is given, and the $HOME fallback only happens when it
+ * is missing.  Nothing here ever creates it. */
+#define T_SYS_CONF    "/tmp/imud_e2e_sysconf.conf"
+/* A $HOME the suite owns, so `getenv("HOME")/.config/imud/imud.conf` resolves
+ * somewhere the test wrote rather than to the developer's real config. */
+#define T_HOME        "/tmp/imud_e2e_home"
+#define T_HOME_CONF   T_HOME "/.config/imud/imud.conf"
+/* A path that must not exist, for the case that proves --config gets no
+ * fallback. */
+#define T_MISSING_CONF "/tmp/imud_e2e_no_such.conf"
 
 /* Ports the N6 cases need a listener or a receiver on, in the same 27xxx block
  * as the NMEA dest_port the lifecycle test already uses. */
@@ -126,12 +137,24 @@ typedef struct {
     int  imu_odr_hz;
     bool nmea_tcp;   /* [nmea] tcp_enabled  → a listener on T_NMEA_TCP_PORT */
     bool hirate;     /* [highrate] enabled  → UDP to 127.0.0.1:T_HIRATE_PORT */
+    /* NULL → T_CONF.  The N5 fallback case needs a second config on disk at
+     * the $HOME path, identical in every other respect. */
+    const char *path;
+    /* Omit `rate_hz` from [nmea] entirely rather than writing a value.  This is
+     * the N5(b) case: the key is DELETED, which is different from setting it,
+     * and the daemon must fall back to the compiled-in default (10). */
+    bool omit_nmea_rate;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
 {
-    FILE *f = fopen(T_CONF, "w");
+    FILE *f = fopen(o.path ? o.path : T_CONF, "w");
     if (!f) { perror("fopen"); exit(1); }
+    /* Written as a whole line or not at all: the point of the N5(b) case is
+     * that the key is absent from the file, not that it holds some value. */
+    char nmea_rate[32];
+    if (o.omit_nmea_rate) nmea_rate[0] = '\0';
+    else snprintf(nmea_rate, sizeof nmea_rate, "rate_hz = %d\n", o.nmea_rate_hz);
     fprintf(f,
         "[device]\n"
         "i2c_bus = \"/dev/null\"\n"
@@ -148,7 +171,7 @@ static void write_conf_opt(conf_opt_t o)
         "set_period_s = 0.0\n"
         "[nmea]\n"
         "enabled = true\n"
-        "rate_hz = %d\n"
+        "%s"
         "dest_addr = \"127.0.0.1\"\n"
         "dest_port = 27110\n"
         "tcp_enabled = %s\n"
@@ -165,7 +188,7 @@ static void write_conf_opt(conf_opt_t o)
         "rate_hz = 50\n"
         "[logging]\n"
         "level = \"error\"\n",
-        o.imu_odr_hz, o.nmea_rate_hz,
+        o.imu_odr_hz, nmea_rate,
         o.nmea_tcp ? "true" : "false", T_NMEA_TCP_PORT,
         o.hirate   ? "true" : "false", T_HIRATE_PORT,
         T_STREAM_SOCK);
@@ -215,17 +238,58 @@ static bool fetch_status(char *buf, size_t bufsz)
     return got > 0;
 }
 
+/* True when the report line beginning `label` also contains `want`. Scoped to
+ * the one line on purpose: "disabled" appears against several outputs, so a
+ * bare strstr over the whole report would match the wrong one. */
+static bool status_line_has(const char *rep, const char *label, const char *want)
+{
+    const char *p = strstr(rep, label);
+    if (!p) return false;
+    const char *eol = strchr(p, '\n');
+    const char *hit = strstr(p, want);
+    return hit && (!eol || hit < eol);
+}
+
+/*
+ * Block until the status report says `label`'s line contains `want`, or give
+ * up.  Returns true if it happened.
+ *
+ * Every "wait for the daemon to have done X" in this suite goes through here,
+ * because the two obvious alternatives are both wrong: a fixed sleep couples
+ * the test to how fast the machine is (a 1.5 s one here used to be the only
+ * thing standing between SIGHUP and the assertion), and connecting to a socket
+ * proves nothing, since out_ctx_open binds every listener in step 7 and a bound
+ * listener accepts into its backlog with no thread behind it — the whole of
+ * audit finding N6, which two cases below had been using as a start signal.
+ */
+static bool wait_for_status(const char *label, const char *want, int timeout_ms)
+{
+    char rep[8192];
+    for (int waited = 0; waited < timeout_ms; waited += 100) {
+        if (fetch_status(rep, sizeof rep) && status_line_has(rep, label, want))
+            return true;
+        msleep(100);
+    }
+    return false;
+}
+
 /* `done` is how a caller can tell "still running" from "returned" without
  * pthread_kill(tid, 0), which is undefined once the thread has exited — the id
  * may already have been reused.  _Atomic per the project's rule for every
  * cross-thread flag; its release also makes `rc` safe to read after it reads 1. */
-typedef struct { int rc; pthread_t tid; _Atomic int done; } daemon_run_t;
+typedef struct {
+    int rc; pthread_t tid; _Atomic int done;
+    /* NULL — every case before N5 — means the usual `--config T_CONF` form.
+     * The N5 cases need argv the daemon has not seen: no --config at all (the
+     * only route left to the $HOME fallback), and --config on a missing path. */
+    char **argv; int argc;
+} daemon_run_t;
 
 static void *daemon_thread(void *arg)
 {
     daemon_run_t *d = (daemon_run_t *)arg;
-    char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF, NULL };
-    d->rc = main_entry(3, argv);
+    char *dflt[] = { (char *)"imud", (char *)"--config", (char *)T_CONF, NULL };
+    d->rc = d->argv ? main_entry(d->argc, d->argv) : main_entry(3, dflt);
     d->done = 1;
     return NULL;
 }
@@ -254,6 +318,11 @@ static void test_daemon_lifecycle(void)
     EXPECT(pthread_create(&d.tid, NULL, daemon_thread, &d) == 0, "daemon thread started");
 
     /* ── it comes up with no sensor and no GPIO ───────────────────────────── */
+    /* On its own this proves less than it looks — the listener is bound in
+     * step 7, so it accepts before any thread exists.  The full frame below is
+     * what actually proves the stream thread runs, and since stream is started
+     * last of step 10's output arms, that frame also orders everything after
+     * it.  Kept as an assertion because a failure here localises the problem. */
     int sfd = connect_unix(T_STREAM_SOCK, 10000);
     EXPECT(sfd >= 0, "stream socket accepts a subscriber");
 
@@ -283,11 +352,15 @@ static void test_daemon_lifecycle(void)
     /* ── SIGHUP: the hot key takes, the restart-only key does not ─────────── */
     write_conf(7, 416);                       /* nmea 10→7 hot, odr 833→416 not */
     EXPECT(pthread_kill(d.tid, SIGHUP) == 0, "SIGHUP delivered to the daemon");
-    msleep(1500);                             /* reload is handled by sigwait */
+
+    /* Poll, don't sleep.  This was msleep(1500), which is a guess about how
+     * long sigwait takes to service a reload — fine on an idle box, and the
+     * kind of thing that fails on loaded CI or under a sanitizer. */
+    EXPECT(wait_for_status("NMEA out:", "7 Hz", 15000),
+           "hot key applied: NMEA rate is now 7 Hz");
 
     char rep2[8192];
     EXPECT(fetch_status(rep2, sizeof rep2), "status socket answers after reload");
-    EXPECT(strstr(rep2, "7 Hz") != NULL, "hot key applied: NMEA rate is now 7 Hz");
     EXPECT(strstr(rep2, "833") != NULL,
            "restart-only key NOT applied: IMU ODR still 833 Hz");
     EXPECT(strstr(rep2, "416") == NULL, "the new ODR did not take effect live");
@@ -547,18 +620,29 @@ static void test_daemon_nmea_thread_failure_closes_listener(void)
     daemon_run_t d = {0};
     daemon_start(&d, &old);
 
-    /* Waiting on the stream socket is the synchronisation: step 10 starts nmea
-     * BEFORE stream, so a stream that accepts proves the nmea arm has run. */
-    int sfd = connect_unix(T_STREAM_SOCK, 10000);
-    EXPECT(sfd >= 0, "the daemon still runs — nmea is opt-in, not fatal");
-    if (sfd >= 0) close(sfd);
+    /*
+     * Synchronise on the arm itself, NOT on the stream socket.  An earlier
+     * version waited for connect_unix(T_STREAM_SOCK) on the reasoning that
+     * step 10 starts nmea before stream — which is true and irrelevant:
+     * out_ctx_open binds every listener back in step 7 (main.c:558), and a
+     * bound listener accepts into its backlog with no thread behind it.  That
+     * is the whole of finding N6, so using it as a start signal proves only
+     * that step 7 finished, and the window to the nmea arm (main.c:642) is
+     * four thread creations wide.  It cost a TSan-only flake to notice.
+     *
+     * status_fmt prints "disabled" for NMEA only when both cfg flags are
+     * false, and clearing both is what the arm does — so that line IS the arm
+     * having run.  The status socket is served by health_thread, which starts
+     * before the arm, so it answers throughout the window.
+     */
+    EXPECT(wait_for_status("NMEA out:", "disabled", 15000),
+           "the daemon still runs, with nmea disabled — opt-in, not fatal");
 
     int rc = connect_tcp(T_NMEA_TCP_PORT);
     EXPECT(rc < 0, "the nmea TCP listener does not accept");
     EXPECT(rc == -ECONNREFUSED, "and refuses rather than hanging a client");
     if (rc >= 0) close(rc);
 
-    /* The flag is cleared too, so imud-status agrees with the socket. */
     char rep[8192];
     EXPECT(fetch_status(rep, sizeof rep), "status socket still answers");
 
@@ -607,10 +691,13 @@ static void test_daemon_hirate_thread_failure_sends_nothing(void)
     daemon_run_t d = {0};
     daemon_start(&d, &old);
 
-    /* Same ordering trick: hirate is started before stream. */
-    int sfd = connect_unix(T_STREAM_SOCK, 10000);
-    EXPECT(sfd >= 0, "the daemon still runs — highrate is opt-in, not fatal");
-    if (sfd >= 0) close(sfd);
+    /* Synchronise on the arm, for the reason spelled out in the nmea case
+     * above — a bound stream socket proves only that step 7 ran.  This case is
+     * less exposed to it (the real assertion is the recv after join, and by
+     * then the daemon has exited), but a start signal that does not signal a
+     * start is worth removing wherever it appears. */
+    EXPECT(wait_for_status("Hi-rate out:", "disabled", 15000),
+           "the daemon still runs, with highrate disabled — opt-in, not fatal");
 
     EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM delivered");
     pthread_join(d.tid, NULL);
@@ -625,6 +712,187 @@ static void test_daemon_hirate_thread_failure_sends_nothing(void)
     atomic_store(&g_fail_fn, NULL);
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
+/* ── audit N5 — SIGHUP must resolve config the way startup does ──────────── */
+
+/* mkdir -p for the one directory these cases need. */
+static void make_home_dir(void)
+{
+    mkdir(T_HOME, 0700);
+    mkdir(T_HOME "/.config", 0700);
+    mkdir(T_HOME "/.config/imud", 0700);
+}
+
+/*
+ * Reload seeded from the RUNNING config, so a key deleted from the file kept
+ * its old value while the daemon logged "config reloaded" — the operator
+ * removes rate_hz to get the default back and gets the previous rate instead,
+ * and the next restart then disagrees with the reload that preceded it.
+ * Seeding from config_defaults() is what makes reload mean what restart means.
+ */
+static void test_daemon_reload_reverts_a_deleted_key(void)
+{
+    begin("test_daemon_reload_reverts_a_deleted_key");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    /* 7, chosen because the compiled-in default is 10: the assertion below
+     * cannot pass by accident on a daemon that never re-read anything. */
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 7, .imu_odr_hz = 833 });
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    /* Poll the report rather than sleeping a fixed interval: the daemon
+     * reaches sigwait only after all of step 10, and connect_unix on the
+     * stream socket does not mark that point (see the nmea case). */
+    EXPECT(wait_for_status("NMEA out:", "7 Hz", 15000),
+           "starts on the configured 7 Hz");
+
+    /* The key is deleted, not changed — the whole point of the case. */
+    write_conf_opt((conf_opt_t){ .omit_nmea_rate = true, .imu_odr_hz = 833 });
+    EXPECT(pthread_kill(d.tid, SIGHUP) == 0, "SIGHUP delivered");
+
+    EXPECT(wait_for_status("NMEA out:", "10 Hz", 15000),
+           "a deleted [hot] key reverts to its default");
+
+    char rep2[8192];
+    EXPECT(fetch_status(rep2, sizeof rep2), "status socket answers after reload");
+    EXPECT(!status_line_has(rep2, "NMEA out:", "7 Hz"),
+           "and the old value is gone");
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM delivered");
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc == 0, "shuts down clean");
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
+/*
+ * The reported half of N5: startup falls back to $HOME when the system config
+ * is missing, and reload used to re-read args.config_path regardless. A daemon
+ * that came up on the fallback therefore answered EVERY SIGHUP with "config
+ * reload failed" — hot reload dead, and the message blaming the file it had in
+ * fact never opened. It must reload the file it actually read.
+ */
+static void test_daemon_reload_follows_the_home_fallback(void)
+{
+    begin("test_daemon_reload_follows_the_home_fallback");
+    int fb = g_fail;
+
+    /* The fallback only happens when the system config is missing.  The suite
+     * never creates T_SYS_CONF; unlinking is belt and braces. */
+    unlink(T_SYS_CONF);
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    make_home_dir();
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_hz = 833,
+                                 .path = T_HOME_CONF });
+
+    /* Set before the daemon thread exists, so its getenv is ordered behind
+     * this store and there is no setenv/getenv race to report. */
+    char *saved_home = getenv("HOME");
+    char home_copy[512];
+    snprintf(home_copy, sizeof home_copy, "%s", saved_home ? saved_home : "");
+    setenv("HOME", T_HOME, 1);
+
+    /* No --config at all: with an explicit one the fallback is skipped, so
+     * this is the only argv that reaches the branch under test. */
+    char *argv[] = { (char *)"imud", NULL };
+    sigset_t old;
+    daemon_run_t d = { .argv = argv, .argc = 1 };
+    daemon_start(&d, &old);
+
+    EXPECT(wait_for_status("NMEA out:", "9 Hz", 15000),
+           "startup used the $HOME fallback");
+
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 6, .imu_odr_hz = 833,
+                                 .path = T_HOME_CONF });
+    EXPECT(pthread_kill(d.tid, SIGHUP) == 0, "SIGHUP delivered");
+
+    EXPECT(wait_for_status("NMEA out:", "6 Hz", 15000),
+           "SIGHUP reloads the file startup actually read");
+
+    char rep2[8192];
+    EXPECT(fetch_status(rep2, sizeof rep2), "status socket answers after reload");
+    EXPECT(!status_line_has(rep2, "NMEA out:", "9 Hz"),
+           "not the one it was asked for");
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM delivered");
+    pthread_join(d.tid, NULL);
+    EXPECT(d.rc == 0, "shuts down clean");
+
+    if (saved_home) setenv("HOME", home_copy, 1);
+    else            unsetenv("HOME");
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_HOME_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
+/*
+ * --config names one file and gets no fallback. The old code ran the $HOME
+ * fallback whether or not --config was given, so a mistyped path silently
+ * started the daemon on someone else's config — while imud.8 had documented
+ * --config as replacing the search path since the beginning.
+ *
+ * The assertion is on the socket, not the exit code, deliberately: a daemon on
+ * built-in defaults wants /dev/i2c-1 and an ism330dhcx, so "it exits non-zero"
+ * would be an assertion about the machine rather than about the policy.
+ * "T_STREAM_SOCK is not on disk" holds whether the defaults daemon fails at
+ * hardware init or starts and binds /run/imud/imud-stream.sock instead.
+ */
+static void test_daemon_explicit_config_does_not_fall_back(void)
+{
+    begin("test_daemon_explicit_config_does_not_fall_back");
+    int fb = g_fail;
+
+    unlink(T_MISSING_CONF);          /* the path must genuinely not exist */
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    make_home_dir();
+    /* A perfectly valid sim config sitting exactly where the fallback looks:
+     * pre-fix, the daemon comes up on this and binds T_STREAM_SOCK. */
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_hz = 833,
+                                 .path = T_HOME_CONF });
+
+    char *saved_home = getenv("HOME");
+    char home_copy[512];
+    snprintf(home_copy, sizeof home_copy, "%s", saved_home ? saved_home : "");
+    setenv("HOME", T_HOME, 1);
+
+    char *argv[] = { (char *)"imud", (char *)"--config",
+                     (char *)T_MISSING_CONF, NULL };
+    sigset_t old;
+    daemon_run_t d = { .argv = argv, .argc = 3 };
+    daemon_start(&d, &old);
+
+    /* Generous: pre-fix the socket appears within a second or two.  Stop early
+     * if the defaults daemon has already exited on missing hardware. */
+    struct stat st;
+    bool bound = false;
+    for (int waited = 0; waited < 8000; waited += 100) {
+        if (stat(T_STREAM_SOCK, &st) == 0) { bound = true; break; }
+        if (atomic_load(&d.done)) break;
+        msleep(100);
+    }
+    EXPECT(!bound, "a missing --config does not silently load the $HOME config");
+
+    if (!atomic_load(&d.done)) pthread_kill(d.tid, SIGTERM);
+    pthread_join(d.tid, NULL);
+
+    if (saved_home) setenv("HOME", home_copy, 1);
+    else            unsetenv("HOME");
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_HOME_CONF);
     unlink(T_STREAM_SOCK);
     end(fb);
 }
@@ -652,6 +920,9 @@ int main(void)
     test_daemon_stream_thread_failure_is_fatal();
     test_daemon_nmea_thread_failure_closes_listener();
     test_daemon_hirate_thread_failure_sends_nothing();
+    test_daemon_reload_reverts_a_deleted_key();
+    test_daemon_reload_follows_the_home_fallback();
+    test_daemon_explicit_config_does_not_fall_back();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

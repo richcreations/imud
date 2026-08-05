@@ -82,6 +82,15 @@
 #ifndef STATUS_SOCK
 # define STATUS_SOCK  "/run/imud/imud.sock"
 #endif
+/* The system config, named here rather than taken from args.config_path: cli.c
+ * pre-fills that for all five tools, and imud is the one that also has a $HOME
+ * fallback, so it resolves the path itself.  Overridable for the same reason as
+ * the two above — test_daemon needs a system path it can rely on being absent,
+ * which is the only route left to the fallback branch now that an explicit
+ * --config skips it. */
+#ifndef SYS_CONF
+# define SYS_CONF     "/etc/imud/imud.conf"
+#endif
 #define STATS_BUF     512
 #define STATUS_BUF    4096   /* status text + recent-warnings section */
 
@@ -392,17 +401,29 @@ int main(int argc, char **argv)
     int cli_rc = cli_parse_imud(argc, argv, &args);
     if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --version */
 
-    /* Try --config path, then /etc/imud/imud.conf, then ~/.config/imud/imud.conf */
+    /* --config PATH, or else SYS_CONF then ~/.config/imud/imud.conf.  "or
+     * else", not "then": an explicit --config names one file and gets no
+     * fallback (audit N5). */
     imud_config_t cfg;
     config_defaults(&cfg);
+
+    const char *primary = args.config_explicit ? args.config_path : SYS_CONF;
+
+    /* The path SIGHUP reloads: the file startup actually READ, which is not
+     * always the file it was asked for.  Reloading args.config_path instead
+     * means a daemon that came up on the $HOME fallback answers every SIGHUP
+     * with "reload failed" — re-reading a file that does not exist — so hot
+     * reload is dead for it and the message blames the config (audit N5). */
+    char cfg_path[sizeof args.config_path];
+    snprintf(cfg_path, sizeof cfg_path, "%s", primary);
 
     /* A config file that exists but fails to parse is fatal: starting with
      * a half-applied config (everything after the bad line discarded) is
      * worse than not starting at all. A missing file is fine — defaults. */
-    int cfg_rc = config_load(args.config_path, &cfg);
+    int cfg_rc = config_load(primary, &cfg);
     if (cfg_rc == CONFIG_ERR_PARSE) {
         LOG_E("[main] %s has errors (see above) — refusing to start\n",
-                args.config_path);
+                primary);
         return 1;
     }
     /* Existing-but-unreadable is fatal for the same reason, and must not fall
@@ -410,19 +431,31 @@ int main(int argc, char **argv)
      * operator has written a config is the worst of both. */
     if (cfg_rc == CONFIG_ERR_PERM) {
         LOG_E("[main] %s exists but cannot be read (see above) — refusing to "
-                "start\n", args.config_path);
+                "start\n", primary);
         return 1;
     }
-    if (cfg_rc == CONFIG_ERR_OPEN) {
+    if (cfg_rc == CONFIG_ERR_OPEN && args.config_explicit) {
+        /* No fallback for a named file.  Loading a DIFFERENT config because
+         * the requested one was missing is how a typo starts the daemon on
+         * someone else's settings, and imud.8 has always documented --config
+         * as replacing the search rather than heading it.  Missing is still
+         * survivable — defaults — but it must not be silent. */
+        LOG_W("[main] --config %s does not exist — running on defaults\n",
+                primary);
+    } else if (cfg_rc == CONFIG_ERR_OPEN) {
         /* Fallback: try the other default */
         char alt[256];
         const char *home = getenv("HOME");
         if (home)
             snprintf(alt, sizeof(alt), "%s/.config/imud/imud.conf", home);
         else
-            snprintf(alt, sizeof(alt), "/etc/imud/imud.conf");
+            /* No $HOME means there is no alternative to try; naming the file
+             * already loaded makes the strcmp below skip it.  SYS_CONF, not the
+             * literal, or a build that redirects it would fall through to the
+             * real /etc/imud/imud.conf here. */
+            snprintf(alt, sizeof(alt), "%s", SYS_CONF);
 
-        if (strcmp(args.config_path, alt) != 0) {
+        if (strcmp(primary, alt) != 0) {
             int alt_rc = config_load(alt, &cfg);
             if (alt_rc == CONFIG_ERR_PARSE) {
                 LOG_E("[main] %s has errors (see above) — refusing to start\n",
@@ -434,8 +467,14 @@ int main(int argc, char **argv)
                         "refusing to start\n", alt);
                 return 1;
             }
+            /* This is the file the daemon is running on, so it is the file
+             * SIGHUP must re-read. */
+            if (alt_rc == 0)
+                snprintf(cfg_path, sizeof cfg_path, "%s", alt);
         }
-        /* Neither file existing is fine — defaults remain. */
+        /* Neither file existing is fine — defaults remain, and cfg_path keeps
+         * naming the system config: if the operator creates it later, SIGHUP
+         * picks it up. */
     }
 
     /* Apply CLI overrides */
@@ -689,8 +728,27 @@ int main(int argc, char **argv)
 
         if (sig == SIGHUP) {
             LOG_I("[main] SIGHUP — reloading config\n");
-            imud_config_t new_cfg = cfg;
-            if (config_load(args.config_path, &new_cfg) == 0) {
+            /*
+             * Defaults first, exactly as startup does — deliberately not
+             * `= cfg`.  Seeding from the RUNNING config means a key deleted
+             * from the file keeps its old value while the daemon reports
+             * "config reloaded": the operator removes `rate_hz` to get the
+             * default back, gets the previous rate, and the next restart then
+             * behaves differently from the reload that preceded it.
+             *
+             * Safe because config_apply_hot() below publishes an enumerated
+             * field list, and no CLI override writes to any field in it —
+             * --no-nmea/--no-highrate/--skip-bias-cal/--replay touch
+             * *_enabled, gyro_bias_sec, the driver names and the sim keys,
+             * none of which is [hot].  A live gpsd/SignalK declination is
+             * likewise safe: imu_ctx_update_config() refuses to copy
+             * declination while a position source is enabled, and it reads
+             * that flag from `cfg`, which config_apply_hot does not touch.
+             */
+            imud_config_t new_cfg;
+            config_defaults(&new_cfg);
+            int reload_rc = config_load(cfg_path, &new_cfg);
+            if (reload_rc == 0) {
                 apply_wmm_if_configured(&new_cfg);
                 /* Publish the hot fields to the shared cfg under the lock (the
                  * health thread reads cfg concurrently).  The field list is
@@ -717,9 +775,15 @@ int main(int argc, char **argv)
                 imu_ctx_update_config(imu, &cfg);
                 out_ctx_reload(out, &cfg);
                 LOG_I("[main] config reloaded\n");
+            } else if (reload_rc == CONFIG_ERR_OPEN) {
+                /* Deliberately NOT the startup rule.  A missing file at
+                 * startup means defaults; a config deleted out from under a
+                 * running daemon must not silently revert it to them. */
+                LOG_W("[main] %s does not exist — nothing to reload\n",
+                        cfg_path);
             } else {
-                LOG_W("[main] config reload failed — "
-                        "keeping current config\n");
+                LOG_W("[main] %s failed to reload (see above) — "
+                        "keeping current config\n", cfg_path);
             }
         }
     }

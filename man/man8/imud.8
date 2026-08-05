@@ -43,10 +43,21 @@ after installation.
 Load configuration from
 .I PATH
 instead of the default search path.
-The daemon searches in order:
-.IR /etc/imud/imud.conf ,
-then
-.IR ~/.config/imud/imud.conf .
+This replaces the search rather than heading it: if
+.I PATH
+does not exist, imud logs a warning and runs on built-in defaults \(em it does
+not fall back to
+.IR ~/.config/imud/imud.conf ,
+so a mistyped path cannot silently start the daemon on a different
+configuration.
+.IP
+Without
+.BR \-\-config ,
+the daemon searches
+.I /etc/imud/imud.conf
+and then
+.IR ~/.config/imud/imud.conf ;
+neither existing is not an error.
 .TP
 .BI \-\-replay \ FILE
 Replay an .imucap capture (recorded by the [capture] black box, or a
@@ -90,6 +101,17 @@ Fields marked
 in
 .IR imud.conf (5)
 require a full restart and are ignored during a reload.
+.IP
+The file re-read is the one the daemon actually loaded at startup, including
+when that was the
+.I ~/.config/imud/imud.conf
+fallback.
+A reload starts from the built-in defaults and then applies the file, exactly as
+startup does, so removing a
+.B [hot]
+key from the file restores its default rather than leaving the running value in
+place.
+If the file has since been deleted, the running configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown: flush output, join all threads, close hardware.

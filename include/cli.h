@@ -38,6 +38,13 @@
 
 typedef struct {
     char config_path[256];
+    /* True only when --config was actually given.  config_path is pre-filled
+     * with the system default either way, so the flag is the only way to tell
+     * "the operator named this file" from "nobody said" — and imud treats the
+     * two differently: an explicit --config disables the $HOME fallback, so a
+     * mistyped path cannot silently start the daemon on someone else's config
+     * (audit N5). */
+    bool config_explicit;
     char replay_path[256];
     int  skip_bias_cal;
     int  no_nmea;
