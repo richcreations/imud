@@ -72,6 +72,69 @@ static const char *cal_first_non_finite(const imud_cal_t *cal, bool gated)
     return NULL;
 }
 
+/*
+ * Reject a calibration whose own arithmetic overflows on an ordinary sample.
+ *
+ * cal_first_non_finite above closes the question of a non-finite value being
+ * *stored*. It does not ask whether a FINITE one is usable, and that gap is
+ * reachable with the most ordinary reading there is. fuzz_cal found it on
+ * main: mag.soft_iron[0][0] = 3.33e37 is finite, so it loaded — and the mag
+ * correction is soft_iron × (sample − hard_iron), which for a sample of ZERO
+ * is 3.33e37 × −11.4 = −3.8e38. A float holds 3.4e38. The result is −inf, in
+ * the filter, from a calibration this loader called good.
+ *
+ * Bounding calibration RANGES was deferred deliberately: choosing a legitimate
+ * maximum hard-iron offset or soft-iron element is a sensor-domain decision,
+ * and too tight a bound rejects a valid calibration — a worse failure than
+ * accepting a silly one. This sidesteps that decision entirely. It does not
+ * ask whether a value is physically sensible, only whether the arithmetic
+ * survives, so a calibration must be some thirty-five orders of magnitude out
+ * before it trips. It cannot reject anything a bench produces.
+ *
+ * PROBE is above the full scale of every sensor in the tree (±800 µT for the
+ * MMC5983MA, ±16 g ≈ 157 m/s², ±2000 dps ≈ 35 rad/s), so a calibration that
+ * overflows here overflows on readings the hardware can actually produce.
+ * Zero is probed explicitly because that is the value that exposed this.
+ *
+ * The arithmetic mirrors apply_imu_cal / apply_mag_cal in src/imu_math.c and
+ * is duplicated rather than called: cal.c links against nothing but libc and
+ * log.c, and test_cal does not link imu_math.c. fuzz_cal's oracle drives the
+ * REAL functions, so if the two ever drift, it fires on a calibration this
+ * accepted — which is the cross-check that keeps the duplication honest.
+ */
+static const char *cal_first_overflowing(const imud_cal_t *cal, bool gated)
+{
+    static const float probes[] = { 0.0f, 1000.0f, -1000.0f };
+
+    for (size_t p = 0; p < sizeof probes / sizeof probes[0]; p++) {
+        const float v = probes[p];
+
+        if (!gated || cal->has_mag) {
+            float tmp[3];
+            for (int i = 0; i < 3; i++) tmp[i] = v - cal->mag_hard_iron[i];
+            for (int i = 0; i < 3; i++) {
+                float f = cal->mag_soft_iron[i][0] * tmp[0]
+                        + cal->mag_soft_iron[i][1] * tmp[1]
+                        + cal->mag_soft_iron[i][2] * tmp[2];
+                if (!isfinite(f)) return "mag.hard_iron/soft_iron";
+            }
+        }
+
+        if (!gated || cal->has_accel)
+            for (int i = 0; i < 3; i++)
+                if (!isfinite((v - cal->accel_offset[i]) * cal->accel_scale[i]))
+                    return "accel.offset/scale";
+
+        if (!gated || cal->has_gyro_temp) {
+            float dT = v - cal->gyro_temp_ref_c;
+            for (int i = 0; i < 3; i++)
+                if (!isfinite(v - cal->gyro_temp_coeff[i] * dT))
+                    return "gyro_temp.coeff/ref_c";
+        }
+    }
+    return NULL;
+}
+
 /* ── JSON float-array parser ─────────────────────────────────────────────── */
 
 /*
@@ -203,6 +266,16 @@ int cal_load(const char *path, imud_cal_t *cal)
         return -1;
     }
 
+    /* Finite is not the same as usable: a finite-but-absurd value overflows to
+     * infinity the first time it is applied.  Same fatal treatment, since the
+     * result reaching the filter is identical. */
+    bad = cal_first_overflowing(cal, false);
+    if (bad) {
+        LOG_E("[cal] %s: %s overflows to infinity when applied to an ordinary "
+                "sample — refusing to start on it\n", path, bad);
+        return -1;
+    }
+
     LOG_I("[cal] loaded %s  accel:%s  gyro:%s  mag:%s  noise:%s  temp:%s\n",
             path,
             cal->has_accel     ? "yes" : "no",
@@ -226,6 +299,12 @@ int cal_write(const char *path, const imud_cal_t *cal)
     if (bad) {
         LOG_E("[cal] refusing to write %s: %s is not a finite number — "
                 "the calibration on disk is unchanged\n", path, bad);
+        return -1;
+    }
+    bad = cal_first_overflowing(cal, true);
+    if (bad) {
+        LOG_E("[cal] refusing to write %s: %s overflows to infinity when "
+                "applied — the calibration on disk is unchanged\n", path, bad);
         return -1;
     }
 

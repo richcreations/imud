@@ -421,6 +421,90 @@ static void test_write_rejects_non_finite(void)
     end(fb);
 }
 
+/*
+ * Finite is not the same as usable.
+ *
+ * The non-finite guard above stops a NaN or an infinity being *stored*. It
+ * says nothing about a finite value so large that applying it overflows, and
+ * that gap was reachable with the most ordinary reading a magnetometer can
+ * produce. fuzz_cal found it on main, in CI, against v1.8.1:
+ * mag.soft_iron[0][0] = 3.33e37 is finite and loaded clean, and the mag
+ * correction soft_iron × (sample − hard_iron) for a sample of ZERO is
+ * 3.33e37 × −11.4 = −3.8e38, past the 3.4e38 a float holds. The filter got
+ * −inf from a calibration cal_load had called good.
+ *
+ * The guard deliberately does NOT judge whether a value is physically
+ * plausible — that is a sensor-domain question, and a bound set too tight
+ * rejects a real calibration, which is the worse failure. It asks only
+ * whether the arithmetic survives an ordinary sample, so a calibration has to
+ * be some thirty-five orders of magnitude out to trip it. Hence the second
+ * half of this test: values that are merely large must still load.
+ */
+static void test_rejects_finite_but_overflowing(void)
+{
+    begin("test_rejects_finite_but_overflowing");
+    int fb = g_fail;
+
+    /* The reproducer from CI, reduced: finite soft iron, ordinary offset.
+     * Hoisted out of the table for the same reason as soft_iron_nan above —
+     * inline it spans two literals and -Wstring-concatenation reads that as a
+     * missing comma. */
+    static const char mag_overflow[] =
+        "{\"mag\": {\"hard_iron\": [11.42, 0, 0], "
+        "\"soft_iron\": [[3.33e37,0,0],[0,1,0],[0,0,1]]}}\n";
+
+    static const char *bodies[] = {
+        mag_overflow,
+        "{\"accel\": {\"offset\": [1e38, 0, 0], \"scale\": [1e38, 1, 1]}}\n",
+        "{\"gyro_temp\": {\"coeff\": [1e38, 0, 0], \"ref_c\": -1e38}}\n",
+    };
+    int id = 40;
+    for (unsigned i = 0; i < sizeof bodies / sizeof bodies[0]; i++) {
+        const char *path = write_tmpjson(id++, bodies[i]);
+        imud_cal_t cal;
+        EXPECT(cal_load(path, &cal) < 0,
+               "finite-but-overflowing cal.json rejected");
+        remove(path);
+    }
+
+    /* Large yet harmless must still load: the guard must not become a range
+     * check by the back door. A soft-iron element of 1000 is nonsense for a
+     * dimensionless matrix that lives near 1.0, but it does not overflow, and
+     * deciding it is nonsense is not this function's job. */
+    static const char mag_large[] =
+        "{\"mag\": {\"hard_iron\": [500, -500, 500], "
+        "\"soft_iron\": [[1000,0,0],[0,1000,0],[0,0,1000]]}}\n";
+    const char *ok = write_tmpjson(id++, mag_large);
+    imud_cal_t cal;
+    EXPECT(cal_load(ok, &cal) == 0, "large but non-overflowing cal accepted");
+    EXPECT(cal.has_mag,             "large mag section applied");
+    remove(ok);
+
+    /* And cal_write refuses to emit one, closing the loop inside imud's own
+     * tooling exactly as the non-finite check does. */
+    const char *path = tmppath(45);
+    imud_cal_t good;
+    memset(&good, 0, sizeof(good));
+    good.gyro_bias[0] = 0.001f;
+    good.has_gyro = true;
+    EXPECT(cal_write(path, &good) == 0, "good calibration written");
+
+    imud_cal_t over = good;
+    over.has_mag = true;
+    over.mag_hard_iron[0]    = 11.42f;
+    over.mag_soft_iron[0][0] = 3.33e37f;
+    over.mag_soft_iron[1][1] = 1.0f;
+    over.mag_soft_iron[2][2] = 1.0f;
+    EXPECT(cal_write(path, &over) < 0, "cal_write refuses an overflowing cal");
+
+    imud_cal_t back;
+    EXPECT(cal_load(path, &back) == 0, "existing file still loads");
+    EXPECT_NEAR(back.gyro_bias[0], 0.001f, 1e-7f,
+                "rejected write left the good value intact");
+    remove(path);
+    end(fb);
+}
+
 /* ── cal_capture: .imucap loading for the offline analysis modes ─────────── */
 
 /*
@@ -684,6 +768,7 @@ int main(void)
     test_round_trip_noise_temp();
     test_load_rejects_non_finite();
     test_write_rejects_non_finite();
+    test_rejects_finite_but_overflowing();
 
     test_calcap_basic();
     test_calcap_settle();
