@@ -281,6 +281,7 @@ jobs:
           # the misspelled-directive case this gate exists for.
           # --man=no skips resolving Documentation=, whose man pages are staged
           # under DESTDIR rather than installed.
+          # shellcheck disable=SC2086  # $units is a deliberate word-split list
           systemd-analyze verify --root="$root" \
                                  --recursive-errors=no --man=no $units
 
@@ -308,6 +309,7 @@ jobs:
           EOF
           export PKG_CONFIG_PATH="$PWD/stage/usr/lib/pkgconfig"
           FLAGS=$(pkg-config --cflags libimud | sed "s|-I/usr/include|-I$PWD/stage/usr/include|")
+          # shellcheck disable=SC2086  # $FLAGS is a deliberate word-split list
           gcc -Wall -Wextra $FLAGS -I"$PWD/stage/usr/include" consumer.c \
               -L"$PWD/stage/usr/lib" -limud -o consumer
           LD_LIBRARY_PATH="$PWD/stage/usr/lib" ./consumer
@@ -326,7 +328,19 @@ jobs:
           make dist
           tar tzf imud-*.tar.gz | grep -q 'LICENSE'
           tar tzf imud-*.tar.gz | grep -q 'include/version.h'
-          ! tar tzf imud-*.tar.gz | grep -E '\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'
+
+          # `if grep; then exit 1; fi`, NOT `! tar ... | grep ...`.  The
+          # negated form could not fail: a `run:` block is `bash -e {0}`, and
+          # errexit is ignored for a pipeline beginning with `!` (POSIX), so a
+          # match returned 1, the shell carried on, and the step exited with
+          # the status of the final `echo` — 0.  This guard silently passed on
+          # a tarball full of .debs for as long as it has existed.  Adding
+          # `-o pipefail` does not fix it; only losing the `!` does.
+          if tar tzf imud-*.tar.gz \
+               | grep -E '\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'; then
+            echo "::error::dist tarball contains repo-only files (listed above)" >&2
+            exit 1
+          fi
 
           # .github/ MUST be present, which is the opposite of what this guard
           # used to assert.  GitHub's source tarball honours export-ignore and
@@ -360,7 +374,10 @@ jobs:
   # `container:` key cannot host an armhf rootfs on an arm64 runner.
   test-armhf:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # Two full build+test passes now (plain, then UBSan).  The plain pass
+    # takes ~3 min; instrumented builds and runs are slower, so the budget
+    # goes up rather than turning a slow day into a red run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -371,6 +388,7 @@ jobs:
           docker run --rm --platform linux/arm/v7 \
             -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
             -e DEBIAN_FRONTEND=noninteractive \
+            -e UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             debian:trixie bash -euo pipefail -c '
               apt-get update
               apt-get install -y build-essential pkgconf libgpiod-dev \
@@ -380,6 +398,25 @@ jobs:
               make
               make bridges
               make test
+
+              # Second pass under UBSan, and the ONLY sanitizer run this
+              # project does on a 32-bit target.  Alignment is the reason:
+              # the wire packet is a __attribute__((packed)) struct
+              # (include/types.h), unaligned loads are free on x86-64 and
+              # arm64, and armv7 is where one actually traps.
+              # -fsanitize=undefined includes -fsanitize=alignment, so this
+              # covers the bug class the amd64 sanitizers job structurally
+              # cannot see — it is not a duplicate of that job on slower
+              # hardware.
+              #
+              # UBSan alone, not ASan: ASan wants control over the ASLR
+              # entropy its shadow mapping needs (vm.mmap_rnd_bits), which
+              # under docker means --privileged or a host sysctl.  UBSan
+              # needs nothing from the container.
+              make clean
+              make test \
+                CFLAGS="-O1 -g -fsanitize=undefined -fno-omit-frame-pointer -Wall -Wextra" \
+                LDFLAGS="-fsanitize=undefined"
             '
 
   # Static analysis: the one axis the rest of CI does not cover.  Everything
@@ -397,7 +434,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev cppcheck clang-tools
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev cppcheck \
+                                  clang-tools pyflakes3
 
       # Blocking: the tree is clean under these checks today.  The single
       # known false positive is suppressed inline at its site with the
@@ -433,6 +471,23 @@ jobs:
           scan-build -o scan-out --status-bugs --keep-going make all bridges
           echo "scan-build clean"
 
+      # The Python had no analyser at all while the C had two, CodeQL and six
+      # fuzzers — and it is not scratch code: lib/imud_client.py is a SHIPPED
+      # public client and the third independent copy of the wire format, and
+      # tools/check-*.py are what version-consistency runs to gate a release.
+      # An undefined name on a branch none of them takes today would sit there
+      # silently until the day that branch runs.
+      #
+      # pyflakes rather than a style linter: it reports undefined names, unused
+      # imports and shadowed definitions — real defects — and has no opinion
+      # about formatting, so it will not start failing over a house-style
+      # disagreement.  From apt, so the distro pins the version and a new
+      # upstream release cannot turn CI red on its own.
+      - name: pyflakes
+        run: |
+          pyflakes3 lib/imud_client.py tools/*.py
+          echo "pyflakes clean"
+
       - name: Save scan-build report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -440,6 +495,57 @@ jobs:
           name: scan-build-report
           path: scan-out
           if-no-files-found: ignore
+
+  # Static analysis of CI ITSELF.  The jobs above read the C; nothing read the
+  # ~1500 lines of YAML and embedded shell that decide whether the C is even
+  # checked — and a broken guard here is worse than a broken test, because it
+  # fails open and reports success.  The first run of this found exactly that:
+  # the dist tarball's forbidden-content check began with `!`, which makes
+  # bash ignore errexit, so it could not fail (SC2251).
+  #
+  # actionlint validates the workflow schema, `runs-on` labels, `needs` graphs
+  # and ${{ }} expressions, and pipes every `run:` block through shellcheck.
+  # Blocking, on the cppcheck model: the tree is clean today and the three
+  # deliberate word-splits are suppressed inline at their sites with the
+  # reason, so a new finding is a real finding.
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned by version AND checksum, the same reasoning as the SHA-pinned
+      # actions (.github/dependabot.yml): a tag is a moving pointer.  The
+      # tradeoff is that Dependabot has no ecosystem for a curl'd binary, so
+      # unlike the actions this one does NOT get bumped automatically —
+      # refresh the version and the checksum together, by hand, from
+      # https://github.com/rhysd/actionlint/releases.
+      # shellcheck is preinstalled on the runner image; actionlint finds it on
+      # PATH by itself, and installing it explicitly keeps that from being
+      # luck.
+      - name: Install actionlint + shellcheck
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar xzf "$tarball" actionlint
+          ./actionlint -version
+
+      # No arguments: actionlint finds .github/workflows itself and checks
+      # every file in it, so a workflow added later is covered with no edit
+      # here.
+      - name: Lint the workflows
+        run: |
+          ./actionlint -oneline
+          echo "workflow lint clean"
 
   # The full test suite under AddressSanitizer + UBSan: memory errors and
   # undefined behavior fail the build. The Makefile respects external
@@ -610,3 +716,159 @@ jobs:
     uses: ./.github/workflows/build-debs.yml
     with:
       lintian: true
+
+  # Actually INSTALL what `debs` just built.  Until now nothing ever did: the
+  # packages were compiled, lintian-ed advisory, published, and the first
+  # machine to run a maintainer script was a user's.
+  #
+  # This is not a duplicate of build-and-test's "Staged install layout" step.
+  # That one checks the FILE LAYOUT of `make install DESTDIR=...`, and it
+  # deliberately asserts that no useradd ran — a staged install is a pure file
+  # copy.  Everything in debian/*.postinst is therefore unexecuted by CI: the
+  # imud system user, the gpio/i2c groups the units refuse to start without,
+  # the ldconfig trigger, and the conffile-mode repair that is the substance
+  # of the entire 1.8.1 changelog.
+  #
+  # arm64 debs on an arm64 runner, so this is a native install with no
+  # emulation.  The armhf debs are not installed here — that would need a
+  # second container for no new signal, since maintainer scripts are
+  # architecture-independent shell.
+  install-test:
+    needs: debs
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: [bookworm, trixie]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: debs-${{ matrix.dist }}-arm64
+          path: debs
+
+      - name: Install, verify, reconfigure and purge (${{ matrix.dist }}/arm64)
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/debs:/debs:ro" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            debian:${{ matrix.dist }} bash -euo pipefail -c '
+              apt-get update
+              mkdir -p /tmp/d
+              cp /debs/*.deb /tmp/d/
+              # dbgsym packages belong to a separate archive (Debian keeps
+              # them out of the main one; apt-publish.yml filters them out of
+              # the pool for the same reason).  They are not what an operator
+              # installs, so they are not what this job installs.
+              rm -f /tmp/d/*-dbgsym_*.deb
+              ls -1 /tmp/d
+
+              # ── install ───────────────────────────────────────────────────
+              # apt, not dpkg -i: only apt resolves the shlibs dependencies
+              # (libgpiod, libmosquitto) out of the archive.
+              echo "=== install ==="
+              apt-get install -y /tmp/d/*.deb
+
+              # Every binary package in debian/control must end up CONFIGURED,
+              # not merely unpacked — a postinst that exits non-zero leaves the
+              # package half-installed and apt still exits 0 in some paths.
+              for p in imud imud-utils libimud0 libimud-dev imud-wmm-data \
+                       imud-signalk imud-mqtt imud-influxdb imud-mavlink \
+                       imud-prometheus; do
+                dpkg -s "$p" | grep -q "^Status: install ok installed" \
+                  || { echo "::error::$p is not configured"; exit 1; }
+                echo "  configured: $p"
+              done
+
+              # ── what the units require, postinst must have created ────────
+              # Read the names back out of the shipped units rather than
+              # hard-coding them, so a new SupplementaryGroups= entry cannot be
+              # added without a maintainer script learning to create it.
+              echo "=== users and groups ==="
+              ls /usr/lib/systemd/system/imud*.service >/dev/null
+              for u in /usr/lib/systemd/system/imud*.service; do
+                user=$(sed -n "s/^User=//p" "$u")
+                if [ -n "$user" ] && ! getent passwd "$user" >/dev/null; then
+                  echo "::error::$u wants User=$user, which no maintainer script creates"
+                  exit 1
+                fi
+                for g in $(sed -n "s/^Group=//p" "$u") \
+                         $(sed -n "s/^SupplementaryGroups=//p" "$u"); do
+                  getent group "$g" >/dev/null \
+                    || { echo "::error::$u wants group $g, which no maintainer script creates"; exit 1; }
+                done
+                echo "  ok: $u"
+              done
+
+              # ── conffile modes on a REAL install ─────────────────────────
+              # The staged test checks these too, but only the mode `make
+              # install` wrote.  Here dpkg has unpacked root:root and the
+              # postinst has had to fix the group, which is the step that can
+              # actually fail on a user machine.
+              echo "=== conffile modes ==="
+              for c in imud-mqtt imud-influxdb; do
+                test "$(stat -c%a /etc/imud/$c.conf)" = 640
+                test "$(stat -c%G /etc/imud/$c.conf)" = imud
+                echo "  /etc/imud/$c.conf 640 root:imud"
+              done
+              test "$(stat -c%a /etc/imud/imud.conf)" = 644
+              test "$(stat -c%a /usr/share/doc/imud-mqtt/examples/imud-mqtt.conf)" = 644
+
+              # ── the installed binaries actually run ──────────────────────
+              # Straight off PATH with no LD_LIBRARY_PATH, which is itself the
+              # check: the bridges link libimud, so this passes only if
+              # libimud0s ldconfig trigger ran.
+              echo "=== binaries ==="
+              ldconfig -p | grep -q "libimud.so.0"
+              ver=$(dpkg -s imud | sed -n "s/^Version: //p" | cut -d- -f1)
+              echo "  package upstream version: $ver"
+              for b in imud imud-imutest imud-signalk imud-mqtt imud-influxdb \
+                       imud-mavlink imud-prometheus; do
+                "$b" --version | grep -qF "$ver" \
+                  || { echo "::error::$b --version disagrees with package version $ver"; exit 1; }
+                echo "  $b reports $ver"
+              done
+
+              # ── the upgrade repair path ─────────────────────────────────
+              # imud-mqtt.postinst claims: "Run on every configure, so an
+              # upgrade from a release that installed the file 0644 repairs
+              # it."  That claim is the substance of the 1.8.1 changelog and
+              # nothing has ever tested it.  Recreate the pre-1.8.1 state
+              # exactly — 0644 root:root — and reconfigure.
+              #
+              # Deliberately NOT "install 1.8.1 from the live apt repo, then
+              # upgrade": that would make a blocking CI gate depend on what
+              # the pool happens to hold today, and the pool prunes to three
+              # versions.  dpkg -i over the same version runs preinst upgrade
+              # / unpack / postinst configure — the real upgrade code path —
+              # offline and deterministically.
+              echo "=== upgrade repair ==="
+              for c in imud-mqtt imud-influxdb; do
+                chown root:root /etc/imud/$c.conf
+                chmod 644 /etc/imud/$c.conf
+              done
+              dpkg -i /tmp/d/imud-mqtt_*.deb /tmp/d/imud-influxdb_*.deb
+              for c in imud-mqtt imud-influxdb; do
+                test "$(stat -c%a /etc/imud/$c.conf)" = 640
+                test "$(stat -c%G /etc/imud/$c.conf)" = imud
+                echo "  /etc/imud/$c.conf repaired to 640 root:imud"
+              done
+
+              # ── purge ───────────────────────────────────────────────────
+              echo "=== purge ==="
+              apt-get purge -y imud imud-utils libimud0 libimud-dev \
+                               imud-wmm-data imud-signalk imud-mqtt \
+                               imud-influxdb imud-mavlink imud-prometheus
+              for c in imud imud-mqtt imud-influxdb imud-signalk \
+                       imud-mavlink imud-prometheus; do
+                test ! -e /etc/imud/$c.conf
+              done
+              # The imud system user deliberately SURVIVES a purge (Debian
+              # convention, spelled out in imud.postinst: system users stay so
+              # file ownership never dangles).  Pin it, because a postrm that
+              # helpfully tidied up would break that contract silently.
+              getent passwd imud >/dev/null
+              echo "  conffiles gone, imud user retained"
+
+              echo "install / reconfigure / purge OK"
+            '

@@ -23,6 +23,9 @@ jobs:
   check-tag:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read      # read ci.yml's run history for this commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,6 +40,51 @@ jobs:
             exit 1
           fi
           echo "tag $GITHUB_REF_NAME matches include/version.h ($ver)"
+
+      # A tag is not evidence that anything passed.  ci.yml triggers on pushes
+      # to main, this workflow triggers on tags, and nothing joined the two: a
+      # tag placed on a commit whose CI went red still built 32 .debs and
+      # opened a draft release, and the only thing standing between that and
+      # the apt pool was the maintainer remembering.  GitHub has no
+      # cross-workflow `needs:`, so ask the API instead.
+      #
+      # docs/RELEASING.md step 4 already says to tag only once CI is green.
+      # This makes that step mechanical rather than remembered.
+      #
+      # Tags do not match ci.yml's `push: branches: [main]`, so the run found
+      # here is always the main-push run for this commit, never a run of this
+      # workflow.
+      - name: CI is green on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          run=$(gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=100" \
+                  --jq '.workflow_runs | sort_by(.run_started_at) | last // empty')
+          if [ -z "$run" ]; then
+            echo "::error::no CI run exists for $SHA — push the commit to main and let CI finish before tagging" >&2
+            exit 1
+          fi
+
+          status=$(printf '%s' "$run" | jq -r '.status')
+          concl=$(printf '%s' "$run" | jq -r '.conclusion')
+          url=$(printf '%s' "$run" | jq -r '.html_url')
+          echo "CI run for $SHA: status=$status conclusion=$concl"
+          echo "$url"
+
+          # Three distinct failure modes, named separately: "never ran",
+          # "still running" and "failed" need different things from the
+          # maintainer, and a single "CI not green" would hide which.
+          if [ "$status" != "completed" ]; then
+            echo "::error::CI is still '$status' for $SHA — wait for it to finish, then re-run this workflow" >&2
+            exit 1
+          fi
+          if [ "$concl" != "success" ]; then
+            echo "::error::CI concluded '$concl' for $SHA — fix it and move the tag; see $url" >&2
+            exit 1
+          fi
+          echo "CI is green on $SHA"
 
   debs:
     needs: check-tag

@@ -25,7 +25,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Two languages, and they need opposite treatment: c-cpp has to be built for
+  # CodeQL to see it, python must NOT be (build-mode: none) — so a matrix with
+  # per-language build steps rather than one job doing both.
+  #
+  # The Python is not incidental: lib/imud_client.py is a SHIPPED public client,
+  # the third independent copy of the wire format, and tools/check-*.py are what
+  # ci.yml's version-consistency job runs to gate a release.  Both were
+  # unanalysed while the C had two static analysers, CodeQL and six fuzzers.
+  #
+  # fail-fast: false — a finding in one language should not cancel the other
+  # language's analysis before it uploads.
   analyze:
+    name: Analyze (${{ matrix.language }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: c-cpp
+            build-mode: manual
+          - language: python
+            build-mode: none
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -38,6 +58,7 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
+        if: matrix.language == 'c-cpp'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgpiod-dev libmosquitto-dev
@@ -55,15 +76,16 @@ jobs:
       # maintainability sweep, and expect the noise again.
       - uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
-          languages: c-cpp
-          build-mode: manual
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           queries: security-extended
 
       - name: Build (daemon, utils, bridges)
+        if: matrix.language == 'c-cpp'
         run: |
           make
           make bridges
 
       - uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         with:
-          category: /language:c-cpp
+          category: /language:${{ matrix.language }}

@@ -27,6 +27,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Resume from the previous night's evolved corpus; fall back to the
       # committed seeds on first run or cache eviction.
@@ -47,6 +49,7 @@ jobs:
             wmm)     DEPS="src/wmm.c src/log.c" ;;
             cal)     DEPS="src/cal.c src/imu_math.c src/log.c" ;;
           esac
+          # shellcheck disable=SC2086  # $DEPS is a deliberate word-split list
           clang -g -O1 -fsanitize=fuzzer,address,undefined \
                 -D_GNU_SOURCE -DIMUD_CLIENT_ALLOW_DEPRECATED -Iinclude \
                 fuzz/fuzz_${{ matrix.target }}.c $DEPS \
