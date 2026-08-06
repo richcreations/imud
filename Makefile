@@ -542,6 +542,17 @@ check-devices:
 check-flags:
 	@python3 tools/check-flags.py
 
+# ── Line count ────────────────────────────────────────────────────────────────
+# Size of the tree, split by ROLE rather than by language: production C apart
+# from the suites, the fuzz harnesses apart from both.  cloc/tokei/scc report
+# per language, which puts every .c in one row and hides the number actually
+# worth watching here — the test suite is slightly larger than the code it
+# tests.  A report, deliberately not a gate: it is not in `check`, and CI prints
+# it to the run summary without ever failing on it.
+.PHONY: loc
+loc:
+	@python3 tools/loc.py
+
 # ── Coverage ──────────────────────────────────────────────────────────────────
 # Rebuild and run the whole host test suite instrumented with gcov, then
 # summarise with lcov.  A measuring tool for finding residual line/branch gaps

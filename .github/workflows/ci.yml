@@ -118,6 +118,15 @@ jobs:
       - name: Packet flag bits agree across all four definitions
         run: make check-flags
 
+      # Size of the tree, by role rather than by language, into the run summary
+      # — visible per-run without downloading anything.  A REPORT, not a gate:
+      # the tool exits non-zero only on its own structural errors (a category
+      # matching nothing, or files unaccounted for), never on the numbers, so
+      # this can tell you the suite shrank without being able to veto it.  Same
+      # reasoning as the coverage job's deliberate lack of a threshold.
+      - name: Line count
+        run: python3 tools/loc.py --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
   build-and-test:
