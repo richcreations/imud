@@ -1,6 +1,7 @@
-# Only the github-actions ecosystem applies here: imud is C, its
-# dependencies are Debian system libraries (libgpiod, libmosquitto)
-# resolved by debian/control, and Dependabot has no ecosystem for those.
+# Two ecosystems apply here: github-actions, and docker for the two pinned
+# Debian bases in devbox/Dockerfile.  imud itself is C, and its dependencies
+# are Debian system libraries (libgpiod, libmosquitto) resolved by
+# debian/control — Dependabot has no ecosystem for those.
 #
 # Everything is grouped into a single PR so a routine v4 -> v5 bump is one
 # review, not six.
@@ -21,6 +22,23 @@ updates:
       day: monday
     groups:
       actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+    labels: []
+
+  # devbox/Dockerfile pins both Debian bases by manifest-list digest.  Unlike
+  # the actionlint tarball — a curl'd binary with no ecosystem, bumped by hand
+  # — a digest on a FROM line is exactly what this ecosystem maintains, so the
+  # pin stays fresh without anyone having to remember it.  Same grouping and
+  # prefix as the actions, so a bump is one review either way.
+  - package-ecosystem: docker
+    directory: /devbox
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
         patterns: ['*']
     commit-message:
       prefix: ci

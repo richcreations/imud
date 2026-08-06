@@ -20,17 +20,25 @@
 # the ~200 MB clang/llvm group is last so the build/test box is usable even if
 # the analysis group has to be retried.
 
-# Deliberately NOT digest-pinned, unlike every action in .github/workflows and
-# unlike the actionlint tarball.  The whole point of this image is to be built
-# twice from one file — `--dist bookworm` is the libgpiod v1 path — and a digest
-# names exactly one image, so pinning would mean two hand-maintained digests for
-# a tool that builds no release artifact and that nothing in the packaging, the
-# build or CI depends on.  A stale dev container is a slow afternoon; a stale
-# release dependency is a supply-chain problem, and only the latter is pinned.
-# Expect Scorecard's Pinned-Dependencies to count this file: that is the honest
-# reading, and the trade is intentional.
+# Both bases are pinned by digest, the same discipline as every action ref in
+# .github/workflows.  One file still builds both suites (`--dist bookworm` is
+# the libgpiod v1 path Raspberry Pi OS ships) because the two bases are named
+# stages and the third FROM selects between them by ARG — so neither digest
+# hides inside a variable, where Dependabot could not bump it and Scorecard
+# could not read it.  BuildKit materialises only the stage actually selected,
+# so `--dist trixie` never pulls the bookworm base.
+#
+# These are INDEX digests, not per-architecture ones: debian:<suite> is an OCI
+# image index covering linux/amd64, linux/arm64 and linux/arm/v7 among others,
+# so `--platform` still resolves through the pin.  That is what makes pinning
+# possible here at all — a per-arch manifest digest would break --arch armhf.
+#
+# Dependabot bumps both (.github/dependabot.yml, docker ecosystem) the way it
+# bumps the action SHAs.  Do not "tidy" these back to a bare tag.
 ARG DIST=trixie
-FROM debian:${DIST}
+FROM debian:bookworm@sha256:813017f3d62be4b5891a7acca6a01bdcd4b8513daa81b1ab99d3a50385b26931 AS base-bookworm
+FROM debian:trixie@sha256:34cd9e9fd437c0a095ec39cb2e73422c9f30821b0d0848ed74fd0d43bae4d958 AS base-trixie
+FROM base-${DIST}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
