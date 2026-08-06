@@ -1,7 +1,8 @@
 # Contributing to imud
 
 Thanks for your interest in improving imud. This guide is for people who want to
-build, hack on, and contribute to the project.
+build, hack on, and contribute to the project. For who decides what lands and
+how, see [GOVERNANCE.md](GOVERNANCE.md).
 
 ## Get the source
 
@@ -15,8 +16,12 @@ cd imud
 ## Prerequisites
 
 - A C11 compiler (gcc or clang) and `make`.
-- `libgpiod-dev` — the daemon links libgpiod. The target platform is Raspberry
-  Pi OS / Debian Bookworm (or a similar Linux with I²C).
+- `libgpiod-dev` — the daemon links libgpiod, and the Makefile auto-detects
+  which API to build against from `pkg-config`: v1 (Debian bookworm ships 1.6)
+  or v2 (trixie ships 2.x). The target is Linux generally — anything with I²C
+  and a GPIO character device. Packages are built for arm64 and armhf on both
+  bookworm and trixie, and Raspberry Pi OS is the most exercised host, not a
+  requirement.
 - `libmosquitto-dev` — only for building the MQTT bridge.
 
 ## Build and test
@@ -30,6 +35,16 @@ make test       # the test suite — run from the repo root
 Please keep the tree **warning-clean**: the build uses `-Wall -Wextra`, and CI
 runs `make && make bridges && make test`. Add or extend a test for any new
 behaviour.
+
+**Not developing on Linux?** `devbox/run make -j4 test` runs the whole suite in
+a throwaway Debian container matching CI's environment. macOS builds only 29 of
+the 34 suites, and it can actively prove the *wrong* thing — a macOS-only
+`fcntl()` once passed the local gate and turned every Linux job in CI red — so
+this is the check to run before pushing. Setup, and the recipes macOS cannot run
+at all (sanitizers, coverage, `.deb` builds, systemd unit verification), are in
+[devbox/README.md](devbox/README.md). On Linux it is optional, but it is the
+quick way to test the other Debian release (`--dist bookworm`, the libgpiod v1
+path Raspberry Pi OS still ships) without touching your own toolchain.
 
 ## Coding conventions
 

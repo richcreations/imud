@@ -1,4 +1,4 @@
-# imud — Deferred & Future Work
+# imud — Roadmap & Deferred Work
 
 Items identified during the 2026-07-06 audit and later passes that remain
 open. Completed work is tracked in git history, NEWS, and spec.md §6, not
@@ -8,6 +8,64 @@ Sections 1–9 predate the 2026-07-25 external audit
 (`imud-audit-and-aerospace-roadmap.md`); §10 and §11 carry what that audit
 left open after 1.7, plus findings from measuring it. Where the two overlap,
 the older section is authoritative and the newer one cross-references it.
+
+## 0. Direction for the next 12 months  *(2026-08 → 2027-08)*
+
+Sections 1–11 are the full backlog. This section is the forward plan: what the
+project intends to do over the coming year, and — just as deliberately — what
+it intends *not* to do. Items name the section that carries the detail.
+
+**Planned.**
+
+- **Clear the hardware validation backlog (§1).** Ten drivers ship marked
+  `experimental = true` and have never met real silicon. `imud-imutest` reduces
+  each one to a single command plus three physical checks, so this is bench
+  time rather than design work. The reference pair is validated; the rest clear
+  opportunistically as boards become available.
+- **Confirm the 1.7/1.8 changes on hardware (§1).** The alignment window, the
+  accel-update duty fix, and the measured sample clock have run only in CI and
+  simulation. This gates confidence in most of §10.
+- **Fit real gyro temperature coefficients (§2).** The mechanism shipped in
+  1.5; what is missing is a cold-boot-to-warm capture from real hardware.
+- **Build the two missing benchmark scenarios (§10.3, §10.5).** Both remaining
+  filter items are blocked on scenarios that do not exist — a vibration case
+  and a calm-water case. The scenario *is* the work: 1.7 refuted two
+  plausible-looking filter changes by measuring them properly, and neither
+  remaining change will be attempted against nothing.
+- **Finish the consolidation items that are not hardware-blocked (§8).**
+- **Further output bridges as demand appears (§5).** WebSocket/SSE, Foxglove,
+  and OSC are the shortlist — all additive, none touching the core daemon.
+
+**Explicitly not planned in this window.**
+
+- **A direct NMEA 2000 bridge (§5).** Covered through Signal K, which owns the
+  device-level work a C bridge would have to reimplement. Revisit only if an
+  appliance install with no Signal K server actually materialises.
+- **ROS2 inside this repository (§5).** It needs ament/colcon and cannot build
+  under this Makefile. It belongs in its own project reusing the client
+  library, as `imud-arduino` does.
+- **The aerospace generalization (§11).** Scoped and recorded, deliberately not
+  scheduled: marine and robotics are the paths with users today. §11.1 blocks
+  the rest and would be picked up against a concrete need, not speculatively.
+- **Multi-IMU redundancy / federated Kalman filtering (§6, §11.5).** The
+  largest item in the backlog. Not undertaken without an explicit redundancy or
+  certification requirement, and a design document first.
+- **Barometer and air-data aiding (§11.3, §11.4).** Each needs a whole new
+  driver class or input channel, not a new fusion update step.
+- **Anything already measured and refuted.** Retuning `Ra` (§10.1), the Huber
+  covariance variants (§10.2), and GNSS dual-antenna heading (§10, "Reviewed,
+  no action") are closed with recorded measurements, not open questions. They
+  reopen only against new evidence.
+- **Geometric refinement of the magnetometer fits (§10.4).** Skipped unless
+  coverage-gated algebraic fits stop meeting accuracy targets in the field.
+
+**Beyond this window.** The one dated commitment is the WMM2030 data refresh
+(§7), expected from NOAA/NCEI around December 2029.
+
+**Cadence.** Versions are `MAJOR.MINOR.PATCH` from 1.9.0 onward
+(`docs/RELEASING.md`). There is no date-driven release schedule: a release goes
+out when there is something worth shipping, and the hardware-blocked items
+above move on bench availability rather than on a calendar.
 
 ## 1. Hardware validation matrix  *(bench task — requires the Pi and real silicon)*
 
@@ -688,4 +746,7 @@ filter-mathematics and aerospace sections (§10, §11) added 2026-07-25 from the
 external audit, pruned of what 1.7 shipped; triaged 2026-07-26 at the close of
 1.7 — §8's UDP drift fixed, its `AF_INET6` note refuted, `FLAG_MOTION` retired,
 B5 shipped, and the items 1.7 deliberately left (§8 consolidation, §9 heave
-init, §10.3, §10.5 vibration half) annotated with why.*
+init, §10.3, §10.5 vibration half) annotated with why; §0 forward plan added
+2026-08-05, synthesised from the sections below rather than from new decisions.
+Not yet triaged against 1.8 — §§1–11 still read as they did at the close of
+1.7.*

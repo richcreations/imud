@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# imud — IMU daemon
+# Copyright (c) 2026 Richard Simpson
+# SPDX-License-Identifier: MIT
+#
+# Run a command (or a shell) in the Debian dev container.  See devbox/README.md.
+#
+#   devbox/run                       # interactive shell at /work/src
+#   devbox/run make -j4 test         # the full 34-suite gate
+#   devbox/run --dist bookworm make test
+#
+# A contributor tool: nothing in the build or the packaging refers to it.
+set -euo pipefail
+
+DIST=trixie
+ARCH=amd64
+REBUILD=0
+
+usage() {
+    cat <<'EOF'
+usage: devbox/run [--dist bookworm|trixie] [--arch amd64|arm64|armhf] [--rebuild] [cmd ...]
+
+  no cmd            interactive bash in the container, at the repo root
+  --dist            Debian release (default trixie; bookworm = the libgpiod v1 path)
+  --arch            target architecture (default amd64; arm* is emulated and slow)
+  --rebuild         rebuild the image even if it already exists
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dist)    DIST="$2"; shift 2 ;;
+        --arch)    ARCH="$2"; shift 2 ;;
+        --rebuild) REBUILD=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --)        shift; break ;;
+        *)         break ;;
+    esac
+done
+
+case "$ARCH" in
+    amd64) PLATFORM=linux/amd64 ;;
+    arm64) PLATFORM=linux/arm64 ;;
+    armhf) PLATFORM=linux/arm/v7 ;;
+    *)     echo "devbox: unknown --arch '$ARCH'" >&2; exit 2 ;;
+esac
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Build droppings land here, NOT in the repo: dpkg-buildpackage writes its
+# .deb/.changes to the parent of the source tree, so the parent is a host cache
+# directory rather than anything git can see.
+OUT="${XDG_CACHE_HOME:-$HOME/.cache}/imud-devbox/out"
+IMAGE="imud-devbox:${DIST}-${ARCH}"
+
+if ! docker info >/dev/null 2>&1; then
+    cat >&2 <<EOF
+devbox: no container engine is reachable.
+
+  colima start --cpu 4 --memory 4 --disk 60 --vm-type vz --mount-type virtiofs
+
+(then re-run this command; 'colima status' shows what is running, 'colima stop'
+gives the RAM back.)
+EOF
+    exit 1
+fi
+
+if [ "$REBUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "devbox: building $IMAGE (first run downloads ~1 GB of Debian packages)" >&2
+    docker build --platform "$PLATFORM" --build-arg "DIST=$DIST" \
+                 -t "$IMAGE" "$REPO/devbox"
+fi
+
+mkdir -p "$OUT"
+
+# dpkg-buildpackage and dch stamp the changelog with DEBEMAIL/DEBFULLNAME.
+# Honour the environment first, then fall back to the *contributor's own* git
+# identity — never to the maintainer's, which would quietly attribute someone
+# else's local build to them.  Empty is fine: debhelper then asks, or guesses
+# from the container's user, and neither outcome misattributes anything.
+DEB_EMAIL="${DEBEMAIL:-$(git -C "$REPO" config user.email 2>/dev/null || true)}"
+DEB_NAME="${DEBFULLNAME:-$(git -C "$REPO" config user.name 2>/dev/null || true)}"
+
+TTY=()
+if [ -t 0 ] && [ -t 1 ]; then TTY=(-it); fi
+
+# The repo is mounted INSIDE the artifact directory's mount point, so `..` from
+# the source tree is the host cache dir.  Docker orders bind mounts by
+# destination depth, so /work is established before /work/src lands on top.
+#
+# git refuses to touch a tree owned by another uid ("dubious ownership"), which
+# `make dist`'s git archive would hit across the mount; GIT_CONFIG_* passes
+# safe.directory by environment so neither the host's ~/.gitconfig nor the image
+# needs editing.
+# ${TTY[@]+"${TTY[@]}"}, not "${TTY[@]}": macOS ships bash 3.2, where expanding
+# an EMPTY array under `set -u` is an unbound-variable error.
+exec docker run --rm ${TTY[@]+"${TTY[@]}"} \
+    --platform "$PLATFORM" \
+    --hostname imud-devbox \
+    -v "$OUT:/work" \
+    -v "$REPO:/work/src" \
+    -w /work/src \
+    --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+    -e GIT_CONFIG_COUNT=1 \
+    -e GIT_CONFIG_KEY_0=safe.directory \
+    -e GIT_CONFIG_VALUE_0=/work/src \
+    -e "DEBEMAIL=$DEB_EMAIL" \
+    -e "DEBFULLNAME=$DEB_NAME" \
+    "$IMAGE" "$@"

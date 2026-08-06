@@ -70,10 +70,13 @@ C standard library. Nothing else.
 
 ### Prerequisites
 
-- Raspberry Pi running PiOS Bookworm (or any Debian Bookworm-based distro).
-- I²C enabled: `sudo raspi-config` → Interface Options → I²C.
-- `libgpiod-dev`. Bookworm ships 1.6.x; both 1.x and 2.x are supported and
-  the Makefile auto-detects the installed version via `pkg-config`.
+- A Linux system with an I²C bus and a GPIO character device. Debian bookworm
+  and trixie are the packaged targets (arm64 and armhf); Raspberry Pi OS is the
+  most exercised host, not a requirement.
+- I²C enabled. On Raspberry Pi OS: `sudo raspi-config` → Interface Options →
+  I²C. Elsewhere, load `i2c-dev` and confirm a `/dev/i2c-*` node appears.
+- `libgpiod-dev`. Bookworm ships 1.6.x and trixie ships 2.x; both are supported
+  and the Makefile auto-detects the installed version via `pkg-config`.
 
 ```sh
 sudo apt update && sudo apt install -y build-essential libgpiod-dev

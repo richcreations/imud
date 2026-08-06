@@ -207,6 +207,8 @@ in-situ `imud-cal mag`. See the
   [Bridges section](docs/manual.md#9a-bridges) of the manual.
 - **[Contributing](CONTRIBUTING.md)** — build, test, coding conventions, and how
   to submit a pull request.
+- **[Governance](GOVERNANCE.md)** — who maintains imud, how decisions get made,
+  and what happens to the project if the maintainer stops.
 - Man pages: `imud(8)`, `imud-cal(8)`, `imud.conf(5)`, `imud-status(1)`,
   `libimud(3)` (installed by `make install`); `imud-mon(1)` and
   `imud-imutest(8)` by `make install-utils`; `imud-signalk(8)` / `imud-mqtt(8)` /

@@ -704,10 +704,12 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud/examples
 	# INSTALL is build-from-source guidance: it ships in the tarball, not in
 	# the installed docs (Debian: package-contains-upstream-installation-documentation).
-	# DCO rides along because CONTRIBUTING.md links to it by relative path —
-	# shipping one without the other installs a dangling link.
-	install -m 644 AUTHORS NEWS README.md CONTRIBUTING.md DCO spec.md \
-	               docs/manual.md docs/ROADMAP.md $(DESTDIR)$(DOCDIR)/imud/
+	# DCO and GOVERNANCE.md ride along because README.md and CONTRIBUTING.md
+	# link to them by relative path — shipping one without the others installs
+	# a dangling link.
+	install -m 644 AUTHORS NEWS README.md CONTRIBUTING.md GOVERNANCE.md DCO \
+	               spec.md docs/manual.md docs/ROADMAP.md \
+	               $(DESTDIR)$(DOCDIR)/imud/
 	install -m 644 packaging/imud/copyright $(DESTDIR)$(DOCDIR)/imud/copyright
 	gzip -9nc packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
 	install -m 644 config/imud.conf $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf

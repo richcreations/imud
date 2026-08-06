@@ -94,10 +94,12 @@ __pycache__/
 AGENTS.md
 audit.md
 
-# Local Debian build/test container for the macOS dev box (devbox/README.md).
-# Nothing in the build, the packaging or CI refers to it — it only exists so the
-# 5 suites and the .deb/systemd checks macOS cannot run have a home before a push.
-devbox
+# devbox/ is TRACKED — the Debian build/test container (devbox/README.md) is a
+# contributor tool, not local tooling.  Nothing in the build, the packaging or
+# CI refers to it and none of it ships in a .deb; it exists so that the suites
+# and the .deb/systemd checks a non-Linux host cannot run have a home before a
+# push.  Its build droppings land in ~/.cache/imud-devbox/, never in the repo.
+
 # Cal file (machine-specific, not for version control)
 cal.json
 
