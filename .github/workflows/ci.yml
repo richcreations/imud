@@ -127,6 +127,61 @@ jobs:
       - name: Line count
         run: python3 tools/loc.py --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
+  # The sign-off is a contributor's legal assertion that they may submit the
+  # code (CONTRIBUTING.md#developer-certificate-of-origin), so an unsigned
+  # commit is not mergeable.  A DCO that nothing checks drifts to fiction
+  # within a release, which is why this is a gate and not a report.
+  #
+  # Pull requests only: a push has no base..head range to walk, and the
+  # sign-off is about accepting code from someone else in the first place.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 — the default shallow clone has no history to diff the
+      # base against, and a deep PR would silently walk a truncated range.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Every commit carries Signed-off-by
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          rc=0
+          n=0
+          # --no-merges: a merge commit contributes no code of its own, and
+          # demanding a sign-off on one only teaches people to forge them.
+          while read -r sha; do
+            [ -n "$sha" ] || continue
+            n=$((n + 1))
+            name=$(git show -s --format='%an' "$sha")
+            email=$(git show -s --format='%ae' "$sha")
+            subject=$(git show -s --format='%s' "$sha")
+            signoff=$(git show -s --format='%B' "$sha" \
+              | grep -iE '^Signed-off-by: .+ <.+@.+>' || true)
+
+            if [ -z "$signoff" ]; then
+              echo "::error::$sha (\"$subject\") has no Signed-off-by line — rerun with 'git commit -s --amend', or 'git rebase --signoff $BASE' for a branch" >&2
+              rc=1
+            elif ! printf '%s\n' "$signoff" | grep -qiF "$name" \
+              && ! printf '%s\n' "$signoff" | grep -qiF "$email"; then
+              # Name OR email is enough.  Requiring both is a false-positive
+              # machine: Dependabot authors from a noreply address and signs
+              # off from another, and humans legitimately sign a work commit
+              # with a personal address.  Neither matching is the real smell,
+              # and even that only annotates — a patch forwarded on someone
+              # else's behalf is exactly what DCO clause (c) is for.
+              echo "::warning::$sha is authored by $name <$email> but signed off by someone else"
+            fi
+          done < <(git rev-list --no-merges "$BASE".."$HEAD")
+
+          echo "checked $n non-merge commit(s)"
+          exit "$rc"
+
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
   build-and-test:

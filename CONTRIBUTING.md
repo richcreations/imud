@@ -62,7 +62,39 @@ behaviour.
    Small, focused changes are far easier to review and land than large ones.
 3. Make sure `make && make bridges && make test` passes and the tree is
    warning-clean.
-4. Open a **pull request** describing what changed and how you tested it.
+4. **Sign off every commit** with `git commit -s` — see below.
+5. Open a **pull request** describing what changed and how you tested it.
 
-By contributing, you agree that your contributions are licensed under the
-project's MIT License (see [LICENSE](LICENSE)).
+## Developer Certificate of Origin
+
+imud uses the [Developer Certificate of Origin][dco] (DCO) — the same
+lightweight mechanism the Linux kernel uses — rather than a Contributor
+License Agreement. There is nothing to sign up for and no paperwork to mail:
+you certify it per commit, with a line Git adds for you.
+
+```sh
+git commit -s -m "ism330dhcx: handle a short FIFO read"
+```
+
+`-s` appends a trailer built from your `user.name` and `user.email`:
+
+```
+Signed-off-by: Jane Developer <jane@example.com>
+```
+
+Adding it certifies the [DCO](DCO), reproduced verbatim in this repository —
+in short: you wrote the patch or otherwise hold the right to submit it under
+the project's license, and you understand that the contribution and your
+sign-off are public and kept indefinitely. Use a real name; a sign-off is a
+legal assertion and an anonymous one cannot serve that purpose.
+
+Forgot one? `git commit -s --amend` fixes the tip commit, and
+`git rebase --signoff origin/main` fixes a whole branch. CI checks every
+non-merge commit in a pull request, so a missing sign-off fails the build
+rather than surfacing during review.
+
+Contributions are licensed under the project's MIT License (see
+[LICENSE](LICENSE)). The sign-off certifies that you are entitled to license
+them that way — it assigns nothing, and you keep your copyright.
+
+[dco]: https://developercertificate.org/
