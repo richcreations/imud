@@ -5,8 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
-[![Fuzz (nightly)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml)
-
+[![Fuzz (nightly)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml)  
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/richcreations/imud/badge)](https://scorecard.dev/viewer/?uri=github.com/richcreations/imud)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13917/badge)](https://www.bestpractices.dev/projects/13917)
 
