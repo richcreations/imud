@@ -28,11 +28,11 @@ software at the stream.
 ```
    IMU + magnetometer (I²C)                      consumers
             │                          ┌────────────────────────────┐
-            ▼                          │  chartplotter / autopilot   │
-   ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                  │
-   │      imud       │   binary UDP ──▶│  vision / stabilization     │
-   │  drivers·MEKF·  │   AF_UNIX    ──▶│  gimbal / dish pointing     │
-   │  timestamps     │                 │  loggers, dashboards, …     │
+            ▼                          │  chartplotter / autopilot  │
+   ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                 │
+   │      imud       │   binary UDP ──▶│  vision / stabilization    │
+   │  drivers·MEKF·  │   AF_UNIX    ──▶│  gimbal / dish pointing    │
+   │  timestamps     │                 │  loggers, dashboards, …    │
    └─────────────────┘                 └────────────────────────────┘
 ```
 
