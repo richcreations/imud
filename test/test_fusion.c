@@ -80,6 +80,35 @@ static double bench_wave_tau   = 0.5;
  * a real vessel gets; the BENCH_SWEEP_DIP driver overwrites it. */
 static double bench_dip_sigma = 1.0;
 
+/*
+ * The rates the wave scenario runs at.
+ *
+ * BENCH_REF_FS / BENCH_REF_MAG_FS are the pair every recorded number in this
+ * tree was measured at, and the scenario is required to reproduce that pair
+ * bit-for-bit — test_bench_stream_fingerprint plus a diff of the printed lines
+ * is what holds it to that.  Everything else is new ground.
+ *
+ * The drivers advertise 27 distinct IMU rates from 12 Hz to 8 kHz and 13
+ * magnetometer rates from 1 Hz to 1 kHz (the supported_odr_hz tables under
+ * src/drivers).
+ * Exactly one pairing out of those 351 has ever been measured, which is what
+ * these globals exist to fix.
+ */
+#define BENCH_REF_FS     833.0f
+#define BENCH_REF_MAG_FS 100.0f
+
+#ifdef BENCH_ODR_HZ
+static float bench_fs = (float)(BENCH_ODR_HZ);
+#else
+static float bench_fs = BENCH_REF_FS;
+#endif
+
+#ifdef BENCH_MAG_HZ
+static float bench_mag_fs = (float)(BENCH_MAG_HZ);
+#else
+static float bench_mag_fs = BENCH_REF_MAG_FS;
+#endif
+
 static imud_config_t make_cfg(void)
 {
     imud_config_t c;
@@ -2403,9 +2432,44 @@ static bool bench_align_clean = false;
 
 static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *out)
 {
-    const float fs   = 833.0f;
+    const float fs   = bench_fs;
     const float dt   = 1.0f / fs;
     const float d2r  = (float)(M_PI / 180.0);
+
+    /*
+     * Sensor-noise scale.  THE trap in rate-parameterising this scenario, and
+     * the reason it is spelled out here rather than inlined.
+     *
+     * The sigmas below are PER-SAMPLE, while the filter models sensor noise as a
+     * density times bandwidth: Ra = (Na/g)^2 * odr, Qg = Ng^2 * dt (fusion.c
+     * mekf_derive_tuning).  Those two only correspond at the rate the constants
+     * were picked for.  Read as densities they are
+     *
+     *     accel  0.03  / sqrt(833) = 1.04e-3 m/s^2/sqrt(Hz)
+     *     gyro   0.002 / sqrt(833) = 6.93e-5 rad/s/sqrt(Hz)
+     *
+     * i.e. sensor-floor scale — the gyro figure is about half the ~1.2e-4 raw
+     * floor the roadmap cites for this part.  They were chosen as density times
+     * sqrt(833).
+     *
+     * So changing fs without scaling them leaves the synthetic sensor's noise
+     * fixed while the filter's Ra shrinks with the rate: at 104 Hz the filter
+     * would be 8x over-confident about noise that never got quieter, and every
+     * number attributed to "the filter at 104 Hz" would be measuring a broken
+     * harness instead.  That is the same failure class as the m33_inv
+     * singularity test that silently discarded 87% of accel updates.
+     *
+     * The magnetometer scales against ITS OWN cadence for the same reason
+     * (Rm = Nm^2 * mag_odr), which is a separate factor — see mag_nscale.
+     *
+     * Ratio form deliberately: at fs = BENCH_REF_FS the division is exactly 1.0f
+     * and IEEE sqrtf(1.0f) is exactly 1.0f, so the reference pair multiplies its
+     * sigmas by exactly one and bench_noise receives a bit-identical argument.
+     * The alternative (0.03f/sqrtf(833.0f))*sqrtf(fs) rounds twice and would
+     * silently re-base the baseline.
+     */
+    const float nscale     = sqrtf(fs / BENCH_REF_FS);
+    const float mag_nscale = sqrtf(bench_mag_fs / BENCH_REF_MAG_FS);
 
     /* Wave truth parameters */
     const float Ar = 15.0f * d2r,  wr = 2.0f*(float)M_PI*0.20f;  /* roll  */
@@ -2421,8 +2485,53 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
 
     imud_config_t cfg = make_cfg();
     cfg.mag_yaw_only = yaw_only;
+
+    /*
+     * Magnetometer cadence.
+     *
+     * Two regimes, because the magnetometer can legitimately be FASTER than the
+     * IMU — a 12 Hz icm42688p paired with a 200 Hz mmc5983ma is a configuration
+     * the drivers permit.  The daemon handles that at src/imu.c: it predicts on
+     * an IMU sample and then drains the mag ring with a while loop, so zero, one
+     * or several mag updates land per IMU sample.  This models the same thing.
+     *
+     * mag <= fs uses an exact integer divisor rather than a float accumulator.
+     * That is not a shortcut: at the reference pair the divisor is
+     * (int)(833/100) = 8, which reproduces the historical `i % 8` bit-for-bit,
+     * and integer counting cannot drift over 150k samples the way a repeatedly
+     * accumulated 1/3 would.
+     *
+     * The achieved cadence is therefore fs/mag_div, not exactly bench_mag_fs —
+     * 104.125 Hz for a requested 100 at 833 Hz.  That quantisation is the
+     * behaviour this benchmark has always had; naming it here makes it bounded
+     * and visible rather than accidental.
+     */
+    const bool  mag_slower  = (bench_mag_fs <= fs);
+    int         mag_div     = mag_slower ? (int)(fs / bench_mag_fs) : 1;
+    if (mag_div < 1) mag_div = 1;
+    const float mag_per_imu = mag_slower ? 1.0f / (float)mag_div
+                                         : bench_mag_fs / fs;
+    float       mag_accum   = 0.0f;
+
+    /*
+     * The rate handed to mekf_init must be the one the mag is ACTUALLY fed at —
+     * include/fusion.h is emphatic that both rates are what the drivers
+     * programmed, since every noise variance and EMA gain derives from them.
+     *
+     * The reference pair is the exception, and deliberately so.  It has always
+     * passed the DECLARED 100 Hz while injecting at 104.125 Hz, a 4% mismatch.
+     * "Correcting" it changes Rm and re-bases every recorded number in this
+     * tree — and test_bench_stream_fingerprint would NOT catch that, because it
+     * moves no draws.  Only the printed-line diff would.  So the reference keeps
+     * its historical value and the discrepancy is recorded rather than fixed.
+     */
+    const bool  at_reference = (fs == BENCH_REF_FS &&
+                                bench_mag_fs == BENCH_REF_MAG_FS);
+    const float mag_eff = at_reference ? BENCH_REF_MAG_FS
+                        : (mag_slower  ? fs / (float)mag_div : bench_mag_fs);
+
     mekf_t f;
-    mekf_init(&f, &cfg, fs, (float)cfg.mag_odr_hz, bias_init);
+    mekf_init(&f, &cfg, fs, mag_eff, bias_init);
     bench_rng_state = bench_seed;
 
     const float warmup_s = 60.0f, measure_s = 120.0f;
@@ -2493,8 +2602,8 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
         memset(&s, 0, sizeof s);
         for (int k = 0; k < 3; k++) {
             s.accel[k] = Rt[0][k]*f_ned[0] + Rt[1][k]*f_ned[1] + Rt[2][k]*f_ned[2]
-                       + bench_noise(0.03f);
-            s.gyro[k]  = w_body[k] + bias_true[k] + bench_noise(0.002f);
+                       + bench_noise(0.03f * nscale);
+            s.gyro[k]  = w_body[k] + bias_true[k] + bench_noise(0.002f * nscale);
         }
 
         /*
@@ -2537,7 +2646,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
             float mb[3];
             for (int k = 0; k < 3; k++)
                 mb[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
-                        * 100.0f + bench_noise(0.3f);   /* µT */
+                        * 100.0f + bench_noise(0.3f * mag_nscale);   /* µT */
             for (int k = 0; k < 3; k++) {
                 align_acc_sum[k] += s.accel[k];
                 align_mag_sum[k] += mb[k];
@@ -2561,13 +2670,24 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
 
         mekf_predict(&f, &s, f.dt);
 
-        /* Mag update at ~104 Hz */
-        if (i % 8 == 0) {
+        /*
+         * Mag updates for this IMU sample: exactly one every mag_div samples
+         * while the mag is the slower sensor, or several per sample when it is
+         * the faster one — the daemon's drain loop, modelled.
+         */
+        int n_mag = 0;
+        if (mag_slower) {
+            n_mag = (i % mag_div == 0) ? 1 : 0;
+        } else {
+            mag_accum += mag_per_imu;
+            while (mag_accum >= 1.0f) { mag_accum -= 1.0f; n_mag++; }
+        }
+        for (int u = 0; u < n_mag; u++) {
             mag_sample_t m;
             memset(&m, 0, sizeof m);
             for (int k = 0; k < 3; k++)
                 m.field[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
-                             * 100.0f + bench_noise(0.3f);
+                             * 100.0f + bench_noise(0.3f * mag_nscale);
             m.valid = true;
             mekf_update_mag(&f, &m);
         }
@@ -2724,6 +2844,21 @@ static void test_bench_stream_fingerprint(void)
     const uint32_t      EXPECT_STATE = 0x390A0177u;
 
     wave_run_t run;
+
+    /*
+     * The constants below pin ONE pairing: the reference rates.  Under a
+     * -DBENCH_ODR_HZ or -DBENCH_MAG_HZ probe build the scenario is deliberately
+     * running somewhere else, where a different draw count is the correct
+     * outcome and asserting the reference count would report a failure that
+     * means nothing.  Skip, and say so, rather than emit a misleading red.
+     */
+    if (bench_fs != BENCH_REF_FS || bench_mag_fs != BENCH_REF_MAG_FS) {
+        printf("\n    [stream] skipped: probe build at %.0f Hz / %.0f Hz mag,"
+               " not the reference pair\n    ",
+               (double)bench_fs, (double)bench_mag_fs);
+        return;
+    }
+
     bench_seed  = bench_seeds[0];
     bench_draws = 0;
     run_wave_scenario_ex(false, SCEN_TONE, &run);
