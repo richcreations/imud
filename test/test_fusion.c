@@ -24,6 +24,7 @@
 #include "fusion.h"
 #include "config.h"
 #include "types.h"
+#include "rate_ladder.h"   /* every rate the drivers advertise */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -965,6 +966,125 @@ TEST(test_mag_tuning_uses_the_programmed_rate)
     EXPECT_NEAR(f.mref_alpha, mref, 1e-12f, "mref_alpha unchanged by reload");
     EXPECT_NEAR(f.nis_mag_alpha, nis, 1e-12f,
                 "nis_mag_alpha unchanged by reload");
+}
+
+/* Relative closeness — the ladder spans 12 Hz to 8 kHz, so quantities derived
+ * from it span six orders of magnitude and no single absolute epsilon works. */
+static bool near_rel(double got, double want, double rel)
+{
+    double err = fabs(got - want);
+    double mag = fabs(want);
+    return mag > 0.0 ? (err <= rel * mag) : (err <= rel);
+}
+
+/*
+ * Every rate this project claims, exercised.
+ *
+ * The test above pins the derivations at one off-default mag rate.  This
+ * generalises it to the whole domain: 27 IMU rates from 12 Hz to 8 kHz against
+ * 13 magnetometer rates from 1 Hz to 1 kHz, every one of which is a
+ * configuration a user can select and the daemon will accept.  Until this
+ * existed, exactly one of those 351 pairings had ever been executed.
+ *
+ * Two things are asserted, and deliberately only two:
+ *
+ *   1. The DERIVATIONS hold — Ra, Rm, Qg, Qb and the two EMA gains are what
+ *      mekf_derive_tuning promises for the rates it was handed.  An EMA gain
+ *      above 1 is divergence and one at zero is a dead channel, so both are
+ *      bounded as well as compared.
+ *   2. The filter stays NUMERICALLY SANE over a couple of hundred steps: unit
+ *      quaternion, symmetric P, positive diagonal on the live states, nothing
+ *      non-finite.  This is what catches an extreme rate overflowing a gain or
+ *      costing P its positive-definiteness — a class of failure no amount of
+ *      833 Hz testing can reach.
+ *
+ * ACCURACY IS NOT ASSERTED HERE, and that is not an oversight.  Ra scales with
+ * the rate, so the filter is retuned at every rung and the 833 Hz error bounds
+ * are meaningless elsewhere; at 12 Hz the filter may well be poor.  Measuring
+ * that is the wave benchmark's job.  This test must be able to say "the
+ * arithmetic is right and nothing blew up" without also claiming the result is
+ * good, or it could never cover the ends of the ladder at all.
+ *
+ * The rate lists come from test/rate_ladder.h, which is cross-checked against
+ * the real driver registry by test_drivers_registry.
+ */
+TEST(test_rate_derivations)
+{
+    imud_config_t cfg = make_cfg();
+    const float Ng = (float)cfg.mekf_gyro_noise;
+    const float Nb = (float)cfg.mekf_gyro_bias;
+    const float Na = (float)cfg.mekf_accel_noise;
+    const float Nm = (float)cfg.mekf_mag_noise;
+    const float g  = 9.80665f;
+
+    int pairs = 0, bad_derive = 0, bad_sane = 0;
+
+    for (int ii = 0; ii < RATE_LADDER_IMU_N; ii++) {
+        for (int mi = 0; mi < RATE_LADDER_MAG_N; mi++) {
+            const float imu_hz = (float)rate_ladder_imu[ii];
+            const float mag_hz = (float)rate_ladder_mag[mi];
+            const float dt     = 1.0f / imu_hz;
+            pairs++;
+
+            mekf_t f;
+            float bias[3] = {0};
+            mekf_init(&f, &cfg, imu_hz, mag_hz, bias);
+
+            /* 1. Derivations. Relative tolerance: float32 carries ~7 digits and
+             * these span six orders of magnitude across the ladder. */
+            if (!near_rel(f.Qg, (double)Ng * Ng * dt, 1e-5) ||
+                !near_rel(f.Qb, (double)Nb * Nb * dt, 1e-5) ||
+                !near_rel(f.Ra, (double)(Na / g) * (Na / g) * imu_hz, 1e-5) ||
+                !near_rel(f.Rm, (double)Nm * Nm * mag_hz, 1e-5) ||
+                !near_rel(f.mref_alpha, 1.0 / (300.0 * mag_hz), 1e-5) ||
+                !near_rel(f.nis_mag_alpha, 1.0 / (30.0 * mag_hz), 1e-5))
+                bad_derive++;
+
+            /* EMA gains must be usable, not merely arithmetically right. */
+            if (!(f.mref_alpha > 0.0f && f.mref_alpha <= 1.0f) ||
+                !(f.nis_mag_alpha > 0.0f && f.nis_mag_alpha <= 1.0f) ||
+                !(f.conv_thresh > 0.0f) || !isfinite(f.conv_thresh))
+                bad_derive++;
+
+            /* 2. Numerical sanity over a short benign run. */
+            imu_sample_t s = make_accel(0.0f, 0.0f, -g);
+            for (int k = 0; k < 200; k++) {
+                mekf_predict(&f, &s, f.dt);
+                mekf_update_accel(&f, &s);
+            }
+
+            float qn = f.q[0]*f.q[0] + f.q[1]*f.q[1] + f.q[2]*f.q[2] + f.q[3]*f.q[3];
+            bool sane = isfinite(qn) && fabsf(qn - 1.0f) < 1e-3f;
+
+            int n = live_n(&f);
+            for (int a = 0; a < MEKF_N && sane; a++) {
+                for (int b = 0; b < MEKF_N; b++) {
+                    if (!isfinite(f.P[a][b])) { sane = false; break; }
+                    /* Symmetry, relative to the larger of the pair. */
+                    float m = fmaxf(fabsf(f.P[a][b]), fabsf(f.P[b][a]));
+                    if (fabsf(f.P[a][b] - f.P[b][a]) > 1e-4f * fmaxf(m, 1e-12f)) {
+                        sane = false; break;
+                    }
+                }
+            }
+            for (int a = 0; a < n && sane; a++)
+                if (!(f.P[a][a] > 0.0f)) sane = false;
+
+            if (!sane) {
+                bad_sane++;
+                fprintf(stderr, "  FAIL  %.0f Hz IMU / %.0f Hz mag: not sane\n",
+                        (double)imu_hz, (double)mag_hz);
+            }
+        }
+    }
+
+    printf("\n    [rate_derivations] %d pairs (%d IMU x %d mag rates)\n    ",
+           pairs, RATE_LADDER_IMU_N, RATE_LADDER_MAG_N);
+
+    EXPECT(pairs == RATE_LADDER_IMU_N * RATE_LADDER_MAG_N,
+           "walked every advertised rate pairing");
+    EXPECT(bad_derive == 0, "derived tuning correct at every rate pairing");
+    EXPECT(bad_sane == 0, "filter numerically sane at every rate pairing");
 }
 
 /*
@@ -2086,9 +2206,9 @@ TEST(test_centripetal_correction)
  * H·sin(ωt) (positive up). After settling, the recovered amplitude must be
  * close to H across ordinary wave periods.
  */
-static float heave_sine_amp(float period_s, float amp_m, float tau_s)
+static float heave_sine_amp_at(float fs, float period_s, float amp_m, float tau_s)
 {
-    const float fs = 833.0f, dt = 1.0f/fs;
+    const float dt = 1.0f/fs;
     float w = 2.0f*(float)M_PI/period_s;
 
     heave_t h;
@@ -2108,6 +2228,66 @@ static float heave_sine_amp(float period_s, float amp_m, float tau_s)
         if (i >= n_settle && fabsf(hv) > peak) peak = fabsf(hv);
     }
     return peak;
+}
+
+/* The historical entry point: the reference rate every recorded heave number
+ * was measured at.  test_heave_across_rates drives the same estimator over the
+ * whole ladder. */
+static float heave_sine_amp(float period_s, float amp_m, float tau_s)
+{
+    return heave_sine_amp_at(833.0f, period_s, amp_m, tau_s);
+}
+
+/*
+ * The heave estimator over every IMU rate the drivers advertise.
+ *
+ * heave_init takes f.dt straight from the resolved IMU rate (src/imu.c), so
+ * this estimator spans the same 12 Hz to 8 kHz domain as the filter, and until
+ * now it had only ever run at 833 Hz.
+ *
+ * Unlike the wave benchmark this can assert the SAME thing at every rung,
+ * because the truth is analytic: drive a known sinusoid in, the recovered
+ * amplitude must come back.  A physical wave does not change amplitude because
+ * you sampled it faster.
+ *
+ * Two ends worth watching, and they fail differently:
+ *
+ *   - LOW.  The leaky integrators discretise as dt/tau and tau/(tau+dt).  At
+ *     12 Hz with tau = 12 s that ratio is still ~0.007, so the discretisation
+ *     should hold and the sharper limit is resolution — an 8 s period is ~96
+ *     samples.
+ *   - HIGH.  This is the real risk and it is the opposite of the filter's: two
+ *     leaky integrators accumulating dt/tau ~ 1e-5 increments into float, 8000
+ *     times a second.  That is the catastrophic-cancellation regime fusion.c
+ *     already flags for the Joseph form over multi-day runs.
+ */
+TEST(test_heave_across_rates)
+{
+    const float period = 8.0f, amp = 1.5f, tau = 12.0f;
+    int bad = 0;
+    float worst_err = 0.0f, worst_at = 0.0f;
+
+    for (int i = 0; i < RATE_LADDER_IMU_N; i++) {
+        const float fs  = (float)rate_ladder_imu[i];
+        const float got = heave_sine_amp_at(fs, period, amp, tau);
+        const float err = fabsf(got - amp) / amp;
+
+        /* 5%: the measured worst across the whole ladder is 1.2%, at 12 Hz.
+         * Four times that leaves room for platform float variance while still
+         * being tight enough that a real regression cannot hide under it. */
+        if (!isfinite(got) || err > 0.05f) {
+            bad++;
+            fprintf(stderr, "  FAIL  heave at %.0f Hz: %.3f m vs %.3f expected"
+                            " (%.1f%%)\n",
+                    (double)fs, (double)got, (double)amp, (double)(err*100.0f));
+        }
+        if (err > worst_err) { worst_err = err; worst_at = fs; }
+    }
+
+    printf("\n    [heave rates] %d rates, worst %.1f%% at %.0f Hz\n    ",
+           RATE_LADDER_IMU_N, (double)(worst_err*100.0f), (double)worst_at);
+
+    EXPECT(bad == 0, "heave recovers a known sinusoid at every advertised rate");
 }
 
 TEST(test_heave_sine_amplitude)
@@ -2155,31 +2335,54 @@ TEST(test_heave_disabled_and_settle)
 
 /* ── Sea-state estimator ────────────────────────────────────────────────────── */
 
+/*
+ * The sea-state scenario, at an arbitrary sample rate.
+ *
+ * seastate_init takes f.dt from the resolved IMU rate (src/imu.c), so this
+ * estimator spans the same 12 Hz to 8 kHz domain as everything else and had only
+ * ever been driven at 200 Hz.  Split out so the historical test and the
+ * across-rates sweep drive exactly the same waveform.
+ */
+#define SEASTATE_A     0.9f                        /* heave amplitude, m     */
+#define SEASTATE_TW    6.0f                        /* wave period, s         */
+#define SEASTATE_B    (12.0f*(float)M_PI/180.0f)   /* roll amplitude, rad    */
+#define SEASTATE_TR    4.5f                        /* roll period, s         */
+#define SEASTATE_C    (8.0f*(float)M_PI/180.0f)    /* pitch amplitude, rad   */
+#define SEASTATE_TP    5.0f                        /* pitch period, s        */
+
+static void seastate_drive_sine(seastate_t *w, float fs)
+{
+    const float dt = 1.0f/fs;
+    const float heel = 5.0f*(float)M_PI/180.0f; /* steady heel offset */
+    const float trim = 2.0f*(float)M_PI/180.0f; /* steady trim offset */
+    const float ww = 2.0f*(float)M_PI/SEASTATE_TW,
+                wr = 2.0f*(float)M_PI/SEASTATE_TR,
+                wp = 2.0f*(float)M_PI/SEASTATE_TP;
+
+    for (int i = 0; i < (int)(120.0f*fs); i++) {
+        float t = (float)i*dt;
+        seastate_update(w, SEASTATE_A*sinf(ww*t), SEASTATE_A*ww*cosf(ww*t),
+                        heel + SEASTATE_B*sinf(wr*t), SEASTATE_B*wr*cosf(wr*t),
+                        trim + SEASTATE_C*sinf(wp*t), SEASTATE_C*wp*cosf(wp*t));
+    }
+}
+
 TEST(test_seastate_sine)
 {
     const float fs = 200.0f, dt = 1.0f/fs;
-    const float A = 0.9f;        /* heave amplitude, m */
-    const float Tw = 6.0f;       /* wave period, s */
-    const float B = 12.0f*(float)M_PI/180.0f;  /* roll amplitude, rad */
-    const float Tr = 4.5f;       /* roll period, s */
-    const float C = 8.0f*(float)M_PI/180.0f;   /* pitch amplitude, rad */
-    const float Tp = 5.0f;       /* pitch period, s */
-    const float heel = 5.0f*(float)M_PI/180.0f; /* steady heel offset */
-    const float trim = 2.0f*(float)M_PI/180.0f; /* steady trim offset */
-    const float ww = 2.0f*(float)M_PI/Tw, wr = 2.0f*(float)M_PI/Tr,
-                wp = 2.0f*(float)M_PI/Tp;
+    const float A = SEASTATE_A;
+    const float Tw = SEASTATE_TW;
+    const float B = SEASTATE_B;
+    const float Tr = SEASTATE_TR;
+    const float C = SEASTATE_C;
+    const float Tp = SEASTATE_TP;
 
     seastate_t w;
     seastate_init(&w, 30.0f, dt);
     EXPECT(w.enabled, "tau>0 enables");
     EXPECT(seastate_wave_height(&w) == 0.0f, "no output before settle");
 
-    for (int i = 0; i < (int)(120.0f*fs); i++) {
-        float t = (float)i*dt;
-        seastate_update(&w, A*sinf(ww*t), A*ww*cosf(ww*t),
-                        heel + B*sinf(wr*t), B*wr*cosf(wr*t),
-                        trim + C*sinf(wp*t), C*wp*cosf(wp*t));
-    }
+    seastate_drive_sine(&w, fs);
     EXPECT(w.settled, "settled after 2 tau");
     /* Pure sine: σ = A/√2 → Hs = 4σ = 2.828·A, significant single
      * amplitude = 2σ = 1.414·A; all periods exact. */
@@ -2195,6 +2398,67 @@ TEST(test_seastate_sine)
                 "pitch period within 5% despite steady trim");
     EXPECT_NEAR(seastate_pitch_amplitude(&w), 1.414f*C, 0.10f*1.414f*C,
                 "pitch amplitude = 1.41·C within 10%");
+}
+
+/*
+ * The sea-state estimator over every IMU rate the drivers advertise.
+ *
+ * Same argument as test_heave_across_rates: the truth here is analytic, so the
+ * SAME assertions hold at every rung.  A 6 s wave is a 6 s wave whatever rate
+ * you sample it at, and Hs = 2.83*A for a pure sine at any rate.  That is what
+ * makes this affordable in the default build, where the wave benchmark — whose
+ * error bounds move with the rate because Ra does — could never be.
+ *
+ * The resolution limit is real but mild: at 12 Hz a 4.5 s roll period is still
+ * ~54 samples.  The bounds below are the historical 200 Hz ones UNCHANGED — they
+ * did not need widening, which is the finding: measured across the ladder the
+ * worst Hs error is 1.0% and the worst period error 0.1%, against bounds of 10%
+ * and 5%.  Neither end of the range degrades this estimator meaningfully.
+ */
+TEST(test_seastate_across_rates)
+{
+    int bad = 0;
+    float worst_hs = 0.0f, worst_tw = 0.0f, worst_at = 0.0f;
+
+    for (int i = 0; i < RATE_LADDER_IMU_N; i++) {
+        const float fs = (float)rate_ladder_imu[i];
+
+        seastate_t w;
+        seastate_init(&w, 30.0f, 1.0f/fs);
+        seastate_drive_sine(&w, fs);
+
+        const float hs = seastate_wave_height(&w);
+        const float tw = seastate_wave_period(&w);
+        const float tr = seastate_roll_period(&w);
+        const float tp = seastate_pitch_period(&w);
+        const float ra = seastate_roll_amplitude(&w);
+
+        const float e_hs = fabsf(hs - 2.828f*SEASTATE_A) / (2.828f*SEASTATE_A);
+        const float e_tw = fabsf(tw - SEASTATE_TW) / SEASTATE_TW;
+        const float e_tr = fabsf(tr - SEASTATE_TR) / SEASTATE_TR;
+        const float e_tp = fabsf(tp - SEASTATE_TP) / SEASTATE_TP;
+        const float e_ra = fabsf(ra - 1.414f*SEASTATE_B) / (1.414f*SEASTATE_B);
+
+        if (!w.settled || !isfinite(hs) ||
+            e_hs > 0.10f || e_tw > 0.05f || e_tr > 0.05f ||
+            e_tp > 0.05f || e_ra > 0.10f) {
+            bad++;
+            fprintf(stderr, "  FAIL  seastate at %.0f Hz: Hs %.3f (%.1f%%)"
+                            "  Tw %.2f (%.1f%%)  Tr %.2f  Tp %.2f  amp %.1f%%\n",
+                    (double)fs, (double)hs, (double)(e_hs*100.0f),
+                    (double)tw, (double)(e_tw*100.0f), (double)tr, (double)tp,
+                    (double)(e_ra*100.0f));
+        }
+        if (e_hs > worst_hs) { worst_hs = e_hs; worst_at = fs; }
+        if (e_tw > worst_tw) worst_tw = e_tw;
+    }
+
+    printf("\n    [seastate rates] %d rates, worst Hs %.1f%% at %.0f Hz,"
+           " worst period %.1f%%\n    ",
+           RATE_LADDER_IMU_N, (double)(worst_hs*100.0f), (double)worst_at,
+           (double)(worst_tw*100.0f));
+
+    EXPECT(bad == 0, "sea-state recovers a known seaway at every advertised rate");
 }
 
 TEST(test_seastate_gates)
@@ -3244,6 +3508,7 @@ int main(void)
     RUN(test_mekf_reconfigure);
     RUN(test_reconfigure_rederives_mag_tuning);
     RUN(test_mag_tuning_uses_the_programmed_rate);
+    RUN(test_rate_derivations);
     RUN(test_reconfigure_resets_skip_window);
     RUN(test_sim_gyro_heading);
     RUN(test_sim_heading_wraps);
@@ -3259,8 +3524,10 @@ int main(void)
     RUN(test_mref_invariants);
     RUN(test_centripetal_correction);
     RUN(test_heave_sine_amplitude);
+    RUN(test_heave_across_rates);
     RUN(test_heave_disabled_and_settle);
     RUN(test_seastate_sine);
+    RUN(test_seastate_across_rates);
     RUN(test_seastate_gates);
     RUN(test_mag_health);
     RUN(test_wave_disabled_inert);

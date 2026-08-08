@@ -16,7 +16,10 @@
  * struct fields and calls imu_driver_find / mag_driver_find only.  It never
  * invokes probe/init/read, so no I2C fd is required.
  *
- * Cross-platform (no --wrap, no gpiod): builds and runs on the dev box too.
+ * Needs no --wrap and no gpiod, but it is NOT cross-platform: it links every
+ * driver, and each of those reaches <linux/i2c.h> through i2c_io.h, so it
+ * builds only on Linux (the container, or CI).  The claim that it "builds and
+ * runs on the dev box too" was here and was wrong.
  */
 
 #include <stdio.h>
@@ -25,6 +28,7 @@
 
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag / snap_odr_up */
+#include "rate_ladder.h" /* the ladder test_fusion walks; guarded below */
 
 /* ── Test framework (matches the rest of the suite) ──────────────────────── */
 
@@ -167,6 +171,61 @@ static void test_mag_lookups(void)
     end(fb);
 }
 
+/*
+ * The rate ladder in test/rate_ladder.h must cover every rung the drivers
+ * actually advertise.
+ *
+ * test_fusion walks that ladder to exercise the filter's derivations at all 351
+ * IMU x mag pairings.  It cannot walk the registry itself: the registries here
+ * are static with no enumeration API, and every driver .c reaches <linux/i2c.h>
+ * through i2c_io.h, so a test that links them will not build on a non-Linux dev
+ * host — and test_fusion has to build everywhere.
+ *
+ * Hence a duplicated list, and hence this: the duplication is GUARDED, not
+ * trusted.  Add a rung to any driver without adding it to rate_ladder.h and
+ * this fails here, naming the driver and the rate, in a test that links the
+ * real registry and runs in CI.  Do not delete this and leave the list.
+ */
+static bool ladder_has(const int *ladder, int n, int hz)
+{
+    for (int i = 0; i < n; i++) if (ladder[i] == hz) return true;
+    return false;
+}
+
+static void test_rate_ladder_covers_registry(void)
+{
+    begin("test_rate_ladder_covers_registry");
+    int fb = g_fail;
+
+    for (const char **p = imu_names; *p; p++) {
+        const imu_ops_t *o = imu_driver_find(*p);
+        if (!o) continue;                      /* the lookup tests own this */
+        for (int i = 0; o->supported_odr_hz[i]; i++) {
+            char msg[128];
+            snprintf(msg, sizeof msg,
+                     "rate_ladder_imu covers %s %d Hz", *p,
+                     o->supported_odr_hz[i]);
+            EXPECT(ladder_has(rate_ladder_imu, RATE_LADDER_IMU_N,
+                              o->supported_odr_hz[i]), msg);
+        }
+    }
+
+    for (const char **p = mag_names; *p; p++) {
+        const mag_ops_t *o = mag_driver_find(*p);
+        if (!o) continue;
+        for (int i = 0; o->supported_odr_hz[i]; i++) {
+            char msg[128];
+            snprintf(msg, sizeof msg,
+                     "rate_ladder_mag covers %s %d Hz", *p,
+                     o->supported_odr_hz[i]);
+            EXPECT(ladder_has(rate_ladder_mag, RATE_LADDER_MAG_N,
+                              o->supported_odr_hz[i]), msg);
+        }
+    }
+
+    end(fb);
+}
+
 static void test_unknown_lookups(void)
 {
     begin("test_unknown_lookups");
@@ -205,6 +264,7 @@ int main(void)
 
     test_imu_lookups();
     test_mag_lookups();
+    test_rate_ladder_covers_registry();
     test_unknown_lookups();
     test_validated_not_experimental();
 
