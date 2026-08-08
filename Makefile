@@ -409,14 +409,20 @@ test_imu_math: src/imu_math.c test/test_imu_math.c
 # src/imu_math.c is linked for snap_odr_up / odr_actual_*: test_odr_agreement
 # checks each driver's own ODR encoding against the shared default rule, which
 # is the invariant that lets imu.c hand the resolved rate back to the driver.
+# src/bus.c is linked for test_bus_open_policy: the transport policy (SPI on a
+# driver with no SPI port, clock clamping) is shared by all three tools, so it
+# is asserted once here rather than in each.  -Isrc is for the quoted include
+# of drivers/bus_io.h, the framing test_spi_framing exercises directly — the
+# same reason test_imutest carries it.
 test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/mpu925x.c src/drivers/ak8963.c \
               src/drivers/lsm6dso.c src/drivers/icm42688p.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c src/log.c \
-              src/imu_math.c test/bus_mock.c test/test_drivers.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
+              src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
+              src/drivers/bus_io.h include/bus.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 
 # The imud-imutest checker logic over the mock I2C bus, with a scripted
 # imt_ui_t standing in for the operator so the guided phases are covered too.
@@ -432,9 +438,10 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
 test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
-              test/bus_mock.c test/test_imutest.c
+              test/bus_mock.c test/test_imutest.c \
+              src/drivers/bus_io.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 
 test: test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \

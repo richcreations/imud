@@ -140,7 +140,7 @@ static int open_sensor_bus(const imud_config_t *cfg, bool is_imu,
     bus_spec_t spec;
     if (is_imu) config_imu_bus_spec(cfg, &spec);
     else        config_mag_bus_spec(cfg, &spec);
-    return bus_open(bus, &spec, is_imu ? "imu" : "mag");
+    return bus_open(bus, &spec, NULL, is_imu ? "imu" : "mag");
 }
 
 /* ── IMU FIFO drain helper ──────────────────────────────────────────────── */

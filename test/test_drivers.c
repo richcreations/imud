@@ -50,6 +50,7 @@
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag — see test_odr_agreement */
 #include "bus_mock.h"
+#include "drivers/bus_io.h"   /* the framing under test in test_spi_framing */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1329,6 +1330,160 @@ static void test_odr_agreement(void)
     end(fb);
 }
 
+/* ── SPI transport ───────────────────────────────────────────────────────── */
+
+/*
+ * The framing itself, independent of any driver: command byte direction,
+ * register decode, and the burst auto-increment.  These assertions are what
+ * make the dual-transport driver tests meaningful — if the framing were
+ * wrong, both transports would simply be wrong together.
+ *
+ * SPI_FD is a descriptor number, not an open file: the mock intercepts every
+ * ioctl, so nothing is ever really transferred.
+ */
+#define SPI_FD   7
+#define SPI_ADDR 0x40   /* an arbitrary register file to bind the fd to */
+
+static imud_bus_t spi_bus(uint8_t inc_mask)
+{
+    i2cmock_reset();
+    spimock_bind(SPI_FD, SPI_ADDR, inc_mask);
+    return (imud_bus_t){ .kind = BUS_SPI, .fd = SPI_FD,
+                         .spi_mode = 3, .spi_inc_mask = inc_mask,
+                         .spi_hz = 10000000 };
+}
+
+static void test_spi_framing(void)
+{
+    begin("test_spi_framing");
+    int fb = g_fail;
+
+    imud_bus_t b = spi_bus(0);
+
+    /* A read reaches the register file the descriptor is bound to. */
+    i2cmock_set_reg(SPI_ADDR, 0x0F, 0x6B);
+    uint8_t v = 0;
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == 0, "spi single read succeeds");
+    EXPECT(v == 0x6B, "spi read returns the register value");
+
+    /* A write must clear the direction bit, or it would land at reg|0x80. */
+    EXPECT(bus_reg_write(&b, 0x12, 0x44) == 0, "spi write succeeds");
+    EXPECT(i2cmock_get_reg(SPI_ADDR, 0x12) == 0x44, "spi write hits the register");
+    EXPECT(i2cmock_get_reg(SPI_ADDR, 0x92 & 0xFF) == 0x00,
+           "spi write did not land at reg|0x80");
+
+    /* Burst reads walk forward through the file. */
+    const uint8_t seq[4] = { 0x11, 0x22, 0x33, 0x44 };
+    i2cmock_set_regs(SPI_ADDR, 0x28, seq, 4);
+    uint8_t got[4] = { 0 };
+    EXPECT(bus_burst_read(&b, 0x28, got, 4) == 0, "spi burst read succeeds");
+    EXPECT(memcmp(got, seq, 4) == 0, "spi burst auto-increments");
+
+    /* A FIFO window pops on every read, exactly as on I2C. */
+    i2cmock_set_fifo_range(SPI_ADDR, 0x78, 0x7E);
+    const uint8_t staged[3] = { 0xA1, 0xB2, 0xC3 };
+    i2cmock_fifo_push(SPI_ADDR, staged, 3);
+    uint8_t popped[3] = { 0 };
+    EXPECT(bus_burst_read(&b, 0x78, popped, 3) == 0, "spi fifo read succeeds");
+    EXPECT(memcmp(popped, staged, 3) == 0, "spi reads pop the fifo window");
+
+    /* Transport errors still surface as -1. */
+    i2cmock_fail_next_ioctl();
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == -1, "spi read propagates ioctl failure");
+    i2cmock_fail_next_ioctl();
+    EXPECT(bus_reg_write(&b, 0x12, 0x00) == -1, "spi write propagates ioctl failure");
+
+    printf("%s\n", g_fail == fb ? "OK" : "FAIL");
+}
+
+/*
+ * The parts that need an explicit auto-increment bit (LIS3MDL's MS at 0x40)
+ * must set it on a burst and NOT on a single read — on those parts the bit is
+ * part of the command, so a single read that sets it would address the wrong
+ * register.
+ */
+static void test_spi_inc_mask(void)
+{
+    begin("test_spi_inc_mask");
+    int fb = g_fail;
+
+    imud_bus_t b = spi_bus(0x40);
+
+    /* Single read: the mask must not be set, so 0x28 stays 0x28. */
+    i2cmock_set_reg(SPI_ADDR, 0x28, 0x5A);
+    uint8_t v = 0;
+    EXPECT(bus_reg_read(&b, 0x28, &v) == 0, "inc-mask single read succeeds");
+    EXPECT(v == 0x5A, "single read addresses the register, not reg|mask");
+
+    /* Burst: the mask is set, and the mock strips it back off. */
+    const uint8_t seq[6] = { 1, 2, 3, 4, 5, 6 };
+    i2cmock_set_regs(SPI_ADDR, 0x28, seq, 6);
+    uint8_t got[6] = { 0 };
+    EXPECT(bus_burst_read(&b, 0x28, got, 6) == 0, "inc-mask burst succeeds");
+    EXPECT(memcmp(got, seq, 6) == 0, "burst with the mask still reads from reg");
+
+    printf("%s\n", g_fail == fb ? "OK" : "FAIL");
+}
+
+/*
+ * bus_open's policy, which is the same for all three tools that use it.
+ * /dev/null stands in for a spidev node: the mock swallows every ioctl, so
+ * only the open() itself is real.
+ */
+static void test_bus_open_policy(void)
+{
+    begin("test_bus_open_policy");
+    int fb = g_fail;
+    i2cmock_reset();
+
+    bus_spec_t spec = { .kind = BUS_SPI, .node = "/dev/null", .spi_hz = 0 };
+    bus_caps_t caps = { .spi_capable = true, .spi_mode = 3,
+                        .spi_max_hz = 10000000, .spi_inc_mask = 0 };
+    imud_bus_t b;
+
+    /* A driver with no SPI port is refused before anything is opened. */
+    bus_caps_t nospi = caps;
+    nospi.spi_capable = false;
+    EXPECT(bus_open(&b, &spec, &nospi, "test") == -1, "spi refused without a port");
+    EXPECT(b.fd < 0, "refused open leaves the handle closed");
+    EXPECT(bus_open(&b, &spec, NULL, "test") == -1, "NULL caps means no SPI");
+
+    /* An unset clock resolves to the part's maximum. */
+    EXPECT(bus_open(&b, &spec, &caps, "test") == 0, "spi opens with caps");
+    EXPECT(b.kind == BUS_SPI, "handle records the transport");
+    EXPECT(b.spi_hz == 10000000, "spi_hz 0 resolves to the part maximum");
+    EXPECT(b.spi_mode == 3, "mode comes from the driver, not the operator");
+    bus_close(&b);
+    EXPECT(b.fd < 0, "bus_close reopens to the closed state");
+
+    /* A request above the datasheet maximum is clamped, not refused. */
+    spec.spi_hz = 50000000;
+    EXPECT(bus_open(&b, &spec, &caps, "test") == 0, "over-fast request still opens");
+    EXPECT(b.spi_hz == 10000000, "clock clamped to the part maximum");
+    bus_close(&b);
+
+    /* A slower request is honoured verbatim. */
+    spec.spi_hz = 1000000;
+    EXPECT(bus_open(&b, &spec, &caps, "test") == 0, "slower request opens");
+    EXPECT(b.spi_hz == 1000000, "a slower clock is left alone");
+    bus_close(&b);
+
+    /* Neither a request nor a declared maximum is a config error, not a
+     * silent 0 Hz handed to the kernel. */
+    spec.spi_hz = 0;
+    bus_caps_t nomax = caps;
+    nomax.spi_max_hz = 0;
+    EXPECT(bus_open(&b, &spec, &nomax, "test") == -1, "no clock at all is refused");
+
+    /* I2C still works and ignores the SPI caps entirely. */
+    bus_spec_t i2c = { .kind = BUS_I2C, .node = "/dev/null", .i2c_addr = 0x6B };
+    EXPECT(bus_open(&b, &i2c, NULL, "test") == 0, "i2c opens without caps");
+    EXPECT(b.kind == BUS_I2C && b.i2c_addr == 0x6B, "i2c handle carries the address");
+    bus_close(&b);
+
+    printf("%s\n", g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud driver register tests (mock I2C) ===");
@@ -1370,6 +1525,10 @@ int main(void)
     test_driver_resets();
     test_ak099_init_modes();
     test_odr_agreement();
+
+    test_spi_framing();
+    test_spi_inc_mask();
+    test_bus_open_policy();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -34,9 +34,24 @@
 
 #include <stdint.h>
 
-/* Clear all register files, FIFOs, FIFO-register declarations, and any pending
- * error injection.  Call at the start of every test case. */
+/* Clear all register files, FIFOs, FIFO-register declarations, SPI bindings,
+ * and any pending error injection.  Call at the start of every test case. */
 void i2cmock_reset(void);
+
+/*
+ * Point a spidev descriptor at one of the register files.
+ *
+ * SPI puts no address on the wire — the chip select does the addressing — so
+ * a transfer on `fd` is serviced by the file `addr` names, and a driver
+ * exercised on both transports sees one device rather than two mocks.
+ * `inc_mask` is the part's multi-byte auto-increment bit (0 for the parts
+ * that increment on their own), stripped from the command byte before the
+ * register is decoded.
+ *
+ * A transfer on an unbound descriptor fails with ENODEV rather than defaulting
+ * to file 0, so a forgotten bind shows up as a test failure.
+ */
+void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask);
 
 /* Register-file access (addr is the 7-bit I2C address). */
 void    i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val);

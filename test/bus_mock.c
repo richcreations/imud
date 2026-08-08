@@ -11,10 +11,12 @@
  */
 
 #include <stdarg.h>
+#include <stdbool.h>
 #include <string.h>
 #include <errno.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
+#include <linux/spi/spidev.h>
 #include <sys/ioctl.h>
 
 #include "bus_mock.h"
@@ -22,6 +24,7 @@
 #define NADDR   128     /* 7-bit I2C address space */
 #define REGSZ   256     /* one 8-bit register file per address */
 #define FIFOSZ  4096    /* per-address FIFO byte queue */
+#define NSPIFD  8       /* bound spidev descriptors */
 
 static uint8_t g_reg[NADDR][REGSZ];
 static uint8_t g_fifo[NADDR][FIFOSZ];
@@ -34,6 +37,19 @@ static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
+/* spidev descriptor → register file. SPI puts no address on the wire, so the
+ * binding is what stands in for the chip select. */
+static int     g_spi_fd[NSPIFD];     /* bound descriptor, or -1 */
+static uint8_t g_spi_addr[NSPIFD];
+static uint8_t g_spi_inc_mask[NADDR];
+
+static int spi_addr_for_fd(int fd)
+{
+    for (int i = 0; i < NSPIFD; i++)
+        if (g_spi_fd[i] == fd) return g_spi_addr[i] & (NADDR - 1);
+    return -1;
+}
+
 /* ── Public harness API ──────────────────────────────────────────────────── */
 
 void i2cmock_reset(void)
@@ -45,8 +61,24 @@ void i2cmock_reset(void)
     memset(g_selfclear, 0, sizeof g_selfclear);
     memset(g_live, 0, sizeof g_live);
     for (int i = 0; i < NADDR; i++) { g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1; }
+    memset(g_spi_inc_mask, 0, sizeof g_spi_inc_mask);
+    for (int i = 0; i < NSPIFD; i++) { g_spi_fd[i] = -1; g_spi_addr[i] = 0; }
     g_fail_next = 0;
     g_fail_all  = 0;
+}
+
+void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask)
+{
+    g_spi_inc_mask[addr & (NADDR - 1)] = inc_mask;
+    for (int i = 0; i < NSPIFD; i++) {
+        if (g_spi_fd[i] == fd || g_spi_fd[i] < 0) {
+            g_spi_fd[i]   = fd;
+            g_spi_addr[i] = addr;
+            return;
+        }
+    }
+    /* Out of slots: leave it unbound so dispatch_spi fails loudly rather than
+     * quietly aliasing onto someone else's register file. */
 }
 
 void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask)
@@ -114,25 +146,50 @@ static uint8_t fifo_pop(int a)
                  * behaviour tests should rely on) */
 }
 
+/* ── Device semantics, shared by both transports ─────────────────────────── */
+
+/*
+ * One byte out of the device at *reg_ptr, advancing the pointer unless the
+ * read landed in a FIFO window.  Both the I2C and the SPI arm go through
+ * here, which is the point: a driver exercised on either bus must see exactly
+ * the same device, or the dual-transport tests would be comparing two
+ * different mocks rather than two framings of one.
+ */
+static uint8_t dev_read(int a, int *reg_ptr)
+{
+    if (g_fifo_reg[a] >= 0 && *reg_ptr >= g_fifo_reg[a] &&
+        *reg_ptr <= g_fifo_reg_hi[a]) {
+        /* FIFO port: pointer stays put, and a read anywhere in the window
+         * pops.  Real data ports are several registers wide (the ST parts'
+         * FIFO_DATA_OUT is 0x78-0x7E) and popping on a read of any of them is
+         * what makes a blind register sweep destructive. */
+        return fifo_pop(a);
+    }
+
+    uint8_t r = (uint8_t)*reg_ptr;
+    uint8_t v = g_reg[a][r];
+    /* Self-clearing bits read back set once, then drop — the behaviour every
+     * reset()/trigger poll is waiting for. */
+    if (g_selfclear[a][r]) g_reg[a][r] &= (uint8_t)~g_selfclear[a][r];
+    /* Live registers advance on their own, like a timestamp counter or a FIFO
+     * level.  Stepping them on read is the only hook available here, and it is
+     * enough: what the code under test sees is a register whose value moves
+     * with no write in between. */
+    if (g_live[a][r]) g_reg[a][r] += g_live[a][r];
+    (*reg_ptr)++;
+    return v;
+}
+
+static void dev_write(int a, int *reg_ptr, uint8_t v)
+{
+    g_reg[a][(uint8_t)(*reg_ptr)] = v;
+    (*reg_ptr)++;
+}
+
 /* ── Wrapped ioctl ───────────────────────────────────────────────────────── */
 
-/* Shared dispatch for the wrappers below. */
-static int mock_dispatch(unsigned long request, void *arg)
+static int dispatch_i2c(struct i2c_rdwr_ioctl_data *d)
 {
-    if (g_fail_next || g_fail_all) {
-        g_fail_next = 0;
-        errno = EIO;
-        return -1;
-    }
-
-    /* Only I2C_RDWR is modelled; anything else is a test bug. */
-    if (request != I2C_RDWR) {
-        errno = EINVAL;
-        return -1;
-    }
-
-    struct i2c_rdwr_ioctl_data *d = arg;
-
     /* The register pointer persists across the messages of a single transfer,
      * so burst_read's [write reg][read data] pair works: the write sets the
      * pointer the following read consumes from. */
@@ -143,42 +200,89 @@ static int mock_dispatch(unsigned long request, void *arg)
         int a = msg->addr & (NADDR - 1);
 
         if (msg->flags & I2C_M_RD) {
-            for (uint16_t i = 0; i < msg->len; i++) {
-                if (g_fifo_reg[a] >= 0 && reg_ptr >= g_fifo_reg[a] &&
-                    reg_ptr <= g_fifo_reg_hi[a]) {
-                    /* FIFO port: pointer stays put, and a read anywhere in the
-                     * window pops.  Real data ports are several registers wide
-                     * (the ST parts' FIFO_DATA_OUT is 0x78-0x7E) and popping on
-                     * a read of any of them is what makes a blind register
-                     * sweep destructive. */
-                    msg->buf[i] = fifo_pop(a);
-                } else {
-                    uint8_t r = (uint8_t)reg_ptr;
-                    msg->buf[i] = g_reg[a][r];
-                    /* Self-clearing bits read back set once, then drop — the
-                     * behaviour every reset()/trigger poll is waiting for. */
-                    if (g_selfclear[a][r]) g_reg[a][r] &= (uint8_t)~g_selfclear[a][r];
-                    /* Live registers advance on their own, like a timestamp
-                     * counter or a FIFO level.  Stepping them on read is the
-                     * only hook available here, and it is enough: what the
-                     * code under test sees is a register whose value moves
-                     * with no write in between. */
-                    if (g_live[a][r]) g_reg[a][r] += g_live[a][r];
-                    reg_ptr++;
-                }
-            }
+            for (uint16_t i = 0; i < msg->len; i++)
+                msg->buf[i] = dev_read(a, &reg_ptr);
         } else {
             /* Write: first byte is the register pointer, the rest are stored
              * with auto-increment. */
             if (msg->len >= 1) {
                 reg_ptr = msg->buf[0];
                 for (uint16_t i = 1; i < msg->len; i++)
-                    g_reg[a][(uint8_t)reg_ptr++] = msg->buf[i];
+                    dev_write(a, &reg_ptr, msg->buf[i]);
             }
         }
     }
 
     return 0;
+}
+
+/*
+ * A spidev transfer: the first transfer's first byte is the command — top bit
+ * the direction, the rest the register — and the data is either the remaining
+ * bytes of that same transfer (write) or the following transfer's rx buffer
+ * (read).  That is exactly the 1-or-2 transfer shape bus_io.h emits.
+ *
+ * There is no address on the wire, so which register file a transfer lands in
+ * comes from spimock_bind(fd, ...): the chip select IS the addressing.
+ */
+static int dispatch_spi(int fd, unsigned long request,
+                        struct spi_ioc_transfer *tr)
+{
+    unsigned n = _IOC_SIZE(request) / sizeof *tr;
+    if (n < 1) { errno = EINVAL; return -1; }
+
+    int a = spi_addr_for_fd(fd);
+    if (a < 0) {
+        /* An unbound descriptor means the test forgot spimock_bind; failing
+         * loudly beats silently servicing register file 0. */
+        errno = ENODEV;
+        return -1;
+    }
+
+    const uint8_t *tx0 = (const uint8_t *)(uintptr_t)tr[0].tx_buf;
+    if (!tx0 || tr[0].len < 1) { errno = EINVAL; return -1; }
+
+    bool is_read = (tx0[0] & 0x80u) != 0;
+    int reg_ptr  = tx0[0] & (uint8_t)~(0x80u | g_spi_inc_mask[a]);
+
+    if (is_read) {
+        if (n < 2) { errno = EINVAL; return -1; }
+        uint8_t *rx = (uint8_t *)(uintptr_t)tr[1].rx_buf;
+        if (!rx) { errno = EINVAL; return -1; }
+        for (uint32_t i = 0; i < tr[1].len; i++)
+            rx[i] = dev_read(a, &reg_ptr);
+    } else {
+        for (uint32_t i = 1; i < tr[0].len; i++)
+            dev_write(a, &reg_ptr, tx0[i]);
+    }
+
+    return 0;
+}
+
+/* Shared dispatch for the wrappers below. */
+static int mock_dispatch(int fd, unsigned long request, void *arg)
+{
+    if (g_fail_next || g_fail_all) {
+        g_fail_next = 0;
+        errno = EIO;
+        return -1;
+    }
+
+    if (request == I2C_RDWR)
+        return dispatch_i2c(arg);
+
+    if (_IOC_TYPE(request) == SPI_IOC_MAGIC) {
+        /* SPI_IOC_MESSAGE(n) is the only spidev request that carries data;
+         * the mode/bits/speed setters are accepted and ignored so bus_open()
+         * works unchanged against the mock. */
+        if (_IOC_NR(request) == 0)
+            return dispatch_spi(fd, request, arg);
+        return 0;
+    }
+
+    /* Anything else is a test bug. */
+    errno = EINVAL;
+    return -1;
 }
 
 /* The drivers call ioctl(fd, I2C_RDWR, &xfer).  On a 32-bit glibc built with
@@ -193,8 +297,7 @@ int __wrap_ioctl(int fd, unsigned long request, ...)
     va_start(ap, request);
     void *arg = va_arg(ap, void *);
     va_end(ap);
-    (void)fd;
-    return mock_dispatch(request, arg);
+    return mock_dispatch(fd, request, arg);
 }
 
 int __wrap___ioctl_time64(int fd, unsigned long request, ...)
@@ -203,6 +306,5 @@ int __wrap___ioctl_time64(int fd, unsigned long request, ...)
     va_start(ap, request);
     void *arg = va_arg(ap, void *);
     va_end(ap);
-    (void)fd;
-    return mock_dispatch(request, arg);
+    return mock_dispatch(fd, request, arg);
 }
