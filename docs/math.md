@@ -743,6 +743,112 @@ calibration defect can be what it measures. See §4.8.1: it is the magnetic
 reference's DIP error, and ~96% of it was the benchmark aligning from a single
 instantaneous sample where the daemon averages a window.
 
+#### 4.7.2 The filter across the whole rate ladder (ROADMAP §10.9)
+
+Every figure above, and every figure elsewhere in this document, was measured at
+one point: 833 Hz IMU with a ~104 Hz magnetometer. The drivers advertise **27
+IMU rates from 12 Hz to 8 kHz and 13 magnetometer rates from 1 Hz to 1 kHz**, and
+each of those 351 pairings is a configuration `imud.conf` will accept. This
+section is what the other 350 do.
+
+Two instruments, because the questions are different sizes.
+`test_rate_derivations` walks all 351 pairings on every build, asserting the
+derived tuning is correct and the filter stays numerically sane — it deliberately
+asserts nothing about accuracy, since $R_a \propto f_{odr}$ retunes the filter at
+every rung and the 833 Hz bounds are meaningless elsewhere. Accuracy comes from
+an opt-in sweep along two axes:
+
+```
+rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+    -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_ODR" && ./test_fusion
+```
+
+**Accuracy is very nearly rate-independent.** 3-D attitude RMS over the IMU axis,
+mag pinned at 100 Hz:
+
+| $f_s$ (Hz) | 12 | 26 | 52 | 104 | 208 | 416 | **833** | 1660 | 3332 | 6664 | 8000 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 3-D att RMS | 1.210° | 1.163° | 1.156° | 1.181° | 1.157° | 1.176° | **1.178°** | 1.192° | 1.210° | 1.224° | 1.252° |
+| yaw att RMS | 7.673° | 2.370° | 1.980° | 2.036° | 2.083° | 2.105° | **2.185°** | 2.203° | 2.226° | 2.241° | 2.232° |
+| NIS$_a$ (3-D) | 15.66 | 7.40 | 3.84 | 2.11 | 1.26 | 0.82 | **0.63** | 0.53 | 0.47 | 0.42 | 0.42 |
+
+±4% across a 667× range in 3-D. A low-power board at 104 Hz gives up essentially
+nothing, which was the question that prompted the work.
+
+**But NIS$_a$ is not flat, and crosses 1.0 near 150–200 Hz.** The shipped
+measurement model is therefore most self-consistent around 200 Hz; at the 833 Hz
+default the filter is mildly *under*-confident, and below ~100 Hz increasingly
+over-confident. Accuracy does not track this at all.
+
+**And that is not a tuning choice.** Re-running the $(\sigma,\tau)$ grid at
+104 Hz: $\tau = 0.5$ s is still at the knee — the eight-fold drop in samples per
+correlation time, 416 to 52, does not move it — but *no point in the grid* brings
+NIS$_a$ near 1. The best is ≈1.69 at $\sigma = 1.8$, twice the shipped value and
+at a real accuracy cost. The decisive evidence is `SCEN_GM`, the one
+configuration whose right answer is known in advance: with the knobs set to the
+truth it reports NIS$_a = 0.87$ at 833 Hz and **≈3.4 at 104 Hz**. Whatever this
+is, it is structural, and it is the open question this section leaves behind.
+
+It is *not* the harness. The benchmark injects per-sample sigmas while the filter
+models a density × bandwidth, so the scenario scales its sensor draws by
+$\sqrt{f_s/833}$ (and the magnetometer independently by $\sqrt{f_{mag}/100}$).
+Cross-checked, $R_a$ over-estimates the injected per-sample variance by 4.480× at
+833 Hz and 4.480× at 104 Hz — identical to four figures.
+
+**The floor is at 12 Hz, only in yaw-only mode, and it is the gate.**
+
+| $f_s$ (Hz) | 12 | 14 | 16 | 20 | 25 | 26 | 40 | 52 |
+|---|---|---|---|---|---|---|---|---|
+| yaw att RMS | **7.673°** | 3.949° | 3.404° | 2.838° | 2.408° | 2.370° | 2.043° | 1.980° |
+| NEES(strict) | **402** | 102 | 72.9 | 46.9 | 30.0 | 28.4 | 15.3 | 12.1 |
+| reject | **.1051** | .0000 | .0000 | .0000 | .0000 | .0000 | .0000 | .0000 |
+
+Degradation from 52 Hz down to 14 Hz is smooth; 12 Hz is a cliff. The mechanism
+is visible in the last row — the gross-outlier gate goes from idle to rejecting
+10.5% of updates, which is the rejection-feedback regime §4.7 describes: lost
+corrections cause drift, drift enlarges innovations, and those trip the gate
+more often still. 3-D mode at 12 Hz is unaffected (1.210°).
+
+Note also that yaw-only is *best* around 40–52 Hz (1.980°), not at the 833 Hz
+default (2.185°).
+
+**This does not test the $\Phi = I + F_c\,\Delta t$ linearisation**, and the
+claim in §4.4 that $\lVert\omega\rVert\Delta t \ll 1$ at supported ODRs remains
+unmeasured. The wave scenario's own peak rate is 18.8 °/s, so
+$\lVert\omega\rVert\Delta t = 0.027$ rad even at 12 Hz — nowhere near the limit.
+At the 2000 °/s full scale the config permits it would be 2.9 rad at 12 Hz.
+Probing that needs a high-rate-rotation scenario that does not exist.
+
+**Two further results worth having.** The Gauss–Markov wave state is
+load-bearing at *every* rate, not a fix specific to 833 Hz: disabled, attitude
+RMS is 8–11° across the whole ladder with 12–27% rejection at the low end, and it
+matters *more* as the rate falls. And the magnetometer ladder is benign for
+accuracy — 3-D attitude is flat at 1.171–1.223° from a 1 Hz mag to a 1 kHz one —
+while being hostile to the NIS instrument: NIS$_m$ runs 9.84 at 1 Hz against 0.46
+at 1 kHz, because $R_m = N_m^2 f_{mag}$ shrinks with the rate while the
+attitude-error component of the innovation does not. NEES(strict) correspondingly
+*improves* at low mag rates (0.59 at 1 Hz against 5.74 at 100 Hz), which is
+independent corroboration of the dip-error diagnosis in §4.8.1: fewer 3-D mag
+updates inject less alignment dip bias into roll and pitch.
+
+**The gyro pad.** ROADMAP §10.3 describes `mekf_gyro_noise = 0.007` as a ~58×
+pad standing in for wave-induced angular dynamics. If that were all it covered it
+should be rate-invariant, since $Q_g = N_g^2\Delta t$ already delivers the same
+rad²/second at any rate. Measured, the RMS-optimal $N_g$ is **0.002 at 833 Hz and
+0.004 at 104 Hz** — eight times the $\Delta t$, twice the pad, close to the
+$\sqrt{\Delta t}$ that $N_g^2\Delta t$ implies for an error growing linearly in
+wall-clock time. That supports intra-sample rotation nonlinearity as (part of)
+what the pad absorbs.
+
+It does **not** justify changing the default, for the reason §4.7 already
+documents for $R_a$: at 833 Hz, $N_g = 0.002$ gives the best attitude RMS in the
+grid (1.074° against 1.178° shipped) *and* the worst NEES(strict) near it (18.5
+against 5.74). No scalar satisfies both. Worth recording that the shipped 0.007
+is essentially optimal for yaw-only (2.185° against a best of 2.178°) while ~9%
+off optimal for 3-D — a deliberate compromise favouring the marine default, not
+an arbitrary number. Reproduce with `-DBENCH_SWEEP_NG`, composable with
+`-DBENCH_ODR_HZ=<rate>`.
+
 ### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:820`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field

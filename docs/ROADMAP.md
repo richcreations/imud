@@ -622,6 +622,67 @@ mean). The 3-D tail is reduced but still ~1.24× the mean, which is a plausible
 amount of genuine scenario luck. The benchmark still asserts on the mean only.
 **Remaining work:** none urgent; revisit only if the 3-D tail grows again.
 
+### 10.9 The filter across every supported sample rate  *(new — measured, mostly resolved)*
+
+Every accuracy and consistency figure in this tree existed at exactly one point
+in a two-dimensional space: 833 Hz IMU, ~104 Hz mag. The drivers advertise **27
+IMU rates from 12 Hz to 8 kHz and 13 mag rates from 1 Hz to 1 kHz** — 351
+pairings, each a config `imud.conf` accepts, of which one had ever been
+measured. `odr_hz = 12` was, on paper, as supported as `odr_hz = 833`.
+
+Now instrumented. `test_rate_derivations` walks all 351 on every build (derived
+tuning correct, filter numerically sane — no accuracy claim, since `Ra ∝ odr`
+retunes the filter at every rung). `BENCH_SWEEP_ODR` measures accuracy along two
+axes. Full tables and reproduction commands in `docs/math.md` §4.7.2.
+
+**Resolved.**
+
+- **Accuracy is very nearly rate-independent.** 3-D attitude RMS is
+  1.156°–1.252° across the whole 12 Hz–8 kHz range, ±4% over 667×. A low-power
+  board at 104 Hz gives up essentially nothing — which was the question that
+  prompted this, and the answer is yes.
+- **Heave and sea-state are clean end to end.** Heave recovers a known sinusoid
+  within 1.2% at every rate (worst at 12 Hz, not 8 kHz); sea-state holds its
+  historical 200 Hz bounds unchanged, worst Hs error 1.0%. The float-accumulation
+  risk predicted at the top of the ladder does not materialise.
+- **The wave state is load-bearing at every rate**, and more so as the rate
+  falls — not a fix specific to 833 Hz.
+
+**The floor: 12 Hz, yaw-only mode only, and it is the gate.** yaw attitude RMS
+goes 1.980° (52 Hz) → 3.949° (14 Hz) → **7.673° (12 Hz)**, with the gross-outlier
+gate going from idle to rejecting 10.5% exactly at the cliff. That is the
+rejection-feedback regime §10.1 identified. 3-D at 12 Hz is unaffected (1.210°).
+Note yaw-only is *best* around 40–52 Hz, not at the 833 Hz default.
+
+*Action, if any:* a documented minimum for yaw-only rather than a code change.
+Nothing is retuned on the strength of this.
+
+**Still open — the one that matters.** NIS_a varies monotonically with rate and
+crosses 1.0 near 150–200 Hz: 15.66 at 12 Hz, 2.11 at 104, 0.63 at 833, 0.42 at
+8 kHz. Retuning does not fix it: no point in the (σ, τ) grid at 104 Hz brings it
+near 1, and — decisively — `SCEN_GM`, the scenario whose right answer is known in
+advance, reports NIS_a = 0.87 at 833 Hz and **≈3.4 at 104 Hz** with the knobs set
+to the truth. This is not a tuning choice, not a scenario artifact, and not the
+harness (`Ra` over-estimates the injected per-sample variance by 4.480× at both
+rates, identical to four figures). Something in how S is composed is
+rate-dependent. **This is the successor to §10.1** and wants the same treatment:
+measure before prescribing.
+
+**Also still open — §10.3 is now half-answered.** The RMS-optimal
+`mekf_gyro_noise` is 0.002 at 833 Hz and 0.004 at 104 Hz, roughly √Δt, which
+supports intra-sample rotation nonlinearity as part of what the 58× pad absorbs
+rather than wave dynamics alone. But RMS and NEES(strict) move in opposite
+directions exactly as they do for `Ra` (§10.1), so no scalar is right and the
+default stands. The shipped 0.007 turns out to be near-optimal for yaw-only and
+~9% off for 3-D — a compromise favouring the marine default.
+
+**Not tested, and it should be said plainly.** The first-order `Φ = I + Fc·dt`
+and `docs/math.md`'s claim that `‖ω‖dt ≪ 1 at supported ODRs` remain unmeasured.
+The wave scenario peaks at 18.8 °/s, so `‖ω‖dt` is 0.027 rad even at 12 Hz —
+nowhere near the limit, where 2000 °/s at 12 Hz would be 2.9 rad. Probing it
+needs a high-rate-rotation scenario that does not exist. Same shape as §10.3 and
+§10.5: **the missing scenario is the work.**
+
 ### Reviewed, no action
 
 - **Heave DC-gain trade-off** *(audit A7)* — the structural high-pass zero at
@@ -749,4 +810,4 @@ B5 shipped, and the items 1.7 deliberately left (§8 consolidation, §9 heave
 init, §10.3, §10.5 vibration half) annotated with why; §0 forward plan added
 2026-08-05, synthesised from the sections below rather than from new decisions.
 Not yet triaged against 1.8 — §§1–11 still read as they did at the close of
-1.7.*
+1.7; §10.9 added 2026-08-08 from the sample-rate sweep.*
