@@ -67,6 +67,20 @@ static int g_pass, g_fail;
 static double bench_ra_override = 0.0;
 
 /*
+ * Same, for mekf_gyro_noise — the ~58x pad over the raw sensor floor that
+ * ROADMAP §10.3 describes.  Only BENCH_SWEEP_NG sets it.
+ *
+ * Added because the pad is the one shipped knob with no override, and the rate
+ * sweep gave a reason to want one: Qg = Ng^2 * dt delivers the same rad^2 per
+ * SECOND at any rate, but what the pad stands in for — intra-sample rotation
+ * nonlinearity under a first-order Phi — grows with dt.  If that is really what
+ * it covers, its optimum should move UP as the rate falls.  If it sits still,
+ * the pad is covering something else and the story in the tree needs correcting.
+ * Either outcome is a result.
+ */
+static double bench_gyro_override = 0.0;
+
+/*
  * Gauss–Markov wave-state knobs. These carry the SHIPPED defaults, so the
  * benchmark measures what a real vessel gets; the BENCH_SWEEP_WAVE driver
  * overwrites them to explore the (σ, τ) grid. Kept here rather than read from
@@ -124,7 +138,8 @@ static imud_config_t make_cfg(void)
     c.mekf_wave_accel       = bench_wave_sigma;
     c.mekf_wave_accel_tau_s = bench_wave_tau;
     c.mekf_mag_dip_sigma_deg = bench_dip_sigma;
-    if (bench_ra_override > 0.0) c.mekf_accel_noise = bench_ra_override;
+    if (bench_ra_override   > 0.0) c.mekf_accel_noise = bench_ra_override;
+    if (bench_gyro_override > 0.0) c.mekf_gyro_noise  = bench_gyro_override;
     return c;
 }
 
@@ -3239,6 +3254,52 @@ static void bench_sweep_wave(void)
 #endif
 
 /*
+ * ROADMAP §10.3 gyro-pad sweep — not built by default.  `make` does not track
+ * CFLAGS, so remove the binary first:
+ *
+ *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+ *       -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_NG" && ./test_fusion
+ *
+ * Compose it with -DBENCH_ODR_HZ=<rate> to ask the question it exists for: does
+ * the ~58x pad over the raw gyro floor want to be LARGER at a lower rate?
+ * Qg = Ng^2 * dt already delivers the same rad^2/second at any rate, so a pad
+ * standing in for intra-sample rotation nonlinearity — an O(dt^2) per-step error
+ * under the first-order Phi, hence O(dt) per second — should shift upward as dt
+ * grows.  A flat optimum falsifies that explanation.
+ *
+ * 0.007 is the shipped value; 1.2e-4 is roughly the raw sensor floor.
+ * Recorded run: docs/math.md §4.7.2.
+ */
+#ifdef BENCH_SWEEP_NG
+static void bench_sweep_ng(void)
+{
+    static const double ng[] = {
+        0.00012, 0.0005, 0.001, 0.002, 0.004, 0.007, 0.012, 0.02, 0.04,
+    };
+    double g0 = bench_gyro_override;
+
+    printf("\n  ── mekf_gyro_noise sweep at %.0f Hz (12 seeds/point) ───────\n",
+           (double)bench_fs);
+    printf("  %-9s %-5s %8s %8s %9s %9s %9s %8s %8s\n",
+           "Ng", "mode", "att RMS", "hdg RMS", "bias_z",
+           "NEES(tr)", "NEES(st)", "NIS_a", "reject");
+    for (size_t i = 0; i < sizeof ng / sizeof ng[0]; i++) {
+        bench_gyro_override = ng[i];
+        for (int mode = 0; mode < 2; mode++) {
+            bench_result_t r;
+            run_wave_seeds(mode == 1, &r);
+            printf("  %-9.5f %-5s %8.3f %8.3f %9.6f %9.2f %9.2f %8.2f %8.4f\n",
+                   ng[i], mode ? "yaw" : "3D",
+                   r.att_mean, r.hdg_mean, r.bias_mean,
+                   r.nees_tr_mean, r.nees_st_mean, r.nis_a_mean, r.reject_mean);
+        }
+    }
+    bench_gyro_override = g0;
+    printf("  ────────────────────────────────────────────────────────────\n\n");
+}
+#endif
+
+/*
  * Sample-rate sweep — not built by default.  `make` does not track CFLAGS, so
  * remove the binary first:
  *
@@ -3367,6 +3428,9 @@ static void test_wave_benchmark(void)
 {
 #ifdef BENCH_SWEEP_ODR
     bench_sweep_odr();
+#endif
+#ifdef BENCH_SWEEP_NG
+    bench_sweep_ng();
 #endif
 #ifdef BENCH_SWEEP_RA
     bench_sweep_ra();
