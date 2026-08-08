@@ -105,7 +105,9 @@ typedef struct IMUD__PACKED {
     uint32_t magic;           /* IMUD_MAGIC */
     uint16_t version;         /* IMUD_VERSION */
     uint16_t flags;           /* IMUD_FLAG_* bitmask */
-    uint64_t ts_wall_ns;      /* CLOCK_REALTIME, nanoseconds */
+    /* The instant the SENSOR sampled, not when the packet was sent — see
+     * docs/libimud/spec.md.  `now() - ts_wall_ns` is the end-to-end age. */
+    uint64_t ts_wall_ns;      /* CLOCK_REALTIME the sample was taken, ns */
     uint64_t ts_tai_ns;       /* CLOCK_TAI, nanoseconds */
     uint32_t ts_chip_ticks;   /* IMU hardware counter (25 µs/tick for ISM330) */
     uint32_t anchor_gen;      /* increments on wall-clock re-anchor */

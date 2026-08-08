@@ -116,10 +116,30 @@ typedef struct {
     float    nis_accel;      /* EMA of accel d²/2; 1 = covariance consistent, >1 over-confident */
     float    nis_mag;        /* EMA of mag d²/dof; 1 = covariance consistent */
     uint16_t flags;          /* FLAG_* bitmask */
-    uint32_t imu_seq;        /* ISM330 sample counter of last prediction step */
-    uint64_t ts_wall_ns;     /* CLOCK_REALTIME of last prediction step (ns) */
-    uint64_t ts_tai_ns;      /* CLOCK_TAI of last prediction step (ns) */
-    uint32_t ts_chip_ticks;  /* ISM330 counter of last prediction step */
+    uint32_t imu_seq;        /* IMU sample counter of last prediction step */
+    /*
+     * WHEN THE SAMPLE WAS TAKEN — not when this state was computed or sent.
+     *
+     * The old wording here, "CLOCK_REALTIME of last prediction step", read as
+     * emit-side time and hid what these are for.  src/imu.c sets them from
+     * chip_to_wall() on the sample's own chip counter, so they carry the
+     * instant the SENSOR sampled, reconstructed against an anchor that also
+     * corrects the chip oscillator's measured period.
+     *
+     * That makes them the correlation timestamp: a consumer can align an imud
+     * packet with a camera frame, and `now() - ts_wall_ns` at receipt is the
+     * end-to-end age of the estimate, FIFO residence included.  (Over a network
+     * that subtraction is only as good as the two clocks' agreement.)
+     *
+     * On a driver with no hardware timestamp counter (has_hw_timestamp = false:
+     * icm20948, mpu925x) chip_ts is always 0 and the anchor is instead refreshed
+     * every burst from the read midpoint, so these degrade to the time of the
+     * I2C READ that delivered the sample — burst-granular, and it cannot see
+     * how long the sample sat in the FIFO first.
+     */
+    uint64_t ts_wall_ns;     /* CLOCK_REALTIME the sample was taken (ns) */
+    uint64_t ts_tai_ns;      /* CLOCK_TAI, same instant (ns) */
+    uint32_t ts_chip_ticks;  /* the chip counter that instant came from */
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
@@ -130,9 +150,11 @@ typedef struct __attribute__((packed)) {
     uint32_t magic;          /* IMUD_MAGIC */
     uint16_t version;        /* IMUD_VERSION */
     uint16_t flags;          /* FLAG_* bitmask */
-    uint64_t ts_wall_ns;     /* CLOCK_REALTIME, ns */
-    uint64_t ts_tai_ns;      /* CLOCK_TAI, ns */
-    uint32_t ts_chip_ticks;  /* ISM330 25 µs counter */
+    /* Sample-taken instant, not emit time — see fused_state_t above for the
+     * full contract and the has_hw_timestamp caveat. */
+    uint64_t ts_wall_ns;     /* CLOCK_REALTIME the sample was taken, ns */
+    uint64_t ts_tai_ns;      /* CLOCK_TAI, same instant, ns */
+    uint32_t ts_chip_ticks;  /* chip counter that instant came from */
     uint32_t anchor_gen;
     /* Accelerometer — calibrated then raw, m/s² */
     float    accel_x;

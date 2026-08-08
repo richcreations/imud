@@ -144,7 +144,8 @@ class ImudPacket:
     magic:          int
     version:        int
     flags:          int
-    ts_wall_ns:     int     # CLOCK_REALTIME, ns
+    ts_wall_ns:     int     # CLOCK_REALTIME the SAMPLE was taken, ns
+                            # (not emit time; now()-this = end-to-end age)
     ts_tai_ns:      int     # CLOCK_TAI, ns
     ts_chip_ticks:  int     # IMU hardware counter ticks
     anchor_gen:     int

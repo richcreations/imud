@@ -78,7 +78,12 @@ extern "C" {
 
 typedef struct imud_data {
     /* Timestamps */
-    uint64_t ts_wall_ns;       /* CLOCK_REALTIME, nanoseconds */
+    /* The instant the SENSOR sampled, not when the packet was sent: use it to
+     * correlate with camera frames, and `now() - ts_wall_ns` for the end-to-end
+     * age of this estimate (only as good as clock agreement across a network).
+     * Drivers without a hardware timestamp counter degrade this to the time of
+     * the I2C read that delivered the sample. */
+    uint64_t ts_wall_ns;       /* CLOCK_REALTIME the sample was taken, ns */
     uint64_t ts_tai_ns;        /* CLOCK_TAI, nanoseconds */
     uint32_t ts_chip_ticks;    /* IMU hardware counter */
     uint32_t anchor_gen;       /* increments on wall-clock re-anchor */

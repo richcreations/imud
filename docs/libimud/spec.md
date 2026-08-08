@@ -41,7 +41,7 @@ settled — check the corresponding flag.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `ts_wall_ns` | uint64 | CLOCK_REALTIME, nanoseconds |
+| `ts_wall_ns` | uint64 | CLOCK_REALTIME at which the sample was **taken**, ns — not when the packet was sent. Use it to correlate with other sensors, and `now() - ts_wall_ns` for the end-to-end age of the estimate. Drivers with no hardware timestamp counter degrade it to the time of the I²C read. |
 | `ts_tai_ns` | uint64 | CLOCK_TAI, nanoseconds |
 | `ts_chip_ticks` | uint32 | IMU hardware counter |
 | `anchor_gen` | uint32 | increments on wall-clock re-anchor |

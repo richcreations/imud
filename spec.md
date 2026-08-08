@@ -694,7 +694,7 @@ Offset  Bytes  Type      Field             Notes
  0      4      uint32    magic             0x494D5544 (“IMUD”)
  4      2      uint16    version           = 14  (1.4; encoded as major*10+minor)
  6      2      uint16    flags             see below
- 8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns
+ 8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns, SAMPLE-TAKEN
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns
 24      4      uint32    ts_chip_ticks     raw ISM330 counter (25 µs/tick)
 28      4      uint32    anchor_gen        increments on re-anchor
