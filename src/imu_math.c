@@ -164,6 +164,69 @@ void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
+/* ── Sample latency ──────────────────────────────────────────────────────── */
+
+/*
+ * Bucket index for an interval: floor(log2(microseconds)), clamped.
+ *
+ * Sub-microsecond lands in bucket 0 rather than being dropped — a zero-length
+ * interval is a real measurement (both stamps inside the same clock tick), and
+ * silently discarding it would bias the count that percentiles divide by.
+ *
+ * Written as a shift loop rather than __builtin_clzll: the builtin is undefined
+ * for zero, which is exactly the input that arrives when the two stamps land in
+ * the same tick, and guarding it costs more than the loop saves at this rate.
+ */
+static int lat_bucket(uint64_t ns)
+{
+    uint64_t us = ns / 1000u;
+    int k = 0;
+    while (us > 1u && k < LAT_BUCKETS - 1) { us >>= 1; k++; }
+    return k;
+}
+
+void lat_record(lat_hist_t *h, uint64_t ns)
+{
+    h->bucket[lat_bucket(ns)]++;
+    h->count++;
+    if (ns > h->max_ns)      h->max_ns      = ns;
+    if (ns > h->max_ever_ns) h->max_ever_ns = ns;
+}
+
+uint64_t lat_percentile(const lat_hist_t *h, double p)
+{
+    if (h->count == 0) return 0;
+    if (p < 0.0) p = 0.0;
+    if (p > 1.0) p = 1.0;
+
+    /*
+     * Rank via ceil so p=1.0 selects the last sample rather than one past it,
+     * and any p>0 selects at least the first.
+     */
+    uint64_t want = (uint64_t)((double)h->count * p + 0.999999);
+    if (want == 0) want = 1;
+
+    uint64_t seen = 0;
+    for (int k = 0; k < LAT_BUCKETS; k++) {
+        seen += h->bucket[k];
+        if (seen >= want) {
+            /* Upper edge of bucket k = 2^(k+1) microseconds, in ns. */
+            return (uint64_t)1000u << (k + 1);
+        }
+    }
+    return (uint64_t)1000u << LAT_BUCKETS;   /* unreachable while count > 0 */
+}
+
+void lat_reset_window(lat_hist_t *h)
+{
+    for (int k = 0; k < LAT_BUCKETS; k++) h->bucket[k] = 0;
+    h->count  = 0;
+    h->max_ns = 0;
+    /* max_ever_ns intentionally survives — see imu_math.h. */
+}
+
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+
 int nearest_odr(const int supported[], int requested)
 {
     int best = supported[0], best_diff = abs(supported[0] - requested);

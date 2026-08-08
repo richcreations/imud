@@ -307,9 +307,26 @@ static void *health_thread(void *arg)
             fused_state_t state;
             imu_get_state(ctx->imu, &state, NULL, NULL, NULL);
 
+            /*
+             * Latency is printed as a separate trailing clause, and only when
+             * the driver can measure it, so the line keeps its historical shape
+             * on a part with no chip timer instead of carrying a row of zeros
+             * that reads like "no latency".
+             *
+             * fifo is the operator's knob (fifo_wm/odr); pipe is imud's own
+             * cost.  Both in ms.  See spec.md §14.
+             */
+            char lat[96] = "";
+            if (st.lat_pipe_p99_ns || st.lat_fifo_p99_ns)
+                snprintf(lat, sizeof lat,
+                         "  fifo=%.1f/%.1fms pipe=%.2f/%.2fms max=%.1f/%.2fms",
+                         st.lat_fifo_p50_ns * 1e-6, st.lat_fifo_p99_ns * 1e-6,
+                         st.lat_pipe_p50_ns * 1e-6, st.lat_pipe_p99_ns * 1e-6,
+                         st.lat_fifo_max_ns * 1e-6, st.lat_pipe_max_ns * 1e-6);
+
             LOG_I("[stats] imu=%llu ovf=%llu mag=%llu  "
                 "hdg=%.1f pitch=%.1f roll=%.1f  "
-                "cov=%.1e %s\n",
+                "cov=%.1e %s%s\n",
                 (unsigned long long)st.imu_samples,
                 (unsigned long long)st.fifo_overflows,
                 (unsigned long long)st.mag_samples,
@@ -317,7 +334,8 @@ static void *health_thread(void *arg)
                 state.pitch * (float)(180.0 / M_PI),
                 state.roll  * (float)(180.0 / M_PI),
                 state.cov[0] + state.cov[4] + state.cov[8],
-                (state.flags & FLAG_FUSION_CONVERGED) ? "converged" : "converging");
+                (state.flags & FLAG_FUSION_CONVERGED) ? "converged" : "converging",
+                lat);
         }
     }
 

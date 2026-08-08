@@ -76,6 +76,16 @@ typedef struct {
     float    temp_c;         /* °C, die temperature (256 LSB/°C, 0 = 25 °C) */
     uint32_t chip_ts;        /* ISM330DHCX TIMESTAMP counter (25 µs/tick, 32-bit) */
     uint32_t seq;            /* monotonic counter across all FIFO bursts */
+    /*
+     * CLOCK_REALTIME at which the I2C burst carrying this sample COMPLETED.
+     * Daemon-internal: it is not on the wire and not in a capture record
+     * (cap_imu_rec_t is built field-by-field, so the .imucap format is
+     * untouched).  It exists to split sample latency into its two terms —
+     * this minus the sample instant is FIFO residence, and the fusion
+     * thread's clock minus this is the daemon's own pipeline.  Only their
+     * sum was ever discussed, and only the second is under imud's control.
+     */
+    uint64_t read_done_ns;
 } imu_sample_t;
 
 /* ── Magnetometer sample — one MMC5983MA reading ──────────────────────────── */

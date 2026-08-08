@@ -109,6 +109,54 @@ double anchor_measured_tick_ns(ts_anchor_t *a);
 void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                   uint64_t *wall_out, uint64_t *tai_out, uint32_t *gen_out);
 
+/* ── Sample latency ──────────────────────────────────────────────────────── */
+
+/*
+ * spec.md §14 budgets FIFO read jitter, fusion latency and end-to-end latency.
+ * Nothing measured any of them, so all three were aspirations — and the
+ * end-to-end row is the one that looks wrong: `fifo_wm = 64` at 833 Hz is 77 ms
+ * of buffering on its own, against a 3 ms budget.
+ *
+ * This is the instrument.  Two terms, kept apart because they answer different
+ * questions and only their sum was ever discussed:
+ *
+ *   FIFO residence   sample taken -> I2C read completed   (fifo_wm / odr)
+ *   pipeline         read completed -> state published    (the daemon's own)
+ *
+ * A log-spaced histogram rather than a mean, because the budget is stated as a
+ * p99 and a mean cannot answer it; and fixed-bucket rather than a reservoir
+ * because this runs per sample on the hot path and must not allocate.
+ *
+ * Bucket k holds [2^k, 2^(k+1)) microseconds, so the 20 buckets span 1 µs to
+ * ~1.05 s, with anything larger clamped into the top bucket.  Percentiles are
+ * therefore bucket-resolution: lat_percentile returns the UPPER edge of the
+ * bucket the percentile falls in, which is a conservative read — never a
+ * flattering one.  For an exact worst case use max_ns, which is not bucketed.
+ */
+#define LAT_BUCKETS 20
+
+typedef struct {
+    uint32_t bucket[LAT_BUCKETS];
+    uint64_t count;         /* samples in the current window */
+    uint64_t max_ns;        /* exact window maximum, not bucketed */
+    uint64_t max_ever_ns;   /* exact maximum since start; survives a reset */
+} lat_hist_t;
+
+/* Record one interval.  Saturates into the top bucket rather than wrapping. */
+void lat_record(lat_hist_t *h, uint64_t ns);
+
+/*
+ * Upper edge, in ns, of the bucket containing the p-th percentile (p in
+ * [0, 1]).  Returns 0 for an empty histogram.  Because it reports a bucket
+ * edge, the true value is at most a factor of two below what is returned.
+ */
+uint64_t lat_percentile(const lat_hist_t *h, double p);
+
+/* Clear the window (buckets, count, max_ns).  max_ever_ns is deliberately
+ * kept: the worst excursion since start is what diagnoses a stall, and a
+ * per-window reset would hide it from anyone not watching that window. */
+void lat_reset_window(lat_hist_t *h);
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 /*

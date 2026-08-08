@@ -480,6 +480,92 @@ static void test_tick_estimate_is_filtered(void)
     end(fb);
 }
 
+/* ── Sample-latency histogram ────────────────────────────────────────────── */
+
+static void test_lat_buckets_and_percentiles(void)
+{
+    begin("test_lat_buckets_and_percentiles");
+    int fb = g_fail;
+    lat_hist_t h;
+    memset(&h, 0, sizeof h);
+
+    EXPECT(lat_percentile(&h, 0.99) == 0, "empty histogram reports 0");
+
+    /* 1000 samples all at 5 ms. Bucket for 5000 µs is floor(log2 5000) = 12,
+     * whose upper edge is 2^13 µs = 8192 µs. Everything lands there, so every
+     * percentile reads that edge — bucket resolution, conservative by design. */
+    for (int i = 0; i < 1000; i++) lat_record(&h, 5000000ull);
+    EXPECT(h.count == 1000, "count tracks records");
+    EXPECT(lat_percentile(&h, 0.50) == 8192000ull, "p50 = bucket upper edge");
+    EXPECT(lat_percentile(&h, 0.99) == 8192000ull, "p99 = same bucket");
+    EXPECT(h.max_ns == 5000000ull, "max_ns is exact, not bucketed");
+
+    /*
+     * The property that matters for a p99 budget: one late sample in a hundred
+     * must move p99 and must NOT move p50. 99 fast, 1 slow.
+     */
+    memset(&h, 0, sizeof h);
+    for (int i = 0; i < 99; i++) lat_record(&h, 100000ull);   /* 100 µs */
+    lat_record(&h, 900000000ull);                              /* 900 ms  */
+    EXPECT(lat_percentile(&h, 0.50) < 1000000ull, "p50 unmoved by one outlier");
+    EXPECT(lat_percentile(&h, 0.99) < 1000000ull, "p99 at exactly 99/100 is fast");
+    EXPECT(lat_percentile(&h, 1.00) > 500000000ull, "p100 catches the outlier");
+    EXPECT(h.max_ns == 900000000ull, "max_ns caught it exactly");
+
+    /* Monotonicity across the whole range, which a bucketing bug breaks. */
+    memset(&h, 0, sizeof h);
+    for (uint64_t ns = 1000; ns < 2000000000ull; ns *= 2) lat_record(&h, ns);
+    uint64_t prev = 0;
+    bool mono = true;
+    for (double p = 0.1; p <= 1.0; p += 0.1) {
+        uint64_t v = lat_percentile(&h, p);
+        if (v < prev) mono = false;
+        prev = v;
+    }
+    EXPECT(mono, "percentiles are non-decreasing in p");
+
+    /* Saturation: nothing wraps or lands out of range. */
+    memset(&h, 0, sizeof h);
+    lat_record(&h, 60ull * 1000000000ull);      /* a minute */
+    EXPECT(h.count == 1 && h.bucket[LAT_BUCKETS-1] == 1,
+           "an absurd interval saturates into the top bucket");
+    EXPECT(h.max_ns == 60ull*1000000000ull, "max_ns still exact when saturated");
+
+    /* Sub-microsecond is a real measurement, not something to drop. */
+    memset(&h, 0, sizeof h);
+    lat_record(&h, 0);
+    lat_record(&h, 999);
+    EXPECT(h.count == 2 && h.bucket[0] == 2, "sub-µs lands in bucket 0");
+
+    end(fb);
+}
+
+static void test_lat_reset_keeps_all_time_max(void)
+{
+    begin("test_lat_reset_keeps_all_time_max");
+    int fb = g_fail;
+    lat_hist_t h;
+    memset(&h, 0, sizeof h);
+
+    lat_record(&h, 500000000ull);               /* 500 ms spike */
+    lat_record(&h, 100000ull);
+    EXPECT(h.max_ever_ns == 500000000ull, "all-time max recorded");
+
+    lat_reset_window(&h);
+    EXPECT(h.count == 0, "window count cleared");
+    EXPECT(h.max_ns == 0, "window max cleared");
+    EXPECT(lat_percentile(&h, 0.99) == 0, "buckets cleared");
+    EXPECT(h.max_ever_ns == 500000000ull,
+           "all-time max SURVIVES the reset — a stall must not be erasable "
+           "by the next window rolling over");
+
+    lat_record(&h, 1000ull);
+    EXPECT(h.max_ns == 1000ull, "window max restarts from the new data");
+    EXPECT(h.max_ever_ns == 500000000ull, "all-time max still held");
+
+    end(fb);
+}
+
 static void test_ts_ns(void)
 {
     begin("test_ts_ns");
@@ -643,6 +729,8 @@ int main(void)
     test_dt_between_samples_is_true();
     test_tick_measurement_rejects_nonsense();
     test_tick_estimate_is_filtered();
+    test_lat_buckets_and_percentiles();
+    test_lat_reset_keeps_all_time_max();
     test_ts_ns();
     test_mount_rotation();
     test_apply_imu_cal();

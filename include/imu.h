@@ -26,7 +26,8 @@
 
 /* ── Calibration data (defined in cal.h) ───────────────────────────────── */
 
-#include "cal.h"   /* imud_cal_t */
+#include "cal.h"       /* imud_cal_t */
+#include "imu_math.h"  /* lat_hist_t */
 
 /* ── Opaque context (defined in imu.c) ─────────────────────────────────── */
 
@@ -40,6 +41,24 @@ typedef struct {
     uint64_t fifo_overflows;   /* IMU ring drop events (software) + hardware overflows */
     uint64_t imu_errors;       /* consecutive-error-reset events from ism_reader */
     uint64_t mag_errors;       /* consecutive-error-reset events from mag_reader */
+
+    /*
+     * Sample latency, ns.  p50/p99 describe the most recent ~1 s window;
+     * max is since start, because the worst excursion is what diagnoses a
+     * stall and a per-window reset would hide it.
+     *
+     * fifo_*  sample taken -> I2C read complete.  Dominated by fifo_wm/odr,
+     *         so it is the operator's knob, not the daemon's.
+     * pipe_*  read complete -> state fused.  This is imud's own cost, and
+     *         the one spec.md §14's 1.5/3 ms budgets can fairly be read
+     *         against.
+     *
+     * Zero on a driver with no hardware timestamp counter: without one there
+     * is no sample instant to subtract, so the split is unmeasurable and
+     * reporting the pipeline alone would invite reading it as the total.
+     */
+    uint64_t lat_fifo_p50_ns, lat_fifo_p99_ns, lat_fifo_max_ns;
+    uint64_t lat_pipe_p50_ns, lat_pipe_p99_ns, lat_pipe_max_ns;
 } imu_stats_t;
 
 /* ── API ────────────────────────────────────────────────────────────────── */

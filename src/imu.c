@@ -116,6 +116,17 @@ struct imu_ctx {
     _Atomic uint64_t imu_error_count;
     _Atomic uint64_t mag_error_count;
 
+    /*
+     * Sample latency.  The histograms are touched ONLY by fusion_thread, so
+     * they need no lock; what crosses threads is the derived p50/p99/max,
+     * published as _Atomic like every other stat.  Deriving costs a 20-bucket
+     * walk and is done about once a second rather than per sample.
+     */
+    lat_hist_t       lat_fifo;      /* fusion_thread only */
+    lat_hist_t       lat_pipe;      /* fusion_thread only */
+    _Atomic uint64_t lat_fifo_p50, lat_fifo_p99, lat_fifo_max;
+    _Atomic uint64_t lat_pipe_p50, lat_pipe_p99, lat_pipe_max;
+
     float            vib_ema;       /* EMA of (|a|-g)² for engine detection, ism_reader only */
 
     /* Cross-thread signal flags: _Atomic int rather than volatile so the
@@ -308,6 +319,13 @@ void *ism_reader_thread(void *arg)
             for (int i = 0; i < n; i++)
                 cap_ring_push_imu(&ctx->cap_ring, &buf[i], mono);
         }
+
+        /* When this burst's I2C read finished — the boundary between FIFO
+         * residence (the operator's fifo_wm/odr) and the daemon's own
+         * pipeline.  t_after is already CLOCK_REALTIME immediately after the
+         * read, so this costs a store per sample and no extra syscall. */
+        const uint64_t read_done = ts_ns(&t_after);
+        for (int i = 0; i < n; i++) buf[i].read_done_ns = read_done;
 
         /* Apply mount rotation (board->body), then accel calibration */
         for (int i = 0; i < n; i++) {
@@ -1068,6 +1086,42 @@ void *fusion_thread(void *arg)
         }
         state.imu_seq = s.seq;
 
+        /*
+         * Sample latency, both terms.
+         *
+         * Only measurable with a hardware timestamp: without one, chip_to_wall
+         * degenerates to the burst's own read midpoint, so `wall` and
+         * read_done_ns are the same clock reading and their difference is
+         * noise rather than FIFO residence.  Reporting the pipeline alone
+         * would invite reading it as the total, so the whole thing stays zero.
+         */
+        if (have_ts && ctx->imu_ops->has_hw_timestamp && s.read_done_ns) {
+            struct timespec t_now;
+            clock_gettime(CLOCK_REALTIME, &t_now);
+            uint64_t now_ns = ts_ns(&t_now);
+
+            /* Clamp rather than wrap: an anchor refresh can momentarily put
+             * `wall` slightly ahead of the read stamp, and an unsigned
+             * underflow there would land in the top bucket and poison p99. */
+            if (s.read_done_ns > wall)
+                lat_record(&ctx->lat_fifo, s.read_done_ns - wall);
+            if (now_ns > s.read_done_ns)
+                lat_record(&ctx->lat_pipe, now_ns - s.read_done_ns);
+
+            /* Publish about once a second, self-paced by the sample count so
+             * it holds at any ODR, then roll the window. */
+            if (ctx->lat_fifo.count >= (uint64_t)ctx->actual_odr_hz) {
+                atomic_store(&ctx->lat_fifo_p50, lat_percentile(&ctx->lat_fifo, 0.50));
+                atomic_store(&ctx->lat_fifo_p99, lat_percentile(&ctx->lat_fifo, 0.99));
+                atomic_store(&ctx->lat_fifo_max, ctx->lat_fifo.max_ever_ns);
+                atomic_store(&ctx->lat_pipe_p50, lat_percentile(&ctx->lat_pipe, 0.50));
+                atomic_store(&ctx->lat_pipe_p99, lat_percentile(&ctx->lat_pipe, 0.99));
+                atomic_store(&ctx->lat_pipe_max, ctx->lat_pipe.max_ever_ns);
+                lat_reset_window(&ctx->lat_fifo);
+                lat_reset_window(&ctx->lat_pipe);
+            }
+        }
+
         /* Declination validity is an explicit flag, not a 0.0 sentinel, so a
          * WMM-computed 0.0° on the agonic line still yields true heading. */
         if (cfg.pos_declination_valid) {
@@ -1407,4 +1461,11 @@ void imu_get_stats(imu_ctx_t *ctx, imu_stats_t *out)
     out->fifo_overflows = ctx->fifo_overflow_count;
     out->imu_errors     = ctx->imu_error_count;
     out->mag_errors     = ctx->mag_error_count;
+
+    out->lat_fifo_p50_ns = ctx->lat_fifo_p50;
+    out->lat_fifo_p99_ns = ctx->lat_fifo_p99;
+    out->lat_fifo_max_ns = ctx->lat_fifo_max;
+    out->lat_pipe_p50_ns = ctx->lat_pipe_p50;
+    out->lat_pipe_p99_ns = ctx->lat_pipe_p99;
+    out->lat_pipe_max_ns = ctx->lat_pipe_max;
 }
