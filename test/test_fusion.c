@@ -2271,8 +2271,16 @@ static const uint32_t bench_seeds[] = {
 
 static uint32_t bench_seed      = 0x1234ABCDu;   /* set per run by the driver */
 static uint32_t bench_rng_state = 0x1234ABCDu;
+
+/*
+ * Draw counter for test_bench_stream_fingerprint().  Counts calls, changes no
+ * state the generator reads, so it cannot perturb the stream it measures.
+ */
+static unsigned long bench_draws = 0;
+
 static float bench_rand(void)   /* uniform in [-1, 1) */
 {
+    bench_draws++;
     bench_rng_state ^= bench_rng_state << 13;
     bench_rng_state ^= bench_rng_state >> 17;
     bench_rng_state ^= bench_rng_state << 5;
@@ -2664,6 +2672,69 @@ static void run_wave_seeds_ex(bool yaw_only, wave_scen_t scen, bench_result_t *r
 static void run_wave_seeds(bool yaw_only, bench_result_t *r)
 {
     run_wave_seeds_ex(yaw_only, SCEN_TONE, r);
+}
+
+/*
+ * The draw stream, pinned.
+ *
+ * run_wave_scenario_ex notes that SCEN_TONE must consume EXACTLY its historical
+ * random-draw sequence or every recorded number in this tree shifts.  That was a
+ * comment, which is to say it was a hope.  This makes it a mechanism: one seed,
+ * two constants, recorded from the tree as it stood.
+ *
+ * bench_draws pins how many draws the scenario takes.  bench_rng_state pins the
+ * generator's state afterwards, which — xorshift being a pure state machine — is
+ * a function of the seed and the call count and nothing else.  So the second
+ * assertion is not independent evidence about the sequence; what it adds over
+ * the first is that the SEED did not change.
+ *
+ * WHAT THIS DOES NOT CATCH is therefore larger than it looks, and both halves
+ * were confirmed by mutation rather than assumed:
+ *
+ *   - Reordering.  Swapping the accel and gyro draws inside the sample loop
+ *     leaves the count at 966801 and the state at 0x390A0177 — this test passes
+ *     — while 3-D attitude RMS moves 1.178 -> 1.175.
+ *   - Anything that changes what is DONE with a draw: a different mekf_init
+ *     argument, a noise sigma scaled wrongly.  No draw moves at all.
+ *
+ * Both are caught only by diffing the benchmark's printed lines before and
+ * after.  This guard is the cheap half of a two-part proof, never the whole of
+ * it; a refactor of this file needs the byte-diff as well.
+ *
+ * One seed rather than twelve: the guard is about the per-sample structure of
+ * the loop, which every seed shares, and this keeps the cost near 1/36th of the
+ * benchmark.
+ */
+static void test_bench_stream_fingerprint(void)
+{
+    /*
+     * Recorded from the tree at the time this guard was added, and independently
+     * predicted before it was measured — which is why the count is quoted with
+     * its derivation rather than as a magic number:
+     *
+     *   align   4165 samples x 9 draws  (6 sensor + 3 mag)  =  37 485
+     *   measure 145775 samples x 6 draws (sensor only)      = 874 650
+     *   mag     18222 updates x 3 draws                     =  54 666
+     *                                                         --------
+     *                                                          966 801
+     *
+     * If a change moves this, that arithmetic says which term moved.
+     */
+    const unsigned long EXPECT_DRAWS = 966801UL;
+    const uint32_t      EXPECT_STATE = 0x390A0177u;
+
+    wave_run_t run;
+    bench_seed  = bench_seeds[0];
+    bench_draws = 0;
+    run_wave_scenario_ex(false, SCEN_TONE, &run);
+
+    printf("\n    [stream] draws = %lu  final state = 0x%08X\n    ",
+           bench_draws, bench_rng_state);
+
+    EXPECT(bench_draws == EXPECT_DRAWS,
+           "SCEN_TONE draw count unchanged (the stream is the baseline)");
+    EXPECT(bench_rng_state == EXPECT_STATE,
+           "SCEN_TONE final RNG state unchanged");
 }
 
 /*
@@ -3066,6 +3137,7 @@ int main(void)
     RUN(test_mag_dip_sigma_is_tangent_to_the_dip_channel);
     RUN(test_mag_dip_sigma_inert_in_yaw_only);
     RUN(test_mref_quiet_gate_stays_tight);
+    RUN(test_bench_stream_fingerprint);
     RUN(test_wave_benchmark);
     RUN(test_wave_gm_ground_truth);
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
