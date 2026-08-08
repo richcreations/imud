@@ -2838,6 +2838,26 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
      * has to consume exactly the stream it always did, or every recorded
      * number in the tree shifts.
      */
+    /*
+     * SCEN_GM's printed numbers are NOT bit-portable across platforms, and
+     * SCEN_TONE's are.  Measured, comparing macOS against the Debian container:
+     * all five TONE-driven benchmark lines are character-identical, while the
+     * GM ground-truth line reads 2.921° on one and 2.918° on the other — 0.1%.
+     *
+     * The cause is right here.  `expf` is correctly rounded to within an ulp by
+     * both libms but not to the SAME ulp, and unlike the tone — which is a pure
+     * function of t at every step, so its last-bit differences never accumulate
+     * — gm[] is a feedback recursion (gm = gm_phi*gm + noise) run 149,940 times.
+     * One ulp in gm_phi compounds.
+     *
+     * The draw stream is unaffected and identical on both (966801 draws,
+     * 0x390A0177), so this is arithmetic, not sequencing.
+     *
+     * Consequence for anyone using printed-output diffs as a regression check,
+     * which is exactly what this file's refactors rely on: that proof is valid
+     * ON ONE MACHINE.  Across platforms, diff the five TONE lines and compare
+     * the GM line against its assertion band instead.
+     */
     const float gm_phi = expf(-dt / (float)scen_gm_tau);
     const float gm_q   = (float)scen_gm_sigma * sqrtf(1.0f - gm_phi*gm_phi);
     float gm[3] = {0, 0, 0};
