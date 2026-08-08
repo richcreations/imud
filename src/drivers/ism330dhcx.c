@@ -19,7 +19,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -139,10 +139,10 @@ static uint8_t gy_fs_encode(int dps, float *scale)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
-static int ism_probe(int fd, uint8_t addr)
+static int ism_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("ism330dhcx: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -154,15 +154,15 @@ static int ism_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int ism_reset(int fd, uint8_t addr)
+static int ism_reset(const imud_bus_t *bus)
 {
     /* Trigger software reset (bit 0 of CTRL3_C); self-clears after ~50 µs. */
-    if (i2c_reg_write(fd, addr, REG_CTRL3_C, 0x01) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL3_C, 0x01) < 0) return -1;
 
     for (int i = 0; i < 50; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_CTRL3_C, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_CTRL3_C, &val) < 0) return -1;
         if (!(val & 0x01)) goto reset_done;
     }
     LOG_W("ism330dhcx: SW_RESET did not clear after 50 ms\n");
@@ -173,7 +173,7 @@ reset_done:
     return 0;
 }
 
-static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_hz);
@@ -181,15 +181,15 @@ static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
     /* Accel: ODR | FS | LPF2_XL_EN=1 | bit0=0 (must be 0) */
-    if (i2c_reg_write(fd, addr, REG_CTRL1_XL, (uint8_t)((odr << 4) | xlfs | 0x02)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL1_XL, (uint8_t)((odr << 4) | xlfs | 0x02)) < 0) return -1;
     /* Gyro: ODR | FS */
-    if (i2c_reg_write(fd, addr, REG_CTRL2_G,  (uint8_t)((odr << 4) | gyfs))         < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL2_G,  (uint8_t)((odr << 4) | gyfs))         < 0) return -1;
     /* BDU=1 (no partial reads), IF_INC=1 (burst-read support) */
-    if (i2c_reg_write(fd, addr, REG_CTRL3_C,  0x44)                                  < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL3_C,  0x44)                                  < 0) return -1;
     /* DEVICE_CONF=1 — recommended by datasheet for all configurations */
-    if (i2c_reg_write(fd, addr, REG_CTRL9_XL, 0x02)                                  < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL9_XL, 0x02)                                  < 0) return -1;
     /* Enable 32-bit hardware timestamp counter (25 µs/tick, regs 0x40–0x43) */
-    if (i2c_reg_write(fd, addr, REG_CTRL10_C, 0x20)                                  < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL10_C, 0x20)                                  < 0) return -1;
 
     /*
      * FIFO watermark: config value is in sample-sets (accel+gyro pairs).
@@ -198,16 +198,16 @@ static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
      */
     int wm = cfg->fifo_wm * 2;
     if (wm > 511) wm = 511;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
     /* Batch accel and gyro at the same rate as ODR (BDR code == ODR code) */
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
     /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10).
      * Temp words feed gyro thermal compensation and imud-cal fit-temp; at
      * 12.5 Hz they add ~1.5% FIFO traffic next to 833 Hz accel+gyro. */
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
     /* Assert INT1 on FIFO watermark threshold (INT1_FIFO_TH = bit 3) */
-    if (i2c_reg_write(fd, addr, REG_INT1_CTRL,  0x08)                        < 0) return -1;
+    if (bus_reg_write(bus, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
     s.accel_scale      = accel_scale;
     s.gyro_scale       = gyro_scale;
@@ -216,8 +216,8 @@ static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
      * 25 °C placeholder. Falls back to 25 °C only if the read fails. */
     {
         uint8_t tb[2];
-        if (i2c_burst_read(fd, addr, REG_OUT_TEMP_L, tb, 2) == 0) {
-            int16_t rt = i2c_s16le(tb);
+        if (bus_burst_read(bus, REG_OUT_TEMP_L, tb, 2) == 0) {
+            int16_t rt = reg_s16le(tb);
             s.last_temp = (float)rt / 256.0f + 25.0f;
         } else {
             s.last_temp = 25.0f;
@@ -242,12 +242,12 @@ static int ism_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
  *   1  — success, but FIFO overflow was detected (data gap; set FLAG_FIFO_OVERFLOW)
  *  -1  — I2C error
  */
-static int ism_read(int fd, uint8_t addr,
+static int ism_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
     /* ── 1. Read FIFO status ─────────────────────────────────────────────── */
     uint8_t st[2];
-    if (i2c_burst_read(fd, addr, REG_FIFO_STATUS1, st, 2) < 0) return -1;
+    if (bus_burst_read(bus, REG_FIFO_STATUS1, st, 2) < 0) return -1;
 
     int  n_words  = (((int)(st[1] & 0x03)) << 8) | st[0]; /* DIFF_FIFO[9:0] */
     int  overflow = (st[1] & 0x40) != 0;                   /* FIFO_OVR_IA */
@@ -267,12 +267,12 @@ static int ism_read(int fd, uint8_t addr,
 
     for (int i = 0; i < n_words && produced < max; i++) {
         uint8_t word[7];
-        if (i2c_burst_read(fd, addr, REG_FIFO_DATA_OUT_TAG, word, 7) < 0) return -1;
+        if (bus_burst_read(bus, REG_FIFO_DATA_OUT_TAG, word, 7) < 0) return -1;
 
         uint8_t tag   = (word[0] >> 3) & 0x1F;
-        int16_t raw_x = i2c_s16le(&word[1]);
-        int16_t raw_y = i2c_s16le(&word[3]);
-        int16_t raw_z = i2c_s16le(&word[5]);
+        int16_t raw_x = reg_s16le(&word[1]);
+        int16_t raw_y = reg_s16le(&word[3]);
+        int16_t raw_z = reg_s16le(&word[5]);
 
         switch (tag) {
         case TAG_ACCEL_NC:
@@ -328,7 +328,7 @@ static int ism_read(int fd, uint8_t addr,
 
     if (produced > 0) {
         uint8_t ts[4];
-        if (i2c_burst_read(fd, addr, REG_TIMESTAMP0, ts, 4) == 0) {
+        if (bus_burst_read(bus, REG_TIMESTAMP0, ts, 4) == 0) {
             /*
              * burst_ts ≈ timestamp of the most-recent (newest) sample.
              * Sample 0 is the oldest in the burst; sample (produced-1) newest.

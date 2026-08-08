@@ -69,6 +69,7 @@ IMUD_SRCS   = src/cal.c \
               src/sdnotify.c \
               src/status_fmt.c \
               src/wmm.c \
+              src/bus.c \
               src/drivers.c \
               $(DRIVER_SRCS)
 
@@ -80,6 +81,7 @@ CAL_SRCS    = src/cal.c \
               src/log.c \
               src/cal_math.c \
               src/config.c \
+              src/bus.c \
               src/drivers.c \
               src/fusion.c \
               src/imu_math.c \
@@ -95,6 +97,7 @@ IMUTEST_SRCS = src/cli.c \
                src/capture.c \
                src/cal_math.c \
                src/imu_math.c \
+               src/bus.c \
                src/drivers.c \
                src/imutest.c \
                src/imutest_open.c \
@@ -396,7 +399,7 @@ test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
 test_imu_math: src/imu_math.c test/test_imu_math.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-# Per-driver register decode/encode over a mock I2C bus (test/i2c_mock.c wraps
+# Per-driver register decode/encode over a mock I2C bus (test/bus_mock.c wraps
 # ioctl with --wrap — GNU ld only).  Covers the two hardware-validated drivers
 # (ism330dhcx IMU, mmc5983ma mag) plus the MPU-925x pair, whose fuse-ROM
 # correction and rotated magnetometer axes are worth pinning down off-hardware.
@@ -411,7 +414,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/lsm6dso.c src/drivers/icm42688p.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c src/log.c \
-              src/imu_math.c test/i2c_mock.c test/test_drivers.c
+              src/imu_math.c test/bus_mock.c test/test_drivers.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 
@@ -429,7 +432,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
 test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
-              test/i2c_mock.c test/test_imutest.c
+              test/bus_mock.c test/test_imutest.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $^ -lm
 

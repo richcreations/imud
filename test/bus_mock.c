@@ -5,8 +5,8 @@
  */
 
 /*
- * i2c_mock.c — __wrap_ioctl implementation of the register-map I2C device.
- * See i2c_mock.h.  Linux/GNU-ld only (relies on -Wl,--wrap=ioctl and
+ * bus_mock.c — __wrap_ioctl implementation of the register-map I2C device.
+ * See bus_mock.h.  Linux/GNU-ld only (relies on -Wl,--wrap=ioctl and
  * <linux/i2c.h>).
  */
 
@@ -17,7 +17,7 @@
 #include <linux/i2c-dev.h>
 #include <sys/ioctl.h>
 
-#include "i2c_mock.h"
+#include "bus_mock.h"
 
 #define NADDR   128     /* 7-bit I2C address space */
 #define REGSZ   256     /* one 8-bit register file per address */

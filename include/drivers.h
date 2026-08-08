@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "bus.h"
 #include "types.h"
 
 /* ── IMU driver configuration ──────────────────────────────────────────────── */
@@ -67,18 +68,18 @@ typedef struct {
     bool experimental;  /* true → print warning at startup; not validated on hardware */
 
     /* Return 0 on success, -1 on failure. */
-    int (*probe)  (int fd, uint8_t addr);
-    int (*reset)  (int fd, uint8_t addr);
-    int (*init)   (int fd, uint8_t addr, const imu_cfg_t *cfg);
+    int (*probe)  (const imud_bus_t *bus);
+    int (*reset)  (const imud_bus_t *bus);
+    int (*init)   (const imud_bus_t *bus, const imu_cfg_t *cfg);
 
     /*
      * Read pending samples from FIFO (or single DRDY register if !has_fifo).
      * Samples are written to buf[] in SI units (m/s², rad/s) using datasheet
      * sensitivity — user calibration (offsets, soft-iron) is applied later.
      * *n is set to the number of samples written (0..max).
-     * Returns 0 on success, -1 on I2C error.
+     * Returns 0 on success, -1 on bus error.
      */
-    int (*read)   (int fd, uint8_t addr,
+    int (*read)   (const imud_bus_t *bus,
                    imu_sample_t *buf, int max, int *n);
 
     bool has_fifo;           /* false → single-sample DRDY read per wakeup */
@@ -99,13 +100,13 @@ typedef struct {
     const char *name;   /* must match config [mag] driver = "..." */
     bool experimental;  /* true → print warning at startup; not validated on hardware */
 
-    int (*probe)    (int fd, uint8_t addr);
-    int (*reset)    (int fd, uint8_t addr);
-    int (*init)     (int fd, uint8_t addr, const mag_cfg_t *cfg);
-    int (*read)     (int fd, uint8_t addr, mag_sample_t *out);
+    int (*probe)    (const imud_bus_t *bus);
+    int (*reset)    (const imud_bus_t *bus);
+    int (*init)     (const imud_bus_t *bus, const mag_cfg_t *cfg);
+    int (*read)     (const imud_bus_t *bus, mag_sample_t *out);
 
     /* Issue a SET (degaussing) pulse. NULL if chip has no coil. */
-    int (*set_reset)(int fd, uint8_t addr);
+    int (*set_reset)(const imud_bus_t *bus);
 
     bool has_interrupt;
     bool has_set_reset;

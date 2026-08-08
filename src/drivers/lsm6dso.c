@@ -25,7 +25,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -123,10 +123,10 @@ static uint8_t gy_fs_encode(int dps, float *scale)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
-static int lsm_probe(int fd, uint8_t addr)
+static int lsm_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("lsm6dso: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -138,14 +138,14 @@ static int lsm_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int lsm_reset(int fd, uint8_t addr)
+static int lsm_reset(const imud_bus_t *bus)
 {
-    if (i2c_reg_write(fd, addr, REG_CTRL3_C, 0x01) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL3_C, 0x01) < 0) return -1;
 
     for (int i = 0; i < 50; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_CTRL3_C, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_CTRL3_C, &val) < 0) return -1;
         if (!(val & 0x01)) goto reset_done;
     }
     LOG_W("lsm6dso: SW_RESET did not clear after 50 ms\n");
@@ -156,34 +156,34 @@ reset_done:
     return 0;
 }
 
-static int lsm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_hz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
-    if (i2c_reg_write(fd, addr, REG_CTRL1_XL, (uint8_t)((odr << 4) | xlfs | 0x02)) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_CTRL2_G,  (uint8_t)((odr << 4) | gyfs))         < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_CTRL3_C,  0x44)                                  < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL1_XL, (uint8_t)((odr << 4) | xlfs | 0x02)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL2_G,  (uint8_t)((odr << 4) | gyfs))         < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL3_C,  0x44)                                  < 0) return -1;
     /* No DEVICE_CONF write — not present on LSM6DSO */
-    if (i2c_reg_write(fd, addr, REG_CTRL10_C, 0x20)                                  < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL10_C, 0x20)                                  < 0) return -1;
 
     int wm = cfg->fifo_wm * 2;
     if (wm > 511) wm = 511;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
     /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10),
      * matching ism330dhcx.c — temp feeds thermal comp and imud-cal fit-temp. */
-    if (i2c_reg_write(fd, addr, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_INT1_CTRL,  0x08)                        < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
+    if (bus_reg_write(bus, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
     /* Seed last_temp from the live temperature register (see ism330dhcx.c). */
     {
         uint8_t tb[2];
-        if (i2c_burst_read(fd, addr, REG_OUT_TEMP_L, tb, 2) == 0) {
-            int16_t rt = i2c_s16le(tb);
+        if (bus_burst_read(bus, REG_OUT_TEMP_L, tb, 2) == 0) {
+            int16_t rt = reg_s16le(tb);
             ls.last_temp = (float)rt / 256.0f + 25.0f;
         } else {
             ls.last_temp = 25.0f;
@@ -197,11 +197,11 @@ static int lsm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     return 0;
 }
 
-static int lsm_read(int fd, uint8_t addr,
+static int lsm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
     uint8_t st[2];
-    if (i2c_burst_read(fd, addr, REG_FIFO_STATUS1, st, 2) < 0) return -1;
+    if (bus_burst_read(bus, REG_FIFO_STATUS1, st, 2) < 0) return -1;
 
     int n_words  = (((int)(st[1] & 0x03)) << 8) | st[0];
     int overflow = (st[1] & 0x40) != 0;
@@ -219,12 +219,12 @@ static int lsm_read(int fd, uint8_t addr,
 
     for (int i = 0; i < n_words && produced < max; i++) {
         uint8_t word[7];
-        if (i2c_burst_read(fd, addr, REG_FIFO_DATA_OUT_TAG, word, 7) < 0) return -1;
+        if (bus_burst_read(bus, REG_FIFO_DATA_OUT_TAG, word, 7) < 0) return -1;
 
         uint8_t tag   = (word[0] >> 3) & 0x1F;
-        int16_t raw_x = i2c_s16le(&word[1]);
-        int16_t raw_y = i2c_s16le(&word[3]);
-        int16_t raw_z = i2c_s16le(&word[5]);
+        int16_t raw_x = reg_s16le(&word[1]);
+        int16_t raw_y = reg_s16le(&word[3]);
+        int16_t raw_z = reg_s16le(&word[5]);
 
         switch (tag) {
         case TAG_ACCEL_NC:
@@ -266,7 +266,7 @@ static int lsm_read(int fd, uint8_t addr,
 
     if (produced > 0) {
         uint8_t ts[4];
-        if (i2c_burst_read(fd, addr, REG_TIMESTAMP0, ts, 4) == 0) {
+        if (bus_burst_read(bus, REG_TIMESTAMP0, ts, 4) == 0) {
             uint32_t burst_ts = (uint32_t)ts[0]
                               | ((uint32_t)ts[1] <<  8)
                               | ((uint32_t)ts[2] << 16)

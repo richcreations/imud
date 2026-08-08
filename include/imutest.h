@@ -20,7 +20,7 @@
  * the core too — the six-face sign table, the right-hand-rule expectations and
  * every tolerance are the part worth testing — reaching the outside world only
  * through the imt_ui_t callbacks below.  test/test_imutest.c supplies a
- * scripted imt_ui_t and drives the whole thing against test/i2c_mock.c.
+ * scripted imt_ui_t and drives the whole thing against test/bus_mock.c.
  *
  * imt_report_t is large (tens of kB).  calloc it; do not put it on the stack.
  */
@@ -298,7 +298,7 @@ void imt_opts_defaults(imt_opts_t *o);
 /* ── Running ───────────────────────────────────────────────────────────────── */
 
 /*
- * Full run: driver lookup, open(cfg->i2c_bus), imt_run_ops, close.
+ * Full run: driver lookup, bus_open for each sensor, imt_run_ops, close.
  * Returns 0 when the run completed (the check statuses carry the verdict),
  * -1 on a setup error that prevented any measurement (message in errbuf).
  */
@@ -306,12 +306,14 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
             imt_report_t *out, char *errbuf, size_t errbufsz);
 
 /*
- * Lower layer: the caller owns the fd and the ops pointers.  `mag` may be NULL
- * for an IMU-only board, in which case every mag check and the spin phase
- * report SKIP.  This is the entry point test_imutest.c uses, so the test can
- * reference driver ops structs directly and never link src/drivers.c.
+ * Lower layer: the caller owns the buses and the ops pointers.  `mag` may be
+ * NULL for an IMU-only board, in which case every mag check and the spin phase
+ * report SKIP — `mbus` is then ignored and may be a closed handle.  This is
+ * the entry point test_imutest.c uses, so the test can reference driver ops
+ * structs directly and never link src/drivers.c.
  */
-int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
+int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
+                const imu_ops_t *imu, const mag_ops_t *mag,
                 const imud_config_t *cfg, const imt_opts_t *opts,
                 imt_report_t *out, char *errbuf, size_t errbufsz);
 

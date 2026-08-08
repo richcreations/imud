@@ -413,12 +413,12 @@ static struct {
     int      odr_hz;
 } imu_s;
 
-static int sim_imu_probe(int fd, uint8_t addr) { (void)fd; (void)addr; return 0; }
-static int sim_imu_reset(int fd, uint8_t addr) { (void)fd; (void)addr; return 0; }
+static int sim_imu_probe(const imud_bus_t *bus) { (void)bus; return 0; }
+static int sim_imu_reset(const imud_bus_t *bus) { (void)bus; return 0; }
 
-static int sim_imu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int sim_imu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
-    (void)fd; (void)addr;
+    (void)bus;
     imu_s.t_last_ns = mono_ns();
     imu_s.seq       = 0;
     imu_s.odr_hz    = cfg->odr_hz > 0 ? cfg->odr_hz : 100;
@@ -426,10 +426,10 @@ static int sim_imu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     return 0;
 }
 
-static int sim_imu_read(int fd, uint8_t addr,
+static int sim_imu_read(const imud_bus_t *bus,
                         imu_sample_t *buf, int max, int *n_out)
 {
-    (void)fd; (void)addr;
+    (void)bus;
 
     if (pb.enabled) return pb_imu_read(buf, max, n_out);
 
@@ -488,19 +488,19 @@ const imu_ops_t sim_imu_ops = {
 
 /* ── Mag sim state ──────────────────────────────────────────────────────── */
 
-static int sim_mag_probe(int fd, uint8_t addr) { (void)fd; (void)addr; return 0; }
-static int sim_mag_reset(int fd, uint8_t addr) { (void)fd; (void)addr; return 0; }
+static int sim_mag_probe(const imud_bus_t *bus) { (void)bus; return 0; }
+static int sim_mag_reset(const imud_bus_t *bus) { (void)bus; return 0; }
 
-static int sim_mag_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
+static int sim_mag_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
-    (void)fd; (void)addr; (void)cfg;
+    (void)bus; (void)cfg;
     if (!sim_t0_set) { sim_t0_ns = mono_ns(); sim_t0_set = true; }
     return 0;
 }
 
-static int sim_mag_read(int fd, uint8_t addr, mag_sample_t *out)
+static int sim_mag_read(const imud_bus_t *bus, mag_sample_t *out)
 {
-    (void)fd; (void)addr;
+    (void)bus;
 
     if (pb.enabled) return pb_mag_read(out);
 

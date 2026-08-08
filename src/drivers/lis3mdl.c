@@ -29,7 +29,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 /* ── Register addresses (DS9463 §7) ───────────────────────────────────────── */
@@ -77,10 +77,10 @@ static uint8_t odr_to_ctrl1(int hz)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
-static int lis_probe(int fd, uint8_t addr)
+static int lis_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("lis3mdl: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -92,26 +92,26 @@ static int lis_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int lis_reset(int fd, uint8_t addr)
+static int lis_reset(const imud_bus_t *bus)
 {
     /* SOFT_RST is bit 2 of CTRL_REG2; self-clears. */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG2, 0x04) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL_REG2, 0x04) < 0) return -1;
     usleep(10000);  /* 10 ms power-on time */
     return 0;
 }
 
-static int lis_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
+static int lis_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
     /* Enable block data update (no partial reads). */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG5, 0x40) < 0) return -1;  /* BDU=1 */
+    if (bus_reg_write(bus, REG_CTRL_REG5, 0x40) < 0) return -1;  /* BDU=1 */
     /* Z-axis operative mode = ultra-high performance. */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG4, 0x0C) < 0) return -1;  /* OMZ=11 */
+    if (bus_reg_write(bus, REG_CTRL_REG4, 0x0C) < 0) return -1;  /* OMZ=11 */
     /* XY mode + ODR from CTRL_REG1. */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_hz)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_hz)) < 0) return -1;
     /* ±4 Gauss full scale; clear REBOOT and SOFT_RST. */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG2, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL_REG2, 0x00) < 0) return -1;
     /* Continuous measurement mode: MD[1:0] = 00. */
-    if (i2c_reg_write(fd, addr, REG_CTRL_REG3, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL_REG3, 0x00) < 0) return -1;
     return 0;
 }
 
@@ -123,19 +123,19 @@ static int lis_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
  *   1  — data not ready (ZYXDA not set); caller should wait for next interrupt
  *  -1  — I2C error
  */
-static int lis_read(int fd, uint8_t addr, mag_sample_t *out)
+static int lis_read(const imud_bus_t *bus, mag_sample_t *out)
 {
     uint8_t status;
-    if (i2c_reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
+    if (bus_reg_read(bus, REG_STATUS_REG, &status) < 0) return -1;
     if (!(status & 0x08)) return 1;  /* ZYXDA not set */
 
     /* Burst read 6 bytes; address auto-increment requires 0x80|reg (§6.1.1). */
     uint8_t raw[6];
-    if (i2c_burst_read(fd, addr, (uint8_t)(REG_OUT_X_L | 0x80), raw, 6) < 0) return -1;
+    if (bus_burst_read(bus, (uint8_t)(REG_OUT_X_L | 0x80), raw, 6) < 0) return -1;
 
-    int16_t rx = i2c_s16le(&raw[0]);
-    int16_t ry = i2c_s16le(&raw[2]);
-    int16_t rz = i2c_s16le(&raw[4]);
+    int16_t rx = reg_s16le(&raw[0]);
+    int16_t ry = reg_s16le(&raw[2]);
+    int16_t rz = reg_s16le(&raw[4]);
 
     /*
      * Remap chip frame (X=port, Y=bow, Z=up) → NED board frame.

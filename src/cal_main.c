@@ -74,7 +74,7 @@ static volatile sig_atomic_t g_stop = 0;
 static void on_sigint(int sig) { (void)sig; g_stop = 1; }
 
 /* Forward declaration — defined below after imu_collect. */
-static int imu_collect(int fd, const imu_ops_t *ops, uint8_t addr,
+static int imu_collect(const imud_bus_t *bus, const imu_ops_t *ops,
                        int duration_ms,
                        double gyro_sum[3], double accel_sum[3]);
 
@@ -86,11 +86,11 @@ static int imu_collect(int fd, const imu_ops_t *ops, uint8_t addr,
  * before calling so g_stop is set on Ctrl-C.
  * Returns false normally, true if interrupted (caller should abort and exit).
  */
-static bool settle_imu(int fd, const imu_ops_t *ops, const imud_config_t *cfg)
+static bool settle_imu(const imud_bus_t *bus, const imu_ops_t *ops, const imud_config_t *cfg)
 {
     if (cfg->startup_settle_sec <= 0.0) return false;
     printf("Settling %.0f s for thermal stabilization...\n", cfg->startup_settle_sec);
-    imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+    imu_collect(bus, ops,
                 (int)(cfg->startup_settle_sec * 1000.0), NULL, NULL);
     return g_stop != 0;
 }
@@ -125,15 +125,22 @@ static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
     fflush(stdout);
 }
 
-/* ── I2C open helper ────────────────────────────────────────────────────── */
+/* ── Bus open helper ────────────────────────────────────────────────────── */
 
-static int open_i2c(const imud_config_t *cfg)
+/*
+ * Open one sensor's bus.  Returns 0, or -1 with the reason already logged.
+ *
+ * A failure is survivable for the sim driver, which never looks at the handle:
+ * the callers below only bail out when the configured driver is real hardware.
+ * bus_open leaves the handle closed on failure, so bus_close() stays safe.
+ */
+static int open_sensor_bus(const imud_config_t *cfg, bool is_imu,
+                           imud_bus_t *bus)
 {
-    int fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-        fprintf(stderr, "cal: cannot open %s: %s\n",
-                cfg->i2c_bus, strerror(errno));
-    return fd;
+    bus_spec_t spec;
+    if (is_imu) config_imu_bus_spec(cfg, &spec);
+    else        config_mag_bus_spec(cfg, &spec);
+    return bus_open(bus, &spec, is_imu ? "imu" : "mag");
 }
 
 /* ── IMU FIFO drain helper ──────────────────────────────────────────────── */
@@ -142,7 +149,7 @@ static int open_i2c(const imud_config_t *cfg)
  * Drain the IMU FIFO for up to duration_ms milliseconds, accumulating
  * samples into arrays (may be NULL to discard).  Returns sample count.
  */
-static int imu_collect(int fd, const imu_ops_t *ops, uint8_t addr,
+static int imu_collect(const imud_bus_t *bus, const imu_ops_t *ops,
                        int duration_ms,
                        double gyro_sum[3], double accel_sum[3])
 {
@@ -158,7 +165,7 @@ static int imu_collect(int fd, const imu_ops_t *ops, uint8_t addr,
                         + (now.tv_nsec - t0.tv_nsec) / 1000000L;
         if (elapsed_ms >= duration_ms) break;
 
-        int rc = ops->read(fd, addr, buf, 128, &n);
+        int rc = ops->read(bus, buf, 128, &n);
         if (rc < 0 || n == 0) { usleep(10000); continue; }
 
         for (int i = 0; i < n; i++) {
@@ -189,19 +196,20 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         return -1;
     }
 
-    int fd = open_i2c(cfg);
-    if (fd < 0 && strcmp(cfg->mag_driver, "sim") != 0) return -1;
+    imud_bus_t bus;
+    if (open_sensor_bus(cfg, false, &bus) < 0 &&
+        strcmp(cfg->mag_driver, "sim") != 0) return -1;
 
     /* Resolved, as the daemon does — imu_cfg_t/mag_cfg_t take the rate the
      * driver will really program, not the raw request. */
     mag_cfg_t mcfg = { .odr_hz = odr_actual_mag(ops, cfg->mag_odr_hz),
                        .set_period_s = 0.0f };
 
-    if (ops->probe(fd, (uint8_t)cfg->mag_addr) < 0 ||
-        ops->reset(fd, (uint8_t)cfg->mag_addr) < 0 ||
-        ops->init (fd, (uint8_t)cfg->mag_addr, &mcfg) < 0) {
+    if (ops->probe(&bus) < 0 ||
+        ops->reset(&bus) < 0 ||
+        ops->init (&bus, &mcfg) < 0) {
         fprintf(stderr, "cal: mag sensor init failed\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return -1;
     }
 
@@ -218,10 +226,10 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             long elapsed = (now.tv_sec - t0.tv_sec) * 1000
                          + (now.tv_nsec - t0.tv_nsec) / 1000000L;
             if (elapsed >= settle_ms) break;
-            ops->read(fd, (uint8_t)cfg->mag_addr, &tmp);
+            ops->read(&bus, &tmp);
             usleep(MAG_POLL_US);
         }
-        if (g_stop) { signal(SIGINT, SIG_DFL); if (fd >= 0) close(fd); return 0; }
+        if (g_stop) { signal(SIGINT, SIG_DFL); bus_close(&bus); return 0; }
     }
 
     printf("imud-cal: magnetometer calibration\n");
@@ -232,7 +240,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* Storage for all raw samples (for residual and soft-iron computation) */
     float (*samps)[3] = malloc(MAX_MAG_SAMPLES * sizeof(*samps));
-    if (!samps) { perror("malloc"); if (fd >= 0) close(fd); return -1; }
+    if (!samps) { perror("malloc"); bus_close(&bus); return -1; }
 
     sphere_accum_t acc = {0};
     int    sectors[N_SECTORS] = {0};
@@ -249,7 +257,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     while (!g_stop && n < MAX_MAG_SAMPLES) {
         mag_sample_t s;
-        int rc = ops->read(fd, (uint8_t)cfg->mag_addr, &s);
+        int rc = ops->read(&bus, &s);
         if (rc < 0) { fprintf(stderr, "\ncal: mag read error\n"); break; }
         if (rc != 0) { usleep(MAG_POLL_US); continue; }   /* not ready */
         if (!s.valid) { usleep(MAG_POLL_US); continue; }
@@ -298,7 +306,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     double center[3], radius;
     if (sphere_fit(&acc, center, &radius) < 0) {
         fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
-        free(samps); if (fd >= 0) close(fd); return -1;
+        free(samps); bus_close(&bus); return -1;
     }
 
     /* ── Soft-iron: diagonal scale from per-axis half-range ─────────── */
@@ -323,7 +331,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     double half[3];
     if (extent_half(&xacc, half) < 0) {
         fprintf(stderr, "cal: no samples to measure\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return -1;
     }
 
@@ -392,7 +400,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     char ans[8] = {0};
     if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
         printf("Calibration not saved.\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return 0;
     }
 
@@ -413,7 +421,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     cal->has_mag = true;
 
-    if (fd >= 0) close(fd);
+    bus_close(&bus);
     return 0;
 }
 
@@ -427,8 +435,9 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
         return -1;
     }
 
-    int fd = open_i2c(cfg);
-    if (fd < 0 && strcmp(cfg->imu_driver, "sim") != 0) return -1;
+    imud_bus_t bus;
+    if (open_sensor_bus(cfg, true, &bus) < 0 &&
+        strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {
         .odr_hz   = odr_actual_imu(ops, cfg->imu_odr_hz),
@@ -437,11 +446,11 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
         .fifo_wm  = cfg->imu_fifo_wm,
     };
 
-    if (ops->probe(fd, (uint8_t)cfg->imu_addr) < 0 ||
-        ops->reset(fd, (uint8_t)cfg->imu_addr) < 0 ||
-        ops->init (fd, (uint8_t)cfg->imu_addr, &icfg) < 0) {
+    if (ops->probe(&bus) < 0 ||
+        ops->reset(&bus) < 0 ||
+        ops->init (&bus, &icfg) < 0) {
         fprintf(stderr, "cal: IMU sensor init failed\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return -1;
     }
 
@@ -450,9 +459,9 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
 
     signal(SIGINT, on_sigint);
 
-    if (settle_imu(fd, ops, cfg)) {
+    if (settle_imu(&bus, ops, cfg)) {
         signal(SIGINT, SIG_DFL);
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return 0;
     }
 
@@ -462,9 +471,9 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
      * during the window (rocking dock, hand-held sensor) that a single
      * mean would silently absorb into the bias. */
     double sum_a[3] = {0}, sum_b[3] = {0};
-    int na = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+    int na = imu_collect(&bus, ops,
                          GYRO_COLLECT_S * 500, sum_a, NULL);
-    int nb = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+    int nb = imu_collect(&bus, ops,
                          GYRO_COLLECT_S * 500, sum_b, NULL);
 
     signal(SIGINT, SIG_DFL);
@@ -472,7 +481,7 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     int n = na + nb;
     if (na < 5 || nb < 5) {
         fprintf(stderr, "cal: too few samples (%d) — sensor not producing data\n", n);
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return -1;
     }
 
@@ -505,7 +514,7 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     char ans[8] = {0};
     if (!fgets(ans, sizeof(ans), stdin) || (ans[0] != 'y' && ans[0] != 'Y')) {
         printf("Calibration not saved.\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return 0;
     }
 
@@ -514,7 +523,7 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     cal->gyro_bias[2] = (float)bias[2];
     cal->has_gyro = true;
 
-    if (fd >= 0) close(fd);
+    bus_close(&bus);
     return 0;
 }
 
@@ -528,8 +537,9 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
         return -1;
     }
 
-    int fd = open_i2c(cfg);
-    if (fd < 0 && strcmp(cfg->imu_driver, "sim") != 0) return -1;
+    imud_bus_t bus;
+    if (open_sensor_bus(cfg, true, &bus) < 0 &&
+        strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {
         .odr_hz   = odr_actual_imu(ops, cfg->imu_odr_hz),
@@ -538,19 +548,19 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
         .fifo_wm  = cfg->imu_fifo_wm,
     };
 
-    if (ops->probe(fd, (uint8_t)cfg->imu_addr) < 0 ||
-        ops->reset(fd, (uint8_t)cfg->imu_addr) < 0 ||
-        ops->init (fd, (uint8_t)cfg->imu_addr, &icfg) < 0) {
+    if (ops->probe(&bus) < 0 ||
+        ops->reset(&bus) < 0 ||
+        ops->init (&bus, &icfg) < 0) {
         fprintf(stderr, "cal: IMU sensor init failed\n");
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return -1;
     }
 
     signal(SIGINT, on_sigint);
 
-    if (settle_imu(fd, ops, cfg)) {
+    if (settle_imu(&bus, ops, cfg)) {
         signal(SIGINT, SIG_DFL);
-        if (fd >= 0) close(fd);
+        bus_close(&bus);
         return 0;
     }
 
@@ -592,18 +602,18 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
 
         printf("  Settling (%.1f s)...", ACCEL_SETTLE_MS / 1000.0);
         fflush(stdout);
-        imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+        imu_collect(&bus, ops,
                     ACCEL_SETTLE_MS, NULL, NULL);
 
         printf("\r  Collecting (%.1f s)...     \n", ACCEL_COLLECT_MS / 1000.0);
         double asum[3] = {0};
-        int n = imu_collect(fd, ops, (uint8_t)cfg->imu_addr,
+        int n = imu_collect(&bus, ops,
                             ACCEL_COLLECT_MS, NULL, asum);
 
         if (n < 10) {
             fprintf(stderr, "cal: too few samples at position %d — aborting\n", p + 1);
             signal(SIGINT, SIG_DFL);
-            if (fd >= 0) close(fd);
+            bus_close(&bus);
             return -1;
         }
 
@@ -618,8 +628,8 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     signal(SIGINT, SIG_DFL);
-    if (g_stop) { if (fd >= 0) close(fd); return 0; }
-    if (fd >= 0) close(fd);
+    if (g_stop) { bus_close(&bus); return 0; }
+    bus_close(&bus);
 
     /*
      * Geometry check before anything else.  A reading taken in the wrong

@@ -24,7 +24,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -132,10 +132,10 @@ static uint8_t accel_fs_encode(int g, float *scale)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
-static int icm_probe(int fd, uint8_t addr)
+static int icm_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("icm42688p: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -147,17 +147,17 @@ static int icm_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int icm_reset(int fd, uint8_t addr)
+static int icm_reset(const imud_bus_t *bus)
 {
     /* Ensure we are in Bank 0 before reset. */
-    if (i2c_reg_write(fd, addr, REG_BANK_SEL, 0) < 0) return -1;
+    if (bus_reg_write(bus, REG_BANK_SEL, 0) < 0) return -1;
 
-    if (i2c_reg_write(fd, addr, REG_DEVICE_CONFIG, 0x01) < 0) return -1;  /* SOFT_RESET */
+    if (bus_reg_write(bus, REG_DEVICE_CONFIG, 0x01) < 0) return -1;  /* SOFT_RESET */
 
     for (int i = 0; i < 100; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_DEVICE_CONFIG, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_DEVICE_CONFIG, &val) < 0) return -1;
         if (!(val & 0x01)) goto reset_done;
     }
     LOG_W("icm42688p: SOFT_RESET did not clear after 100 ms\n");
@@ -168,7 +168,7 @@ reset_done:
     return 0;
 }
 
-static int icm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_hz);
@@ -176,37 +176,37 @@ static int icm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     uint8_t afs  = accel_fs_encode(cfg->accel_g, &accel_scale);
 
     /* Must clear INT_ASYNC_RESET after reset (datasheet §12.6). */
-    if (i2c_reg_write(fd, addr, REG_INT_CONFIG1, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_INT_CONFIG1, 0x00) < 0) return -1;
 
     /* Enable hardware timestamp latch to Bank 1 registers. */
-    if (i2c_reg_write(fd, addr, REG_TMST_CONFIG, 0x11) < 0) return -1; /* TO_REGS_EN|EN */
+    if (bus_reg_write(bus, REG_TMST_CONFIG, 0x11) < 0) return -1; /* TO_REGS_EN|EN */
 
     /* Enable accel + gyro in low-noise mode; wait for power-up. */
-    if (i2c_reg_write(fd, addr, REG_PWR_MGMT0, 0x0F) < 0) return -1;
+    if (bus_reg_write(bus, REG_PWR_MGMT0, 0x0F) < 0) return -1;
     usleep(200);
 
     /* Configure ODR and full-scale. */
-    if (i2c_reg_write(fd, addr, REG_GYRO_CONFIG0,  (uint8_t)(gfs | odr)) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_ACCEL_CONFIG0, (uint8_t)(afs | odr)) < 0) return -1;
+    if (bus_reg_write(bus, REG_GYRO_CONFIG0,  (uint8_t)(gfs | odr)) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG0, (uint8_t)(afs | odr)) < 0) return -1;
 
     /* Watermark in packets (one 16-byte packet per sample-pair). */
     int wm = cfg->fifo_wm;
     if (wm > 511) wm = 511;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CONFIG2, (uint8_t)(wm & 0xFF))        < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_FIFO_CONFIG3, (uint8_t)((wm >> 8) & 0x0F)) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CONFIG2, (uint8_t)(wm & 0xFF))        < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CONFIG3, (uint8_t)((wm >> 8) & 0x0F)) < 0) return -1;
 
     /* Route FIFO threshold to INT1. */
-    if (i2c_reg_write(fd, addr, REG_INT_SOURCE0, 0x04) < 0) return -1; /* FIFO_THS_INT1_EN */
+    if (bus_reg_write(bus, REG_INT_SOURCE0, 0x04) < 0) return -1; /* FIFO_THS_INT1_EN */
 
     /* Enable accel, gyro, temp, and timestamp in FIFO packets. */
-    if (i2c_reg_write(fd, addr, REG_FIFO_CONFIG1, 0x0B) < 0) return -1; /* TMST|GYRO|ACCEL */
+    if (bus_reg_write(bus, REG_FIFO_CONFIG1, 0x0B) < 0) return -1; /* TMST|GYRO|ACCEL */
 
     /* Flush FIFO before enabling stream mode. */
-    if (i2c_reg_write(fd, addr, REG_SIGNAL_PATH_RESET, 0x02) < 0) return -1; /* FIFO_FLUSH */
+    if (bus_reg_write(bus, REG_SIGNAL_PATH_RESET, 0x02) < 0) return -1; /* FIFO_FLUSH */
     usleep(1000);
 
     /* Start stream mode: FIFO_CONFIG bits[7:6] = 01. */
-    if (i2c_reg_write(fd, addr, REG_FIFO_CONFIG, 0x40) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_CONFIG, 0x40) < 0) return -1;
 
     ic.accel_scale      = accel_scale;
     ic.gyro_scale       = gyro_scale;
@@ -233,12 +233,12 @@ static int icm_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
  *   [13]   temperature (int8_t, 1°C/LSB, 0 = 25°C)
  *   [14–15] FIFO timestamp (unused; absolute TS read from Bank 1 after drain)
  */
-static int icm_read(int fd, uint8_t addr,
+static int icm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
     /* ── 1. Read FIFO byte count (big endian; COUNTH read latches both) ─── */
     uint8_t cnt[2];
-    if (i2c_burst_read(fd, addr, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
+    if (bus_burst_read(bus, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
 
     int n_bytes = (((int)(cnt[0] & 0x3F)) << 8) | cnt[1];
     int n_pkts  = n_bytes / 16;
@@ -253,18 +253,18 @@ static int icm_read(int fd, uint8_t addr,
 
     for (int i = 0; i < n_pkts && produced < max; i++) {
         uint8_t pkt[16];
-        if (i2c_burst_read(fd, addr, REG_FIFO_DATA, pkt, 16) < 0) return -1;
+        if (bus_burst_read(bus, REG_FIFO_DATA, pkt, 16) < 0) return -1;
 
         uint8_t hdr = pkt[0];
         if (hdr & FIFO_HDR_MSG) continue;                    /* empty/padding */
         if (!(hdr & FIFO_HDR_ACCEL) || !(hdr & FIFO_HDR_GYRO)) continue;
 
-        int16_t ax = i2c_s16be(&pkt[1]);
-        int16_t ay = i2c_s16be(&pkt[3]);
-        int16_t az = i2c_s16be(&pkt[5]);
-        int16_t gx = i2c_s16be(&pkt[7]);
-        int16_t gy = i2c_s16be(&pkt[9]);
-        int16_t gz = i2c_s16be(&pkt[11]);
+        int16_t ax = reg_s16be(&pkt[1]);
+        int16_t ay = reg_s16be(&pkt[3]);
+        int16_t az = reg_s16be(&pkt[5]);
+        int16_t gx = reg_s16be(&pkt[7]);
+        int16_t gy = reg_s16be(&pkt[9]);
+        int16_t gz = reg_s16be(&pkt[11]);
 
         /*
          * Chip native: X=bow, Y=port, Z=up.
@@ -284,9 +284,9 @@ static int icm_read(int fd, uint8_t addr,
 
     /* ── 3. Timestamp: read Bank 1 TMSTVAL, back-calculate per sample ───── */
     if (produced > 0) {
-        if (i2c_reg_write(fd, addr, REG_BANK_SEL, 1) == 0) {
+        if (bus_reg_write(bus, REG_BANK_SEL, 1) == 0) {
             uint8_t ts[3];
-            if (i2c_burst_read(fd, addr, REG_TMSTVAL0, ts, 3) == 0) {
+            if (bus_burst_read(bus, REG_TMSTVAL0, ts, 3) == 0) {
                 /* TMSTVAL: 20-bit, 1 µs/tick.  ts[2][3:0] = bits [19:16]. */
                 uint32_t raw = ((uint32_t)(ts[2] & 0x0F) << 16)
                              | ((uint32_t)ts[1] << 8)
@@ -305,7 +305,7 @@ static int icm_read(int fd, uint8_t addr,
                     buf[i].chip_ts = burst_ts - age;
                 }
             }
-            i2c_reg_write(fd, addr, REG_BANK_SEL, 0);
+            bus_reg_write(bus, REG_BANK_SEL, 0);
         }
     }
 

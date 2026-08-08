@@ -6,7 +6,7 @@
 
 /*
  * test_drivers.c — register-level decode/encode tests over the mock I2C bus
- * (test/i2c_mock.c, --wrap=ioctl).
+ * (test/bus_mock.c, --wrap=ioctl).
  *
  * Covers ALL TEN hardware drivers: the two hardware-validated ones
  * (ism330dhcx, mmc5983ma), the MPU-925x pair, and the six that until now had
@@ -38,7 +38,7 @@
  *
  * Linux/GNU-ld only (the --wrap and <linux/i2c.h> dependencies), like the rest
  * of the daemon-linking suite.  Reference coverage for the mock pattern; the
- * remaining drivers extend it by reusing i2c_mock unchanged.
+ * remaining drivers extend it by reusing bus_mock unchanged.
  */
 
 #include <stdio.h>
@@ -49,7 +49,7 @@
 
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag — see test_odr_agreement */
-#include "i2c_mock.h"
+#include "bus_mock.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -86,6 +86,14 @@ static const mag_ops_t *ak  = &ak8963_ops;
 
 #define FD 3   /* arbitrary; the mock ignores it */
 
+/*
+ * A handle addressing `a` on the mock bus.  bus_mock.c ignores the descriptor
+ * entirely, so FD is arbitrary; the address is what selects which of the 128
+ * register files a transfer lands in.
+ */
+#define I2CBUS(a) (&(const imud_bus_t){ .kind = BUS_I2C, \
+                                        .fd = FD, .i2c_addr = (a) })
+
 /* ── ISM330DHCX ──────────────────────────────────────────────────────────── */
 
 #define ISM_ADDR 0x6A
@@ -109,14 +117,14 @@ static void test_ism_probe(void)
 
     i2cmock_reset();
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);          /* WHO_AM_I = correct */
-    EXPECT(ism->probe(FD, ISM_ADDR) == 0, "probe accepts 0x6B");
+    EXPECT(ism->probe(I2CBUS(ISM_ADDR)) == 0, "probe accepts 0x6B");
 
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x00);          /* wrong id */
-    EXPECT(ism->probe(FD, ISM_ADDR) != 0, "probe rejects wrong WHO_AM_I");
+    EXPECT(ism->probe(I2CBUS(ISM_ADDR)) != 0, "probe rejects wrong WHO_AM_I");
 
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
     i2cmock_fail_next_ioctl();
-    EXPECT(ism->probe(FD, ISM_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(ism->probe(I2CBUS(ISM_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
 }
@@ -132,7 +140,7 @@ static void test_ism_init_registers(void)
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
 
     imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    EXPECT(ism->init(FD, ISM_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
 
     /* ODR code 0x5 (208 Hz); accel FS ±4g code 0x08; gyro FS ±500 dps code 0x04. */
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x10) == 0x5A, "CTRL1_XL = ODR|FS|LPF2");
@@ -160,7 +168,7 @@ static void test_ism_read_decode(void)
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
 
     imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)ism->init(FD, ISM_ADDR, &cfg);   /* sets accel/gyro scale */
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);   /* sets accel/gyro scale */
 
     /* FIFO status: 3 words available, no overflow. */
     i2cmock_set_reg(ISM_ADDR, 0x3A, 3);
@@ -181,7 +189,7 @@ static void test_ism_read_decode(void)
 
     imu_sample_t buf[8];
     int n = -1;
-    EXPECT(ism->read(FD, ISM_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), buf, 8, &n) == 0, "read returns 0");
     EXPECT(n == 1, "one sample produced from accel+gyro pair");
 
     const float as = 0.122e-3f * 9.80665f;                 /* ±4g m/s²/LSB */
@@ -210,19 +218,19 @@ static void test_ism_read_overflow_and_empty(void)
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
     imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)ism->init(FD, ISM_ADDR, &cfg);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
 
     /* Empty FIFO, overflow flag set (FIFO_OVR_IA = bit 6 of STATUS2). */
     i2cmock_set_reg(ISM_ADDR, 0x3A, 0);
     i2cmock_set_reg(ISM_ADDR, 0x3B, 0x40);
     int n = -1;
-    EXPECT(ism->read(FD, ISM_ADDR, NULL, 0, &n) == 1, "empty+overflow returns 1");
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), NULL, 0, &n) == 1, "empty+overflow returns 1");
     EXPECT(n == 0, "no samples produced");
 
     /* I2C error on the status read. */
     i2cmock_fail_next_ioctl();
     n = 99;
-    EXPECT(ism->read(FD, ISM_ADDR, NULL, 0, &n) == -1, "I2C error returns -1");
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), NULL, 0, &n) == -1, "I2C error returns -1");
 
     end(fb);
 }
@@ -250,14 +258,14 @@ static void test_mmc_probe(void)
 
     i2cmock_reset();
     i2cmock_set_reg(MMC_ADDR, 0x2F, 0x30);       /* PRODUCT_ID correct */
-    EXPECT(mmc->probe(FD, MMC_ADDR) == 0, "probe accepts 0x30");
+    EXPECT(mmc->probe(I2CBUS(MMC_ADDR)) == 0, "probe accepts 0x30");
 
     i2cmock_set_reg(MMC_ADDR, 0x2F, 0xFF);
-    EXPECT(mmc->probe(FD, MMC_ADDR) != 0, "probe rejects wrong product ID");
+    EXPECT(mmc->probe(I2CBUS(MMC_ADDR)) != 0, "probe rejects wrong product ID");
 
     i2cmock_set_reg(MMC_ADDR, 0x2F, 0x30);
     i2cmock_fail_next_ioctl();
-    EXPECT(mmc->probe(FD, MMC_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(mmc->probe(I2CBUS(MMC_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
 }
@@ -268,12 +276,12 @@ static void test_mmc_reset_and_init(void)
     int fb = g_fail;
 
     i2cmock_reset();
-    EXPECT(mmc->reset(FD, MMC_ADDR) == 0, "reset succeeds");
+    EXPECT(mmc->reset(I2CBUS(MMC_ADDR)) == 0, "reset succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x80, "reset writes SW_RST to CTRL1");
 
     /* 100 Hz → BW=01, CM_Freq=101. */
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
-    EXPECT(mmc->init(FD, MMC_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x01, "CTRL1 = BW bits");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0B) == 0x0D, "CTRL2 = Cmm_en|CM_Freq");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x04, "CTRL0 ends at INT_EN");
@@ -296,7 +304,7 @@ static void test_mmc_read_decode(void)
 
     mag_sample_t out;
     memset(&out, 0, sizeof out);
-    EXPECT(mmc->read(FD, MMC_ADDR, &out) == 0, "read returns 0");
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 0, "read returns 0");
     EXPECT(out.valid, "sample marked valid");
 
     EXPECT_NEAR(out.field[0],  100.0f, 0.1, "field X = +100 µT");
@@ -305,11 +313,11 @@ static void test_mmc_read_decode(void)
 
     /* Not-ready: M_DONE clear → returns 1 (wait for next interrupt). */
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
-    EXPECT(mmc->read(FD, MMC_ADDR, &out) == 1, "M_DONE clear returns 1");
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 1, "M_DONE clear returns 1");
 
     /* I2C error on the status read. */
     i2cmock_fail_next_ioctl();
-    EXPECT(mmc->read(FD, MMC_ADDR, &out) == -1, "I2C error returns -1");
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == -1, "I2C error returns -1");
 
     end(fb);
 }
@@ -320,7 +328,7 @@ static void test_mmc_set_reset(void)
     int fb = g_fail;
 
     i2cmock_reset();
-    EXPECT(mmc->set_reset(FD, MMC_ADDR) == 0, "set_reset succeeds");
+    EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "set_reset succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x08, "SET pulse bit written to CTRL0");
 
     end(fb);
@@ -345,26 +353,26 @@ static void test_mpu_probe(void)
     int fb = g_fail;
 
     mpu_stage_genuine(0x71);
-    EXPECT(mpu->probe(FD, MPU_ADDR) == 0, "mpu9250 probe accepts 0x71");
-    EXPECT(mpu9255_ops.probe(FD, MPU_ADDR) != 0, "mpu9255 probe rejects 0x71");
+    EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) == 0, "mpu9250 probe accepts 0x71");
+    EXPECT(mpu9255_ops.probe(I2CBUS(MPU_ADDR)) != 0, "mpu9255 probe rejects 0x71");
 
     mpu_stage_genuine(0x73);
-    EXPECT(mpu9255_ops.probe(FD, MPU_ADDR) == 0, "mpu9255 probe accepts 0x73");
-    EXPECT(mpu->probe(FD, MPU_ADDR) != 0, "mpu9250 probe rejects 0x73");
+    EXPECT(mpu9255_ops.probe(I2CBUS(MPU_ADDR)) == 0, "mpu9255 probe accepts 0x73");
+    EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "mpu9250 probe rejects 0x73");
 
     /* The counterfeit that matters: a relabelled MPU-6500 (no magnetometer). */
     mpu_stage_genuine(0x70);
-    EXPECT(mpu->probe(FD, MPU_ADDR) != 0, "probe rejects MPU-6500 id 0x70");
+    EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe rejects MPU-6500 id 0x70");
 
     /* Right WHO_AM_I, but no compass answering through the bypass — the other
      * common clone.  Must fail rather than leave it to the mag driver. */
     mpu_stage_genuine(0x71);
     i2cmock_set_reg(AK_ADDR, 0x00, 0x00);
-    EXPECT(mpu->probe(FD, MPU_ADDR) != 0, "probe rejects missing AK8963");
+    EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe rejects missing AK8963");
 
     mpu_stage_genuine(0x71);
     i2cmock_fail_next_ioctl();
-    EXPECT(mpu->probe(FD, MPU_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
 }
@@ -378,7 +386,7 @@ static void test_mpu_init_registers(void)
 
     /* 1000 Hz is on the 1000/(1+SMPLRT_DIV) grid with divider 0. */
     imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
-    EXPECT(mpu->init(FD, MPU_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(mpu->init(I2CBUS(MPU_ADDR), &cfg) == 0, "init succeeds");
 
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6B) == 0x01, "PWR_MGMT_1 = CLKSEL auto");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6C) == 0x00, "PWR_MGMT_2 = all sensors on");
@@ -397,7 +405,7 @@ static void test_mpu_init_registers(void)
     /* A rate off the grid must still land on a reachable divider. */
     mpu_stage_genuine(0x71);
     imu_cfg_t c200 = { .odr_hz = 200, .accel_g = 2, .gyro_dps = 250, .fifo_wm = 32 };
-    EXPECT(mpu->init(FD, MPU_ADDR, &c200) == 0, "init at 200 Hz succeeds");
+    EXPECT(mpu->init(I2CBUS(MPU_ADDR), &c200) == 0, "init at 200 Hz succeeds");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x19) == 4, "SMPLRT_DIV = 4 for 200 Hz");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x1B) == 0x00, "GYRO_CONFIG = 250 dps");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x1C) == 0x00, "ACCEL_CONFIG = 2 g");
@@ -405,7 +413,7 @@ static void test_mpu_init_registers(void)
     /* Two consecutive inits must leave an identical register image. */
     uint8_t before[0x80];
     for (int r = 0; r < 0x80; r++) before[r] = i2cmock_get_reg(MPU_ADDR, (uint8_t)r);
-    EXPECT(mpu->init(FD, MPU_ADDR, &c200) == 0, "second init succeeds");
+    EXPECT(mpu->init(I2CBUS(MPU_ADDR), &c200) == 0, "second init succeeds");
     int same = 1;
     for (int r = 0; r < 0x80; r++)
         if (r != 0x74 && before[r] != i2cmock_get_reg(MPU_ADDR, (uint8_t)r)) same = 0;
@@ -421,7 +429,7 @@ static void test_mpu_read_decode(void)
 
     mpu_stage_genuine(0x71);
     imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
-    (void)mpu->init(FD, MPU_ADDR, &cfg);
+    (void)mpu->init(I2CBUS(MPU_ADDR), &cfg);
 
     /* One 12-byte sample-set pending, no overflow. */
     i2cmock_set_reg(MPU_ADDR, 0x72, 0x00);   /* FIFO_COUNTH */
@@ -444,7 +452,7 @@ static void test_mpu_read_decode(void)
 
     imu_sample_t buf[8];
     int n = -1;
-    EXPECT(mpu->read(FD, MPU_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 8, &n) == 0, "read returns 0");
     EXPECT(n == 1, "one sample produced");
 
     const float as = 9.80665f / 4096.0f;                   /* ±8 g  m/s²/LSB   */
@@ -473,7 +481,7 @@ static void test_mpu_read_overflow_and_errors(void)
 
     mpu_stage_genuine(0x71);
     imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
-    (void)mpu->init(FD, MPU_ADDR, &cfg);
+    (void)mpu->init(I2CBUS(MPU_ADDR), &cfg);
     i2cmock_set_fifo_reg(MPU_ADDR, 0x74);
 
     /* Empty FIFO and no overflow: 0 samples, rc 0 — never -1. */
@@ -482,16 +490,16 @@ static void test_mpu_read_overflow_and_errors(void)
     i2cmock_set_reg(MPU_ADDR, 0x3A, 0x00);
     imu_sample_t buf[4];
     int n = -1;
-    EXPECT(mpu->read(FD, MPU_ADDR, buf, 4, &n) == 0, "empty FIFO returns 0");
+    EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 4, &n) == 0, "empty FIFO returns 0");
     EXPECT(n == 0, "no samples produced");
 
     /* Overflow latched in INT_STATUS bit 4, FIFO still empty. */
     i2cmock_set_reg(MPU_ADDR, 0x3A, 0x10);
-    EXPECT(mpu->read(FD, MPU_ADDR, buf, 4, &n) == 1, "overflow returns 1");
+    EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 4, &n) == 1, "overflow returns 1");
 
     /* I2C error on the count read. */
     i2cmock_fail_next_ioctl();
-    EXPECT(mpu->read(FD, MPU_ADDR, buf, 4, &n) == -1, "I2C error returns -1");
+    EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 4, &n) == -1, "I2C error returns -1");
 
     end(fb);
 }
@@ -505,15 +513,15 @@ static void test_ak_probe(void)
 
     i2cmock_reset();
     i2cmock_set_reg(AK_ADDR, 0x00, 0x48);
-    EXPECT(ak->probe(FD, AK_ADDR) == 0, "probe accepts WIA 0x48");
+    EXPECT(ak->probe(I2CBUS(AK_ADDR)) == 0, "probe accepts WIA 0x48");
 
     /* An AK09916 would answer 0x09 here — must not be accepted. */
     i2cmock_set_reg(AK_ADDR, 0x00, 0x09);
-    EXPECT(ak->probe(FD, AK_ADDR) != 0, "probe rejects AK09916 id 0x09");
+    EXPECT(ak->probe(I2CBUS(AK_ADDR)) != 0, "probe rejects AK09916 id 0x09");
 
     i2cmock_set_reg(AK_ADDR, 0x00, 0x48);
     i2cmock_fail_next_ioctl();
-    EXPECT(ak->probe(FD, AK_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(ak->probe(I2CBUS(AK_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
 }
@@ -531,12 +539,12 @@ static void test_ak_init_and_fuse_rom(void)
     i2cmock_set_reg(AK_ADDR, 0x12, 96);
 
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
-    EXPECT(ak->init(FD, AK_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(ak->init(I2CBUS(AK_ADDR), &cfg) == 0, "init succeeds");
     EXPECT(i2cmock_get_reg(AK_ADDR, 0x0A) == 0x16,
            "CNTL1 = 16-bit | continuous mode 2");
 
     mag_cfg_t slow = { .odr_hz = 8, .set_period_s = 0.0f };
-    EXPECT(ak->init(FD, AK_ADDR, &slow) == 0, "init at 8 Hz succeeds");
+    EXPECT(ak->init(I2CBUS(AK_ADDR), &slow) == 0, "init at 8 Hz succeeds");
     EXPECT(i2cmock_get_reg(AK_ADDR, 0x0A) == 0x12,
            "CNTL1 = 16-bit | continuous mode 1");
 
@@ -554,7 +562,7 @@ static void test_ak_read_decode(void)
     i2cmock_set_reg(AK_ADDR, 0x11, 160);
     i2cmock_set_reg(AK_ADDR, 0x12, 96);
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
-    (void)ak->init(FD, AK_ADDR, &cfg);
+    (void)ak->init(I2CBUS(AK_ADDR), &cfg);
 
     i2cmock_set_reg(AK_ADDR, 0x02, 0x01);      /* ST1: DRDY */
 
@@ -570,7 +578,7 @@ static void test_ak_read_decode(void)
 
     mag_sample_t out;
     memset(&out, 0, sizeof out);
-    EXPECT(ak->read(FD, AK_ADDR, &out) == 0, "read returns 0");
+    EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == 0, "read returns 0");
     EXPECT(out.valid, "sample marked valid");
 
     /*
@@ -591,17 +599,17 @@ static void test_ak_read_decode(void)
     /* HOFL set: unreliable sample, but not an I2C fault — must return 1. */
     d[6] = 0x08;
     i2cmock_set_regs(AK_ADDR, 0x03, d, 7);
-    EXPECT(ak->read(FD, AK_ADDR, &out) == 1, "HOFL overflow returns 1");
+    EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == 1, "HOFL overflow returns 1");
 
     /* DRDY never asserts: no data yet, still not an error. */
     d[6] = 0x00;
     i2cmock_set_regs(AK_ADDR, 0x03, d, 7);
     i2cmock_set_reg(AK_ADDR, 0x02, 0x00);
-    EXPECT(ak->read(FD, AK_ADDR, &out) == 1, "DRDY timeout returns 1, not -1");
+    EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == 1, "DRDY timeout returns 1, not -1");
 
     i2cmock_set_reg(AK_ADDR, 0x02, 0x01);
     i2cmock_fail_next_ioctl();
-    EXPECT(ak->read(FD, AK_ADDR, &out) == -1, "I2C error returns -1");
+    EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == -1, "I2C error returns -1");
 
     end(fb);
 }
@@ -654,16 +662,16 @@ static void test_lsm_probe(void)
     /* This driver backs BOTH registry names, so it must accept either
      * WHO_AM_I — rejecting 0x6D would silently break the lsm6dsox entry. */
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
-    EXPECT(d->probe(FD, LSM_ADDR) == 0, "probe accepts LSM6DSO (0x6C)");
+    EXPECT(d->probe(I2CBUS(LSM_ADDR)) == 0, "probe accepts LSM6DSO (0x6C)");
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6D);
-    EXPECT(d->probe(FD, LSM_ADDR) == 0, "probe accepts LSM6DSOX (0x6D)");
+    EXPECT(d->probe(I2CBUS(LSM_ADDR)) == 0, "probe accepts LSM6DSOX (0x6D)");
 
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6B);   /* ISM330DHCX's ID */
-    EXPECT(d->probe(FD, LSM_ADDR) != 0, "probe rejects a different ST part");
+    EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe rejects a different ST part");
 
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
     i2cmock_fail_next_ioctl();
-    EXPECT(d->probe(FD, LSM_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe fails on I2C error");
     end(fb);
 }
 
@@ -675,7 +683,7 @@ static void test_lsm_init_registers(void)
 
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
-    EXPECT(d->init(FD, LSM_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(d->init(I2CBUS(LSM_ADDR), &cfg) == 0, "init succeeds");
 
     /* ODR 833 → 0x7; ±8 g → 0x0C; the 0x02 bit is LPF2_XL_EN. */
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x10) == (uint8_t)((0x7 << 4) | 0x0C | 0x02),
@@ -697,14 +705,14 @@ static void test_lsm_init_registers(void)
     /* A watermark past the 511-word cap must clamp, not wrap. */
     i2cmock_reset();
     imu_cfg_t big = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 400 };
-    EXPECT(d->init(FD, LSM_ADDR, &big) == 0, "init with an oversized watermark");
+    EXPECT(d->init(I2CBUS(LSM_ADDR), &big) == 0, "init with an oversized watermark");
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x07) == (uint8_t)(511 & 0xFF) &&
            i2cmock_get_reg(LSM_ADDR, 0x08) == 0x01,
            "watermark clamps to 511 words");
 
     i2cmock_reset();
     i2cmock_fail_next_ioctl();
-    EXPECT(d->init(FD, LSM_ADDR, &cfg) != 0, "init fails on I2C error");
+    EXPECT(d->init(I2CBUS(LSM_ADDR), &cfg) != 0, "init fails on I2C error");
     end(fb);
 }
 
@@ -716,7 +724,7 @@ static void test_lsm_read_decode(void)
 
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)d->init(FD, LSM_ADDR, &cfg);
+    (void)d->init(I2CBUS(LSM_ADDR), &cfg);
 
     i2cmock_set_reg(LSM_ADDR, 0x3A, 3);      /* three words queued */
     i2cmock_set_reg(LSM_ADDR, 0x3B, 0);      /* no overflow */
@@ -728,7 +736,7 @@ static void test_lsm_read_decode(void)
 
     imu_sample_t buf[8];
     int n = -1;
-    EXPECT(d->read(FD, LSM_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 8, &n) == 0, "read returns 0");
     EXPECT(n == 1, "one sample from the accel+gyro pair");
 
     const float as = 0.122e-3f * 9.80665f;
@@ -751,26 +759,26 @@ static void test_lsm_read_overflow_and_errors(void)
 
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)d->init(FD, LSM_ADDR, &cfg);
+    (void)d->init(I2CBUS(LSM_ADDR), &cfg);
 
     /* Empty FIFO with the overflow flag set: 1 (not an error), zero samples. */
     i2cmock_set_reg(LSM_ADDR, 0x3A, 0);
     i2cmock_set_reg(LSM_ADDR, 0x3B, 0x40);
     imu_sample_t buf[4];
     int n = -1;
-    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == 1, "overflow reports 1, not -1");
+    EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 4, &n) == 1, "overflow reports 1, not -1");
     EXPECT(n == 0, "and produces no samples");
 
     /* Plain empty FIFO: 0 samples, success. */
     i2cmock_set_reg(LSM_ADDR, 0x3B, 0x00);
     n = -1;
-    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == 0, "empty FIFO returns 0");
+    EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 4, &n) == 0, "empty FIFO returns 0");
     EXPECT(n == 0, "no samples");
 
     /* A bus fault is the ONLY thing allowed to return -1: the reader counts
      * those toward its error-reset threshold. */
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, LSM_ADDR, buf, 4, &n) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 4, &n) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -802,16 +810,16 @@ static void test_icm42_probe_and_init(void)
 
     i2cmock_reset();
     i2cmock_set_reg(ICM42_ADDR, 0x75, 0x47);
-    EXPECT(d->probe(FD, ICM42_ADDR) == 0, "probe accepts WHO_AM_I 0x47");
+    EXPECT(d->probe(I2CBUS(ICM42_ADDR)) == 0, "probe accepts WHO_AM_I 0x47");
     i2cmock_set_reg(ICM42_ADDR, 0x75, 0x67);   /* ICM-42605 */
-    EXPECT(d->probe(FD, ICM42_ADDR) != 0, "probe rejects a sibling part");
+    EXPECT(d->probe(I2CBUS(ICM42_ADDR)) != 0, "probe rejects a sibling part");
     i2cmock_set_reg(ICM42_ADDR, 0x75, 0x47);
     i2cmock_fail_next_ioctl();
-    EXPECT(d->probe(FD, ICM42_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(d->probe(I2CBUS(ICM42_ADDR)) != 0, "probe fails on I2C error");
 
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
-    EXPECT(d->init(FD, ICM42_ADDR, &cfg) == 0, "init succeeds");
+    EXPECT(d->init(I2CBUS(ICM42_ADDR), &cfg) == 0, "init succeeds");
 
     /* FS bits live in [7:5]: ±2000 dps → 0x0, ±8 g → 0x1. */
     EXPECT((i2cmock_get_reg(ICM42_ADDR, 0x4F) >> 5) == 0x0, "GYRO_CONFIG0 FS = 2000 dps");
@@ -833,7 +841,7 @@ static void test_icm42_read_decode(void)
 
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)d->init(FD, ICM42_ADDR, &cfg);
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
 
     /* FIFO_COUNT is BIG endian here (COUNTH first): 32 bytes = 2 packets. */
     i2cmock_set_reg(ICM42_ADDR, 0x2E, 0x00);
@@ -846,7 +854,7 @@ static void test_icm42_read_decode(void)
 
     imu_sample_t buf[8];
     int n = -1;
-    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == 0, "read returns 0");
     EXPECT(n == 2, "two packets decoded");
 
     const float as = 4.0f * 9.80665f / 32768.0f;
@@ -864,10 +872,10 @@ static void test_icm42_read_decode(void)
     i2cmock_set_reg(ICM42_ADDR, 0x2E, 0);
     i2cmock_set_reg(ICM42_ADDR, 0x2F, 0);
     n = -1;
-    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == 0 && n == 0, "empty FIFO → 0");
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == 0 && n == 0, "empty FIFO → 0");
 
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, ICM42_ADDR, buf, 8, &n) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -884,15 +892,15 @@ static void test_icm209_probe(void)
     i2cmock_reset();
     /* probe selects bank 0 first, then reads WHO_AM_I at 0x00. */
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
-    EXPECT(d->probe(FD, ICM209_ADDR) == 0, "probe accepts WHO_AM_I 0xEA");
+    EXPECT(d->probe(I2CBUS(ICM209_ADDR)) == 0, "probe accepts WHO_AM_I 0xEA");
     EXPECT(i2cmock_get_reg(ICM209_ADDR, 0x7F) == 0x00, "probe selected bank 0");
 
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0x12);
-    EXPECT(d->probe(FD, ICM209_ADDR) != 0, "probe rejects wrong WHO_AM_I");
+    EXPECT(d->probe(I2CBUS(ICM209_ADDR)) != 0, "probe rejects wrong WHO_AM_I");
 
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
     i2cmock_fail_next_ioctl();
-    EXPECT(d->probe(FD, ICM209_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(d->probe(I2CBUS(ICM209_ADDR)) != 0, "probe fails on I2C error");
     end(fb);
 }
 
@@ -905,7 +913,7 @@ static void test_icm209_read_decode(void)
     i2cmock_reset();
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
     imu_cfg_t cfg = { .odr_hz = 225, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
-    (void)d->init(FD, ICM209_ADDR, &cfg);
+    (void)d->init(I2CBUS(ICM209_ADDR), &cfg);
 
     /* FIFO count is 13-bit big-endian at 0x70/0x71; 24 bytes = 2 samples of 12. */
     i2cmock_set_reg(ICM209_ADDR, 0x70, 0x00);
@@ -927,7 +935,7 @@ static void test_icm209_read_decode(void)
 
     imu_sample_t buf[8];
     int n = -1;
-    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == 0, "read returns 0");
+    EXPECT(d->read(I2CBUS(ICM209_ADDR), buf, 8, &n) == 0, "read returns 0");
     EXPECT(n == 2, "two 12-byte samples decoded");
 
     const float as = 9.80665f / 8192.0f;              /* ±4 g  */
@@ -943,11 +951,11 @@ static void test_icm209_read_decode(void)
     /* Fewer than one whole sample in the FIFO: nothing to produce. */
     i2cmock_set_reg(ICM209_ADDR, 0x71, 8);
     n = -1;
-    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == 0 && n == 0,
+    EXPECT(d->read(I2CBUS(ICM209_ADDR), buf, 8, &n) == 0 && n == 0,
            "a partial sample yields none");
 
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, ICM209_ADDR, buf, 8, &n) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(ICM209_ADDR), buf, 8, &n) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -963,12 +971,12 @@ static void test_ak099_probe_and_read(void)
 
     i2cmock_reset();
     i2cmock_set_reg(AK099_ADDR, 0x01, 0x09);
-    EXPECT(d->probe(FD, AK099_ADDR) == 0, "probe accepts WIA2 0x09");
+    EXPECT(d->probe(I2CBUS(AK099_ADDR)) == 0, "probe accepts WIA2 0x09");
     i2cmock_set_reg(AK099_ADDR, 0x01, 0x48);   /* AK8963's value */
-    EXPECT(d->probe(FD, AK099_ADDR) != 0, "probe rejects the AK8963 ID");
+    EXPECT(d->probe(I2CBUS(AK099_ADDR)) != 0, "probe rejects the AK8963 ID");
     i2cmock_set_reg(AK099_ADDR, 0x01, 0x09);
     i2cmock_fail_next_ioctl();
-    EXPECT(d->probe(FD, AK099_ADDR) != 0, "probe fails on I2C error");
+    EXPECT(d->probe(I2CBUS(AK099_ADDR)) != 0, "probe fails on I2C error");
 
     /* Data ready, no overflow. */
     i2cmock_reset();
@@ -979,7 +987,7 @@ static void test_ak099_probe_and_read(void)
 
     mag_sample_t m;
     memset(&m, 0, sizeof m);
-    EXPECT(d->read(FD, AK099_ADDR, &m) == 0, "read returns 0 when DRDY is set");
+    EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == 0, "read returns 0 when DRDY is set");
     EXPECT(m.valid, "sample marked valid");
     EXPECT_NEAR(m.field[0],  100 * 0.15f, 1e-3, "X = +chip X");
     EXPECT_NEAR(m.field[1], -200 * 0.15f, 1e-3, "Y flipped to starboard");
@@ -988,7 +996,7 @@ static void test_ak099_probe_and_read(void)
     /* Magnetic overflow: the sample is unusable but the bus is fine, so this
      * must be 1 (skip) rather than -1 (which counts toward an error reset). */
     i2cmock_set_reg(AK099_ADDR, 0x18, 0x08);
-    EXPECT(d->read(FD, AK099_ADDR, &m) == 1, "HOFL overflow returns 1, not -1");
+    EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == 1, "HOFL overflow returns 1, not -1");
 
     /*
      * DRDY never asserts.  Same contract, and this is the exact bug fixed
@@ -997,11 +1005,11 @@ static void test_ak099_probe_and_read(void)
      */
     i2cmock_reset();
     i2cmock_set_reg(AK099_ADDR, 0x10, 0x00);
-    EXPECT(d->read(FD, AK099_ADDR, &m) == 1, "no DRDY returns 1 (no data yet)");
+    EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == 1, "no DRDY returns 1 (no data yet)");
 
     i2cmock_set_reg(AK099_ADDR, 0x10, 0x01);
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, AK099_ADDR, &m) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -1018,13 +1026,13 @@ static void test_lis3mdl(void)
 
     i2cmock_reset();
     i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x3D);
-    EXPECT(d->probe(FD, LIS3_ADDR) == 0, "probe accepts WHO_AM_I 0x3D");
+    EXPECT(d->probe(I2CBUS(LIS3_ADDR)) == 0, "probe accepts WHO_AM_I 0x3D");
     i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x40);   /* LIS2MDL's value */
-    EXPECT(d->probe(FD, LIS3_ADDR) != 0, "probe rejects the LIS2MDL ID");
+    EXPECT(d->probe(I2CBUS(LIS3_ADDR)) != 0, "probe rejects the LIS2MDL ID");
     i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x3D);
 
     mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
-    EXPECT(d->init(FD, LIS3_ADDR, &mcfg) == 0, "init succeeds");
+    EXPECT(d->init(I2CBUS(LIS3_ADDR), &mcfg) == 0, "init succeeds");
     EXPECT((i2cmock_get_reg(LIS3_ADDR, 0x22) & 0x03) == 0x00,
            "CTRL_REG3 selects continuous-conversion mode");
 
@@ -1032,7 +1040,7 @@ static void test_lis3mdl(void)
     i2cmock_set_reg(LIS3_ADDR, 0x27, 0x00);
     mag_sample_t m;
     memset(&m, 0, sizeof m);
-    EXPECT(d->read(FD, LIS3_ADDR, &m) == 1, "ZYXDA clear returns 1");
+    EXPECT(d->read(I2CBUS(LIS3_ADDR), &m) == 1, "ZYXDA clear returns 1");
 
     /*
      * Data ready.  This part needs 0x80|reg on the sub-address to enable
@@ -1052,7 +1060,7 @@ static void test_lis3mdl(void)
     uint8_t raw[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };     /* 100, 200, 300 */
     i2cmock_set_regs(LIS3_ADDR, 0x28 | 0x80, raw, 6);
 
-    EXPECT(d->read(FD, LIS3_ADDR, &m) == 0, "read returns 0 when data is ready");
+    EXPECT(d->read(I2CBUS(LIS3_ADDR), &m) == 0, "read returns 0 when data is ready");
     EXPECT(m.valid, "sample marked valid");
     const float s3 = 100.0f / 6842.0f;
     EXPECT_NEAR(m.field[0],  200 * s3, 1e-3, "X = +chip Y (bow)");
@@ -1060,7 +1068,7 @@ static void test_lis3mdl(void)
     EXPECT_NEAR(m.field[2], -300 * s3, 1e-3, "Z = -chip Z (down)");
 
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, LIS3_ADDR, &m) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(LIS3_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -1072,33 +1080,33 @@ static void test_lis2mdl(void)
 
     i2cmock_reset();
     i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x40);
-    EXPECT(d->probe(FD, LIS2_ADDR) == 0, "probe accepts WHO_AM_I 0x40");
+    EXPECT(d->probe(I2CBUS(LIS2_ADDR)) == 0, "probe accepts WHO_AM_I 0x40");
     i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x3D);   /* LIS3MDL's value */
-    EXPECT(d->probe(FD, LIS2_ADDR) != 0, "probe rejects the LIS3MDL ID");
+    EXPECT(d->probe(I2CBUS(LIS2_ADDR)) != 0, "probe rejects the LIS3MDL ID");
     i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x40);
 
     mag_cfg_t mcfg = { .odr_hz = 100, .set_period_s = 0.0f };
-    EXPECT(d->init(FD, LIS2_ADDR, &mcfg) == 0, "init succeeds");
+    EXPECT(d->init(I2CBUS(LIS2_ADDR), &mcfg) == 0, "init succeeds");
     EXPECT((i2cmock_get_reg(LIS2_ADDR, 0x60) & 0x03) == 0x00,
            "CFG_REG_A selects continuous mode");
 
     i2cmock_set_reg(LIS2_ADDR, 0x67, 0x00);
     mag_sample_t m;
     memset(&m, 0, sizeof m);
-    EXPECT(d->read(FD, LIS2_ADDR, &m) == 1, "ZYXDA clear returns 1");
+    EXPECT(d->read(I2CBUS(LIS2_ADDR), &m) == 1, "ZYXDA clear returns 1");
 
     i2cmock_set_reg(LIS2_ADDR, 0x67, 0x08);
     uint8_t raw[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };
     i2cmock_set_regs(LIS2_ADDR, 0x68, raw, 6);
 
-    EXPECT(d->read(FD, LIS2_ADDR, &m) == 0, "read returns 0 when data is ready");
+    EXPECT(d->read(I2CBUS(LIS2_ADDR), &m) == 0, "read returns 0 when data is ready");
     const float s2 = 0.15f;
     EXPECT_NEAR(m.field[0],  200 * s2, 1e-3, "X = +chip Y (bow)");
     EXPECT_NEAR(m.field[1], -100 * s2, 1e-3, "Y = -chip X (starboard)");
     EXPECT_NEAR(m.field[2], -300 * s2, 1e-3, "Z = -chip Z (down)");
 
     i2cmock_fail_next_ioctl();
-    EXPECT(d->read(FD, LIS2_ADDR, &m) == -1, "I2C error returns -1");
+    EXPECT(d->read(I2CBUS(LIS2_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
 
@@ -1129,8 +1137,8 @@ struct reset_case {
 
 static int run_reset(const struct reset_case *c)
 {
-    if (c->is_imu) return ((const imu_ops_t *)c->ops)->reset(FD, c->addr);
-    return ((const mag_ops_t *)c->ops)->reset(FD, c->addr);
+    if (c->is_imu) return ((const imu_ops_t *)c->ops)->reset(I2CBUS(c->addr));
+    return ((const mag_ops_t *)c->ops)->reset(I2CBUS(c->addr));
 }
 
 static void test_driver_resets(void)
@@ -1177,18 +1185,18 @@ static void test_driver_resets(void)
     /* These two have no poll at all — a blind write plus a settling delay —
      * so they cannot time out and always report success. */
     i2cmock_reset();
-    EXPECT(lis3mdl_ops.reset(FD, LIS3_ADDR) == 0, "lis3mdl: reset succeeds");
+    EXPECT(lis3mdl_ops.reset(I2CBUS(LIS3_ADDR)) == 0, "lis3mdl: reset succeeds");
     EXPECT(i2cmock_get_reg(LIS3_ADDR, 0x21) == 0x04,
            "lis3mdl: SOFT_RST written to CTRL_REG2");
     i2cmock_fail_next_ioctl();
-    EXPECT(lis3mdl_ops.reset(FD, LIS3_ADDR) == -1, "lis3mdl: I2C error returns -1");
+    EXPECT(lis3mdl_ops.reset(I2CBUS(LIS3_ADDR)) == -1, "lis3mdl: I2C error returns -1");
 
     i2cmock_reset();
-    EXPECT(lis2mdl_ops.reset(FD, LIS2_ADDR) == 0, "lis2mdl: reset succeeds");
+    EXPECT(lis2mdl_ops.reset(I2CBUS(LIS2_ADDR)) == 0, "lis2mdl: reset succeeds");
     EXPECT(i2cmock_get_reg(LIS2_ADDR, 0x60) == 0x20,
            "lis2mdl: SOFT_RST written to CFG_REG_A");
     i2cmock_fail_next_ioctl();
-    EXPECT(lis2mdl_ops.reset(FD, LIS2_ADDR) == -1, "lis2mdl: I2C error returns -1");
+    EXPECT(lis2mdl_ops.reset(I2CBUS(LIS2_ADDR)) == -1, "lis2mdl: I2C error returns -1");
 
     end(fb);
 }
@@ -1213,14 +1221,14 @@ static void test_ak099_init_modes(void)
     for (unsigned i = 0; i < sizeof tbl / sizeof tbl[0]; i++) {
         i2cmock_reset();
         mag_cfg_t cfg = { .odr_hz = tbl[i].hz, .set_period_s = 0.0f };
-        EXPECT(d->init(FD, AK099_ADDR, &cfg) == 0, "init succeeds");
+        EXPECT(d->init(I2CBUS(AK099_ADDR), &cfg) == 0, "init succeeds");
         EXPECT(i2cmock_get_reg(AK099_ADDR, 0x31) == tbl[i].mode, tbl[i].msg);
     }
 
     i2cmock_reset();
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
     i2cmock_fail_next_ioctl();
-    EXPECT(d->init(FD, AK099_ADDR, &cfg) == -1, "init reports an I2C error");
+    EXPECT(d->init(I2CBUS(AK099_ADDR), &cfg) == -1, "init reports an I2C error");
     end(fb);
 }
 
@@ -1245,7 +1253,7 @@ static uint8_t init_imu_reg(const imu_ops_t *d, uint8_t addr, uint8_t reg,
     /* ISM/LSM read OUT_TEMP during init; a zeroed mock reads back fine. */
     imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = accel_g,
                       .gyro_dps = gyro_dps, .fifo_wm = 64 };
-    d->init(FD, addr, &cfg);
+    d->init(I2CBUS(addr), &cfg);
     return i2cmock_get_reg(addr, reg);
 }
 
@@ -1254,7 +1262,7 @@ static uint8_t init_mag_reg(const mag_ops_t *d, uint8_t addr, uint8_t reg,
 {
     i2cmock_reset();
     mag_cfg_t cfg = { .odr_hz = odr_hz, .set_period_s = 0.0f };
-    d->init(FD, addr, &cfg);
+    d->init(I2CBUS(addr), &cfg);
     return i2cmock_get_reg(addr, reg);
 }
 

@@ -1,0 +1,81 @@
+/*
+ * imud — IMU daemon
+ * Copyright (c) 2026 Richard Simpson
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * bus.h — the sensor transport handle (§4)
+ *
+ * Drivers neither open nor address a bus: they are handed an imud_bus_t and
+ * issue their register reads and writes through src/drivers/bus_io.h.
+ * Everything that distinguishes one transport from another — the file
+ * descriptor, the I2C slave address — lives in the handle, so a driver's
+ * register logic is written once and does not care how the bytes travel.
+ *
+ * bus_spec_t is what the operator asked for, straight out of the config;
+ * bus_open() turns it into a live imud_bus_t.  The two are separate because
+ * the config is parsed long before any device is opened, and by three
+ * different programs: imud, imud-cal and imud-imutest each build a spec and
+ * open it themselves.
+ *
+ * The IMU and the magnetometer get one handle each, never a shared one.  On
+ * I2C that means the same node is opened twice, which is harmless — an
+ * I2C_RDWR message carries its own address — and it is what lets the two
+ * sensors sit on different buses.
+ */
+#ifndef IMUD_BUS_H
+#define IMUD_BUS_H
+
+#include <stdint.h>
+
+/*
+ * Deliberately no Linux kernel headers here: include/config.h includes this
+ * one, and test_config builds on the macOS dev box.  The Linux-only pieces
+ * live in src/bus.c and src/drivers/bus_io.h, which are only ever linked into
+ * Linux-only binaries.
+ */
+
+typedef enum {
+    BUS_I2C = 0,
+    BUS_SPI = 1,
+} bus_kind_t;
+
+/* A live bus.  fd < 0 means "not open". */
+typedef struct {
+    bus_kind_t kind;
+    int        fd;
+    uint8_t    i2c_addr;   /* BUS_I2C: the 7-bit slave address */
+} imud_bus_t;
+
+/* What the operator asked for, before any device is touched. */
+typedef struct {
+    bus_kind_t  kind;
+    const char *node;      /* device node — [device] i2c_bus */
+    uint8_t     i2c_addr;  /* BUS_I2C — [imu]/[mag] i2c_addr */
+} bus_spec_t;
+
+/*
+ * Put a handle in the closed state.  Call this before any error path that can
+ * reach bus_close(): a handle inside a calloc'd context starts at fd 0, and
+ * closing that would take stdin down with it.
+ */
+static inline void bus_init(imud_bus_t *b)
+{
+    b->kind     = BUS_I2C;
+    b->fd       = -1;
+    b->i2c_addr = 0;
+}
+
+/*
+ * Open `spec` into `b`.  `who` is "imu" or "mag" and appears only in log
+ * messages, so a failure says which sensor could not be reached.  Returns 0,
+ * or -1 with the reason already logged.  On failure the handle is left closed,
+ * so bus_close() is safe either way.
+ */
+int  bus_open(imud_bus_t *b, const bus_spec_t *spec, const char *who);
+
+/* Close and mark closed.  Safe on an unopened or already-closed handle. */
+void bus_close(imud_bus_t *b);
+
+#endif /* IMUD_BUS_H */

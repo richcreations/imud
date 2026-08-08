@@ -19,6 +19,8 @@
 
 #include <stdbool.h>
 
+#include "bus.h"
+
 typedef struct {
 
     /* [device] */
@@ -286,6 +288,17 @@ int  config_load(const char *path, imud_config_t *cfg);
  * Call before config_load so unset keys get the right fallback.
  */
 void config_defaults(imud_config_t *cfg);
+
+/*
+ * config_{imu,mag}_bus_spec: describe a sensor's transport from the config,
+ * ready for bus_open().  imud, imud-cal and imud-imutest all go through these
+ * so none of them can disagree about which node a sensor lives on.
+ *
+ * The returned spec borrows string storage from `cfg`, so it must not outlive
+ * it — every caller opens the bus immediately and then forgets the spec.
+ */
+void config_imu_bus_spec(const imud_config_t *cfg, bus_spec_t *out);
+void config_mag_bus_spec(const imud_config_t *cfg, bus_spec_t *out);
 
 /*
  * config_apply_influx_transport_compat: back-compat shim for the deprecated

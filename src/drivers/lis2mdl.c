@@ -27,7 +27,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 /* ── Register addresses (DS12144 §8) ──────────────────────────────────────── */
@@ -56,10 +56,10 @@ static uint8_t odr_encode(int hz)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
-static int li2_probe(int fd, uint8_t addr)
+static int li2_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("lis2mdl: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -71,22 +71,22 @@ static int li2_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int li2_reset(int fd, uint8_t addr)
+static int li2_reset(const imud_bus_t *bus)
 {
     /* SOFT_RST is bit 5 of CFG_REG_A; self-clears after ~5 ms. */
-    if (i2c_reg_write(fd, addr, REG_CFG_REG_A, 0x20) < 0) return -1;
+    if (bus_reg_write(bus, REG_CFG_REG_A, 0x20) < 0) return -1;
     usleep(5000);
     return 0;
 }
 
-static int li2_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
+static int li2_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
     /* Enable block data update + DRDY interrupt pin. */
-    if (i2c_reg_write(fd, addr, REG_CFG_REG_C, 0x11) < 0) return -1;  /* BDU|DRDY_on_PIN */
+    if (bus_reg_write(bus, REG_CFG_REG_C, 0x11) < 0) return -1;  /* BDU|DRDY_on_PIN */
     /* Enable offset cancellation. */
-    if (i2c_reg_write(fd, addr, REG_CFG_REG_B, 0x02) < 0) return -1;  /* OFF_CANC */
+    if (bus_reg_write(bus, REG_CFG_REG_B, 0x02) < 0) return -1;  /* OFF_CANC */
     /* Set ODR and enable continuous mode (MD[1:0] = 00). */
-    if (i2c_reg_write(fd, addr, REG_CFG_REG_A, odr_encode(cfg->odr_hz)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CFG_REG_A, odr_encode(cfg->odr_hz)) < 0) return -1;
     return 0;
 }
 
@@ -98,18 +98,18 @@ static int li2_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
  *   1  — data not ready (ZYXDA not set); caller should wait for next interrupt
  *  -1  — I2C error
  */
-static int li2_read(int fd, uint8_t addr, mag_sample_t *out)
+static int li2_read(const imud_bus_t *bus, mag_sample_t *out)
 {
     uint8_t status;
-    if (i2c_reg_read(fd, addr, REG_STATUS_REG, &status) < 0) return -1;
+    if (bus_reg_read(bus, REG_STATUS_REG, &status) < 0) return -1;
     if (!(status & 0x08)) return 1;  /* ZYXDA not set */
 
     uint8_t raw[6];
-    if (i2c_burst_read(fd, addr, REG_OUTX_L, raw, 6) < 0) return -1;
+    if (bus_burst_read(bus, REG_OUTX_L, raw, 6) < 0) return -1;
 
-    int16_t rx = i2c_s16le(&raw[0]);
-    int16_t ry = i2c_s16le(&raw[2]);
-    int16_t rz = i2c_s16le(&raw[4]);
+    int16_t rx = reg_s16le(&raw[0]);
+    int16_t ry = reg_s16le(&raw[2]);
+    int16_t rz = reg_s16le(&raw[4]);
 
     /*
      * Remap chip frame (X=port, Y=bow, Z=up) → NED board frame.

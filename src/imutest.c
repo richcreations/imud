@@ -356,19 +356,19 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
 
 /*
  * The register snapshot needs raw bus access, so this file includes the
- * drivers' private I2C header.  That is the same single-ioctl(I2C_RDWR) path
- * every driver uses, which keeps the snapshot visible to test/i2c_mock.c, and
- * it is why the tool is Linux-only exactly like the drivers are.
+ * drivers' private bus header.  That is the same single-ioctl path every
+ * driver uses, which keeps the snapshot visible to test/bus_mock.c, and it is
+ * why the tool is Linux-only exactly like the drivers are.
  */
-#include "drivers/i2c_io.h"
+#include "drivers/bus_io.h"
 
 /* Single-byte snapshot of a device's safe control registers. */
-static int reg_snapshot(int fd, uint8_t addr, const imt_regmap_t *m, uint8_t *out)
+static int reg_snapshot(const imud_bus_t *bus, const imt_regmap_t *m, uint8_t *out)
 {
     for (int reg = m->lo; reg <= (int)m->hi; reg++) {
         if (regmap_skips(m, (uint8_t)reg)) { out[reg] = 0; continue; }
         uint8_t v = 0;
-        if (i2c_reg_read(fd, addr, (uint8_t)reg, &v) < 0) return -1;
+        if (bus_reg_read(bus, (uint8_t)reg, &v) < 0) return -1;
         out[reg] = v;
     }
     return 0;
@@ -395,7 +395,7 @@ static int reg_snapshot(int fd, uint8_t addr, const imt_regmap_t *m, uint8_t *ou
  */
 #define IMT_VOLATILE_PASSES 4
 
-static int reg_volatile_scan(int fd, uint8_t addr, const imt_regmap_t *m,
+static int reg_volatile_scan(const imud_bus_t *bus, const imt_regmap_t *m,
                              const uint8_t *ref, bool *vol)
 {
     static uint8_t probe[256];
@@ -404,7 +404,7 @@ static int reg_volatile_scan(int fd, uint8_t addr, const imt_regmap_t *m,
     for (int pass = 0; pass < IMT_VOLATILE_PASSES; pass++) {
         if (pass) sleep_s(0.03);
         memset(probe, 0, sizeof probe);
-        if (reg_snapshot(fd, addr, m, probe) < 0) return -1;
+        if (reg_snapshot(bus, m, probe) < 0) return -1;
         for (int reg = m->lo; reg <= (int)m->hi; reg++) {
             if (regmap_skips(m, (uint8_t)reg)) continue;
             if (probe[reg] != ref[reg]) vol[reg] = true;
@@ -439,8 +439,7 @@ static int reg_diff(const uint8_t *before, const uint8_t *after,
 
 typedef struct {
     const imu_ops_t *ops;
-    int              fd;
-    uint8_t          addr;
+    const imud_bus_t *bus;
     /* Running contract observations, accumulated across every drain. */
     bool             have_seq;
     uint32_t         last_seq;
@@ -449,10 +448,10 @@ typedef struct {
     uint64_t         total;
 } drain_ctx_t;
 
-static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, int fd, uint8_t addr)
+static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, const imud_bus_t *bus)
 {
     memset(d, 0, sizeof *d);
-    d->ops = ops; d->fd = fd; d->addr = addr;
+    d->ops = ops; d->bus = bus;
 }
 
 /*
@@ -461,7 +460,7 @@ static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, int fd, uint8_t add
  */
 static int drain_once(drain_ctx_t *d, imu_sample_t *buf, int max, int *n)
 {
-    int rc = d->ops->read(d->fd, d->addr, buf, max, n);
+    int rc = d->ops->read(d->bus, buf, max, n);
     if (rc < 0) { d->rcneg++; d->last_errno = errno; *n = 0; return rc; }
     if (rc > 0) d->rc1++;
 
@@ -496,16 +495,16 @@ static void drain_flush(drain_ctx_t *d)
 /* ── Phase A: probe / reset / init ─────────────────────────────────────────── */
 
 /* Returns 0 if the device came up, -1 if a prerequisite failed. */
-static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
+static int check_bringup(imt_report_t *r, const imt_opts_t *o,
+                         const imud_bus_t *ibus, const imud_bus_t *mbus,
                          const imu_ops_t *imu, const mag_ops_t *mag,
                          const imud_config_t *cfg, const imu_cfg_t *icfg,
                          const mag_cfg_t *mcfg, bool *mag_ok)
 {
     char mb[56];
-    uint8_t addr = (uint8_t)cfg->imu_addr;
 
     /* ── probe ───────────────────────────────────────────────────────────── */
-    if (imu->probe(fd, addr) < 0) {
+    if (imu->probe(ibus) < 0) {
         add_check(r, "imu.probe", "IMU probe() / chip identification", IMT_FAIL,
                   "rejected", "accepted",
                   "probe() failed at 0x%02X. Wrong address, wrong driver, or "
@@ -522,7 +521,9 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
      * check above for the wrong reason.  Nothing answers at the reserved
      * address, so a driver that accepts it is not identifying anything.
      */
-    if (imu->probe(fd, IMT_BOGUS_ADDR) == 0)
+    imud_bus_t ibogus = *ibus;
+    ibogus.i2c_addr = IMT_BOGUS_ADDR;
+    if (imu->probe(&ibogus) == 0)
         add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
                   IMT_FAIL, "accepted", "rejected",
                   "probe() returned 0 at unused address 0x%02X — it is not "
@@ -535,7 +536,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
 
     /* ── reset ───────────────────────────────────────────────────────────── */
     double t0 = now_s();
-    int rc = imu->reset(fd, addr);
+    int rc = imu->reset(ibus);
     double ms = (now_s() - t0) * 1e3;
     r->raw.reset_ms = ms;
 
@@ -570,10 +571,10 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
 
     if (rm) {
         memset(before, 0, sizeof before);
-        snapped = (reg_snapshot(fd, addr, rm, before) == 0);
+        snapped = (reg_snapshot(ibus, rm, before) == 0);
     }
 
-    if (imu->init(fd, addr, icfg) < 0) {
+    if (imu->init(ibus, icfg) < 0) {
         add_check(r, "imu.init.rc", "IMU init()", IMT_FAIL, "failed", "0",
                   "init() returned -1 for ODR %d Hz, %d g, %d dps, wm %d.",
                   icfg->odr_hz, icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
@@ -601,7 +602,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
                    "the post-reset snapshot could not be read");
     } else {
         memset(after, 0, sizeof after);
-        if (reg_snapshot(fd, addr, rm, after) < 0) {
+        if (reg_snapshot(ibus, rm, after) < 0) {
             skip_check(r, "imu.init.regdiff", "IMU control-register diff",
                        "the post-init snapshot could not be read");
             skip_check(r, "imu.init.idempotent", "IMU init() is idempotent",
@@ -610,7 +611,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
             /* Find the registers that move on their own before diffing
              * anything, so neither the diff nor the idempotency compare is
              * dominated by sensor output, FIFO level and the timestamp. */
-            int nvol = reg_volatile_scan(fd, addr, rm, after, volatile_imu);
+            int nvol = reg_volatile_scan(ibus, rm, after, volatile_imu);
             const bool *vol = nvol >= 0 ? volatile_imu : NULL;
             r->raw.n_volatile_imu = nvol > 0 ? nvol : 0;
 
@@ -639,13 +640,13 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
 
             /* A second init must land on the same image: catches a bank left
              * selected, a latched enable, or any state-dependent branch. */
-            if (imu->init(fd, addr, icfg) < 0) {
+            if (imu->init(ibus, icfg) < 0) {
                 add_check(r, "imu.init.idempotent", "IMU init() is idempotent",
                           IMT_FAIL, "second init failed", "0",
                           "init() succeeded once but failed when repeated.");
             } else {
                 memset(again, 0, sizeof again);
-                if (reg_snapshot(fd, addr, rm, again) < 0) {
+                if (reg_snapshot(ibus, rm, again) < 0) {
                     skip_check(r, "imu.init.idempotent",
                                "IMU init() is idempotent",
                                "the second snapshot could not be read");
@@ -690,8 +691,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
         return 0;
     }
 
-    uint8_t maddr = (uint8_t)cfg->mag_addr;
-    if (mag->probe(fd, maddr) < 0) {
+    if (mag->probe(mbus) < 0) {
         add_check(r, "mag.probe", "Mag probe() / chip identification", IMT_FAIL,
                   "rejected", "accepted",
                   "probe() failed at 0x%02X. For a compass behind an IMU's I2C "
@@ -703,7 +703,9 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
               fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->mag_addr),
               "accepted", "driver '%s' recognised the part", mag->name);
 
-    if (mag->probe(fd, IMT_BOGUS_ADDR) == 0)
+    imud_bus_t mbogus = *mbus;
+    mbogus.i2c_addr = IMT_BOGUS_ADDR;
+    if (mag->probe(&mbogus) == 0)
         add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
                   IMT_FAIL, "accepted", "rejected",
                   "probe() returned 0 at unused address 0x%02X.", IMT_BOGUS_ADDR);
@@ -713,7 +715,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
                   "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
 
     t0 = now_s();
-    rc = mag->reset(fd, maddr);
+    rc = mag->reset(mbus);
     ms = (now_s() - t0) * 1e3;
     r->raw.mag_reset_ms = ms;
     if (rc < 0) {
@@ -730,10 +732,10 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
     bool msnapped = false;
     if (mrm && !mrm->ctrl_writeonly) {
         memset(mbefore, 0, sizeof mbefore);
-        msnapped = (reg_snapshot(fd, maddr, mrm, mbefore) == 0);
+        msnapped = (reg_snapshot(mbus, mrm, mbefore) == 0);
     }
 
-    if (mag->init(fd, maddr, mcfg) < 0) {
+    if (mag->init(mbus, mcfg) < 0) {
         add_check(r, "mag.init.rc", "Mag init()", IMT_FAIL, "failed", "0",
                   "init() returned -1 for ODR %d Hz.", mcfg->odr_hz);
         return 0;
@@ -755,8 +757,8 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o, int fd,
                    "are covered off-hardware by test_drivers instead");
     } else if (mrm && msnapped) {
         memset(mafter, 0, sizeof mafter);
-        if (reg_snapshot(fd, maddr, mrm, mafter) == 0) {
-            int nvol = reg_volatile_scan(fd, maddr, mrm, mafter, volatile_mag);
+        if (reg_snapshot(mbus, mrm, mafter) == 0) {
+            int nvol = reg_volatile_scan(mbus, mrm, mafter, volatile_mag);
             const bool *mvol = nvol >= 0 ? volatile_mag : NULL;
             r->raw.n_volatile_mag = nvol > 0 ? nvol : 0;
 
@@ -1499,7 +1501,7 @@ static uint64_t collect_stats(const imt_opts_t *o, drain_ctx_t *d, double secs,
 }
 
 static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
-                           const imu_ops_t *imu, int fd, uint8_t addr,
+                           const imu_ops_t *imu, const imud_bus_t *bus,
                            const imu_cfg_t *base)
 {
     char mb[56], eb[56], id[32], nm[64];
@@ -1521,7 +1523,7 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         imu_cfg_t c = *base;
         c.accel_g = imu->supported_accel_g[i];
 
-        if (imu->reset(fd, addr) < 0 || imu->init(fd, addr, &c) < 0) {
+        if (imu->reset(bus) < 0 || imu->init(bus, &c) < 0) {
             snprintf(id, sizeof id, "imu.fs.a%d", c.accel_g);
             snprintf(nm, sizeof nm, "Accel full scale +/-%d g", c.accel_g);
             add_check(r, id, nm, IMT_FAIL, "init failed", "0",
@@ -1589,7 +1591,7 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         imu_cfg_t c = *base;
         c.gyro_dps = imu->supported_gyro_dps[i];
 
-        if (imu->reset(fd, addr) < 0 || imu->init(fd, addr, &c) < 0) {
+        if (imu->reset(bus) < 0 || imu->init(bus, &c) < 0) {
             gbad++;
             continue;
         }
@@ -1646,7 +1648,7 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                      "phase alone, at +/-%d dps.", base->gyro_dps);
 
     /* Everything after this depends on the configured setup being back. */
-    bool ok = (imu->reset(fd, addr) == 0) && (imu->init(fd, addr, base) == 0);
+    bool ok = (imu->reset(bus) == 0) && (imu->init(bus, base) == 0);
     add_check(r, "imu.fs.restore", "Configured full scale restored",
               ok ? IMT_PASS : IMT_FAIL,
               ok ? "restored" : "failed",
@@ -1734,7 +1736,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 /* ── Phase A: magnetometer ────────────────────────────────────────────────── */
 
 static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
-                              const mag_ops_t *mag, int fd, uint8_t addr,
+                              const mag_ops_t *mag, const imud_bus_t *bus,
                               int eff_odr)
 {
     char mb[56], eb[56];
@@ -1754,7 +1756,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
     while (now_s() < deadline && !g_abort) {
         mag_sample_t s;
         memset(&s, 0, sizeof s);
-        int rc = mag->read(fd, addr, &s);
+        int rc = mag->read(bus, &s);
         if (rc < 0)      rcneg++;
         else if (rc > 0) rc1++;
         else {
@@ -1866,7 +1868,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                       "has_set_reset is true but set_reset is NULL — the "
                       "daemon would call through a null pointer.");
         } else {
-            int rc = mag->set_reset(fd, addr);
+            int rc = mag->set_reset(bus);
             add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
                       rc == 0 ? IMT_PASS : IMT_FAIL,
                       fmtbuf(mb, sizeof mb, "%d", rc), "0",
@@ -2255,7 +2257,7 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 /* ── Phase D: guided magnetometer spin ────────────────────────────────────── */
 
 static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
-                       const mag_ops_t *mag, int fd, uint8_t maddr,
+                       const mag_ops_t *mag, const imud_bus_t *bus,
                        const imud_config_t *cfg, const imu_ops_t *imu,
                        int eff_odr)
 {
@@ -2312,7 +2314,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 
         mag_sample_t s;
         memset(&s, 0, sizeof s);
-        if (mag->read(fd, maddr, &s) == 0 && s.valid) {
+        if (mag->read(bus, &s) == 0 && s.valid) {
             double bx = s.field[0], by = s.field[1], bz = s.field[2];
             if (bx < bx_min) bx_min = bx;
             if (bx > bx_max) bx_max = bx;
@@ -2589,7 +2591,8 @@ static void fill_environment(imt_report_t *r, const imud_config_t *cfg)
     snprintf(r->gpio_chip, sizeof r->gpio_chip, "%s", cfg->gpio_chip);
 }
 
-int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
+int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
+                const imu_ops_t *imu, const mag_ops_t *mag,
                 const imud_config_t *cfg, const imt_opts_t *opts,
                 imt_report_t *r, char *errbuf, size_t errbufsz)
 {
@@ -2684,14 +2687,14 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
     }
 
     bool mag_ok = false;
-    if (check_bringup(r, opts, fd, imu, mag, cfg, &icfg, &mcfg, &mag_ok) < 0) {
+    if (check_bringup(r, opts, ibus, mbus, imu, mag, cfg, &icfg, &mcfg, &mag_ok) < 0) {
         r->wall_duration_s = now_s() - t_start;
         imt_decide_verdict(r);
         return 0;   /* the checks carry the verdict */
     }
 
     drain_ctx_t d;
-    drain_init(&d, imu, fd, (uint8_t)cfg->imu_addr);
+    drain_init(&d, imu, ibus);
 
     if (opts->phases & IMT_PHASE_PASSIVE) {
         check_odr_seq_ts(r, opts, &d, imu, r->eff_odr_hz);
@@ -2701,10 +2704,10 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
         check_rest(r, opts, &d);
         check_drdy(r, opts, &d, cfg, r->eff_odr_hz, cfg->imu_fifo_wm);
         if (mag_ok)
-            check_mag_passive(r, opts, mag, fd, (uint8_t)cfg->mag_addr,
+            check_mag_passive(r, opts, mag, mbus,
                               r->mag_eff_odr_hz);
         /* last: every init() in the sweep resets the driver's seq counter */
-        check_fs_sweep(r, opts, &d, imu, fd, (uint8_t)cfg->imu_addr, &icfg);
+        check_fs_sweep(r, opts, &d, imu, ibus, &icfg);
         r->phases_run |= IMT_PHASE_PASSIVE;
     }
 
@@ -2734,7 +2737,7 @@ int imt_run_ops(int fd, const imu_ops_t *imu, const mag_ops_t *mag,
         }
         if ((opts->phases & IMT_PHASE_SPIN) && !g_abort && !r->aborted) {
             if (mag_ok) {
-                phase_spin(r, opts, &d, mag, fd, (uint8_t)cfg->mag_addr,
+                phase_spin(r, opts, &d, mag, mbus,
                            cfg, imu, r->eff_odr_hz);
                 r->phases_run |= IMT_PHASE_SPIN;
             } else {

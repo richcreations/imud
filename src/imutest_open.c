@@ -43,14 +43,33 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
         }
     }
 
-    int fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        snprintf(errbuf, errbufsz, "cannot open %s: %s",
-                 cfg->i2c_bus, strerror(errno));
+    /* One handle per sensor. bus_open logs the errno detail; errbuf carries
+     * the summary imud-imutest prints, so the operator sees both which sensor
+     * and why. */
+    imud_bus_t ibus, mbus;
+    bus_spec_t spec;
+
+    config_imu_bus_spec(cfg, &spec);
+    if (bus_open(&ibus, &spec, "imu") < 0) {
+        snprintf(errbuf, errbufsz, "cannot open %s for the IMU", spec.node);
         return -1;
     }
 
-    int rc = imt_run_ops(fd, imu, mag, cfg, opts, r, errbuf, errbufsz);
-    close(fd);
+    /* An IMU-only board leaves mbus closed: imt_run_ops never touches it when
+     * mag is NULL. */
+    bus_init(&mbus);
+    if (mag) {
+        config_mag_bus_spec(cfg, &spec);
+        if (bus_open(&mbus, &spec, "mag") < 0) {
+            snprintf(errbuf, errbufsz, "cannot open %s for the magnetometer",
+                     spec.node);
+            bus_close(&ibus);
+            return -1;
+        }
+    }
+
+    int rc = imt_run_ops(&ibus, &mbus, imu, mag, cfg, opts, r, errbuf, errbufsz);
+    bus_close(&ibus);
+    bus_close(&mbus);
     return rc;
 }

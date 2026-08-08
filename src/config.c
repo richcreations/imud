@@ -395,6 +395,27 @@ void config_defaults(imud_config_t *cfg)
     cfg->log_stats_hz = 1;
 }
 
+/* ── Bus specs ──────────────────────────────────────────────────────────── */
+
+/*
+ * The IMU and the magnetometer are described separately even though they share
+ * [device] i2c_bus today: they are two sensors on two handles, and keeping the
+ * lookup per-sensor is what will let them sit on different transports.
+ */
+void config_imu_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
+{
+    out->kind     = BUS_I2C;
+    out->node     = cfg->i2c_bus;
+    out->i2c_addr = (uint8_t)cfg->imu_addr;
+}
+
+void config_mag_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
+{
+    out->kind     = BUS_I2C;
+    out->node     = cfg->i2c_bus;
+    out->i2c_addr = (uint8_t)cfg->mag_addr;
+}
+
 bool config_apply_influx_transport_compat(imud_config_t *cfg)
 {
     /* New configs use udp_enabled/http_enabled; only fall back to the legacy

@@ -61,7 +61,10 @@ struct imu_ctx {
     imud_config_t    cfg;              /* copy at open; hot-reload fields updated via imu_ctx_update_config */
     imud_cal_t       cal;              /* copy at open, read-only afterwards */
 
-    int              i2c_fd;
+    /* One handle per sensor, not one bus shared by both: the two can sit on
+     * different nodes, and each driver addresses only its own. */
+    imud_bus_t       imu_bus;
+    imud_bus_t       mag_bus;
     const imu_ops_t *imu_ops;
     const mag_ops_t *mag_ops;
     imu_cfg_t        imu_hw_cfg;
@@ -277,8 +280,7 @@ void *ism_reader_thread(void *arg)
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
 
-        int rc = ctx->imu_ops->read(ctx->i2c_fd, (uint8_t)cfg.imu_addr,
-                                    buf, 128, &n);
+        int rc = ctx->imu_ops->read(&ctx->imu_bus, buf, 128, &n);
 
         clock_gettime(CLOCK_REALTIME, &t_after);
         clock_gettime(CLOCK_TAI,      &t_tai);
@@ -287,8 +289,8 @@ void *ism_reader_thread(void *arg)
             ctx->imu_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[ism_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)cfg.imu_addr) == 0)
-                       && (ctx->imu_ops->init (ctx->i2c_fd, (uint8_t)cfg.imu_addr,
+                int rok = (ctx->imu_ops->reset(&ctx->imu_bus) == 0)
+                       && (ctx->imu_ops->init (&ctx->imu_bus,
                                                &ctx->imu_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
@@ -467,7 +469,7 @@ void *mag_reader_thread(void *arg)
             double elapsed = (double)(now.tv_sec  - last_set.tv_sec)
                            + (double)(now.tv_nsec - last_set.tv_nsec) * 1e-9;
             if (elapsed >= (double)cfg.mag_set_period_s) {
-                ctx->mag_ops->set_reset(ctx->i2c_fd, (uint8_t)cfg.mag_addr);
+                ctx->mag_ops->set_reset(&ctx->mag_bus);
                 ctx->mag_set_flag = 1;
                 last_set = now;
                 usleep(1000); /* 1 ms settling — no read this cycle */
@@ -475,15 +477,15 @@ void *mag_reader_thread(void *arg)
             }
         }
 
-        int mrc = ctx->mag_ops->read(ctx->i2c_fd, (uint8_t)cfg.mag_addr, &s);
+        int mrc = ctx->mag_ops->read(&ctx->mag_bus, &s);
         if (mrc > 0) continue;   /* no data yet (DRDY not set / playback idle) —
                                   * pushing here would re-fuse a stale sample */
         if (mrc < 0) {
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[mag_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)cfg.mag_addr) == 0)
-                       && (ctx->mag_ops->init (ctx->i2c_fd, (uint8_t)cfg.mag_addr,
+                int rok = (ctx->mag_ops->reset(&ctx->mag_bus) == 0)
+                       && (ctx->mag_ops->init (&ctx->mag_bus,
                                                &ctx->mag_hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
@@ -1152,7 +1154,10 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 {
     imu_ctx_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) { LOG_E("[imu] calloc: %s\n", strerror(errno)); return -1; }
-    ctx->i2c_fd = -1;   /* calloc zeros to 0; must be -1 so fail: doesn't close stdin */
+    /* calloc zeros both handles to fd 0; bus_init makes them -1 so a fail:
+     * before the opens does not close stdin. */
+    bus_init(&ctx->imu_bus);
+    bus_init(&ctx->mag_bus);
 
     ctx->cfg = *cfg;
     if (cal) {
@@ -1208,13 +1213,20 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     ctx->actual_odr_hz     = odr_actual_imu(ctx->imu_ops, cfg->imu_odr_hz);
     ctx->actual_mag_odr_hz = odr_actual_mag(ctx->mag_ops, cfg->mag_odr_hz);
 
-    /* ── Open I2C bus ────────────────────────────────────────────────────── */
+    /* ── Open the sensor buses ───────────────────────────────────────────── */
 
-    ctx->i2c_fd = open(cfg->i2c_bus, O_RDWR | O_CLOEXEC);
-    if (ctx->i2c_fd < 0) {
-        LOG_E("[imu] cannot open %s: %s\n", cfg->i2c_bus, strerror(errno));
+    /* One handle each. On I2C that opens the same node twice, which costs a
+     * descriptor and buys a uniform model: no shared-fd ownership to track,
+     * and the two sensors are free to live on different buses. */
+    bus_spec_t spec;
+
+    config_imu_bus_spec(cfg, &spec);
+    if (bus_open(&ctx->imu_bus, &spec, "imu") < 0)
         goto fail;
-    }
+
+    config_mag_bus_spec(cfg, &spec);
+    if (bus_open(&ctx->mag_bus, &spec, "mag") < 0)
+        goto fail;
 
     /* ── Build hw config structs ─────────────────────────────────────────── */
 
@@ -1230,16 +1242,16 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Probe + reset + init IMU ────────────────────────────────────────── */
 
-    if (ctx->imu_ops->probe(ctx->i2c_fd, (uint8_t)cfg->imu_addr) < 0) {
+    if (ctx->imu_ops->probe(&ctx->imu_bus) < 0) {
         LOG_E("[imu] %s probe failed at 0x%02X\n",
                 ctx->imu_ops->name, cfg->imu_addr);
         goto fail;
     }
-    if (ctx->imu_ops->reset(ctx->i2c_fd, (uint8_t)cfg->imu_addr) < 0) {
+    if (ctx->imu_ops->reset(&ctx->imu_bus) < 0) {
         LOG_E("[imu] %s reset failed\n", ctx->imu_ops->name);
         goto fail;
     }
-    if (ctx->imu_ops->init(ctx->i2c_fd, (uint8_t)cfg->imu_addr, &ctx->imu_hw_cfg) < 0) {
+    if (ctx->imu_ops->init(&ctx->imu_bus, &ctx->imu_hw_cfg) < 0) {
         LOG_E("[imu] %s init failed\n", ctx->imu_ops->name);
         goto fail;
     }
@@ -1253,16 +1265,16 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Probe + reset + init mag ────────────────────────────────────────── */
 
-    if (ctx->mag_ops->probe(ctx->i2c_fd, (uint8_t)cfg->mag_addr) < 0) {
+    if (ctx->mag_ops->probe(&ctx->mag_bus) < 0) {
         LOG_E("[imu] %s probe failed at 0x%02X\n",
                 ctx->mag_ops->name, cfg->mag_addr);
         goto fail;
     }
-    if (ctx->mag_ops->reset(ctx->i2c_fd, (uint8_t)cfg->mag_addr) < 0) {
+    if (ctx->mag_ops->reset(&ctx->mag_bus) < 0) {
         LOG_E("[imu] %s reset failed\n", ctx->mag_ops->name);
         goto fail;
     }
-    if (ctx->mag_ops->init(ctx->i2c_fd, (uint8_t)cfg->mag_addr, &ctx->mag_hw_cfg) < 0) {
+    if (ctx->mag_ops->init(&ctx->mag_bus, &ctx->mag_hw_cfg) < 0) {
         LOG_E("[imu] %s init failed\n", ctx->mag_ops->name);
         goto fail;
     }
@@ -1315,7 +1327,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     return 0;
 
 fail:
-    if (ctx->i2c_fd >= 0)  close(ctx->i2c_fd);
+    bus_close(&ctx->imu_bus);
+    bus_close(&ctx->mag_bus);
     if (ctx->imu_line)     release_gpio_line(ctx->imu_line);
     if (ctx->mag_line)     release_gpio_line(ctx->mag_line);
     if (ctx->gpio_chip)    gpiod_chip_close(ctx->gpio_chip);
@@ -1420,7 +1433,8 @@ void imu_ctx_stop(imu_ctx_t *ctx)
 void imu_ctx_free(imu_ctx_t *ctx)
 {
     if (!ctx) return;
-    close(ctx->i2c_fd);
+    bus_close(&ctx->imu_bus);
+    bus_close(&ctx->mag_bus);
     if (ctx->imu_line)  release_gpio_line(ctx->imu_line);
     if (ctx->mag_line)  release_gpio_line(ctx->mag_line);
     if (ctx->gpio_chip) gpiod_chip_close(ctx->gpio_chip);

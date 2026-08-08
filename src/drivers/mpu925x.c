@@ -45,7 +45,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -182,10 +182,10 @@ static uint8_t accel_fs_encode(int g, float *scale)
  * two interesting wrong answers by name.  Enabling bypass here is safe and
  * idempotent: init() sets it again as its last step.
  */
-static int probe_common(int fd, uint8_t addr, uint8_t expect, const char *part)
+static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("%s: WHO_AM_I read failed: %s\n", part, strerror(errno));
         return -1;
     }
@@ -210,12 +210,18 @@ static int probe_common(int fd, uint8_t addr, uint8_t expect, const char *part)
      * unexplained I2C error later, from the mag driver, about a different
      * address.
      */
-    if (i2c_reg_write(fd, addr, REG_USER_CTRL, 0x00) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
     usleep(1000);
 
+    /* The compass answers at its own address on the same wires, so borrow the
+     * handle and swap only the address.  This is I2C-only by construction:
+     * the bypass exists precisely to put the AKM die on the host I2C bus. */
+    imud_bus_t akm = *bus;
+    akm.i2c_addr = AK8963_I2C_ADDR;
+
     uint8_t wia;
-    if (i2c_reg_read(fd, AK8963_I2C_ADDR, AK8963_REG_WIA, &wia) < 0 ||
+    if (bus_reg_read(&akm, AK8963_REG_WIA, &wia) < 0 ||
         wia != AK8963_WIA_VALUE) {
         LOG_E("%s: no AK8963 magnetometer found at 0x%02X through the I2C "
               "bypass — this is probably a relabelled MPU-6500 (6-axis only). "
@@ -226,25 +232,25 @@ static int probe_common(int fd, uint8_t addr, uint8_t expect, const char *part)
     return 0;
 }
 
-static int mpu9250_probe(int fd, uint8_t addr)
+static int mpu9250_probe(const imud_bus_t *bus)
 {
-    return probe_common(fd, addr, WHO_AM_I_MPU9250, "mpu9250");
+    return probe_common(bus, WHO_AM_I_MPU9250, "mpu9250");
 }
 
-static int mpu9255_probe(int fd, uint8_t addr)
+static int mpu9255_probe(const imud_bus_t *bus)
 {
-    return probe_common(fd, addr, WHO_AM_I_MPU9255, "mpu9255");
+    return probe_common(bus, WHO_AM_I_MPU9255, "mpu9255");
 }
 
-static int mpu_reset(int fd, uint8_t addr)
+static int mpu_reset(const imud_bus_t *bus)
 {
     /* H_RESET (bit 7) restores defaults and self-clears. */
-    if (i2c_reg_write(fd, addr, REG_PWR_MGMT_1, PWR1_H_RESET) < 0) return -1;
+    if (bus_reg_write(bus, REG_PWR_MGMT_1, PWR1_H_RESET) < 0) return -1;
 
     for (int i = 0; i < 100; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_PWR_MGMT_1, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_PWR_MGMT_1, &val) < 0) return -1;
         if (!(val & PWR1_H_RESET)) goto reset_done;
     }
     LOG_W("mpu925x: H_RESET did not clear after 100 ms\n");
@@ -255,7 +261,7 @@ reset_done:
     return 0;
 }
 
-static int mpu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t gfs = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
@@ -281,25 +287,25 @@ static int mpu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
     }
 
     /* ── Wake up, pick a clock, enable both sensors ──────────────────────── */
-    if (i2c_reg_write(fd, addr, REG_PWR_MGMT_1, PWR1_CLKSEL_AUTO) < 0) return -1;
+    if (bus_reg_write(bus, REG_PWR_MGMT_1, PWR1_CLKSEL_AUTO) < 0) return -1;
     usleep(5000);
-    if (i2c_reg_write(fd, addr, REG_PWR_MGMT_2, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_PWR_MGMT_2, 0x00) < 0) return -1;
 
     /* ── Rate and filters ────────────────────────────────────────────────── */
 
     /* Gyro/temp DLPF: DLPF_CFG=3 is 41 Hz bandwidth at an 1 kHz internal rate,
      * which is what makes the 1000/(1+SMPLRT_DIV) grid available at all.
      * FIFO_MODE=0 so a full FIFO overwrites its oldest data. */
-    if (i2c_reg_write(fd, addr, REG_CONFIG, CONFIG_FIFO_STREAM | 0x03) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_SMPLRT_DIV, div) < 0) return -1;
+    if (bus_reg_write(bus, REG_CONFIG, CONFIG_FIFO_STREAM | 0x03) < 0) return -1;
+    if (bus_reg_write(bus, REG_SMPLRT_DIV, div) < 0) return -1;
 
     /* Gyro full scale, FCHOICE_B=00 so the DLPF above is in circuit. */
-    if (i2c_reg_write(fd, addr, REG_GYRO_CONFIG, gfs) < 0) return -1;
+    if (bus_reg_write(bus, REG_GYRO_CONFIG, gfs) < 0) return -1;
 
     /* Accel full scale, then its own filter: accel_fchoice_b=0 (DLPF enabled)
      * with A_DLPF_CFG=3, again 41 Hz at 1 kHz. */
-    if (i2c_reg_write(fd, addr, REG_ACCEL_CONFIG,  afs)  < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_ACCEL_CONFIG2, 0x03) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG,  afs)  < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG2, 0x03) < 0) return -1;
 
     /* ── FIFO ────────────────────────────────────────────────────────────── */
 
@@ -308,21 +314,21 @@ static int mpu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
      * explicitly anyway so init() leaves a deterministic register image
      * (`imud-imutest` compares two consecutive inits byte for byte).
      * I2C_MST_EN stays clear throughout — bypass needs the master disabled. */
-    if (i2c_reg_write(fd, addr, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_USER_CTRL,
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL,
                       USER_CTRL_FIFO_EN | USER_CTRL_FIFO_RST) < 0) return -1;
     usleep(1000);
-    if (i2c_reg_write(fd, addr, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
 
-    if (i2c_reg_write(fd, addr, REG_FIFO_EN, FIFO_EN_ACCEL_GYRO) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_EN, FIFO_EN_ACCEL_GYRO) < 0) return -1;
 
     /* Data-ready on INT so a GPIO line can wake the reader.  With no GPIO
      * wired the reader falls back to its 10 ms timer, same as every other
      * driver here. */
-    if (i2c_reg_write(fd, addr, REG_INT_ENABLE, INT_ENABLE_RAW_RDY) < 0) return -1;
+    if (bus_reg_write(bus, REG_INT_ENABLE, INT_ENABLE_RAW_RDY) < 0) return -1;
 
     /* Last: open the bypass so the AK8963 is visible to the host bus. */
-    if (i2c_reg_write(fd, addr, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
 
     s.accel_scale = accel_scale;
     s.gyro_scale  = gyro_scale;
@@ -341,14 +347,14 @@ static int mpu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
  * Returns 0 on success, 1 when a FIFO overflow was detected, -1 on I2C error.
  * chip_ts is always 0 — this part has no sample timer.
  */
-static int mpu_read(int fd, uint8_t addr,
+static int mpu_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
     *n_out = 0;
 
     /* ── 1. Pending byte count (13-bit; reading COUNTH latches both) ─────── */
     uint8_t cnt[2];
-    if (i2c_burst_read(fd, addr, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
+    if (bus_burst_read(bus, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
     int n_bytes   = (((int)(cnt[0] & 0x1F)) << 8) | cnt[1];
     int n_samples = n_bytes / FIFO_SAMPLE_BYTES;
 
@@ -358,7 +364,7 @@ static int mpu_read(int fd, uint8_t addr,
      * time a burst has been drained the depth no longer shows what happened.
      */
     uint8_t istat = 0;
-    if (i2c_reg_read(fd, addr, REG_INT_STATUS, &istat) < 0) return -1;
+    if (bus_reg_read(bus, REG_INT_STATUS, &istat) < 0) return -1;
     int overflow = (istat & 0x10) ? 1 : 0;
 
     if (n_samples == 0) return overflow;
@@ -368,19 +374,19 @@ static int mpu_read(int fd, uint8_t addr,
     /* ── 2. Burst read from the FIFO port ────────────────────────────────── */
     uint8_t raw[128 * FIFO_SAMPLE_BYTES];   /* caller's max is 128 samples */
     int to_read = n_samples * FIFO_SAMPLE_BYTES;
-    if (i2c_burst_read(fd, addr, REG_FIFO_R_W, raw, (uint16_t)to_read) < 0)
+    if (bus_burst_read(bus, REG_FIFO_R_W, raw, (uint16_t)to_read) < 0)
         return -1;
 
     /* ── 3. Parse and scale ──────────────────────────────────────────────── */
     for (int i = 0; i < n_samples; i++) {
         const uint8_t *p = raw + i * FIFO_SAMPLE_BYTES;
 
-        int16_t ax = i2c_s16be(&p[0]);
-        int16_t ay = i2c_s16be(&p[2]);
-        int16_t az = i2c_s16be(&p[4]);
-        int16_t gx = i2c_s16be(&p[6]);
-        int16_t gy = i2c_s16be(&p[8]);
-        int16_t gz = i2c_s16be(&p[10]);
+        int16_t ax = reg_s16be(&p[0]);
+        int16_t ay = reg_s16be(&p[2]);
+        int16_t az = reg_s16be(&p[4]);
+        int16_t gx = reg_s16be(&p[6]);
+        int16_t gy = reg_s16be(&p[8]);
+        int16_t gz = reg_s16be(&p[10]);
 
         /*
          * Remap chip frame → NED-compatible board frame.
@@ -403,8 +409,8 @@ static int mpu_read(int fd, uint8_t addr,
 
     /* Temperature from the live register — one read for the whole burst. */
     uint8_t tmp[2];
-    if (i2c_burst_read(fd, addr, REG_TEMP_OUT_H, tmp, 2) == 0) {
-        int16_t raw_temp = i2c_s16be(tmp);
+    if (bus_burst_read(bus, REG_TEMP_OUT_H, tmp, 2) == 0) {
+        int16_t raw_temp = reg_s16be(tmp);
         float temp_c = (float)raw_temp / TEMP_SENSITIVITY + TEMP_OFFSET_C;
         for (int i = 0; i < n_samples; i++)
             buf[i].temp_c = temp_c;

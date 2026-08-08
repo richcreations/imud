@@ -33,11 +33,11 @@
 #include <unistd.h>
 
 #include "imutest.h"
-#include "i2c_mock.h"
+#include "bus_mock.h"
 /* For the mock self-check below: the same single-byte read path the register
  * sweep uses, so the harness is exercised exactly the way the tool exercises
  * it. */
-#include "drivers/i2c_io.h"
+#include "drivers/bus_io.h"
 
 /* ── Test framework (matches the rest of the suite) ──────────────────────── */
 
@@ -79,6 +79,11 @@ extern const mag_ops_t mmc5983ma_ops;
 #define FD        3          /* the mock ignores it */
 #define ISM_ADDR  0x6A
 #define MMC_ADDR  0x30
+
+/* Handles on the mock bus; the descriptor is ignored, the address selects
+ * which register file a transfer lands in. */
+#define I2CBUS(a) (&(const imud_bus_t){ .kind = BUS_I2C, \
+                                        .fd = FD, .i2c_addr = (a) })
 
 /* ── Staging helpers ─────────────────────────────────────────────────────── */
 
@@ -368,7 +373,8 @@ static imt_report_t *run(imud_config_t *cfg, imt_opts_t *o)
 {
     imt_report_t *r = calloc(1, sizeof *r);
     char err[256] = "";
-    int rc = imt_run_ops(FD, &ism330dhcx_ops, &mmc5983ma_ops, cfg, o, r,
+    int rc = imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                         &ism330dhcx_ops, &mmc5983ma_ops, cfg, o, r,
                          err, sizeof err);
     if (rc < 0) fprintf(stderr, "  imt_run_ops: %s\n", err);
     return r;
@@ -396,14 +402,14 @@ static void test_mock_models_the_whole_fifo_window(void)
     /* A single-byte read from the middle of the window must pop, not return
      * the register file — that is what makes a blind sweep destructive. */
     uint8_t v = 0;
-    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x7B, &v) == 0, "mid-window read succeeds");
+    EXPECT(bus_reg_read(I2CBUS(ISM_ADDR), 0x7B, &v) == 0, "mid-window read succeeds");
     EXPECT(v == 0xA1, "a read inside the window pops the queue");
-    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x7E, &v) == 0, "end-of-window read succeeds");
+    EXPECT(bus_reg_read(I2CBUS(ISM_ADDR), 0x7E, &v) == 0, "end-of-window read succeeds");
     EXPECT(v == 0xB2, "the queue advanced, so the whole window is a port");
 
     /* Just outside it is an ordinary register. */
     i2cmock_set_reg(ISM_ADDR, 0x77, 0x5A);
-    EXPECT(i2c_reg_read(FD, ISM_ADDR, 0x77, &v) == 0, "outside-window read succeeds");
+    EXPECT(bus_reg_read(I2CBUS(ISM_ADDR), 0x77, &v) == 0, "outside-window read succeeds");
     EXPECT(v == 0x5A, "0x77 is still the register file");
 
     end(fb);

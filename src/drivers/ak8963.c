@@ -52,7 +52,7 @@
 #include <unistd.h>
 
 #include "drivers.h"
-#include "i2c_io.h"
+#include "bus_io.h"
 #include "log.h"
 
 /* ── Register addresses (§5, accessible in bypass mode) ───────────────────── */
@@ -102,21 +102,21 @@ static uint8_t odr_to_mode(int odr_hz)
  * registers 0x02–0x09, and the part needs a settling gap before it will
  * accept the new mode.
  */
-static int set_mode(int fd, uint8_t addr, uint8_t mode)
+static int set_mode(const imud_bus_t *bus, uint8_t mode)
 {
-    if (i2c_reg_write(fd, addr, REG_CNTL1, MODE_POWER_DOWN) < 0) return -1;
+    if (bus_reg_write(bus, REG_CNTL1, MODE_POWER_DOWN) < 0) return -1;
     usleep(1000);
-    if (i2c_reg_write(fd, addr, REG_CNTL1, mode) < 0) return -1;
+    if (bus_reg_write(bus, REG_CNTL1, mode) < 0) return -1;
     usleep(1000);
     return 0;
 }
 
 /* ── Driver operations ───────────────────────────────────────────────────── */
 
-static int ak_probe(int fd, uint8_t addr)
+static int ak_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WIA, &who) < 0) {
+    if (bus_reg_read(bus, REG_WIA, &who) < 0) {
         LOG_E("ak8963: WIA read failed: %s — is the MPU-925x I2C bypass open? "
               "The IMU driver must be initialised first.\n", strerror(errno));
         return -1;
@@ -128,31 +128,31 @@ static int ak_probe(int fd, uint8_t addr)
     return 0;
 }
 
-static int ak_reset(int fd, uint8_t addr)
+static int ak_reset(const imud_bus_t *bus)
 {
     /* Power-down first, then soft reset. */
-    if (i2c_reg_write(fd, addr, REG_CNTL1, MODE_POWER_DOWN) < 0) return -1;
+    if (bus_reg_write(bus, REG_CNTL1, MODE_POWER_DOWN) < 0) return -1;
     usleep(1000);
 
-    if (i2c_reg_write(fd, addr, REG_CNTL2, 0x01) < 0) return -1;  /* SRST=1 */
+    if (bus_reg_write(bus, REG_CNTL2, 0x01) < 0) return -1;  /* SRST=1 */
 
     for (int i = 0; i < 20; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_CNTL2, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_CNTL2, &val) < 0) return -1;
         if (!(val & 0x01)) return 0;   /* self-clears when the reset completes */
     }
     LOG_W("ak8963: SRST did not clear after 20 ms\n");
     return -1;
 }
 
-static int ak_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
+static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
     /* ── Read the factory sensitivity adjustment from fuse ROM ───────────── */
-    if (set_mode(fd, addr, MODE_FUSE_ROM) < 0) return -1;
+    if (set_mode(bus, MODE_FUSE_ROM) < 0) return -1;
 
     uint8_t asa[3];
-    if (i2c_burst_read(fd, addr, REG_ASAX, asa, 3) < 0) {
+    if (bus_burst_read(bus, REG_ASAX, asa, 3) < 0) {
         LOG_E("ak8963: fuse-ROM read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -165,7 +165,7 @@ static int ak_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
           (double)s.adj[0], (double)s.adj[1], (double)s.adj[2]);
 
     /* ── Continuous measurement, 16-bit output ───────────────────────────── */
-    return set_mode(fd, addr, (uint8_t)(CNTL1_16BIT | odr_to_mode(cfg->odr_hz)));
+    return set_mode(bus, (uint8_t)(CNTL1_16BIT | odr_to_mode(cfg->odr_hz)));
 }
 
 /*
@@ -181,11 +181,11 @@ static int ak_init(int fd, uint8_t addr, const mag_cfg_t *cfg)
  * with this measurement, and DRDY does not clear until a data register or ST2
  * is read.
  */
-static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
+static int ak_read(const imud_bus_t *bus, mag_sample_t *out)
 {
     uint8_t st1 = 0;
     for (int i = 0; i < 15; i++) {
-        if (i2c_reg_read(fd, addr, REG_ST1, &st1) < 0) return -1;
+        if (bus_reg_read(bus, REG_ST1, &st1) < 0) return -1;
         if (st1 & 0x01) break;   /* DRDY asserted */
         usleep(1000);
     }
@@ -194,7 +194,7 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
 
     /* HXL…HZH then ST2, little-endian 16-bit signed. */
     uint8_t raw[7];
-    if (i2c_burst_read(fd, addr, REG_HXL, raw, 7) < 0) return -1;
+    if (bus_burst_read(bus, REG_HXL, raw, 7) < 0) return -1;
 
     if (raw[6] & ST2_HOFL) {
         /* Magnetic overflow: this measurement is not reliable.  Transient
@@ -202,9 +202,9 @@ static int ak_read(int fd, uint8_t addr, mag_sample_t *out)
         return 1;
     }
 
-    int16_t hx = i2c_s16le(&raw[0]);
-    int16_t hy = i2c_s16le(&raw[2]);
-    int16_t hz = i2c_s16le(&raw[4]);
+    int16_t hx = reg_s16le(&raw[0]);
+    int16_t hy = reg_s16le(&raw[2]);
+    int16_t hz = reg_s16le(&raw[4]);
 
     /* Factory sensitivity adjustment, applied in the AK8963's own axes. */
     float mx = (float)hx * s.adj[0] * AK8963_SCALE;

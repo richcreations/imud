@@ -5,7 +5,7 @@
  */
 
 /*
- * i2c_mock.h — an in-memory I2C register-map device for driver unit tests.
+ * bus_mock.h — an in-memory I2C register-map device for driver unit tests.
  *
  * The sensor drivers do all their I/O through ioctl(fd, I2C_RDWR, ...).  Built
  * with `-Wl,--wrap=ioctl` (GNU ld), this harness replaces that syscall with a

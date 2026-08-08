@@ -436,20 +436,23 @@ static void test_playback_driver(void)
     int fb = g_fail;
     const char *path = make_small_capture();
 
+    /* The sim driver ignores the bus entirely; a closed handle is enough. */
+    imud_bus_t nobus; bus_init(&nobus);
+
     imu_cfg_t icfg = { .odr_hz = 100, .accel_g = 8, .gyro_dps = 2000 };
     mag_cfg_t mcfg = { .odr_hz = 100 };
 
     /* ── single pass, as-fast-as-possible ─────────────────────────────── */
     sim_set_playback(path, false, 0.0f);
-    EXPECT(sim_imu_ops.init(0, 0, &icfg) == 0, "imu init (playback)");
-    EXPECT(sim_mag_ops.init(0, 0, &mcfg) == 0, "mag init (playback)");
+    EXPECT(sim_imu_ops.init(&nobus, &icfg) == 0, "imu init (playback)");
+    EXPECT(sim_mag_ops.init(&nobus, &mcfg) == 0, "mag init (playback)");
 
     imu_sample_t buf[128];
     int total = 0, n = 0;
     uint32_t next_seq = 0;
     bool seq_ok = true;
     for (int guard = 0; guard < 100; guard++) {
-        EXPECT(sim_imu_ops.read(0, 0, buf, 128, &n) == 0, "imu read rc");
+        EXPECT(sim_imu_ops.read(&nobus, buf, 128, &n) == 0, "imu read rc");
         if (n == 0) break;
         for (int i = 0; i < n; i++)
             if (buf[i].seq != next_seq++) seq_ok = false;
@@ -462,24 +465,24 @@ static void test_playback_driver(void)
     int mags = 0;
     uint64_t prev_wall = 0;
     bool wall_ok = true;
-    while (sim_mag_ops.read(0, 0, &m) == 0 && mags < 1000) {
+    while (sim_mag_ops.read(&nobus, &m) == 0 && mags < 1000) {
         if (m.wall_ns <= prev_wall && mags > 0) wall_ok = false;
         prev_wall = m.wall_ns;
         mags++;
     }
     EXPECT(mags == 50, "all 50 mag samples replayed");
     EXPECT(wall_ok, "mag wall_ns strictly increasing (remapped)");
-    EXPECT(sim_mag_ops.read(0, 0, &m) == 1, "mag EOF reports no-data");
+    EXPECT(sim_mag_ops.read(&nobus, &m) == 1, "mag EOF reports no-data");
 
     /* ── loop mode: seq/chip_ts stay monotonic across the wrap ─────────── */
     sim_set_playback(path, true, 0.0f);
-    sim_imu_ops.init(0, 0, &icfg);
+    sim_imu_ops.init(&nobus, &icfg);
 
     uint32_t prev_s = 0, prev_ts = 0;
     bool mono_ok = true;
     int got = 0;
     while (got < 1500) {                       /* three passes worth */
-        sim_imu_ops.read(0, 0, buf, 128, &n);
+        sim_imu_ops.read(&nobus, buf, 128, &n);
         if (n == 0) break;
         for (int i = 0; i < n && got < 1500; i++, got++) {
             if (got > 0 && (buf[i].seq != prev_s + 1 ||
