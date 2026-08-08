@@ -2645,6 +2645,8 @@ typedef struct {
     float nis_accel;     /* end-of-run rolling accel NIS — the FIELD instrument */
     float nis_mag;       /* end-of-run rolling mag NIS */
     float m_ref[3];      /* filter's magnetic reference at end of run */
+    float conv_s;        /* seconds from end-of-alignment to FLAG_FUSION_CONVERGED,
+                          * -1 if it never converged.  Costs no draws. */
 } wave_run_t;
 
 /*
@@ -2806,6 +2808,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
     const int align_n = (int)(5.0f * fs);
     double align_acc_sum[3] = {0}, align_mag_sum[3] = {0};
 
+    int    conv_i   = -1;          /* first sample with f.converged set */
     double sum_att2 = 0.0, sum_hdg2 = 0.0;
     double sum_e2 = 0.0, sum_tr = 0.0, sum_nees_st = 0.0;
     int    n_meas   = 0, n_nees = 0;
@@ -2958,6 +2961,8 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
 
         mekf_update_accel(&f, &s);
 
+        if (conv_i < 0 && f.converged) conv_i = i;
+
         if (t >= warmup_s) {
             float err = q_angle_between(f.q, q_true);
             sum_att2 += (double)err * err;
@@ -3010,6 +3015,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
     out->nis_accel    = f.nis_accel_ema;
     out->nis_mag      = f.nis_mag_ema;
     memcpy(out->m_ref, f.m_ref, sizeof f.m_ref);
+    out->conv_s = (conv_i >= 0) ? (float)(conv_i - align_n) * dt : -1.0f;
 }
 
 /* Mean and worst-case RMS over the seed set, for one mag mode. */
@@ -3019,13 +3025,14 @@ typedef struct {
     float nees_tr_mean, nees_st_mean, nees_tr_worst;
     float weight_mean, reject_mean;
     float nis_a_mean, nis_m_mean;
+    float conv_mean, conv_worst;
 } bench_result_t;
 
 static void run_wave_seeds_ex(bool yaw_only, wave_scen_t scen, bench_result_t *r)
 {
     double sa = 0, sh = 0, sb = 0, sn = 0, ss = 0, sw = 0, sr = 0;
-    double sna = 0, snm = 0;
-    float  wa = 0, wh = 0, wn = 0;
+    double sna = 0, snm = 0, sc = 0;
+    float  wa = 0, wh = 0, wn = 0, wc = -1.0f;
     for (int i = 0; i < N_BENCH_SEEDS; i++) {
         wave_run_t run;
         bench_seed = bench_seeds[i];
@@ -3034,6 +3041,8 @@ static void run_wave_seeds_ex(bool yaw_only, wave_scen_t scen, bench_result_t *r
         sn += run.nees_trace; ss += run.nees_strict;
         sw += run.innov_weight; sr += run.innov_reject;
         sna += run.nis_accel;   snm += run.nis_mag;
+        sc += run.conv_s;
+        if (run.conv_s > wc) wc = run.conv_s;
         if (run.rms_att    > wa) wa = run.rms_att;
         if (run.rms_hdg    > wh) wh = run.rms_hdg;
         if (run.nees_trace > wn) wn = run.nees_trace;
@@ -3050,6 +3059,8 @@ static void run_wave_seeds_ex(bool yaw_only, wave_scen_t scen, bench_result_t *r
     r->reject_mean   = (float)(sr / N_BENCH_SEEDS);
     r->nis_a_mean    = (float)(sna / N_BENCH_SEEDS);
     r->nis_m_mean    = (float)(snm / N_BENCH_SEEDS);
+    r->conv_mean     = (float)(sc / N_BENCH_SEEDS);
+    r->conv_worst    = wc;
 }
 
 /* The historical seaway. Every recorded number in the tree is this one. */
@@ -3227,8 +3238,136 @@ static void bench_sweep_wave(void)
 }
 #endif
 
+/*
+ * Sample-rate sweep — not built by default.  `make` does not track CFLAGS, so
+ * remove the binary first:
+ *
+ *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+ *       -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_ODR" && ./test_fusion
+ *
+ * The drivers advertise 27 IMU rates and 13 magnetometer rates, and only the
+ * 833/100 pairing has ever been measured for ACCURACY (test_rate_derivations
+ * covers all 351 for correctness and stability, which is a different question
+ * and a far cheaper one).
+ *
+ * TWO AXES, NOT A GRID.  11 x 13 pairings of a 12-seed 180 s benchmark is not a
+ * measurement, it is a weekend.  Each axis is swept with the other pinned, which
+ * puts every rung of both ladders in at least one row.
+ *
+ * RATES ARE LOG-SPACED, NOT EXHAUSTIVE.  The IMU axis runs the LSM6DSO ladder
+ * plus icm42688p's 8000, spanning the whole 12 Hz - 8 kHz domain.  Every other
+ * driver's rung falls within ~4% of one of these or between two adjacent ones,
+ * and the filter cannot tell 25 Hz from 26 Hz.  Do not "complete" this into 27
+ * rows: it buys no information and triples the runtime.
+ *
+ * THE 833/100 ROWS ARE THIS SWEEP'S OWN SELF-CHECK — they must reproduce the
+ * default benchmark's printed lines exactly.  If they do not, the sweep is
+ * measuring something other than what ships.
+ *
+ * Block 2 re-runs with the Gauss-Markov wave state disabled, which is the
+ * decisive experiment for GROSS_REJECT_MULT: with the wave block gone, S is
+ * dominated by Ra, and Ra scales with the rate, so the 25-gamma gate loses the
+ * insulation it enjoys at 833 Hz.  reject_mean in that block is the number that
+ * says whether 25 gamma survives lower down the ladder.
+ *
+ * Recorded run: docs/math.md §4.7.2.
+ */
+#ifdef BENCH_SWEEP_ODR
+static void sweep_odr_header(const char *title)
+{
+    printf("\n  ── %s ─────────────────────────\n", title);
+    printf("  %-6s %-6s %-7s %-4s %-5s %8s %8s %9s %9s %9s %7s %7s %7s %8s %7s\n",
+           "fs", "magreq", "mageff", "div", "mode", "att RMS", "hdg RMS",
+           "bias_z", "NEES(tr)", "NEES(st)", "NIS_a", "NIS_m", "weight",
+           "reject", "conv_s");
+}
+
+static void sweep_odr_row(float fs, float magreq, int n_modes)
+{
+    /* Mirrors run_wave_scenario_ex's own rule, so the table reports what the
+     * scenario actually did rather than what was requested. */
+    const bool  slower = (magreq <= fs);
+    int         div    = slower ? (int)(fs / magreq) : 1;
+    if (div < 1) div = 1;
+    const float mageff = slower ? fs / (float)div : magreq;
+
+    bench_fs     = fs;
+    bench_mag_fs = magreq;
+
+    for (int mode = 0; mode < n_modes; mode++) {
+        bench_result_t r;
+        if (mode == 2) {                      /* 3-D with WMM invariants */
+            bench_wmm_ref = true;
+            run_wave_seeds(false, &r);
+            bench_wmm_ref = false;
+        } else {
+            run_wave_seeds(mode == 1, &r);
+        }
+        printf("  %-6.0f %-6.0f %-7.1f %-4d %-5s %8.3f %8.3f %9.6f %9.2f %9.2f"
+               " %7.2f %7.2f %7.3f %8.4f %7.2f\n",
+               (double)fs, (double)magreq, (double)mageff, div,
+               mode == 0 ? "3D" : mode == 1 ? "yaw" : "3D+W",
+               r.att_mean, r.hdg_mean, r.bias_mean,
+               r.nees_tr_mean, r.nees_st_mean, r.nis_a_mean, r.nis_m_mean,
+               r.weight_mean, r.reject_mean, r.conv_mean);
+    }
+}
+
+static void bench_sweep_odr(void)
+{
+    /* LSM6DSO's ladder plus icm42688p's top rung. */
+    static const float imu_rates[] = {
+        12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 8000
+    };
+    /* Every magnetometer rung any driver advertises. */
+    static const float mag_rates[] = {
+        1, 2, 5, 8, 10, 20, 40, 50, 80, 100, 155, 200, 1000
+    };
+    const float f0 = bench_fs, m0 = bench_mag_fs;
+    const double s0 = bench_wave_sigma;
+
+    for (int block = 0; block < 2; block++) {
+        if (block == 1) {
+            bench_wave_sigma = 0.0;   /* gate exposed: S is dominated by Ra */
+            sweep_odr_header("IMU rate, WAVE STATE DISABLED (mag 100 Hz)");
+        } else {
+            sweep_odr_header("IMU rate sweep, shipped tuning (mag 100 Hz)");
+        }
+        const int n_modes = (block == 0) ? 3 : 2;
+
+        for (size_t i = 0; i < sizeof imu_rates / sizeof imu_rates[0]; i++)
+            sweep_odr_row(imu_rates[i], 100.0f, n_modes);
+        printf("  ────────────────────────────────────────────────────────────\n");
+    }
+    bench_wave_sigma = s0;
+
+    /*
+     * Mag axis, pinned at two IMU rates.  833 is the reference; 104 is where a
+     * 200 Hz or 1000 Hz magnetometer is FASTER than the IMU and exercises the
+     * drain path, which no 833 Hz row reaches.
+     */
+    static const float pins[] = { 833.0f, 104.0f };
+    for (size_t p = 0; p < sizeof pins / sizeof pins[0]; p++) {
+        char title[80];
+        snprintf(title, sizeof title, "Mag rate sweep at %.0f Hz IMU",
+                 (double)pins[p]);
+        sweep_odr_header(title);
+        for (size_t i = 0; i < sizeof mag_rates / sizeof mag_rates[0]; i++)
+            sweep_odr_row(pins[p], mag_rates[i], 2);
+        printf("  ────────────────────────────────────────────────────────────\n");
+    }
+
+    bench_fs     = f0;
+    bench_mag_fs = m0;
+    printf("\n");
+}
+#endif
+
 static void test_wave_benchmark(void)
 {
+#ifdef BENCH_SWEEP_ODR
+    bench_sweep_odr();
+#endif
 #ifdef BENCH_SWEEP_RA
     bench_sweep_ra();
 #endif
