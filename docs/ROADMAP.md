@@ -27,6 +27,9 @@ it intends *not* to do. Items name the section that carries the detail.
   simulation. This gates confidence in most of §10.
 - **Fit real gyro temperature coefficients (§2).** The mechanism shipped in
   1.5; what is missing is a cold-boot-to-warm capture from real hardware.
+- **Measure sample latency on silicon and fix spec §14 (§3.1).** The instrument
+  shipped; the FIFO-residence term cannot be validated under sim, and one of the
+  three budgeted numbers looks wrong as written. Same bench session as §1 and §2.
 - **Build the two missing benchmark scenarios (§10.3, §10.5).** Both remaining
   filter items are blocked on scenarios that do not exist — a vibration case
   and a calm-water case. The scenario *is* the work: 1.7 refuted two
@@ -135,6 +138,46 @@ warm it gently mid-capture).
 
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
+
+### 3.1 spec §14's latency budgets are unvalidated, and one looks wrong  *(bench — instrument shipped, measurement owed)*
+
+`spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
+end-to-end at 3 ms. Nothing measured any of them until now, and the end-to-end
+row does not survive contact with the shipped config: `fifo_wm = 64` at 833 Hz is
+77 ms of buffering on its own — 615 ms at `odr_hz = 104` — against a 3 ms budget.
+`docs/manual.md` documents that 77 ms as a deliberate knob three files away from
+the budget it blows.
+
+**The instrument now exists** (`lat_hist_t` in `imu_math.c`, wired in `imu.c`,
+reported on the `[stats]` line). It splits the chain into the two terms only ever
+discussed as a sum:
+
+    FIFO residence   sample taken -> I2C read complete   ~ fifo_wm/odr, the operator's knob
+    pipeline         read complete -> state fused        imud's own cost
+
+**What is owed is a measurement on real silicon**, because sim cannot supply it:
+the sim driver synthesises `chip_ts` as `seq*ticks_per`, advancing at exactly
+nominal rate rather than tracking elapsed time, so its FIFO column reports the
+sim's own batching. Reading it as FIFO residence would be an instrument artifact
+of exactly the kind §10.9 was written to avoid. The pipeline column *is* real
+and measured ~0.5–1.0 ms p50 in a container, but that is a loaded laptop, not a Pi.
+
+**Then fix §14.** The likely defect is the label rather than the number — "I2C
+sample" probably meant the sample as delivered by the read, making the row a
+budget for the daemon's own pipeline with FIFO residence excluded. Three things
+support that reading: the adjacent 1.5 ms fusion row has the same structure and
+would be equally impossible under the broad reading; the jitter row's own
+parenthetical calls the FIFO a jitter absorber, so the author knew it buffers;
+and `manual.md` presents `fifo_wm` as a chosen latency cost. But that is a
+reconstruction, and as written the row is wrong under its plain meaning.
+
+Do not simply relabel it. The number a control-loop or camera-sync consumer needs
+is total sample age, and that appears nowhere. Define the chain, publish both
+terms, and cross-reference from `manual.md`'s `fifo_wm` entry so the 77 ms and
+the budget stop contradicting each other across two files.
+
+Fold the measurement into the same bench session as §1 and §2 — it needs nothing
+the hardware validation pass does not already require.
 
 ## 4. ISM330DHCX MLC engine detection  *(pre-existing spec §16 item, optional)*
 
@@ -810,4 +853,5 @@ B5 shipped, and the items 1.7 deliberately left (§8 consolidation, §9 heave
 init, §10.3, §10.5 vibration half) annotated with why; §0 forward plan added
 2026-08-05, synthesised from the sections below rather than from new decisions.
 Not yet triaged against 1.8 — §§1–11 still read as they did at the close of
-1.7; §10.9 added 2026-08-08 from the sample-rate sweep.*
+1.7; §10.9 added 2026-08-08 from the sample-rate sweep, §3.1 the same
+day when the latency instrument shipped without its measurement.*
