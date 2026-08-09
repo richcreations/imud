@@ -2534,6 +2534,58 @@ TEST(test_seastate_gates)
 }
 
 /*
+ * The elapsed-time EMA gain must be exact, not merely plausible.
+ *
+ * alpha = 1 − e^(−Δt/τ) with Δt/τ small is the textbook case for expm1:
+ * `1.0f - expf(-x)` subtracts two numbers differing by less than an ULP of
+ * 1.0, so the answer is quantised to multiples of 2^-24 = 5.96e-8 no matter
+ * how small the true value is.  At 32 kHz against the 30 s health constant
+ * the target is 1.04e-6 — seventeen representable values — and the naive form
+ * lands 2.7 % away.
+ *
+ * The reference values below are computed in DOUBLE from the same identity,
+ * not copied from the implementation, so this checks the arithmetic rather
+ * than pinning whatever the code happens to return.  The 1e-5 tolerance is
+ * two orders of magnitude tighter than the naive form's error at the top of
+ * the ladder and still loose enough for float32 rounding of an exact expm1f.
+ *
+ * Worth its own test because no filter-level assertion can see this: a 2.7 %
+ * error in a 30 s time constant is a 30.8 s time constant, which no accuracy
+ * bound in this file is remotely sharp enough to detect.
+ */
+TEST(test_ema_alpha_is_exact_at_every_rate)
+{
+    static const double rates[] = { 12, 833, 8000, 16000, 32000 };
+    static const double taus[]  = { 2.0, 30.0, 300.0 };
+
+    double worst = 0.0; double worst_fs = 0, worst_tau = 0;
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        for (size_t j = 0; j < sizeof taus / sizeof taus[0]; j++) {
+            const float  dt   = (float)(1.0 / rates[i]);
+            const float  tau  = (float)taus[j];
+            const double want = -expm1((double)dt / (double)tau * -1.0);
+            const double got  = mekf_ema_alpha(dt, tau);
+            const double rel  = fabs(got - want) / want;
+            if (rel > worst) { worst = rel; worst_fs = rates[i]; worst_tau = taus[j]; }
+            char msg[96];
+            snprintf(msg, sizeof msg, "ema_alpha exact at %.0f Hz, tau %.0f s",
+                     rates[i], taus[j]);
+            EXPECT(rel < 1e-5, msg);
+        }
+    }
+    printf("\n    [ema_alpha] worst %.3g relative, at %.0f Hz / tau %.0f s\n    ",
+           worst, worst_fs, worst_tau);
+
+    /* Degenerate inputs stay in [0,1] — a gain outside that range would make
+     * the EMA diverge or run backwards. */
+    EXPECT(mekf_ema_alpha(0.0f, 30.0f) == 0.0f, "zero elapsed -> zero gain");
+    EXPECT(mekf_ema_alpha(-1.0f, 30.0f) == 0.0f, "negative elapsed -> zero gain");
+    EXPECT(mekf_ema_alpha(1.0f, 0.0f) == 0.0f, "zero tau -> zero gain");
+    EXPECT(mekf_ema_alpha(1e6f, 30.0f) <= 1.0f, "huge elapsed -> gain capped at 1");
+    EXPECT(mekf_ema_alpha(1e6f, 30.0f) > 0.999f, "huge elapsed -> takes the step");
+}
+
+/*
  * Settling must still latch when the window is long and the rate is high.
  *
  * This is a regression test for a float32 stall, and the only way to see it is
@@ -3859,6 +3911,7 @@ int main(void)
     RUN(test_seastate_sine);
     RUN(test_seastate_across_rates);
     RUN(test_seastate_gates);
+    RUN(test_ema_alpha_is_exact_at_every_rate);
     RUN(test_settling_survives_a_long_window_at_a_high_rate);
     RUN(test_mag_health);
     RUN(test_wave_disabled_inert);

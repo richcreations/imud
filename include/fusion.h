@@ -247,6 +247,23 @@ bool mekf_sanitize(mekf_t *f);
  */
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in);
 
+/*
+ * mekf_ema_alpha — per-update EMA gain for an elapsed interval: 1 − e^(−Δt/τ).
+ *
+ * Exact for any feed rate, and equal to Δt/τ in the limit of frequent
+ * updates, which is what makes an EMA rate-independent when its input is
+ * delivered irregularly (the accel path's |a| skip band being the case that
+ * needs it).
+ *
+ * Named rather than inlined at its one call site because the implementation
+ * has a trap in it: Δt/τ is small, so `1.0f - expf(-x)` subtracts two numbers
+ * differing by less than an ULP of 1.0, quantising the result to multiples of
+ * 5.96e-8 — 2.7 % relative error at 32 kHz against a 30 s constant, and only
+ * 17 distinct representable values. expm1f is exact. Anything else needing an
+ * elapsed-time gain should call this and not rediscover that.
+ */
+float mekf_ema_alpha(float dt_s, float tau_s);
+
 /* ── Heave estimator ──────────────────────────────────────────────────────── */
 
 /*
