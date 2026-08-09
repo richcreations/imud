@@ -1,13 +1,16 @@
-.\" GENERATED from `imud-mavlink --help` and man/h2m/imud-mavlink.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-MAVLINK 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-mavlink.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-mavlink --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-mavlink \- bridge imud's binary stream to MAVLink over UDP/serial/TCP
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-mavlink
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-version\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-mavlink
 connects to the local AF_UNIX binary subscription stream published by
 .BR imud (8)
@@ -48,21 +51,8 @@ ground stations connect as TCP clients
 .RB ( tcp://<host>:5760
 in QGroundControl / Mission Planner) and every connected client receives the
 same frames.
-.IP
-MAVLink bridge: reads imud's stream socket and emits MAVLink
-HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.
-Configured by [imud\-mavlink] in its own file.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud\-mavlink.conf\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH SIGNALS
+
+[SIGNALS]
 .TP
 .B SIGHUP
 Reload the configuration.  The protocol version, rate, message selection, UDP
@@ -72,18 +62,21 @@ running configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
-.SH CONFIGURATION
+
+[CONFIGURATION]
 Read from
 .I /etc/imud/imud-mavlink.conf
 (the
 .B [imud-mavlink]
 section); the keys are documented in
 .BR imud-mavlink.conf (5).
-.SH FILES
+
+[FILES]
 .TP
 .I /etc/imud/imud-mavlink.conf
 Default configuration file.
-.SH EXAMPLES
+
+[EXAMPLES]
 Run against a local ground station on UDP:
 .PP
 .RS 4
@@ -107,12 +100,14 @@ the daemon itself is enabled by default):
 sudo systemctl enable --now imud-mavlink
 .EE
 .RE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud-mavlink.conf (5),
 .BR imud (8),
 .BR imud-signalk (8),
 .BR imud-mqtt (8),
 .BR imud-influxdb (8),
 .BR imud.conf (5)
+
+[AUTHOR]
+Richard Simpson

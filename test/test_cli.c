@@ -98,6 +98,62 @@ static bool has(const char *hay, const char *needle)
     return strstr(hay, needle) != NULL;
 }
 
+/* ── two-stream capture ──────────────────────────────────────────────────────
+ *
+ * cap_begin() above dup2s ONE fd onto both stdout and stderr, so which stream
+ * a message went to is invisible to it.  That is why cli.c could carry a
+ * comment claiming "test_cli pins that" about the streams while nothing
+ * pinned them at all, and why usage output sat on stderr for years.
+ *
+ * The stream is part of the contract now — help2man reads stdout and a script
+ * redirecting stdout must not collect a usage dump on failure — so it needs
+ * assertions, and assertions need the two kept apart.
+ *
+ * Note the streams are captured to regular files, which makes stdout fully
+ * buffered where a terminal would line-buffer it.  Interleaving between the
+ * two is therefore NOT preserved; assert on content per stream, never on the
+ * order of one relative to the other.
+ */
+static int  g2_saved_out = -1, g2_saved_err = -1;
+static char g2_out_path[128], g2_err_path[128];
+
+static void cap2_begin(void)
+{
+    snprintf(g2_out_path, sizeof g2_out_path, "/tmp/imud_tcli_o_%d.txt",
+             (int)getpid());
+    snprintf(g2_err_path, sizeof g2_err_path, "/tmp/imud_tcli_e_%d.txt",
+             (int)getpid());
+    fflush(stdout); fflush(stderr);
+    g2_saved_out = dup(STDOUT_FILENO);
+    g2_saved_err = dup(STDERR_FILENO);
+    int fo = open(g2_out_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fe = open(g2_err_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fo >= 0) { dup2(fo, STDOUT_FILENO); close(fo); }
+    if (fe >= 0) { dup2(fe, STDERR_FILENO); close(fe); }
+}
+
+static void slurp(const char *path, char *buf, size_t bufsz)
+{
+    buf[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (f) {
+        size_t n = fread(buf, 1, bufsz - 1, f);
+        buf[n] = '\0';
+        fclose(f);
+    }
+    unlink(path);
+}
+
+static void cap2_end(char *out, size_t outsz, char *err, size_t errsz)
+{
+    fflush(stdout); fflush(stderr);
+    if (g2_saved_out >= 0) { dup2(g2_saved_out, STDOUT_FILENO); close(g2_saved_out); }
+    if (g2_saved_err >= 0) { dup2(g2_saved_err, STDERR_FILENO); close(g2_saved_err); }
+    g2_saved_out = g2_saved_err = -1;
+    slurp(g2_out_path, out, outsz);
+    slurp(g2_err_path, err, errsz);
+}
+
 /* ── imud ────────────────────────────────────────────────────────────────── */
 
 static void test_imud(void)
@@ -667,6 +723,111 @@ static void test_missing_value(void)
 
 /* ── main ────────────────────────────────────────────────────────────────── */
 
+/*
+ * The stream contract, for every parser: --help is requested output and goes
+ * to stdout with rc 1 (which main() maps to exit 0); an unknown option is a
+ * diagnostic and goes to stderr with rc -1 (exit 1).  Neither may leak onto
+ * the other stream.
+ *
+ * This is the assertion the old single-fd capture structurally could not
+ * make.  It matters twice over: help2man builds the man pages from stdout, so
+ * usage on stderr yields an empty OPTIONS section; and a script doing
+ * `imud-status > report.txt` must not find a usage dump in the file when the
+ * command failed.
+ */
+static void test_help_and_error_streams(void)
+{
+    begin("test_help_and_error_streams");
+    int fb = g_fail;
+    static char out[8192], err[8192];
+
+    /* Macros rather than a table: the five parsers take five different
+     * argument types, so there is no one function-pointer type to hold them. */
+#define HELP_CASE(PROG, TYPE, PARSE)                                          \
+    do {                                                                      \
+        TYPE a;                                                               \
+        char *v[] = { (char *)PROG, (char *)"--help", NULL };                 \
+        cap2_begin();                                                         \
+        int rc = PARSE(argc_of(v), v, &a);                                    \
+        cap2_end(out, sizeof out, err, sizeof err);                           \
+        EXPECT(rc == 1, PROG " --help → rc 1 (exit 0)");                      \
+        EXPECT(has(out, "Usage: " PROG), PROG " --help writes usage to stdout"); \
+        EXPECT(err[0] == '\0', PROG " --help writes NOTHING to stderr");      \
+    } while (0)
+
+#define BAD_CASE(PROG, TYPE, PARSE)                                           \
+    do {                                                                      \
+        TYPE a;                                                               \
+        char *v[] = { (char *)PROG, (char *)"--nope", NULL };                 \
+        cap2_begin();                                                         \
+        int rc = PARSE(argc_of(v), v, &a);                                    \
+        cap2_end(out, sizeof out, err, sizeof err);                           \
+        EXPECT(rc == -1, PROG " --nope → rc -1 (exit 1)");                    \
+        EXPECT(has(err, "Usage: " PROG), PROG " error writes usage to stderr"); \
+        EXPECT(out[0] == '\0', PROG " error writes NOTHING to stdout");       \
+    } while (0)
+
+    HELP_CASE("imud",          cli_imud_t,    cli_parse_imud);
+    HELP_CASE("imud-cal",      cli_cal_t,     cli_parse_cal);
+    HELP_CASE("imud-mon",      cli_mon_t,     cli_parse_mon);
+    HELP_CASE("imud-status",   cli_status_t,  cli_parse_status);
+    HELP_CASE("imud-imutest",  cli_imutest_t, cli_parse_imutest);
+
+    BAD_CASE("imud",           cli_imud_t,    cli_parse_imud);
+    BAD_CASE("imud-cal",       cli_cal_t,     cli_parse_cal);
+    BAD_CASE("imud-mon",       cli_mon_t,     cli_parse_mon);
+    BAD_CASE("imud-status",    cli_status_t,  cli_parse_status);
+    BAD_CASE("imud-imutest",   cli_imutest_t, cli_parse_imutest);
+
+#undef HELP_CASE
+#undef BAD_CASE
+
+    /* -h is the same door as --help, on every tool that offers it. */
+    {   cli_imud_t a;
+        char *v[] = { "imud", "-h", NULL };
+        cap2_begin();
+        int rc = cli_parse_imud(argc_of(v), v, &a);
+        cap2_end(out, sizeof out, err, sizeof err);
+        EXPECT(rc == 1 && has(out, "Usage: imud") && err[0] == '\0',
+               "imud -h behaves as --help");
+    }
+
+    end(fb);
+}
+
+/*
+ * --version on every tool: the string is what help2man puts in the .TH footer,
+ * so it must be "<prog> <version>" on stdout with rc 1 and nothing on stderr.
+ */
+static void test_version_strings(void)
+{
+    begin("test_version_strings");
+    int fb = g_fail;
+    static char out[8192], err[8192];
+
+#define VER_CASE(PROG, TYPE, PARSE)                                           \
+    do {                                                                      \
+        TYPE a;                                                               \
+        char *v[] = { (char *)PROG, (char *)"--version", NULL };              \
+        cap2_begin();                                                         \
+        int rc = PARSE(argc_of(v), v, &a);                                    \
+        cap2_end(out, sizeof out, err, sizeof err);                           \
+        EXPECT(rc == 1, PROG " --version → rc 1");                            \
+        EXPECT(has(out, PROG " " IMUD_VERSION_STR),                           \
+               PROG " --version prints '" PROG " " IMUD_VERSION_STR "'");     \
+        EXPECT(err[0] == '\0', PROG " --version writes nothing to stderr");   \
+    } while (0)
+
+    VER_CASE("imud",          cli_imud_t,    cli_parse_imud);
+    VER_CASE("imud-cal",      cli_cal_t,     cli_parse_cal);
+    VER_CASE("imud-mon",      cli_mon_t,     cli_parse_mon);
+    VER_CASE("imud-status",   cli_status_t,  cli_parse_status);
+    VER_CASE("imud-imutest",  cli_imutest_t, cli_parse_imutest);
+
+#undef VER_CASE
+    end(fb);
+}
+
 int main(void)
 {
     printf("test_cli — argv parsing for the five non-bridge entry points\n");
@@ -677,6 +838,8 @@ int main(void)
     test_status();
     test_imutest();
     test_missing_value();
+    test_help_and_error_streams();
+    test_version_strings();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

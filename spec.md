@@ -1244,6 +1244,7 @@ imud [OPTIONS]
   --no-highrate      Disable high-rate binary stream
   --foreground       Accepted and ignored (always foreground under systemd)
   --version          Print version and exit
+  -h, --help         Print this help and exit
 ```
 
 ### imud-cal

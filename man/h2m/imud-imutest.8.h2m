@@ -1,16 +1,19 @@
-.\" GENERATED from `imud-imutest --help` and man/h2m/imud-imutest.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-IMUTEST 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-imutest.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-imutest --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-imutest \- validate an imud sensor driver against real hardware
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-imutest
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-report\fR \fIPATH\fR]
 \&[\fIdevice overrides\fR]
 \&[\fIphases\fR]
 \&[\fItuning\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-imutest
 drives a registered IMU and magnetometer driver through the whole
 .BR imu_ops_t / mag_ops_t
@@ -34,123 +37,8 @@ below.
 .PP
 It works with any registered driver, not only the one in the configuration
 file: use the device overrides to point it at whatever is wired up.
-.PP
-Exercises a registered IMU/magnetometer driver against real silicon and
-writes a Markdown report suitable for pasting into a GitHub issue.
-.PP
-Stop the daemon first: imud and imud\-imutest both open the same I2C device,
-and both would drain the same FIFO.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud.conf\/\fP)
-.TP
-\fB\-\-report\fR PATH
-Report output
-(default: ./imud\-imutest\-<imu>\-<YYYYmmdd\-HHMMSS>.md)
-.PP
-Device overrides (default: whatever imud.conf says)
-.TP
-\fB\-\-imu\-driver\fR NAME
-[imu] driver
-.TP
-\fB\-\-mag\-driver\fR NAME
-[mag] driver; "none" for an IMU\-only board
-.TP
-\fB\-\-imu\-addr\fR HEX
-[imu] i2c_addr, e.g. 0x6A
-.TP
-\fB\-\-mag\-addr\fR HEX
-[mag] i2c_addr, e.g. 0x0C
-.TP
-\fB\-\-i2c\-bus\fR PATH
-[device] i2c_bus
-.TP
-\fB\-\-gpio\-chip\fR NAME
-[device] gpio_chip
-.TP
-\fB\-\-int\-gpio\fR N
-[imu] int_gpio; 0 skips the interrupt check
-.TP
-\fB\-\-odr\fR HZ
-[imu] odr_hz
-.TP
-\fB\-\-accel\-g\fR N
-[imu] accel_g
-.TP
-\fB\-\-gyro\-dps\fR N
-[imu] gyro_dps
-.TP
-\fB\-\-fifo\-wm\fR N
-[imu] fifo_wm
-.PP
-Phases (default: all four)
-.TP
-\fB\-\-passive\fR
-Automatic checks only; no operator action
-.TP
-\fB\-\-faces\fR
-Guided six\-face accelerometer / axis\-sign test
-.TP
-\fB\-\-gyro\fR
-Guided gyro rotation test
-.TP
-\fB\-\-spin\fR
-Guided magnetometer spin test
-.TP
-\fB\-\-all\fR
-All four (the default)
-.TP
-\fB\-\-non\-interactive\fR
-Passive only, never prompt. Implied when stdin is
-not a terminal.
-.PP
-Tuning
-.TP
-\fB\-\-odr\-window\fR S
-ODR / seq / chip_ts window, s   (default 5, min 3)
-.TP
-\fB\-\-noise\-window\fR S
-Noise and temperature window, s (default 10)
-.TP
-\fB\-\-drdy\-window\fR S
-Interrupt edge\-count window, s  (default 3)
-.TP
-\fB\-\-turn\-deg\fR N
-Commanded angle for \fB\-\-gyro\fR      (default 90)
-.TP
-\fB\-\-grav\-tol\fR M
-Gravity warn tolerance, m/s^2   (default 0.25)
-.TP
-\fB\-\-odr\-tol\fR PCT
-ODR warn tolerance, percent     (default 5)
-.TP
-\fB\-\-no\-fs\-sweep\fR
-Skip the full\-scale re\-init sweep
-.TP
-\fB\-\-no\-overflow\fR
-Do not deliberately overflow the FIFO
-.TP
-\fB\-\-no\-regdiff\fR
-Do not read control registers back
-.TP
-\fB\-\-force\fR
-Run even if imud appears to be running
-.TP
-\fB\-\-quiet\fR
-Digest only; no live progress lines
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-This message
-.PP
-Exit: 0 all pass  1 usage/config/I\-O error  2 a check FAILed
-.TP
-3 warnings only
-130 aborted
-.SH PHASES
+
+[PHASES]
 .TP
 .B Passive
 No operator action. Chip identification, reset timing, control-register
@@ -184,7 +72,8 @@ axis responds, that the heading circle is covered, and \(em the substantive
 check \(em that the magnetometer's heading turns the same way and by the same
 amount as the gyroscope's Z integral. A disagreement there means the mag axes
 are inverted or swapped relative to the IMU.
-.SH REPORT
+
+[REPORT]
 The report is self-contained and prints every threshold inline, so a reviewer
 never needs the source to know what a check asserted. It records the
 environment, the driver's advertised capabilities, one row per check with the
@@ -226,7 +115,8 @@ is returned
 on a genuine I2C fault is checked off-hardware by the unit tests, which inject
 bus failures through the mock; a hardware run can only show that no spurious
 errors occurred.
-.SH "EXIT STATUS"
+
+[EXIT STATUS]
 .TP
 .B 0
 Every check passed.
@@ -244,7 +134,16 @@ Warnings only.
 .TP
 .B 130
 Aborted by the operator.
-.SH NOTES
+
+[FILES]
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+.TP
+.I ./imud-imutest-<driver>-<timestamp>.md
+Default report path.
+
+[NOTES]
 The daemon
 .RB ( imud )
 and
@@ -274,17 +173,12 @@ recommends clearing an experimental flag.
 imud-imutest --imu-driver sim --mag-driver sim --passive
 .EE
 .RE
-.SH FILES
-.TP
-.I /etc/imud/imud.conf
-Default configuration file.
-.TP
-.I ./imud-imutest-<driver>-<timestamp>.md
-Default report path.
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud (8),
 .BR imud-cal (8),
 .BR imud-mon (1),
 .BR imud.conf (5)
+
+[AUTHOR]
+Richard Simpson

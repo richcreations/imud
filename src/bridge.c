@@ -65,13 +65,15 @@ void bridge_sleep_interruptible(int secs)
 
 /* ── CLI + config ────────────────────────────────────────────────────────── */
 
-static void usage(const char *prog, const bridge_info_t *bi)
+/* Help to stdout, diagnostics to stderr — see the stream contract in cli.c. */
+static void usage(FILE *o, const char *prog, const bridge_info_t *bi)
 {
-    fprintf(stderr,
+    fprintf(o,
         "Usage: %s [--config PATH]\n"
         "\n"
         "%s"
         "\n"
+        "Options:\n"
         "  --config PATH   Config file (default: %s)\n"
         "  --version       Print version and exit\n"
         "  -h, --help      Print this help and exit\n",
@@ -90,11 +92,11 @@ int bridge_parse_cli(int argc, char **argv, const bridge_info_t *bi,
             printf("%s %s\n", bi->prog, IMUD_VERSION_STR);
             return 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(argv[0], bi);
+            usage(stdout, argv[0], bi);
             return 1;
         } else {
             LOG_E("unknown option: %s\n", argv[i]);
-            usage(argv[0], bi);
+            usage(stderr, argv[0], bi);
             return -1;
         }
     }

@@ -1,9 +1,11 @@
-.\" GENERATED from `imud --help` and man/h2m/imud.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud \- IMU daemon for marine and robotics navigation
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-replay\fR \fIFILE\fR]
@@ -13,7 +15,8 @@ imud \- IMU daemon for marine and robotics navigation
 \&[\fB\-\-foreground\fR]
 \&[\fB\-\-version\fR]
 \&[\fB\-h\fR|\fB\-\-help\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud
 reads from an IMU (gyroscope + accelerometer) and a magnetometer over I2C,
 fuses the sensor data with a Multiplicative Extended Kalman Filter (MEKF),
@@ -40,32 +43,8 @@ imud is normally run as a systemd service.
 Use
 .BR "systemctl enable --now imud"
 after installation.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud.conf\/\fP)
-.TP
-\fB\-\-skip\-bias\-cal\fR
-Skip startup gyro bias estimation
-.TP
-\fB\-\-replay\fR FILE
-Replay an .imucap capture through the sim driver
-.TP
-\fB\-\-no\-nmea\fR
-Disable NMEA output stream
-.TP
-\fB\-\-no\-highrate\fR
-Disable high\-rate binary stream
-.TP
-\fB\-\-foreground\fR
-Compatibility no\-op (imud always runs in foreground)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH "CONFIGURATION FILE SEARCH"
+
+[CONFIGURATION FILE SEARCH]
 Without
 .BR \-\-config ,
 the daemon searches
@@ -84,7 +63,8 @@ fall back to
 .IR ~/.config/imud/imud.conf ,
 so a mistyped path cannot silently start the daemon on a different
 configuration.
-.SH REPLAY
+
+[REPLAY]
 .B \-\-replay
 takes an .imucap capture \(em recorded by the [capture] black box, or a
 synthetic scenario \(em and replays it through the full pipeline, with both
@@ -92,7 +72,8 @@ sensors forced onto the sim driver in playback mode.
 Pacing and looping come from the [device] sim_* keys; see
 .BR imud.conf (5)
 and docs/capture.md.
-.SH SIGNALS
+
+[SIGNALS]
 .TP
 .B SIGHUP
 Reload hot-reloadable configuration fields without restarting.
@@ -123,62 +104,8 @@ If the file has since been deleted, the running configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown: flush output, join all threads, close hardware.
-.SH "USERS AND GROUPS"
-The daemon runs as the system user
-.I imud
-with primary group
-.IR imud ,
-which owns
-.I /run/imud
-and both Unix domain sockets.
-Hardware access comes from the supplementary groups
-.I gpio
-.RI ( /dev/gpiochip* )
-and
-.I i2c
-.RI ( /dev/i2c\-* ).
-All three are created at install time if absent; the service refuses to start
-without
-.I gpio
-and
-.IR i2c .
-.PP
-To connect to the stream socket or run
-.BR imud-status (1)
-as an ordinary user, join the
-.I imud
-group \(em not
-.I gpio
-\(em with
-.BR "adduser <user> imud" .
-.SH "SUPPORTED HARDWARE"
-.TP
-IMUs
-ISM330DHCX (ST), ICM-20948 (TDK)*, ICM-42688-P (TDK)*, LSM6DSO/LSM6DSOX (ST)*,
-sim (software simulation)
-.TP
-Magnetometers
-MMC5983MA (MEMSIC), AK09916 (via ICM-20948 I2C master)*, LIS3MDL (ST)*,
-LIS2MDL (ST)*, sim
-.PP
-Drivers marked * are experimental: implemented but not yet validated on real
-silicon; imud logs a warning at startup when one is selected.
-.SH "EXIT STATUS"
-.B 0
-on graceful shutdown,
-.B 1
-on configuration or hardware initialisation error, or if the
-.B [stream]
-output thread cannot be started \(em that stream is the one output a stock
-daemon provides and every bridge reads it, so running without it would produce
-nothing while reporting active.
-The optional outputs
-.RB ( [nmea] ,
-.BR [highrate] ,
-and the position thread)
-warn and continue instead; whatever they had already bound is closed, so a
-client is refused rather than left connected to a socket nobody is serving.
-.SH FILES
+
+[FILES]
 .TP
 .I /etc/imud/imud.conf
 Default configuration file.
@@ -228,7 +155,66 @@ Raspberry Pi OS ships equivalent rules in
 this file is what makes a stock Debian install work.
 A source install places it in
 .IR /etc/udev/rules.d .
-.SH EXAMPLES
+
+[USERS AND GROUPS]
+The daemon runs as the system user
+.I imud
+with primary group
+.IR imud ,
+which owns
+.I /run/imud
+and both Unix domain sockets.
+Hardware access comes from the supplementary groups
+.I gpio
+.RI ( /dev/gpiochip* )
+and
+.I i2c
+.RI ( /dev/i2c\-* ).
+All three are created at install time if absent; the service refuses to start
+without
+.I gpio
+and
+.IR i2c .
+.PP
+To connect to the stream socket or run
+.BR imud-status (1)
+as an ordinary user, join the
+.I imud
+group \(em not
+.I gpio
+\(em with
+.BR "adduser <user> imud" .
+
+[SUPPORTED HARDWARE]
+.TP
+IMUs
+ISM330DHCX (ST), ICM-20948 (TDK)*, ICM-42688-P (TDK)*, LSM6DSO/LSM6DSOX (ST)*,
+sim (software simulation)
+.TP
+Magnetometers
+MMC5983MA (MEMSIC), AK09916 (via ICM-20948 I2C master)*, LIS3MDL (ST)*,
+LIS2MDL (ST)*, sim
+.PP
+Drivers marked * are experimental: implemented but not yet validated on real
+silicon; imud logs a warning at startup when one is selected.
+
+[EXIT STATUS]
+.B 0
+on graceful shutdown,
+.B 1
+on configuration or hardware initialisation error, or if the
+.B [stream]
+output thread cannot be started \(em that stream is the one output a stock
+daemon provides and every bridge reads it, so running without it would produce
+nothing while reporting active.
+The optional outputs
+.RB ( [nmea] ,
+.BR [highrate] ,
+and the position thread)
+warn and continue instead; whatever they had already bound is closed, so a
+client is refused rather than left connected to a socket nobody is serving.
+
+[EXAMPLES]
 Run in the foreground with the simulation driver:
 .PP
 .RS 4
@@ -246,11 +232,13 @@ sudo systemctl reload imud
 kill -HUP $(pidof imud)
 .EE
 .RE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud-cal (8),
 .BR imud-status (1),
 .BR imud-mon (1),
 .BR imud.conf (5),
 .BR gpsd (8)
+
+[AUTHOR]
+Richard Simpson

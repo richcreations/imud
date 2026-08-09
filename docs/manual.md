@@ -242,6 +242,7 @@ imud [OPTIONS]
   --no-highrate      Disable the high-rate binary stream
   --foreground       Accepted and ignored (imud always runs in the foreground)
   --version          Print the version and exit
+  -h, --help         Print this help and exit
 ```
 
 If `--config` is omitted, imud tries `/etc/imud/imud.conf` and then

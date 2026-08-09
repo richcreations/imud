@@ -1,14 +1,17 @@
-.\" GENERATED from `imud-prometheus --help` and man/h2m/imud-prometheus.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-PROMETHEUS 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-prometheus.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-prometheus --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-prometheus \- Prometheus exporter for the imud IMU daemon
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud\-prometheus
 .RB [ \-\-config
 .IR PATH ]
 .RB [ \-\-version ]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud\-prometheus
 connects to
 .BR imud (8)'s
@@ -43,32 +46,22 @@ imud automatically and answers scrapes with
 while imud is away. Built on the ABI-stable
 .BR libimud (3)
 \(em no rebuild needed across imud wire revisions.
-.IP
-Prometheus exporter: reads imud's stream socket and serves the
-latest fused state as text\-format gauges on GET \fI\,/metrics\/\fP.
-Configured by [imud\-prometheus] in its own file.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud\-prometheus.conf\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH SIGNALS
-.TP
-.B SIGHUP
-Reload the config (log level; the listen address needs a restart).
-.SH FILES
+
+[FILES]
 .TP
 .I /etc/imud/imud\-prometheus.conf
 Configuration; see
 .BR imud\-prometheus.conf (5).
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SIGNALS]
+.TP
+.B SIGHUP
+Reload the config (log level; the listen address needs a restart).
+
+[SEE ALSO]
 .BR imud (8),
 .BR imud\-prometheus.conf (5),
 .BR libimud (3)
+
+[AUTHOR]
+Richard Simpson

@@ -1,12 +1,15 @@
-.\" GENERATED from `imud-status --help` and man/h2m/imud-status.1.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-STATUS 1 "2026-08-05" "imud 1.8.2" "User Commands"
-.SH NAME
+.\" help2man include for imud-status.1 — the hand-written sections.
+.\" OPTIONS is generated from `imud-status --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-status \- query imud daemon health and sensor status
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-status
 \&[\fB\-\-socket\fR \fIPATH\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-status
 connects to the running
 .BR imud (8)
@@ -32,22 +35,14 @@ The summary includes:
 Exits immediately after printing one snapshot.
 For a continuous live display use
 .BR imud-mon (1).
-.SH OPTIONS
-.TP
-\fB\-\-socket\fR PATH
-Status socket (default: \fI\,/run/imud/imud.sock\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH "EXIT STATUS"
+
+[EXIT STATUS]
 .B 0
 on success,
 .B 1
 if the daemon is not reachable.
-.SH PERMISSIONS
+
+[PERMISSIONS]
 The status socket is mode 0660, owner
 .IR imud:imud ,
 so an ordinary user must be in the
@@ -64,12 +59,15 @@ Log out and back in for the new group to take effect, or run
 .B imud-status
 under
 .BR sudo .
-.SH EXAMPLES
+
+[EXAMPLES]
 .EX
 imud-status
 .EE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud (8),
 .BR imud-mon (1)
+
+[AUTHOR]
+Richard Simpson

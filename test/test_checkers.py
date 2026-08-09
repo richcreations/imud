@@ -94,6 +94,19 @@ CASES = [
     ("check-links", "docs/manual.md",
      sub(r"\]\(#6-calibration\)", "](#no-such-heading)"),
      "no-such-heading"),
+
+    # A page the Makefile stages and no Debian package claims: staged, then
+    # dropped from every .deb.  dh_missing only notices during a full package
+    # build, which is why this is checked here.
+    ("check-manpages", "debian/imud.install",
+     sub(r"^usr/share/man/man1/imud-status\.1\.gz\n", ""),
+     "imud-status.1"),
+
+    # And the reverse: Debian shipping a page the Makefile never stages.
+    ("check-manpages", "debian/imud-utils.install",
+     sub(r"^usr/share/man/man1/imud-mon\.1\.gz$",
+         "usr/share/man/man1/imud-mon.1.gz\nusr/share/man/man9/imud-zzz.9.gz"),
+     "imud-zzz"),
 ]
 
 
@@ -112,16 +125,29 @@ def main():
     with tempfile.TemporaryDirectory(prefix="imud-checkers-") as tmp:
         pristine = os.path.join(tmp, "pristine")
         os.makedirs(pristine)
-        # git archive, so the fixture is what ships rather than what is lying
-        # around the working tree.
-        tar = subprocess.run(["git", "-C", ROOT, "archive", "HEAD"],
-                             capture_output=True, check=True).stdout
-        subprocess.run(["tar", "-x", "-C", pristine], input=tar, check=True)
 
-        # Uncommitted work must still be testable: overlay the live tools/ and
-        # any doc the working tree has changed.
-        shutil.rmtree(os.path.join(pristine, "tools"), ignore_errors=True)
-        shutil.copytree(TOOLS, os.path.join(pristine, "tools"))
+        # The fixture is the WORKING TREE, not HEAD.  These checkers are the
+        # gate for changes that have not been committed yet — a fixture built
+        # from `git archive HEAD` cannot see the checker being added or the
+        # Makefile variable it reads, so the test silently exercises the old
+        # tree and reports a detection failure that is really a fixture bug.
+        #
+        # --cached --others --exclude-standard is tracked files plus new ones,
+        # minus anything gitignored: what a commit would contain, as it stands
+        # right now.
+        listing = subprocess.run(
+            ["git", "-C", ROOT, "ls-files", "-z",
+             "--cached", "--others", "--exclude-standard"],
+            capture_output=True, check=True).stdout
+        for rel in listing.decode().split("\0"):
+            if not rel:
+                continue
+            src = os.path.join(ROOT, rel)
+            if not os.path.isfile(src):       # deleted-but-still-indexed
+                continue
+            dst = os.path.join(pristine, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
 
         base = {}
         for checker, *_ in CASES:

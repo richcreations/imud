@@ -8,10 +8,24 @@
  * cli.c — argv parsing for imud, imud-cal, imud-mon, imud-status, imud-imutest
  *
  * See include/cli.h for why these live outside their main()s and for the
- * 0 / 1 / -1 return convention.  Every usage() body and every error line here
- * is the text the corresponding tool printed before the move, unchanged and
- * on the same stream — imud/cal/mon/status write usage to stderr, imutest to
- * stdout.  test_cli pins that.
+ * 0 / 1 / -1 return convention.
+ *
+ * STREAM CONTRACT.  Help is REQUESTED output: --help writes to stdout and
+ * exits 0, because the operator asked for it and may well be piping it into
+ * less or grep.  A bad option is a DIAGNOSTIC: the error line and the usage
+ * recap both go to stderr and the tool exits 1, so a script's stdout is not
+ * polluted by a failure.  Hence the FILE * every usage_*() takes — the same
+ * text, on whichever stream the caller's situation calls for.
+ *
+ * This is also what help2man requires: it runs `prog --help`, reads STDOUT,
+ * and expects exit 0.  The man pages are generated from that output, so a
+ * usage string on the wrong stream produces an empty OPTIONS section.
+ *
+ * The comment this replaces claimed test_cli pinned the streams.  It did not:
+ * its capture dup2'd one fd onto both 1 and 2, so the split was invisible to
+ * every assertion.  test_cli now captures the two separately and asserts that
+ * --help writes nothing to stderr and an unknown option writes nothing to
+ * stdout.
  */
 
 #include <errno.h>
@@ -83,26 +97,29 @@ static bool cli_pos_dbl(const char *s, double *out)
 }
 
 static int cli_bad_num(const char *prog, const char *flag, const char *val,
-                       void (*usage)(const char *))
+                       void (*usage)(FILE *, const char *))
 {
     fprintf(stderr, "invalid value for %s: %s\n", flag, val);
-    usage(prog);
+    usage(stderr, prog);
     return -1;
 }
 
 /* ── imud ────────────────────────────────────────────────────────────────── */
 
-static void usage_imud(const char *prog)
+static void usage_imud(FILE *o, const char *prog)
 {
     /* CLI help is user-requested output, never level-gated or prefixed. */
-    fprintf(stderr, "Usage: %s [OPTIONS]\n"
+    fprintf(o, "Usage: %s [OPTIONS]\n"
+        "\n"
+        "Options:\n"
         "  --config PATH      Config file (default: /etc/imud/imud.conf)\n"
         "  --skip-bias-cal    Skip startup gyro bias estimation\n"
         "  --replay FILE      Replay an .imucap capture through the sim driver\n"
         "  --no-nmea          Disable NMEA output stream\n"
         "  --no-highrate      Disable high-rate binary stream\n"
         "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
-        "  --version          Print version and exit\n",
+        "  --version          Print version and exit\n"
+        "  -h, --help         Print this help and exit\n",
         prog);
 }
 
@@ -128,9 +145,12 @@ int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
             return 1;
         } else if (strcmp(argv[i], "--foreground") == 0) {
             /* always foreground under systemd — accepted, ignored */
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage_imud(stdout, argv[0]);
+            return 1;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
-            usage_imud(argv[0]);
+            usage_imud(stderr, argv[0]);
             return -1;
         }
     }
@@ -139,9 +159,9 @@ int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
 
 /* ── imud-cal ────────────────────────────────────────────────────────────── */
 
-static void usage_cal(const char *prog)
+static void usage_cal(FILE *o, const char *prog)
 {
-    fprintf(stderr,
+    fprintf(o,
         "Usage: %s [--config PATH] [--output PATH] <mode>\n"
         "\n"
         "Modes:\n"
@@ -156,9 +176,12 @@ static void usage_cal(const char *prog)
         "               rough-water capture (requires --from FILE).\n"
         "               Reports only; writes nothing.\n"
         "\n"
+        "Options:\n"
         "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
         "  --output PATH   Override cal.json output path from config\n"
-        "  --from FILE     .imucap capture to analyze (offline modes)\n",
+        "  --from FILE     .imucap capture to analyze (offline modes)\n"
+        "  --version       Print version and exit\n"
+        "  -h, --help      Print this help and exit\n",
         prog);
 }
 
@@ -174,15 +197,25 @@ int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
             a->output_path = argv[++i];
         } else if (strcmp(argv[i], "--from") == 0 && i + 1 < argc) {
             a->from_path = argv[++i];
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("imud-cal %s\n", IMUD_VERSION_STR);
+            return 1;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            usage_cal(stdout, argv[0]);
+            return 1;
+        /* Positional mode. Placed after the flags so --help and --version are
+         * never swallowed as one: the guard below only accepts a non-'-'
+         * token, but keeping the order explicit stops a future flag from
+         * being captured as a mode name. */
         } else if (!a->mode && argv[i][0] != '-') {
             a->mode = argv[i];
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
-            usage_cal(argv[0]); return -1;
+            usage_cal(stderr, argv[0]); return -1;
         }
     }
 
-    if (!a->mode) { usage_cal(argv[0]); return -1; }
+    if (!a->mode) { usage_cal(stderr, argv[0]); return -1; }
 
     if (strcmp(a->mode, "mag")          != 0 &&
         strcmp(a->mode, "gyro")         != 0 &&
@@ -191,7 +224,7 @@ int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
         strcmp(a->mode, "fit-temp")     != 0 &&
         strcmp(a->mode, "fit-ra")       != 0) {
         fprintf(stderr, "unknown mode '%s'\n", a->mode);
-        usage_cal(argv[0]); return -1;
+        usage_cal(stderr, argv[0]); return -1;
     }
 
     /* The offline analysis modes read an .imucap instead of the sensors, so
@@ -205,19 +238,21 @@ int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
     if (a->offline && !a->from_path) {
         fprintf(stderr, "%s requires --from FILE (an .imucap capture)\n",
                 a->mode);
-        usage_cal(argv[0]); return -1;
+        usage_cal(stderr, argv[0]); return -1;
     }
     return 0;
 }
 
 /* ── imud-mon ────────────────────────────────────────────────────────────── */
 
-static void usage_mon(const char *prog)
+static void usage_mon(FILE *o, const char *prog)
 {
-    fprintf(stderr,
+    fprintf(o,
         "Usage: %s [--config PATH] [nmea] [binary]\n"
         "\n"
+        "Options:\n"
         "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
+        "  --version      Print version and exit\n"
         "  -h, --help     Print this help and exit\n"
         "\n"
         "  nmea    Monitor NMEA 0183 stream (UDP port 10110)\n"
@@ -242,11 +277,14 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
             a->want_nmea   = true; any_stream = true;
         } else if (strcmp(argv[i], "binary") == 0) {
             a->want_binary = true; any_stream = true;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("imud-mon %s\n", IMUD_VERSION_STR);
+            return 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage_mon(argv[0]); return 1;
+            usage_mon(stdout, argv[0]); return 1;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
-            usage_mon(argv[0]); return -1;
+            usage_mon(stderr, argv[0]); return -1;
         }
     }
 
@@ -258,14 +296,16 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
 
 /* ── imud-status ─────────────────────────────────────────────────────────── */
 
-static void usage_status(const char *p)
+static void usage_status(FILE *o, const char *p)
 {
-    fprintf(stderr,
+    fprintf(o,
         "Usage: %s [--socket PATH]\n"
         "\n"
+        "Options:\n"
         /* Concatenated from the constant the parser defaults to, so the help
          * text cannot drift from the actual default. */
         "  --socket PATH  Status socket (default: " CLI_DEFAULT_STATUS_SOCK ")\n"
+        "  --version      Print version and exit\n"
         "  -h, --help     Print this help and exit\n", p);
 }
 
@@ -277,11 +317,14 @@ int cli_parse_status(int argc, char **argv, cli_status_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             a->sockpath = argv[++i];
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("imud-status %s\n", IMUD_VERSION_STR);
+            return 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage_status(argv[0]);
+            usage_status(stdout, argv[0]);
             return 1;
         } else {
-            usage_status(argv[0]);
+            usage_status(stderr, argv[0]);
             return -1;
         }
     }
@@ -290,9 +333,9 @@ int cli_parse_status(int argc, char **argv, cli_status_t *a)
 
 /* ── imud-imutest ────────────────────────────────────────────────────────── */
 
-static void usage_imutest(const char *prog)
+static void usage_imutest(FILE *o, const char *prog)
 {
-    printf(
+    fprintf(o,
 "Usage: %s [OPTIONS]\n"
 "\n"
 "Exercises a registered IMU/magnetometer driver against real silicon and\n"
@@ -301,6 +344,7 @@ static void usage_imutest(const char *prog)
 "Stop the daemon first: imud and imud-imutest both open the same I2C device,\n"
 "and both would drain the same FIFO.\n"
 "\n"
+"Options:\n"
 "  --config PATH        Config file (default: /etc/imud/imud.conf)\n"
 "  --report PATH        Report output\n"
 "                       (default: ./imud-imutest-<imu>-<YYYYmmdd-HHMMSS>.md)\n"
@@ -442,12 +486,12 @@ int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
             return 1;
         }
         else if (strcmp(s, "-h") == 0 || strcmp(s, "--help") == 0) {
-            usage_imutest(argv[0]);
+            usage_imutest(stdout, argv[0]);
             return 1;
         }
         else {
             fprintf(stderr, "unknown option: %s\n", s);
-            usage_imutest(argv[0]);
+            usage_imutest(stderr, argv[0]);
             return -1;
         }
     }

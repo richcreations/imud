@@ -576,9 +576,10 @@ check-flags:
 # including the version-consistency CI job that never compiles anything.
 CHECK_DOC_TOOLS = check-links check-cli-docs check-packet check-nmea \
                   check-drivers check-mqtt-topics check-bridge-outputs \
-                  check-libimud-api check-math-citations
+                  check-libimud-api check-math-citations check-manpages
 
-.PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools
+.PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools \
+        docs-man check-generated-man
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
@@ -591,6 +592,54 @@ check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS)
 # a copy of the tree and asserts the relevant checker notices.
 test-tools:
 	@python3 test/test_checkers.py
+
+# ── Generated man pages (help2man) ───────────────────────────────────────────
+# The man1/man8 pages are generated from each tool's own --help, so the flag
+# list in the page and the flag list the tool prints cannot disagree — they are
+# the same text.  Everything that is not a flag list (DESCRIPTION, SIGNALS,
+# FILES, EXAMPLES, ...) lives in man/h2m/<page>.h2m and is spliced in.
+#
+# man5 and man3 are NOT here: help2man documents a command's options, and a
+# config-file format is not that.  Those stay hand-written.
+#
+# This is the one docs target that needs a BUILD — help2man runs the binary.
+# On macOS imud, imud-cal and imud-imutest do not link at all, so regenerating
+# is a devbox/Linux operation.  The generated pages are committed, so a
+# packager never runs help2man and `make dist` (git archive HEAD) still ships
+# a complete tree.
+MAN_GENERATED = $(addprefix man/,$(filter man1/% man8/%,$(MAN_ALL)))
+
+# $(call run-help2man,<binary>,<section>,<manual>,<output>)
+# LD_LIBRARY_PATH: the bridges link libimud, which is not installed yet.
+define run-help2man
+	@TZ=UTC0 LC_ALL=C LD_LIBRARY_PATH=. help2man \
+	    --output=$(4) --section=$(2) --manual="$(3)" \
+	    --source="imud $(VERSION)" --no-info \
+	    --include=man/h2m/$(notdir $(4)).h2m ./$(1)
+	@python3 tools/man-postprocess.py $(4) >/dev/null
+	@echo "  generated $(4)"
+endef
+
+man/man1/%.1: % man/h2m/%.1.h2m tools/man-postprocess.py include/version.h
+	$(call run-help2man,$*,1,User Commands,$@)
+
+man/man8/%.8: % man/h2m/%.8.h2m tools/man-postprocess.py include/version.h
+	$(call run-help2man,$*,8,System Manager's Manual,$@)
+
+# -B: regenerate unconditionally.  Without it make skips a page whose mtime is
+# newer than its prerequisites, so a hand-edit that got committed would never
+# be overwritten and check-generated-man would pass on it — the exact thing the
+# gate exists to prevent.  Ten help2man runs cost about a second.
+docs-man: all bridges
+	@$(MAKE) --no-print-directory -B $(MAN_GENERATED)
+
+# What CI runs: regenerating must change nothing that is committed.
+check-generated-man: docs-man
+	@git diff --quiet -- man/ || { \
+	    echo "man pages are stale — run 'make docs-man' and commit" >&2; \
+	    git --no-pager diff --stat -- man/ >&2; \
+	    exit 1; }
+	@echo "check-generated-man: $(words $(MAN_GENERATED)) pages regenerate unchanged"
 
 # ── Line count ────────────────────────────────────────────────────────────────
 # Size of the tree, split by ROLE rather than by language: production C apart
@@ -652,6 +701,47 @@ DOCDIR  ?= $(PREFIX)/share/doc
 # land in /etc or the rule is inert.  Packagers override this to
 # /usr/lib/udev/rules.d (/etc is reserved for the admin's own overrides).
 UDEVDIR ?= /etc/udev/rules.d
+
+# ── Man pages, one list per installed package ────────────────────────────────
+# These existed three times over — once in each install-* recipe, again in
+# uninstall, and a third time in debian/*.install — with nothing comparing
+# them.  A page that exists and is never installed passes CI, because the
+# mandoc lint and the .TH version check both glob man/ and neither knows what
+# ships.
+#
+# install-* and uninstall now read these variables, so a new page is added in
+# one place.  debian/*.install cannot: dh_install reads it from the source
+# package before any Makefile runs, and generating it in debian/rules would
+# leave build-modified files under debian/, which dpkg-source rejects on a
+# 3.0 (quilt) package.  tools/check-manpages.py closes that third copy instead.
+MAN_imud       = man8/imud.8 man8/imud-cal.8 man5/imud.conf.5 man1/imud-status.1
+MAN_libimud    = man3/libimud.3
+MAN_utils      = man1/imud-mon.1 man8/imud-imutest.8
+MAN_signalk    = man8/imud-signalk.8    man5/imud-signalk.conf.5
+MAN_mqtt       = man8/imud-mqtt.8       man5/imud-mqtt.conf.5
+MAN_influxdb   = man8/imud-influxdb.8   man5/imud-influxdb.conf.5
+MAN_prometheus = man8/imud-prometheus.8 man5/imud-prometheus.conf.5
+MAN_mavlink    = man8/imud-mavlink.8    man5/imud-mavlink.conf.5
+
+MAN_ALL = $(MAN_imud) $(MAN_libimud) $(MAN_utils) $(MAN_signalk) $(MAN_mqtt) \
+          $(MAN_influxdb) $(MAN_prometheus) $(MAN_mavlink)
+
+# $(call install-man,<list>) — gzip man/<sec>/<page> into $(MANDIR)/<sec>/.
+# ${p%%/*} is the section directory, ${p##*/} the page: POSIX parameter
+# expansion, so it behaves the same in the macOS and Debian shells this
+# project builds under.
+define install-man
+	@for p in $(1); do \
+	    d=$(DESTDIR)$(MANDIR)/$${p%%/*}; \
+	    install -d -m 0755 "$$d"; \
+	    gzip -9nc man/$$p > "$$d/$${p##*/}.gz"; \
+	done
+endef
+
+# Printing a variable for tools/check-manpages.py, which has to see the same
+# list the install rules use rather than a second copy of it.
+print-%:
+	@echo "$($*)"
 
 # pkg-config metadata, generated with the configured paths/version.
 libimud.pc: lib/libimud.pc.in .FORCE
@@ -730,8 +820,7 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	ln -sf $(SONAME) $(DESTDIR)$(LIBDIR)/libimud.so
 	install -m 644 lib/imud.h $(DESTDIR)$(PREFIX)/include/imud.h
 	install -m 644 libimud.pc $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man3
-	gzip -9nc man/man3/libimud.3 > $(DESTDIR)$(MANDIR)/man3/libimud.3.gz
+	$(call install-man,$(MAN_libimud))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/libimud
 	install -m 644 docs/libimud/README.md docs/libimud/manual.md \
 	               docs/libimud/spec.md $(DESTDIR)$(DOCDIR)/libimud/
@@ -742,13 +831,7 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	fi
 	@echo "Installed libimud:      $(DESTDIR)$(LIBDIR)/$(SHLIB) (+ imud.h, libimud.pc, libimud.3)"
 	# ── Man pages ──────────────────────────────────────────────────────────
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man1 \
-	                   $(DESTDIR)$(MANDIR)/man5 \
-	                   $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man1/imud-status.1 > $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz
-	gzip -9nc man/man5/imud.conf.5   > $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz
-	gzip -9nc man/man8/imud.8        > $(DESTDIR)$(MANDIR)/man8/imud.8.gz
-	gzip -9nc man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
+	$(call install-man,$(MAN_imud))
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
 	# ── Documentation (/usr/share/doc/imud) ────────────────────────────────
 	#
@@ -801,8 +884,7 @@ install-utils: imud-mon imud-imutest
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(MANDIR)/man1 \
 	                   $(DESTDIR)$(MANDIR)/man8
 	install -m 755 imud-mon imud-imutest $(DESTDIR)$(PREFIX)/bin/
-	gzip -9nc man/man1/imud-mon.1 > $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz
-	gzip -9nc man/man8/imud-imutest.8 > $(DESTDIR)$(MANDIR)/man8/imud-imutest.8.gz
+	$(call install-man,$(MAN_utils))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-utils
 	install -m 644 docs/imud-utils/README.md docs/imud-utils/manual.md \
 	               docs/imud-utils/spec.md $(DESTDIR)$(DOCDIR)/imud-utils/
@@ -833,9 +915,7 @@ install-signalk: imud-signalk etc/imud-signalk.service
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man5/imud-signalk.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz
-	gzip -9nc man/man8/imud-signalk.8 > $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz
+	$(call install-man,$(MAN_signalk))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-signalk/examples
 	install -m 644 docs/imud-signalk/README.md docs/imud-signalk/manual.md \
 	               docs/imud-signalk/spec.md $(DESTDIR)$(DOCDIR)/imud-signalk/
@@ -875,9 +955,7 @@ install-mqtt: imud-mqtt etc/imud-mqtt.service
 	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
 	    fi; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man5/imud-mqtt.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz
-	gzip -9nc man/man8/imud-mqtt.8 > $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz
+	$(call install-man,$(MAN_mqtt))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples
 	install -m 644 docs/imud-mqtt/README.md docs/imud-mqtt/manual.md \
 	               docs/imud-mqtt/spec.md $(DESTDIR)$(DOCDIR)/imud-mqtt/
@@ -917,9 +995,7 @@ install-influxdb: imud-influxdb etc/imud-influxdb.service
 	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
 	    fi; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man5/imud-influxdb.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz
-	gzip -9nc man/man8/imud-influxdb.8 > $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz
+	$(call install-man,$(MAN_influxdb))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples
 	install -m 644 docs/imud-influxdb/README.md docs/imud-influxdb/manual.md \
 	               docs/imud-influxdb/spec.md $(DESTDIR)$(DOCDIR)/imud-influxdb/
@@ -946,9 +1022,7 @@ install-prometheus: imud-prometheus etc/imud-prometheus.service
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man5/imud-prometheus.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz
-	gzip -9nc man/man8/imud-prometheus.8 > $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz
+	$(call install-man,$(MAN_prometheus))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples
 	install -m 644 docs/imud-prometheus/README.md docs/imud-prometheus/manual.md \
 	               docs/imud-prometheus/spec.md $(DESTDIR)$(DOCDIR)/imud-prometheus/
@@ -976,9 +1050,7 @@ install-mavlink: imud-mavlink etc/imud-mavlink.service
 	else \
 	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
 	fi
-	install -d -m 0755 $(DESTDIR)$(MANDIR)/man5 $(DESTDIR)$(MANDIR)/man8
-	gzip -9nc man/man5/imud-mavlink.conf.5 > $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
-	gzip -9nc man/man8/imud-mavlink.8 > $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz
+	$(call install-man,$(MAN_mavlink))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples
 	install -m 644 docs/imud-mavlink/README.md docs/imud-mavlink/manual.md \
 	               docs/imud-mavlink/spec.md $(DESTDIR)$(DOCDIR)/imud-mavlink/
@@ -1024,24 +1096,12 @@ uninstall:
 	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
 	      $(DESTDIR)$(SVCDIR)/imud-influxdb.service \
 	      $(DESTDIR)$(SVCDIR)/imud-prometheus.service \
-	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service \
-	      $(DESTDIR)$(MANDIR)/man3/libimud.3.gz \
-	      $(DESTDIR)$(MANDIR)/man1/imud-status.1.gz \
-	      $(DESTDIR)$(MANDIR)/man1/imud-mon.1.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud.conf.5.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-imutest.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-signalk.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-mqtt.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-influxdb.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-prometheus.8.gz \
-	      $(DESTDIR)$(MANDIR)/man8/imud-mavlink.8.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud-signalk.conf.5.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud-mqtt.conf.5.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud-influxdb.conf.5.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud-prometheus.conf.5.gz \
-	      $(DESTDIR)$(MANDIR)/man5/imud-mavlink.conf.5.gz
+	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service
+	# Same list the install rules use, so a page cannot be installed and then
+	# left behind by uninstall.
+	@for p in $(MAN_ALL); do \
+	    rm -f $(DESTDIR)$(MANDIR)/$${p%%/*}/$${p##*/}.gz; \
+	done
 	rm -rf $(DESTDIR)$(DOCDIR)/imud $(DESTDIR)$(DOCDIR)/imud-signalk \
 	       $(DESTDIR)$(DOCDIR)/imud-mqtt $(DESTDIR)$(DOCDIR)/imud-influxdb \
 	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/imud-prometheus \

@@ -17,4 +17,18 @@
 
 #define IMUD_VERSION_STR "1.8.2"
 
+/*
+ * Release date, ISO 8601, stamped into every generated man page's .TH line.
+ *
+ * help2man writes the current date in "August 2026" form, which is neither
+ * this project's format nor reproducible — regenerating on a different day
+ * would produce a diff, and the regenerate-and-diff CI gate would fail once a
+ * month for no reason.  tools/man-postprocess.py overwrites the .TH using this
+ * value, so the generated pages carry the same date as the hand-written ones
+ * and change only when a release does.
+ *
+ * tools/bump-version.sh writes both macros.
+ */
+#define IMUD_RELEASE_DATE "2026-08-05"
+
 #endif /* IMUD_VERSION_H */

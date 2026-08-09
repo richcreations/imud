@@ -61,8 +61,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get install -y --no-install-recommends \
         debhelper devscripts fakeroot lintian systemd
 
-# 3. analysis: cppcheck, scan-build, gcov/lcov, man lint — the biggest download
-#    by far (clang/llvm is most of it).
+# 3. analysis + doc generation: cppcheck, scan-build, gcov/lcov, man lint, and
+#    the doc toolchain — the biggest download by far (clang/llvm is most of it).
+#
+#    help2man generates the man1/man8 pages from each tool's --help, and it
+#    RUNS the binary, so regeneration only works where imud links: not macOS.
+#    texinfo builds the info manual.  pandoc converts docs/manual.md to
+#    Texinfo and docs/math.md to PDF; CI does not need it (check-texi.py and
+#    makeinfo validate without it), so this list is a superset of ci.yml's,
+#    which the header above already says is the contract.
 #
 #    The libFuzzer runtime is a version-suffixed package (libclang-rt-14-dev on
 #    bookworm, -19- on trixie) with no unversioned alias, so resolve it from the
@@ -83,7 +90,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
         > /etc/apt/apt.conf.d/99devbox-keep-debs && \
     apt-get install -y --no-install-recommends \
-        cppcheck clang clang-tools lcov mandoc && \
+        cppcheck clang clang-tools lcov mandoc \
+        help2man texinfo pandoc && \
     rt=$(apt-cache --names-only search '^libclang-rt-[0-9]+-dev$' \
          | awk '{print $1}' | sort -V | tail -1) && \
     if [ -n "$rt" ]; then \

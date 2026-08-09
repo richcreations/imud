@@ -1,13 +1,16 @@
-.\" GENERATED from `imud-signalk --help` and man/h2m/imud-signalk.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-SIGNALK 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-signalk.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-signalk --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-signalk \- bridge imud's binary stream to Signal K over UDP or TCP
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-signalk
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-version\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-signalk
 connects to the local AF_UNIX binary subscription stream published by
 .BR imud (8)
@@ -57,20 +60,8 @@ listener (default port 10113); configure a TCP client data connection on the
 Signal K server instead \(em useful when the server runs on another machine
 and \(dqjust connecting\(dq beats configuring UDP paths.  See
 .BR imud-signalk.conf (5).
-.IP
-Signal K bridge: reads imud's stream socket and emits Signal K
-delta JSON over UDP. Configured by [imud\-signalk] in its own file.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud\-signalk.conf\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH SIGNALS
+
+[SIGNALS]
 .TP
 .B SIGHUP
 Reload the configuration.  The emit rate, destination address/port, source
@@ -79,18 +70,16 @@ parse, the running configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
-.SH CONFIGURATION
+
+[CONFIGURATION]
 Read from
 .I /etc/imud/imud-signalk.conf
 (the
 .B [imud-signalk]
 section); the keys are documented in
 .BR imud-signalk.conf (5).
-.SH FILES
-.TP
-.I /etc/imud/imud-signalk.conf
-Default configuration file.
-.SH EXAMPLES
+
+[EXAMPLES]
 Run in the foreground against a local config:
 .PP
 .RS 4
@@ -114,11 +103,18 @@ the daemon itself is enabled by default):
 sudo systemctl enable --now imud-signalk
 .EE
 .RE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[FILES]
+.TP
+.I /etc/imud/imud-signalk.conf
+Default configuration file.
+
+[SEE ALSO]
 .BR imud-signalk.conf (5),
 .BR imud (8),
 .BR imud.conf (5),
 .BR imud-mon (1),
 .BR imud-status (1)
+
+[AUTHOR]
+Richard Simpson

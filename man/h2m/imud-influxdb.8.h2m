@@ -1,13 +1,16 @@
-.\" GENERATED from `imud-influxdb --help` and man/h2m/imud-influxdb.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-INFLUXDB 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-influxdb.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-influxdb --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-influxdb \- bridge imud's binary stream to InfluxDB line protocol
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-influxdb
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-version\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-influxdb
 connects to the local AF_UNIX binary subscription stream published by
 .BR imud (8)
@@ -79,21 +82,8 @@ the heave-rate, gyro-bias, quiescence, compass-health and sea-state
 diagnostics are always SI (m/s, rad/s, (rad/s)\[u00B2], m, s, rad)
 regardless of
 .BR units .
-.IP
-InfluxDB bridge: reads imud's stream socket and writes InfluxDB
-line\-protocol points over UDP (default) or HTTP.
-Configured by [imud\-influxdb] in its own file.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud\-influxdb.conf\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH SIGNALS
+
+[SIGNALS]
 .TP
 .B SIGHUP
 Reload the configuration.  The rate, measurement, source tag, units, heave
@@ -103,14 +93,16 @@ configuration is kept.
 .TP
 .BR SIGTERM ", " SIGINT
 Graceful shutdown.
-.SH CONFIGURATION
+
+[CONFIGURATION]
 Read from
 .I /etc/imud/imud-influxdb.conf
 (the
 .B [imud-influxdb]
 section); the keys are documented in
 .BR imud-influxdb.conf (5).
-.SH FILES
+
+[FILES]
 .TP
 .I /etc/imud/imud-influxdb.conf
 Default configuration file, installed mode 0640 owner
@@ -118,7 +110,8 @@ Default configuration file, installed mode 0640 owner
 because it can hold a plaintext InfluxDB API token.
 A file that exists but cannot be read is fatal \(em the bridge refuses to start
 rather than run on defaults.
-.SH EXAMPLES
+
+[EXAMPLES]
 Run against a local InfluxDB 1.x UDP listener:
 .PP
 .RS 4
@@ -142,11 +135,13 @@ the daemon itself is enabled by default):
 sudo systemctl enable --now imud-influxdb
 .EE
 .RE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud-influxdb.conf (5),
 .BR imud (8),
 .BR imud-signalk (8),
 .BR imud-mqtt (8),
 .BR imud.conf (5)
+
+[AUTHOR]
+Richard Simpson

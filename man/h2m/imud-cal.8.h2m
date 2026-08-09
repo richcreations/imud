@@ -1,14 +1,17 @@
-.\" GENERATED from `imud-cal --help` and man/h2m/imud-cal.8.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-CAL 8 "2026-08-05" "imud 1.8.2" "System Manager's Manual"
-.SH NAME
+.\" help2man include for imud-cal.8 — the hand-written sections.
+.\" OPTIONS is generated from `imud-cal --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-cal \- IMU calibration tool for imud
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-cal
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fB\-\-output\fR \fIPATH\fR]
 .I mode
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-cal
 performs interactive sensor calibration and writes the result to a JSON
 calibration file read by
@@ -25,46 +28,8 @@ Run
 once after installing the hardware.
 Re-run after physically repositioning the sensor or after a hard reset
 that clears non-volatile sensor registers.
-.SS "Modes:"
-.TP
-mag
-Magnetometer calibration (vessel swing, daemon stopped)
-.TP
-gyro
-Gyroscope bias capture   (hold still, daemon stopped)
-.TP
-accel
-Accelerometer 6\-position (bench, daemon stopped)
-.IP
-characterize Allan\-variance noise analysis of a stationary capture
-.IP
-(requires \fB\-\-from\fR FILE; record with [capture] enabled)
-.TP
-fit\-temp
-Gyro bias/temperature fit from a warm\-up capture
-(requires \fB\-\-from\fR FILE)
-.TP
-fit\-ra
-Check the MEKF accel measurement model against a
-rough\-water capture (requires \fB\-\-from\fR FILE).
-Reports only; writes nothing.
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud.conf\/\fP)
-.TP
-\fB\-\-output\fR PATH
-Override cal.json output path from config
-.TP
-\fB\-\-from\fR FILE
-\&.imucap capture to analyze (offline modes)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.SH MODES
+
+[MODES]
 .TP
 .B gyro
 Gyroscope bias capture.
@@ -164,7 +129,16 @@ calibration, which no noise setting can fix.
 Requires a mag calibration in cal.json \(em without heading updates the
 covariance diverges and the analysis is refused.
 Offline: never touches the sensors.
-.SH NOTES
+
+[FILES]
+.TP
+.I /etc/imud/cal.json
+Default calibration output path.
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+
+[NOTES]
 The daemon
 .RB ( imud )
 and
@@ -179,20 +153,16 @@ sudo imud-cal --config /etc/imud/imud.conf mag
 sudo systemctl start imud
 .EE
 .RE
-.SH "EXIT STATUS"
+
+[EXIT STATUS]
 .B 0
 on success,
 .B 1
 on configuration or hardware error.
-.SH FILES
-.TP
-.I /etc/imud/cal.json
-Default calibration output path.
-.TP
-.I /etc/imud/imud.conf
-Default configuration file.
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud (8),
 .BR imud.conf (5)
+
+[AUTHOR]
+Richard Simpson

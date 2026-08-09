@@ -20,6 +20,7 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -199,6 +200,60 @@ static void test_parse_cli(void)
     char *argv5[] = { "imud-test", "--config", NULL };
     EXPECT(bridge_parse_cli(2, argv5, &TBI, path, sizeof path) == -1,
            "--config w/o value → error");
+
+    /*
+     * Stream contract, shared by all five bridges through this one parser:
+     * --help is requested output (stdout, rc 1 → exit 0) and an unknown
+     * option is a diagnostic (stderr, rc -1 → exit 1).  help2man reads stdout
+     * and expects exit 0, so a usage string on the wrong stream produces a man
+     * page with an empty OPTIONS section.  See the contract note in cli.c.
+     */
+    {
+        char opath[64], epath[64], obuf[4096], ebuf[4096];
+        snprintf(opath, sizeof opath, "/tmp/imud_tb_o_%d.txt", (int)getpid());
+        snprintf(epath, sizeof epath, "/tmp/imud_tb_e_%d.txt", (int)getpid());
+
+        for (int help = 1; help >= 0; help--) {
+            char *v[] = { "imud-test", help ? (char *)"--help"
+                                            : (char *)"--bogus", NULL };
+            fflush(stdout); fflush(stderr);
+            int so = dup(STDOUT_FILENO), se = dup(STDERR_FILENO);
+            int fo = open(opath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            int fe = open(epath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fo >= 0) { dup2(fo, STDOUT_FILENO); close(fo); }
+            if (fe >= 0) { dup2(fe, STDERR_FILENO); close(fe); }
+
+            int rc = bridge_parse_cli(2, v, &TBI, path, sizeof path);
+
+            fflush(stdout); fflush(stderr);
+            dup2(so, STDOUT_FILENO); close(so);
+            dup2(se, STDERR_FILENO); close(se);
+
+            obuf[0] = ebuf[0] = '\0';
+            FILE *f;
+            if ((f = fopen(opath, "r"))) {
+                obuf[fread(obuf, 1, sizeof obuf - 1, f)] = '\0'; fclose(f);
+            }
+            if ((f = fopen(epath, "r"))) {
+                ebuf[fread(ebuf, 1, sizeof ebuf - 1, f)] = '\0'; fclose(f);
+            }
+            unlink(opath); unlink(epath);
+
+            if (help) {
+                EXPECT(rc == 1, "bridge --help → rc 1");
+                EXPECT(strstr(obuf, "Usage: imud-test") != NULL,
+                       "bridge --help writes usage to stdout");
+                EXPECT(ebuf[0] == '\0',
+                       "bridge --help writes NOTHING to stderr");
+            } else {
+                EXPECT(rc == -1, "bridge unknown option → rc -1");
+                EXPECT(strstr(ebuf, "Usage: imud-test") != NULL,
+                       "bridge error writes usage to stderr");
+                EXPECT(obuf[0] == '\0',
+                       "bridge error writes NOTHING to stdout");
+            }
+        }
+    }
 
     end(fb);
 }

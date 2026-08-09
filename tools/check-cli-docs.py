@@ -96,6 +96,29 @@ def body_of(src, name):
     return None
 
 
+def tool_section(text, tool):
+    """The part of a multi-tool document that belongs to `tool`.
+
+    Without this the check is a whole-file substring search, and a document
+    covering several tools satisfies every tool from any one of them.  That is
+    not hypothetical: spec.md passed for `imud --help` purely because
+    `[-h|--help]` appeared ~90 lines later in the imud-imutest synopsis, while
+    imud's own option block did not list it.  A checker that reports success
+    for a gap it is looking straight at is worse than no checker.
+
+    A section runs from a heading naming the tool to the next heading at the
+    same or higher level.  Documents with no such heading (man pages, the
+    website, docs/manual.md) cover one tool and are returned whole.
+    """
+    m = re.search(r"^(#{1,6})\s+`?" + re.escape(tool) + r"`?\s*$", text, re.M)
+    if not m:
+        return text
+    level = len(m.group(1))
+    rest = text[m.end():]
+    nxt = re.search(r"^#{1," + str(level) + r"}\s+\S", rest, re.M)
+    return rest[:nxt.start()] if nxt else rest
+
+
 def options_in(text):
     """Every --long-option mentioned, minus the hidden ones."""
     return {o for o in re.findall(r"--[a-z][a-z0-9-]*", text)} - HIDDEN
@@ -156,6 +179,7 @@ def main():
             if text is None:
                 rep.fail(f"{tool}: missing surface {rel}")
                 continue
+            text = tool_section(text, tool)
             # roff splits options across escape sequences (\fB\-\-config\fR),
             # so compare on a de-escaped copy.
             flat = text.replace("\\fB", "").replace("\\fR", "")

@@ -1,14 +1,17 @@
-.\" GENERATED from `imud-mon --help` and man/h2m/imud-mon.1.h2m — do not edit.
-.\" Regenerate with `make docs-man`.
-.TH IMUD\-MON 1 "2026-08-05" "imud 1.8.2" "User Commands"
-.SH NAME
+.\" help2man include for imud-mon.1 — the hand-written sections.
+.\" OPTIONS is generated from `imud-mon --help`; everything else lives here.
+.\" See tools/man-postprocess.py and `make docs-man`.
+
+[NAME]
 imud\-mon \- live monitor for imud output streams
-.SH SYNOPSIS
+
+[SYNOPSIS]
 .B imud-mon
 \&[\fB\-\-config\fR \fIPATH\fR]
 \&[\fBnmea\fR]
 \&[\fBbinary\fR]
-.SH DESCRIPTION
+
+[DESCRIPTION]
 .B imud-mon
 listens on the UDP ports configured for
 .BR imud (8)
@@ -51,26 +54,8 @@ S	Startup / settling period active
 !	IMU FIFO overflow since the last packet
 R	Fusion filter reset itself after a non-finite state
 .TE
-.SH OPTIONS
-.TP
-\fB\-\-config\fR PATH
-Config file (default: \fI\,/etc/imud/imud.conf\/\fP)
-.TP
-\fB\-\-version\fR
-Print version and exit
-.TP
-\fB\-h\fR, \fB\-\-help\fR
-Print this help and exit
-.TP
-nmea
-Monitor NMEA 0183 stream (UDP port 10110)
-.TP
-binary
-Monitor binary stream    (UDP port 10111)
-.IP
-With no stream arguments both streams are shown.
-Port numbers and multicast addresses are read from the config file.
-.SH EXAMPLES
+
+[EXAMPLES]
 Monitor both streams:
 .PP
 .RS 4
@@ -94,9 +79,11 @@ Use a non-default config (e.g.\& sim mode):
 imud-mon --config config/sim.conf
 .EE
 .RE
-.SH AUTHOR
-Richard Simpson
-.SH "SEE ALSO"
+
+[SEE ALSO]
 .BR imud (8),
 .BR imud-status (1),
 .BR imud.conf (5)
+
+[AUTHOR]
+Richard Simpson
