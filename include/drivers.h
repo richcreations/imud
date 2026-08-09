@@ -67,6 +67,13 @@ typedef struct {
     const char *name;   /* must match config [imu] driver = "..." */
     bool experimental;  /* true → print warning at startup; not validated on hardware */
 
+    /*
+     * What this part's silicon can do on SPI — datasheet facts, not operator
+     * policy. Left zeroed means spi_capable = false, so `bus = "spi"` is
+     * refused by name rather than tried and mis-framed. See include/bus.h.
+     */
+    bus_caps_t bus_caps;
+
     /* Return 0 on success, -1 on failure. */
     int (*probe)  (const imud_bus_t *bus);
     int (*reset)  (const imud_bus_t *bus);
@@ -99,6 +106,8 @@ typedef struct {
 typedef struct {
     const char *name;   /* must match config [mag] driver = "..." */
     bool experimental;  /* true → print warning at startup; not validated on hardware */
+
+    bus_caps_t bus_caps;   /* as for imu_ops_t above */
 
     int (*probe)    (const imud_bus_t *bus);
     int (*reset)    (const imud_bus_t *bus);

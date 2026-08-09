@@ -1330,6 +1330,194 @@ static void test_odr_agreement(void)
     end(fb);
 }
 
+/* ── Dual-transport agreement ────────────────────────────────────────────── */
+
+/*
+ * The point of the bus abstraction: one driver, two transports, identical
+ * device traffic.
+ *
+ * Each part is driven through its whole probe/reset/init/read sequence twice —
+ * once over I2C, once over SPI — against two register files staged the same
+ * way. Then every one of the 256 registers is compared. The register
+ * expectations are transport-independent, so any difference is a framing bug:
+ * a mis-set direction bit, a missed auto-increment, a command byte landing at
+ * reg|0x80.
+ *
+ * This is deliberately a comparison rather than a second set of hardcoded
+ * expectations. Hardcoding them twice would let both copies drift together;
+ * comparing pins them to each other.
+ */
+#define DUAL_SPI_FD 9
+
+static int reg_files_differ(uint8_t a, uint8_t b, int *first)
+{
+    int n = 0;
+    for (int r = 0; r < 256; r++) {
+        if (i2cmock_get_reg(a, (uint8_t)r) != i2cmock_get_reg(b, (uint8_t)r)) {
+            if (n == 0 && first) *first = r;
+            n++;
+        }
+    }
+    return n;
+}
+
+static void test_dual_transport_ism330dhcx(void)
+{
+    begin("test_dual_transport_ism330dhcx");
+    int fb = g_fail;
+
+    const uint8_t I2C_AT = 0x6A, SPI_AT = 0x2A;
+
+    i2cmock_reset();
+    spimock_bind(DUAL_SPI_FD, SPI_AT, 0);   /* IF_INC part: no inc mask */
+
+    /* Stage both devices identically. */
+    for (int i = 0; i < 2; i++) {
+        uint8_t at = i ? SPI_AT : I2C_AT;
+        i2cmock_set_reg(at, 0x0F, 0x6B);            /* WHO_AM_I */
+        i2cmock_set_reg(at, 0x20, 0x00);            /* OUT_TEMP_L */
+        i2cmock_set_reg(at, 0x21, 0x00);            /* OUT_TEMP_H */
+        i2cmock_set_selfclear(at, 0x12, 0x01);      /* SW_RESET self-clears */
+        i2cmock_set_reg(at, 0x3A, 3);               /* FIFO_STATUS1: 3 words */
+        i2cmock_set_reg(at, 0x3B, 0);
+        i2cmock_set_fifo_range(at, 0x78, 0x7E);
+    }
+
+    imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+                      .spi_mode = 3, .spi_inc_mask = 0, .spi_hz = 10000000 };
+
+    EXPECT(ism->probe(&ib) == 0, "i2c probe");
+    EXPECT(ism->probe(&sb) == 0, "spi probe");
+    EXPECT(ism->reset(&ib) == 0, "i2c reset");
+    EXPECT(ism->reset(&sb) == 0, "spi reset");
+
+    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    EXPECT(ism->init(&ib, &cfg) == 0, "i2c init");
+    EXPECT(ism->init(&sb, &cfg) == 0, "spi init");
+
+    int first = -1;
+    int diffs = reg_files_differ(I2C_AT, SPI_AT, &first);
+    if (diffs) {
+        printf("\n  first differing register 0x%02X: i2c=0x%02X spi=0x%02X\n",
+               first, i2cmock_get_reg(I2C_AT, (uint8_t)first),
+               i2cmock_get_reg(SPI_AT, (uint8_t)first));
+    }
+    EXPECT(diffs == 0, "init leaves identical registers on both transports");
+
+    /*
+     * And the read path: same FIFO bytes in, same samples out.
+     *
+     * The temperature word goes FIRST on purpose. last_temp is driver state
+     * that persists across drains (the ISM batches temperature an order of
+     * magnitude below accel/gyro), so with temperature last, the I2C pass
+     * would emit its sample before seeing it and the SPI pass would inherit
+     * what the I2C pass stored — a difference in call order, not transport.
+     * Feeding it first makes temp_c a function of the bytes alone, so it can
+     * be compared like everything else.
+     */
+    static const struct { uint8_t tag; int16_t x, y, z; } words[3] = {
+        { 0x03, 1234, 0, 0 },         /* temperature */
+        { 0x01, 100, -200, 300 },     /* gyro */
+        { 0x02, -400, 500, -600 },    /* accel */
+    };
+    for (int i = 0; i < 2; i++) {
+        uint8_t at = i ? SPI_AT : I2C_AT;
+        for (int w = 0; w < 3; w++) {
+            uint8_t b[7] = {
+                (uint8_t)(words[w].tag << 3),
+                (uint8_t)(words[w].x & 0xFF), (uint8_t)((words[w].x >> 8) & 0xFF),
+                (uint8_t)(words[w].y & 0xFF), (uint8_t)((words[w].y >> 8) & 0xFF),
+                (uint8_t)(words[w].z & 0xFF), (uint8_t)((words[w].z >> 8) & 0xFF),
+            };
+            i2cmock_fifo_push(at, b, 7);
+        }
+    }
+
+    imu_sample_t ibuf[8] = { 0 }, sbuf[8] = { 0 };
+    int in = 0, sn = 0;
+    EXPECT(ism->read(&ib, ibuf, 8, &in) == 0, "i2c read");
+    EXPECT(ism->read(&sb, sbuf, 8, &sn) == 0, "spi read");
+    EXPECT(in == sn && in > 0, "both transports decoded the same sample count");
+
+    /*
+     * The fields a DRIVER fills, not the whole struct. accel_raw/field_raw are
+     * written later by imu.c's calibration stage and are untouched here, and
+     * read_done_ns is a CLOCK_REALTIME reading — comparing either would be
+     * comparing noise. seq is excluded for the same reason as last_temp above:
+     * it is a counter that keeps climbing across both calls.
+     */
+    bool same = (in == sn);
+    for (int i = 0; same && i < in; i++)
+        same = memcmp(ibuf[i].accel, sbuf[i].accel, sizeof ibuf[i].accel) == 0
+            && memcmp(ibuf[i].gyro,  sbuf[i].gyro,  sizeof ibuf[i].gyro)  == 0
+            && ibuf[i].temp_c  == sbuf[i].temp_c
+            && ibuf[i].chip_ts == sbuf[i].chip_ts;
+    EXPECT(same, "both transports decoded identical accel/gyro/temp/chip_ts");
+
+    end(fb);
+}
+
+static void test_dual_transport_mmc5983ma(void)
+{
+    begin("test_dual_transport_mmc5983ma");
+    int fb = g_fail;
+
+    const uint8_t I2C_AT = 0x30, SPI_AT = 0x31;
+
+    i2cmock_reset();
+    spimock_bind(DUAL_SPI_FD, SPI_AT, 0);
+
+    for (int i = 0; i < 2; i++) {
+        uint8_t at = i ? SPI_AT : I2C_AT;
+        i2cmock_set_reg(at, 0x2F, 0x30);        /* PRODUCT_ID */
+        i2cmock_set_reg(at, 0x08, 0x01);        /* STATUS: Meas_M_Done */
+        /* 18-bit X/Y/Z output, distinct per axis. */
+        const uint8_t raw[7] = { 0x91, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x55 };
+        i2cmock_set_regs(at, 0x00, raw, 7);
+    }
+
+    imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+                      .spi_mode = 3, .spi_inc_mask = 0, .spi_hz = 10000000 };
+
+    EXPECT(mmc->probe(&ib) == 0, "i2c probe");
+    EXPECT(mmc->probe(&sb) == 0, "spi probe");
+
+    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    EXPECT(mmc->init(&ib, &cfg) == 0, "i2c init");
+    EXPECT(mmc->init(&sb, &cfg) == 0, "spi init");
+
+    int first = -1;
+    int diffs = reg_files_differ(I2C_AT, SPI_AT, &first);
+    if (diffs) {
+        printf("\n  first differing register 0x%02X: i2c=0x%02X spi=0x%02X\n",
+               first, i2cmock_get_reg(I2C_AT, (uint8_t)first),
+               i2cmock_get_reg(SPI_AT, (uint8_t)first));
+    }
+    EXPECT(diffs == 0, "init leaves identical registers on both transports");
+
+    /* Re-arm the data-ready flag both sides cleared, then read. */
+    i2cmock_set_reg(I2C_AT, 0x08, 0x01);
+    i2cmock_set_reg(SPI_AT, 0x08, 0x01);
+    mag_sample_t im = { 0 }, sm = { 0 };
+    EXPECT(mmc->read(&ib, &im) == 0, "i2c read");
+    EXPECT(mmc->read(&sb, &sm) == 0, "spi read");
+    /* field and valid only: field_raw is imu.c's to fill and wall_ns is a
+     * clock reading, so neither says anything about the transport. */
+    EXPECT(memcmp(im.field, sm.field, sizeof im.field) == 0 &&
+           im.valid == sm.valid,
+           "both transports decoded an identical field vector");
+
+    /* set_reset is a write-only path — it must reach the same register. */
+    EXPECT(mmc->set_reset(&ib) == 0, "i2c set_reset");
+    EXPECT(mmc->set_reset(&sb) == 0, "spi set_reset");
+    EXPECT(i2cmock_get_reg(I2C_AT, 0x09) == i2cmock_get_reg(SPI_AT, 0x09),
+           "set_reset wrote the same CTRL0 on both transports");
+
+    end(fb);
+}
+
 /* ── SPI transport ───────────────────────────────────────────────────────── */
 
 /*
@@ -1525,6 +1713,9 @@ int main(void)
     test_driver_resets();
     test_ak099_init_modes();
     test_odr_agreement();
+
+    test_dual_transport_ism330dhcx();
+    test_dual_transport_mmc5983ma();
 
     test_spi_framing();
     test_spi_inc_mask();

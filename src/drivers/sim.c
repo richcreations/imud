@@ -473,6 +473,11 @@ static int sim_actual_odr_hz(int requested) { return requested; }
 const imu_ops_t sim_imu_ops = {
     .name               = "sim",
     .experimental       = false,
+    /* The sim driver never touches the handle, so it imposes no transport
+     * constraint of its own. spi_dev must still name a real spidev node:
+     * bus_open configures mode and speed on it before any driver runs. */
+    .bus_caps           = { .spi_capable = true, .spi_mode = 3,
+                            .spi_max_hz = 10000000 },
     .probe              = sim_imu_probe,
     .reset              = sim_imu_reset,
     .init               = sim_imu_init,
@@ -518,6 +523,8 @@ static int sim_mag_read(const imud_bus_t *bus, mag_sample_t *out)
 const mag_ops_t sim_mag_ops = {
     .name             = "sim",
     .experimental     = false,
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000 },   /* see sim_imu_ops */
     .probe            = sim_mag_probe,
     .reset            = sim_mag_reset,
     .init             = sim_mag_init,

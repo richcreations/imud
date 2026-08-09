@@ -222,6 +222,13 @@ static int mmc_set_reset(const imud_bus_t *bus)
 const mag_ops_t mmc5983ma_ops = {
     .name             = "mmc5983ma",
     .experimental     = false,
+    /* Rev A pp.4-7: 10 MHz, SCK idle high and captured on the rising edge —
+     * mode 3 — and multi-byte transfers add 8-clock blocks, so no
+     * auto-increment bit. The command byte's address field is only six bits
+     * wide (bit 6 is don't-care); every register here is <= 0x2F, so reg|0x80
+     * addresses them all correctly. */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = mmc_probe,
     .reset            = mmc_reset,
     .init             = mmc_init,

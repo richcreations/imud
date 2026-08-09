@@ -258,6 +258,70 @@ static void test_validated_not_experimental(void)
     end(fb);
 }
 
+/*
+ * Which parts declare SPI, and — just as important — which do not.
+ *
+ * The exclusions are the interesting half. ak09916 and ak8963 have no SPI
+ * port at all; icm20948 and mpu925x reach their on-die AKM compass through
+ * I2C *bypass*, which puts the compass die on the host I2C bus and is
+ * therefore meaningless from a SPI host (reaching it needs the aux-I2C-master
+ * path, which is not implemented). Pinning that here means the reasoning is
+ * enforced rather than just written down in a comment somewhere.
+ *
+ * A driver that declares SPI must also declare a mode and a maximum clock:
+ * bus_open has nothing to program the bus with otherwise.
+ */
+static void test_spi_capability_declarations(void)
+{
+    begin("test_spi_capability_declarations");
+    int fb = g_fail;
+
+    static const struct { const char *name; bool spi; } imu_spi[] = {
+        { "ism330dhcx", true  },
+        { "lsm6dso",    false },   /* ROADMAP: same family, untested on SPI */
+        { "lsm6dsox",   false },
+        { "icm42688p",  false },
+        { "icm20948",   false },   /* AKM compass sits behind the I2C bypass */
+        { "mpu9250",    false },   /* ditto */
+        { "mpu9255",    false },
+        { "sim",        true  },   /* never touches the handle */
+    };
+    static const struct { const char *name; bool spi; } mag_spi[] = {
+        { "mmc5983ma",  true  },
+        { "ak09916",    false },   /* no SPI port on the part */
+        { "ak8963",     false },   /* no SPI port on the part */
+        { "lis3mdl",    false },   /* ROADMAP: needs the 0x40 MS bit */
+        { "lis2mdl",    false },
+        { "sim",        true  },
+    };
+    char msg[96];
+
+    for (unsigned i = 0; i < sizeof imu_spi / sizeof imu_spi[0]; i++) {
+        const imu_ops_t *o = imu_driver_find(imu_spi[i].name);
+        snprintf(msg, sizeof msg, "%s: spi_capable == %s",
+                 imu_spi[i].name, imu_spi[i].spi ? "true" : "false");
+        EXPECT(o && o->bus_caps.spi_capable == imu_spi[i].spi, msg);
+        if (o && o->bus_caps.spi_capable) {
+            snprintf(msg, sizeof msg, "%s: declares a SPI mode and clock",
+                     imu_spi[i].name);
+            EXPECT(o->bus_caps.spi_mode <= 3 && o->bus_caps.spi_max_hz > 0, msg);
+        }
+    }
+    for (unsigned i = 0; i < sizeof mag_spi / sizeof mag_spi[0]; i++) {
+        const mag_ops_t *o = mag_driver_find(mag_spi[i].name);
+        snprintf(msg, sizeof msg, "%s: spi_capable == %s",
+                 mag_spi[i].name, mag_spi[i].spi ? "true" : "false");
+        EXPECT(o && o->bus_caps.spi_capable == mag_spi[i].spi, msg);
+        if (o && o->bus_caps.spi_capable) {
+            snprintf(msg, sizeof msg, "%s: declares a SPI mode and clock",
+                     mag_spi[i].name);
+            EXPECT(o->bus_caps.spi_mode <= 3 && o->bus_caps.spi_max_hz > 0, msg);
+        }
+    }
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver registry tests ===");
@@ -267,6 +331,7 @@ int main(void)
     test_rate_ladder_covers_registry();
     test_unknown_lookups();
     test_validated_not_experimental();
+    test_spi_capability_declarations();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

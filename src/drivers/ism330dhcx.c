@@ -355,6 +355,11 @@ static int ism_read(const imud_bus_t *bus,
 const imu_ops_t ism330dhcx_ops = {
     .name             = "ism330dhcx",
     .experimental     = false,
+    /* DS13012 Rev 7 §5.1.2 (protocol, mode 3) and §4.4.1 Table 5 (10 MHz).
+     * No auto-increment bit: multi-byte transfers step the address when
+     * CTRL3_C's IF_INC is set, which ism_init already does (0x44). */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = ism_probe,
     .reset            = ism_reset,
     .init             = ism_init,

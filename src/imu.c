@@ -1221,11 +1221,11 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     bus_spec_t spec;
 
     config_imu_bus_spec(cfg, &spec);
-    if (bus_open(&ctx->imu_bus, &spec, NULL, "imu") < 0)
+    if (bus_open(&ctx->imu_bus, &spec, &ctx->imu_ops->bus_caps, "imu") < 0)
         goto fail;
 
     config_mag_bus_spec(cfg, &spec);
-    if (bus_open(&ctx->mag_bus, &spec, NULL, "mag") < 0)
+    if (bus_open(&ctx->mag_bus, &spec, &ctx->mag_ops->bus_caps, "mag") < 0)
         goto fail;
 
     /* ── Build hw config structs ─────────────────────────────────────────── */

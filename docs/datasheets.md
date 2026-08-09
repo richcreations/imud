@@ -7,18 +7,24 @@ search the part number on the linked page if a deep link has rotted.
 
 ## Supported parts (in-tree drivers)
 
-| Part | Role | Driver | Manufacturer page |
-|---|---|---|---|
-| ST ISM330DHCX | IMU (accel+gyro), reference | `ism330dhcx` | <https://www.st.com/en/mems-and-sensors/ism330dhcx.html> |
-| Memsic MMC5983MA | magnetometer, reference | `mmc5983ma` | <https://www.memsic.com/> (search MMC5983MA) |
-| TDK ICM-42688-P | IMU, experimental | `icm42688p` | <https://invensense.tdk.com/products/motion-tracking/6-axis/icm-42688-p/> |
-| TDK ICM-20948 | 9-axis IMU, experimental | `icm20948` | <https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/> |
-| AKM AK09916 | magnetometer (inside ICM-20948), experimental | `ak09916` | documented in the TDK ICM-20948 datasheet above |
-| ST LSM6DSO / LSM6DSOX | IMU, experimental | `lsm6dso` | <https://www.st.com/en/mems-and-sensors/lsm6dso.html> |
-| TDK MPU-9250 / MPU-9255 | 9-axis IMU, experimental (NRND) | `mpu9250`, `mpu9255` | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
-| AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
-| ST LIS2MDL | magnetometer, experimental | `lis2mdl` | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |
-| ST LIS3MDL | magnetometer, experimental | `lis3mdl` | <https://www.st.com/en/mems-and-sensors/lis3mdl.html> |
+| Part | Role | Driver | Bus | Manufacturer page |
+|---|---|---|---|---|
+| ST ISM330DHCX | IMU (accel+gyro), reference | `ism330dhcx` | I²C + SPI | <https://www.st.com/en/mems-and-sensors/ism330dhcx.html> |
+| Memsic MMC5983MA | magnetometer, reference | `mmc5983ma` | I²C + SPI | <https://www.memsic.com/> (search MMC5983MA) |
+| TDK ICM-42688-P | IMU, experimental | `icm42688p` | I²C | <https://invensense.tdk.com/products/motion-tracking/6-axis/icm-42688-p/> |
+| TDK ICM-20948 | 9-axis IMU, experimental | `icm20948` | I²C | <https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/> |
+| AKM AK09916 | magnetometer (inside ICM-20948), experimental | `ak09916` | I²C only | documented in the TDK ICM-20948 datasheet above |
+| ST LSM6DSO / LSM6DSOX | IMU, experimental | `lsm6dso` | I²C | <https://www.st.com/en/mems-and-sensors/lsm6dso.html> |
+| TDK MPU-9250 / MPU-9255 | 9-axis IMU, experimental (NRND) | `mpu9250`, `mpu9255` | I²C | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
+| AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | I²C only | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
+| ST LIS2MDL | magnetometer, experimental | `lis2mdl` | I²C | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |
+| ST LIS3MDL | magnetometer, experimental | `lis3mdl` | I²C | <https://www.st.com/en/mems-and-sensors/lis3mdl.html> |
+
+The **Bus** column is what `[imu] bus` / `[mag] bus` accepts today, not what
+the silicon can do. "I²C only" is a property of the part — the AKM compasses
+have no SPI port, and inside a 9-axis IMU they hang off that chip's auxiliary
+I²C bus. A plain "I²C" means the part has a SPI port that imud does not drive
+yet; see docs/manual.md §5.
 
 (The `sim` driver is synthetic and has no hardware.)
 

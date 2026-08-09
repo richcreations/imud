@@ -135,12 +135,12 @@ static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
  * bus_open leaves the handle closed on failure, so bus_close() stays safe.
  */
 static int open_sensor_bus(const imud_config_t *cfg, bool is_imu,
-                           imud_bus_t *bus)
+                           const bus_caps_t *caps, imud_bus_t *bus)
 {
     bus_spec_t spec;
     if (is_imu) config_imu_bus_spec(cfg, &spec);
     else        config_mag_bus_spec(cfg, &spec);
-    return bus_open(bus, &spec, NULL, is_imu ? "imu" : "mag");
+    return bus_open(bus, &spec, caps, is_imu ? "imu" : "mag");
 }
 
 /* ── IMU FIFO drain helper ──────────────────────────────────────────────── */
@@ -197,7 +197,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, false, &bus) < 0 &&
+    if (open_sensor_bus(cfg, false, &ops->bus_caps, &bus) < 0 &&
         strcmp(cfg->mag_driver, "sim") != 0) return -1;
 
     /* Resolved, as the daemon does — imu_cfg_t/mag_cfg_t take the rate the
@@ -436,7 +436,7 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, true, &bus) < 0 &&
+    if (open_sensor_bus(cfg, true, &ops->bus_caps, &bus) < 0 &&
         strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {
@@ -538,7 +538,7 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, true, &bus) < 0 &&
+    if (open_sensor_bus(cfg, true, &ops->bus_caps, &bus) < 0 &&
         strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {

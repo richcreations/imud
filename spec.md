@@ -198,19 +198,51 @@ The `ism_reader` and `mag_reader` threads call through a chip operations struct
 rather than reading registers directly. Swapping hardware means selecting a
 different driver in config — the rest of the daemon is unchanged.
 
+Every op takes an `imud_bus_t` — the transport handle. It carries the
+descriptor, the transport kind, and whatever that transport needs to address
+the part: the 7-bit slave address on I²C, the resolved clock and framing bits
+on SPI. A driver's register logic is therefore written once and runs on either
+bus. The IMU and the magnetometer hold one handle each, never a shared one, so
+they can sit on different buses.
+
+```c
+typedef enum { BUS_I2C = 0, BUS_SPI = 1 } bus_kind_t;
+
+typedef struct {
+    bus_kind_t kind;
+    int        fd;              /* < 0 = not open */
+    uint8_t    i2c_addr;        /* BUS_I2C: 7-bit slave address */
+    uint8_t    spi_mode;        /* BUS_SPI: 0..3 */
+    uint8_t    spi_inc_mask;    /* BUS_SPI: multi-byte auto-increment bits */
+    uint32_t   spi_hz;          /* BUS_SPI: resolved clock */
+} imud_bus_t;
+```
+
+On SPI the command byte carries the direction in its top bit — 1 read, 0 write
+— and the register address in the low seven; a read is a command transfer
+followed by a data transfer inside one `SPI_IOC_MESSAGE`, so chip-select stays
+asserted across both. Parts differ in whether a multi-byte read needs an
+explicit auto-increment bit, which is why `spi_inc_mask` is per-driver.
+
 ### IMU Driver Interface
 
 ```c
 typedef struct {
     const char *name;               /* matches config [imu] driver = "..." */
 
-    int (*probe)    (int fd, uint8_t addr);
-    int (*reset)    (int fd, uint8_t addr);
-    int (*init)     (int fd, uint8_t addr, const imu_cfg_t *cfg);
+    bool  experimental;             /* warn at startup; not validated on silicon */
+
+    /* What this part's silicon can do on SPI — datasheet facts. Zeroed means
+       spi_capable = false, and `bus = "spi"` is then refused by name. */
+    bus_caps_t bus_caps;
+
+    int (*probe)    (const imud_bus_t *bus);
+    int (*reset)    (const imud_bus_t *bus);
+    int (*init)     (const imud_bus_t *bus, const imu_cfg_t *cfg);
 
     /* Drain FIFO or read data-ready registers.
        Returns samples as calibrated SI (m/s², rad/s). Fills *n. */
-    int (*read)     (int fd, uint8_t addr,
+    int (*read)     (const imud_bus_t *bus,
                      imu_sample_t *buf, int max, int *n);
 
     bool  has_fifo;                 /* false → single-sample DRDY read per wake */
@@ -232,11 +264,14 @@ typedef struct {
 typedef struct {
     const char *name;               /* matches config [mag] driver = "..." */
 
-    int (*probe)    (int fd, uint8_t addr);
-    int (*reset)    (int fd, uint8_t addr);
-    int (*init)     (int fd, uint8_t addr, const mag_cfg_t *cfg);
-    int (*read)     (int fd, uint8_t addr, mag_sample_t *out);
-    int (*set_reset)(int fd, uint8_t addr); /* NULL if chip has no degauss coil */
+    bool  experimental;
+    bus_caps_t bus_caps;            /* as imu_ops_t */
+
+    int (*probe)    (const imud_bus_t *bus);
+    int (*reset)    (const imud_bus_t *bus);
+    int (*init)     (const imud_bus_t *bus, const mag_cfg_t *cfg);
+    int (*read)     (const imud_bus_t *bus, mag_sample_t *out);
+    int (*set_reset)(const imud_bus_t *bus); /* NULL if chip has no degauss coil */
 
     bool  has_interrupt;
     bool  has_set_reset;
@@ -252,7 +287,7 @@ the configured name at startup and fatals if no match is found.
 
 ```c
 static const imu_ops_t *imu_registry[] = {
-    &ism330dhcx_ops,   /* ISM330DHCX — reference hardware */
+    &ism330dhcx_ops,   /* ISM330DHCX — reference hardware  [I2C + SPI] */
     &icm20948_ops,     /* ICM-20948 — alternate IMU        [experimental] */
     &icm42688p_ops,    /* ICM-42688-P                      [experimental] */
     &lsm6dso_ops,      /* LSM6DSO                          [experimental] */
@@ -264,7 +299,7 @@ static const imu_ops_t *imu_registry[] = {
 };
 
 static const mag_ops_t *mag_registry[] = {
-    &mmc5983ma_ops,    /* MMC5983MA — reference hardware */
+    &mmc5983ma_ops,    /* MMC5983MA — reference hardware   [I2C + SPI] */
     &ak09916_ops,      /* AK09916 — compass on ICM-20948   [experimental] */
     &ak8963_ops,       /* AK8963 — compass on MPU-925x     [experimental] */
     &lis3mdl_ops,      /* LIS3MDL                          [experimental] */

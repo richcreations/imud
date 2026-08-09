@@ -50,7 +50,7 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
     bus_spec_t spec;
 
     config_imu_bus_spec(cfg, &spec);
-    if (bus_open(&ibus, &spec, NULL, "imu") < 0) {
+    if (bus_open(&ibus, &spec, &imu->bus_caps, "imu") < 0) {
         snprintf(errbuf, errbufsz, "cannot open %s for the IMU", spec.node);
         return -1;
     }
@@ -60,7 +60,7 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
     bus_init(&mbus);
     if (mag) {
         config_mag_bus_spec(cfg, &spec);
-        if (bus_open(&mbus, &spec, NULL, "mag") < 0) {
+        if (bus_open(&mbus, &spec, &mag->bus_caps, "mag") < 0) {
             snprintf(errbuf, errbufsz, "cannot open %s for the magnetometer",
                      spec.node);
             bus_close(&ibus);
