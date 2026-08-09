@@ -75,13 +75,75 @@ Standard gravity `G_MS2` $=g=9.80665\,\mathrm{m\,s^{-2}}$ (`fusion.c:42`).
 accelerometer's *specific force* at rest reads $-g$ on Z; the filter works
 with the **gravity direction** $z_a=-\widehat{a}_b$ (§4.7).
 
-**As-implemented.** All filter state is single precision (`float`);
-calibration fits and WMM are double precision. The quaternion is
-renormalized (`q_normalize`, `fusion.c:169`) after every multiplicative
-update, guarding unit-norm drift from float round-off.
+**As-implemented.** MEKF state — quaternion, bias, wave acceleration, and the
+covariance $P$ — is single precision (`float`); calibration fits and WMM are
+double precision. The quaternion is renormalized (`q_normalize`,
+`fusion.c:169`) after every multiplicative update, guarding unit-norm drift
+from float round-off, and $P$ uses the Joseph form for the same reason
+(§4.5): the simple $(I-KH)P$ form slowly loses symmetry and
+positive-definiteness at 833 Hz over multi-day runs.
+
+**Where that split stops holding, and why the accumulators are double.** The
+rule is not "filter state is float" but *nothing that accumulates over an
+unbounded number of steps is float*. Every leaky integrator and exponentially
+weighted statistic here advances by $\alpha\,\delta$ with
+$\alpha = \Delta t/\tau$, and that gain shrinks with the sample rate **and**
+with the time constant. Once $\alpha$ falls below half a float32 ULP of the
+state it is being added to, the update rounds to an exact no-op — not a
+gradual loss, a full stop — and $\varepsilon_{32} = 1.19\times10^{-7}$ is
+reachable from `imud.conf`: at 32 kHz a 1200 s sea-state window gives
+$\alpha = 2.6\times10^{-8}$.
+
+Measured against a double-precision reference of the same arithmetic, both fed
+identical float-rounded inputs so only accumulator width differs:
+
+```
+rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+    -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_PRECISION" && ./test_fusion
+```
+
+| $\Delta t/\tau$ | configuration | Hs error | $T_z$ error |
+|---|---|---|---|
+| $1.0\times10^{-5}$ | 833 Hz / 120 s **(default)** | 0.000 % | 0.000 % |
+| $2.1\times10^{-7}$ | 8 kHz / 600 s | 0.128 % | 0.491 % |
+| $5.2\times10^{-8}$ | 32 kHz / 600 s | 1.823 % | 0.982 % |
+| $2.6\times10^{-8}$ | 32 kHz / 1200 s | **17.995 %** | **6.865 %** |
+
+Heave, on its own $\tau$ axis, failed harder. Its leak is what bounds the
+drift of a double integration of accelerometer noise; when the leak becomes a
+no-op the estimator is a *plain* double integrator:
+
+| $\Delta t/\tau$ | configuration | recovered amplitude error |
+|---|---|---|
+| $2.6\times10^{-6}$ | 32 kHz / 12 s **(default)** | 0.225 % |
+| $5.2\times10^{-7}$ | 32 kHz / 60 s | 1.225 % |
+| $1.0\times10^{-7}$ | 32 kHz / 300 s | 7.263 % |
+| $3.5\times10^{-8}$ | 32 kHz / 900 s | **6 543 975 %** — 253 m of "heave" |
+
+Both estimators' accumulators are therefore `double`
+(`seastate_t`'s six mean/variance pairs, `heave_t`'s `vel`/`disp`/`hp_y`),
+along with their gains and heave's gravity subtraction — a cancellation of
+$9.8$ against $9.8$ down to a signal three orders smaller. That moves the
+cliff to $\Delta t/\tau \sim 10^{-16}$, which no rate and window reach. Every
+cell above reads 0.000 % after. Inputs, outputs and the wire stay float:
+sensor resolution is coarser than float32 either way, so widening those would
+flatter the measurement without changing the hardware.
+
+Independent confirmation from the default-on sweeps: `test_seastate_across_rates`
+was flat at 1.015 % Hs from 100 Hz to 16 kHz and ticked up to 1.046 % at
+32 kHz. §4.7.2 recorded that endpoint as float32 accumulation. It is now
+1.016 % — the plateau simply continues, and the uptick is gone.
+
+One elapsed-time gain is worth naming separately. `mekf_ema_alpha`
+($\alpha = 1 - e^{-\Delta t/\tau}$, exact for any feed rate) must be computed
+with `expm1f`: spelled `1.0f - expf(-x)` it subtracts two numbers differing by
+less than an ULP of 1.0, quantising the answer to multiples of
+$5.96\times10^{-8}$ — 2.7 % error at 32 kHz against the 30 s health constant,
+with only 17 representable values.
 
 **Source:** Solà 2017 *(code comment)*; Shuster 1993 for quaternion
-conventions *(canonical)*.
+conventions *(canonical)*; Higham 2002 for the $1-e^{-x}$ cancellation
+*(canonical)*. Measurements from `-DBENCH_SWEEP_PRECISION`.
 
 ---
 
@@ -1612,6 +1674,11 @@ wish to verify against a specific edition/page are flagged **[verify]**.
     in `wmm.c` via WMM Technical Note 28.)*
 26. **NIMA TR8350.2**, *Department of Defense World Geodetic System 1984*,
     3rd ed. *(WGS-84 ellipsoid constants.)*
+27. **N. J. Higham**, *Accuracy and Stability of Numerical Algorithms*,
+    2nd ed., SIAM, 2002. *(Cancellation in expressions of the form
+    $1-e^{-x}$, and why an accumulator's width is set by the smallest
+    increment it must still register rather than by the precision of its
+    output.)* **[verify]** — section numbers not checked against a copy.
 
 ---
 
