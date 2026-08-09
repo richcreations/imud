@@ -117,6 +117,55 @@ CASES = [
      sub(r"^usr/share/man/man1/imud-mon\.1\.gz$",
          "usr/share/man/man1/imud-mon.1.gz\nusr/share/man/man9/imud-zzz.9.gz"),
      "imud-zzz"),
+
+    # ── The registry describing a parser that no longer exists ───────────────
+    # Every generated surface is rendered from docs/config-keys.toml, so a
+    # registry that has drifted from apply_kv() does not fail — it publishes.
+    # These are the ways it can drift.
+
+    # The field a key writes was renamed in the registry but not in the code
+    # (or, just as likely, the other way round).
+    ("check-docs", "docs/config-keys.toml",
+     sub(r'fields = \["imu_odr_hz"\]', 'fields = ["imu_odr_zzz"]'),
+     "imu_odr_zzz"),
+
+    # The macro drifted: NEED_POS_INT rejects zero, NEED_INT accepts it, and
+    # the generated defaults test picks its comparison from this.
+    ("check-docs", "docs/config-keys.toml",
+     sub(r'macros = \["NEED_POS_INT"\]', 'macros = ["NEED_INT"]'),
+     "odr_hz"),
+
+    # A key the parser gained and nobody documented.
+    ("check-docs", "src/config.c",
+     sub(r'(else if \(strcmp\(key, "fifo_wm"\)  == 0\) NEED_INT\(cfg->imu_fifo_wm\);)',
+         r'\1\n        else if (strcmp(key, "zzz_new")  == 0) '
+         r'NEED_INT(cfg->imu_accel_g);'),
+     "zzz_new"),
+
+    # A default restated outside a generated region — the one place a
+    # documented default can still rot, and where one had.
+    ("check-docs", "man/man5/imud-prometheus.conf.5",
+     sub(r"^\.RI \(string,\\ default:\\ \\\(dqwarn\\\(dq\)$",
+         r".RI (string,\\ default:\\ info)"),
+     "level restates its default"),
+
+    # A [hot] key config_apply_hot() does not copy: documented as live, and
+    # silently ignored on every SIGHUP.
+    ("check-docs", "src/config.c",
+     sub(r"^    dst->stream_rate_hz   = src->stream_rate_hz;\n", ""),
+     "[stream] rate_hz"),
+
+    # ...and the reverse, a field copied live that the page calls [restart].
+    ("check-docs", "src/config.c",
+     sub(r"^(    dst->log_stats_hz     = src->log_stats_hz;)$",
+         r"\1\n    dst->nmea_dest_port   = src->nmea_dest_port;"),
+     "[nmea] dest_port"),
+
+    # The generated defaults test going stale against the registry.  It is
+    # committed, so nothing rebuilds it on checkout — only this notices.
+    ("gen-config-docs", "test/test_config_defaults.gen.c",
+     sub(r"^CK_INT \(c\.imu_odr_hz,       833,", "CK_INT (c.imu_odr_hz,       999,"),
+     "test_config_defaults.gen.c is stale"),
 ]
 
 

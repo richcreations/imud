@@ -81,7 +81,8 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 
 | Checker | What it will not let you break |
 |---|---|
-| `check-docs` | every key `src/config.c` parses appears in its template, man page and manual |
+| `check-docs` | every key `src/config.c` parses appears in its template, man page and manual; and `docs/config-keys.toml` names the same keys, fields and `NEED_*` macros `apply_kv()` really uses |
+| `check-config-docs` | the man5 entries, the manual tables and `test/test_config_defaults.gen.c` are what the registry renders — one key, one home, four surfaces |
 | `check-cli-docs` | every flag a parser accepts is in that tool's `--help` **and** its man page, manual, spec and the website |
 | `check-packet` | `spec.md`'s offset table matches `imu_packet_t` — offset, size, type and the wire version |
 | `check-drivers` | the driver tables and every documented rate/range list match the `*_ops` initialisers |
@@ -103,13 +104,16 @@ What is still on you, because no checker covers it:
 - **`NEWS`**, and the Debian changelogs under `packaging/`. Release notes are
   written for an operator deciding whether an upgrade will bite them; nothing
   can generate that. CI only checks the version numbers agree.
-- **A `[hot]` key** must also reach `config_apply_hot()` in `src/config.c`,
-  `HOT_FIELDS()` in `test/test_config.c` (the two lists are independent on
-  purpose and `test_apply_hot_partition` fails if they disagree), and
-  `imu_ctx_update_config()` in `src/imu.c` if the fusion thread reads it.
-- **A new config key** needs a default assertion and a `fill_distinct()` line
-  in `test/test_config.c` — that helper is written from the struct, and
-  without the line the partition test cannot see the field at all.
+- **A `[hot]` key** must also reach `HOT_FIELDS()` in `test/test_config.c` (the
+  two lists are independent on purpose and `test_apply_hot_partition` fails if
+  they disagree), and `imu_ctx_update_config()` in `src/imu.c` if the fusion
+  thread reads it. That it reaches `config_apply_hot()` at all, and that the
+  man page marks it the same way, `check-docs` now proves.
+- **A new config key** needs a `fill_distinct()` line in `test/test_config.c` —
+  that helper is written from the struct, and without the line the partition
+  test cannot see the field at all. Its documented default no longer needs a
+  hand-written assertion: describe the key once in `docs/config-keys.toml`, run
+  `make docs-config`, and commit what it writes.
 - **Installed docs must be self-contained.** Anything a shipped document links
   to has to ship too, and the doc tree mirrors the source tree so one relative
   path is correct in both. `check-links` enforces both, but deciding whether a

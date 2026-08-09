@@ -67,7 +67,63 @@ static const char *write_tmpconf(int id, const char *content)
 
 /* ── Tests ──────────────────────────────────────────────────────────────── */
 
-/* config_defaults() spot-checks: types and values from spec §9. */
+/*
+ * Every documented default, asserted against config_defaults().
+ *
+ * The list is generated from docs/config-keys.toml — the registry the man5
+ * pages and docs/manual.md are also rendered from — so the right-hand side of
+ * each line is literally the value the manual prints for that key.  Rendering
+ * three documents from one registry proves they agree with each other; only
+ * this proves they agree with the code.
+ *
+ * Generated C rather than a key -> offsetof table because a renamed or
+ * retyped field then becomes a compile error naming the key, with no runtime
+ * type dispatch and no float/double aliasing hazard — the struct mixes both.
+ * And compiled rather than a Python scan of config.c because config_defaults()
+ * opens with memset(cfg, 0, sizeof *cfg): a DELETED assignment leaves a
+ * plausible zero, which a text scan has no way to notice.
+ *
+ * The macros are here, not in the generated file, so the tolerances stay
+ * hand-written and arguable.  Floats and doubles get a relative epsilon: every
+ * default today is exactly representable, but pinning that would make the
+ * first inexact one (0.1f) fail for a reason that has nothing to do with docs.
+ */
+#define CK_INT(f, want, key)   EXPECT((f) == (want), key " default")
+#define CK_BOOL(f, want, key)  EXPECT((f) == (want), key " default")
+#define CK_ENUM(f, want, key)  EXPECT((f) == (want), key " default")
+#define CK_STR(f, want, key)   EXPECT_STR((f), (want), key " default")
+#define CK_FLT(f, want, key) \
+    EXPECT_NEAR_D((f), (want), 1e-6 + 1e-6 * fabs((double)(want)), key " default")
+#define CK_DBL(f, want, key) \
+    EXPECT_NEAR_D((f), (want), 1e-12 + 1e-9 * fabs((double)(want)), key " default")
+
+static void test_defaults_registry(void)
+{
+    begin_test("test_defaults_registry");
+    int fb = g_fail;
+    imud_config_t c;
+    config_defaults(&c);
+
+#include "test_config_defaults.gen.c"
+
+    end_test(fb);
+}
+
+#undef CK_INT
+#undef CK_BOOL
+#undef CK_ENUM
+#undef CK_STR
+#undef CK_FLT
+#undef CK_DBL
+
+/*
+ * config_defaults() spot-checks: types and values from spec §9.
+ *
+ * Kept alongside the generated block above, which subsumes them as coverage:
+ * these carry the REASONING — why nmea is off by default, why mag_yaw_only is
+ * the marine choice, what a spi_speed_hz of 0 means — and a generated line
+ * cannot.
+ */
 static void test_defaults_values(void)
 {
     begin_test("test_defaults_values");
@@ -119,6 +175,39 @@ static void test_defaults_values(void)
     EXPECT_STR(cfg.log_level, "warn",                 "log_level default");
     EXPECT(cfg.log_stats_hz == 1,                     "log_stats_hz default");
     EXPECT(cfg.publish_heave == true,                 "publish_heave default true");
+    end_test(fb);
+}
+
+/*
+ * [mount]'s three keys, which the generated block above cannot reach.
+ *
+ * They are the only keys apply_kv() handles with a hand-rolled block instead
+ * of a NEED_* macro: each sets several members at once (or, for `preset`,
+ * matches a name and stores nothing), so no single field carries "the
+ * documented default" for a generator to assert.  Written out here so the
+ * exception is a covered case rather than a gap with a comment on it.
+ *
+ * The default rotation matrix is all zeros, NOT the identity — config_defaults
+ * memsets and never touches it.  That is only safe because imu_math.c:265
+ * returns early on !mount_set, so the degenerate matrix is never applied; the
+ * pairing is what this pins.
+ */
+static void test_defaults_mount(void)
+{
+    begin_test("test_defaults_mount");
+    int fb = g_fail;
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    EXPECT(cfg.mount_set == false, "[mount] unset by default");
+    for (int i = 0; i < 3; i++)
+        EXPECT_NEAR_D(cfg.mount_euler_deg[i], 0.0, 1e-12,
+                      "[mount] rotation_euler_deg defaults to [0, 0, 0]");
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            EXPECT_NEAR_D(cfg.mount_rot[i][j], 0.0, 1e-12,
+                          "[mount] rotation_matrix is zeroed, and gated by "
+                          "mount_set rather than being an identity");
     end_test(fb);
 }
 
@@ -1692,7 +1781,9 @@ int main(void)
 {
     puts("=== imud config tests ===");
 
+    test_defaults_registry();
     test_defaults_values();
+    test_defaults_mount();
     test_defaults_cal_file();
     test_defaults_position();
     test_fusion_marine_keys();

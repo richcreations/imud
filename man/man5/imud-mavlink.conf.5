@@ -34,10 +34,12 @@ take effect on the next service start.
 .\" BEGIN GENERATED: config-keys imud-mavlink
 .TP
 .B enabled
-.RI ( bool ,\ default:\ true )\ [restart]
+.RI ( bool ,\ default:\ false )\ [restart]
 Run the MAVLink bridge daemon.  With it true and every transport off the daemon
 runs but sends nothing; set it false to not run the bridge at all (it exits
 cleanly, so systemd does not restart it).
+The shipped configuration file sets it true; false is what applies when
+the key is absent altogether.
 .TP
 .B socket
 .RI ( string ,\ default:\ \(dq/run/imud/imud-stream.sock\(dq )\ [restart]

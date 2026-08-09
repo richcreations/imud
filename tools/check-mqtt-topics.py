@@ -60,40 +60,6 @@ EXTRA = {
 }
 
 
-def expand_shorthands(text):
-    """Resolve the two ways the docs abbreviate sibling topics.
-
-    Both exist because a topic tree written out in full does not fit in 80
-    columns and reads worse when it does.  A checker that cannot follow them
-    reports working documentation as missing, which is how a checker gets
-    switched off — so it follows them:
-
-      config/imud-mqtt.conf   imud/attitude/{roll,pitch,yaw}
-      docs/imud-mqtt/spec.md  `imud/attitude/roll` · `/pitch` · `/yaw`
-
-    The second form shares the leading path with the previous full topic, so
-    it needs the running context rather than a local rewrite.
-    """
-    out = []
-
-    # {a,b,c} alternation
-    for m in re.finditer(r"([\w/.-]*)\{([^}]*)\}([\w/.-]*)", text):
-        head, alts, tail = m.group(1), m.group(2), m.group(3)
-        for alt in alts.split(","):
-            out.append(f"{head}{alt.strip()}{tail}")
-
-    # `full/path` · `/leaf` — the leaf inherits the previous topic's parent.
-    prev = None
-    for m in re.finditer(r"`([^`]+)`", text):
-        token = m.group(1).strip()
-        if token.startswith("/") and prev and "/" in prev:
-            out.append(prev.rsplit("/", 1)[0] + token)
-        elif "/" in token:
-            prev = token.rstrip("/")
-
-    return text + "\n" + "\n".join(out)
-
-
 def published():
     """The scalar topic subpaths, in FIELDS[] order."""
     src = must_read(SRC, "the MQTT bridge's publish table")

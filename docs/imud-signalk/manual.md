@@ -63,7 +63,7 @@ level live; `enabled`, `socket`, and the `udp_*`/`tcp_*` keys require a restart.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys imud-signalk.1 -->
-| `enabled` | bool | `true` | Run the bridge daemon. With it true and every output off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
+| `enabled` | bool | `false` | Run the bridge daemon. With it true and every output off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). The shipped configuration file sets it true; `false` is what applies when the key is absent altogether. |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read (match `imud.conf` if you changed it there). |
 | `udp_enabled` | bool | `false` | Emit deltas over UDP to `dest_addr`:`dest_port`. |
 | `dest_addr` | string | `"127.0.0.1"` | Signal K server host: a hostname, a numeric IPv4 or IPv6 address, or a broadcast address. Resolved with `getaddrinfo(3)`, as in the other bridges. Before 1.7 this key accepted numeric IPv4 only. |

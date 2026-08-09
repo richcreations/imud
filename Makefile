@@ -224,8 +224,12 @@ test_fusion: src/fusion.c test/test_fusion.c test/rate_ladder.h
 test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fit_ra.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-test_config: src/config.c src/log.c test/test_config.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+# The .gen.c is a prerequisite but not a translation unit: test_config.c
+# #includes it inside a function.  Listed so regenerating it rebuilds the
+# suite, filtered out so the compiler is not handed it twice.
+test_config: src/config.c src/log.c test/test_config.c \
+             test/test_config_defaults.gen.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter-out %.gen.c,$^) -lm
 
 # imud-mon's stream decoding (src/mon_parse.c): packet CRC, NMEA field
 # extraction, flag summary.  Pure — no sockets, no config.
@@ -579,7 +583,7 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-packet check-nmea \
                   check-libimud-api check-math-citations check-manpages
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
-        docs-man check-generated-man
+        docs-config docs-man check-generated-man
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
@@ -589,11 +593,19 @@ check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
                      check-config-docs
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
-# the man5 entries and the manual tables on disk are what it renders.  Its
-# prose was extracted from those pages, so the first run matched byte for
-# byte — a diff here is an edit that reached one surface and not the other.
+# the man5 entries, the manual tables and the generated defaults test on disk
+# are what it renders.  Its prose was extracted from those pages, so the first
+# run matched byte for byte — a diff here is an edit that reached one surface
+# and not the other.
 check-config-docs:
 	@python3 tools/gen-config-docs.py
+
+# Write them.  python3 only: no build, no network, so it runs on any box.
+# Run this after editing docs/config-keys.toml, then commit what it changes —
+# test/test_config_defaults.gen.c is compiled into test_config, and the man5
+# and manual regions ship in the packages.
+docs-config:
+	@python3 tools/gen-config-docs.py --write
 
 # The checkers are regexes over source, so a checker that has quietly stopped
 # matching looks exactly like a clean tree.  This breaks one fact at a time in

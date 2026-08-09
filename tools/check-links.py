@@ -37,7 +37,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from checklib import ROOT, Report                              # noqa: E402
+from checklib import ROOT                                      # noqa: E402
 
 # Link targets that are deliberately not files: anchors handled separately,
 # schemes we do not resolve, and the placeholder used in examples.

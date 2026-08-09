@@ -13,11 +13,13 @@ Keys marked [restart] require a service restart to take effect.
 .\" BEGIN GENERATED: config-keys imud-prometheus
 .TP
 .B enabled
-.RI (bool,\ default:\ true)
+.RI (bool,\ default:\ false)
 Run the exporter daemon. With it true and
 .B http_enabled
 false the daemon runs but does not bind the /metrics port; set it false to not
-run the exporter at all (it exits cleanly, so systemd does not restart it). [restart]
+run the exporter at all (it exits cleanly, so systemd does not restart it).
+The shipped configuration file sets it true; false is what applies when
+the key is absent altogether. [restart]
 .TP
 .B http_enabled
 .RI (bool,\ default:\ false)
@@ -42,7 +44,7 @@ HTTP port for
 .SH "SECTION [logging]"
 .TP
 .B level
-.RI (string,\ default:\ info)
+.RI (string,\ default:\ \(dqwarn\(dq)
 error | warn | info | debug. Reloaded on SIGHUP.
 .SH FILES
 .TP

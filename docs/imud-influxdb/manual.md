@@ -45,7 +45,7 @@ HTTP target need a restart.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys imud-influxdb.1 -->
-| `enabled` | bool | `true` | Run the bridge daemon. With it true and every output off the daemon runs but writes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
+| `enabled` | bool | `false` | Run the bridge daemon. With it true and every output off the daemon runs but writes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). The shipped configuration file sets it true; `false` is what applies when the key is absent altogether. |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `transport` | string | `""` | **Deprecated** — legacy `"udp"`/`"http"` selector, mapped to `udp_enabled`/`http_enabled` when neither is set. Prefer the enables. |
 | `rate_hz` | int | `10` | Point emit rate in Hz; must be greater than zero. |

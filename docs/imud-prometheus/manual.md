@@ -20,7 +20,7 @@ Requires imud's stream output (`imud.conf`: `[stream] enabled = true`).
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 <!-- BEGIN GENERATED: config-keys imud-prometheus.1 -->
-| `enabled` | bool | `true` | Run the exporter daemon. With it true and `http_enabled` false the daemon runs but does not bind the /metrics port; set false to not run the exporter at all (it exits cleanly, so systemd does not restart it). [restart] |
+| `enabled` | bool | `false` | Run the exporter daemon. With it true and `http_enabled` false the daemon runs but does not bind the /metrics port; set false to not run the exporter at all (it exits cleanly, so systemd does not restart it). The shipped configuration file sets it true; `false` is what applies when the key is absent altogether. [restart] |
 | `http_enabled` | bool | `false` | Serve the /metrics HTTP listener (the exporter's only output). [restart] |
 | `socket` | string | `/run/imud/imud-stream.sock` | imud stream socket to read. [restart] |
 | `listen_addr` | string | `127.0.0.1` | HTTP bind address; `0.0.0.0` to allow scrapes from another host. [restart] |

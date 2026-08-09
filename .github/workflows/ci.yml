@@ -630,7 +630,7 @@ jobs:
       # upstream release cannot turn CI red on its own.
       - name: pyflakes
         run: |
-          pyflakes3 lib/imud_client.py tools/*.py
+          pyflakes3 lib/imud_client.py tools/*.py test/test_checkers.py
           echo "pyflakes clean"
 
       - name: Save scan-build report
