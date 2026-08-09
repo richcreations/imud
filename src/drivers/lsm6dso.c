@@ -88,12 +88,16 @@ static uint8_t odr_encode(int hz)
     return 0xA;  /* 6664 Hz */
 }
 
+/* Bound and clamp both derive from the table — see ism330dhcx.c, same shape
+ * and the same reason. */
 static int odr_actual(int hz)
 {
-    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664 };
-    for (int i = 0; i < 9; i++)
+    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
+                                 3332, 6664 };
+    static const int n = (int)(sizeof steps / sizeof steps[0]);
+    for (int i = 0; i < n; i++)
         if (hz <= steps[i]) return steps[i];
-    return 6664;
+    return steps[n - 1];
 }
 
 static uint8_t xl_fs_encode(int g, float *scale)

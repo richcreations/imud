@@ -81,25 +81,34 @@ static uint8_t odr_encode(int hz)
     if (hz <=  208) return 0x5;
     if (hz <=  416) return 0x6;
     if (hz <=  833) return 0x7;
-    return 0x8;  /* 1660 Hz */
+    if (hz <= 1660) return 0x8;
+    if (hz <= 3332) return 0x9;
+    return 0xA;  /* 6664 Hz */
 }
 
 /*
  * The rate odr_encode() above will actually select, for the ticks_per_sample
- * calculation: the lowest supported rate >= hz, clamped to 1660. Rounds UP,
+ * calculation: the lowest supported rate >= hz, clamped to 6664. Rounds UP,
  * not to nearest — it has to mirror odr_encode() exactly or the chip-timer
  * tick arithmetic would be scaled for a rate the part is not running at.
  *
  * Kept local rather than calling snap_odr_up() from imu_math.h so the drivers
  * stay free of daemon-side dependencies; the steps[] table below must match
  * ism330dhcx_ops.supported_odr_hz, which test_drivers_registry pins.
+ *
+ * The loop bound and the clamp both derive from the table, so growing it is a
+ * one-line edit.  They did not, before 3332 and 6664 were added, and the
+ * hand-written "< 7" plus a literal fallthrough is exactly the shape that
+ * silently keeps returning the old ceiling when a rung is appended.
  */
 static int odr_actual(int hz)
 {
-    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660 };
-    for (int i = 0; i < 7; i++)
+    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
+                                 3332, 6664 };
+    static const int n = (int)(sizeof steps / sizeof steps[0]);
+    for (int i = 0; i < n; i++)
         if (hz <= steps[i]) return steps[i];
-    return 1660;
+    return steps[n - 1];
 }
 
 /*
@@ -200,7 +209,11 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     if (wm > 511) wm = 511;
     if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
     if (bus_reg_write(bus, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
-    /* Batch accel and gyro at the same rate as ODR (BDR code == ODR code) */
+    /* Batch accel and gyro at the same rate as ODR (BDR code == ODR code).
+     * BDR is a separate encoding from ODR (Table 29, §9.5) that happens to
+     * line up over the whole ODR range, 0x1 = 12.5 Hz through 0xA = 6667 Hz.
+     * It diverges only at 0xB — 6.5 Hz on the gyro, 1.6 Hz on the accel —
+     * which no ODR code can reach through (odr << 4) | odr. */
     if (bus_reg_write(bus, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
     /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10).
      * Temp words feed gyro thermal compensation and imud-cal fit-temp; at
@@ -224,7 +237,16 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
         }
     }
     s.seq              = 0;
-    /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz */
+    /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
+     *
+     * Integer division, and it is inexact at most rungs — the 25 µs tick is
+     * not a multiple of the sample period.  The relative error shrinks as the
+     * rate climbs, so the two rates added last are the *best* behaved: 1660 Hz
+     * is 24.096 -> 24 (0.4 %), while 3332 Hz is 12.005 -> 12 and 6664 Hz is
+     * 6.002 -> 6, both 0.04 %.  Leave it alone.  The value only ages samples
+     * backwards within one burst from an anchor that is re-read every drain
+     * (see ism_read), so the error is bounded by the watermark depth rather
+     * than accumulating. */
     s.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
 
     return 0;
@@ -367,7 +389,13 @@ const imu_ops_t ism330dhcx_ops = {
     .has_fifo         = true,
     .has_hw_timestamp = true,
     .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick */
-    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 },
+    /* DS13012 Rev 7 Table 43 (CTRL1_XL, §9.12) and Table 46 (CTRL2_G, §9.13):
+     * both give 0x9 = 3.33 kHz and 0xA = 6.66 kHz in high-performance mode.
+     * The two tables agreeing at the top is what makes writing one shared odr
+     * code to both registers valid.  Batching keeps up: Table 29 (§9.5) gives
+     * BDR_XL/BDR_GY 1001 = 3333 Hz and 1010 = 6667 Hz, so the (odr << 4) | odr
+     * written to FIFO_CTRL3 still selects the matching batch rate. */
+    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
 };

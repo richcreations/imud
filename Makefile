@@ -214,8 +214,12 @@ src/%.entry.o: src/%.c
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
-test_fusion: src/fusion.c test/test_fusion.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+# test/rate_ladder.h is a prerequisite, not just an include: adding a rung to
+# it must rebuild this suite, or the rate sweeps keep walking the old ladder
+# and report a pass for rates they never ran.  $(filter %.c,$^) keeps the
+# header off the compiler command line.
+test_fusion: src/fusion.c test/test_fusion.c test/rate_ladder.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
 
 test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fit_ra.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
@@ -389,9 +393,13 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # imu_math.c is here for odr_actual_imu/odr_actual_mag — the ODR resolution
 # invariant has to hold for every registered driver, which is exactly this
 # suite's job.  Linux-only (the drivers include <linux/i2c.h>), like `test`.
+# rate_ladder.h listed for the same reason as test_fusion: this suite is the
+# guard that the ladder covers the registry, and a stale binary would compare
+# the new tables against the old ladder — or the reverse — and pass.
 test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
-                       src/imu_math.c test/test_drivers_registry.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+                       src/imu_math.c test/test_drivers_registry.c \
+                       test/rate_ladder.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
 # calibration application — the helpers factored into src/imu_math.c.  Pure

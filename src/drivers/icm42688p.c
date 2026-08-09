@@ -82,26 +82,45 @@ static struct {
 
 /* ── ODR and full-scale encoding ───────────────────────────────────────────── */
 
-/* GYRO_CONFIG0 / ACCEL_CONFIG0 bits [3:0] — Table 58 / Table 64 */
+/*
+ * GYRO_CONFIG0 / ACCEL_CONFIG0 bits [3:0] — DS-000347 Rev 1.6 §5.6.
+ *
+ * The codes are not monotonic in rate: 500 Hz is 1111, parked at the end of
+ * the field past the reserved codes rather than in sequence between 200 Hz
+ * and 1 kHz.  That is a datasheet quirk, not a typo here, and it is why 500
+ * Hz went missing in the first place — reading the table top to bottom skips
+ * straight from 200 to 1000.
+ *
+ * 16 kHz and 32 kHz are low-noise mode only on the accel (they are the only
+ * two rates the accel table does not also offer in LP).  init() writes
+ * PWR_MGMT0 = 0x0F, gyro and accel both LN, so all twelve rates are reachable.
+ */
 static uint8_t odr_encode(int hz)
 {
-    if (hz <=   12) return 0x0B;  /* 12.5 Hz */
-    if (hz <=   25) return 0x0A;
-    if (hz <=   50) return 0x09;
-    if (hz <=  100) return 0x08;
-    if (hz <=  200) return 0x07;
-    if (hz <= 1000) return 0x06;
-    if (hz <= 2000) return 0x05;
-    if (hz <= 4000) return 0x04;
-    return 0x03;  /* 8000 Hz */
+    if (hz <=    12) return 0x0B;  /* 12.5 Hz */
+    if (hz <=    25) return 0x0A;
+    if (hz <=    50) return 0x09;
+    if (hz <=   100) return 0x08;
+    if (hz <=   200) return 0x07;
+    if (hz <=   500) return 0x0F;  /* out of sequence — see above */
+    if (hz <=  1000) return 0x06;
+    if (hz <=  2000) return 0x05;
+    if (hz <=  4000) return 0x04;
+    if (hz <=  8000) return 0x03;
+    if (hz <= 16000) return 0x02;
+    return 0x01;  /* 32000 Hz */
 }
 
+/* Must mirror odr_encode() exactly; both bound and clamp derive from the
+ * table so appending a rung cannot leave the ceiling behind. */
 static int odr_actual(int hz)
 {
-    static const int steps[] = { 12, 25, 50, 100, 200, 1000, 2000, 4000, 8000 };
-    for (int i = 0; i < 8; i++)
+    static const int steps[] = { 12, 25, 50, 100, 200, 500, 1000, 2000,
+                                 4000, 8000, 16000, 32000 };
+    static const int n = (int)(sizeof steps / sizeof steps[0]);
+    for (int i = 0; i < n; i++)
         if (hz <= steps[i]) return steps[i];
-    return 8000;
+    return steps[n - 1];
 }
 
 /* GYRO_CONFIG0 bits [7:5]: FS_SEL.  Sensitivity: datasheet Table 4. */
@@ -211,7 +230,17 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.accel_scale      = accel_scale;
     ic.gyro_scale       = gyro_scale;
     ic.seq              = 0;
-    /* 1 µs/tick timestamp; ticks between adjacent samples at the actual ODR. */
+    /* 1 µs/tick timestamp; ticks between adjacent samples at the actual ODR.
+     *
+     * Whole microseconds, and the division stops being exact at the top of the
+     * ladder: every rate through 8 kHz divides 1000000 evenly, but 16 kHz is
+     * 62.5 -> 62 and 32 kHz is 31.25 -> 31, both 0.8 % short.  Deliberate.
+     * The value only walks backwards from a per-burst anchor (see the age
+     * calculation in icm_read), so the error is bounded by the watermark
+     * depth rather than accumulating across bursts — about 16 µs at a
+     * 64-sample watermark, half a sample period at 32 kHz.  Widening this to
+     * sub-microsecond ticks would buy nothing the chip timestamp resolution
+     * can support. */
     ic.ticks_per_sample = (uint32_t)(1000000u / (unsigned)odr_actual(cfg->odr_hz));
     ic.ts_last_raw      = 0;    /* counter restarts with the chip */
     ic.ts_hi            = 0;
@@ -332,7 +361,21 @@ const imu_ops_t icm42688p_ops = {
     .has_fifo         = true,
     .has_hw_timestamp = true,
     .ts_tick_ns       = 1000,    /* TMSTVAL: 1 µs/tick (unwrapped to 32 bits) */
-    .supported_odr_hz   = { 12, 25, 50, 100, 200, 1000, 2000, 4000, 8000, 0 },
+    /*
+     * Everything the silicon does (DS-000347 Rev 1.6 §5.6), including the two
+     * rates a Raspberry Pi will not survive.
+     *
+     * 16 kHz and 32 kHz are offered because the part has them and imud is not
+     * a Pi-only daemon; on a host with the headroom they are usable, and
+     * withholding them would be imud deciding what hardware someone runs.  On
+     * a Pi they are not: 32 kHz fills the 256-deep imu_ring_t in 8 ms and asks
+     * the fusion thread for 32000 MEKF predictions a second, so the realistic
+     * outcome is this driver's FIFO-overflow path (read() returning 1) rather
+     * than data.  Choosing them should be a decision, not a discovery —
+     * manual §5 says the same thing where an operator will see it.
+     */
+    .supported_odr_hz   = { 12, 25, 50, 100, 200, 500, 1000, 2000, 4000,
+                            8000, 16000, 32000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 0 },
 };

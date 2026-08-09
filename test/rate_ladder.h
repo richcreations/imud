@@ -5,9 +5,9 @@
  *
  * rate_ladder.h — every sample rate this project claims to support.
  *
- * The union of supported_odr_hz across all registered drivers: 27 IMU rates
- * spanning 12 Hz to 8 kHz, and 13 magnetometer rates from 1 Hz to 1 kHz.  Any
- * of the 351 pairings is a configuration a user can select and the daemon will
+ * The union of supported_odr_hz across all registered drivers: 29 IMU rates
+ * spanning 12 Hz to 32 kHz, and 13 magnetometer rates from 1 Hz to 1 kHz.  Any
+ * of the 377 pairings is a configuration a user can select and the daemon will
  * accept.
  *
  * WHY THIS IS A HAND-MAINTAINED LIST, and why that is safe.  The natural way to
@@ -30,15 +30,17 @@
 
 /*
  * IMU rates, Hz.
- *   12,26,52,104,208,416,833,1660          ism330dhcx, sim
- *   +3332,6664                             lsm6dso, lsm6dsox
- *   12,25,50,100,200,1000,2000,4000,8000   icm42688p
+ *   12,26,52,104,208,416,833,1660          sim
+ *   +3332,6664                             ism330dhcx, lsm6dso, lsm6dsox
+ *   12,25,50,100,200,500,1000,2000,        icm42688p
+ *     4000,8000,16000,32000
  *   225,281,375,562,1125                   icm20948
  *   100,125,200,250,333,500,1000           mpu9250, mpu9255
  */
 static const int rate_ladder_imu[] = {
     12, 25, 26, 50, 52, 100, 104, 125, 200, 208, 225, 250, 281, 333,
-    375, 416, 500, 562, 833, 1000, 1125, 1660, 2000, 3332, 4000, 6664, 8000
+    375, 416, 500, 562, 833, 1000, 1125, 1660, 2000, 3332, 4000, 6664, 8000,
+    16000, 32000
 };
 #define RATE_LADDER_IMU_N \
     ((int)(sizeof rate_ladder_imu / sizeof rate_ladder_imu[0]))
