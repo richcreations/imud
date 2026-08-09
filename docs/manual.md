@@ -337,7 +337,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `spi_speed_hz` | int | `0` | SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. |
 | `i2c_addr` | int | `0x6B` | I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
 | `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to use a 10 ms polling timer instead of a hardware interrupt. |
-| `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`. |
+| `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported hardware](#supported-hardware), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms. |
@@ -606,17 +606,17 @@ Links to the manufacturers' datasheets are collected in
 
 | Driver name | Chip | Type | I²C address | GPIO interrupt | SPI | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 3, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. |
+| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 3, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
 | `icm20948` | TDK ICM-20948 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes a built-in AK09916 mag via I²C master. No hardware timestamp. |
-| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. |
-| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR up to 6664 Hz. |
+| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below. |
+| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
 | `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
 | `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 3, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
-| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. |
+| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |
 | `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
 | `sim` | — | IMU + Magnetometer | — | none | n/a | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
 
@@ -640,6 +640,44 @@ work:
   interrupt and data-ready signalling. imud drives this part from its
   data-ready line, so 4-wire would cost the interrupt and 3-wire needs
   half-duplex support the bus layer does not have.
+
+#### Sample rates, and which ones your host can actually run
+
+Each driver advertises exactly the rates its part can be programmed to. Ask
+for something else and imud rounds **up** to the next one the chip supports,
+tunes the filter for that rate, and logs `requested, N Hz actual` at startup.
+
+Two parts advertise rates a Raspberry Pi will not survive:
+
+- **`icm42688p` at 16000 and 32000 Hz.** The silicon does them (low-noise
+  mode, which is how imud configures it), and imud is not a Pi-only daemon —
+  on a host with the headroom they are usable. On a Pi they are not. At
+  32 kHz the 256-sample IMU ring fills in 8 ms and the fusion thread is asked
+  for 32000 MEKF predictions a second; the realistic outcome is FIFO overflow
+  rather than data. Treat them as available for larger hosts, not as a
+  setting to try because it is the biggest number.
+- **`ism330dhcx` / `lsm6dso` at 6664 Hz.** Comfortable on a Pi 4 or 5, and the
+  rate the SPI transport exists to reach — I²C at 400 kHz cannot carry a
+  6664 Hz FIFO drain.
+
+For sea-state and heave work none of this is needed: those estimators track
+0.05–1 Hz wave physics, and the sweep tests measure their accuracy as
+essentially flat from 100 Hz to 16 kHz. High rates buy vibration rejection
+and attitude bandwidth, not wave accuracy. The default of 833 Hz is the
+right answer for almost every installation.
+
+Two drivers deliberately advertise less than their part can do:
+
+- **`lis3mdl`** stops at 155 Hz. Its 300, 560 and 1000 Hz modes require
+  dropping the XY/Z operating mode below ultra-high-performance, which costs
+  magnetometer noise performance — a bad trade when the MEKF's magnetometer
+  update only needs heading, and 155 Hz is already far above what that needs.
+  (Its 0.625 Hz bottom rung is also omitted: the rate table is integer Hz.)
+- **`icm20948` and `mpu925x`** derive their rate from an integer divider
+  (`1125/(1+div)` and `1000/(1+div)`), so they reach rates no table could
+  list. Their advertised entries are a readable sample, not the whole set;
+  both implement the `actual_odr_hz` hook and report what they really
+  programmed.
 
 GPIO pins shown are the defaults (`imu.int_gpio = 17`, `mag.int_gpio = 27`).
 Set `int_gpio = 0` to disable the interrupt and use a polling timer — useful

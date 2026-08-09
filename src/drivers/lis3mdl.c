@@ -190,5 +190,20 @@ const mag_ops_t lis3mdl_ops = {
     .set_reset        = NULL,
     .has_interrupt    = true,
     .has_set_reset    = false,
+    /*
+     * Deliberately narrower than the silicon, at both ends (DS9463 Rev 7
+     * Tables 19 and 21).
+     *
+     * TOP.  Above 80 Hz the rate comes from FAST_ODR, and what it selects
+     * depends on the operating mode: UHP 155, HP 300, MP 560, LP 1000 Hz.
+     * This driver fixes OM = ultra-high-performance for noise performance
+     * (CTRL_REG1 OM = 11, CTRL_REG4 OMZ = 11), so 155 Hz is the ceiling by
+     * choice, not by limit.  Reaching 1000 Hz would mean low-power mode on a
+     * part whose only job here is to feed the MEKF a heading reference — a
+     * bad trade, and 155 Hz is already far more than that update needs.
+     *
+     * BOTTOM.  DO = 000 is 0.625 Hz, which this int table cannot express; it
+     * would have to round onto 1.25's slot and lie about it.
+     */
     .supported_odr_hz = { 1, 2, 5, 10, 20, 40, 80, 155, 0 },
 };

@@ -15,7 +15,10 @@
  * Physical orientation varies by breakout PCB; use [mount] rotation_euler_deg
  * to correct for your installation if needed.
  *
- * Register references: ICM-42688-P datasheet DS-000347 Rev 1.2.
+ * Register references: ICM-42688-P datasheet DS-000347 Rev 1.2, except where a
+ * comment cites Rev 1.6 — the SPI characteristics and the ODR tables were
+ * read from that later revision, which is the one TDK publishes now.  Only
+ * the sections named in those comments have been re-checked against it.
  */
 
 #include <errno.h>

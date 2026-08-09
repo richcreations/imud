@@ -251,7 +251,13 @@ Still open:
     `imud-imutest --all` report on each bus from the same board, and the
     FIFO-drain latency comparison (§3.1's split makes it visible) that would
     substantiate the speed argument with a measurement rather than an
-    arithmetic estimate.
+    arithmetic estimate. The sharpest test is **6664 Hz on the ISM330DHCX over
+    SPI**: I²C at 400 kHz cannot carry that FIFO drain, so it is the rate the
+    transport exists for and the one where a measured-ODR check either
+    confirms the part runs there and the FIFO keeps up, or does not. (Those
+    rates were only advertised by the driver from the ODR-coverage audit that
+    followed this work — before it, `supported_odr_hz` stopped at 1660 Hz and
+    the transport could not deliver its own argument.)
   - **AKM compasses behind an InvenSense host.** icm20948 and mpu925x reach
     their on-die AK09916/AK8963 through I²C *bypass*, which only an I²C host
     can use. SPI needs the aux-I²C-master path — `I2C_SLV0_ADDR/REG/CTRL` plus
