@@ -39,6 +39,13 @@ typedef struct {
 
     /* [imu]  [restart] */
     char  imu_driver[32];       /* "ism330dhcx" */
+    /* Transport. BUS_I2C uses [device] i2c_bus + i2c_addr below; BUS_SPI uses
+     * imu_spi_dev, and the chip select in that node name replaces the address.
+     * The two sensors are independent — a SPI IMU with an I2C compass is a
+     * legal rig. */
+    bus_kind_t imu_bus_kind;    /* BUS_I2C default */
+    char  imu_spi_dev[64];      /* "/dev/spidev0.0"; required when bus = "spi" */
+    int   imu_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
     int   imu_addr;             /* 0x6B default, 0x6A via jumper */
     int   imu_int_gpio;         /* BCM GPIO for FIFO watermark interrupt */
     int   imu_odr_hz;           /* 833, must be > 0; the rate REQUESTED — the
@@ -51,6 +58,9 @@ typedef struct {
 
     /* [mag]  [restart] */
     char  mag_driver[32];       /* "mmc5983ma" */
+    bus_kind_t mag_bus_kind;    /* BUS_I2C default; see imu_bus_kind */
+    char  mag_spi_dev[64];      /* "/dev/spidev0.1"; required when bus = "spi" */
+    int   mag_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
     int   mag_addr;             /* 0x30 fixed */
     int   mag_int_gpio;         /* BCM GPIO for measurement-done interrupt */
     int   mag_odr_hz;           /* 100, must be > 0; requested, as imu_odr_hz */

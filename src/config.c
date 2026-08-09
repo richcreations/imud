@@ -221,6 +221,9 @@ void config_defaults(imud_config_t *cfg)
 
     /* [imu] */
     snprintf(cfg->imu_driver, sizeof(cfg->imu_driver), "ism330dhcx");
+    cfg->imu_bus_kind      = BUS_I2C;
+    cfg->imu_spi_dev[0]    = '\0';
+    cfg->imu_spi_speed_hz  = 0;
     cfg->imu_addr     = 0x6B;
     cfg->imu_int_gpio = 17;
     cfg->imu_odr_hz   = 833;
@@ -230,6 +233,9 @@ void config_defaults(imud_config_t *cfg)
 
     /* [mag] */
     snprintf(cfg->mag_driver, sizeof(cfg->mag_driver), "mmc5983ma");
+    cfg->mag_bus_kind      = BUS_I2C;
+    cfg->mag_spi_dev[0]    = '\0';
+    cfg->mag_spi_speed_hz  = 0;
     cfg->mag_addr         = 0x30;
     cfg->mag_int_gpio     = 27;
     cfg->mag_odr_hz       = 100;
@@ -404,16 +410,54 @@ void config_defaults(imud_config_t *cfg)
  */
 void config_imu_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
 {
-    out->kind     = BUS_I2C;
-    out->node     = cfg->i2c_bus;
+    out->kind     = cfg->imu_bus_kind;
+    out->node     = cfg->imu_bus_kind == BUS_SPI ? cfg->imu_spi_dev
+                                                 : cfg->i2c_bus;
     out->i2c_addr = (uint8_t)cfg->imu_addr;
+    out->spi_hz   = (uint32_t)cfg->imu_spi_speed_hz;
 }
 
 void config_mag_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
 {
-    out->kind     = BUS_I2C;
-    out->node     = cfg->i2c_bus;
+    out->kind     = cfg->mag_bus_kind;
+    out->node     = cfg->mag_bus_kind == BUS_SPI ? cfg->mag_spi_dev
+                                                 : cfg->i2c_bus;
     out->i2c_addr = (uint8_t)cfg->mag_addr;
+    out->spi_hz   = (uint32_t)cfg->mag_spi_speed_hz;
+}
+
+/*
+ * Cross-key checks, run once after the whole file is parsed.
+ *
+ * apply_kv cannot do these: it sees one line at a time, so `bus = "spi"`
+ * before `spi_dev` would fire on a file that is perfectly valid two lines
+ * later. Reported the same way as a bad value — every problem in one pass,
+ * and the daemon refuses to start.
+ */
+static int validate_bus(const imud_config_t *cfg, const char *path)
+{
+    int rc = 0;
+
+    if (cfg->imu_bus_kind == BUS_SPI && cfg->imu_spi_dev[0] == '\0') {
+        LOG_E("%s: [imu] bus = \"spi\" needs spi_dev "
+              "(e.g. \"/dev/spidev0.0\")\n", path);
+        rc = CONFIG_ERR_PARSE;
+    }
+    if (cfg->mag_bus_kind == BUS_SPI && cfg->mag_spi_dev[0] == '\0') {
+        LOG_E("%s: [mag] bus = \"spi\" needs spi_dev "
+              "(e.g. \"/dev/spidev0.1\")\n", path);
+        rc = CONFIG_ERR_PARSE;
+    }
+
+    /* A negative clock is not a slow one. 0 is legal and means "the driver's
+     * datasheet maximum", which is why this is not NEED_POS_INT above. */
+    if (cfg->imu_spi_speed_hz < 0 || cfg->mag_spi_speed_hz < 0) {
+        LOG_E("%s: spi_speed_hz cannot be negative "
+              "(0 means the driver's maximum)\n", path);
+        rc = CONFIG_ERR_PARSE;
+    }
+
+    return rc;
 }
 
 bool config_apply_influx_transport_compat(imud_config_t *cfg)
@@ -792,6 +836,25 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
  * and main.c's policy that a config which parses badly must not start: a
  * plausible substitute hides the mistake, exactly as with NEED_POS_INT.
  */
+/*
+ * The transport is a closed set, so an unrecognised value is a typo and not a
+ * transport this build lacks. Fatal for the reason NEED_STR is: silently
+ * leaving it at I2C would run the daemon against a bus the operator did not
+ * ask for, and on a SPI-wired board that looks like dead hardware rather than
+ * a config error.
+ */
+#define NEED_BUS_KIND(field) \
+    do { char kbuf[8]; \
+         /* Through copy_str so the value may be quoted exactly like the
+          * `driver` beside it; anything longer than "i2c" overflows kbuf,
+          * which is already not a transport. */ \
+         if (copy_str(val, kbuf, sizeof kbuf) != COPY_OK || \
+             (strcmp(kbuf, "i2c") != 0 && strcmp(kbuf, "spi") != 0)) { \
+        LOG_E("%s:%d: '%s': must be \"i2c\" or \"spi\" (got %s)\n", \
+              path, lineno, key, val); \
+        return -1; } \
+        (field) = strcmp(kbuf, "spi") == 0 ? BUS_SPI : BUS_I2C; } while (0)
+
 #define NEED_STR(field) \
     do { switch (copy_str(val, (field), sizeof(field))) { \
          case COPY_OK: break; \
@@ -910,6 +973,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_IMU:
         if      (strcmp(key, "driver")   == 0) NEED_STR(cfg->imu_driver);
+        else if (strcmp(key, "bus")      == 0) NEED_BUS_KIND(cfg->imu_bus_kind);
+        else if (strcmp(key, "spi_dev")  == 0) NEED_STR(cfg->imu_spi_dev);
+        else if (strcmp(key, "spi_speed_hz") == 0) NEED_INT(cfg->imu_spi_speed_hz);
         else if (strcmp(key, "i2c_addr") == 0) NEED_I2C_ADDR(cfg->imu_addr);
         else if (strcmp(key, "int_gpio") == 0) NEED_GPIO(cfg->imu_int_gpio);
         else if (strcmp(key, "odr_hz")   == 0) NEED_POS_INT(cfg->imu_odr_hz);
@@ -921,6 +987,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_MAG:
         if      (strcmp(key, "driver")       == 0) NEED_STR(cfg->mag_driver);
+        else if (strcmp(key, "bus")          == 0) NEED_BUS_KIND(cfg->mag_bus_kind);
+        else if (strcmp(key, "spi_dev")      == 0) NEED_STR(cfg->mag_spi_dev);
+        else if (strcmp(key, "spi_speed_hz") == 0) NEED_INT(cfg->mag_spi_speed_hz);
         else if (strcmp(key, "i2c_addr")     == 0) NEED_I2C_ADDR(cfg->mag_addr);
         else if (strcmp(key, "int_gpio")     == 0) NEED_GPIO(cfg->mag_int_gpio);
         else if (strcmp(key, "odr_hz")       == 0) NEED_POS_INT(cfg->mag_odr_hz);
@@ -1209,5 +1278,6 @@ int config_load(const char *path, imud_config_t *cfg)
 
     fclose(f);
     resolve_wmm_file(cfg);
+    if (validate_bus(cfg, path) != 0) rc = CONFIG_ERR_PARSE;
     return rc;
 }

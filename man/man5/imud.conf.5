@@ -176,9 +176,41 @@ and
 are experimental (register map verified from datasheet; not yet validated
 on hardware).
 .TP
+.B bus
+.RI (string,\ default:\ "i2c")
+Transport:
+.B i2c
+or
+.BR spi .
+SPI is faster per transfer, which is what unlocks the high sample rates and
+shortens the FIFO drain.
+Not every driver has SPI; the daemon refuses to start on one that does not.
+The IMU and the magnetometer choose independently, so a SPI IMU alongside an
+I2C compass is a legal rig.
+.TP
+.B spi_dev
+.RI (string,\ default:\ "")
+spidev node, for example
+.IR /dev/spidev0.0 .
+Required when
+.BR "bus = \(dqspi\(dq" ;
+ignored otherwise.
+The chip select in the node name does the addressing, so
+.B i2c_addr
+is unused.
+.TP
+.B spi_speed_hz
+.RI (int,\ default:\ 0)
+SPI clock in Hz.
+.B 0
+means the driver's datasheet maximum, which is the useful default.
+A request above that maximum is clamped rather than refused, and the daemon
+logs the rate it really programmed.
+.TP
 .B i2c_addr
 .RI (int,\ default:\ 0x6B)
-I2C address.
+I2C address; used only when
+.BR "bus = \(dqi2c\(dq" .
 ISM330DHCX: 0x6B (SA0 high) or 0x6A (SA0 low).
 .TP
 .B int_gpio
@@ -231,10 +263,43 @@ and
 .B sim
 are experimental.
 .TP
+.B bus
+.RI (string,\ default:\ "i2c")
+Transport:
+.B i2c
+or
+.BR spi .
+SPI is faster per transfer, which is what unlocks the high sample rates and
+shortens the FIFO drain.
+Not every driver has SPI; the daemon refuses to start on one that does not.
+The IMU and the magnetometer choose independently, so a SPI IMU alongside an
+I2C compass is a legal rig.
+.TP
+.B spi_dev
+.RI (string,\ default:\ "")
+spidev node, for example
+.IR /dev/spidev0.1 .
+Required when
+.BR "bus = \(dqspi\(dq" ;
+ignored otherwise.
+The chip select in the node name does the addressing, so
+.B i2c_addr
+is unused.
+.TP
+.B spi_speed_hz
+.RI (int,\ default:\ 0)
+SPI clock in Hz.
+.B 0
+means the driver's datasheet maximum, which is the useful default.
+A request above that maximum is clamped rather than refused, and the daemon
+logs the rate it really programmed.
+.TP
 .B i2c_addr
 .RI (int,\ default:\ 0x30)
-I2C address.
+I2C address; used only when
+.BR "bus = \(dqi2c\(dq" .
 MMC5983MA has a fixed address (0x30).
+The AKM compasses are I2C-only: they have no SPI port.
 The AKM compasses inside a 9-axis IMU
 .RB ( ak09916
 in the ICM-20948,

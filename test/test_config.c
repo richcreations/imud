@@ -80,12 +80,18 @@ static void test_defaults_values(void)
     EXPECT(cfg.sim_loop == false,                     "sim_loop default false");
     EXPECT_NEAR_D(cfg.sim_speed, 1.0, 1e-6,           "sim_speed default 1.0");
     EXPECT_STR(cfg.imu_driver,       "ism330dhcx",    "imu_driver default");
+    EXPECT(cfg.imu_bus_kind == BUS_I2C,               "imu bus default i2c");
+    EXPECT_STR(cfg.imu_spi_dev,      "",              "imu spi_dev default empty");
+    EXPECT(cfg.imu_spi_speed_hz == 0,                 "imu spi_speed_hz default 0 (driver max)");
     EXPECT(cfg.imu_addr     == 0x6B,                  "imu_addr default");
     EXPECT(cfg.imu_odr_hz   == 833,                   "imu_odr_hz default");
     EXPECT(cfg.imu_accel_g  == 8,                     "imu_accel_g default");
     EXPECT(cfg.imu_gyro_dps == 2000,                  "imu_gyro_dps default");
     EXPECT(cfg.imu_fifo_wm  == 64,                    "imu_fifo_wm default");
     EXPECT_STR(cfg.mag_driver,       "mmc5983ma",     "mag_driver default");
+    EXPECT(cfg.mag_bus_kind == BUS_I2C,               "mag bus default i2c");
+    EXPECT_STR(cfg.mag_spi_dev,      "",              "mag spi_dev default empty");
+    EXPECT(cfg.mag_spi_speed_hz == 0,                 "mag spi_speed_hz default 0 (driver max)");
     EXPECT(cfg.mag_addr     == 0x30,                  "mag_addr default");
     EXPECT(cfg.nmea_enabled  == false,                "nmea_enabled default off (1.6: local stream only)");
     EXPECT(cfg.nmea_rate_hz  == 10,                   "nmea_rate_hz default");
@@ -1045,6 +1051,86 @@ static void test_sim_playback_keys(void)
     end_test(fb);
 }
 
+/*
+ * The [imu]/[mag] transport keys, and the bus_spec_t they resolve to.
+ *
+ * The spec helpers are asserted here rather than only through the daemon
+ * because they are the single place the three tools agree about which node a
+ * sensor lives on — imud, imud-cal and imud-imutest all build a spec this way.
+ */
+static void test_bus_transport_keys(void)
+{
+    begin_test("test_bus_transport_keys");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+
+    /* A mixed rig: SPI IMU, I2C compass. The two sections are independent. */
+    const char *path = write_tmpconf(41,
+        "[device]\n"
+        "i2c_bus = \"/dev/i2c-3\"\n"
+        "[imu]\n"
+        "bus          = \"spi\"\n"
+        "spi_dev      = \"/dev/spidev0.0\"\n"
+        "spi_speed_hz = 8000000\n"
+        "[mag]\n"
+        "bus          = \"i2c\"\n"
+        "i2c_addr     = 0x30\n");
+    EXPECT(config_load(path, &cfg) == 0,               "mixed transports load");
+    EXPECT(cfg.imu_bus_kind == BUS_SPI,                "imu bus = spi parsed");
+    EXPECT_STR(cfg.imu_spi_dev, "/dev/spidev0.0",      "imu spi_dev parsed");
+    EXPECT(cfg.imu_spi_speed_hz == 8000000,            "imu spi_speed_hz parsed");
+    EXPECT(cfg.mag_bus_kind == BUS_I2C,                "mag stays on i2c");
+    remove(path);
+
+    /* The specs the three tools open from. */
+    bus_spec_t is, ms;
+    config_imu_bus_spec(&cfg, &is);
+    config_mag_bus_spec(&cfg, &ms);
+    EXPECT(is.kind == BUS_SPI,                         "imu spec is spi");
+    EXPECT_STR(is.node, "/dev/spidev0.0",              "imu spec uses spi_dev");
+    EXPECT(is.spi_hz == 8000000,                       "imu spec carries the clock");
+    EXPECT(ms.kind == BUS_I2C,                         "mag spec is i2c");
+    EXPECT_STR(ms.node, "/dev/i2c-3",                  "mag spec falls back to i2c_bus");
+    EXPECT(ms.i2c_addr == 0x30,                        "mag spec carries the address");
+
+    /* An unrecognised transport is a typo, not a build without that bus. */
+    config_defaults(&cfg);
+    path = write_tmpconf(42, "[imu]\nbus = \"parallel\"\n");
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE, "unknown bus rejected");
+    EXPECT(cfg.imu_bus_kind == BUS_I2C,                 "bad bus leaves the default");
+    remove(path);
+
+    /* bus = spi without a node cannot be opened, and saying so at parse time
+     * beats an ENOENT on "" at startup. This is a cross-key check, so it can
+     * only run once the whole file is read. */
+    config_defaults(&cfg);
+    path = write_tmpconf(43, "[imu]\nbus = \"spi\"\n");
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE, "spi without spi_dev rejected");
+    remove(path);
+
+    config_defaults(&cfg);
+    path = write_tmpconf(44, "[mag]\nbus = \"spi\"\n");
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE, "mag spi without spi_dev rejected");
+    remove(path);
+
+    /* Order must not matter: spi_dev before bus is the same file. */
+    config_defaults(&cfg);
+    path = write_tmpconf(45,
+        "[imu]\nspi_dev = \"/dev/spidev0.0\"\nbus = \"spi\"\n");
+    EXPECT(config_load(path, &cfg) == 0,               "spi_dev before bus is fine");
+    remove(path);
+
+    /* 0 is "the driver's maximum"; negative is not a slow clock. */
+    config_defaults(&cfg);
+    path = write_tmpconf(46, "[imu]\nspi_speed_hz = -1\n");
+    EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE, "negative spi_speed_hz rejected");
+    remove(path);
+
+    end_test(fb);
+}
+
 static void test_signalk_section(void)
 {
     begin_test("test_signalk_section");
@@ -1298,6 +1384,9 @@ static void fill_distinct(imud_config_t *c)
     c->capture_max_files = 16;
     c->capture_flush_s = 17;
     SET_STR(c->imu_driver, "distinct-11");
+    c->imu_bus_kind = BUS_SPI;
+    SET_STR(c->imu_spi_dev, "distinct-imu-spi");
+    c->imu_spi_speed_hz = 1000001;
     c->imu_addr = 19;
     c->imu_int_gpio = 20;
     c->imu_odr_hz = 21;
@@ -1305,6 +1394,9 @@ static void fill_distinct(imud_config_t *c)
     c->imu_gyro_dps = 23;
     c->imu_fifo_wm = 24;
     SET_STR(c->mag_driver, "distinct-18");
+    c->mag_bus_kind = BUS_SPI;
+    SET_STR(c->mag_spi_dev, "distinct-mag-spi");
+    c->mag_spi_speed_hz = 1000002;
     c->mag_addr = 26;
     c->mag_int_gpio = 27;
     c->mag_odr_hz = 28;
@@ -1609,6 +1701,7 @@ int main(void)
     test_stream_section();
     test_tcp_output_keys();
     test_sim_playback_keys();
+    test_bus_transport_keys();
     test_capture_section();
     test_signalk_section();
     test_bridge_output_enables();
