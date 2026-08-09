@@ -713,6 +713,19 @@ void *fusion_thread(void *arg)
             if (count == target && !extended) {
                 float std_max = 0.0f;
                 for (int k = 0; k < 3; k++) {
+                    /*
+                     * E[x²] − mean², the cancellation-prone variance form,
+                     * and safe here for a reason worth writing down rather
+                     * than rediscovering.  Gyro readings are ~1e-3 rad/s, so
+                     * E[x²] and mean² are both ~1e-6 and their difference is
+                     * the ~1e-8 variance — three digits lost out of double's
+                     * sixteen.  The window is bounded (gyro_bias_sec, at most
+                     * doubled once), so the sums cannot grow without limit
+                     * either.  In float32 this same expression would keep
+                     * about four digits and the 0.5 °/s threshold below would
+                     * be reading noise; the accumulators are double for
+                     * exactly that reason and must stay that way.
+                     */
                     double mean = sum[k] / count;
                     double var  = sumsq[k] / count - mean * mean;
                     if (var > 0 && (float)sqrt(var) > std_max)
@@ -1023,7 +1036,8 @@ void *fusion_thread(void *arg)
         mekf_get_state(&f, &state, cal_flags);
 
         state.heave_m    = heave_update(&heave, f.q, s.accel);
-        state.heave_rate = -heave.vel;   /* NED down → heave positive up, m/s */
+        /* heave.vel is double (see heave_t); the wire field is float. */
+        state.heave_rate = (float)(-heave.vel);  /* NED down → up, m/s */
         if (heave.enabled && heave.settled)
             state.flags |= FLAG_HEAVE_VALID;
 

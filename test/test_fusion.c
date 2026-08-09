@@ -2586,6 +2586,72 @@ TEST(test_ema_alpha_is_exact_at_every_rate)
 }
 
 /*
+ * The leaks and the EMA gain must still bite when dt/tau is tiny.
+ *
+ * This pins the arithmetic that fails, not the symptom, which is what makes
+ * it affordable: reproducing the symptom needs 25 filter constants at 32 kHz
+ * — 720 M iterations — while the mechanism is visible in a single update.
+ *
+ * All three quantities below are of the form `state -= state * (dt/tau)` or
+ * `state += (dt/tau) * delta`.  In float32 they become exact no-ops once
+ * dt/tau falls under half an ULP of the state (5.96e-8), and each failure is
+ * worse than a rounding error:
+ *
+ *   heave leak      the leaky integrator becomes a PLAIN double integrator
+ *                   and accelerometer noise walks off unbounded.  Measured
+ *                   at 32 kHz / tau 900 s: 253 m of "heave" against a true
+ *                   0.004 m, with FLAG_HEAVE_VALID set.
+ *   heave high-pass alpha = tau/(tau+dt) rounds to exactly 1.0, so y = y + 0
+ *                   forever and the exact zero at DC is gone.
+ *   ew_stat gain    the sea-state mean/variance stop converging.  Measured
+ *                   at 32 kHz / 1200 s: Hs 18 % low, Tz 6.9 % off.
+ *
+ * The configurations are the extreme end of what imud.conf accepts, and that
+ * is the point — the accumulators are double so that the extreme end degrades
+ * gracefully instead of producing confident nonsense.
+ */
+TEST(test_leaks_survive_a_tiny_dt_over_tau)
+{
+    const float dt = 1.0f/32000.0f;
+    const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    const float rest[3] = { 0.0f, 0.0f, -9.80665f };   /* a_down == 0 exactly */
+
+    /* dt/tau = 3.47e-8, well under float32's 5.96e-8 half-ULP at 1.0. */
+    heave_t h;
+    heave_init(&h, 900.0f, dt);
+    const double leak = (double)dt / 900.0;
+
+    h.vel = 1.0;
+    (void)heave_update(&h, q, rest);
+    const double dropped = 1.0 - h.vel;
+    EXPECT(h.vel < 1.0, "heave leak still bites at dt/tau = 3.5e-8");
+    EXPECT(fabs(dropped - leak) < 0.01 * leak,
+           "heave leak removes vel*dt/tau, not a rounded-away zero");
+
+    /* High-pass: with disp held constant the recursion is y *= alpha, so a
+     * non-decaying y means alpha rounded to 1.0 and the DC zero is gone. */
+    h.vel = 0.0; h.disp = 0.0; h.disp_prev = 0.0;
+    h.hp_y = 1.0;
+    (void)heave_update(&h, q, rest);
+    const double hp_drop = 1.0 - h.hp_y;             /* = 1 - alpha */
+    const double want_hp = (double)dt / (900.0 + (double)dt);
+    EXPECT(h.hp_y < 1.0, "heave high-pass still decays at dt/tau = 3.5e-8");
+    EXPECT(fabs(hp_drop - want_hp) < 0.01 * want_hp,
+           "heave high-pass decays by 1-alpha, at the right RATE");
+
+    /* Sea state: seed a mean of 1 and feed 2, so the increment is alpha*1 —
+     * exactly the case float32 rounds away against a state of order 1. */
+    seastate_t w;
+    seastate_init(&w, 1200.0f, dt);
+    const double alpha = (double)dt / 1200.0;
+    w.h_mean = 1.0;
+    seastate_update(&w, 2.0f, 0, 0, 0, 0, 0);
+    EXPECT(w.h_mean > 1.0, "ew_stat mean still advances at alpha = 2.6e-8");
+    EXPECT(fabs((w.h_mean - 1.0) - alpha) < 0.01 * alpha,
+           "ew_stat mean advances by alpha*d");
+}
+
+/*
  * Settling must still latch when the window is long and the rate is high.
  *
  * This is a regression test for a float32 stall, and the only way to see it is
@@ -3603,8 +3669,192 @@ static void bench_sweep_odr(void)
 }
 #endif
 
+#ifdef BENCH_SWEEP_PRECISION
+/*
+ * What single precision costs the heave and sea-state estimators, measured
+ * against a double-precision reference of the same arithmetic.
+ *
+ *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
+ *       -Wextra -std=c11 -pthread -Iinclude -DBENCH_SWEEP_PRECISION" \
+ *       && ./test_fusion
+ *
+ * The question this answers is narrow and worth stating: NOT "how accurate is
+ * the estimator" — test_heave_across_rates and test_seastate_across_rates
+ * already measure that against analytic truth — but "how much of the error
+ * that remains would go away if the accumulators were double".  Those are
+ * different numbers, and only the second one justifies changing a type.
+ *
+ * Both estimators are driven with the SAME float-rounded inputs, so input
+ * quantisation is common-mode and what is left is accumulator precision
+ * alone.  That is deliberate: the wire delivers float samples either way, so
+ * widening the inputs is not on the table and measuring it would flatter the
+ * case for double.
+ *
+ * The axis that matters is the product dt/tau, not either alone, because that
+ * is the EMA gain: it is what approaches float32 epsilon (1.19e-7) and stalls
+ * the accumulator.  Hence a rate x window grid rather than a rate sweep.  The
+ * long windows are not hypothetical — fusion.c's own comment on wave_tau_s
+ * says "oceanographic practice is 10-20 min records", i.e. 600-1200 s.
+ *
+ * Recorded run: docs/math.md.
+ */
+static void ew_stat_d(double *mean, double *var, double x, double alpha)
+{
+    double d = x - *mean;
+    *mean += alpha * d;
+    *var  += alpha * ((1.0 - alpha) * d * d - *var);
+}
+
+static void bench_precision_row(double fs, double tau)
+{
+    const float  dtf = (float)(1.0 / fs);
+    const double dt  = (double)dtf;
+    const double alpha = dt / tau;
+    const double ww = 2.0 * M_PI / (double)SEASTATE_TW;
+    /*
+     * 2.5 sea-state windows: past the 2-tau settle latch with margin to
+     * converge.  Floored at 300 s so the heave column is never reported
+     * before heave itself has settled — its tau is fixed at 12 s here, so a
+     * 30 s sea-state window would otherwise sample heave at 6 taus and report
+     * a settling transient as if it were a precision figure.
+     */
+    const double span_s = (2.5 * tau > 300.0) ? 2.5 * tau : 300.0;
+    const uint64_t n = (uint64_t)(span_s * fs);
+
+    seastate_t w;
+    seastate_init(&w, (float)tau, dtf);
+    double h_mean = 0, h_var = 0, hr_mean = 0, hr_var = 0;
+
+    heave_t hv;
+    heave_init(&hv, 12.0f, dtf);
+    const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    double d_vel = 0, d_disp = 0, d_prev = 0, d_hp = 0;
+    const double h_tau = 12.0, leak = dt / h_tau, hp_a = h_tau / (h_tau + dt);
+    /* Vertical acceleration of the same wave, so heave sees a real signal. */
+    const double a_amp = (double)SEASTATE_A * ww * ww;
+
+    for (uint64_t i = 0; i < n; i++) {
+        const double t = (double)i * dt;
+        /* Round ONCE, feed both — see the note about common-mode inputs. */
+        const float  hf  = (float)((double)SEASTATE_A * sin(ww * t));
+        const float  hrf = (float)((double)SEASTATE_A * ww * cos(ww * t));
+        const float  af  = (float)(-a_amp * sin(ww * t));
+
+        seastate_update(&w, hf, hrf, 0.0f, 0.0f, 0.0f, 0.0f);
+        ew_stat_d(&h_mean,  &h_var,  (double)hf,  alpha);
+        ew_stat_d(&hr_mean, &hr_var, (double)hrf, alpha);
+
+        /*
+         * The specific force the driver would deliver: wave acceleration on
+         * top of −g.  Both paths get the identical float value and each
+         * removes gravity at its own precision, so the g-subtraction — a real
+         * cancellation of ~9.8 against ~9.8 — is inside what is being
+         * measured, which is right: it is arithmetic, not input rounding.
+         */
+        float accel[3] = { 0.0f, 0.0f, -(float)G + af };
+        (void)heave_update(&hv, q, accel);
+        const double a_down_d = (double)accel[2] + (double)G;
+        d_vel  += a_down_d * dt;     d_vel  -= d_vel * leak;
+        d_disp += d_vel * dt;        d_disp -= d_disp * leak;
+        d_hp    = hp_a * (d_hp + d_disp - d_prev);
+        d_prev  = d_disp;
+    }
+
+    const double hs_f = (double)seastate_wave_height(&w);
+    const double hs_d = 4.0 * sqrt(h_var);
+    const double tz_f = (double)seastate_wave_period(&w);
+    const double tz_d = 2.0 * M_PI * sqrt(h_var / hr_var);
+    const double hs_t = 2.828427 * (double)SEASTATE_A;   /* 4*A/sqrt(2) */
+
+    /* Heave: compare recovered amplitude, float against double. */
+    const double hv_f = (double)fabsf(hv.hp_y), hv_d = fabs(d_hp);
+
+    printf("  %7.0f %7.0f %11.3e %12.4f %12.4f %9.3f%% %9.3f%% %9.3f%%\n",
+           fs, tau, alpha, hs_f, hs_d,
+           fabs(hs_f - hs_d) / hs_d * 100.0,
+           fabs(tz_f - tz_d) / tz_d * 100.0,
+           hv_d > 1e-12 ? fabs(hv_f - hv_d) / hv_d * 100.0 : 0.0);
+    fflush(stdout);
+    (void)hs_t;
+}
+
+/*
+ * Heave on its own tau axis.
+ *
+ * The sea-state table above varies the STATS window; heave's filter constant
+ * is fixed at 12 s there.  But heave_tau_s is configurable too, and it enters
+ * as leak = dt/tau on both integrators and as alpha = tau/(tau+dt) on the
+ * output high-pass — so it has the same dt/tau cliff, in a different place.
+ * When leak drops below half a float32 ULP, `vel -= vel*leak` becomes a no-op
+ * and the leaky integrator turns into a plain one; when 1−alpha does, the
+ * high-pass loses its zero at DC.  Either way the bounded-drift guarantee
+ * that justifies the whole design goes away.
+ *
+ * This table is what the startup warning's threshold is set from.
+ */
+static void bench_precision_heave_row(double fs, double htau)
+{
+    const float  dtf = (float)(1.0 / fs);
+    const double dt  = (double)dtf;
+    const double ww  = 2.0 * M_PI / (double)SEASTATE_TW;
+    const double a_amp = (double)SEASTATE_A * ww * ww;
+    /* 25 filter constants: settled, and long enough for a leak failure to show. */
+    const uint64_t n = (uint64_t)(25.0 * htau * fs);
+
+    heave_t hv;
+    heave_init(&hv, (float)htau, dtf);
+    double d_vel = 0, d_disp = 0, d_prev = 0, d_hp = 0;
+    const double leak = dt / htau, hp_a = htau / (htau + dt);
+
+    for (uint64_t i = 0; i < n; i++) {
+        const double t = (double)i * dt;
+        const float af = (float)(-a_amp * sin(ww * t));
+        float accel[3] = { 0.0f, 0.0f, -(float)G + af };
+        const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+        (void)heave_update(&hv, q, accel);
+        const double a_down_d = (double)accel[2] + (double)G;
+        d_vel  += a_down_d * dt;     d_vel  -= d_vel * leak;
+        d_disp += d_vel * dt;        d_disp -= d_disp * leak;
+        d_hp    = hp_a * (d_hp + d_disp - d_prev);
+        d_prev  = d_disp;
+    }
+
+    const double f_amp = fabs((double)hv.hp_y), d_amp = fabs(d_hp);
+    printf("  %7.0f %7.0f %11.3e %12.5f %12.5f %9.3f%%\n",
+           fs, htau, leak, f_amp, d_amp,
+           d_amp > 1e-12 ? fabs(f_amp - d_amp) / d_amp * 100.0 : 0.0);
+    fflush(stdout);
+}
+
+static void bench_sweep_precision(void)
+{
+    static const double rates[] = { 833, 8000, 32000 };
+    static const double taus[]  = { 30, 120, 600, 1200 };
+    static const double htaus[] = { 12, 60, 300, 900 };
+
+    printf("\n  -- float vs double accumulators (same float inputs) --------\n");
+    printf("  %7s %7s %11s %12s %12s %10s %10s %10s\n",
+           "fs", "tau", "dt/tau", "Hs float", "Hs double",
+           "d Hs", "d Tz", "d heave");
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++)
+        for (size_t j = 0; j < sizeof taus / sizeof taus[0]; j++)
+            bench_precision_row(rates[i], taus[j]);
+
+    printf("\n  -- heave, on its own tau axis -------------------------------\n");
+    printf("  %7s %7s %11s %12s %12s %10s\n",
+           "fs", "heave tau", "leak", "amp float", "amp double", "delta");
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++)
+        for (size_t j = 0; j < sizeof htaus / sizeof htaus[0]; j++)
+            bench_precision_heave_row(rates[i], htaus[j]);
+    printf("\n");
+}
+#endif /* BENCH_SWEEP_PRECISION */
+
 static void test_wave_benchmark(void)
 {
+#ifdef BENCH_SWEEP_PRECISION
+    bench_sweep_precision();
+#endif
 #ifdef BENCH_SWEEP_ODR
     bench_sweep_odr();
 #endif
@@ -3912,6 +4162,7 @@ int main(void)
     RUN(test_seastate_across_rates);
     RUN(test_seastate_gates);
     RUN(test_ema_alpha_is_exact_at_every_rate);
+    RUN(test_leaks_survive_a_tiny_dt_over_tau);
     RUN(test_settling_survives_a_long_window_at_a_high_rate);
     RUN(test_mag_health);
     RUN(test_wave_disabled_inert);

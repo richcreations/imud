@@ -274,10 +274,31 @@ float mekf_ema_alpha(float dt_s, float tau_s);
 typedef struct {
     float tau;       /* leak / high-pass time constant, s */
     float dt;        /* sample period, s */
-    float vel;       /* leaked vertical velocity, m/s (down +) */
-    float disp;      /* leaked vertical displacement, m (down +) */
-    float disp_prev; /* previous displacement (high-pass state) */
-    float hp_y;      /* high-passed displacement (down +) */
+    /*
+     * Double, for a sharper version of the reason seastate_t gives.  Both
+     * stages are leaky — vel -= vel*(dt/tau) — and the leak is what bounds
+     * the drift of a double integration of accelerometer noise.  In float32
+     * that leak becomes a no-op once dt/tau falls below half an ULP, and the
+     * filter silently turns into a PLAIN double integrator.  The output
+     * high-pass fails the same way: alpha = tau/(tau+dt) rounds to exactly
+     * 1.0 and the exact zero at DC is gone.
+     *
+     * Measured against a double reference of the same arithmetic
+     * (BENCH_SWEEP_PRECISION), recovered amplitude error:
+     *
+     *     32 kHz / tau  12 s   0.225 %      <- shipped default
+     *     32 kHz / tau  60 s   1.225 %
+     *     32 kHz / tau 300 s   7.263 %
+     *     32 kHz / tau 900 s   6543974 %    <- 253 m of "heave"
+     *
+     * That last row is not a degraded reading, it is an unbounded integrator
+     * with FLAG_HEAVE_VALID set.  Double moves the cliff to dt/tau ~ 1e-16,
+     * which nothing reaches.  heave_update still returns float.
+     */
+    double vel;       /* leaked vertical velocity, m/s (down +) */
+    double disp;      /* leaked vertical displacement, m (down +) */
+    double disp_prev; /* previous displacement (high-pass state) */
+    double hp_y;      /* high-passed displacement (down +) */
     /*
      * Settling is counted in SAMPLES, not summed in seconds.  A float
      * accumulating a constant dt stops advancing once dt drops below half an
@@ -314,12 +335,32 @@ float heave_update(heave_t *h, const float q[4], const float accel[3]);
 typedef struct {
     float tau;       /* averaging time constant, s */
     float dt;        /* sample period, s */
-    float h_mean,  h_var;    /* heave, m / m² */
-    float hr_mean, hr_var;   /* heave rate, m/s / (m/s)² */
-    float r_mean,  r_var;    /* roll, rad / rad² (mean = steady heel) */
-    float rr_mean, rr_var;   /* roll rate, rad/s / (rad/s)² */
-    float p_mean,  p_var;    /* pitch, rad / rad² (mean = steady trim) */
-    float pr_mean, pr_var;   /* pitch rate, rad/s / (rad/s)² */
+    /*
+     * The accumulators are DOUBLE, and this is the one place in the filter
+     * where that is load-bearing rather than tidy.  The EMA gain is dt/tau,
+     * so it shrinks with the sample rate AND with the window; at 32 kHz with
+     * a 1200 s window it is 2.6e-8, well under float32's 1.19e-7 epsilon, and
+     * `mean += alpha*d` stops making progress.  Measured against a
+     * double-precision reference of the same arithmetic (BENCH_SWEEP_PRECISION):
+     *
+     *     dt/tau        Hs error   Tz error
+     *     1.0e-5  (833 Hz/120 s)      0.000 %    0.000 %   <- shipped default
+     *     2.1e-7  (8 kHz/600 s)       0.128 %    0.491 %
+     *     5.2e-8  (32 kHz/600 s)      1.823 %    0.982 %
+     *     2.6e-8  (32 kHz/1200 s)    17.995 %    6.865 %
+     *
+     * — and that last row is a valid-flagged 18 % under-report of significant
+     * wave height, not a missing reading.  Both long windows are documented
+     * practice (10–20 min records), so the combination is reachable.  Double
+     * moves the same cliff out past dt/tau ~ 1e-16, which no rate reaches.
+     * The accessors still return float; only the accumulation is widened.
+     */
+    double h_mean,  h_var;   /* heave, m / m² */
+    double hr_mean, hr_var;  /* heave rate, m/s / (m/s)² */
+    double r_mean,  r_var;   /* roll, rad / rad² (mean = steady heel) */
+    double rr_mean, rr_var;  /* roll rate, rad/s / (rad/s)² */
+    double p_mean,  p_var;   /* pitch, rad / rad² (mean = steady trim) */
+    double pr_mean, pr_var;  /* pitch rate, rad/s / (rad/s)² */
     /* Samples, not summed seconds — see heave_t for why.  This one is the
      * reachable case: `settled` needs 2·wave_tau_s, and wave_tau_s has no
      * upper bound while the window this estimator is built for is minutes. */

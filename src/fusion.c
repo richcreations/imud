@@ -1715,21 +1715,31 @@ float heave_update(heave_t *h, const float q[4], const float accel[3])
 
     float R[3][3];
     q_to_R(q, R);
-    float a_down = R[2][0]*accel[0] + R[2][1]*accel[1] + R[2][2]*accel[2]
-                 + G_MS2;
+    /*
+     * Gravity removal in double: R·accel is ~9.8 and G_MS2 is ~9.8, so this
+     * is a cancellation down to a wave signal three or four orders smaller.
+     * The rotation stays float — it is the accel sample's own precision, and
+     * widening it would flatter the result without changing the hardware.
+     */
+    const double a_down = (double)R[2][0]*accel[0] + (double)R[2][1]*accel[1]
+                        + (double)R[2][2]*accel[2] + (double)G_MS2;
 
-    float leak = h->dt / h->tau;
-    h->vel  += a_down * h->dt;
+    const double dt   = (double)h->dt;
+    const double tau  = (double)h->tau;
+    const double leak = dt / tau;
+    h->vel  += a_down * dt;
     h->vel  -= h->vel * leak;
-    h->disp += h->vel * h->dt;
+    h->disp += h->vel * dt;
     h->disp -= h->disp * leak;
 
-    /* First-order high-pass: y = α·(y + x − x_prev), exact zero at DC. */
-    float alpha = h->tau / (h->tau + h->dt);
+    /* First-order high-pass: y = α·(y + x − x_prev), exact zero at DC.
+     * α in double for the same reason as leak: in float it rounds to exactly
+     * 1.0 once dt/tau goes under an ULP, and the DC zero disappears. */
+    const double alpha = tau / (tau + dt);
     h->hp_y = alpha * (h->hp_y + h->disp - h->disp_prev);
     h->disp_prev = h->disp;
 
-    return -h->hp_y;   /* NED down → heave positive up */
+    return (float)(-h->hp_y);   /* NED down → heave positive up */
 }
 
 /* ── Sea-state estimator ───────────────────────────────────────────────────── */
@@ -1763,12 +1773,19 @@ void seastate_init(seastate_t *w, float tau_s, float dt)
         ? settle_samples(SEASTATE_SETTLE_FACTOR, tau_s, dt) : 0;
 }
 
-/* One EW mean/variance step: var converges to the variance about the EW mean. */
-static void ew_stat(float *mean, float *var, float x, float alpha)
+/*
+ * One EW mean/variance step: var converges to the variance about the EW mean.
+ *
+ * Double, deliberately — see the seastate_t declaration for the measured
+ * reason.  The incremental form is already the numerically good one (not
+ * E[x²] − mean²), so the width is about the GAIN, not the formula: alpha is
+ * dt/tau and goes under float32 epsilon at a high rate with a long window.
+ */
+static void ew_stat(double *mean, double *var, double x, double alpha)
 {
-    float d = x - *mean;
+    double d = x - *mean;
     *mean += alpha * d;
-    *var  += alpha * ((1.0f - alpha) * d * d - *var);
+    *var  += alpha * ((1.0 - alpha) * d * d - *var);
 }
 
 void seastate_update(seastate_t *w, float heave_m, float heave_rate,
@@ -1777,13 +1794,16 @@ void seastate_update(seastate_t *w, float heave_m, float heave_rate,
 {
     if (!w->enabled) return;
 
-    float alpha = w->dt / w->tau;
-    ew_stat(&w->h_mean,  &w->h_var,  heave_m,    alpha);
-    ew_stat(&w->hr_mean, &w->hr_var, heave_rate, alpha);
-    ew_stat(&w->r_mean,  &w->r_var,  roll,       alpha);
-    ew_stat(&w->rr_mean, &w->rr_var, roll_rate,  alpha);
-    ew_stat(&w->p_mean,  &w->p_var,  pitch,      alpha);
-    ew_stat(&w->pr_mean, &w->pr_var, pitch_rate, alpha);
+    /* alpha in double as well: at 32 kHz with a 1200 s window it is 2.6e-8,
+     * which float32 still represents fine — but rounding it there before
+     * multiplying would give back some of what the double accumulators buy. */
+    double alpha = (double)w->dt / (double)w->tau;
+    ew_stat(&w->h_mean,  &w->h_var,  (double)heave_m,    alpha);
+    ew_stat(&w->hr_mean, &w->hr_var, (double)heave_rate, alpha);
+    ew_stat(&w->r_mean,  &w->r_var,  (double)roll,       alpha);
+    ew_stat(&w->rr_mean, &w->rr_var, (double)roll_rate,  alpha);
+    ew_stat(&w->p_mean,  &w->p_var,  (double)pitch,      alpha);
+    ew_stat(&w->pr_mean, &w->pr_var, (double)pitch_rate, alpha);
 
     w->n++;
     if (!w->settled && w->n >= w->settle_n)
@@ -1793,43 +1813,43 @@ void seastate_update(seastate_t *w, float heave_m, float heave_rate,
 float seastate_wave_height(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    return 4.0f * sqrtf(w->h_var);
+    return 4.0f * (float)sqrt(w->h_var);
 }
 
 float seastate_wave_period(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    if (sqrtf(w->h_var) < SEASTATE_MIN_HEAVE_SIG || w->hr_var <= 0.0f)
+    if (sqrt(w->h_var) < (double)SEASTATE_MIN_HEAVE_SIG || w->hr_var <= 0.0)
         return 0.0f;
-    return 2.0f * (float)M_PI * sqrtf(w->h_var / w->hr_var);
+    return (float)(2.0 * M_PI * sqrt(w->h_var / w->hr_var));
 }
 
 float seastate_roll_period(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    if (sqrtf(w->r_var) < SEASTATE_MIN_ANGLE_SIG || w->rr_var <= 0.0f)
+    if (sqrt(w->r_var) < (double)SEASTATE_MIN_ANGLE_SIG || w->rr_var <= 0.0)
         return 0.0f;
-    return 2.0f * (float)M_PI * sqrtf(w->r_var / w->rr_var);
+    return (float)(2.0 * M_PI * sqrt(w->r_var / w->rr_var));
 }
 
 float seastate_roll_amplitude(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    return 2.0f * sqrtf(w->r_var);
+    return 2.0f * (float)sqrt(w->r_var);
 }
 
 float seastate_pitch_period(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    if (sqrtf(w->p_var) < SEASTATE_MIN_ANGLE_SIG || w->pr_var <= 0.0f)
+    if (sqrt(w->p_var) < (double)SEASTATE_MIN_ANGLE_SIG || w->pr_var <= 0.0)
         return 0.0f;
-    return 2.0f * (float)M_PI * sqrtf(w->p_var / w->pr_var);
+    return (float)(2.0 * M_PI * sqrt(w->p_var / w->pr_var));
 }
 
 float seastate_pitch_amplitude(const seastate_t *w)
 {
     if (!w->enabled || !w->settled) return 0.0f;
-    return 2.0f * sqrtf(w->p_var);
+    return 2.0f * (float)sqrt(w->p_var);
 }
 
 void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
