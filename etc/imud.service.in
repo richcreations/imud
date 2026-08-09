@@ -27,7 +27,7 @@ Group=imud
 # /dev/i2c-*.  Both groups are created by the installer (they already exist on
 # Raspberry Pi OS), and 60-imud.rules grants the group access to the device
 # nodes on distributions shipping no equivalent of Pi OS's 99-com.rules.
-SupplementaryGroups=gpio i2c
+SupplementaryGroups=gpio i2c spi
 
 # systemd creates /run/imud/ (mode 0750, owned by imud:imud) before the
 # service starts and removes it on stop.  The daemon writes its PID file
@@ -122,6 +122,11 @@ DeviceAllow=/dev/i2c-3 rw
 # gpiochip0: Pi 4.  gpiochip4: Pi 5 (RP1).
 DeviceAllow=/dev/gpiochip0 rw
 DeviceAllow=/dev/gpiochip4 rw
+# spidev0.0 / spidev0.1: SPI0 chip selects CE0 and CE1, the two the Pi header
+# exposes by default and the pair [imu] spi_dev / [mag] spi_dev name.  A board
+# using SPI1..6, or a second SPI bus, needs its own line here.
+DeviceAllow=/dev/spidev0.0 rw
+DeviceAllow=/dev/spidev0.1 rw
 
 # Memory ceiling (spec target: <14 MB RSS; 32 MB allows headroom).
 MemoryMax=32M

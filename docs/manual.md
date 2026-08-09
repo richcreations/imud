@@ -185,15 +185,23 @@ journalctl -u imud -f                # follow the log
 The unit is `Type=notify` and hardened (`ProtectSystem=strict`,
 `NoNewPrivileges`, `DevicePolicy=closed` with explicit `DeviceAllow` lines,
 `MemoryMax=32M`, a 10 s systemd watchdog). The shipped unit allows every
-supported node — `/dev/i2c-1`, `/dev/i2c-3`, `/dev/gpiochip0` and
-`/dev/gpiochip4` — so it needs no edit on either a Pi 4 or a Pi 5; an allow for
-a node the board does not have is inert. Only the config needs to match your
-board (`device.gpio_chip`, `device.i2c_bus`).
+supported node — `/dev/i2c-1`, `/dev/i2c-3`, `/dev/spidev0.0`,
+`/dev/spidev0.1`, `/dev/gpiochip0` and `/dev/gpiochip4` — so it needs no edit
+on either a Pi 4 or a Pi 5, on either transport; an allow for a node the board
+does not have is inert. Only the config needs to match your board
+(`device.gpio_chip`, `device.i2c_bus`, and `spi_dev` if you use SPI).
 
-If you point `i2c_bus` or `gpio_chip` at a node outside that list, add a
-matching `DeviceAllow=` line to the unit — under `DevicePolicy=closed` the open
-is refused otherwise, and the failure looks like a permissions problem rather
-than a policy one.
+The daemon runs as `imud` with `SupplementaryGroups=gpio i2c spi`. All three
+groups are created by the package's maintainer scripts (or `make install`),
+and `60-imud.rules` gives them the device nodes — Raspberry Pi OS already does
+this in its own `99-com.rules`.
+
+If you point `i2c_bus`, `spi_dev` or `gpio_chip` at a node outside that list —
+SPI1..6, or a second SPI bus — add a matching `DeviceAllow=` line to the unit.
+Under `DevicePolicy=closed` the open is refused otherwise, and the failure
+looks like a permissions problem rather than a policy one. `make check-devices`
+compares the shipped config against the shipped unit and fails the build if
+they disagree, which is what stops the two drifting apart.
 
 All six units — the daemon and the five bridges — additionally carry an empty
 `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, a

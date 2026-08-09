@@ -1,9 +1,10 @@
 # udev rules for imud — Copyright (c) 2026 Richard Simpson
 # SPDX-License-Identifier: MIT
 #
-# Give the i2c and gpio groups access to the character devices imud opens:
-# /dev/i2c-* (the IMU and magnetometer bus) and /dev/gpiochip* (the data-ready
-# interrupt lines, via libgpiod).  Without this the nodes are root-owned and
+# Give the i2c, spi and gpio groups access to the character devices imud opens:
+# /dev/i2c-* and /dev/spidev* (the IMU and magnetometer bus, whichever
+# transport is configured) and /dev/gpiochip* (the data-ready interrupt lines,
+# via libgpiod).  Without this the nodes are root-owned and
 # imud.service — which runs unprivileged as imud with gpio/i2c as supplementary
 # groups — cannot open them.
 #
@@ -17,4 +18,5 @@
 # (or by `make install`).
 
 SUBSYSTEM=="i2c-dev",                   GROUP="i2c",  MODE="0660"
+SUBSYSTEM=="spidev",                    GROUP="spi",  MODE="0660"
 SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"

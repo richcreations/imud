@@ -629,8 +629,8 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud imud-cal imud-status $(DESTDIR)$(PREFIX)/bin/
 	# ── System user + hardware groups (skipped for staged installs: DESTDIR set) ─
-	# The groups are created, not just joined: Raspberry Pi OS ships gpio and
-	# i2c, stock Debian ships neither, and imud.service's SupplementaryGroups=
+	# The groups are created, not just joined: Raspberry Pi OS ships gpio, i2c
+	# and spi, stock Debian ships none, and imud.service's SupplementaryGroups=
 	# refuses to start without them.  Done on every install, not only when the
 	# user is created, so an upgrade repairs a host that was missing them.
 	@if [ -z "$(DESTDIR)" ]; then \
@@ -638,7 +638,7 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	        useradd --system --no-create-home --shell /usr/sbin/nologin imud; \
 	        echo "Created system user 'imud'"; \
 	    fi; \
-	    for grp in gpio i2c; do \
+	    for grp in gpio i2c spi; do \
 	        getent group "$$grp" >/dev/null 2>&1 || groupadd --system "$$grp" 2>/dev/null || true; \
 	        usermod -aG "$$grp" imud 2>/dev/null || true; \
 	    done; \

@@ -36,13 +36,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONF = "config/imud.conf"
 UNIT = "etc/imud.service.in"
 
-# [device] keys that name a /dev node, and how to turn the value into a path.
-# The bare-name form is not a quirk to paper over: include/config.h stores
-# gpio_chip without the prefix and src/imu.c builds "/dev/%s" from it.
-DEVICE_KEYS = {
-    "i2c_bus":   lambda v: v,
-    "gpio_chip": lambda v: v if v.startswith("/dev/") else "/dev/" + v,
+# Keys that name a /dev node, per section, and how to turn the value into a
+# path. The bare-name form is not a quirk to paper over: include/config.h
+# stores gpio_chip without the prefix and src/imu.c builds "/dev/%s" from it.
+#
+# spi_dev is per-sensor rather than global, because the IMU and the
+# magnetometer sit on separate chip selects — so it is looked for in [imu] and
+# [mag], not [device].
+SECTION_KEYS = {
+    "device": {
+        "i2c_bus":   lambda v: v,
+        "gpio_chip": lambda v: v if v.startswith("/dev/") else "/dev/" + v,
+    },
+    "imu": {"spi_dev": lambda v: v},
+    "mag": {"spi_dev": lambda v: v},
 }
+
+# The section whose absence means the file has been restructured. The sensor
+# sections are optional here only in the sense that a config need not select
+# SPI; [device] always exists.
+REQUIRED_SECTION = "device"
 
 
 def read(rel):
@@ -63,19 +76,22 @@ def conf_section(text, name):
 
 
 def configured_devices(conf_text):
-    """[(key, value, path)] for every active device-valued key."""
-    body = conf_section(conf_text, "device")
-    if body is None:
-        sys.exit(f"{CONF}: no [device] section — has it been renamed?")
-
+    """[(where, key, value, path)] for every active device-valued key."""
     out = []
-    for key, to_path in DEVICE_KEYS.items():
-        # Active lines only. A commented-out alternative is a suggestion, and
-        # the operator who uncomments it owns the matching unit edit.
-        m = re.search(r'^\s*' + re.escape(key) + r'\s*=\s*"?([^"#\s]+)"?',
-                      body, re.M)
-        if m:
-            out.append((key, m.group(1), to_path(m.group(1))))
+    for section, keys in SECTION_KEYS.items():
+        body = conf_section(conf_text, section)
+        if body is None:
+            if section == REQUIRED_SECTION:
+                sys.exit(f"{CONF}: no [{section}] section — has it been renamed?")
+            continue
+        for key, to_path in keys.items():
+            # Active lines only. A commented-out alternative is a suggestion,
+            # and the operator who uncomments it owns the matching unit edit.
+            m = re.search(r'^\s*' + re.escape(key) + r'\s*=\s*"?([^"#\s]+)"?',
+                          body, re.M)
+            if m:
+                out.append((f"[{section}] {key}", key, m.group(1),
+                            to_path(m.group(1))))
     return out
 
 
@@ -112,8 +128,9 @@ def main():
     # An extractor that silently finds nothing must fail, not pass. Both of
     # these would otherwise turn a renamed key or directive into a green run.
     if not devices:
-        sys.exit(f"{CONF}: no device keys found in [device] — "
-                 f"expected one of {sorted(DEVICE_KEYS)}")
+        sys.exit(f"{CONF}: no device keys found — expected at least one of "
+                 f"{sorted(SECTION_KEYS[REQUIRED_SECTION])} in "
+                 f"[{REQUIRED_SECTION}]")
     if not allows:
         sys.exit(f"{UNIT}: no DeviceAllow= lines found — "
                  f"has the hardening block been removed?")
@@ -126,10 +143,10 @@ def main():
             f"entirely, allowing nothing under DevicePolicy=closed. "
             f"(A trailing comment does this; put it on its own line.)")
 
-    for key, value, path in devices:
+    for where, _key, value, path in devices:
         if path not in allows:
             failures.append(
-                f"{CONF} [device] {key} = {value} resolves to {path}, "
+                f"{CONF} {where} = {value} resolves to {path}, "
                 f"which {UNIT} does not allow. Under DevicePolicy=closed the "
                 f"open is refused. Allowed: {', '.join(sorted(allows))}")
 
