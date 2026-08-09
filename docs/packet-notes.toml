@@ -1,0 +1,146 @@
+# imud — packet and flag NOTES
+#
+# The Offset/Bytes/Type/Field columns of spec.md's packet table, and the bit
+# numbers and names of its flags table, are GENERATED from include/types.h by
+# tools/gen-packet-docs.py.  What cannot be generated is the Notes column: it
+# is prose, and it is the reason a third-party integrator can write a decoder
+# from that table at all.  It lives here.
+#
+# Keyed by field / flag name, so a field that moves in the struct carries its
+# note with it — the offsets shift, the prose does not.
+#
+# CONTINUATION LINES ARE VERBATIM, indentation included: they are stored the
+# way they appear so the generator never has to re-wrap prose, and its output
+# is byte-identical to the table these were lifted out of.  If you rewrap a
+# note, rewrap it here, aligned to the Notes column (43 for fields, 27 for
+# flags).
+#
+# `version` carries {version}, substituted from IMUD_VERSION.  That row is why
+# this generator exists: it read `= 14` for three wire revisions while the
+# header said 17.
+
+
+[fields]
+magic = '0x494D5544 (“IMUD”)'
+version = '''
+= {version}  (IMUD_VERSION; wire revision,
+                                              not the release version)'''
+flags = 'see below'
+ts_wall_ns = 'CLOCK_REALTIME ns, SAMPLE-TAKEN'
+ts_tai_ns = 'CLOCK_TAI ns'
+ts_chip_ticks = 'raw ISM330 counter (25 µs/tick)'
+anchor_gen = 'increments on re-anchor'
+accel_x = 'm/s², calibrated + cal-corrected'
+accel_y = ''
+accel_z = ''
+accel_raw_x = 'm/s², pre-calibration (after mount rot)'
+accel_raw_y = ''
+accel_raw_z = ''
+gyro_x = 'rad/s, bias-corrected (fused)'
+gyro_y = ''
+gyro_z = ''
+gyro_raw_x = 'rad/s, before bias correction'
+gyro_raw_y = ''
+gyro_raw_z = ''
+mag_x = 'µT, calibrated (hard/soft-iron corrected)'
+mag_y = ''
+mag_z = ''
+mag_raw_x = 'µT, pre-calibration (after mount rot)'
+mag_raw_y = ''
+mag_raw_z = ''
+quat_w = 'MEKF output quaternion [w,x,y,z]'
+quat_x = ''
+quat_y = ''
+quat_z = ''
+pitch = 'rad, NED'
+roll = 'rad, NED'
+yaw = 'rad, magnetic'
+heading_deg = '0–360° magnetic'
+rate_of_turn = 'deg/min, + = turning right'
+temp_c = '°C ISM330DHCX die sensor'
+cov_9 = '''
+3×3 attitude error covariance,
+                                          row-major (rad²); from MEKF P matrix'''
+imu_seq = 'monotonic ISM330 sample counter'
+declination_deg = '°E+; 0.0 when FLAG_DECLINATION_VALID not set'
+heave_m = 'm, + up; 0.0 when heave disabled (v1.1)'
+gyro_bias_x = 'rad/s, estimated gyro bias (v1.2, body frame)'
+gyro_bias_y = ''
+gyro_bias_z = ''
+gyro_bias_var_x = '(rad/s)², gyro-bias variance (v1.2)'
+gyro_bias_var_y = ''
+gyro_bias_var_z = ''
+heave_rate = 'm/s, + up; 0.0 when heave disabled (v1.2)'
+accel_quiescence = 'EMA of (|a|/g−1)²; disturbance metric (v1.2)'
+wave_height_m = '''
+significant wave height Hs = 4σ(heave), m;
+                                          0.0 until FLAG_WAVE_VALID (v14)'''
+wave_period_s = '''
+mean zero-crossing wave period Tz, s;
+                                          0.0 when becalmed or not settled (v14)'''
+roll_period_s = 'vessel roll period, s; 0.0 = not rolling (v14)'
+roll_amplitude = 'significant single amplitude 2σ(roll), rad (v14)'
+pitch_period_s = 'vessel pitch period, s; 0.0 = not pitching (v14)'
+pitch_amplitude = 'significant single amplitude 2σ(pitch), rad (v14)'
+mag_anomaly = '''
+EMA of ||B|−|B_ref||/|B_ref| — magnetic
+                                          interference / iron-cal drift metric (v14)'''
+mag_residual = '''
+EMA of |heading innovation|, rad — compass
+                                          calibration health (v14)'''
+innov_weight = '''
+EMA of the Huber weight √(γ/d²) applied
+                                          to accepted MEKF updates; 1.0 = never
+                                          capped, → 0.33 = sustained capping at
+                                          the reject boundary (v17)'''
+innov_reject = '''
+EMA of the innovation-gate reject
+                                          indicator; fraction of MEKF updates
+                                          discarded outright (v17)'''
+nis_accel = '''
+EMA of the normalised innovation
+                                          squared for the accel update, d²/2;
+                                          1.0 = the filter's covariance is
+                                          consistent with the innovations it
+                                          actually sees, > 1 = over-confident
+                                          (v17)'''
+nis_mag = '''
+Same for the mag update: d²/2 in
+                                          3-D mode, d²/1 in yaw-only (v17)'''
+crc32 = 'IEEE 802.3 CRC of bytes 0–271'
+
+[flags]
+mag_valid = '1 = mag calibrated and sensor healthy'
+mag_set_reset = 'SET pulse issued within last read cycle (settling)'
+fusion_converged = 'MEKF covariance trace < threshold (filter settled)'
+accel_cal = 'Accel calibration applied'
+gyro_cal = 'Gyro bias applied'
+mag_cal = 'Mag hard/soft-iron cal applied'
+motion = '''
+RETIRED — never set. Use accel_quiescence (a
+                           continuous disturbance metric) or bit 13. The bit
+                           is not reused: a stale consumer would read a new
+                           meaning through the old name.'''
+fifo_overflow = 'ISM330 FIFO overflowed since last packet (gap!)'
+startup = 'Gyro bias estimation still in progress'
+shutdown = 'Final packet before clean exit'
+declination_valid = 'Declination known; true heading = heading_deg + declination_deg'
+heave_valid = 'Heave estimator settled (heave_m / heave_rate trustworthy)'
+wave_valid = '''
+Sea-state statistics settled (wave/roll/pitch
+                           height, period, and amplitude fields trustworthy)'''
+engine_on = 'Engine-vibration detector currently asserting'
+state_reset = '''
+The MEKF found a non-finite value in its own state
+                           and reset itself: nominal state and covariance back
+                           to their initial values, re-aligning from the next
+                           good accel/mag pair. LATCHED from the reset until
+                           the filter next converges, not a single-packet
+                           pulse — at up to 500 Hz a momentary bit is invisible
+                           to a 1 Hz consumer. Bit 2 is clear for the same
+                           span. Attitude remains readable throughout; it is
+                           unconverged, not invalid.'''
+
+# Rows that are not a FLAG_* define: bit 15 has no symbol, only a
+# promise about what a future revision may do with it.
+trailer = 'bit 15  reserved (a flags_ext field can be appended in a future revision)'

@@ -60,13 +60,59 @@ EXTRA = {
 }
 
 
-def published():
-    """The scalar topic subpaths, in FIELDS[] order."""
+def fields():
+    """[(subpath, GATE_*)] in FIELDS[] order."""
     src = must_read(SRC, "the MQTT bridge's publish table")
     m = re.search(r"\}\s*FIELDS\[\]\s*=\s*\{(.*?)\n\};", src, re.S)
     if not m:
         sys.exit(f"{SRC}: cannot find FIELDS[] — has the publish table moved?")
-    return re.findall(r'\{\s*"([^"]+)"', m.group(1))
+    return re.findall(r'\{\s*"([^"]+)".*?(GATE_\w+)\s*\}', m.group(1))
+
+
+def published():
+    """The scalar topic subpaths, in FIELDS[] order."""
+    return [t for t, _ in fields()]
+
+
+# The spec's condition column, per gate.  It is prose, so it is matched on the
+# distinguishing phrase rather than compared whole — but WHICH phrase a row
+# carries is a fact about FIELDS[], and one nothing read until now: a topic
+# moved from GATE_ALWAYS to GATE_WAVE still appeared in the table, still
+# appeared in the config template, and still said "always".
+GATE_PHRASE = {
+    "GATE_ALWAYS": "always",
+    "GATE_DECL":   "declination known",
+    "GATE_HEAVE":  "settled",
+    "GATE_WAVE":   "sea state settled",
+}
+
+
+def check_gates(rep, rel, text):
+    """Each documented topic's condition must match its gate in FIELDS[]."""
+    rows = {}
+    for line in text.split("\n"):
+        m = re.match(r"^\|\s*(.+?)\s*\|.*\|\s*(.+?)\s*\|\s*$", line)
+        if m and "imud/" in m.group(1):
+            for topic in re.findall(r"`imud/([^`]+)`", expand_shorthands(m.group(1))):
+                rows[topic] = m.group(2)
+    rep.expect(rows, f"{rel} topic table rows")
+
+    for topic, gate in fields():
+        cond = rows.get(topic)
+        if cond is None:
+            continue                      # absence is reported by main()
+        want = GATE_PHRASE.get(gate)
+        if want is None:
+            rep.fail(f"{SRC}: '{topic}' has gate {gate}, which this checker "
+                     f"has no documented condition for — add it to GATE_PHRASE")
+            continue
+        # GATE_HEAVE's phrase is a substring of GATE_WAVE's, so a heave topic
+        # must NOT read as a wave one.
+        ok = want in cond and not (gate == "GATE_HEAVE"
+                                   and GATE_PHRASE["GATE_WAVE"] in cond)
+        rep.check(ok,
+                  f"{rel}: '{topic}' is published under {gate}, but the table "
+                  f"gives its condition as '{cond}'")
 
 
 def verify_extras(rep):
@@ -107,6 +153,18 @@ def main():
         for topic in expected:
             rep.check(topic in haystack,
                       f"{rel}: publishes '{topic}' but it is not documented here")
+
+        # And the reverse.  A topic that stops being published leaves a
+        # subscriber waiting forever on a path the documentation still
+        # promises — the same failure as an undocumented one, read from the
+        # other end, and nothing checked it until now.
+        for topic in sorted(set(re.findall(r"`imud/([a-zA-Z/]+)`", haystack))):
+            rep.check(topic in expected,
+                      f"{rel}: documents 'imud/{topic}', which {SRC} no "
+                      f"longer publishes")
+
+    check_gates(rep, "docs/imud-mqtt/spec.md",
+                read("docs/imud-mqtt/spec.md") or "")
 
     return rep.finish(f"{len(subs)} scalar topics + {len(EXTRA)} others "
                       f"across {len(SURFACES)} surfaces")

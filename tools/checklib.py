@@ -93,6 +93,30 @@ def expand_shorthands(text):
     return text + "\n" + "\n".join(out)
 
 
+def splice(text, begin, end, body, where, rep):
+    """Replace the text between two markers, leaving the rest byte-identical.
+
+    Shared by the generators, which all work the same way: a document is
+    hand-written prose with machine-owned islands in it, marked by comments
+    that neither GitHub, pandoc nor roff renders.
+
+    Fails loudly rather than guessing: an unmatched or duplicated marker means
+    the file is not in the shape the generator understands, and writing anyway
+    would corrupt a document.
+    """
+    b, e = text.count(begin), text.count(end)
+    if b != 1 or e != 1:
+        rep.fail("%s: expected exactly one %r and one %r, found %d and %d"
+                 % (where, begin, end, b, e))
+        return text
+    i = text.index(begin) + len(begin)
+    j = text.index(end)
+    if j < i:
+        rep.fail("%s: END marker precedes BEGIN" % where)
+        return text
+    return text[:i] + "\n" + body + "\n" + text[j:]
+
+
 class Report:
     """Failure accumulator with the family's output format.
 

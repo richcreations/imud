@@ -723,6 +723,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 ### Packet Layout
 
+<!-- BEGIN GENERATED: packet-layout -->
 ```text
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
@@ -806,6 +807,7 @@ Offset  Bytes  Type      Field             Notes
 ────────────────────────────────────────────────────────────────────
 Total: 276 bytes
 ```
+<!-- END GENERATED: packet-layout -->
 
 **Consistency metrics (`nis_accel` / `nis_mag`).** Rolling averages (τ ≈ 30 s)
 of d² = νᵀS⁻¹ν, accumulated *before* the Huber cap and *including* updates the
@@ -824,6 +826,7 @@ average would be ~8:1 accel with the mag signal invisible.
 
 ### Flags Bitmask
 
+<!-- BEGIN GENERATED: packet-flags -->
 ```text
 bit 0   mag_valid          1 = mag calibrated and sensor healthy
 bit 1   mag_set_reset      SET pulse issued within last read cycle (settling)
@@ -854,6 +857,7 @@ bit 14  state_reset        The MEKF found a non-finite value in its own state
                            unconverged, not invalid.
 bit 15  reserved (a flags_ext field can be appended in a future revision)
 ```
+<!-- END GENERATED: packet-flags -->
 
 ### Coordinate Frame
 

@@ -59,6 +59,12 @@ BRIDGES = {
         "src": "src/prom_metrics.c",
         "pattern": r'GAUGE\(\s*"([a-z][a-z0-9_]*)"',
         "what": "exported gauge names",
+        # Documented names look like metric names and nothing else does, so
+        # the spec can be read back and each name checked against the code.
+        # The counter is not a GAUGE — it is APPENDed with its own HELP/TYPE
+        # because Prometheus types it differently — so it is added by hand.
+        "documented": r"`(imud_[a-z0-9_]+)`",
+        "extra": ["imud_packets_total"],
     },
 }
 
@@ -98,6 +104,23 @@ def main():
             rep.check(item in haystack,
                       f"{rel}: {spec['src']} emits '{item}' but the spec does "
                       f"not document it")
+
+        # And the reverse, where the spec's names are unambiguous enough to
+        # read back.  A metric that stops being exported leaves every
+        # dashboard and alert rule built from the spec silently empty — the
+        # same failure as an undocumented one, from the other end.
+        if "documented" in spec:
+            known = set(emitted) | set(spec.get("extra", ()))
+            for item in sorted(set(re.findall(spec["documented"], haystack))):
+                # `imud_data_t` and friends: the spec talks about the libimud
+                # types it decodes as well as the metrics it exports, and C's
+                # _t suffix is what tells the two apart.  No Prometheus metric
+                # name ends there — they end in a unit.
+                if item.endswith("_t"):
+                    continue
+                rep.check(item in known,
+                          f"{rel}: documents '{item}', which {spec['src']} no "
+                          f"longer exports")
 
     return rep.finish(f"{total} outputs across {len(BRIDGES)} bridges")
 

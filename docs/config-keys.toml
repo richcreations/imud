@@ -415,6 +415,7 @@ to use a 10\~ms polling timer instead.'''
   [[section.key]]
   names = ["odr_hz"]
   fields = ["imu_odr_hz"]
+  values_from = "ism330dhcx.supported_odr_hz"
   macros = ["NEED_POS_INT"]
   type = 'int'
   default = 'default:\ 833'
@@ -426,16 +427,17 @@ A rate the chip cannot produce is rounded
 .I up
 to the next one it can, and the filter is tuned for that actual rate; the
 daemon logs both at startup when they differ.
-ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664.
+ISM330DHCX supports: {values}.
 Rates above 1660 need
 .BR "bus = \(dqspi\(dq" .'''
   md_type = 'int'
   md_default = '`833`'
-  desc = 'Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain.'
+  desc = 'Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: {values}. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain.'
 
   [[section.key]]
   names = ["accel_g"]
   fields = ["imu_accel_g"]
+  values_from = "ism330dhcx.supported_accel_g"
   macros = ["NEED_INT"]
   type = 'int'
   default = 'default:\ 8'
@@ -443,14 +445,15 @@ Rates above 1660 need
   man_style = "tight"
   man = '''
 Accelerometer full-scale range in g.
-ISM330DHCX: 2, 4, 8, 16.'''
+ISM330DHCX: {values}.'''
   md_type = 'int'
   md_default = '`8`'
-  desc = 'Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`.'
+  desc = 'Accelerometer full-scale range in g. ISM330DHCX: {values}.'
 
   [[section.key]]
   names = ["gyro_dps"]
   fields = ["imu_gyro_dps"]
+  values_from = "ism330dhcx.supported_gyro_dps"
   macros = ["NEED_INT"]
   type = 'int'
   default = 'default:\ 2000'
@@ -458,10 +461,10 @@ ISM330DHCX: 2, 4, 8, 16.'''
   man_style = "tight"
   man = '''
 Gyroscope full-scale range in degrees/second.
-ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.'''
+ISM330DHCX: {values}.'''
   md_type = 'int'
   md_default = '`2000`'
-  desc = 'Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`.'
+  desc = 'Gyroscope full-scale range in degrees/second. ISM330DHCX: {values}.'
 
   [[section.key]]
   names = ["fifo_wm"]
@@ -618,6 +621,7 @@ to use a polling timer.'''
   [[section.key]]
   names = ["odr_hz"]
   fields = ["mag_odr_hz"]
+  values_from = "mmc5983ma.supported_odr_hz"
   macros = ["NEED_POS_INT"]
   type = 'int'
   default = 'default:\ 100'
@@ -629,10 +633,10 @@ Rounded
 .I up
 to a supported rate as for
 .BR [imu]\ odr_hz .
-MMC5983MA supports: 1, 10, 20, 50, 100, 200, 1000.'''
+MMC5983MA supports: {values}.'''
   md_type = 'int'
   md_default = '`100`'
-  desc = 'Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`.'
+  desc = 'Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: {values}.'
 
   [[section.key]]
   names = ["set_period_s"]

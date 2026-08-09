@@ -84,10 +84,10 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 | `check-docs` | every key `src/config.c` parses appears in its template, man page and manual; and `docs/config-keys.toml` names the same keys, fields and `NEED_*` macros `apply_kv()` really uses |
 | `check-config-docs` | the man5 entries, the manual tables and `test/test_config_defaults.gen.c` are what the registry renders — one key, one home, four surfaces |
 | `check-cli-docs` | every flag a parser accepts is in that tool's `--help` **and** its man page, manual, spec and the website |
-| `check-packet` | `spec.md`'s offset table matches `imu_packet_t` — offset, size, type and the wire version |
-| `check-drivers` | the driver tables and every documented rate/range list match the `*_ops` initialisers |
+| `check-packet-docs` | `spec.md`'s offset table and flags bitmask **are** `imu_packet_t` and the `FLAG_*` defines — generated, so an inserted field renumbers every row beneath it and the wire version cannot go stale |
+| `check-driver-docs` | `docs/manual.md` §5 **is** `src/drivers.c` — name, type, SPI mode and clock, and the experimental marker, with the parts and notes in `docs/driver-notes.toml`; every documented rate list comes from the `.supported_*` array it describes |
 | `check-nmea` | the documented sentence set and count match `nmea_encode()` |
-| `check-mqtt-topics`, `check-bridge-outputs` | each bridge's spec lists exactly what its encoder emits |
+| `check-mqtt-topics`, `check-bridge-outputs` | each bridge's spec lists exactly what its encoder emits, **and nothing it no longer emits**; each MQTT topic's documented condition matches its `GATE_*` |
 | `check-libimud-api` | `libimud.map`, `imud.h`, `libimud.3` and the libimud spec describe one API |
 | `check-links` | every link resolves — in the repo **and** in the tree `make install` lays down |
 | `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
@@ -95,6 +95,15 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 Run it before you commit; CI runs it on every push. `make test-tools` then
 checks the checkers themselves still detect drift, by breaking one fact at a
 time in a copy of the tree.
+
+**Adding a driver** used to mean editing six files. It is now: write
+`src/drivers/<part>.c`, register it in `src/drivers.c`, add an entry to
+`docs/driver-notes.toml` (the part, its address range, the reference GPIO, why
+it is not on SPI if it is not, and the notes), and run `make docs-tables`. The
+driver table, the type column, the SPI column and every supported-rate list
+follow from the code. The one hand edit left is the driver-name sentence in
+`docs/config-keys.toml`'s `[imu] driver` / `[mag] driver` entry — prose, not a
+table, so it is checked rather than generated, and forgetting it fails.
 
 What is still on you, because no checker covers it:
 

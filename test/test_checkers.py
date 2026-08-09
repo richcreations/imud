@@ -54,26 +54,81 @@ def sub(pattern, repl, count=1):
 
 
 CASES = [
-    ("check-packet", "include/types.h",
+    # The wire version, which spent three revisions reading 14 in this table
+    # while the header said 17.
+    ("gen-packet-docs", "include/types.h",
      sub(r"#define\s+IMUD_VERSION\s+\d+", "#define IMUD_VERSION  99"),
-     "wire version"),
+     "spec.md does not match"),
 
-    ("check-packet", "spec.md",
-     sub(r"^(\s*8\s+)8(\s+uint64\s+ts_wall_ns)", r"\g<1>4\g<2>"),
-     "ts_wall_ns"),
+    # A field added to the packet: the offsets beneath it move and the total
+    # changes, while nothing about the rows themselves looks wrong.  Anchored
+    # on the crc32 DECLARATION — several field names in types.h appear in more
+    # than one struct, and a mutation that lands in the wrong one silently
+    # tests nothing.
+    ("gen-packet-docs", "include/types.h",
+     sub(r"^    uint32_t crc32;", "    uint32_t zzz_new;\n    uint32_t crc32;"),
+     "_Static_assert pins"),
+
+    # A flag renamed in the header, leaving the table describing a bit by a
+    # name no longer defined.
+    ("gen-packet-docs", "include/types.h",
+     sub(r"^#define FLAG_ENGINE_ON(\s+)\(1u << 13\)",
+         r"#define FLAG_ZZZ_ON\1(1u << 13)"),
+     "zzz_on"),
+
+    # A new packet field with no Notes prose.  The table would still be
+    # correct and still be useless, so it is a failure.
+    ("gen-packet-docs", "docs/packet-notes.toml",
+     sub(r"^heave_m = .*$", ""),
+     "no note for 'heave_m'"),
 
     ("check-nmea", "src/nmea.c",
      sub(r'"\$?PASHR', '"$ZZZZZ'),
      "ZZZZZ"),
 
-    ("check-drivers", "src/drivers/ism330dhcx.c",
+    # A rate list that grew in the driver.  This is the drift that shipped:
+    # the man page stopped at 1660 while ism330dhcx.c offered 3332 and 6664.
+    ("gen-config-docs", "src/drivers/ism330dhcx.c",
      sub(r"\.supported_accel_g\s*=\s*\{[^}]*\}",
          ".supported_accel_g  = { 2, 4, 8, 16, 32, 0 }"),
-     "accel_g"),
+     "[imu] accel_g"),
+
+    # A driver's SPI clock changed without the driver table following.
+    ("gen-drivers", "src/drivers/ism330dhcx.c",
+     sub(r"\.spi_max_hz = 10000000", ".spi_max_hz = 20000000"),
+     "driver table does not match"),
+
+    # A driver registered and never documented.
+    ("gen-drivers", "src/drivers.c",
+     sub(r"^(\s*)&lis2mdl_ops,", r"\1&zzz_new_ops,\n\1&lis2mdl_ops,"),
+     "zzz_new_ops"),
+
+    # A driver promoted out of experimental in the code only.
+    ("gen-drivers", "src/drivers/lis3mdl.c",
+     sub(r"\.experimental\s*=\s*true", ".experimental     = false"),
+     "driver table does not match"),
 
     ("check-mqtt-topics", "src/mqtt_publish.c",
      sub(r'\{ "imu/temperature"', '{ "imu/zzztemp"'),
      "imu/zzztemp"),
+
+    # A topic whose publish CONDITION changed.  It stays in the table, stays
+    # in the config template, and every subscriber that reads "always" waits
+    # for a message that now needs a settled sea state.
+    ("check-mqtt-topics", "src/mqtt_publish.c",
+     sub(r'"Temperature",        U_TEMP,     GATE_ALWAYS',
+         '"Temperature",        U_TEMP,     GATE_WAVE'),
+     "published under GATE_WAVE"),
+
+    # A topic dropped from the code and left in the docs.
+    ("check-mqtt-topics", "src/mqtt_publish.c",
+     sub(r'^\s*\{ "navigation/rateOfTurn".*\n', ""),
+     "no longer publishes"),
+
+    # The same, for a Prometheus metric.
+    ("check-bridge-outputs", "src/prom_metrics.c",
+     sub(r'GAUGE\("imud_wave_height_meters"', 'GAUGE("imud_zzz_height_meters"'),
+     "no longer exports"),
 
     ("check-cli-docs", "src/cli.c",
      sub(r'strcmp\(argv\[i\], "--no-nmea"\)', 'strcmp(argv[i], "--no-zzz")'),

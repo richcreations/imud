@@ -635,6 +635,7 @@ config. Drivers live in `src/drivers/` and are registered in `src/drivers.c`.
 Links to the manufacturers' datasheets are collected in
 [datasheets.md](datasheets.md).
 
+<!-- BEGIN GENERATED: driver-table -->
 | Driver name | Chip | Type | I²C address | GPIO interrupt | SPI | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 3, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
@@ -650,6 +651,7 @@ Links to the manufacturers' datasheets are collected in
 | `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |
 | `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
 | `sim` | — | IMU + Magnetometer | — | none | n/a | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
+<!-- END GENERATED: driver-table -->
 
 The **SPI** column is what `[imu] bus` / `[mag] bus` will accept. Selecting
 `bus = "spi"` on a driver marked "no" is refused at startup by name, rather

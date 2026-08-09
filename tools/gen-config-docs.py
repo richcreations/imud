@@ -48,7 +48,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from checklib import ROOT, read, must_read, Report              # noqa: E402
+from checklib import ROOT, read, must_read, splice, Report      # noqa: E402
+import driverlib                                                # noqa: E402
 
 REGISTRY = "docs/config-keys.toml"
 
@@ -59,25 +60,6 @@ END_ROFF   = '.\\" END GENERATED: config-keys %s'
 BEGIN_MD   = "<!-- BEGIN GENERATED: config-keys %s -->"
 END_MD     = "<!-- END GENERATED: config-keys %s -->"
 
-
-def splice(text, begin, end, body, where, rep):
-    """Replace the text between two markers, leaving the rest byte-identical.
-
-    Fails loudly rather than guessing: an unmatched or duplicated marker means
-    the file is not in the shape this tool understands, and writing anyway
-    would corrupt a document.
-    """
-    b, e = text.count(begin), text.count(end)
-    if b != 1 or e != 1:
-        rep.fail("%s: expected exactly one %r and one %r, found %d and %d"
-                 % (where, begin, end, b, e))
-        return text
-    i = text.index(begin) + len(begin)
-    j = text.index(end)
-    if j < i:
-        rep.fail("%s: END marker precedes BEGIN" % where)
-        return text
-    return text[:i] + "\n" + body + "\n" + text[j:]
 
 try:
     import tomllib
@@ -91,7 +73,55 @@ def load():
         return tomllib.load(f)
 
 
-def man_entry(key):
+# The *_ops initialisers, loaded once in main().  A module global rather than
+# a parameter threaded through six renderers: only values() reads it, and only
+# for the four keys that name a driver's rate list.
+DRIVERS = []
+
+
+def values(key, rep, backticked):
+    """The `supports:` list a key documents, read out of the driver.
+
+    A handful of keys name the rates or ranges one specific part accepts —
+    `[imu] odr_hz` says "ISM330DHCX supports: ..." — and that list is a copy
+    of a .supported_* array in the ops initialiser.  It is the copy that went
+    stale: the man page stopped at 1660 for several releases while the driver
+    had offered 3332 and 6664 since it shipped.
+
+    `values_from` names the array; the prose keeps a {values} placeholder, so
+    the sentence around it stays hand-written and only the enumeration is
+    machine-owned.
+    """
+    src = key.get("values_from")
+    if not src:
+        return None
+    name, _, array = src.partition(".")
+    d = next((x for x in DRIVERS if x["name"] == name and x.get(array)), None)
+    if d is None:
+        rep.fail("%s: values_from = %r names no registered driver with that "
+                 "array" % (REGISTRY, src))
+        return ""
+    fmt = "`%d`" if backticked else "%d"
+    return ", ".join(fmt % v for v in d[array])
+
+
+def substitute(text, key, rep, backticked):
+    """Fill a rendered body's {values} placeholder, if it has one."""
+    if "{values}" not in text:
+        if key.get("values_from"):
+            rep.fail("%s: [%s] has values_from but no {values} placeholder — "
+                     "the list it names is not reaching the page"
+                     % (REGISTRY, "/".join(key["names"])))
+        return text
+    got = values(key, rep, backticked)
+    if got is None:
+        rep.fail("%s: [%s] writes {values} but has no values_from"
+                 % (REGISTRY, "/".join(key["names"])))
+        return text
+    return text.replace("{values}", got)
+
+
+def man_entry(key, rep):
     """The .TP block for one registry entry, as roff.
 
     Two spellings are in use and both are reproduced: the core page writes
@@ -112,7 +142,8 @@ def man_entry(key):
     else:
         ri = ".RI (%s,\\ %s)" % (key["type"], key["default"])
 
-    return "\n".join([".TP", head, ri, key["man"]])
+    return "\n".join([".TP", head, ri,
+                      substitute(key["man"], key, rep, backticked=False)])
 
 
 def md_tables(section):
@@ -134,11 +165,12 @@ def md_tables(section):
     return out
 
 
-def md_row(key):
+def md_row(key, rep):
     """The manual.md table row for one registry entry."""
     names = " / ".join("`%s`" % n for n in key["names"])
-    return "| %s | %s | %s | %s |" % (names, key["md_type"],
-                                      key["md_default"], key["desc"])
+    return "| %s | %s | %s | %s |" % (
+        names, key["md_type"], key["md_default"],
+        substitute(key["desc"], key, rep, backticked=True))
 
 
 # ── The compiled defaults test ───────────────────────────────────────────────
@@ -299,7 +331,7 @@ def defaults_test(reg, rep):
     return "\n".join(out) + "\n", n, skipped
 
 
-def regions(reg):
+def regions(reg, rep):
     """(file, begin, end, body, [(key label, rendered)]) per owned region.
 
     The per-key renderings ride along so a mismatch can name the KEY that
@@ -308,13 +340,13 @@ def regions(reg):
     """
     for section in reg["section"]:
         name = section["name"]
-        parts = [("[%s] %s" % (name, "/".join(k["names"])), man_entry(k))
+        parts = [("[%s] %s" % (name, "/".join(k["names"])), man_entry(k, rep))
                  for k in section["key"]]
         yield (section["man_file"], BEGIN_ROFF % name, END_ROFF % name,
                "\n".join(p for _, p in parts), parts)
         for i, group in enumerate(md_tables(section), 1):
             tag = "%s.%d" % (name, i)
-            parts = [("[%s] %s" % (name, "/".join(k["names"])), md_row(k))
+            parts = [("[%s] %s" % (name, "/".join(k["names"])), md_row(k, rep))
                      for k in group]
             yield (section["md_file"], BEGIN_MD % tag, END_MD % tag,
                    "\n".join(p for _, p in parts), parts)
@@ -326,11 +358,14 @@ def main():
     reg = load()
     rep.expect(reg.get("section"), "registry sections")
 
+    global DRIVERS
+    DRIVERS = driverlib.drivers(rep)
+
     # Group by file: a file holds several regions and must be read once and
     # written once, or each splice would undo the last.
     files, order = {}, []
     stale = {}
-    for path, begin, end, body, parts in regions(reg):
+    for path, begin, end, body, parts in regions(reg, rep):
         if path not in files:
             files[path] = must_read(path)
             order.append(path)
@@ -382,7 +417,7 @@ def main():
                 print("    " + line, file=sys.stderr)
 
     n_keys = sum(len(k["names"]) for s in reg["section"] for k in s["key"])
-    n_regions = sum(1 for _ in regions(reg))
+    n_regions = sum(1 for _ in regions(reg, rep))
     rep.expect(n_asserts, "defaults-test assertions")
     if write:
         return rep.finish("%d keys into %d regions + %d assertions, "

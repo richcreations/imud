@@ -578,19 +578,20 @@ check-flags:
 #
 # All text-only — no build, no network — so they run anywhere python3 does,
 # including the version-consistency CI job that never compiles anything.
-CHECK_DOC_TOOLS = check-links check-cli-docs check-packet check-nmea \
-                  check-drivers check-mqtt-topics check-bridge-outputs \
+CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
+                  check-mqtt-topics check-bridge-outputs \
                   check-libimud-api check-math-citations check-manpages
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
-        docs-config docs-man check-generated-man
+        check-packet-docs check-driver-docs docs-config docs-tables \
+        docs-man check-generated-man
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
 # Everything text-only, in one target: what CI runs, and what to run before
 # touching a document.
 check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
-                     check-config-docs
+                     check-config-docs check-packet-docs check-driver-docs
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
 # the man5 entries, the manual tables and the generated defaults test on disk
@@ -606,6 +607,27 @@ check-config-docs:
 # and manual regions ship in the packages.
 docs-config:
 	@python3 tools/gen-config-docs.py --write
+
+# spec.md's packet table and flags bitmask, from include/types.h.  Offsets in
+# a packed struct are cumulative sizeof: insert a field and every row below it
+# moves, which is exactly what a human proof-reader does not catch.  This
+# replaced check-packet.py — a checked table can still be wrong between
+# checks, a generated one cannot be wrong at all.
+check-packet-docs:
+	@python3 tools/gen-packet-docs.py
+
+# docs/manual.md §5, from src/drivers.c and the *_ops initialisers.  The four
+# generated columns are the ones that restate the code — name, type, SPI mode
+# and clock, and the experimental marker; the parts, addresses and notes are
+# prose in docs/driver-notes.toml.  This replaced check-drivers.py, and also
+# absorbed its check on the driver-name lists in the [imu]/[mag] key prose,
+# which stay hand-written because they are a sentence rather than a table.
+check-driver-docs:
+	@python3 tools/gen-drivers.py
+
+docs-tables:
+	@python3 tools/gen-packet-docs.py --write
+	@python3 tools/gen-drivers.py --write
 
 # The checkers are regexes over source, so a checker that has quietly stopped
 # matching looks exactly like a clean tree.  This breaks one fact at a time in
