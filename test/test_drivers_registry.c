@@ -278,9 +278,9 @@ static void test_spi_capability_declarations(void)
 
     static const struct { const char *name; bool spi; } imu_spi[] = {
         { "ism330dhcx", true  },
-        { "lsm6dso",    false },   /* ROADMAP: same family, untested on SPI */
-        { "lsm6dsox",   false },
-        { "icm42688p",  false },
+        { "lsm6dso",    true  },
+        { "lsm6dsox",   true  },
+        { "icm42688p",  true  },
         { "icm20948",   false },   /* AKM compass sits behind the I2C bypass */
         { "mpu9250",    false },   /* ditto */
         { "mpu9255",    false },
@@ -290,8 +290,8 @@ static void test_spi_capability_declarations(void)
         { "mmc5983ma",  true  },
         { "ak09916",    false },   /* no SPI port on the part */
         { "ak8963",     false },   /* no SPI port on the part */
-        { "lis3mdl",    false },   /* ROADMAP: needs the 0x40 MS bit */
-        { "lis2mdl",    false },
+        { "lis3mdl",    true  },   /* the one part needing an MS bit */
+        { "lis2mdl",    false },   /* 3-wire default; 4-wire costs DRDY */
         { "sim",        true  },
     };
     char msg[96];

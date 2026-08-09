@@ -595,26 +595,38 @@ Links to the manufacturers' datasheets are collected in
 | --- | --- | --- | --- | --- | --- | --- |
 | `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 3, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. |
 | `icm20948` | TDK ICM-20948 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes a built-in AK09916 mag via I²C master. No hardware timestamp. |
-| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | not yet | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. |
-| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | not yet | *Experimental.* Near-clone of ISM330DHCX. ODR up to 6664 Hz. |
-| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | not yet | *Experimental.* LSM6DSO with ML core; same driver. |
+| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. |
+| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR up to 6664 Hz. |
+| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
 | `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 3, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
-| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | not yet | *Experimental.* Popular standalone mag. ±4 G fixed. |
-| `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | not yet | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
+| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. |
+| `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
 | `sim` | — | IMU + Magnetometer | — | none | n/a | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
 
-The **SPI** column is what `[imu] bus` / `[mag] bus` will accept. "not yet"
-means the part has a SPI port but no driver support here yet — selecting
-`bus = "spi"` is refused at startup by name, rather than tried and
-mis-framed. The two "no" cases are permanent: the AKM compasses have no SPI
-port at all, and the AKM die inside an ICM-20948 or MPU-925x hangs off that
-chip's *auxiliary* I²C bus, reachable through the I²C bypass only from an I²C
-host. A SPI host would need the aux-I²C-master path, which imud does not
-implement — so a 9-axis board of that family runs on I²C.
+The **SPI** column is what `[imu] bus` / `[mag] bus` will accept. Selecting
+`bus = "spi"` on a driver marked "no" is refused at startup by name, rather
+than tried and mis-framed. Only `ism330dhcx` and `mmc5983ma` have been
+exercised on both transports against a mock device; the rest are
+`experimental` on either bus.
+
+The "no" rows each have a specific cause, and none of them is simply missing
+work:
+
+- **`ak09916`, `ak8963`** — the parts have no SPI port at all.
+- **`icm20948`, `mpu9250`, `mpu9255`** — the AKM compass die inside them hangs
+  off the host chip's *auxiliary* I²C bus and is reached through the I²C
+  bypass, which only an I²C host can use. A SPI host would need the
+  aux-I²C-master path (`I2C_SLV0_*` + `EXT_SENS_DATA_*` shadow reads), which
+  imud does not implement, so a 9-axis board of that family runs on I²C.
+- **`lis2mdl`** — its SPI defaults to *three* wires, and switching to 4-wire
+  means writing `CFG_REG_C` bit 2, which the datasheet says disables the
+  interrupt and data-ready signalling. imud drives this part from its
+  data-ready line, so 4-wire would cost the interrupt and 3-wire needs
+  half-duplex support the bus layer does not have.
 
 GPIO pins shown are the defaults (`imu.int_gpio = 17`, `mag.int_gpio = 27`).
 Set `int_gpio = 0` to disable the interrupt and use a polling timer — useful

@@ -155,7 +155,7 @@ static uint8_t fifo_pop(int a)
  * the same device, or the dual-transport tests would be comparing two
  * different mocks rather than two framings of one.
  */
-static uint8_t dev_read(int a, int *reg_ptr)
+static uint8_t dev_read(int a, int *reg_ptr, bool advance)
 {
     if (g_fifo_reg[a] >= 0 && *reg_ptr >= g_fifo_reg[a] &&
         *reg_ptr <= g_fifo_reg_hi[a]) {
@@ -176,7 +176,11 @@ static uint8_t dev_read(int a, int *reg_ptr)
      * enough: what the code under test sees is a register whose value moves
      * with no write in between. */
     if (g_live[a][r]) g_reg[a][r] += g_live[a][r];
-    (*reg_ptr)++;
+    /* A part whose multi-byte reads need an explicit auto-increment bit
+     * returns the SAME register over and over when the bit is absent. Modelling
+     * that is what makes a forgotten bit a test failure rather than a silent
+     * pass. */
+    if (advance) (*reg_ptr)++;
     return v;
 }
 
@@ -201,7 +205,7 @@ static int dispatch_i2c(struct i2c_rdwr_ioctl_data *d)
 
         if (msg->flags & I2C_M_RD) {
             for (uint16_t i = 0; i < msg->len; i++)
-                msg->buf[i] = dev_read(a, &reg_ptr);
+                msg->buf[i] = dev_read(a, &reg_ptr, true);
         } else {
             /* Write: first byte is the register pointer, the rest are stored
              * with auto-increment. */
@@ -245,12 +249,21 @@ static int dispatch_spi(int fd, unsigned long request,
     bool is_read = (tx0[0] & 0x80u) != 0;
     int reg_ptr  = tx0[0] & (uint8_t)~(0x80u | g_spi_inc_mask[a]);
 
+    /*
+     * On a part with an explicit auto-increment bit, the address only walks
+     * when that bit is set — with it clear the same register is returned for
+     * every byte (LIS3MDL DS9463 Rev 7 §5.2). Parts that increment on their
+     * own declare inc_mask 0 and always advance.
+     */
+    bool advance = g_spi_inc_mask[a] == 0 ||
+                   (tx0[0] & g_spi_inc_mask[a]) != 0;
+
     if (is_read) {
         if (n < 2) { errno = EINVAL; return -1; }
         uint8_t *rx = (uint8_t *)(uintptr_t)tr[1].rx_buf;
         if (!rx) { errno = EINVAL; return -1; }
         for (uint32_t i = 0; i < tr[1].len; i++)
-            rx[i] = dev_read(a, &reg_ptr);
+            rx[i] = dev_read(a, &reg_ptr, advance);
     } else {
         for (uint32_t i = 1; i < tr[0].len; i++)
             dev_write(a, &reg_ptr, tx0[i]);

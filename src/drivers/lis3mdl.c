@@ -129,9 +129,26 @@ static int lis_read(const imud_bus_t *bus, mag_sample_t *out)
     if (bus_reg_read(bus, REG_STATUS_REG, &status) < 0) return -1;
     if (!(status & 0x08)) return 1;  /* ZYXDA not set */
 
-    /* Burst read 6 bytes; address auto-increment requires 0x80|reg (§6.1.1). */
+    /*
+     * Burst read 6 bytes.  This part puts the auto-increment bit in a
+     * different place on each transport:
+     *
+     *   I2C  the sub-address MSB, 0x80|reg              (DS9463 Rev 7 §5.1)
+     *   SPI  MS at 0x40; 0x80 is the read bit there     (§5.2)
+     *
+     * bus_io.h applies the SPI half from spi_inc_mask, so only the I2C half is
+     * spelled here.  Being explicit about it is a readability choice, not a
+     * fix: ORing 0x80 unconditionally also works today, because the SPI
+     * command is reg|0x80|0x40 and the I2C bit lands on the very bit SPI uses
+     * for read — 0xA8 and 0x28 both encode as 0xE8, address 0x28.  That is a
+     * coincidence of bit positions, and a mutation confirms no test can see
+     * the difference.  Naming the transport keeps the coincidence from
+     * becoming load-bearing.
+     */
     uint8_t raw[6];
-    if (bus_burst_read(bus, (uint8_t)(REG_OUT_X_L | 0x80), raw, 6) < 0) return -1;
+    uint8_t out_reg = REG_OUT_X_L;
+    if (bus->kind == BUS_I2C) out_reg |= 0x80;
+    if (bus_burst_read(bus, out_reg, raw, 6) < 0) return -1;
 
     int16_t rx = reg_s16le(&raw[0]);
     int16_t ry = reg_s16le(&raw[2]);
@@ -158,6 +175,14 @@ static int lis_read(const imud_bus_t *bus, mag_sample_t *out)
 const mag_ops_t lis3mdl_ops = {
     .name             = "lis3mdl",
     .experimental     = true,
+    /* DS9463 Rev 7 §5.2 (protocol, 4-wire, SPC idle high and captured on the
+     * rising edge — mode 3) and §2.4.1 Table 5 (10 MHz).  The only part in the
+     * tree that needs an explicit auto-increment bit: MS at 0x40, because its
+     * address field is six bits.  Every register here is <= 0x33, so bit 6 is
+     * free to carry it.  init() writes CTRL_REG3 = 0x00, which selects 4-wire
+     * (SIM = 0) — nothing extra to do for SPI. */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0x40 },
     .probe            = lis_probe,
     .reset            = lis_reset,
     .init             = lis_init,

@@ -318,6 +318,13 @@ static int icm_read(const imud_bus_t *bus,
 const imu_ops_t icm42688p_ops = {
     .name             = "icm42688p",
     .experimental     = true,
+    /* DS-000347 Rev 1.6 §9.6: MSB-first, latched on the rising edge and
+     * transitioned on the falling — satisfied by mode 0 and mode 3 alike, and
+     * mode 3 is what the rest of the tree uses. 24 MHz, 7-bit address behind
+     * the R/W bit, burst reads auto-increment. The part supports single writes
+     * only, which is all bus_reg_write ever issues. */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 24000000, .spi_inc_mask = 0 },
     .probe            = icm_probe,
     .reset            = icm_reset,
     .init             = icm_init,

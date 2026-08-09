@@ -289,9 +289,9 @@ the configured name at startup and fatals if no match is found.
 static const imu_ops_t *imu_registry[] = {
     &ism330dhcx_ops,   /* ISM330DHCX — reference hardware  [I2C + SPI] */
     &icm20948_ops,     /* ICM-20948 — alternate IMU        [experimental] */
-    &icm42688p_ops,    /* ICM-42688-P                      [experimental] */
-    &lsm6dso_ops,      /* LSM6DSO                          [experimental] */
-    &lsm6dsox_ops,     /* LSM6DSOX (alias of lsm6dso)      [experimental] */
+    &icm42688p_ops,    /* ICM-42688-P     [I2C + SPI]      [experimental] */
+    &lsm6dso_ops,      /* LSM6DSO         [I2C + SPI]      [experimental] */
+    &lsm6dsox_ops,     /* LSM6DSOX        [I2C + SPI]      [experimental] */
     &mpu9250_ops,      /* MPU-9250                         [experimental] */
     &mpu9255_ops,      /* MPU-9255 (same driver)           [experimental] */
     &sim_imu_ops,      /* synthetic driver for testing without hardware */
@@ -302,7 +302,7 @@ static const mag_ops_t *mag_registry[] = {
     &mmc5983ma_ops,    /* MMC5983MA — reference hardware   [I2C + SPI] */
     &ak09916_ops,      /* AK09916 — compass on ICM-20948   [experimental] */
     &ak8963_ops,       /* AK8963 — compass on MPU-925x     [experimental] */
-    &lis3mdl_ops,      /* LIS3MDL                          [experimental] */
+    &lis3mdl_ops,      /* LIS3MDL         [I2C + SPI]      [experimental] */
     &lis2mdl_ops,      /* LIS2MDL                          [experimental] */
     &sim_mag_ops,      /* synthetic driver for testing without hardware */
     NULL

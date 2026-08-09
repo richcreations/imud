@@ -287,6 +287,11 @@ static int lsm_read(const imud_bus_t *bus,
 const imu_ops_t lsm6dso_ops = {
     .name             = "lsm6dso",
     .experimental     = true,
+    /* DS12140 Rev 3 §5.1.2 (protocol, mode 3), §4.4.1 Table 5 (10 MHz).
+     * Same family as the ISM330DHCX: multi-byte steps the address from
+     * CTRL3_C IF_INC, which lsm_init writes as part of 0x44. */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = lsm_probe,
     .reset            = lsm_reset,
     .init             = lsm_init,
@@ -302,6 +307,8 @@ const imu_ops_t lsm6dso_ops = {
 const imu_ops_t lsm6dsox_ops = {
     .name             = "lsm6dsox",
     .experimental     = true,
+    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = lsm_probe,
     .reset            = lsm_reset,
     .init             = lsm_init,

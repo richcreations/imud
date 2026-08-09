@@ -132,6 +132,27 @@ static int li2_read(const imud_bus_t *bus, mag_sample_t *out)
 const mag_ops_t lis2mdl_ops = {
     .name             = "lis2mdl",
     .experimental     = true,
+    /*
+     * NO SPI, and not merely "not yet" — this part's SPI is incompatible with
+     * how imud reads it.
+     *
+     * DS12144 Rev 6 §6.2: the LIS2MDL's SPI defaults to THREE wires (CS, SPC,
+     * a shared SDI/O), and 4-wire mode has to be switched on by writing bit 2
+     * of CFG_REG_C — which, in the datasheet's own words, "disables the
+     * interrupt and data-ready signaling capability of the device".
+     *
+     * That is exactly what this driver depends on: init() writes CFG_REG_C =
+     * 0x11 for BDU | DRDY_on_PIN, has_interrupt is true below, and imu.c
+     * requests a GPIO line and blocks the mag reader on its edges.  So 4-wire
+     * SPI costs the interrupt, and keeping the interrupt means half-duplex
+     * 3-wire, which the bus layer does not do (spi_burst_read is a
+     * full-duplex command-then-data pair; 3-wire needs SPI_3WIRE).
+     *
+     * Enabling either would be a change to how the part is READ, not just how
+     * it is addressed, so it belongs in a commit of its own with hardware to
+     * check it against.  See docs/ROADMAP.md.
+     */
+    .bus_caps         = { .spi_capable = false },
     .probe            = li2_probe,
     .reset            = li2_reset,
     .init             = li2_init,

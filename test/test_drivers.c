@@ -632,6 +632,7 @@ static void test_ak_read_decode(void)
  * ════════════════════════════════════════════════════════════════════════════ */
 
 extern const imu_ops_t lsm6dso_ops;
+extern const imu_ops_t lsm6dsox_ops;
 extern const imu_ops_t icm42688p_ops;
 extern const imu_ops_t icm20948_ops;
 extern const mag_ops_t ak09916_ops;
@@ -1518,6 +1519,107 @@ static void test_dual_transport_mmc5983ma(void)
     end(fb);
 }
 
+/*
+ * The rest of the SPI-capable parts. probe + init only: their read paths need
+ * part-specific FIFO staging, and what a second transport can get wrong is the
+ * addressing, which every control-register write exercises.
+ */
+static void test_dual_transport_others(void)
+{
+    begin("test_dual_transport_others");
+    int fb = g_fail;
+    char msg[96];
+
+    struct icase {
+        const char     *name;
+        const imu_ops_t *ops;
+        uint8_t         i2c_at, spi_at, inc;
+        uint8_t         whoami_reg, whoami_val;
+        uint8_t         rst_reg, rst_bit;
+    };
+    static const struct icase imus[] = {
+        { "lsm6dso",   &lsm6dso_ops,   0x6A, 0x1A, 0, 0x0F, 0x6C, 0x12, 0x01 },
+        { "lsm6dsox",  &lsm6dsox_ops,  0x6B, 0x1B, 0, 0x0F, 0x6C, 0x12, 0x01 },
+        { "icm42688p", &icm42688p_ops, 0x68, 0x18, 0, 0x75, 0x47, 0x11, 0x01 },
+    };
+
+    imu_cfg_t icfg = { .odr_hz = 200, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 32 };
+
+    for (unsigned i = 0; i < sizeof imus / sizeof imus[0]; i++) {
+        const struct icase *c = &imus[i];
+        i2cmock_reset();
+        spimock_bind(DUAL_SPI_FD, c->spi_at, c->inc);
+        for (int k = 0; k < 2; k++) {
+            uint8_t at = k ? c->spi_at : c->i2c_at;
+            i2cmock_set_reg(at, c->whoami_reg, c->whoami_val);
+            i2cmock_set_selfclear(at, c->rst_reg, c->rst_bit);
+        }
+        imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = c->i2c_at };
+        imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
+                          .spi_inc_mask = c->inc, .spi_hz = 10000000 };
+
+        snprintf(msg, sizeof msg, "%s: probe agrees on both transports", c->name);
+        EXPECT((c->ops->probe(&ib) == 0) == (c->ops->probe(&sb) == 0), msg);
+        (void)c->ops->reset(&ib);
+        (void)c->ops->reset(&sb);
+        snprintf(msg, sizeof msg, "%s: init agrees on both transports", c->name);
+        EXPECT((c->ops->init(&ib, &icfg) == 0) == (c->ops->init(&sb, &icfg) == 0), msg);
+
+        int first = -1;
+        int diffs = reg_files_differ(c->i2c_at, c->spi_at, &first);
+        if (diffs)
+            printf("\n  %s: first differing register 0x%02X: i2c=0x%02X spi=0x%02X\n",
+                   c->name, first, i2cmock_get_reg(c->i2c_at, (uint8_t)first),
+                   i2cmock_get_reg(c->spi_at, (uint8_t)first));
+        snprintf(msg, sizeof msg, "%s: identical registers after init", c->name);
+        EXPECT(diffs == 0, msg);
+    }
+
+    /*
+     * LIS3MDL gets the read path too, because it is the one part whose
+     * auto-increment bit differs between the transports: I2C sets the
+     * sub-address MSB (0x80), SPI sets MS (0x40) with 0x80 meaning read. Real
+     * data is staged at BOTH landing points so a correct driver reads the same
+     * six bytes either way — and a driver that dropped either bit does not.
+     */
+    const uint8_t L_I2C = 0x1C, L_SPI = 0x3C;
+    i2cmock_reset();
+    spimock_bind(DUAL_SPI_FD, L_SPI, 0x40);
+
+    const uint8_t out[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };  /* 100,200,300 */
+    for (int k = 0; k < 2; k++) {
+        uint8_t at = k ? L_SPI : L_I2C;
+        i2cmock_set_reg(at, 0x0F, 0x3D);        /* WHO_AM_I */
+        i2cmock_set_reg(at, 0x27, 0x08);        /* STATUS: ZYXDA */
+        i2cmock_set_regs(at, 0x28, out, 6);     /* where SPI lands */
+        i2cmock_set_regs(at, 0xA8, out, 6);     /* where I2C lands */
+    }
+
+    imud_bus_t lib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C };
+    imud_bus_t lsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
+                       .spi_inc_mask = 0x40, .spi_hz = 10000000 };
+    const mag_ops_t *l3 = &lis3mdl_ops;
+    mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
+
+    EXPECT(l3->probe(&lib) == 0 && l3->probe(&lsb) == 0, "lis3mdl: probe on both");
+    EXPECT(l3->init(&lib, &mcfg) == 0 && l3->init(&lsb, &mcfg) == 0,
+           "lis3mdl: init on both");
+    int lfirst = -1;
+    EXPECT(reg_files_differ(L_I2C, L_SPI, &lfirst) == 0,
+           "lis3mdl: identical registers after init");
+
+    mag_sample_t lm = { 0 }, ls = { 0 };
+    EXPECT(l3->read(&lib, &lm) == 0, "lis3mdl: i2c read");
+    EXPECT(l3->read(&lsb, &ls) == 0, "lis3mdl: spi read");
+    EXPECT(memcmp(lm.field, ls.field, sizeof lm.field) == 0 && lm.valid == ls.valid,
+           "lis3mdl: same field despite different auto-increment bits");
+    /* And it is the real vector, not six copies of one register. */
+    EXPECT(ls.field[0] != ls.field[1] && ls.field[1] != ls.field[2],
+           "lis3mdl: spi burst walked the output registers");
+
+    end(fb);
+}
+
 /* ── SPI transport ───────────────────────────────────────────────────────── */
 
 /*
@@ -1603,12 +1705,26 @@ static void test_spi_inc_mask(void)
     EXPECT(bus_reg_read(&b, 0x28, &v) == 0, "inc-mask single read succeeds");
     EXPECT(v == 0x5A, "single read addresses the register, not reg|mask");
 
-    /* Burst: the mask is set, and the mock strips it back off. */
+    /* Burst: the mask is set, so the address walks. */
     const uint8_t seq[6] = { 1, 2, 3, 4, 5, 6 };
     i2cmock_set_regs(SPI_ADDR, 0x28, seq, 6);
     uint8_t got[6] = { 0 };
     EXPECT(bus_burst_read(&b, 0x28, got, 6) == 0, "inc-mask burst succeeds");
-    EXPECT(memcmp(got, seq, 6) == 0, "burst with the mask still reads from reg");
+    EXPECT(memcmp(got, seq, 6) == 0, "burst with the mask walks the registers");
+
+    /*
+     * And the omission is detectable: a handle that does not set the bit on a
+     * part that needs it gets one register back over and over, which is what
+     * the silicon does (LIS3MDL DS9463 Rev 7 §5.2). Without the mock modelling
+     * that, forgetting spi_inc_mask would pass silently — so this asserts the
+     * harness as much as the framing.
+     */
+    imud_bus_t forgot = b;
+    forgot.spi_inc_mask = 0;
+    uint8_t rep[4] = { 0 };
+    EXPECT(bus_burst_read(&forgot, 0x28, rep, 4) == 0, "burst without the bit transfers");
+    EXPECT(rep[0] == 1 && rep[1] == 1 && rep[2] == 1 && rep[3] == 1,
+           "without the MS bit the part repeats one register");
 
     printf("%s\n", g_fail == fb ? "OK" : "FAIL");
 }
@@ -1716,6 +1832,7 @@ int main(void)
 
     test_dual_transport_ism330dhcx();
     test_dual_transport_mmc5983ma();
+    test_dual_transport_others();
 
     test_spi_framing();
     test_spi_inc_mask();
