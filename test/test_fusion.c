@@ -2272,9 +2272,27 @@ static float heave_sine_amp(float period_s, float amp_m, float tau_s)
  *     should hold and the sharper limit is resolution — an 8 s period is ~96
  *     samples.
  *   - HIGH.  This is the real risk and it is the opposite of the filter's: two
- *     leaky integrators accumulating dt/tau ~ 1e-5 increments into float, 8000
- *     times a second.  That is the catastrophic-cancellation regime fusion.c
- *     already flags for the Joseph form over multi-day runs.
+ *     leaky integrators accumulating dt/tau ~ 1e-5 increments into float, up to
+ *     32000 times a second.  That is the catastrophic-cancellation regime
+ *     fusion.c already flags for the Joseph form over multi-day runs.
+ *
+ * MEASURED, when 16 kHz and 32 kHz joined the ladder (icm42688p).  The high-end
+ * cost is real, visible, and small.  Error falls monotonically with rate to a
+ * minimum at 6664 Hz and then turns back up — the inflection is float32
+ * accumulation overtaking the resolution limit, exactly where the arithmetic
+ * says it should:
+ *
+ *      12 Hz  1.157 %      4000 Hz  0.127 %     16000 Hz  0.155 %
+ *     100 Hz  0.259 %      6664 Hz  0.112 %  <- min
+ *    1660 Hz  0.145 %      8000 Hz  0.142 %     32000 Hz  0.247 %
+ *
+ * So 32 kHz costs 2.2x the best rung and is still 20x inside the bound, and
+ * the ladder's worst case stays at the LOW end.  A fully-correlated float32
+ * error over one tau at 32 kHz (~384k steps) would have been ~4.6 % and blown
+ * the bound; the measurement lands near the random-walk end instead.  If a
+ * future rung pushes this past ~1 %, decimate into the heave filter rather
+ * than widening the bound — it tracks 0.05-1 Hz wave physics and gains
+ * nothing from being fed at 32 kHz.
  */
 TEST(test_heave_across_rates)
 {
@@ -2287,9 +2305,10 @@ TEST(test_heave_across_rates)
         const float got = heave_sine_amp_at(fs, period, amp, tau);
         const float err = fabsf(got - amp) / amp;
 
-        /* 5%: the measured worst across the whole ladder is 1.2%, at 12 Hz.
-         * Four times that leaves room for platform float variance while still
-         * being tight enough that a real regression cannot hide under it. */
+        /* 5%: the measured worst across the whole ladder is 1.2%, at 12 Hz —
+         * unchanged by the 16/32 kHz rungs, which peak at 0.25%.  Four times
+         * that leaves room for platform float variance while still being
+         * tight enough that a real regression cannot hide under it. */
         if (!isfinite(got) || err > 0.05f) {
             bad++;
             fprintf(stderr, "  FAIL  heave at %.0f Hz: %.3f m vs %.3f expected"
@@ -2427,8 +2446,18 @@ TEST(test_seastate_sine)
  * The resolution limit is real but mild: at 12 Hz a 4.5 s roll period is still
  * ~54 samples.  The bounds below are the historical 200 Hz ones UNCHANGED — they
  * did not need widening, which is the finding: measured across the ladder the
- * worst Hs error is 1.0% and the worst period error 0.1%, against bounds of 10%
+ * worst Hs error is 1.0% and the worst period error 0.2%, against bounds of 10%
  * and 5%.  Neither end of the range degrades this estimator meaningfully.
+ *
+ * Re-measured when 16 kHz and 32 kHz joined the ladder.  Hs sits on a plateau
+ * of 1.015% from 100 Hz all the way to 16 kHz — flat to four digits, the
+ * estimator simply does not care about rate — and then ticks up to 1.046% at
+ * 32 kHz.  Wave period does the same: 0.124% across the plateau, 0.129% at
+ * 16 kHz, 0.161% at 32 kHz.  That last rung is float32 accumulation over a
+ * 30 s window (~960k samples), the same effect test_heave_across_rates
+ * documents, and at 1/10th of the Hs bound it changes nothing.  It is recorded
+ * because a plateau with one raised endpoint is evidence, and the next rung
+ * added should be checked against it rather than against the bound.
  */
 TEST(test_seastate_across_rates)
 {

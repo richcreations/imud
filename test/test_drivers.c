@@ -1331,6 +1331,238 @@ static void test_odr_agreement(void)
     end(fb);
 }
 
+/*
+ * Every advertised rate encodes to the code its datasheet gives.
+ *
+ * test_odr_agreement above proves the driver is self-consistent; this proves
+ * it is RIGHT.  The distinction matters because a driver's supported_odr_hz
+ * and its odr_encode() are edited together, so a table-derived expectation
+ * would agree with a wrong encoding.  The codes below are transcribed from
+ * the register tables and from nothing in src/ — that is the whole point, and
+ * a mutation of any encode branch has to fail here.
+ *
+ * The register writes are masked down to the ODR field so the full-scale bits
+ * stay out of it; those are pinned by the per-driver tests.
+ */
+static void test_odr_codes_match_datasheet(void)
+{
+    begin("test_odr_codes_match_datasheet");
+    int fb = g_fail;
+
+    /*
+     * ST, DS13012 Rev 7 Table 43 (CTRL1_XL) and Table 46 (CTRL2_G).  The two
+     * tables are identical over this range, which is what lets both drivers
+     * write one shared code to both registers.
+     */
+    static const struct { int hz; uint8_t code; } st[] = {
+        {   12, 0x1 }, {   26, 0x2 }, {   52, 0x3 }, {  104, 0x4 },
+        {  208, 0x5 }, {  416, 0x6 }, {  833, 0x7 }, { 1660, 0x8 },
+        { 3332, 0x9 }, { 6664, 0xA },
+    };
+    for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "ism %d Hz -> CTRL code 0x%X",
+                 st[i].hz, st[i].code);
+        EXPECT((init_imu_reg(ism, ISM_ADDR, 0x10, st[i].hz, 4, 500) >> 4)
+               == st[i].code, msg);
+        EXPECT((init_imu_reg(ism, ISM_ADDR, 0x11, st[i].hz, 4, 500) >> 4)
+               == st[i].code, msg);
+        /* FIFO_CTRL3 batches at the ODR: BDR_GY|BDR_XL, Table 29 §9.5, whose
+         * codes run in lockstep with the ODR codes across this whole range. */
+        EXPECT(init_imu_reg(ism, ISM_ADDR, 0x09, st[i].hz, 4, 500)
+               == (uint8_t)((st[i].code << 4) | st[i].code), msg);
+
+        snprintf(msg, sizeof msg, "lsm %d Hz -> CTRL code 0x%X",
+                 st[i].hz, st[i].code);
+        EXPECT((init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, st[i].hz, 4, 500) >> 4)
+               == st[i].code, msg);
+        EXPECT((init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x11, st[i].hz, 4, 500) >> 4)
+               == st[i].code, msg);
+    }
+
+    /*
+     * TDK, DS-000347 Rev 1.6 §5.6, GYRO_ODR (0x4F) and ACCEL_ODR (0x50).
+     * Note 500 Hz: it is 1111, parked past the reserved codes at the end of
+     * the field rather than in rate order between 200 Hz and 1 kHz.  Reading
+     * that table in order is how 500 Hz came to be missing, and it is the one
+     * row here that a plausible-looking encoder gets wrong.
+     */
+    static const struct { int hz; uint8_t code; } tdk[] = {
+        {    12, 0x0B }, {    25, 0x0A }, {    50, 0x09 }, {   100, 0x08 },
+        {   200, 0x07 }, {   500, 0x0F }, {  1000, 0x06 }, {  2000, 0x05 },
+        {  4000, 0x04 }, {  8000, 0x03 }, { 16000, 0x02 }, { 32000, 0x01 },
+    };
+    for (size_t i = 0; i < sizeof tdk / sizeof tdk[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "icm42688p %d Hz -> ODR code 0x%02X",
+                 tdk[i].hz, tdk[i].code);
+        EXPECT((init_imu_reg(&icm42688p_ops, ICM42_ADDR, 0x4F,
+                             tdk[i].hz, 8, 2000) & 0x0F) == tdk[i].code, msg);
+        EXPECT((init_imu_reg(&icm42688p_ops, ICM42_ADDR, 0x50,
+                             tdk[i].hz, 8, 2000) & 0x0F) == tdk[i].code, msg);
+    }
+
+    /*
+     * And the tables the daemon advertises hold exactly these rates — no more,
+     * no less.  Without this an encoder could reach a rate no operator can
+     * request, or a table could advertise one the encoder rounds away.
+     */
+    for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) {
+        EXPECT(ism->supported_odr_hz[i] == st[i].hz,
+               "ism advertises exactly the encodable rates");
+        EXPECT(lsm6dso_ops.supported_odr_hz[i] == st[i].hz,
+               "lsm advertises exactly the encodable rates");
+    }
+    EXPECT(ism->supported_odr_hz[sizeof st / sizeof st[0]] == 0,
+           "ism table ends after 6664");
+    for (size_t i = 0; i < sizeof tdk / sizeof tdk[0]; i++)
+        EXPECT(icm42688p_ops.supported_odr_hz[i] == tdk[i].hz,
+               "icm42688p advertises exactly the encodable rates");
+    EXPECT(icm42688p_ops.supported_odr_hz[sizeof tdk / sizeof tdk[0]] == 0,
+           "icm42688p table ends after 32000");
+
+    end(fb);
+}
+
+/*
+ * ticks_per_sample: the chip-timer spacing the FIFO drivers use to date the
+ * samples inside a burst.
+ *
+ * This existed untested.  Each of these drivers keeps a private odr_actual()
+ * whose only consumer is this arithmetic — the daemon-facing rounding goes
+ * through odr_actual_imu() and supported_odr_hz instead — so a wrong private
+ * table was invisible to every other suite.  It was not hypothetical: the
+ * hand-written loop bounds ("i < 7" over an 8-entry table) meant that adding
+ * 3332 and 6664 Hz to ism330dhcx would have left odr_actual() clamping at
+ * 1660, spacing samples 24 ticks apart when the part emits them 6 apart.  The
+ * FIFO would drain correctly and every register assertion would pass; only
+ * the timestamps would be wrong, by 4x, and imu.c would have believed them.
+ *
+ * The spacing is observable: read() dates the newest sample from the chip
+ * counter and steps back one ticks_per_sample per older sample, so two
+ * samples in one burst differ by exactly that value.
+ *
+ * Expected values are computed here from the datasheet tick period and the
+ * resolved rate, not read out of the driver.  Both divisions are inexact at
+ * some rungs (see the comments at each init) and the truncation is part of
+ * what is being pinned — these are the values the drivers must produce, not
+ * the values ideal arithmetic would give.
+ */
+static uint32_t st_burst_ts_delta(const imu_ops_t *d, uint8_t addr, int odr_hz)
+{
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = 4, .gyro_dps = 500,
+                      .fifo_wm = 64 };
+    if (d->init(I2CBUS(addr), &cfg) != 0) return 0;
+
+    i2cmock_set_reg(addr, 0x3A, 4);      /* FIFO_STATUS1: four words queued */
+    i2cmock_set_reg(addr, 0x3B, 0);      /* no overflow */
+    i2cmock_set_fifo_reg(addr, 0x78);
+    /* ism_push_word serves both parts: the FIFO word format is the same and
+     * ISM_ADDR == LSM_ADDR == 0x6A, which is the real ST 7-bit address. */
+    ism_push_word(0x02, 1, 2, 3);        /* accel + gyro = sample 0 */
+    ism_push_word(0x01, 4, 5, 6);
+    ism_push_word(0x02, 7, 8, 9);        /* accel + gyro = sample 1 */
+    ism_push_word(0x01, 10, 11, 12);
+
+    /* Timestamp counter = 1000000 ticks, comfortably above any one spacing. */
+    i2cmock_set_reg(addr, 0x40, 0x40);
+    i2cmock_set_reg(addr, 0x41, 0x42);
+    i2cmock_set_reg(addr, 0x42, 0x0F);
+    i2cmock_set_reg(addr, 0x43, 0x00);
+
+    imu_sample_t buf[8];
+    int n = -1;
+    if (d->read(I2CBUS(addr), buf, 8, &n) != 0 || n != 2) return 0;
+    return buf[1].chip_ts - buf[0].chip_ts;
+}
+
+static uint32_t icm42_burst_ts_delta(int odr_hz)
+{
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = 4, .gyro_dps = 500,
+                      .fifo_wm = 64 };
+    if (icm42688p_ops.init(I2CBUS(ICM42_ADDR), &cfg) != 0) return 0;
+
+    i2cmock_set_reg(ICM42_ADDR, 0x2E, 0x00);   /* FIFO_COUNT, big endian */
+    i2cmock_set_reg(ICM42_ADDR, 0x2F, 32);     /* 32 bytes = two packets */
+    i2cmock_set_fifo_reg(ICM42_ADDR, 0x30);
+    icm42_push_packet(0x60, 1, 2, 3, 4, 5, 6, 5);
+    icm42_push_packet(0x60, 7, 8, 9, 10, 11, 12, 5);
+
+    /* Bank 1 TMSTVAL = 0x0F4240 = 1000000 µs.  Set after init, which writes
+     * 0x64 as bank 0's INT_CONFIG1 — the mock register file is flat. */
+    i2cmock_set_reg(ICM42_ADDR, 0x62, 0x40);
+    i2cmock_set_reg(ICM42_ADDR, 0x63, 0x42);
+    i2cmock_set_reg(ICM42_ADDR, 0x64, 0x0F);
+
+    imu_sample_t buf[8];
+    int n = -1;
+    if (icm42688p_ops.read(I2CBUS(ICM42_ADDR), buf, 8, &n) != 0 || n != 2)
+        return 0;
+    return buf[1].chip_ts - buf[0].chip_ts;
+}
+
+static void test_ticks_per_sample_across_rates(void)
+{
+    begin("test_ticks_per_sample_across_rates");
+    int fb = g_fail;
+    char msg[112];
+
+    /*
+     * ST: 25 µs/tick (CTRL10_C timestamp counter), so 40000/rate ticks.
+     * Inexact almost everywhere, and the error shrinks as the rate climbs:
+     * 1660 Hz truncates 24.096 to 24 (0.4%), 3332 Hz 12.005 to 12 and
+     * 6664 Hz 6.002 to 6 (both 0.04%).  The two rates added last are the
+     * best-behaved on the ladder, not the worst.
+     */
+    static const int st_rates[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
+                                    3332, 6664 };
+    for (size_t i = 0; i < sizeof st_rates / sizeof st_rates[0]; i++) {
+        const uint32_t want = 40000u / (uint32_t)st_rates[i];
+        snprintf(msg, sizeof msg, "ism %d Hz spaces samples %u ticks",
+                 st_rates[i], want);
+        EXPECT(st_burst_ts_delta(ism, ISM_ADDR, st_rates[i]) == want, msg);
+        snprintf(msg, sizeof msg, "lsm %d Hz spaces samples %u ticks",
+                 st_rates[i], want);
+        EXPECT(st_burst_ts_delta(&lsm6dso_ops, LSM_ADDR, st_rates[i]) == want,
+               msg);
+    }
+
+    /*
+     * TDK: 1 µs/tick, so 1000000/rate.  Exact through 8 kHz; 16 kHz truncates
+     * 62.5 to 62 and 32 kHz 31.25 to 31, both 0.8% short.  Bounded per burst
+     * rather than cumulative — the anchor is re-read every drain.
+     */
+    static const int tdk_rates[] = { 12, 25, 50, 100, 200, 500, 1000, 2000,
+                                     4000, 8000, 16000, 32000 };
+    for (size_t i = 0; i < sizeof tdk_rates / sizeof tdk_rates[0]; i++) {
+        const uint32_t want = 1000000u / (uint32_t)tdk_rates[i];
+        snprintf(msg, sizeof msg, "icm42688p %d Hz spaces samples %u ticks",
+                 tdk_rates[i], want);
+        EXPECT(icm42_burst_ts_delta(tdk_rates[i]) == want, msg);
+    }
+    EXPECT(icm42_burst_ts_delta(16000) == 62, "16 kHz truncates 62.5 to 62");
+    EXPECT(icm42_burst_ts_delta(32000) == 31, "32 kHz truncates 31.25 to 31");
+
+    /*
+     * Off-grid requests round UP to the next advertised rate, and the spacing
+     * follows the rate the part is actually programmed to — the private table
+     * and the encoder have to agree at the top, which is precisely what a
+     * stale loop bound breaks.
+     */
+    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 5000) == 40000u / 6664u,
+           "ism 5000 Hz is spaced for its resolved 6664, not the old 1660 cap");
+    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 99000) == 40000u / 6664u,
+           "ism clamps above the top rung and spaces for it");
+    EXPECT(icm42_burst_ts_delta(300) == 1000000u / 500u,
+           "icm42688p 300 Hz is spaced for 500, the rate 0x0F selects");
+    EXPECT(icm42_burst_ts_delta(99000) == 1000000u / 32000u,
+           "icm42688p clamps above the top rung and spaces for it");
+
+    end(fb);
+}
+
 /* ── Dual-transport agreement ────────────────────────────────────────────── */
 
 /*
@@ -1829,6 +2061,8 @@ int main(void)
     test_driver_resets();
     test_ak099_init_modes();
     test_odr_agreement();
+    test_odr_codes_match_datasheet();
+    test_ticks_per_sample_across_rates();
 
     test_dual_transport_ism330dhcx();
     test_dual_transport_mmc5983ma();
