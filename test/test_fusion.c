@@ -3425,9 +3425,12 @@ static void sweep_odr_row(float fs, float magreq, int n_modes)
 
 static void bench_sweep_odr(void)
 {
-    /* LSM6DSO's ladder plus icm42688p's top rung. */
+    /* Every IMU rung any driver advertises on the ST and TDK ladders,
+     * including icm42688p's 16 kHz and 32 kHz — the two that only a host
+     * larger than a Pi can sustain, and the two where float32 accumulation
+     * is first measurable elsewhere in this file. */
     static const float imu_rates[] = {
-        12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 8000
+        12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 8000, 16000, 32000
     };
     /* Every magnetometer rung any driver advertises. */
     static const float mag_rates[] = {

@@ -746,13 +746,13 @@ instantaneous sample where the daemon averages a window.
 #### 4.7.2 The filter across the whole rate ladder (ROADMAP §10.9)
 
 Every figure above, and every figure elsewhere in this document, was measured at
-one point: 833 Hz IMU with a ~104 Hz magnetometer. The drivers advertise **27
-IMU rates from 12 Hz to 8 kHz and 13 magnetometer rates from 1 Hz to 1 kHz**, and
-each of those 351 pairings is a configuration `imud.conf` will accept. This
-section is what the other 350 do.
+one point: 833 Hz IMU with a ~104 Hz magnetometer. The drivers advertise **29
+IMU rates from 12 Hz to 32 kHz and 13 magnetometer rates from 1 Hz to 1 kHz**,
+and each of those 377 pairings is a configuration `imud.conf` will accept. This
+section is what the other 376 do.
 
 Two instruments, because the questions are different sizes.
-`test_rate_derivations` walks all 351 pairings on every build, asserting the
+`test_rate_derivations` walks all 377 pairings on every build, asserting the
 derived tuning is correct and the filter stays numerically sane — it deliberately
 asserts nothing about accuracy, since $R_a \propto f_{odr}$ retunes the filter at
 every rung and the 833 Hz bounds are meaningless elsewhere. Accuracy comes from
@@ -766,14 +766,32 @@ rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
 **Accuracy is very nearly rate-independent.** 3-D attitude RMS over the IMU axis,
 mag pinned at 100 Hz:
 
-| $f_s$ (Hz) | 12 | 26 | 52 | 104 | 208 | 416 | **833** | 1660 | 3332 | 6664 | 8000 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 3-D att RMS | 1.210° | 1.163° | 1.156° | 1.181° | 1.157° | 1.176° | **1.178°** | 1.192° | 1.210° | 1.224° | 1.252° |
-| yaw att RMS | 7.673° | 2.370° | 1.980° | 2.036° | 2.083° | 2.105° | **2.185°** | 2.203° | 2.226° | 2.241° | 2.232° |
-| NIS$_a$ (3-D) | 15.66 | 7.40 | 3.84 | 2.11 | 1.26 | 0.82 | **0.63** | 0.53 | 0.47 | 0.42 | 0.42 |
+| $f_s$ (Hz) | 12 | 26 | 52 | 104 | 208 | 416 | **833** | 1660 | 3332 | 6664 | 8000 | 16000 | 32000 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 3-D att RMS | 1.210° | 1.163° | 1.156° | 1.181° | 1.157° | 1.176° | **1.178°** | 1.192° | 1.210° | 1.224° | 1.252° | 1.280° | 1.299° |
+| yaw att RMS | 7.673° | 2.370° | 1.980° | 2.036° | 2.083° | 2.105° | **2.185°** | 2.203° | 2.226° | 2.241° | 2.232° | 2.241° | 2.124° |
+| NIS$_a$ (3-D) | 15.66 | 7.40 | 3.84 | 2.11 | 1.26 | 0.82 | **0.63** | 0.53 | 0.47 | 0.42 | 0.42 | 0.35 | 0.23 |
 
-±4% across a 667× range in 3-D. A low-power board at 104 Hz gives up essentially
-nothing, which was the question that prompted the work.
+±6% about the midpoint across a 2667× range in 3-D — 1.156° at 52 Hz to 1.299°
+at 32 kHz. A low-power board at 104 Hz gives up essentially nothing, which was
+the question that prompted the work.
+
+The top two rungs arrived later, with the ODR-coverage audit that added
+icm42688p's 16 kHz and 32 kHz. They did not change the conclusion, and they
+did not reveal a new mechanism either: 3-D attitude RMS has climbed steadily
+above the 833 Hz default for the whole length of this table, and it simply
+keeps climbing. Through 8 kHz the spread was ±4%; the two new rungs supply the
+rest. NIS$_a$ keeps falling too, to 0.23 at 32 kHz — nearly 3× more
+under-confident than at the default, on the same trend the next paragraph
+describes rather than a break in it.
+
+Worth separating from a related finding, because they are *not* the same
+effect. `test_heave_across_rates` measures float32 accumulation error in the
+heave integrator turning upward above 6664 Hz (0.112% there, 0.247% at 32 kHz;
+see the comment on that test). The MEKF's attitude degradation here begins at
+833 Hz, well below that inflection, and is a property of the tuning across the
+ladder rather than of float32 accumulation. Two different curves that happen
+to both bend upward at the top.
 
 **But NIS$_a$ is not flat, and crosses 1.0 near 150–200 Hz.** The shipped
 measurement model is therefore most self-consistent around 200 Hz; at the 833 Hz
@@ -821,8 +839,17 @@ Probing that needs a high-rate-rotation scenario that does not exist.
 
 **Two further results worth having.** The Gauss–Markov wave state is
 load-bearing at *every* rate, not a fix specific to 833 Hz: disabled, attitude
-RMS is 8–11° across the whole ladder with 12–27% rejection at the low end, and it
-matters *more* as the rate falls. And the magnetometer ladder is benign for
+RMS runs **5.0–11.4°** across the whole ladder — against 1.16–1.30° in 3-D with
+it enabled — and the gross-outlier gate goes from idle to rejecting **17–29%**
+of updates at 416 Hz and below. Both ranges are from the re-run that added the
+16 kHz and 32 kHz rungs, and both are wider than the 8–11° and 12–27%
+previously recorded here; the mag-axis figures in the next paragraph reproduce
+to the digit against the same run, so this is a stale entry rather than a
+non-deterministic bench. Its *direction* also needs qualifying: the wave state
+mattering more as the rate falls is true of the rejection rate, not of
+accuracy. By RMS ratio it is worth least at 52 Hz (4.4×) and most around the
+833 Hz default (8.6×), tapering to 7.8× at 32 kHz. And the magnetometer ladder
+is benign for
 accuracy — 3-D attitude is flat at 1.171–1.223° from a 1 Hz mag to a 1 kHz one —
 while being hostile to the NIS instrument: NIS$_m$ runs 9.84 at 1 Hz against 0.46
 at 1 kHz, because $R_m = N_m^2 f_{mag}$ shrinks with the rate while the
