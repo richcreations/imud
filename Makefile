@@ -578,14 +578,22 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-packet check-nmea \
                   check-drivers check-mqtt-topics check-bridge-outputs \
                   check-libimud-api check-math-citations check-manpages
 
-.PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools \
+.PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         docs-man check-generated-man
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
 # Everything text-only, in one target: what CI runs, and what to run before
 # touching a document.
-check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS)
+check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
+                     check-config-docs
+
+# The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
+# the man5 entries and the manual tables on disk are what it renders.  Its
+# prose was extracted from those pages, so the first run matched byte for
+# byte — a diff here is an edit that reached one surface and not the other.
+check-config-docs:
+	@python3 tools/gen-config-docs.py
 
 # The checkers are regexes over source, so a checker that has quietly stopped
 # matching looks exactly like a clean tree.  This breaks one fact at a time in

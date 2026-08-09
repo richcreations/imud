@@ -62,6 +62,7 @@ level live; `enabled`, `socket`, and the `udp_*`/`tcp_*` keys require a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys imud-signalk.1 -->
 | `enabled` | bool | `true` | Run the bridge daemon. With it true and every output off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read (match `imud.conf` if you changed it there). |
 | `udp_enabled` | bool | `false` | Emit deltas over UDP to `dest_addr`:`dest_port`. |
@@ -73,5 +74,6 @@ level live; `enabled`, `socket`, and the `udp_*`/`tcp_*` keys require a restart.
 | `tcp_enabled` | bool | `false` | Serve the same deltas newline-framed on a TCP listener (the SK server connects as a TCP client). Up to 8 clients; independent of `udp_enabled`. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4); `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10113` | Listener TCP port (TCP namespace of the UDP default). |
+<!-- END GENERATED: config-keys imud-signalk.1 -->
 
 See also `imud-signalk(8)` and `imud-signalk.conf(5)`.

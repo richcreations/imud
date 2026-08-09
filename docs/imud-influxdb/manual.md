@@ -44,6 +44,7 @@ HTTP target need a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys imud-influxdb.1 -->
 | `enabled` | bool | `true` | Run the bridge daemon. With it true and every output off the daemon runs but writes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `transport` | string | `""` | **Deprecated** — legacy `"udp"`/`"http"` selector, mapped to `udp_enabled`/`http_enabled` when neither is set. Prefer the enables. |
@@ -60,5 +61,6 @@ HTTP target need a restart.
 | `http_port` | int | `8086` | HTTP port. |
 | `http_path` | string | `"/write?db=imud&precision=ns"` | Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`). |
 | `http_token` | string | `""` | InfluxDB 2.x API token. Stored in plaintext, so `/etc/imud/imud-influxdb.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file. |
+<!-- END GENERATED: config-keys imud-influxdb.1 -->
 
 See also `imud-influxdb(8)` and `imud-influxdb.conf(5)`.

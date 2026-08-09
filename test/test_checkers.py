@@ -102,6 +102,16 @@ CASES = [
      sub(r"^usr/share/man/man1/imud-status\.1\.gz\n", ""),
      "imud-status.1"),
 
+    # A config key whose documented default drifted from the registry.
+    ("gen-config-docs", "man/man5/imud.conf.5",
+     sub(r"^\.RI \(int,\\ default:\\ 833\)$", r".RI (int,\\ default:\\ 999)"),
+     "odr_hz"),
+
+    # ...and the same on the markdown surface.
+    ("gen-config-docs", "docs/manual.md",
+     sub(r"^\| `fifo_wm` \| int \| `64` \|", "| `fifo_wm` | int | `128` |"),
+     "fifo_wm"),
+
     # And the reverse: Debian shipping a page the Makefile never stages.
     ("check-manpages", "debian/imud-utils.install",
      sub(r"^usr/share/man/man1/imud-mon\.1\.gz$",

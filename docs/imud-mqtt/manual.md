@@ -53,6 +53,7 @@ broker/client/topic changes need a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys imud-mqtt.1 -->
 | `enabled` | bool | `true` | Run the bridge daemon. With it true and `broker_enabled` false the daemon runs but publishes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
 | `broker_enabled` | bool | `false` | Connect to the broker and publish (the bridge's only output). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
@@ -71,5 +72,6 @@ broker/client/topic changes need a restart.
 | `username` / `password` | string | `""` | Broker auth. The password is stored in plaintext, so `/etc/imud/imud-mqtt.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file. |
 | `tls` | bool | `false` | Enable TLS (empty `tls_cafile` = system CA store). |
 | `tls_cafile` | string | `""` | CA certificate path for TLS. |
+<!-- END GENERATED: config-keys imud-mqtt.1 -->
 
 See also `imud-mqtt(8)` and `imud-mqtt.conf(5)`.

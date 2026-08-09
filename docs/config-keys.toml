@@ -1,0 +1,2309 @@
+# imud — config-key registry
+#
+# THE single source for every key src/config.c parses: 150 keys across 12
+# core sections and 5 bridges.  tools/gen-config-docs.py renders the man5
+# .TP blocks and the docs/manual.md tables from this file, and
+# tools/check-docs.py asserts this file and apply_kv() describe the same
+# set of keys, in both directions.
+#
+# The prose was EXTRACTED from the existing pages rather than retyped, and
+# the first generator run reproduced them byte for byte.  That identity is
+# the evidence the migration preserved the documentation instead of
+# paraphrasing it — 150 keys is far past what hand-transcription survives.
+# Keep it true: after editing this file the only diff should be the edit.
+#
+# Strings are TOML LITERAL strings, because roff is mostly backslashes and
+# a basic string would eat every escape in the file.
+#
+# Per entry:
+#   names      one entry may document several keys — imud-mqtt's username
+#              and password share a type, a default and a description
+#   type       as written in the docs (int, string, array of 9, ...)
+#   default    as written and roff-escaped, or 'unset'
+#   scope      hot | restart | ''  (blank where the page states it once
+#              per section instead of per key)
+#   man        the roff body of the .TP entry
+#   desc       the markdown Description cell
+#   man_style  the core page writes  .RI (int,\ default:\ 833)
+#              the bridges write     .RI ( int ,\ default:\ 5 )\ [hot]
+#              Same fact, two spellings.  Preserved so regeneration is a
+#              no-op; unifying them is a separate change with a visible
+#              diff, which is how it should be.
+
+
+[[section]]
+name = "mount"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["rotation_euler_deg", "preset", "rotation_matrix"]]
+
+  [[section.key]]
+  names = ["rotation_euler_deg"]
+  type = 'array'
+  default = 'default:\ [0.0,\ 0.0,\ 0.0]'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Rotation as [roll, pitch, yaw] in degrees.
+Applied as R = Rz(yaw) x Ry(pitch) x Rx(roll).
+Only the yaw component is normally non-zero; set it to correct for
+the angle between the chip X axis and the vessel bow.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.'''
+  md_type = 'array'
+  md_default = '`[0.0, 0.0, 0.0]`'
+  desc = '`[roll, pitch, yaw]` in degrees. Measure the angle between chip X and the forward axis once (e.g. with a handbearing compass on a vessel); set that as `yaw`.'
+
+  [[section.key]]
+  names = ["rotation_matrix"]
+  type = 'array\ of\ 9'
+  default = 'unset'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Board-to-body rotation given directly, row-major, as
+v_body = R x v_board.
+An alternative to
+.B rotation_euler_deg
+for installations whose rotation is known as a matrix.
+Validated at load against R^T R = I and det(R) = +1;
+a non-orthonormal matrix or a reflection (det = -1, typically a
+sign-flipped axis) is a fatal configuration error.'''
+  md_type = 'array of 9'
+  md_default = '*(unset)*'
+  desc = 'Board→body rotation given directly, row-major (`v_body = R · v_board`). Validated at load against `RᵀR = I` and `det(R) = +1`; a non-orthonormal matrix or a reflection is a fatal config error. Whichever mount key appears last wins.'
+
+  [[section.key]]
+  names = ["preset"]
+  type = 'string'
+  default = 'unset'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Named rotation shortcut.
+One of:
+.BR identity ,
+.BR yaw_90 ,
+.BR yaw_180 ,
+.BR yaw_270 ,
+.BR roll_90 ,
+.BR roll_270 ,
+.BR pitch_90 ,
+.BR pitch_270 .
+Overrides
+.B rotation_euler_deg
+when set; whichever mount key appears last in the file wins.
+An unrecognised preset name is a fatal configuration error \(em
+starting with a silently wrong mount rotation would bias every sample.'''
+  md_type = 'string'
+  md_default = '*(unset)*'
+  desc = 'Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. An unrecognised name is a fatal config error.'
+
+[[section]]
+name = "device"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["i2c_bus", "gpio_chip", "sim_file", "sim_loop", "sim_speed"]]
+
+  [[section.key]]
+  names = ["i2c_bus"]
+  type = 'string'
+  default = 'default:\ \(dq/dev/i2c-1\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'I2C bus device node.'
+  md_type = 'string'
+  md_default = '`"/dev/i2c-1"`'
+  desc = 'I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.'
+
+  [[section.key]]
+  names = ["gpio_chip"]
+  type = 'string'
+  default = 'default:\ \(dqgpiochip0\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+gpiochip device name.
+Use
+.B gpiochip0
+on Raspberry Pi 4 and
+.B gpiochip4
+on Raspberry Pi 5 (RP1 GPIO controller).'''
+  md_type = 'string'
+  md_default = '`"gpiochip0"`'
+  desc = 'gpiochip device name. `"gpiochip0"` on Pi 4; `"gpiochip4"` on Pi 5 (RP1 GPIO controller).'
+
+  [[section.key]]
+  names = ["sim_file"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+An .imucap capture for the sim driver to replay (with
+.B driver
+= \(dqsim\(dq in both
+.B [imu]
+and
+.BR [mag] );
+empty selects the built-in synthetic scenario.
+.B imud --replay
+.I FILE
+is the shortcut form.
+See
+.BR imud (8)
+and docs/capture.md.'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md).'
+
+  [[section.key]]
+  names = ["sim_loop"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Repeat the capture forever; sequence numbers and timestamps are rebased so
+downstream consumers see a continuous stream.'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic.'
+
+  [[section.key]]
+  names = ["sim_speed"]
+  type = 'float'
+  default = 'default:\ 1.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Playback pacing: 2.0 is double speed, 0 delivers as fast as the pipeline
+accepts (offline regression runs).'''
+  md_type = 'float'
+  md_default = '`1.0`'
+  desc = 'Playback pacing: `2.0` = double speed, `0` = as fast as the pipeline accepts.'
+
+[[section]]
+name = "capture"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["enabled", "dir", "max_mb", "max_files", "flush_s"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Record raw samples from both sensors, exactly as the drivers delivered them
+(pre-mount, pre-calibration).'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Record raw samples from both sensors.'
+
+  [[section.key]]
+  names = ["dir"]
+  type = 'string'
+  default = 'default:\ \(dq/var/lib/imud\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'Destination directory; files are named imud-YYYYMMDD-HHMMSS.imucap (UTC).'
+  md_type = 'string'
+  md_default = '`"/var/lib/imud"`'
+  desc = 'Destination; files are `imud-YYYYMMDD-HHMMSS.imucap` (UTC).'
+
+  [[section.key]]
+  names = ["max_mb"]
+  type = 'int'
+  default = 'default:\ 256'
+  scope = ""
+  man_style = "tight"
+  man = 'Start a new file when the current one reaches this size.  0 = unlimited.'
+  md_type = 'int'
+  md_default = '`256`'
+  desc = 'Rotate the file at this size. `0` = unlimited.'
+
+  [[section.key]]
+  names = ["max_files"]
+  type = 'int'
+  default = 'default:\ 8'
+  scope = ""
+  man_style = "tight"
+  man = 'Keep at most this many capture files, deleting the oldest.  0 = keep all.'
+  md_type = 'int'
+  md_default = '`8`'
+  desc = 'Keep the newest N files, deleting the oldest. `0` = keep all.'
+
+  [[section.key]]
+  names = ["flush_s"]
+  type = 'int'
+  default = 'default:\ 5'
+  scope = ""
+  man_style = "tight"
+  man = 'Interval between flushes to storage.'
+  md_type = 'int'
+  md_default = '`5`'
+  desc = 'Flush-to-storage interval, seconds.'
+
+[[section]]
+name = "imu"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "accel_g", "gyro_dps", "fifo_wm"]]
+
+  [[section.key]]
+  names = ["driver"]
+  type = 'string'
+  default = 'default:\ \(dqism330dhcx\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Driver name:
+.BR ism330dhcx ,
+.BR icm20948 ,
+.BR icm42688p ,
+.BR lsm6dso ,
+.BR lsm6dsox ,
+.BR mpu9250 ,
+.BR mpu9255 ,
+or
+.B sim
+(software simulation, no hardware required).
+Drivers other than
+.B ism330dhcx
+and
+.B sim
+are experimental (register map verified from datasheet; not yet validated
+on hardware).'''
+  md_type = 'string'
+  md_default = '`"ism330dhcx"`'
+  desc = 'Driver to load. See [Supported drivers](#5-supported-drivers).'
+
+  [[section.key]]
+  names = ["bus"]
+  type = 'string'
+  default = 'default:\ "i2c"'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Transport:
+.B i2c
+or
+.BR spi .
+SPI is faster per transfer, which is what unlocks the high sample rates and
+shortens the FIFO drain.
+Not every driver has SPI; the daemon refuses to start on one that does not.
+The IMU and the magnetometer choose independently, so a SPI IMU alongside an
+I2C compass is a legal rig.'''
+  md_type = 'string'
+  md_default = '`"i2c"`'
+  desc = 'Transport: `"i2c"` or `"spi"`. SPI is faster per transfer, which is what unlocks the high sample rates and shortens the FIFO drain; not every driver has it, and the daemon refuses to start on one that does not (see [Supported drivers](#5-supported-drivers)). The IMU and the magnetometer choose independently.'
+
+  [[section.key]]
+  names = ["spi_dev"]
+  type = 'string'
+  default = 'default:\ ""'
+  scope = ""
+  man_style = "tight"
+  man = '''
+spidev node, for example
+.IR /dev/spidev0.0 .
+Required when
+.BR "bus = \(dqspi\(dq" ;
+ignored otherwise.
+The chip select in the node name does the addressing, so
+.B i2c_addr
+is unused.'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused.'
+
+  [[section.key]]
+  names = ["spi_speed_hz"]
+  type = 'int'
+  default = 'default:\ 0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+SPI clock in Hz.
+.B 0
+means the driver's datasheet maximum, which is the useful default.
+A request above that maximum is clamped rather than refused, and the daemon
+logs the rate it really programmed.'''
+  md_type = 'int'
+  md_default = '`0`'
+  desc = '''
+SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed.'''
+
+  [[section.key]]
+  names = ["i2c_addr"]
+  type = 'int'
+  default = 'default:\ 0x6B'
+  scope = ""
+  man_style = "tight"
+  man = '''
+I2C address; used only when
+.BR "bus = \(dqi2c\(dq" .
+ISM330DHCX: 0x6B (SA0 high) or 0x6A (SA0 low).'''
+  md_type = 'int'
+  md_default = '`0x6B`'
+  desc = 'I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper).'
+
+  [[section.key]]
+  names = ["int_gpio"]
+  type = 'int'
+  default = 'default:\ 17'
+  scope = ""
+  man_style = "tight"
+  man = '''
+BCM GPIO number for the FIFO watermark interrupt.
+Set
+.B 0
+to use a 10\~ms polling timer instead.'''
+  md_type = 'int'
+  md_default = '`17`'
+  desc = 'BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to use a 10 ms polling timer instead of a hardware interrupt.'
+
+  [[section.key]]
+  names = ["odr_hz"]
+  type = 'int'
+  default = 'default:\ 833'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Output data rate in Hz; must be greater than zero.
+A rate the chip cannot produce is rounded
+.I up
+to the next one it can, and the filter is tuned for that actual rate; the
+daemon logs both at startup when they differ.
+ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664.
+Rates above 1660 need
+.BR "bus = \(dqspi\(dq" .'''
+  md_type = 'int'
+  md_default = '`833`'
+  desc = 'Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain.'
+
+  [[section.key]]
+  names = ["accel_g"]
+  type = 'int'
+  default = 'default:\ 8'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Accelerometer full-scale range in g.
+ISM330DHCX: 2, 4, 8, 16.'''
+  md_type = 'int'
+  md_default = '`8`'
+  desc = 'Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`.'
+
+  [[section.key]]
+  names = ["gyro_dps"]
+  type = 'int'
+  default = 'default:\ 2000'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Gyroscope full-scale range in degrees/second.
+ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.'''
+  md_type = 'int'
+  md_default = '`2000`'
+  desc = 'Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`.'
+
+  [[section.key]]
+  names = ["fifo_wm"]
+  type = 'int'
+  default = 'default:\ 64'
+  scope = ""
+  man_style = "tight"
+  man = '''
+FIFO watermark in sample-sets.
+At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.'''
+  md_type = 'int'
+  md_default = '`64`'
+  desc = 'FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms.'
+
+[[section]]
+name = "mag"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "set_period_s"]]
+
+  [[section.key]]
+  names = ["driver"]
+  type = 'string'
+  default = 'default:\ \(dqmmc5983ma\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Driver name:
+.BR mmc5983ma ,
+.BR ak09916 ,
+.BR ak8963 ,
+.BR lis3mdl ,
+.BR lis2mdl ,
+or
+.BR sim .
+Drivers other than
+.B mmc5983ma
+and
+.B sim
+are experimental.'''
+  md_type = 'string'
+  md_default = '`"mmc5983ma"`'
+  desc = 'Driver to load. See [Supported drivers](#5-supported-drivers).'
+
+  [[section.key]]
+  names = ["bus"]
+  type = 'string'
+  default = 'default:\ "i2c"'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Transport:
+.B i2c
+or
+.BR spi .
+SPI is faster per transfer, which is what unlocks the high sample rates and
+shortens the FIFO drain.
+Not every driver has SPI; the daemon refuses to start on one that does not.
+The IMU and the magnetometer choose independently, so a SPI IMU alongside an
+I2C compass is a legal rig.'''
+  md_type = 'string'
+  md_default = '`"i2c"`'
+  desc = '''
+Transport: `"i2c"` or `"spi"`, as for `[imu]` above. The AKM compasses (`ak09916`, `ak8963`) are I²C-only — they have no SPI port and are reached through the host IMU's bypass.'''
+
+  [[section.key]]
+  names = ["spi_dev"]
+  type = 'string'
+  default = 'default:\ ""'
+  scope = ""
+  man_style = "tight"
+  man = '''
+spidev node, for example
+.IR /dev/spidev0.1 .
+Required when
+.BR "bus = \(dqspi\(dq" ;
+ignored otherwise.
+The chip select in the node name does the addressing, so
+.B i2c_addr
+is unused.'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`.'
+
+  [[section.key]]
+  names = ["spi_speed_hz"]
+  type = 'int'
+  default = 'default:\ 0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+SPI clock in Hz.
+.B 0
+means the driver's datasheet maximum, which is the useful default.
+A request above that maximum is clamped rather than refused, and the daemon
+logs the rate it really programmed.'''
+  md_type = 'int'
+  md_default = '`0`'
+  desc = '''
+SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`.'''
+
+  [[section.key]]
+  names = ["i2c_addr"]
+  type = 'int'
+  default = 'default:\ 0x30'
+  scope = ""
+  man_style = "tight"
+  man = '''
+I2C address; used only when
+.BR "bus = \(dqi2c\(dq" .
+MMC5983MA has a fixed address (0x30).
+The AKM compasses are I2C-only: they have no SPI port.
+The AKM compasses inside a 9-axis IMU
+.RB ( ak09916
+in the ICM-20948,
+.B ak8963
+in the MPU-9250/9255) are reached through the host chip's I2C
+.IR bypass ,
+not its I2C master, and answer on the host bus at 0x0C.'''
+  md_type = 'int'
+  md_default = '`0x30`'
+  desc = '''
+I²C address; used only when `bus = "i2c"`. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both.'''
+
+  [[section.key]]
+  names = ["int_gpio"]
+  type = 'int'
+  default = 'default:\ 27'
+  scope = ""
+  man_style = "tight"
+  man = '''
+BCM GPIO for the measurement-done interrupt.
+Set
+.B 0
+to use a polling timer.'''
+  md_type = 'int'
+  md_default = '`27`'
+  desc = 'BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer.'
+
+  [[section.key]]
+  names = ["odr_hz"]
+  type = 'int'
+  default = 'default:\ 100'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Output data rate in Hz; must be greater than zero.
+Rounded
+.I up
+to a supported rate as for
+.BR [imu]\ odr_hz .
+MMC5983MA supports: 1, 10, 20, 50, 100, 200, 1000.'''
+  md_type = 'int'
+  md_default = '`100`'
+  desc = 'Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`.'
+
+  [[section.key]]
+  names = ["set_period_s"]
+  type = 'float'
+  default = 'default:\ 5.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Interval in seconds between degauss (SET/RESET) pulses.
+Set
+.B 0
+to disable.'''
+  md_type = 'float'
+  md_default = '`5.0`'
+  desc = 'Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable.'
+
+[[section]]
+name = "fusion"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["mekf_gyro_noise", "mekf_gyro_bias", "mekf_accel_noise", "mekf_mag_noise", "mekf_wave_accel", "mekf_wave_accel_tau_s", "mekf_mag_dip_sigma_deg", "mag_reject_gauss", "accel_skip_thresh", "mag_yaw_only", "heave_tau_s", "wave_tau_s", "engine_vibration_g2", "engine_accel_skip_thresh"]]
+
+  [[section.key]]
+  names = ["mekf_gyro_noise"]
+  type = 'double'
+  default = 'default:\ 0.007'
+  scope = ""
+  man_style = "tight"
+  man = 'Gyro noise density in rad/s/sqrt(Hz).'
+  md_type = 'double'
+  md_default = '`0.007`'
+  desc = 'Gyro noise density in rad/s/√Hz. ISM330DHCX datasheet: 7 mdps/√Hz ≈ 0.000122 rad/s/√Hz.'
+
+  [[section.key]]
+  names = ["mekf_gyro_bias"]
+  type = 'double'
+  default = 'default:\ 0.00015'
+  scope = ""
+  man_style = "tight"
+  man = 'In-run gyro bias instability in rad/s.'
+  md_type = 'double'
+  md_default = '`0.00015`'
+  desc = 'In-run gyro bias instability in rad/s. Sets the bias random-walk process noise.'
+
+  [[section.key]]
+  names = ["mekf_accel_noise"]
+  type = 'double'
+  default = 'default:\ 0.0022'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Accelerometer noise density in m/s^2/sqrt(Hz).
+This describes SENSOR noise only. Resist the temptation to raise it to
+"account for wave acceleration" \(em that is what
+.B mekf_wave_accel
+below is for.
+Across the 12-seed wave benchmark the default is a sharp local optimum for
+the marine (yaw-only) configuration, and values in the range 0.003 to 0.03
+are substantially worse than either side of it: the gravity correction
+weakens, the filter leans on gyro integration, gyro-bias observability
+degrades, and the growing errors feed back through the innovation gate.
+The
+.B nis_accel
+field on the wire reports whether the noise model matches reality (1.0 =
+consistent); check it against a real capture before changing this.
+Must be greater than zero \(em zero or negative is rejected at load, since it
+would make the Kalman gain degenerate.'''
+  md_type = 'double'
+  md_default = '`0.0022`'
+  desc = 'Accelerometer **sensor** noise density in m/s²/√Hz. ISM330DHCX: ~186 µg/√Hz × 9.81. Not the knob for rough weather — see `mekf_wave_accel`.'
+
+  [[section.key]]
+  names = ["mekf_mag_noise"]
+  type = 'double'
+  default = 'default:\ 0.0004'
+  scope = ""
+  man_style = "tight"
+  man = 'Magnetometer noise density in Gauss/sqrt(Hz).'
+  md_type = 'double'
+  md_default = '`0.0004`'
+  desc = 'Magnetometer noise density in Gauss/√Hz. MMC5983MA: 0.4 mGauss RMS.'
+
+  [[section.key]]
+  names = ["mekf_wave_accel"]
+  type = 'double'
+  default = 'default:\ 0.8'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Steady-state standard deviation, in m/s^2, of the wave-orbital acceleration
+that contaminates the gravity measurement in a seaway. This is the knob for
+"the sea is rough", not
+.BR mekf_accel_noise .
+.IP
+The disturbance is correlated over roughly a second rather than white, so it
+is modelled as a first-order Gauss\(enMarkov process in the filter state.
+Without that, the filter treats 833 strongly correlated samples per second as
+833 independent measurements of gravity, collapses its own covariance and
+diverges. Set to 0 (or set
+.B mekf_wave_accel_tau_s
+to 0) to disable the state entirely, which returns the pre\-1.7 six\-state
+filter exactly.
+.IP
+Too small a value is the failure mode that hurts, so round up. Run
+.B imud\-cal fit\-ra
+on a capture of your worst conditions: it measures the disturbance with the
+state disabled and prints a suggested value.'''
+  md_type = 'double'
+  md_default = '`0.8`'
+  desc = 'Steady-state σ, in m/s², of the wave-orbital acceleration contaminating the gravity measurement. **This is the knob for "the sea is rough."** The disturbance is correlated over roughly a second rather than white, so it is carried as a first-order Gauss–Markov state; without it the filter treats 833 strongly correlated samples per second as 833 independent measurements of gravity and diverges. `0` (or `mekf_wave_accel_tau_s = 0`) disables the state and restores the pre-1.7 6-state filter exactly. Too small is the failure mode that hurts, so round up; `imud-cal fit-ra` measures it from a capture.'
+
+  [[section.key]]
+  names = ["mekf_wave_accel_tau_s"]
+  type = 'double'
+  default = 'default:\ 0.5'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Correlation time, in seconds, of the Gauss\(enMarkov wave-acceleration state.
+0 disables the state.
+.IP
+Not to be confused with
+.BR wave_tau_s ,
+which is the unrelated sea\-state reporting window.
+.IP
+Attitude error and wave acceleration are separated only by their dynamics, so
+too long a value lets the state absorb genuine tilt: the benchmark's yaw\-only
+attitude RMS degrades from 2.3 degrees at 0.5 s to 7.1 degrees at 2 s. Short
+is the safe side.'''
+  md_type = 'double'
+  md_default = '`0.5`'
+  desc = 'Correlation time in seconds of the Gauss–Markov wave-acceleration state. `0` disables. **Unrelated to `wave_tau_s`**, which is the sea-state reporting window. Attitude error and wave acceleration are told apart only by their dynamics, so too long a value lets the state absorb genuine tilt: benchmark yaw-only attitude RMS degrades 2.3° at 0.5 s → 7.1° at 2 s. Short is the safe side.'
+
+  [[section.key]]
+  names = ["mekf_mag_dip_sigma_deg"]
+  type = 'double'
+  default = 'default:\ 1.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Uncertainty, in degrees, of the magnetic reference's DIP angle.
+.IP
+Applies only to 3\-D vector fusion
+.RB ( mag_yaw_only
+= false), where the field's dip is what constrains roll and pitch. The dip of
+the reference is fixed once, at alignment, from the tilt estimate available at
+that moment; in a seaway that is wrong by around a degree, and in this mode the
+error becomes a permanent roll/pitch bias.
+.IP
+It cannot be corrected in run. The reference's in\-run healing is gated on the
+platform being quiescent, deliberately: the accelerometer samples that pass the
+motion gate in a seaway are wave\-phase correlated, and learning from that
+subset walks the reference away from the truth rather than toward it (measured
+over 30 minutes; opening the gate roughly triples the covariance
+inconsistency). So the error is admitted into the covariance instead, as a
+rank\-1 term along the one direction a dip error acts on.
+.IP
+The default is the residual measured after a 5 s
+.BR align_window_sec ,
+rounded up. Set to
+.B 0
+when a position source supplies WMM field invariants \(em that removes the dip
+error at its source and is strictly better. Raising it improves covariance
+consistency and lowers the
+.B nis_mag
+wire field, by design: the dip channel is being trusted less.'''
+  md_type = 'double'
+  md_default = '`1.0`'
+  desc = '''
+Uncertainty in degrees of the magnetic reference's **dip** angle. Applies only to 3-D vector fusion (`mag_yaw_only = false`), where the dip constrains roll and pitch — a wrong dip reference therefore biases them, permanently, and the error cannot be learned out at sea. It is admitted into the covariance instead, as a rank-1 anisotropic term in the magnetometer noise. Set `0` when a position source supplies WMM field invariants, which removes the error at its source and is strictly better. Raising it improves covariance consistency and lowers the `nis_mag` wire field by design.'''
+
+  [[section.key]]
+  names = ["mag_reject_gauss"]
+  type = 'double'
+  default = 'default:\ 0.05'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Strong-anomaly cutoff: reject magnetometer updates whose post-calibration
+residual exceeds this value (Gauss). Fine-grained consistency is handled by
+internal chi-squared innovation gates; keep this a coarse threshold
+(~10% of the Earth field).'''
+  md_type = 'double'
+  md_default = '`0.05`'
+  desc = 'Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field).'
+
+  [[section.key]]
+  names = ["accel_skip_thresh"]
+  type = 'double'
+  default = 'default:\ 0.05'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Skip accelerometer updates when
+.RI |a|\(en1g
+exceeds this fraction of g.'''
+  md_type = 'double'
+  md_default = '`0.05`'
+  desc = 'Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g.'
+
+  [[section.key]]
+  names = ["mag_yaw_only"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Heading-only magnetometer fusion (marine default): the magnetometer corrects
+heading and never pulls on roll/pitch. Set
+.B false
+for full 3D vector fusion (magnetically clean installs with a true 3D
+calibration).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = '''
+Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration.'''
+
+  [[section.key]]
+  names = ["heave_tau_s"]
+  type = 'float'
+  default = 'default:\ 12.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Heave filter time constant, seconds. Vertical displacement from band-passed
+double integration of vertical acceleration; feeds the $PASHR heave field
+and the binary packet heave_m. Allow ~2 minutes settling after startup.
+.B 0
+disables.'''
+  md_type = 'float'
+  md_default = '`12.0`'
+  desc = '''
+Heave filter time constant in seconds. Heave (vertical displacement) is a band-passed double integration of vertical acceleration; it feeds the `$PASHR` heave field and the binary packet's `heave_m`. The passband covers ~2–15 s wave periods at the default; allow ~2 minutes of settling after startup. `0` disables (heave reads 0.0). Values far above the default are not useful — the passband stops covering waves — and were once actively dangerous: the filter's leak is sized by `dt/heave_tau_s`, and in single precision it stopped working entirely at a high ODR, turning a bounded band-pass into an unbounded double integrator (253 m of "heave" at 32 kHz with a 900 s constant). The accumulators are double precision as of this release, so the whole range now degrades gracefully; see [math.md §1](math.md).'''
+
+  [[section.key]]
+  names = ["wave_tau_s"]
+  type = 'float'
+  default = 'default:\ 120.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Sea-state averaging window, seconds: significant wave height, mean
+zero-crossing wave period, and the vessel's roll and pitch periods and
+significant single amplitudes are exponentially weighted statistics of the
+heave/roll/pitch oscillations over this window. Statistics settle ~2 windows
+after the heave estimator itself settles. Requires
+.B heave_tau_s
+> 0.
+.B 0
+disables (the packet fields read 0.0).'''
+  md_type = 'float'
+  md_default = '`120.0`'
+  desc = '''
+Sea-state averaging window in seconds. Significant wave height (Hs = 4·σ(heave)), mean zero-crossing wave period, and the vessel's roll/pitch periods and significant single amplitudes (2σ) are exponentially weighted statistics of the heave/roll/pitch oscillations over this window (packet fields `wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`, `pitch_period_s`, `pitch_amplitude`, gated by the `wave_valid` flag). Stats settle ~2 windows after heave settles. Oceanographic practice is 10–20 minute records, and windows that long are supported — but note they interact with `[imu] odr_hz`, because the statistics' gain is `dt/wave_tau_s`. At 32 kHz with a 1200 s window that gain is 2.6e-8, which single precision cannot accumulate; significant wave height under-read by 18 % while still reporting `wave_valid`. Fixed by double-precision accumulators as of this release. Requires `heave_tau_s` > 0; `0` disables.'''
+
+  [[section.key]]
+  names = ["engine_vibration_g2"]
+  type = 'double'
+  default = 'default:\ 0.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+EMA threshold (m^2/s^4) for engine-vibration detection.
+Set
+.B 0
+to disable.'''
+  md_type = 'double'
+  md_default = '`0.0`'
+  desc = 'EMA threshold (m²/s⁴) for engine-vibration detection. The filter tracks an exponential moving average of `(|a| − g)²`; when it exceeds this value the engine is considered on. Set `0` to disable (default).'
+
+  [[section.key]]
+  names = ["engine_accel_skip_thresh"]
+  type = 'double'
+  default = 'default:\ 0.20'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Accelerometer skip threshold override applied while engine vibration is
+detected (wider gate; accel noise is additionally inflated 4x).'''
+  md_type = 'double'
+  md_default = '`0.20`'
+  desc = '''
+Accelerometer skip threshold applied while engine vibration is detected: wider than `accel_skip_thresh` so the filter isn't starved, while the accel noise is inflated ×4 so the vibration-contaminated samples that pass are trusted proportionally less. Only active when `engine_vibration_g2 > 0`.'''
+
+[[section]]
+name = "calibration"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["file", "startup_settle_sec", "align_window_sec", "gyro_bias_sec"]]
+
+  [[section.key]]
+  names = ["file"]
+  type = 'string'
+  default = 'default:\ \(dq/etc/imud/cal.json\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Path to the calibration file produced by
+.BR imud-cal (8).
+Supports
+.B ~/
+expansion.'''
+  md_type = 'string'
+  md_default = '`"/etc/imud/cal.json"`'
+  desc = 'Path to the calibration JSON produced by `imud-cal`. Supports `~/` expansion. If the file does not exist, imud runs uncalibrated (magnetometer readings will be biased).'
+
+  [[section.key]]
+  names = ["startup_settle_sec"]
+  type = 'double'
+  default = 'default:\ 5.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Seconds to discard sensor output after chip initialisation.
+Set
+.B 0
+for the
+.B sim
+driver.'''
+  md_type = 'double'
+  md_default = '`5.0`'
+  desc = 'Seconds of sensor data to discard after chip initialisation. The ISM330DHCX gyro drifts ~0.02 rad/s for ~5 s after power-on; discarding this window keeps it out of the bias estimate. Set `0` for the `sim` driver.'
+
+  [[section.key]]
+  names = ["gyro_bias_sec"]
+  type = 'double'
+  default = 'default:\ 2.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Length of the stationary bias-estimation window at startup.
+Set
+.B 0
+to skip.'''
+  md_type = 'double'
+  md_default = '`2.0`'
+  desc = 'Length of the stationary window used to estimate gyro bias at startup. The board must be still for this duration. Skipped if the cal file already has a gyro bias. If motion is detected during the window (gyro std > 0.5 °/s) the window is doubled once and a warning is logged. Set `0` to skip bias estimation.'
+
+  [[section.key]]
+  names = ["align_window_sec"]
+  type = 'double'
+  default = 'default:\ 5.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Seconds of accelerometer and magnetometer averaging used for the one\-shot
+initial attitude alignment.
+.IP
+Whatever tilt error survives this window is baked permanently into the magnetic
+reference's dip, so in a seaway the length matters. One second \(em the value
+hardcoded before 1.7 \(em is about a fifth of a typical roll period, so it
+aligns to an arbitrary point in the cycle: measured attitude RMS in the marine
+default is 47.7 degrees at a 1 s window against 2.19 degrees at 5 s, flat
+beyond. 3\-D vector fusion keeps improving out to roughly 15 s.
+.IP
+The only cost of a longer window is startup latency before the filter produces
+usable attitude, so raising it is worthwhile when starting from a mooring and
+not when starting underway.'''
+  md_type = 'double'
+  md_default = '`5.0`'
+  desc = '''
+Seconds of accelerometer and magnetometer averaging used for the one-shot initial attitude alignment. Whatever tilt error survives this window is baked permanently into the magnetic reference's dip, so in a seaway the length matters: 1 s (the value hardcoded before 1.7) is about a fifth of a roll period and aligns to an arbitrary point in the cycle — measured attitude RMS in the marine default is 47.7° at 1 s against 2.19° at 5 s, flat beyond. 3-D vector fusion keeps improving out to ~15 s. The only cost of a longer window is startup latency before usable attitude, so raise it when starting from a mooring, not underway.'''
+
+[[section]]
+name = "nmea"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["enabled", "rate_hz", "dest_addr", "dest_port", "tcp_enabled", "tcp_bind_addr", "tcp_port"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = 'Enable NMEA UDP output.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable the NMEA UDP output stream.'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 10'
+  scope = ""
+  man_style = "tight"
+  man = 'Output rate in Hz (shared by UDP and TCP).'
+  md_type = 'int'
+  md_default = '`10`'
+  desc = 'Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable.'
+
+  [[section.key]]
+  names = ["dest_addr"]
+  type = 'string'
+  default = 'default:\ \(dq255.255.255.255\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'Destination IP address (broadcast, unicast, or multicast).'
+  md_type = 'string'
+  md_default = '`"255.255.255.255"`'
+  desc = 'Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host.'
+
+  [[section.key]]
+  names = ["dest_port"]
+  type = 'int'
+  default = 'default:\ 10110'
+  scope = ""
+  man_style = "tight"
+  man = 'Destination UDP port.'
+  md_type = 'int'
+  md_default = '`10110`'
+  desc = 'Destination UDP port. Standard NMEA-over-UDP port is 10110.'
+
+  [[section.key]]
+  names = ["tcp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Enable the NMEA-over-TCP listener.
+Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP
+clients and each receives every sentence burst; up to 8 clients, slow clients
+skip bursts rather than stalling the daemon.'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon.'
+
+  [[section.key]]
+  names = ["tcp_bind_addr"]
+  type = 'string'
+  default = 'default:\ \(dq0.0.0.0\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Listener bind address (numeric IPv4).
+Set
+.B 127.0.0.1
+to keep the listener host-local.'''
+  md_type = 'string'
+  md_default = '`"0.0.0.0"`'
+  desc = 'Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local.'
+
+  [[section.key]]
+  names = ["tcp_port"]
+  type = 'int'
+  default = 'default:\ 10110'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Listener TCP port (the de-facto NMEA-over-TCP port).
+.PP
+Sentences emitted:
+.BR $PASHR ,
+.BR $HCHDM ,
+.BR $HCHDG ,
+.BR $TIROT ,
+.BR $IIXDR .
+When declination is configured,
+.B $HCHDT
+(true heading) is added and
+.B $HCHDG
+carries the variation fields.'''
+  md_type = 'int'
+  md_default = '`10110`'
+  desc = 'Listener TCP port (the de-facto NMEA-over-TCP port).'
+
+[[section]]
+name = "highrate"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["enabled", "rate_hz", "dest_addr", "dest_port", "coord_frame"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = 'Enable the high-rate stream.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable the high-rate binary stream. Opt in for machine vision, ROS2, or any consumer needing quaternion + covariance at high rate.'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 500'
+  scope = ""
+  man_style = "tight"
+  man = 'Output rate in Hz.'
+  md_type = 'int'
+  md_default = '`500`'
+  desc = 'Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable.'
+
+  [[section.key]]
+  names = ["dest_addr"]
+  type = 'string'
+  default = 'default:\ \(dq239.255.0.1\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Destination IP.
+Default is an IPv4 multicast group (TTL=1, link-local).
+Use
+.B 255.255.255.255
+for broadcast or a unicast IP for point-to-point.'''
+  md_type = 'string'
+  md_default = '`"239.255.0.1"`'
+  desc = 'Destination IP. Default is an IPv4 multicast group (TTL=1, link-local). Consumers join with `IP_ADD_MEMBERSHIP`. Use `255.255.255.255` for broadcast or a unicast IP for point-to-point.'
+
+  [[section.key]]
+  names = ["dest_port"]
+  type = 'int'
+  default = 'default:\ 10111'
+  scope = ""
+  man_style = "tight"
+  man = 'Destination UDP port.'
+  md_type = 'int'
+  md_default = '`10111`'
+  desc = 'Destination UDP port.'
+
+  [[section.key]]
+  names = ["coord_frame"]
+  type = 'string'
+  default = 'default:\ \(dqNED\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Output frame:
+.B NED
+(North-East-Down) or
+.B ENU
+(East-North-Up).'''
+  md_type = 'string'
+  md_default = '`"NED"`'
+  desc = 'Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet.'
+
+[[section]]
+name = "stream"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["enabled", "socket", "rate_hz", "tcp_enabled", "tcp_bind_addr", "tcp_port"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Enable the subscription stream \(em the one output a stock daemon provides
+(the bridges and libimud consumers read it).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it).'
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ \(dq/run/imud/imud-stream.sock\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'Listen socket path (mode 0660).'
+  md_type = 'string'
+  md_default = '`"/run/imud/imud-stream.sock"`'
+  desc = 'Listen path (mode 0660, owner `imud:imud` — a consumer needs `adduser <user> imud`).'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 100'
+  scope = ""
+  man_style = "tight"
+  man = 'Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers).'
+  md_type = 'int'
+  md_default = '`100`'
+  desc = 'Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be greater than zero. Hot-reloadable.'
+
+  [[section.key]]
+  names = ["tcp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Enable the TCP listener: the same framed packets, lossless, over the
+network \(em for a remote
+.BR imud-mon ,
+a bridge on another machine, or any
+.BR libimud (3)
+consumer using
+.B imud_connect_tcp
+(Python:
+.BR ImudClient.connect_tcp ).'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket.'
+
+  [[section.key]]
+  names = ["tcp_bind_addr"]
+  type = 'string'
+  default = 'default:\ \(dq0.0.0.0\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Listener bind address (numeric IPv4).
+Set
+.B 127.0.0.1
+to keep the listener host-local.'''
+  md_type = 'string'
+  md_default = '`"0.0.0.0"`'
+  desc = 'Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local.'
+
+  [[section.key]]
+  names = ["tcp_port"]
+  type = 'int'
+  default = 'default:\ 10112'
+  scope = ""
+  man_style = "tight"
+  man = 'Listener TCP port.'
+  md_type = 'int'
+  md_default = '`10112`'
+  desc = 'Listener TCP port.'
+
+[[section]]
+name = "logging"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["level", "file", "stats_hz"]]
+
+  [[section.key]]
+  names = ["level"]
+  type = 'string'
+  default = 'default:\ \(dqwarn\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Log verbosity:
+.BR debug ,
+.BR info ,
+.BR warn ,
+or
+.BR error .
+.B warn
+is recommended for production (SD card friendly).
+.B info
+adds lifecycle messages and a periodic
+.B [stats]
+heartbeat.
+Applied live on SIGHUP.'''
+  md_type = 'string'
+  md_default = '`"warn"`'
+  desc = 'Log verbosity: `"debug"`, `"info"`, `"warn"`, or `"error"`. `"warn"` is recommended for production (SD-card friendly). `"info"` adds lifecycle messages and a periodic `[stats]` heartbeat. Applied live on SIGHUP.'
+
+  [[section.key]]
+  names = ["file"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Log destination.
+Empty = write to stderr; under systemd, lines carry sd-daemon priority
+prefixes so journald records real priorities.
+Set an absolute path to redirect to a timestamped log file; the file is
+reopened on SIGHUP, so logrotate can rotate it
+.RB ( "postrotate: systemctl reload imud" ).
+Repeated identical messages are suppressed and logged as a count.'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'Log destination. Empty = stderr; under systemd, lines carry sd-daemon priority prefixes so journald records real priorities (`journalctl -p warning` filters work). Set an absolute path for a timestamped log file; it is reopened on SIGHUP so logrotate can rotate it (`postrotate: systemctl reload imud`).'
+
+  [[section.key]]
+  names = ["stats_hz"]
+  type = 'int'
+  default = 'default:\ 1'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Rate of the
+.B [stats]
+heartbeat line.
+Only visible at
+.B info
+or
+.B debug
+level.'''
+  md_type = 'int'
+  md_default = '`1`'
+  desc = 'Rate of the `[stats]` heartbeat log line. Only visible at `level = "info"` or `"debug"`.'
+
+[[section]]
+name = "position"
+man_file = "man/man5/imud.conf.5"
+md_file = "docs/manual.md"
+md_groups = [["declination_deg", "lat_deg", "lon_deg", "wmm_file"], ["gpsd_enabled", "gpsd_host", "gpsd_port"], ["signalk_enabled", "signalk_host", "signalk_port", "signalk_path"], ["fix_max_age_h"]]
+
+  [[section.key]]
+  names = ["declination_deg"]
+  type = 'float'
+  default = 'default:\ 0.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Static magnetic declination in degrees.
+Ignored when
+.B lat_deg
+and
+.B lon_deg
+are both non-zero.'''
+  md_type = 'float'
+  md_default = '`0.0`'
+  desc = 'Static declination in degrees. East positive (+), west negative (−). Ignored when `lat_deg` and `lon_deg` are both non-zero.'
+
+  [[section.key]]
+  names = ["lat_deg"]
+  type = 'double'
+  default = 'default:\ 0.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Geodetic latitude in decimal degrees (+N / \-S).
+Set with
+.B lon_deg
+to enable WMM auto-compute.'''
+  md_type = 'double'
+  md_default = '`0.0`'
+  desc = 'Geodetic latitude in decimal degrees (+N / −S). Set with `lon_deg` to enable WMM auto-compute.'
+
+  [[section.key]]
+  names = ["lon_deg"]
+  type = 'double'
+  default = 'default:\ 0.0'
+  scope = ""
+  man_style = "tight"
+  man = 'Geodetic longitude in decimal degrees (+E / \-W).'
+  md_type = 'double'
+  md_default = '`0.0`'
+  desc = 'Geodetic longitude in decimal degrees (+E / −W). Set with `lat_deg` to enable WMM auto-compute.'
+
+  [[section.key]]
+  names = ["wmm_file"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq\ =\ auto'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Path to the WMM coefficient file.
+When empty (the default), imud uses
+.I /etc/imud/WMM.COF
+if it exists (operator override), otherwise
+.I /usr/share/imud/WMM.COF
+(installed by the imud-wmm-data package /
+.BR "make install-wmm-data" ).
+The bundled model is WMM2025, valid 2025.0\(en2030.0.
+When WMM2030 is published (expected late 2029), update the data package \(em
+or drop the new file in as an override:
+.EX
+    sudo cp WMM2030.COF /etc/imud/WMM.COF
+    sudo systemctl reload imud
+.EE'''
+  md_type = 'string'
+  md_default = '`""` (auto)'
+  desc = 'Path to the WMM coefficient file. Empty = auto-resolve: `/etc/imud/WMM.COF` if present (operator override), else `/usr/share/imud/WMM.COF` (`imud-wmm-data` package / `make install-wmm-data`). Bundled model WMM2025, valid 2025.0–2030.0.'
+
+  [[section.key]]
+  names = ["gpsd_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = 'Connect to gpsd for live position updates.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Connect to gpsd for live position (and speed). gpsd must be running with a working GPS source.'
+
+  [[section.key]]
+  names = ["gpsd_host"]
+  type = 'string'
+  default = 'default:\ \(dqlocalhost\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'Hostname or IP address of the gpsd instance.'
+  md_type = 'string'
+  md_default = '`"localhost"`'
+  desc = 'Hostname or IP of the gpsd instance.'
+
+  [[section.key]]
+  names = ["gpsd_port"]
+  type = 'int'
+  default = 'default:\ 2947'
+  scope = ""
+  man_style = "tight"
+  man = 'TCP port of the gpsd instance.'
+  md_type = 'int'
+  md_default = '`2947`'
+  desc = 'TCP port of the gpsd instance.'
+
+  [[section.key]]
+  names = ["signalk_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = 'Poll the SignalK REST API for position (every 30\~s).'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Poll the SignalK REST API for position.'
+
+  [[section.key]]
+  names = ["signalk_host"]
+  type = 'string'
+  default = 'default:\ \(dqlocalhost\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'Hostname or IP address of the SignalK server.'
+  md_type = 'string'
+  md_default = '`"localhost"`'
+  desc = 'Hostname or IP of the SignalK server.'
+
+  [[section.key]]
+  names = ["signalk_port"]
+  type = 'int'
+  default = 'default:\ 3000'
+  scope = ""
+  man_style = "tight"
+  man = 'HTTP port of the SignalK server.'
+  md_type = 'int'
+  md_default = '`3000`'
+  desc = 'HTTP port of the SignalK server.'
+
+  [[section.key]]
+  names = ["signalk_path"]
+  type = 'string'
+  default = 'default:\ \(dq/signalk/v1/api/vessels/self/navigation/position\(dq'
+  scope = ""
+  man_style = "tight"
+  man = 'REST endpoint path.'
+  md_type = 'string'
+  md_default = '`"/signalk/v1/api/vessels/self/navigation/position"`'
+  desc = 'REST endpoint path. Override for a non-standard path or vessel ID.'
+
+  [[section.key]]
+  names = ["fix_max_age_h"]
+  type = 'float'
+  default = 'default:\ 24.0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Hours to retain a GPS-derived declination without a new fix.
+An anchored vessel with continuous GPS reception keeps its declination
+indefinitely; the TTL only fires during a genuine GPS outage.
+Set
+.B 0
+to never expire.'''
+  md_type = 'float'
+  md_default = '`24.0`'
+  desc = 'Hours to keep a GPS-derived declination after the last fix. The TTL resets on every fix — an anchored vessel with continuous GPS keeps declination valid indefinitely. After the window expires without a fix, `FLAG_DECLINATION_VALID` clears and true-heading output stops. Set `0` to never expire.'
+
+[[section]]
+name = "imud-signalk"
+man_file = "man/man5/imud-signalk.conf.5"
+md_file = "docs/imud-signalk/manual.md"
+md_groups = [["enabled", "socket", "udp_enabled", "dest_addr", "dest_port", "rate_hz", "source_label", "publish_heave", "tcp_enabled", "tcp_bind_addr", "tcp_port"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Run the Signal K bridge daemon.  With it true and every output off the daemon
+runs but sends nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Run the bridge daemon. With it true and every output off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it).'
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ \(dq/run/imud/imud-stream.sock\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+imud stream socket to read (match
+.I imud.conf
+if you changed it there).'''
+  md_type = 'string'
+  md_default = '`"/run/imud/imud-stream.sock"`'
+  desc = 'imud stream socket to read (match `imud.conf` if you changed it there).'
+
+  [[section.key]]
+  names = ["udp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Emit deltas over UDP to
+.IR dest_addr : dest_port .'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Emit deltas over UDP to `dest_addr`:`dest_port`.'
+
+  [[section.key]]
+  names = ["dest_addr"]
+  type = 'string'
+  default = 'default:\ \(dq127.0.0.1\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Signal K server host: a hostname, a numeric IPv4 or IPv6 address, or a
+broadcast address.  Resolved with
+.BR getaddrinfo (3).
+Before 1.7 this key accepted numeric IPv4 only.'''
+  md_type = 'string'
+  md_default = '`"127.0.0.1"`'
+  desc = 'Signal K server host: a hostname, a numeric IPv4 or IPv6 address, or a broadcast address. Resolved with `getaddrinfo(3)`, as in the other bridges. Before 1.7 this key accepted numeric IPv4 only.'
+
+  [[section.key]]
+  names = ["dest_port"]
+  type = 'int'
+  default = 'default:\ 10113'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+UDP port; must match the Signal K server's UDP input connection.'''
+  md_type = 'int'
+  md_default = '`10113`'
+  desc = '''
+UDP port — must match the Signal K server's UDP input connection.'''
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 10'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Delta emit rate in Hz; must be greater than zero.'
+  md_type = 'int'
+  md_default = '`10`'
+  desc = 'Delta emit rate in Hz; must be greater than zero.'
+
+  [[section.key]]
+  names = ["source_label"]
+  type = 'string'
+  default = 'default:\ \(dqimud\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Signal K delta
+.B source.label
+value.'''
+  md_type = 'string'
+  md_default = '`"imud"`'
+  desc = 'Signal K delta `source.label` value.'
+
+  [[section.key]]
+  names = ["publish_heave"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Emit
+.B environment.heave
+(set false if imud's heave estimator is off).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = '''
+Emit `environment.heave`, withheld until the estimator settles (~10·τ) so no startup transient is sent (set false if imud's heave estimator is off).'''
+
+  [[section.key]]
+  names = ["tcp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Serve the same deltas (newline-framed JSON, one delta per line) on a TCP
+listener; the Signal K server consumes it as a TCP client data connection.
+Up to 8 clients.  Independent of
+.BR udp_enabled ;
+enable either or both.'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Serve the same deltas newline-framed on a TCP listener (the SK server connects as a TCP client). Up to 8 clients; independent of `udp_enabled`.'
+
+  [[section.key]]
+  names = ["tcp_bind_addr"]
+  type = 'string'
+  default = 'default:\ \(dq0.0.0.0\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Listener bind address (numeric IPv4);
+.B 127.0.0.1
+keeps it host-local.'''
+  md_type = 'string'
+  md_default = '`"0.0.0.0"`'
+  desc = 'Listener bind address (numeric IPv4); `127.0.0.1` keeps it host-local.'
+
+  [[section.key]]
+  names = ["tcp_port"]
+  type = 'int'
+  default = 'default:\ 10113'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Listener TCP port (TCP namespace of the UDP default).'
+  md_type = 'int'
+  md_default = '`10113`'
+  desc = 'Listener TCP port (TCP namespace of the UDP default).'
+
+[[section]]
+name = "imud-mqtt"
+man_file = "man/man5/imud-mqtt.conf.5"
+md_file = "docs/imud-mqtt/manual.md"
+md_groups = [["enabled", "broker_enabled", "socket", "broker_addr", "broker_port", "client_id", "keepalive_s", "topic_prefix", "rate_hz", "qos", "retain", "units", "publish_heave", "ha_discovery", "ha_prefix", "username", "tls", "tls_cafile"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Run the MQTT bridge daemon.  With it true and
+.B broker_enabled
+false the daemon runs but publishes nothing; set it false to not run the bridge
+at all (it exits cleanly, so systemd does not restart it).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Run the bridge daemon. With it true and `broker_enabled` false the daemon runs but publishes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it).'
+
+  [[section.key]]
+  names = ["broker_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Connect to the broker and publish (the bridge's only output).  This keeps a
+fresh install from repeatedly dialing a broker that is not configured yet.'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = '''
+Connect to the broker and publish (the bridge's only output).'''
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ \(dq/run/imud/imud-stream.sock\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'imud stream socket to read.'
+  md_type = 'string'
+  md_default = '`"/run/imud/imud-stream.sock"`'
+  desc = 'imud stream socket to read.'
+
+  [[section.key]]
+  names = ["broker_addr"]
+  type = 'string'
+  default = 'default:\ \(dq127.0.0.1\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Broker host (name or IP).'
+  md_type = 'string'
+  md_default = '`"127.0.0.1"`'
+  desc = 'Broker host (name or IP).'
+
+  [[section.key]]
+  names = ["broker_port"]
+  type = 'int'
+  default = 'default:\ 1883'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Broker TCP port.'
+  md_type = 'int'
+  md_default = '`1883`'
+  desc = 'Broker TCP port.'
+
+  [[section.key]]
+  names = ["client_id"]
+  type = 'string'
+  default = 'default:\ \(dqimud\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'MQTT client id; also the Home Assistant device/node id.'
+  md_type = 'string'
+  md_default = '`"imud"`'
+  desc = 'MQTT client id; also the Home Assistant device/node id.'
+
+  [[section.key]]
+  names = ["keepalive_s"]
+  type = 'int'
+  default = 'default:\ 30'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'MQTT keepalive interval in seconds.'
+  md_type = 'int'
+  md_default = '`30`'
+  desc = 'MQTT keepalive interval in seconds.'
+
+  [[section.key]]
+  names = ["topic_prefix"]
+  type = 'string'
+  default = 'default:\ \(dqimud\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Prefix for all published topics.'
+  md_type = 'string'
+  md_default = '`"imud"`'
+  desc = 'Prefix for all published topics.'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 5'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Publish rate in Hz; must be greater than zero.'
+  md_type = 'int'
+  md_default = '`5`'
+  desc = 'Publish rate in Hz; must be greater than zero.'
+
+  [[section.key]]
+  names = ["qos"]
+  type = 'int'
+  default = 'default:\ 0'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Publish QoS (0, 1, or 2).'
+  md_type = 'int'
+  md_default = '`0`'
+  desc = 'Publish QoS (0/1/2).'
+
+  [[section.key]]
+  names = ["retain"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Retain published values so late subscribers / Home Assistant see current state.'
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Retain values so late subscribers / HA see current state.'
+
+  [[section.key]]
+  names = ["units"]
+  type = 'string'
+  default = 'default:\ \(dqdeg\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+.B deg
+(degrees, \(de/min, m, \(deC) or
+.B rad
+(SI: radians, rad/s).'''
+  md_type = 'string'
+  md_default = '`"deg"`'
+  desc = '`"deg"` (degrees, °/min, m, °C) or `"rad"` (SI).'
+
+  [[section.key]]
+  names = ["publish_heave"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Publish the
+.B environment/heave
+topic.'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Publish the heave family: `environment/heave`, `environment/heaveRate` (m/s), plus the sea-state topics `environment/waveHeight` (m), `wavePeriod`/`rollPeriod`/`pitchPeriod` (s), and `rollAmplitude`/`pitchAmplitude` (angles, follow `units`). State topics are withheld until the respective estimator settles (heave ~10·τ; sea state ~2·`wave_tau_s` after that); HA discovery is still advertised on this flag alone.'
+
+  [[section.key]]
+  names = ["ha_discovery"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Publish Home Assistant MQTT-discovery configs.'
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Publish Home Assistant discovery configs.'
+
+  [[section.key]]
+  names = ["ha_prefix"]
+  type = 'string'
+  default = 'default:\ \(dqhomeassistant\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Home Assistant discovery topic prefix.'
+  md_type = 'string'
+  md_default = '`"homeassistant"`'
+  desc = 'HA discovery topic prefix.'
+
+  [[section.key]]
+  names = ["username", "password"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Broker authentication.  A
+.B password
+here is stored in plaintext, which is why this file installs mode 0640 owned
+.IR root:imud .'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'Broker auth. The password is stored in plaintext, so `/etc/imud/imud-mqtt.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file.'
+
+  [[section.key]]
+  names = ["tls"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Enable TLS (with an empty
+.B tls_cafile
+the system CA store is used).'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable TLS (empty `tls_cafile` = system CA store).'
+
+  [[section.key]]
+  names = ["tls_cafile"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'CA certificate path for TLS.'
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'CA certificate path for TLS.'
+
+[[section]]
+name = "imud-influxdb"
+man_file = "man/man5/imud-influxdb.conf.5"
+md_file = "docs/imud-influxdb/manual.md"
+md_groups = [["enabled", "socket", "transport", "rate_hz", "measurement", "source_label", "units", "publish_heave", "udp_enabled", "udp_addr", "udp_port", "http_enabled", "http_host", "http_port", "http_path", "http_token"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Run the InfluxDB bridge daemon.  With it true and every output off the daemon
+runs but writes nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Run the bridge daemon. With it true and every output off the daemon runs but writes nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it).'
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ \(dq/run/imud/imud-stream.sock\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'imud stream socket to read.'
+  md_type = 'string'
+  md_default = '`"/run/imud/imud-stream.sock"`'
+  desc = 'imud stream socket to read.'
+
+  [[section.key]]
+  names = ["transport"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+.B DEPRECATED.
+Legacy output selector
+.RB ( udp " or " http );
+kept only for old configs.  When neither
+.B udp_enabled
+nor
+.B http_enabled
+is set, a
+.B transport
+value is mapped to the matching enable (with a warning).  Prefer the enables.'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = '**Deprecated** — legacy `"udp"`/`"http"` selector, mapped to `udp_enabled`/`http_enabled` when neither is set. Prefer the enables.'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 10'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Point emit rate in Hz; must be greater than zero.'
+  md_type = 'int'
+  md_default = '`10`'
+  desc = 'Point emit rate in Hz; must be greater than zero.'
+
+  [[section.key]]
+  names = ["measurement"]
+  type = 'string'
+  default = 'default:\ \(dqimud\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Line-protocol measurement name.'
+  md_type = 'string'
+  md_default = '`"imud"`'
+  desc = 'Line-protocol measurement name.'
+
+  [[section.key]]
+  names = ["source_label"]
+  type = 'string'
+  default = 'default:\ \(dqimud\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Value of the
+.B source=
+tag.'''
+  md_type = 'string'
+  md_default = '`"imud"`'
+  desc = 'Value of the `source=` tag.'
+
+  [[section.key]]
+  names = ["units"]
+  type = 'string'
+  default = 'default:\ \(dqdeg\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+.B deg
+(degrees, \(de/min) or
+.B rad
+(SI: radians, rad/s).'''
+  md_type = 'string'
+  md_default = '`"deg"`'
+  desc = '`"deg"` (degrees, °/min) or `"rad"` (SI).'
+
+  [[section.key]]
+  names = ["publish_heave"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+Include the
+.B heave
+field.'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Include the `heave` field.'
+
+  [[section.key]]
+  names = ["udp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Write line-protocol points over UDP.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Write line-protocol points over UDP.'
+
+  [[section.key]]
+  names = ["udp_addr"]
+  type = 'string'
+  default = 'default:\ \(dq127.0.0.1\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'UDP destination host (InfluxDB 1.x listener or Telegraf).'
+  md_type = 'string'
+  md_default = '`"127.0.0.1"`'
+  desc = 'UDP destination host (InfluxDB 1.x / Telegraf).'
+
+  [[section.key]]
+  names = ["udp_port"]
+  type = 'int'
+  default = 'default:\ 8089'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'UDP destination port.'
+  md_type = 'int'
+  md_default = '`8089`'
+  desc = 'UDP port.'
+
+  [[section.key]]
+  names = ["http_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Write line-protocol points over HTTP (may run alongside
+.BR udp_enabled ).'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Write line-protocol points over HTTP (may run alongside `udp_enabled`).'
+
+  [[section.key]]
+  names = ["http_host"]
+  type = 'string'
+  default = 'default:\ \(dq127.0.0.1\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'HTTP host.'
+  md_type = 'string'
+  md_default = '`"127.0.0.1"`'
+  desc = 'HTTP host.'
+
+  [[section.key]]
+  names = ["http_port"]
+  type = 'int'
+  default = 'default:\ 8086'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'HTTP port.'
+  md_type = 'int'
+  md_default = '`8086`'
+  desc = 'HTTP port.'
+
+  [[section.key]]
+  names = ["http_path"]
+  type = 'string'
+  default = 'default:\ \(dq/write?db=imud&precision=ns\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Write path: 1.x
+.IR /write?db=<db> ,
+or 2.x
+.IR /api/v2/write?org=<org>&bucket=<bucket> ,
+with
+.BR precision=ns .'''
+  md_type = 'string'
+  md_default = '`"/write?db=imud&precision=ns"`'
+  desc = 'Write path (1.x `db`, or 2.x `/api/v2/write?org=&bucket=`).'
+
+  [[section.key]]
+  names = ["http_token"]
+  type = 'string'
+  default = 'default:\ \(dq\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+InfluxDB 2.x API token.  Stored in plaintext, which is why this file installs
+mode 0640 owned
+.IR root:imud .'''
+  md_type = 'string'
+  md_default = '`""`'
+  desc = 'InfluxDB 2.x API token. Stored in plaintext, so `/etc/imud/imud-influxdb.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file.'
+
+[[section]]
+name = "imud-prometheus"
+man_file = "man/man5/imud-prometheus.conf.5"
+md_file = "docs/imud-prometheus/manual.md"
+md_groups = [["enabled", "http_enabled", "socket", "listen_addr", "listen_port"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Run the exporter daemon. With it true and
+.B http_enabled
+false the daemon runs but does not bind the /metrics port; set it false to not
+run the exporter at all (it exits cleanly, so systemd does not restart it). [restart]'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Run the exporter daemon. With it true and `http_enabled` false the daemon runs but does not bind the /metrics port; set false to not run the exporter at all (it exits cleanly, so systemd does not restart it). [restart]'
+
+  [[section.key]]
+  names = ["http_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Serve the /metrics HTTP listener (the exporter's only output). [restart]'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = '''
+Serve the /metrics HTTP listener (the exporter's only output). [restart]'''
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ /run/imud/imud\-stream.sock'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Path of imud's [stream] AF_UNIX socket to read. [restart]'''
+  md_type = 'string'
+  md_default = '`/run/imud/imud-stream.sock`'
+  desc = 'imud stream socket to read. [restart]'
+
+  [[section.key]]
+  names = ["listen_addr"]
+  type = 'string'
+  default = 'default:\ 127.0.0.1'
+  scope = ""
+  man_style = "tight"
+  man = '''
+HTTP bind address. Set
+.B 0.0.0.0
+to allow scrapes from another host. [restart]'''
+  md_type = 'string'
+  md_default = '`127.0.0.1`'
+  desc = 'HTTP bind address; `0.0.0.0` to allow scrapes from another host. [restart]'
+
+  [[section.key]]
+  names = ["listen_port"]
+  type = 'int'
+  default = 'default:\ 9815'
+  scope = ""
+  man_style = "tight"
+  man = '''
+HTTP port for
+.BR GET\ /metrics .
+[restart]'''
+  md_type = 'int'
+  md_default = '`9815`'
+  desc = 'HTTP port. [restart]'
+
+[[section]]
+name = "imud-mavlink"
+man_file = "man/man5/imud-mavlink.conf.5"
+md_file = "docs/imud-mavlink/manual.md"
+md_groups = [["enabled", "socket", "version", "system_id", "component_id", "rate_hz", "send_attitude", "send_attitude_quaternion", "udp_enabled", "udp_addr", "udp_port", "serial_enabled", "serial_device", "serial_baud", "tcp_enabled", "tcp_bind_addr", "tcp_port"]]
+
+  [[section.key]]
+  names = ["enabled"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Run the MAVLink bridge daemon.  With it true and every transport off the daemon
+runs but sends nothing; set it false to not run the bridge at all (it exits
+cleanly, so systemd does not restart it).'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Run the bridge daemon. With it true and every transport off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it).'
+
+  [[section.key]]
+  names = ["socket"]
+  type = 'string'
+  default = 'default:\ \(dq/run/imud/imud-stream.sock\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'imud stream socket to read.'
+  md_type = 'string'
+  md_default = '`"/run/imud/imud-stream.sock"`'
+  desc = 'imud stream socket to read.'
+
+  [[section.key]]
+  names = ["version"]
+  type = 'int'
+  default = 'default:\ 2'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'MAVLink protocol version: 1 or 2.'
+  md_type = 'int'
+  md_default = '`2`'
+  desc = 'MAVLink protocol version (1 or 2).'
+
+  [[section.key]]
+  names = ["system_id"]
+  type = 'int'
+  default = 'default:\ 1'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'MAVLink system id.'
+  md_type = 'int'
+  md_default = '`1`'
+  desc = 'MAVLink system id.'
+
+  [[section.key]]
+  names = ["component_id"]
+  type = 'int'
+  default = 'default:\ 1'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+MAVLink component id (raise, e.g. 191, when sharing a bus with a real
+autopilot).'''
+  md_type = 'int'
+  md_default = '`1`'
+  desc = 'MAVLink component id (raise, e.g. 191, on a shared autopilot bus).'
+
+  [[section.key]]
+  names = ["rate_hz"]
+  type = 'int'
+  default = 'default:\ 10'
+  scope = "hot"
+  man_style = "spaced"
+  man = '''
+ATTITUDE / ATTITUDE_QUATERNION rate in Hz; must be greater than zero
+(HEARTBEAT is fixed at 1 Hz).'''
+  md_type = 'int'
+  md_default = '`10`'
+  desc = 'ATTITUDE/quaternion rate; must be greater than zero (heartbeat is fixed 1 Hz).'
+
+  [[section.key]]
+  names = ["send_attitude"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Emit ATTITUDE (#30).'
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Emit ATTITUDE (#30).'
+
+  [[section.key]]
+  names = ["send_attitude_quaternion"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'Emit ATTITUDE_QUATERNION (#31).'
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = 'Emit ATTITUDE_QUATERNION (#31).'
+
+  [[section.key]]
+  names = ["udp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Enable UDP output.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable UDP output.'
+
+  [[section.key]]
+  names = ["udp_addr"]
+  type = 'string'
+  default = 'default:\ \(dq127.0.0.1\(dq'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'UDP destination host (e.g. a ground station).'
+  md_type = 'string'
+  md_default = '`"127.0.0.1"`'
+  desc = 'UDP destination host.'
+
+  [[section.key]]
+  names = ["udp_port"]
+  type = 'int'
+  default = 'default:\ 14550'
+  scope = "hot"
+  man_style = "spaced"
+  man = 'UDP destination port (QGroundControl default).'
+  md_type = 'int'
+  md_default = '`14550`'
+  desc = 'UDP destination port (QGC default).'
+
+  [[section.key]]
+  names = ["serial_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Enable serial output.'
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable serial output.'
+
+  [[section.key]]
+  names = ["serial_device"]
+  type = 'string'
+  default = 'default:\ \(dq/dev/serial0\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Serial device (e.g.
+.IR /dev/serial0 ,
+.IR /dev/ttyAMA0 ,
+.IR /dev/ttyUSB0 ).'''
+  md_type = 'string'
+  md_default = '`"/dev/serial0"`'
+  desc = 'Serial device.'
+
+  [[section.key]]
+  names = ["serial_baud"]
+  type = 'int'
+  default = 'default:\ 57600'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Serial baud rate (9600\(en921600).'
+  md_type = 'int'
+  md_default = '`57600`'
+  desc = 'Serial baud (9600–921600).'
+
+  [[section.key]]
+  names = ["tcp_enabled"]
+  type = 'bool'
+  default = 'default:\ false'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Enable the TCP listener.
+Ground stations connect as TCP clients (QGroundControl / Mission Planner
+.BR tcp://<host>:5760 );
+every connected client (up to 8) receives the same frames.
+Can run alongside UDP and serial.'''
+  md_type = 'bool'
+  md_default = '`false`'
+  desc = 'Enable the TCP listener (GCS connects as a client).'
+
+  [[section.key]]
+  names = ["tcp_bind_addr"]
+  type = 'string'
+  default = 'default:\ \(dq0.0.0.0\(dq'
+  scope = "restart"
+  man_style = "spaced"
+  man = '''
+Listener bind address (numeric IPv4);
+.B 127.0.0.1
+keeps it host-local.'''
+  md_type = 'string'
+  md_default = '`"0.0.0.0"`'
+  desc = 'Listener bind address (numeric IPv4); `127.0.0.1` keeps it host-local.'
+
+  [[section.key]]
+  names = ["tcp_port"]
+  type = 'int'
+  default = 'default:\ 5760'
+  scope = "restart"
+  man_style = "spaced"
+  man = 'Listener TCP port (the de-facto MAVLink TCP port).'
+  md_type = 'int'
+  md_default = '`5760`'
+  desc = 'Listener TCP port (the de-facto MAVLink TCP port).'
+

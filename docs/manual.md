@@ -320,11 +320,13 @@ Hardware bus and GPIO controller. **[restart]**
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys device.1 -->
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. `"gpiochip0"` on Pi 4; `"gpiochip4"` on Pi 5 (RP1 GPIO controller). |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
 | `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. |
 | `sim_speed` | float | `1.0` | Playback pacing: `2.0` = double speed, `0` = as fast as the pipeline accepts. |
+<!-- END GENERATED: config-keys device.1 -->
 
 ### `[imu]`
 
@@ -332,6 +334,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys imu.1 -->
 | `driver` | string | `"ism330dhcx"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
 | `bus` | string | `"i2c"` | Transport: `"i2c"` or `"spi"`. SPI is faster per transfer, which is what unlocks the high sample rates and shortens the FIFO drain; not every driver has it, and the daemon refuses to start on one that does not (see [Supported drivers](#5-supported-drivers)). The IMU and the magnetometer choose independently. |
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused. |
@@ -342,6 +345,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms. |
+<!-- END GENERATED: config-keys imu.1 -->
 
 ### `[mag]`
 
@@ -349,6 +353,7 @@ Magnetometer driver settings. **[restart]**
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys mag.1 -->
 | `driver` | string | `"mmc5983ma"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
 | `bus` | string | `"i2c"` | Transport: `"i2c"` or `"spi"`, as for `[imu]` above. The AKM compasses (`ak09916`, `ak8963`) are I²C-only — they have no SPI port and are reached through the host IMU's bypass. |
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`. |
@@ -357,6 +362,7 @@ Magnetometer driver settings. **[restart]**
 | `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
 | `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
+<!-- END GENERATED: config-keys mag.1 -->
 
 ### `[fusion]`
 
@@ -374,6 +380,7 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys fusion.1 -->
 | `mekf_gyro_noise` | double | `0.007` | Gyro noise density in rad/s/√Hz. ISM330DHCX datasheet: 7 mdps/√Hz ≈ 0.000122 rad/s/√Hz. |
 | `mekf_gyro_bias` | double | `0.00015` | In-run gyro bias instability in rad/s. Sets the bias random-walk process noise. |
 | `mekf_accel_noise` | double | `0.0022` | Accelerometer **sensor** noise density in m/s²/√Hz. ISM330DHCX: ~186 µg/√Hz × 9.81. Not the knob for rough weather — see `mekf_wave_accel`. |
@@ -388,6 +395,7 @@ for a noisy install are `mag_reject_gauss`, `accel_skip_thresh`,
 | `wave_tau_s` | float | `120.0` | Sea-state averaging window in seconds. Significant wave height (Hs = 4·σ(heave)), mean zero-crossing wave period, and the vessel's roll/pitch periods and significant single amplitudes (2σ) are exponentially weighted statistics of the heave/roll/pitch oscillations over this window (packet fields `wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`, `pitch_period_s`, `pitch_amplitude`, gated by the `wave_valid` flag). Stats settle ~2 windows after heave settles. Oceanographic practice is 10–20 minute records, and windows that long are supported — but note they interact with `[imu] odr_hz`, because the statistics' gain is `dt/wave_tau_s`. At 32 kHz with a 1200 s window that gain is 2.6e-8, which single precision cannot accumulate; significant wave height under-read by 18 % while still reporting `wave_valid`. Fixed by double-precision accumulators as of this release. Requires `heave_tau_s` > 0; `0` disables. |
 | `engine_vibration_g2` | double | `0.0` | EMA threshold (m²/s⁴) for engine-vibration detection. The filter tracks an exponential moving average of `(|a| − g)²`; when it exceeds this value the engine is considered on. Set `0` to disable (default). |
 | `engine_accel_skip_thresh` | double | `0.20` | Accelerometer skip threshold applied while engine vibration is detected: wider than `accel_skip_thresh` so the filter isn't starved, while the accel noise is inflated ×4 so the vibration-contaminated samples that pass are trusted proportionally less. Only active when `engine_vibration_g2 > 0`. |
+<!-- END GENERATED: config-keys fusion.1 -->
 
 ### `[calibration]`
 
@@ -395,10 +403,12 @@ Calibration file and startup behaviour. **[restart]**
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys calibration.1 -->
 | `file` | string | `"/etc/imud/cal.json"` | Path to the calibration JSON produced by `imud-cal`. Supports `~/` expansion. If the file does not exist, imud runs uncalibrated (magnetometer readings will be biased). |
 | `startup_settle_sec` | double | `5.0` | Seconds of sensor data to discard after chip initialisation. The ISM330DHCX gyro drifts ~0.02 rad/s for ~5 s after power-on; discarding this window keeps it out of the bias estimate. Set `0` for the `sim` driver. |
 | `align_window_sec` | double | `5.0` | Seconds of accelerometer and magnetometer averaging used for the one-shot initial attitude alignment. Whatever tilt error survives this window is baked permanently into the magnetic reference's dip, so in a seaway the length matters: 1 s (the value hardcoded before 1.7) is about a fifth of a roll period and aligns to an arbitrary point in the cycle — measured attitude RMS in the marine default is 47.7° at 1 s against 2.19° at 5 s, flat beyond. 3-D vector fusion keeps improving out to ~15 s. The only cost of a longer window is startup latency before usable attitude, so raise it when starting from a mooring, not underway. |
 | `gyro_bias_sec` | double | `2.0` | Length of the stationary window used to estimate gyro bias at startup. The board must be still for this duration. Skipped if the cal file already has a gyro bias. If motion is detected during the window (gyro std > 0.5 °/s) the window is doubled once and a warning is logged. Set `0` to skip bias estimation. |
+<!-- END GENERATED: config-keys calibration.1 -->
 
 ### `[nmea]`
 
@@ -413,6 +423,7 @@ details.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys nmea.1 -->
 | `enabled` | bool | `false` | Enable the NMEA UDP output stream. |
 | `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host. |
@@ -420,6 +431,7 @@ details.
 | `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10110` | Listener TCP port (the de-facto NMEA-over-TCP port). |
+<!-- END GENERATED: config-keys nmea.1 -->
 
 ### `[highrate]`
 
@@ -430,11 +442,13 @@ Consumer libraries are in `lib/`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys highrate.1 -->
 | `enabled` | bool | `false` | Enable the high-rate binary stream. Opt in for machine vision, ROS2, or any consumer needing quaternion + covariance at high rate. |
 | `rate_hz` | int | `500` | Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
 | `dest_addr` | string | `"239.255.0.1"` | Destination IP. Default is an IPv4 multicast group (TTL=1, link-local). Consumers join with `IP_ADD_MEMBERSHIP`. Use `255.255.255.255` for broadcast or a unicast IP for point-to-point. |
 | `dest_port` | int | `10111` | Destination UDP port. |
 | `coord_frame` | string | `"NED"` | Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. |
+<!-- END GENERATED: config-keys highrate.1 -->
 
 ### `[stream]`
 
@@ -450,12 +464,14 @@ machine (`imud_connect_tcp` / `ImudClient.connect_tcp`). **[restart]**:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys stream.1 -->
 | `enabled` | bool | `true` | Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660, owner `imud:imud` — a consumer needs `adduser <user> imud`). |
 | `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be greater than zero. Hot-reloadable. |
 | `tcp_enabled` | bool | `false` | TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10112` | Listener TCP port. |
+<!-- END GENERATED: config-keys stream.1 -->
 
 ### `[capture]`
 
@@ -466,11 +482,13 @@ exactly as the driver delivered it) to rotating `.imucap` files. Replay with
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys capture.1 -->
 | `enabled` | bool | `false` | Record raw samples from both sensors. |
 | `dir` | string | `"/var/lib/imud"` | Destination; files are `imud-YYYYMMDD-HHMMSS.imucap` (UTC). |
 | `max_mb` | int | `256` | Rotate the file at this size. `0` = unlimited. |
 | `max_files` | int | `8` | Keep the newest N files, deleting the oldest. `0` = keep all. |
 | `flush_s` | int | `5` | Flush-to-storage interval, seconds. |
+<!-- END GENERATED: config-keys capture.1 -->
 
 Reader threads never block on storage — a stalled SD card drops capture
 records (counted; `imud-status` shows a `Capture:` line), never sensor
@@ -497,9 +515,11 @@ between the chip X axis and the platform's forward direction.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys mount.1 -->
 | `rotation_euler_deg` | array | `[0.0, 0.0, 0.0]` | `[roll, pitch, yaw]` in degrees. Measure the angle between chip X and the forward axis once (e.g. with a handbearing compass on a vessel); set that as `yaw`. |
 | `preset` | string | *(unset)* | Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. An unrecognised name is a fatal config error. |
 | `rotation_matrix` | array of 9 | *(unset)* | Board→body rotation given directly, row-major (`v_body = R · v_board`). Validated at load against `RᵀR = I` and `det(R) = +1`; a non-orthonormal matrix or a reflection is a fatal config error. Whichever mount key appears last wins. |
+<!-- END GENERATED: config-keys mount.1 -->
 
 **Example** — chip X points aft (180° from forward; e.g. to a vessel's stern):
 ```toml
@@ -519,9 +539,11 @@ repeated N times` count. The most recent warnings/errors are also shown by
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys logging.1 -->
 | `level` | string | `"warn"` | Log verbosity: `"debug"`, `"info"`, `"warn"`, or `"error"`. `"warn"` is recommended for production (SD-card friendly). `"info"` adds lifecycle messages and a periodic `[stats]` heartbeat. Applied live on SIGHUP. |
 | `file` | string | `""` | Log destination. Empty = stderr; under systemd, lines carry sd-daemon priority prefixes so journald records real priorities (`journalctl -p warning` filters work). Set an absolute path for a timestamped log file; it is reopened on SIGHUP so logrotate can rotate it (`postrotate: systemctl reload imud`). |
 | `stats_hz` | int | `1` | Rate of the `[stats]` heartbeat log line. Only visible at `level = "info"` or `"debug"`. |
+<!-- END GENERATED: config-keys logging.1 -->
 
 ### `[position]`
 
@@ -555,10 +577,12 @@ sustained turns.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys position.1 -->
 | `declination_deg` | float | `0.0` | Static declination in degrees. East positive (+), west negative (−). Ignored when `lat_deg` and `lon_deg` are both non-zero. |
 | `lat_deg` | double | `0.0` | Geodetic latitude in decimal degrees (+N / −S). Set with `lon_deg` to enable WMM auto-compute. |
 | `lon_deg` | double | `0.0` | Geodetic longitude in decimal degrees (+E / −W). Set with `lat_deg` to enable WMM auto-compute. |
 | `wmm_file` | string | `""` (auto) | Path to the WMM coefficient file. Empty = auto-resolve: `/etc/imud/WMM.COF` if present (operator override), else `/usr/share/imud/WMM.COF` (`imud-wmm-data` package / `make install-wmm-data`). Bundled model WMM2025, valid 2025.0–2030.0. |
+<!-- END GENERATED: config-keys position.1 -->
 
 **Live position sources**
 
@@ -571,9 +595,11 @@ _gpsd:_
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys position.2 -->
 | `gpsd_enabled` | bool | `false` | Connect to gpsd for live position (and speed). gpsd must be running with a working GPS source. |
 | `gpsd_host` | string | `"localhost"` | Hostname or IP of the gpsd instance. |
 | `gpsd_port` | int | `2947` | TCP port of the gpsd instance. |
+<!-- END GENERATED: config-keys position.2 -->
 
 imud subscribes to gpsd's JSON stream and processes `TPV` messages with
 `mode ≥ 2`. The connection is persistent and reconnects automatically.
@@ -582,10 +608,12 @@ _SignalK:_
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys position.3 -->
 | `signalk_enabled` | bool | `false` | Poll the SignalK REST API for position. |
 | `signalk_host` | string | `"localhost"` | Hostname or IP of the SignalK server. |
 | `signalk_port` | int | `3000` | HTTP port of the SignalK server. |
 | `signalk_path` | string | `"/signalk/v1/api/vessels/self/navigation/position"` | REST endpoint path. Override for a non-standard path or vessel ID. |
+<!-- END GENERATED: config-keys position.3 -->
 
 SignalK is polled every 30 seconds. When gpsd is also enabled, SignalK is a
 fallback (polled once when gpsd drops), still respecting the 30 s minimum.
@@ -594,7 +622,9 @@ _Stale-fix TTL:_
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys position.4 -->
 | `fix_max_age_h` | float | `24.0` | Hours to keep a GPS-derived declination after the last fix. The TTL resets on every fix — an anchored vessel with continuous GPS keeps declination valid indefinitely. After the window expires without a fix, `FLAG_DECLINATION_VALID` clears and true-heading output stops. Set `0` to never expire. |
+<!-- END GENERATED: config-keys position.4 -->
 
 ---
 

@@ -113,6 +113,7 @@ config does not revert a running daemon to defaults.
 .SS [device]
 Hardware bus selection.
 .B [restart]
+.\" BEGIN GENERATED: config-keys device
 .TP
 .B i2c_bus
 .RI (string,\ default:\ \(dq/dev/i2c-1\(dq)
@@ -152,9 +153,11 @@ downstream consumers see a continuous stream.
 .RI (float,\ default:\ 1.0)
 Playback pacing: 2.0 is double speed, 0 delivers as fast as the pipeline
 accepts (offline regression runs).
+.\" END GENERATED: config-keys device
 .SS [imu]
 IMU driver settings.
 .B [restart]
+.\" BEGIN GENERATED: config-keys imu
 .TP
 .B driver
 .RI (string,\ default:\ \(dqism330dhcx\(dq)
@@ -245,9 +248,11 @@ ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.
 .RI (int,\ default:\ 64)
 FIFO watermark in sample-sets.
 At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.
+.\" END GENERATED: config-keys imu
 .SS [mag]
 Magnetometer driver settings.
 .B [restart]
+.\" BEGIN GENERATED: config-keys mag
 .TP
 .B driver
 .RI (string,\ default:\ \(dqmmc5983ma\(dq)
@@ -332,6 +337,7 @@ Interval in seconds between degauss (SET/RESET) pulses.
 Set
 .B 0
 to disable.
+.\" END GENERATED: config-keys mag
 .SS [fusion]
 MEKF noise parameters and rejection thresholds.
 .B [hot]
@@ -343,6 +349,7 @@ The per-unit noise recorded by
 .B imud-cal characterize
 (cal.json \(dqnoise\(dq section) is informational only and never feeds
 the filter.
+.\" BEGIN GENERATED: config-keys fusion
 .TP
 .B mekf_gyro_noise
 .RI (double,\ default:\ 0.007)
@@ -491,6 +498,7 @@ to disable.
 .RI (double,\ default:\ 0.20)
 Accelerometer skip threshold override applied while engine vibration is
 detected (wider gate; accel noise is additionally inflated 4x).
+.\" END GENERATED: config-keys fusion
 .SS [capture]
 Black-box recording of every raw sensor sample to rotating .imucap
 files \(em replayable with
@@ -501,6 +509,7 @@ and analyzable with
 All keys
 .BR [restart] .
 See docs/capture.md for the format and sizing (\(ti25 MB/hour at 104 Hz).
+.\" BEGIN GENERATED: config-keys capture
 .TP
 .B enabled
 .RI (bool,\ default:\ false)
@@ -522,8 +531,10 @@ Keep at most this many capture files, deleting the oldest.  0 = keep all.
 .B flush_s
 .RI (int,\ default:\ 5)
 Interval between flushes to storage.
+.\" END GENERATED: config-keys capture
 .SS [calibration]
 .B [restart]
+.\" BEGIN GENERATED: config-keys calibration
 .TP
 .B file
 .RI (string,\ default:\ \(dq/etc/imud/cal.json\(dq)
@@ -564,6 +575,7 @@ beyond. 3\-D vector fusion keeps improving out to roughly 15 s.
 The only cost of a longer window is startup latency before the filter produces
 usable attitude, so raising it is worthwhile when starting from a mooring and
 not when starting underway.
+.\" END GENERATED: config-keys calibration
 .SS [nmea]
 NMEA 0183 output over UDP and/or a TCP listener.
 Both are off by default (since 1.6 a stock daemon emits only on the local
@@ -578,6 +590,7 @@ socket; every network output is an explicit opt-in).
 .BR tcp_port .
 .B [hot]:
 .BR rate_hz .
+.\" BEGIN GENERATED: config-keys nmea
 .TP
 .B enabled
 .RI (bool,\ default:\ false)
@@ -624,6 +637,7 @@ When declination is configured,
 (true heading) is added and
 .B $HCHDG
 carries the variation fields.
+.\" END GENERATED: config-keys nmea
 .SS [highrate]
 High-rate binary UDP stream.
 .B [restart]:
@@ -633,6 +647,7 @@ High-rate binary UDP stream.
 .BR coord_frame .
 .B [hot]:
 .BR rate_hz .
+.\" BEGIN GENERATED: config-keys highrate
 .TP
 .B enabled
 .RI (bool,\ default:\ false)
@@ -661,6 +676,7 @@ Output frame:
 (North-East-Down) or
 .B ENU
 (East-North-Up).
+.\" END GENERATED: config-keys highrate
 .SS [stream]
 Local AF_UNIX subscription stream carrying the same 276-byte binary packets
 as
@@ -677,6 +693,7 @@ An optional TCP listener serves the same framed packets to remote consumers.
 .BR tcp_port .
 .B [hot]:
 .BR rate_hz .
+.\" BEGIN GENERATED: config-keys stream
 .TP
 .B enabled
 .RI (bool,\ default:\ true)
@@ -713,6 +730,7 @@ to keep the listener host-local.
 .B tcp_port
 .RI (int,\ default:\ 10112)
 Listener TCP port.
+.\" END GENERATED: config-keys stream
 .SS Bridge daemons
 The optional bridge daemons \(em
 .BR imud-signalk (8),
@@ -741,6 +759,7 @@ Signal K.)
 .SS [mount]
 Board-to-body rotation.
 .B [restart]
+.\" BEGIN GENERATED: config-keys mount
 .TP
 .B rotation_euler_deg
 .RI (array,\ default:\ [0.0,\ 0.0,\ 0.0])
@@ -779,6 +798,7 @@ Overrides
 when set; whichever mount key appears last in the file wins.
 An unrecognised preset name is a fatal configuration error \(em
 starting with a silently wrong mount rotation would bias every sample.
+.\" END GENERATED: config-keys mount
 .SS [logging]
 .B [hot]:
 .BR level ,
@@ -786,6 +806,7 @@ starting with a silently wrong mount rotation would bias every sample.
 .B [restart]:
 .B file
 (path changes; the file itself is reopened on every reload).
+.\" BEGIN GENERATED: config-keys logging
 .TP
 .B level
 .RI (string,\ default:\ \(dqwarn\(dq)
@@ -823,6 +844,7 @@ Only visible at
 or
 .B debug
 level.
+.\" END GENERATED: config-keys logging
 .SS [position]
 Magnetic declination and true heading.
 .B [hot]:
@@ -863,6 +885,7 @@ East declination is positive (+), west is negative (\-).
 All three values at zero.
 .PP
 Configuration keys:
+.\" BEGIN GENERATED: config-keys position
 .TP
 .B declination_deg
 .RI (float,\ default:\ 0.0)
@@ -937,6 +960,7 @@ indefinitely; the TTL only fires during a genuine GPS outage.
 Set
 .B 0
 to never expire.
+.\" END GENERATED: config-keys position
 .SH FILES
 .TP
 .I /etc/imud/imud.conf

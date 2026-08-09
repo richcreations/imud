@@ -10,6 +10,7 @@ at startup and on SIGHUP. The exporter reads only this file, never
 .IR imud.conf .
 Keys marked [restart] require a service restart to take effect.
 .SH "SECTION [imud-prometheus]"
+.\" BEGIN GENERATED: config-keys imud-prometheus
 .TP
 .B enabled
 .RI (bool,\ default:\ true)
@@ -37,6 +38,7 @@ to allow scrapes from another host. [restart]
 HTTP port for
 .BR GET\ /metrics .
 [restart]
+.\" END GENERATED: config-keys imud-prometheus
 .SH "SECTION [logging]"
 .TP
 .B level

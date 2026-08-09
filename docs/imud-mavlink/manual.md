@@ -50,6 +50,7 @@ transports are enabled require a restart.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys imud-mavlink.1 -->
 | `enabled` | bool | `true` | Run the bridge daemon. With it true and every transport off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `version` | int | `2` | MAVLink protocol version (1 or 2). |
@@ -67,5 +68,6 @@ transports are enabled require a restart.
 | `tcp_enabled` | bool | `false` | Enable the TCP listener (GCS connects as a client). |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4); `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `5760` | Listener TCP port (the de-facto MAVLink TCP port). |
+<!-- END GENERATED: config-keys imud-mavlink.1 -->
 
 See also `imud-mavlink(8)` and `imud-mavlink.conf(5)`.
