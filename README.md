@@ -196,9 +196,10 @@ in-situ `imud-cal mag`. See the
   guide to writing new drivers.
 - **[Protocol spec](spec.md)** — architecture, the binary packet layout, NMEA
   sentence formats, and the timestamp design.
-- **[libimud](docs/libimud/)** — the ABI-stable C client library and the Python
-  client for the binary stream: [README](docs/libimud/README.md),
-  [manual](docs/libimud/manual.md), [spec](docs/libimud/spec.md).
+- **libimud** — the ABI-stable C client library and the Python client for the
+  binary stream. Shipped separately in the `libimud` package: see
+  `man 3 libimud`, with the README, manual and spec under
+  `/usr/share/doc/libimud/`.
 - **[imud-arduino](https://github.com/richcreations/imud-arduino)** — the
   Arduino/ESP32 client library (`ImudClient`) for the binary stream over TCP
   or UDP, maintained in its own repository.

@@ -34,6 +34,10 @@ NED convention (no sign flip).
 | `roll_amplitude` | significant single roll amplitude | rad | always |
 | `pitch_period` | vessel pitch period | s | always |
 | `pitch_amplitude` | significant single pitch amplitude | rad | always |
+| `nis_accel` | EMA of normalised innovation squared, accel update (d²/2); 1 = covariance matches innovations, higher = over-confident | unitless | always |
+| `nis_mag` | EMA of normalised innovation squared, mag update (d²/dof); 1 = consistent, higher = over-confident | unitless | always |
+| `innov_weight` | EMA of the Huber weight applied to MEKF updates; 1 = no capping, lower = the filter is persistently distrusting its sensors | unitless | always |
+| `innov_reject` | EMA of the fraction of MEKF updates rejected by the innovation gate | unitless | always |
 | `mag_anomaly` | EMA of \|\|B\|−\|B_ref\|\|/\|B_ref\| — interference / iron-cal drift | unitless | always |
 | `mag_residual` | EMA of \|heading innovation\| — compass cal health | rad | always |
 | `wave_valid` | sea-state statistics settled | boolean (`t`/`f`) | always |

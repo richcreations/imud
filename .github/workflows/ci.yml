@@ -118,6 +118,25 @@ jobs:
       - name: Packet flag bits agree across all four definitions
         run: make check-flags
 
+      # check-docs above proves a config key REACHED its surfaces.  These nine
+      # prove the surfaces are telling the truth: spec.md's wire table against
+      # include/types.h, the driver rate lists against the ops structs, the
+      # MQTT topic tree against the publisher, every --help flag against the
+      # parser that accepts it, every link against what `make install` lays
+      # down.  Run against the tree before this change they found 81
+      # disagreements — including a spec.md packet table three wire revisions
+      # stale and seven tools whose --help was undocumented.  Text only; this
+      # job compiles nothing.
+      - name: Documentation agrees with the code it documents
+        run: make check-generated-text
+
+      # And the checkers themselves: each is a regex over source, so one that
+      # has quietly stopped matching is indistinguishable from a clean tree.
+      # This breaks one fact at a time in a copy of the tree and asserts the
+      # relevant checker notices.
+      - name: The documentation checkers still detect drift
+        run: make test-tools
+
       # Size of the tree, by role rather than by language, into the run summary
       # — visible per-run without downloading anything.  A REPORT, not a gate:
       # the tool exits non-zero only on its own structural errors (a category
@@ -268,6 +287,25 @@ jobs:
           grep -q '^ExecStart=/usr/bin/imud ' stage/lib/systemd/system/imud.service
           test -f stage/usr/share/doc/imud/changelog.gz
           test -f stage/usr/share/doc/imud-mqtt/copyright
+          # The doc tree MIRRORS the source tree — docs/ keeps its directory
+          # rather than being flattened — because every one of these documents
+          # links to the others by relative path.  Flattening docs/manual.md
+          # to manual.md broke every `docs/...` link the moment it installed
+          # while leaving it correct on GitHub.  tools/check-links.py proves
+          # the links; these prove the layout it assumes is what ships.
+          test -f stage/usr/share/doc/imud/docs/manual.md
+          test -f stage/usr/share/doc/imud/docs/capture.md
+          test -f stage/usr/share/doc/imud/docs/math.md
+          test -f stage/usr/share/doc/imud/README.md
+          # Shipped solely because README.md/CONTRIBUTING.md link to them by
+          # relative path: a link to a file no package installs is a dead link.
+          test -f stage/usr/share/doc/imud/LICENSE
+          test -f stage/usr/share/doc/imud/SECURITY.md
+          test -f stage/usr/share/doc/imud/CODE_OF_CONDUCT.md
+          test -f stage/usr/share/doc/imud/devbox/README.md
+          # INSTALL is build-from-source guidance and Debian rejects it in a
+          # binary package; nothing installed links to it.
+          test ! -e stage/usr/share/doc/imud/INSTALL
           test -f stage/usr/share/man/man8/imud.8.gz
           test -f stage/etc/imud/imud.conf
           # The udev rule is what makes the gpio/i2c groups useful on a distro

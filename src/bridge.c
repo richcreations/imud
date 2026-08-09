@@ -73,7 +73,8 @@ static void usage(const char *prog, const bridge_info_t *bi)
         "%s"
         "\n"
         "  --config PATH   Config file (default: %s)\n"
-        "  --version       Print version and exit\n",
+        "  --version       Print version and exit\n"
+        "  -h, --help      Print this help and exit\n",
         prog, bi->usage_desc, bi->default_conf);
 }
 

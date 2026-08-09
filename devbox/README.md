@@ -121,7 +121,7 @@ is not — `unitcheck.sh` verifies the unit files offline instead.
 
 - **`chmod()` on an AF_UNIX socket fails with EINVAL on the mounted repo.**
   virtiofs does not support it, and imud chmods every socket it binds to 0660
-  (`bind_unix_mode`, [include/fileio.h](../include/fileio.h)) — so a daemon
+  (`bind_unix_mode`, in `include/fileio.h`) — so a daemon
   whose `[stream] socket` path is inside `/work/src` dies at startup with
   `[output] stream bind/chmod(...): Invalid argument`. Put runtime sockets in
   `/tmp` (the container's own filesystem), which is what `test_stream.c` and

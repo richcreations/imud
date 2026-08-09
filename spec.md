@@ -633,7 +633,7 @@ receive a partial burst is disconnected.
 
 ### Sentence Set
 
-Four sentences are emitted per update cycle (five when magnetic declination is known):
+Five sentences are emitted per update cycle (six when magnetic declination is known):
 
 **`$PASHR` — Attitude (primary)**
 
@@ -727,7 +727,8 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
  0      4      uint32    magic             0x494D5544 (“IMUD”)
- 4      2      uint16    version           = 14  (1.4; encoded as major*10+minor)
+ 4      2      uint16    version           = 17  (IMUD_VERSION; wire revision,
+                                              not the release version)
  6      2      uint16    flags             see below
  8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns, SAMPLE-TAKEN
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns

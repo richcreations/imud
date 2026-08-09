@@ -45,5 +45,5 @@ ST LSM6DS33 (<https://www.st.com/>), InvenSense MPU-6000
 (<https://www.bosch-sensortec.com/>).
 
 Where a part has been evaluated in depth — what it would take, and why it did
-or did not get a driver — the reasoning is recorded in
-[hardware-evaluations.md](hardware-evaluations.md).
+or did not get a driver — the reasoning is recorded in the issue or pull
+request that raised it.

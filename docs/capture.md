@@ -99,8 +99,21 @@ of several °C is required). The daemon subtracts `coeff × (T − 25 °C)` from
 the gyro before fusion, so the filter's bias estimator only tracks the
 residual. Best captured on the bench across a real thermal swing.
 
-Both modes only read the capture file — they never touch the sensors and can
-run on any machine.
+```sh
+imud-cal fit-ra --from rough-water.imucap --config /etc/imud/imud.conf
+```
+
+checks the MEKF's accelerometer measurement model against a **rough-water**
+capture — the opposite recording conditions to the two above. It reports the
+gravity-direction residual, its correlation time, the innovation-distance
+distribution against the filter's gates, and the mean NIS, which is the same
+statistic the daemon publishes live as `nis_accel`. Use it to size
+`[fusion] mekf_wave_accel`. Unlike the other two it **writes nothing**: what it
+comments on is filter tuning in `imud.conf`, not a sensor property. It needs an
+existing mag calibration in `cal.json`.
+
+All three modes only read the capture file — they never touch the sensors and
+can run on any machine.
 
 ## Why capture lives in the daemon (not a bridge)
 

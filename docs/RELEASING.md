@@ -115,8 +115,10 @@ manual fallback.
 The public ABI is `imud.h`: the `imud_*` functions (kept complete in
 `lib/libimud.map`) and the **append-only** `imud_data_t`. The rules — how to
 add a wire field, when the SONAME may move, and what must never change — are
-specified once in **[libimud/spec.md](libimud/spec.md)** ("ABI contract" and
-"Maintainer discipline"); follow them there rather than duplicating them here.
+specified once in the `libimud` package's **spec.md** ("ABI contract" and
+"Maintainer discipline") — `man 3 libimud`, or
+`/usr/share/doc/libimud/spec.md`; follow them there rather than duplicating
+them here.
 
 Release-relevant summary: appending a member to `imud_data_t` or a function to
 `lib/libimud.map` keeps SONAME `libimud.so.0`, so a normal release never

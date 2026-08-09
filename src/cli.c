@@ -218,6 +218,7 @@ static void usage_mon(const char *prog)
         "Usage: %s [--config PATH] [nmea] [binary]\n"
         "\n"
         "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
+        "  -h, --help     Print this help and exit\n"
         "\n"
         "  nmea    Monitor NMEA 0183 stream (UDP port 10110)\n"
         "  binary  Monitor binary stream    (UDP port 10111)\n"
@@ -259,7 +260,13 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
 
 static void usage_status(const char *p)
 {
-    fprintf(stderr, "Usage: %s [--socket PATH]\n", p);
+    fprintf(stderr,
+        "Usage: %s [--socket PATH]\n"
+        "\n"
+        /* Concatenated from the constant the parser defaults to, so the help
+         * text cannot drift from the actual default. */
+        "  --socket PATH  Status socket (default: " CLI_DEFAULT_STATUS_SOCK ")\n"
+        "  -h, --help     Print this help and exit\n", p);
 }
 
 int cli_parse_status(int argc, char **argv, cli_status_t *a)

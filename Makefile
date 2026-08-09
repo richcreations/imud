@@ -560,6 +560,38 @@ check-devices:
 check-flags:
 	@python3 tools/check-flags.py
 
+# ── Documentation drift checks ───────────────────────────────────────────────
+# check-docs above proves every config key REACHED its doc surfaces.  These
+# prove the surfaces say the right thing: that the wire table matches the
+# struct, the rate lists match the driver, the topic tree matches the
+# publisher, the flags match the parser, and every link leads somewhere.
+#
+# Written before the generators (S4/S5) deliberately: run against the tree as
+# it stood they found 81 disagreements, which is the audit no amount of
+# proof-reading was going to produce.  Each stays as the regression gate for
+# the surface it covers, and retires when a generator makes that surface
+# incapable of drifting.
+#
+# All text-only — no build, no network — so they run anywhere python3 does,
+# including the version-consistency CI job that never compiles anything.
+CHECK_DOC_TOOLS = check-links check-cli-docs check-packet check-nmea \
+                  check-drivers check-mqtt-topics check-bridge-outputs \
+                  check-libimud-api check-math-citations
+
+.PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools
+$(CHECK_DOC_TOOLS):
+	@python3 tools/$@.py
+
+# Everything text-only, in one target: what CI runs, and what to run before
+# touching a document.
+check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS)
+
+# The checkers are regexes over source, so a checker that has quietly stopped
+# matching looks exactly like a clean tree.  This breaks one fact at a time in
+# a copy of the tree and asserts the relevant checker notices.
+test-tools:
+	@python3 test/test_checkers.py
+
 # ── Line count ────────────────────────────────────────────────────────────────
 # Size of the tree, split by ROLE rather than by language: production C apart
 # from the suites, the fuzz harnesses apart from both.  cloc/tokei/scc report
@@ -719,15 +751,35 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	gzip -9nc man/man8/imud-cal.8    > $(DESTDIR)$(MANDIR)/man8/imud-cal.8.gz
 	@echo "Installed man pages to $(DESTDIR)$(MANDIR)"
 	# ── Documentation (/usr/share/doc/imud) ────────────────────────────────
-	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud/examples
-	# INSTALL is build-from-source guidance: it ships in the tarball, not in
-	# the installed docs (Debian: package-contains-upstream-installation-documentation).
-	# DCO and GOVERNANCE.md ride along because README.md and CONTRIBUTING.md
-	# link to them by relative path — shipping one without the others installs
-	# a dangling link.
+	#
+	# The installed tree MIRRORS the source tree: repo-root files land at the
+	# top and docs/ keeps its directory.  That is not cosmetic — every one of
+	# these documents links to the others by relative path, and flattening
+	# docs/manual.md to manual.md broke every `docs/...` link the moment it
+	# was installed while leaving it perfectly correct on GitHub.  Preserving
+	# the prefix is the only arrangement where one relative path is right in
+	# both trees.  tools/check-links.py enforces it.
+	#
+	# Everything a shipped document links to must ship too, for the same
+	# reason: a link to a file no package installs is a dangling link.  That
+	# is why DCO, GOVERNANCE.md, LICENSE, SECURITY.md and CODE_OF_CONDUCT.md
+	# are here — README.md and CONTRIBUTING.md reference them.
+	#
+	# INSTALL is the one deliberate exception: it is build-from-source
+	# guidance, ships in the tarball, and Debian rejects it in a binary
+	# package (package-contains-upstream-installation-documentation).  Nothing
+	# installed links to it.
+	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud/examples \
+	                   $(DESTDIR)$(DOCDIR)/imud/docs \
+	                   $(DESTDIR)$(DOCDIR)/imud/devbox
 	install -m 644 AUTHORS NEWS README.md CONTRIBUTING.md GOVERNANCE.md DCO \
-	               spec.md docs/manual.md docs/ROADMAP.md \
+	               LICENSE SECURITY.md CODE_OF_CONDUCT.md spec.md \
 	               $(DESTDIR)$(DOCDIR)/imud/
+	install -m 644 docs/manual.md docs/ROADMAP.md docs/RELEASING.md \
+	               docs/capture.md docs/datasheets.md docs/math.md \
+	               $(DESTDIR)$(DOCDIR)/imud/docs/
+	# CONTRIBUTING.md points at the dev container guide by relative path.
+	install -m 644 devbox/README.md $(DESTDIR)$(DOCDIR)/imud/devbox/
 	install -m 644 packaging/imud/copyright $(DESTDIR)$(DOCDIR)/imud/copyright
 	gzip -9nc packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
 	install -m 644 config/imud.conf $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf

@@ -70,6 +70,52 @@ path Raspberry Pi OS still ships) without touching your own toolchain.
   [docs/RELEASING.md](docs/RELEASING.md) (the canonical version is
   `include/version.h`).
 
+## Doc-sync discipline
+
+This project states the same fact in several places on purpose — a config key
+lives in the parser, the shipped template, the man page and the manual, and a
+reader of any one of them should get the truth. A code change is not done
+until its parallel surfaces move with it, **in the same commit**.
+
+Most of that is now machine-enforced. `make check-generated-text` proves:
+
+| Checker | What it will not let you break |
+|---|---|
+| `check-docs` | every key `src/config.c` parses appears in its template, man page and manual |
+| `check-cli-docs` | every flag a parser accepts is in that tool's `--help` **and** its man page, manual, spec and the website |
+| `check-packet` | `spec.md`'s offset table matches `imu_packet_t` — offset, size, type and the wire version |
+| `check-drivers` | the driver tables and every documented rate/range list match the `*_ops` initialisers |
+| `check-nmea` | the documented sentence set and count match `nmea_encode()` |
+| `check-mqtt-topics`, `check-bridge-outputs` | each bridge's spec lists exactly what its encoder emits |
+| `check-libimud-api` | `libimud.map`, `imud.h`, `libimud.3` and the libimud spec describe one API |
+| `check-links` | every link resolves — in the repo **and** in the tree `make install` lays down |
+| `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
+
+Run it before you commit; CI runs it on every push. `make test-tools` then
+checks the checkers themselves still detect drift, by breaking one fact at a
+time in a copy of the tree.
+
+What is still on you, because no checker covers it:
+
+- **Prose.** The checkers compare names, numbers and structure, never wording.
+  If you change what a setting *does*, every surface that explains it needs
+  rewriting — they are deliberately different lengths, not copies.
+- **`NEWS`**, and the Debian changelogs under `packaging/`. Release notes are
+  written for an operator deciding whether an upgrade will bite them; nothing
+  can generate that. CI only checks the version numbers agree.
+- **A `[hot]` key** must also reach `config_apply_hot()` in `src/config.c`,
+  `HOT_FIELDS()` in `test/test_config.c` (the two lists are independent on
+  purpose and `test_apply_hot_partition` fails if they disagree), and
+  `imu_ctx_update_config()` in `src/imu.c` if the fusion thread reads it.
+- **A new config key** needs a default assertion and a `fill_distinct()` line
+  in `test/test_config.c` — that helper is written from the struct, and
+  without the line the partition test cannot see the field at all.
+- **Installed docs must be self-contained.** Anything a shipped document links
+  to has to ship too, and the doc tree mirrors the source tree so one relative
+  path is correct in both. `check-links` enforces both, but deciding whether a
+  new document belongs in the package is a judgement call — contributor-facing
+  material that deep-links into `src/` should stay repo-only.
+
 ## Submitting a change
 
 1. **Fork** the repository and create a branch for your work.

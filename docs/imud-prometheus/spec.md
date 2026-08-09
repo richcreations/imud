@@ -25,6 +25,11 @@ All values are base SI units; heading is additionally conventional degrees.
 | `imud_accel_quiescence_ratio` | EMA of (\|a\|/g−1)² — platform disturbance | unitless |
 | `imud_gyro_bias_{x,y,z}_radians_per_second` | estimated gyro bias, body frame | rad/s |
 | `imud_temperature_celsius` | IMU die temperature | °C |
+| `imud_nis_accel_ratio` | EMA of normalised innovation squared, accel update (d²/2) — 1 = covariance matches innovations, higher = over-confident | unitless |
+| `imud_nis_mag_ratio` | EMA of normalised innovation squared, mag update (d²/dof) — 1 = consistent, higher = over-confident | unitless |
+| `imud_innov_weight_ratio` | EMA of the Huber weight applied to MEKF updates — 1 = no capping, lower = the filter is persistently distrusting its sensors | unitless |
+| `imud_innov_reject_ratio` | EMA of the fraction of MEKF updates rejected by the innovation gate | unitless |
+| `imud_state_reset` | MEKF reset itself after a non-finite state; clears when it re-converges | 0/1 |
 | `imud_mag_valid` `imud_converged` `imud_heave_valid` `imud_wave_valid` `imud_engine_on` | packet flag bits | 0/1 |
 
 Sea-state gauges read 0.0 until the statistics settle (`imud_wave_valid` = 0);

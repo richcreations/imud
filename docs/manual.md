@@ -337,7 +337,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `spi_speed_hz` | int | `0` | SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. |
 | `i2c_addr` | int | `0x6B` | I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
 | `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to use a 10 ms polling timer instead of a hardware interrupt. |
-| `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported hardware](#supported-hardware), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
+| `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms. |
@@ -689,17 +689,12 @@ warning at startup when an experimental driver is selected. To add a new
 driver, see [§11 Writing a driver](#11-writing-a-driver).
 
 If you have one of these parts, you can clear its experimental flag for
-everyone: run [`imud-imutest`](imud-utils/manual.md) against it and open an
-issue with the report it writes. For the MPU-925x there is a step-by-step
-bench guide — wiring, `config.txt`, `imud.conf`, and what each test phase asks
-you to do: [validating-mpu925x.md](validating-mpu925x.md).
+everyone: run `imud-imutest` (`man 8 imud-imutest`, shipped in `imud-utils`)
+against it and open an issue with the report it writes.
 
 ### Fitting an MPU-9250 or MPU-9255
 
-Wiring, the `config.txt` I²C settings, a ready-made `imud.conf`, and a walk
-through validating the driver on your bench are collected in
-[validating-mpu925x.md](validating-mpu925x.md). The rest of this section is the
-short version.
+Wiring, the `config.txt` I²C settings, and a ready-made `imud.conf` follow.
 
 Three things about this part differ from imud's shipped defaults, and all
 three are worth knowing before you wire one up.
@@ -1065,8 +1060,7 @@ validates each binary packet (magic + CRC) before display.
 
 Validates a sensor driver against real hardware and writes a Markdown report
 suitable for attaching to an issue. Ships in `imud-utils`; full documentation
-is in [docs/imud-utils/manual.md](imud-utils/manual.md) and
-`man 8 imud-imutest`.
+is in `man 8 imud-imutest` and under `/usr/share/doc/imud-utils/`.
 
 ```sh
 sudo systemctl stop imud       # both would drain the same FIFO
@@ -1135,9 +1129,9 @@ microcontroller client lives in its own repository:
 
 All validate CRC32 and support multicast. `make install` installs libimud
 (library, header, pkg-config) and the Python module to
-`/usr/local/share/imud`. See [libimud/manual.md](libimud/manual.md) for full
-usage and examples, and [libimud/spec.md](libimud/spec.md) for the API,
-`imud_data_t` fields, and the ABI contract.
+`/usr/local/share/imud`. See `man 3 libimud` for the API, `imud_data_t`
+fields and the ABI contract; the `libimud` package ships fuller usage examples
+under `/usr/share/doc/libimud/`.
 
 ---
 

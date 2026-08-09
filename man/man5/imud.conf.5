@@ -227,7 +227,9 @@ A rate the chip cannot produce is rounded
 .I up
 to the next one it can, and the filter is tuned for that actual rate; the
 daemon logs both at startup when they differ.
-ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660.
+ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664.
+Rates above 1660 need
+.BR "bus = \(dqspi\(dq" .
 .TP
 .B accel_g
 .RI (int,\ default:\ 8)

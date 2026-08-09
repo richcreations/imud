@@ -124,12 +124,16 @@ leak-*
 # source tarball non-DFSG-free.  See docs/datasheets.md — drivers cite a
 # datasheet revision in their header comment instead.
 #
-# The extension is spelled case-insensitively on purpose.  gitignore matching
-# is case-SENSITIVE wherever core.ignorecase is false — which is every Linux
-# checkout, and this one — so a plain `docs/*.pdf` silently misses the
-# uppercase names some vendors ship (TDK's ICM-20948.PDF and ICM-42688-P.PDF
-# both arrived that way and showed up untracked).  Given the 75 MB the repo
-# once cost, this guard does not get to be fragile.
+# They live in docs/datasheet_pdf/, which the first rule ignores wholesale —
+# extension and case stop mattering once the directory is the unit.
+#
+# The second rule stays as a backstop for a PDF dropped straight into docs/,
+# and its extension is spelled case-insensitively on purpose: gitignore
+# matching is case-SENSITIVE wherever core.ignorecase is false, which is every
+# Linux checkout and this one, so a plain `docs/*.pdf` would miss the uppercase
+# names some vendors ship (TDK's arrived as .PDF and showed up untracked).
+# Given the 75 MB the repo once cost, this guard does not get to be fragile.
+datasheet_pdf
 docs/*.[pP][dD][fF]
 # ...but docs/math.pdf is generated in-tree from docs/math.md and IS tracked.
 !docs/math.pdf
