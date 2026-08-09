@@ -2533,6 +2533,81 @@ TEST(test_seastate_gates)
     EXPECT(seastate_wave_height(&calm) < 0.05f, "becalmed Hs is small");
 }
 
+/*
+ * Settling must still latch when the window is long and the rate is high.
+ *
+ * This is a regression test for a float32 stall, and the only way to see it is
+ * to actually run past it.  Both estimators used to count settling by summing
+ * dt into a float; `x += dt` with a CONSTANT dt stops advancing the moment dt
+ * drops below half an ULP of x, and at 32 kHz (dt = 3.125e-5) that happens at
+ * x = 1024 s — permanently, not gradually.  Any window whose settling ramp
+ * runs past 1024 s therefore never latched: `settled` stayed false forever,
+ * FLAG_WAVE_VALID never set, all six wave fields read 0.0, and nothing was
+ * logged.  The daemon looked healthy and sea state simply never arrived.
+ *
+ * Both cases below are reachable from imud.conf, and neither is exotic.
+ * seastate latches at 2·wave_tau_s, so 32 kHz breaks above 512 s — and
+ * fusion.c's own comment on that window says "oceanographic practice is
+ * 10–20 min records", i.e. 600–1200 s.  heave latches at 10·heave_tau_s, so
+ * it breaks above 102 s.
+ *
+ * Nothing else in the suite can see this.  The rate sweeps walk all 29 rates
+ * but pin tau at 30 s, which latches at 60 s — three orders of magnitude
+ * inside the stall.  The rate axis was covered; the tau axis was not covered
+ * at all.
+ *
+ * ~35 M iterations per case: the stall needs ~2^25 additions to reach, so
+ * there is no cheap version of this test.  Feeding zeros is deliberate — the
+ * latch is a function of the sample count alone, so signal would only cost
+ * time.
+ */
+TEST(test_settling_survives_a_long_window_at_a_high_rate)
+{
+    const float fs = 32000.0f, dt = 1.0f/fs;
+
+    /*
+     * Assertions are on settle_n·dt, not on a sample count computed here:
+     * dt is 1/32000 rounded to float32 and is NOT exactly 3.125e-5, so a
+     * count derived independently lands a sample either side.  What has to
+     * hold is that the latch is one sample period away from factor·tau.
+     */
+    /* Sea state: 550 s window → latches at 1100 s, past the 1024 s stall. */
+    seastate_t w;
+    seastate_init(&w, 550.0f, dt);
+    EXPECT(fabs((double)w.settle_n * dt - 2.0 * 550.0) <= (double)dt,
+           "seastate settle_n is 2 tau worth of samples");
+    for (uint64_t i = 0; i < w.settle_n - 1; i++)
+        seastate_update(&w, 0, 0, 0, 0, 0, 0);
+    EXPECT(!w.settled, "seastate not settled one sample early");
+    seastate_update(&w, 0, 0, 0, 0, 0, 0);
+    EXPECT(w.settled, "seastate settles at 2 tau even at 32 kHz / 550 s");
+
+    /* Heave: 110 s tau → latches at 1100 s, likewise past the stall. */
+    heave_t h;
+    heave_init(&h, 110.0f, dt);
+    EXPECT(fabs((double)h.settle_n * dt - 10.0 * 110.0) <= (double)dt,
+           "heave settle_n is 10 tau worth of samples");
+    const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    const float a[3] = { 0.0f, 0.0f, -G };          /* at rest: a_down = 0 */
+    for (uint64_t i = 0; i < h.settle_n - 1; i++)
+        (void)heave_update(&h, q, a);
+    EXPECT(!h.settled, "heave not settled one sample early");
+    (void)heave_update(&h, q, a);
+    EXPECT(h.settled, "heave settles at 10 tau even at 32 kHz / 110 s");
+
+    /*
+     * And the default configuration is unchanged — 833 Hz with the shipped
+     * 120 s window still latches at exactly 2 tau, which is where the float
+     * sum put it too.  This is the "no behaviour change where it already
+     * worked" half of the fix.
+     */
+    const float dt833 = 1.0f/833.0f;
+    seastate_t d;
+    seastate_init(&d, 120.0f, dt833);
+    EXPECT(fabs((double)d.settle_n * dt833 - 2.0 * 120.0) <= (double)dt833,
+           "default 833 Hz / 120 s settles at 2 tau");
+}
+
 TEST(test_mag_health)
 {
     imud_config_t cfg = make_cfg();
@@ -3784,6 +3859,7 @@ int main(void)
     RUN(test_seastate_sine);
     RUN(test_seastate_across_rates);
     RUN(test_seastate_gates);
+    RUN(test_settling_survives_a_long_window_at_a_high_rate);
     RUN(test_mag_health);
     RUN(test_wave_disabled_inert);
     RUN(test_wave_needs_both_knobs);

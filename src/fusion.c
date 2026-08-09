@@ -1654,20 +1654,44 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
 /* Heave settles after ~10 time constants (≈2 min at the default τ = 12 s). */
 #define HEAVE_SETTLE_FACTOR 10.0f
 
+/*
+ * settle_samples — how many samples of settling a factor·tau ramp is worth.
+ *
+ * Computed once in double, then counted in uint64_t.  The obvious
+ * alternative, summing dt into a float until it reaches factor·tau, does not
+ * work at the top of the rate ladder: `x += dt` with a CONSTANT dt stops
+ * advancing entirely once dt falls below half an ULP of x, which at 32 kHz
+ * happens at 1024 s (2048 s at 16 kHz, 4096 s at 8 kHz).  A window whose ramp
+ * runs past that point would leave `settled` false forever — silently, since
+ * the only symptom is a valid flag that never sets.
+ *
+ * Rounded up so a threshold is never met early, and floored at 1 so an
+ * absurdly short tau still costs one sample rather than settling instantly.
+ */
+static uint64_t settle_samples(float factor, float tau_s, float dt)
+{
+    double n = ceil((double)factor * (double)tau_s / (double)dt);
+    if (!(n >= 1.0)) return 1;                 /* also catches NaN */
+    if (n > 1e18) return (uint64_t)1e18;       /* far past any real run */
+    return (uint64_t)n;
+}
+
 void heave_init(heave_t *h, float tau_s, float dt)
 {
     memset(h, 0, sizeof *h);
-    h->tau     = tau_s;
-    h->dt      = dt;
-    h->enabled = (tau_s > 0.0f && dt > 0.0f);
+    h->tau      = tau_s;
+    h->dt       = dt;
+    h->enabled  = (tau_s > 0.0f && dt > 0.0f);
+    h->settle_n = h->enabled
+        ? settle_samples(HEAVE_SETTLE_FACTOR, tau_s, dt) : 0;
 }
 
 float heave_update(heave_t *h, const float q[4], const float accel[3])
 {
     if (!h->enabled) return 0.0f;
 
-    h->elapsed += h->dt;
-    if (!h->settled && h->elapsed >= HEAVE_SETTLE_FACTOR * h->tau)
+    h->n++;
+    if (!h->settled && h->n >= h->settle_n)
         h->settled = true;
 
     float R[3][3];
@@ -1713,9 +1737,11 @@ float heave_update(heave_t *h, const float q[4], const float accel[3])
 void seastate_init(seastate_t *w, float tau_s, float dt)
 {
     memset(w, 0, sizeof *w);
-    w->tau     = tau_s;
-    w->dt      = dt;
-    w->enabled = (tau_s > 0.0f && dt > 0.0f);
+    w->tau      = tau_s;
+    w->dt       = dt;
+    w->enabled  = (tau_s > 0.0f && dt > 0.0f);
+    w->settle_n = w->enabled
+        ? settle_samples(SEASTATE_SETTLE_FACTOR, tau_s, dt) : 0;
 }
 
 /* One EW mean/variance step: var converges to the variance about the EW mean. */
@@ -1740,8 +1766,8 @@ void seastate_update(seastate_t *w, float heave_m, float heave_rate,
     ew_stat(&w->p_mean,  &w->p_var,  pitch,      alpha);
     ew_stat(&w->pr_mean, &w->pr_var, pitch_rate, alpha);
 
-    w->elapsed += w->dt;
-    if (!w->settled && w->elapsed >= SEASTATE_SETTLE_FACTOR * w->tau)
+    w->n++;
+    if (!w->settled && w->n >= w->settle_n)
         w->settled = true;
 }
 

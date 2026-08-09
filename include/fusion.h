@@ -261,8 +261,17 @@ typedef struct {
     float disp;      /* leaked vertical displacement, m (down +) */
     float disp_prev; /* previous displacement (high-pass state) */
     float hp_y;      /* high-passed displacement (down +) */
-    float elapsed;   /* seconds since enable (settling ramp) */
-    bool  settled;   /* true once elapsed ≥ ~10·tau — heave trustworthy */
+    /*
+     * Settling is counted in SAMPLES, not summed in seconds.  A float
+     * accumulating a constant dt stops advancing once dt drops below half an
+     * ULP of the running total — at 32 kHz that is 1024 s, and a heave_tau_s
+     * above ~102 s would then never reach 10·tau, leaving `settled` false
+     * forever with no error anywhere.  A counter is exact at every rate for
+     * any run length, and says what the code means.
+     */
+    uint64_t n;         /* samples fed since enable */
+    uint64_t settle_n;  /* n needed for `settled`; ~10·tau worth of samples */
+    bool  settled;   /* true once n ≥ settle_n — heave trustworthy */
     bool  enabled;
 } heave_t;
 
@@ -294,8 +303,12 @@ typedef struct {
     float rr_mean, rr_var;   /* roll rate, rad/s / (rad/s)² */
     float p_mean,  p_var;    /* pitch, rad / rad² (mean = steady trim) */
     float pr_mean, pr_var;   /* pitch rate, rad/s / (rad/s)² */
-    float elapsed;   /* seconds of accumulated (heave-valid) input */
-    bool  settled;   /* true once elapsed ≥ ~2·tau — stats trustworthy */
+    /* Samples, not summed seconds — see heave_t for why.  This one is the
+     * reachable case: `settled` needs 2·wave_tau_s, and wave_tau_s has no
+     * upper bound while the window this estimator is built for is minutes. */
+    uint64_t n;         /* samples of (heave-valid) input accumulated */
+    uint64_t settle_n;  /* n needed for `settled`; ~2·tau worth of samples */
+    bool  settled;   /* true once n ≥ settle_n — stats trustworthy */
     bool  enabled;
 } seastate_t;
 
