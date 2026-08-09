@@ -25,7 +25,7 @@ NMEA sentence formats, timestamp architecture), see [spec.md](../spec.md).
 
 imud is a general-purpose IMU daemon — *gpsd for IMUs*. It owns the inertial
 sensor and does the real-time work once: it reads a gyroscope/accelerometer
-(IMU) and a magnetometer over I²C, fuses them with a Multiplicative Extended
+(IMU) and a magnetometer over I²C or SPI, fuses them with a Multiplicative Extended
 Kalman Filter (MEKF) into a real-time attitude estimate (quaternion, Euler
 angles, magnetic and true heading, rate of turn, heave), and publishes the
 result on several standard interfaces that any number of programs can consume
@@ -70,11 +70,16 @@ C standard library. Nothing else.
 
 ### Prerequisites
 
-- A Linux system with an I²C bus and a GPIO character device. Debian bookworm
-  and trixie are the packaged targets (arm64 and armhf); Raspberry Pi OS is the
-  most exercised host, not a requirement.
-- I²C enabled. On Raspberry Pi OS: `sudo raspi-config` → Interface Options →
-  I²C. Elsewhere, load `i2c-dev` and confirm a `/dev/i2c-*` node appears.
+- A Linux system with an I²C **or** SPI bus and a GPIO character device.
+  Debian bookworm and trixie are the packaged targets (arm64 and armhf);
+  Raspberry Pi OS is the most exercised host, not a requirement.
+- The bus you intend to use, enabled:
+  - **I²C** — on Raspberry Pi OS `sudo raspi-config` → Interface Options →
+    I²C. Elsewhere, load `i2c-dev` and confirm a `/dev/i2c-*` node appears.
+  - **SPI** — `sudo raspi-config` → Interface Options → SPI, or add
+    `dtparam=spi=on` to `/boot/firmware/config.txt` and reboot. Confirm
+    `/dev/spidev0.0` and `/dev/spidev0.1` appear. Not every driver supports
+    SPI; see [Supported drivers](#5-supported-drivers).
 - `libgpiod-dev`. Bookworm ships 1.6.x and trixie ships 2.x; both are supported
   and the Makefile auto-detects the installed version via `pkg-config`.
 
@@ -112,8 +117,8 @@ This installs:
 `imud-mon` and `imud-imutest` share their own install target. They are
 operator tools rather than part of the running system: `imud-mon` reads the
 UDP streams and can live on any machine on the network, while `imud-imutest`
-talks to the sensor over I²C and must run on the daemon's own box, with the
-daemon stopped.
+talks to the sensor directly — over whichever bus is configured — and must run
+on the daemon's own box, with the daemon stopped.
 
 ```sh
 sudo make install-utils
@@ -687,6 +692,48 @@ Boards sold as MPU-9250 are very often relabelled **MPU-6500s**, which have no
 magnetometer at all. `probe()` rejects those by name rather than letting the
 failure surface later as an unexplained I²C error from the mag driver.
 
+### Running a sensor on SPI
+
+SPI moves the same registers over a faster link. That matters in two places:
+the high sample rates a part advertises stop being limited by the bus, and the
+FIFO drain — which `imud-mon` reports separately from the daemon's own
+pipeline latency — gets shorter. An ISM330DHCX FIFO word costs roughly 180 µs
+of bus time at 400 kHz I²C and under 10 µs at 10 MHz SPI.
+
+Enable the bus (`dtparam=spi=on`, or `raspi-config` → Interface Options →
+SPI), then wire each sensor to its own chip select and name the node:
+
+```ini
+[imu]
+driver       = "ism330dhcx"
+bus          = "spi"
+spi_dev      = "/dev/spidev0.0"   # CE0, header pin 24
+int_gpio     = 17                 # unchanged — the interrupt is a separate wire
+
+[mag]
+driver       = "mmc5983ma"
+bus          = "spi"
+spi_dev      = "/dev/spidev0.1"   # CE1, header pin 26
+int_gpio     = 27
+```
+
+Points worth knowing:
+
+- **The chip select does the addressing.** `i2c_addr` is unused on SPI, and
+  the two sensors need *separate* chip selects — they cannot share one node.
+- **The sections are independent.** A SPI IMU with an I²C compass is a legal
+  and sometimes necessary rig: the AKM compasses have no SPI port, so a
+  9-axis ICM-20948 or MPU-925x board stays on I²C entirely.
+- **`spi_speed_hz = 0` means the part's datasheet maximum**, which is usually
+  what you want. A higher request is clamped and the daemon logs the rate it
+  really programmed.
+- **The interrupt line is unchanged.** `int_gpio` is a separate wire either
+  way; only the data path moves.
+- **Wiring is not modelled by any test.** The tests prove both transports
+  produce identical register traffic, which is a different claim from "the
+  board is wired right". Run `imud-imutest --all` after changing transport —
+  its report should match the one you get on I²C.
+
 ---
 
 ## 6. Calibration
@@ -1094,10 +1141,11 @@ matching output enable with a warning.)
 
 | Symptom | Check |
 |---|---|
-| Sensors not detected | I²C enabled? `i2cdetect -y 1` should list `0x6b` (ISM330DHCX) and `0x30` (MMC5983MA). Check wiring and the `i2c_addr` values. |
-| `WHO_AM_I` mismatch at startup | Wrong `imu.driver`/`mag.driver`, or a wrong `i2c_addr` (e.g. SA0 jumper → 0x6A vs 0x6B). |
-| GPIO open/permission errors | `gpio_chip` must match the Pi model (`gpiochip0` on Pi 4, `gpiochip4` on Pi 5). Run as the `imud` service user or a member of the `gpio`/`i2c` groups. |
-| I²C or GPIO open fails only under systemd, but works when run by hand | The unit's `DevicePolicy=closed` allows a fixed list of nodes. The shipped list covers `/dev/i2c-1`, `/dev/i2c-3`, `/dev/gpiochip0` and `/dev/gpiochip4`; anything else needs its own `DeviceAllow=` line. `systemd-analyze verify` will not catch this — it only bites at device-open time. |
+| Sensors not detected (I²C) | I²C enabled? `i2cdetect -y 1` should list `0x6b` (ISM330DHCX) and `0x30` (MMC5983MA). Check wiring and the `i2c_addr` values. |
+| Sensors not detected (SPI) | SPI enabled (`dtparam=spi=on`) and `/dev/spidev0.*` present? Check `spi_dev` names the right chip select, that each sensor has its **own** CE line, and that the driver supports SPI at all — see [Supported drivers](#5-supported-drivers). A `probe()` failure here is usually MISO/MOSI swapped or the wrong CE. |
+| `WHO_AM_I` mismatch at startup | Wrong `imu.driver`/`mag.driver`, or a wrong `i2c_addr` (e.g. SA0 jumper → 0x6A vs 0x6B). On SPI the address comes from the chip select, so suspect `spi_dev` instead. |
+| GPIO open/permission errors | `gpio_chip` must match the Pi model (`gpiochip0` on Pi 4, `gpiochip4` on Pi 5). Run as the `imud` service user or a member of the `gpio`/`i2c`/`spi` groups. |
+| Bus or GPIO open fails only under systemd, but works when run by hand | The unit's `DevicePolicy=closed` allows a fixed list of nodes. The shipped list covers `/dev/i2c-1`, `/dev/i2c-3`, `/dev/spidev0.0`, `/dev/spidev0.1`, `/dev/gpiochip0` and `/dev/gpiochip4`; anything else — SPI1..6, for instance — needs its own `DeviceAllow=` line. `systemd-analyze verify` will not catch this — it only bites at device-open time. |
 | Filter reports `R` in `imud-mon`, or `imud_state_reset` is 1 | The MEKF found a non-finite value in its own state and reset itself; it re-aligns automatically and the flag clears when it re-converges. Repeated resets are a bug — capture the log line (`[fusion] non-finite filter state`) and the `.imucap` that produced it. |
 | Fusion never converges | Magnetometer uncalibrated, or a strong local magnetic disturbance. Run `imud-cal mag`; check the fit residual. |
 | Heading is off by a constant | Mount rotation. Set `mount.rotation_euler_deg` yaw to the chip-X-to-bow angle. |
@@ -1132,8 +1180,40 @@ Each type is a struct of function pointers plus a few capability flags and
 supported-rate tables. The daemon calls through these pointers and never
 touches chip-specific registers directly.
 
-Both types communicate over I²C using the Linux `I2C_RDWR` ioctl — no
-`smbus` dependency — so the same low-level helpers work for all chips.
+Both types are handed an `imud_bus_t` — a transport handle — and reach the
+chip through the helpers in `src/drivers/bus_io.h`:
+
+```c
+int bus_reg_read  (const imud_bus_t *bus, uint8_t reg, uint8_t *val);
+int bus_reg_write (const imud_bus_t *bus, uint8_t reg, uint8_t val);
+int bus_burst_read(const imud_bus_t *bus, uint8_t reg, uint8_t *buf, uint16_t len);
+```
+
+The handle carries the descriptor, the transport, and whatever addresses the
+part — the 7-bit slave address on I²C, the resolved clock and framing bits on
+SPI. **Write the register logic once; it runs on either bus.** The helpers are
+`static inline` so every driver still issues its own single `ioctl()`, which
+is what `test/bus_mock.c` intercepts with `--wrap=ioctl`; do not reroute them
+through `I2C_SLAVE`, SMBus calls, or `read()`/`write()`.
+
+To offer SPI, fill in `bus_caps` from the datasheet:
+
+```c
+.bus_caps = { .spi_capable = true, .spi_mode = 3,
+              .spi_max_hz = 10000000, .spi_inc_mask = 0 },
+```
+
+Leave it zeroed and `bus = "spi"` is refused at startup by name — the right
+outcome for a part with no SPI port, and better than silently mis-framing.
+`spi_inc_mask` is the one field that is easy to get wrong: some parts step the
+address on a multi-byte read automatically (the ST 6-axis parts do it from
+`CTRL3_C`'s `IF_INC`), and some need an explicit bit in the command byte
+(LIS3MDL's MS at `0x40`). Check the SPI section of the datasheet, not the I²C
+one — the auto-increment bit is frequently in a different place on each.
+
+If a part cannot do SPI, say why in the ops struct rather than leaving the
+field zeroed without comment; `src/drivers/lis2mdl.c` is the worked example
+(its 4-wire mode disables the data-ready line the driver depends on).
 
 ### Conventions that must be followed exactly
 

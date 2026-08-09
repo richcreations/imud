@@ -20,13 +20,13 @@ IMUs*.** It owns the inertial sensor, does the hard real-time work once
 timestamps), and publishes a clean attitude/heading/motion estimate on
 standard interfaces that any number of programs can read at the same time.
 
-Instead of every application re-implementing I²C drivers and a Kalman filter,
+Instead of every application re-implementing sensor drivers and a Kalman filter,
 you run one small daemon and consume its output. Like gpsd, it's meant to be
 boring, always-on infrastructure: start it, forget it, and point your
 software at the stream.
 
 ```
-   IMU + magnetometer (I²C)                      consumers
+   IMU + magnetometer (I²C/SPI)                  consumers
             │                          ┌────────────────────────────┐
             ▼                          │  chartplotter / autopilot  │
    ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                 │
@@ -131,7 +131,7 @@ sudo systemctl enable --now imud
 ```
 
 The package creates the `imud` user and the `gpio`/`i2c` groups, and installs a
-udev rule granting those groups the I²C and GPIO device nodes — so this works on
+udev rule granting those groups the I²C, SPI and GPIO device nodes — so this works on
 a stock Debian, not only on Raspberry Pi OS. To read the stream socket or run
 `imud-status` as yourself, join the `imud` group: `sudo adduser "$USER" imud`.
 
@@ -143,7 +143,7 @@ Optional bridges and the network monitor are separate packages:
 `imud-signalk`, `imud-mqtt`, `imud-influxdb`, `imud-mavlink`, `imud-prometheus`,
 `imud-utils`. See <https://richcreations.github.io/imud/apt/>.
 
-**Or build from source** (any Linux host with I²C):
+**Or build from source** (any Linux host with I²C or SPI):
 
 ```sh
 sudo apt update && sudo apt install -y build-essential libgpiod-dev

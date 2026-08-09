@@ -9,7 +9,7 @@ optional TCP listener, for any number of
 consumers (marine nav, robotics, machine vision, gimbals/pointing).  
 **Reference hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA
 (SEN-19895); a driver layer supports other parts (see §4).  
-**Platform:** Raspberry Pi / Linux (any host with I2C)  
+**Platform:** Raspberry Pi / Linux (any host with I2C or SPI)  
 **Language:** C11, POSIX — no external dependencies beyond libc and libgpiod
 
 -----

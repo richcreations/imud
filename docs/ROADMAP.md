@@ -240,8 +240,27 @@ Still open:
   version word outright, which is the point — but it means a wire bump has to
   reach that repository too, and it is not part of an imud tag. Keep it in the
   wire-change checklist.
-- **SPI transport.** Unlocks high-ODR modes (6.6 kHz ISM330) and lower jitter;
-  pairs with the Pi 5 latency profiling item.
+- **SPI transport — SHIPPED.** `[imu] bus` / `[mag] bus` select `"i2c"` or
+  `"spi"` per sensor, over a `bus_caps_t` each driver declares from its
+  datasheet. ism330dhcx and mmc5983ma are exercised on both transports against
+  a mock device; lsm6dso/lsm6dsox, icm42688p and lis3mdl are wired up and
+  remain `experimental`. Three follow-ons remain:
+
+  - **Hardware validation.** The claim that both transports produce identical
+    register traffic is proven only against a mock. It needs an
+    `imud-imutest --all` report on each bus from the same board, and the
+    FIFO-drain latency comparison (§3.1's split makes it visible) that would
+    substantiate the speed argument with a measurement rather than an
+    arithmetic estimate.
+  - **AKM compasses behind an InvenSense host.** icm20948 and mpu925x reach
+    their on-die AK09916/AK8963 through I²C *bypass*, which only an I²C host
+    can use. SPI needs the aux-I²C-master path — `I2C_SLV0_ADDR/REG/CTRL` plus
+    `EXT_SENS_DATA_*` shadow polling — a genuinely different read path, so
+    those boards run on I²C today.
+  - **LIS2MDL.** Its SPI defaults to three wires, and 4-wire mode (CFG_REG_C
+    bit 2) disables the data-ready line the driver reads it from. Either
+    half-duplex `SPI_3WIRE` support in the bus layer, or a polled read path
+    for the part — both change how it is read, not just how it is addressed.
 - **Debian archive submission.** The self-hosted apt repo shipped (1.5
   follow-on, richcreations.github.io/imud/apt); the next step toward the
   original goal is submission to the Debian archive proper (source package +
