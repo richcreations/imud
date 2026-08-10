@@ -1,0 +1,5 @@
+# imud is hardware-gated more than it is time-gated: eleven drivers are
+# written, unit-tested against a mock bus, and still marked experimental
+# because the silicon has never been on a bench (docs/ROADMAP.md §1).
+# Clearing that flag needs the parts, not review. Funding here buys them.
+github: [richcreations]
