@@ -674,7 +674,7 @@ work:
   data-ready line, so 4-wire would cost the interrupt and 3-wire needs
   half-duplex support the bus layer does not have.
 
-#### Sample rates, and which ones your host can actually run
+### Sample rates, and which ones your host can actually run
 
 Each driver advertises exactly the rates its part can be programmed to. Ask
 for something else and imud rounds **up** to the next one the chip supports,

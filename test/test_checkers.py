@@ -221,6 +221,34 @@ CASES = [
     ("gen-config-docs", "test/test_config_defaults.gen.c",
      sub(r"^CK_INT \(c\.imu_odr_hz,       833,", "CK_INT (c.imu_odr_hz,       999,"),
      "test_config_defaults.gen.c is stale"),
+
+    # ── The Info manual ──────────────────────────────────────────────────────
+    # docs/imud.texi is committed and NOT diff-gated (two pandocs, two
+    # outputs), so these are the whole guarantee that it still is the manual.
+
+    # A section added to the manual and never converted: invisible to
+    # `info imud`, and the failure mode the conversion exists to prevent.
+    ("check-texi", "docs/manual.md",
+     sub(r"^## 10\. Troubleshooting", "## 9z. Zzz new section\n\n"
+         "Body.\n\n## 10. Troubleshooting"),
+     "Zzz new section"),
+
+    # A section renamed in the manual, leaving the .texi node behind.
+    ("check-texi", "docs/manual.md",
+     sub(r"^### Signals$", "### Zzz signals"),
+     "Zzz signals"),
+
+    # A version bump that never reached `make docs-texi`.
+    ("check-texi", "include/version.h",
+     sub(r'#define IMUD_VERSION_STR\s+"[^"]+"',
+         '#define IMUD_VERSION_STR "9.9.9"'),
+     "@set VERSION"),
+
+    # The Info directory entry deleted: the manual installs and never appears
+    # in `info` or `M-x info`, which no other check would notice.
+    ("check-texi", "docs/imud.texi",
+     sub(r"^@dircategory .*$", ""),
+     "@dircategory"),
 ]
 
 

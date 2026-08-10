@@ -66,6 +66,20 @@ This step cannot run on macOS: help2man executes the binaries, and `imud`,
 carrying the previous version, which `make check-generated-man` — and CI's
 **build-and-test** job — fails on.
 
+### 1c. Regenerate the Info manual
+
+```sh
+make docs-texi         # needs pandoc; runs anywhere
+```
+
+`docs/imud.texi` carries `@set VERSION`, and `tools/check-texi.py` fails if it
+disagrees with `include/version.h`. Unlike the man pages this runs on macOS —
+it reads `docs/manual.md`, not a built binary.
+
+The `.texi` is committed but **not** diff-gated: pandoc 3.10 and 3.1.11 emit
+different Texinfo from the same markdown, so the gate is `check-texi` plus
+`makeinfo`, neither of which cares which pandoc wrote the file.
+
 ## 2. Write the prose — the part no script can do
 
 - **`NEWS`**: add an `X.Y.Z` section at the top, user-visible changes only.

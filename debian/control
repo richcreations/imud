@@ -5,7 +5,10 @@ Maintainer: Richard Simpson <richcreations@gmail.com>
 Build-Depends: debhelper-compat (= 13),
                pkgconf,
                libgpiod-dev,
-               libmosquitto-dev
+               libmosquitto-dev,
+# makeinfo, for usr/share/info/imud.info.  Only texinfo — docs/imud.texi is
+# committed, so pandoc is a maintainer tool and never a build dependency.
+               texinfo
 Standards-Version: 4.6.2
 Homepage: https://github.com/richcreations/imud
 Rules-Requires-Root: no

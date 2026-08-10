@@ -231,7 +231,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgpiod-dev libmosquitto-dev devscripts mandoc \
-                                  help2man
+                                  help2man texinfo
 
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
@@ -288,8 +288,11 @@ jobs:
       # correct paths, no useradd, no systemctl.
       - name: Staged install layout
         run: |
+          # install-info-doc is deliberately NOT a prerequisite of `install`
+          # (a source install must work without texinfo), so it is named here
+          # exactly as debian/rules names it.
           make install install-utils install-wmm-data install-signalk install-mqtt \
-               install-influxdb install-mavlink install-prometheus \
+               install-influxdb install-mavlink install-prometheus install-info-doc \
                DESTDIR="$PWD/stage" PREFIX=/usr SVCDIR=/lib/systemd/system \
                UDEVDIR=/usr/lib/udev/rules.d
           test -x stage/usr/bin/imud
@@ -321,6 +324,10 @@ jobs:
           # binary package; nothing installed links to it.
           test ! -e stage/usr/share/doc/imud/INSTALL
           test -f stage/usr/share/man/man8/imud.8.gz
+          # Uncompressed: dh_compress owns /usr/share/info/*.info and runs
+          # after dh_install, so compressing here would ship a .info.gz.gz.
+          test -f stage/usr/share/info/imud.info
+          test ! -e stage/usr/share/info/imud.info.gz
           test -f stage/etc/imud/imud.conf
           # The udev rule is what makes the gpio/i2c groups useful on a distro
           # that ships no equivalent of Pi OS's 99-com.rules.
@@ -493,6 +500,23 @@ jobs:
       # different help2man, and again on the first of every month.
       - name: Man pages regenerate to what is committed
         run: make check-generated-man
+
+      # docs/imud.texi is generated from docs/manual.md and committed, but
+      # deliberately NOT diff-gated: pandoc 3.10 (dev box) and 3.1.11
+      # (container) do not emit identical Texinfo from the same markdown, so
+      # a regenerate-and-diff would be red on whichever runner did not match
+      # whoever last ran `make docs-texi`.  makeinfo is the half of the gate
+      # that IS version-stable — it either builds a valid Info manual or it
+      # does not — and check-generated-text runs the other half
+      # (tools/check-texi.py: every heading has a node, the version matches,
+      # every cross-reference resolves) with no pandoc at all.
+      - name: The Info manual builds
+        run: |
+          make imud.info
+          test -s imud.info
+          grep -q '^INFO-DIR-SECTION System administration' imud.info
+          grep -q '^\* imud: (imud)\.' imud.info
+          echo "info manual OK"
 
   # The suite on 32-bit ARM.  armhf .debs are built and published, but until
   # now nothing ever RAN the tests there: build-and-test covers amd64 and

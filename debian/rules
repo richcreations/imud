@@ -25,6 +25,7 @@ override_dh_auto_install:
 	dh_auto_install -- install-utils install-wmm-data \
 	        install-signalk install-mqtt install-influxdb \
 	        install-mavlink install-prometheus \
+	        install-info-doc \
 	        PREFIX=/usr SVCDIR=/usr/lib/systemd/system \
 	        UDEVDIR=/usr/lib/udev/rules.d \
 	        LIBDIR=/usr/lib/$(DEB_HOST_MULTIARCH)

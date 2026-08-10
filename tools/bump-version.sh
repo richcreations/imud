@@ -158,7 +158,10 @@ done
 echo
 echo "Also by hand: NEWS (user-visible changes for $VERSION)."
 echo
-echo "Then, on Linux (help2man runs the binaries, which do not link on macOS):"
+echo "Then regenerate what carries the version:"
+echo "  make docs-texi    # docs/imud.texi's @set VERSION (needs pandoc)"
+echo
+echo "and, on Linux (help2man runs the binaries, which do not link on macOS):"
 echo "  make docs-man     # restamps the 10 generated man1/man8 pages"
 echo "  make test && mandoc -Tlint -Wwarning man/man*/*"
 echo "before tagging."

@@ -583,15 +583,17 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-libimud-api check-math-citations check-manpages
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
-        check-packet-docs check-driver-docs docs-config docs-tables \
-        docs-man check-generated-man
+        check-packet-docs check-driver-docs check-texi docs-config \
+        docs-tables docs-texi docs-man check-generated-man \
+        install-info-doc uninstall-info-doc
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
 # Everything text-only, in one target: what CI runs, and what to run before
 # touching a document.
 check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
-                     check-config-docs check-packet-docs check-driver-docs
+                     check-config-docs check-packet-docs check-driver-docs \
+                     check-texi
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
 # the man5 entries, the manual tables and the generated defaults test on disk
@@ -629,6 +631,47 @@ docs-tables:
 	@python3 tools/gen-packet-docs.py --write
 	@python3 tools/gen-drivers.py --write
 
+# ── Info manual ──────────────────────────────────────────────────────────────
+# docs/manual.md -> docs/imud.texi -> imud.info.  `info imud` is the third way
+# to read the manual and the only navigable one, in a reader already on every
+# Debian system.
+#
+# docs/imud.texi is COMMITTED (make dist is `git archive HEAD`, so a packager
+# must not need pandoc) but not diff-gated: this tree meets pandoc 3.10 and
+# 3.1.11, they disagree on the Texinfo they emit, and a regenerate-and-diff
+# would be red on whichever runner did not match.  check-texi is the gate
+# instead, and needs no pandoc.
+docs-texi:
+	@python3 tools/gen-texi.py
+
+check-texi:
+	@python3 tools/check-texi.py
+
+imud.info: docs/imud.texi
+	makeinfo --no-split -o $@ $<
+
+# NOT a prerequisite of `install`: makeinfo is not a build dependency, and a
+# source install must keep working on a box without texinfo.  Debian's
+# dh_installinfo calls this via debian/imud.info.
+#
+# Installed UNCOMPRESSED.  dh_compress handles /usr/share/info/*.info itself
+# and runs after dh_install, so compressing here would leave it a .info.gz.gz.
+install-info-doc: imud.info
+	install -d -m 0755 $(DESTDIR)$(INFODIR)
+	install -m 0644 imud.info $(DESTDIR)$(INFODIR)/imud.info
+	@# Register with the Info directory when installing for real.  Debian
+	@# packages get this from dh_installinfo's trigger instead, which is why
+	@# a staged install (DESTDIR set) must not touch the system dir file.
+	@if [ -z "$(DESTDIR)" ] && command -v install-info >/dev/null 2>&1; then \
+	  install-info --quiet $(INFODIR)/imud.info $(INFODIR)/dir || true; \
+	fi
+
+uninstall-info-doc:
+	@if [ -z "$(DESTDIR)" ] && command -v install-info >/dev/null 2>&1; then \
+	  install-info --quiet --delete $(INFODIR)/imud.info $(INFODIR)/dir || true; \
+	fi
+	rm -f $(DESTDIR)$(INFODIR)/imud.info
+
 # The checkers are regexes over source, so a checker that has quietly stopped
 # matching looks exactly like a clean tree.  This breaks one fact at a time in
 # a copy of the tree and asserts the relevant checker notices.
@@ -656,7 +699,7 @@ MAN_GENERATED = $(addprefix man/,$(filter man1/% man8/%,$(MAN_ALL)))
 define run-help2man
 	@TZ=UTC0 LC_ALL=C LD_LIBRARY_PATH=. help2man \
 	    --output=$(4) --section=$(2) --manual="$(3)" \
-	    --source="imud $(VERSION)" --no-info \
+	    --source="imud $(VERSION)" --info-page=imud \
 	    --include=man/h2m/$(notdir $(4)).h2m ./$(1)
 	@python3 tools/man-postprocess.py $(4) >/dev/null
 	@echo "  generated $(4)"
@@ -738,6 +781,7 @@ SVCDIR  ?= /etc/systemd/system
 LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc
+INFODIR ?= $(PREFIX)/share/info
 # udev reads rules from /etc/udev/rules.d, /run/udev/rules.d and
 # /usr/lib/udev/rules.d only — never from $(PREFIX) — so a source install must
 # land in /etc or the rule is inert.  Packagers override this to
@@ -1172,7 +1216,7 @@ clean:
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers test_imutest \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
-	      mkseed_packet \
+	      mkseed_packet imud.info \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
 	      etc/*.service imud-*.tar.gz

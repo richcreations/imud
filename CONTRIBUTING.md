@@ -90,11 +90,18 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 | `check-mqtt-topics`, `check-bridge-outputs` | each bridge's spec lists exactly what its encoder emits, **and nothing it no longer emits**; each MQTT topic's documented condition matches its `GATE_*` |
 | `check-libimud-api` | `libimud.map`, `imud.h`, `libimud.3` and the libimud spec describe one API |
 | `check-links` | every link resolves — in the repo **and** in the tree `make install` lays down |
+| `check-texi` | `docs/imud.texi` is still `docs/manual.md`: every section has an Info node, the version matches `include/version.h`, every cross-reference resolves, and the Info directory entry is intact |
 | `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
 
 Run it before you commit; CI runs it on every push. `make test-tools` then
 checks the checkers themselves still detect drift, by breaking one fact at a
 time in a copy of the tree.
+
+**Editing `docs/manual.md`** means running `make docs-texi` and committing
+`docs/imud.texi` with it — that file is `info imud`. It is generated but not
+diff-gated, because pandoc 3.10 and 3.1.11 emit different Texinfo from the
+same markdown; `check-texi` and `makeinfo` gate it instead, and neither cares
+which pandoc wrote it.
 
 **Adding a driver** used to mean editing six files. It is now: write
 `src/drivers/<part>.c`, register it in `src/drivers.c`, add an entry to
