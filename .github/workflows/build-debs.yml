@@ -114,8 +114,18 @@ jobs:
                   return 1
               }
               apt_retry apt-get update
-              apt_retry apt-get install -y build-essential debhelper devscripts \
-                                          pkgconf libgpiod-dev libmosquitto-dev
+              # devscripts is for dch below — CI tooling, not a build
+              # dependency of the package, so it is named here.
+              apt_retry apt-get install -y devscripts
+              # The build dependencies themselves come from debian/control, and
+              # are deliberately NOT restated here.  They used to be, and the
+              # copy drifted: `docs: ship the manual as an Info page` added
+              # texinfo to Build-Depends for debian/imud.info, this list was
+              # not touched, and all four matrix legs died in
+              # dpkg-checkbuilddeps before compiling a line.  Nothing compared
+              # the two, because there was nothing to compare — one of them was
+              # a hand copy.  build-dep also pulls build-essential.
+              apt_retry apt-get build-dep -y ./
               if [ "$LINTIAN" = "true" ]; then apt_retry apt-get install -y lintian; fi
               dch --local "~${{ matrix.dist }}" \
                   "Automated CI build for Debian ${{ matrix.dist }}."
