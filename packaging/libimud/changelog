@@ -1,3 +1,17 @@
+libimud (1.9.0) unstable; urgency=medium
+
+  * imud.h documents ts_wall_ns correctly: it carries the instant the
+    SENSOR sampled, reconstructed from the chip counter, not the moment
+    the packet was sent. The old comment, "CLOCK_REALTIME, nanoseconds",
+    read as emit time and hid the two things the field is for --
+    correlating an imud sample with another sensor, and computing
+    end-to-end age as now() - ts_wall_ns at receipt. The field itself is
+    unchanged.
+  * No ABI change: imud_data_t is untouched, libimud.map has not grown,
+    and the SONAME stays libimud.so.0.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
+
 libimud (1.8.2) unstable; urgency=medium
 
   * New flag bit IMUD_FLAG_STATE_RESET (1u << 14), in imud.h, the

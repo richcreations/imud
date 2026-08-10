@@ -1,3 +1,28 @@
+imud (1.9.0) unstable; urgency=medium
+
+  * SPI transport: [imu] and [mag] gain bus, spi_dev and spi_speed_hz.
+    Default bus = "i2c", so an existing imud.conf is unaffected. The two
+    sections choose independently; a driver whose part has no SPI port
+    refuses bus = "spi" by name at startup, and an unrecognised bus value
+    is fatal rather than falling back to I2C silently.
+  * The systemd unit allows /dev/spidev0.0 and /dev/spidev0.1 and gains
+    the spi supplementary group; without this, DevicePolicy=closed made
+    bus = "spi" fail at open like a permissions fault.
+  * New magnetometer driver rm3100 (PNI RM3100): magneto-inductive, no
+    SET/RESET coil, I2C 0x20-0x23 or SPI, ODR 1-600 Hz. Experimental.
+  * ism330dhcx and lsm6dso gain 3332 and 6664 Hz, icm42688p 4000 through
+    32000 Hz -- rates the datasheets always specified and the drivers had
+    never offered. 6664 Hz needs SPI; icm42688p above 8000 Hz will not run
+    on a Raspberry Pi.
+  * The manual installs as an Info page (`info imud`); building from
+    source now requires texinfo.
+  * Heave and sea state accumulate in double, following a measured
+    precision sweep. Attitude is unaffected.
+  * ts_wall_ns / ts_tai_ns documentation corrected: they carry the instant
+    the sensor sampled, not the emit time. No field changed.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
+
 imud (1.8.2) unstable; urgency=medium
 
   * BEHAVIOUR CHANGE: a bad value in imud.conf is now fatal, where it

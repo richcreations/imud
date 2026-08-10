@@ -1,3 +1,51 @@
+imud (1.9.0-1) unstable; urgency=medium
+
+  * SPI transport for the IMU and the magnetometer. [imu] and [mag] each
+    gain bus, spi_dev and spi_speed_hz; the default bus = "i2c" preserves
+    1.8.2 behaviour for any config that does not mention them. The two
+    sections choose independently, so a SPI IMU with an I2C compass is a
+    legal rig -- and on a 9-axis board the only one, since the AKM
+    compasses have no SPI port. A driver whose part has no SPI port
+    refuses bus = "spi" at startup by name. An unrecognised bus value is
+    fatal rather than a silent fallback to I2C, which on a SPI-wired
+    board would look like dead hardware instead of a typo.
+  * The hardened systemd unit allows /dev/spidev0.0 and /dev/spidev0.1
+    (SPI0 CE0 and CE1) and gains the spi supplementary group. Under
+    DevicePolicy=closed, bus = "spi" would otherwise have failed at open
+    looking like a permissions problem. A board on SPI1..6 still needs
+    its own DeviceAllow= line.
+  * ism330dhcx and lsm6dso advertise 3332 and 6664 Hz; icm42688p
+    advertises 4000 through 32000 Hz. These were missing rather than
+    disabled -- the datasheets specify them all. No behaviour change at
+    any rate that already worked. 6664 Hz needs bus = "spi" (I2C at
+    400 kHz cannot carry the FIFO drain), and icm42688p at 16000/32000
+    will not run on a Raspberry Pi.
+  * New magnetometer driver rm3100 (PNI RM3100), magneto-inductive
+    rather than AMR: ~13 nT sensitivity, no offset drift, and no
+    SET/RESET coil, so set_period_s does nothing on this part. I2C at
+    0x20-0x23 or SPI, ODR 1-600 Hz. Flagged experimental -- it has not
+    run on real silicon, and the daemon warns at startup.
+  * The manual installs as an Info page: `info imud`. Building from
+    source now requires texinfo.
+  * ts_wall_ns and ts_tai_ns are documented correctly at last. They have
+    always carried the instant the sensor sampled, reconstructed from the
+    chip counter, but every header called them "CLOCK_REALTIME of last
+    prediction step" -- which reads as emit time and hid that the field
+    exists for correlating a packet with another sensor and for computing
+    end-to-end age. The fields did not change; only their documentation
+    was wrong. On icm20948 and mpu925x, which have no hardware timestamp
+    counter, they degrade to the time of the I2C read and cannot see FIFO
+    residence.
+  * Heave and sea state accumulate in double. A measured precision sweep
+    found the float accumulators to be the dominant error term in those
+    two estimators; attitude is unaffected.
+  * Sample latency is instrumented and split into FIFO residence and the
+    daemon's own pipeline, only the second of which imud controls.
+  * The wire packet is unchanged (v17, 276 bytes) and so is the libimud
+    ABI (SONAME libimud.so.0), so consumers need no rebuild.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
+
 imud (1.8.2-1) unstable; urgency=medium
 
   * BEHAVIOUR CHANGE: a bad value in a config file is now fatal for the

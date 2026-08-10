@@ -6,6 +6,68 @@ per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
 packaging-level record, and the git history holds the full detail.
 
 
+1.9.0
+-----
+An additive release: SPI transport, higher sample rates on three parts, a new
+magnetometer driver, and the manual as an Info page. The wire packet is
+unchanged — still v17 / 276 bytes — and so is the libimud ABI, so nothing here
+forces you to redeploy consumers. Existing configurations keep working: every
+new key defaults to the behaviour 1.8.2 had.
+
+* **SPI transport for the IMU and the magnetometer.** `[imu]` and `[mag]` each
+  gain `bus`, `spi_dev` and `spi_speed_hz`. The default is `bus = "i2c"`, so a
+  config that says nothing behaves exactly as before. The two sections choose
+  independently — a SPI IMU alongside an I²C compass is a legal rig, and on a
+  9-axis board it is the only one, because the AKM compasses have no SPI port.
+  A driver whose part has no SPI port refuses `bus = "spi"` at startup by name
+  rather than mis-framing the transfers. `bus` is a closed set: an
+  unrecognised value is fatal, because a silent fallback to I²C on a
+  SPI-wired board looks like dead hardware rather than a typo.
+
+  If you run the packaged systemd unit, it now allows `/dev/spidev0.0` and
+  `/dev/spidev0.1` (SPI0 CE0 and CE1, the two chip selects the Pi header
+  exposes) and adds the `spi` group. A board on SPI1–6 needs its own
+  `DeviceAllow=` line; the manual says how.
+
+* **Three parts now advertise the rates their silicon actually has.**
+  `ism330dhcx` and `lsm6dso` gain 3332 and 6664 Hz; `icm42688p` gains 4000
+  through 32000 Hz. These were missing, not disabled — the datasheets have
+  always specified them. No behaviour changes at any rate that already
+  worked. Two cautions: 6664 Hz needs `bus = "spi"`, since I²C at 400 kHz
+  cannot carry the FIFO drain, and `icm42688p` at 16000/32000 will not run on
+  a Raspberry Pi — treat those as available for larger hosts.
+
+* **New driver: `rm3100`** (PNI RM3100), magneto-inductive rather than AMR.
+  ~13 nT sensitivity, no offset drift, and no SET/RESET coil — so
+  `set_period_s` does nothing on this part. I²C at 0x20–0x23 or SPI. ODR
+  1–600 Hz, where the top two rungs trade resolution for rate because the
+  cycle count sets both. Flagged experimental: it has never run on real
+  silicon, and the daemon says so at startup.
+
+* **`info imud`.** The manual now installs as an Info page — the only
+  navigable rendering, in a reader already on every Debian system. The
+  generated man pages end with a pointer to it. Building the package from
+  source now needs `texinfo`.
+
+* **Timestamp semantics documented, not changed.** `ts_wall_ns` / `ts_tai_ns`
+  have always carried the instant the *sensor sampled*, reconstructed from
+  the chip counter — not the moment the packet was emitted. Every header and
+  client comment said "CLOCK_REALTIME of last prediction step", which reads
+  as emit time and hid what the field is for: correlating an imud packet with
+  a camera frame, and computing end-to-end age as `now() - ts_wall_ns` at
+  receipt. The fields are unchanged; only their documentation was wrong. Note
+  the caveat now spelled out: on `icm20948` and `mpu925x`, which have no
+  hardware timestamp counter, these degrade to the time of the I²C read that
+  delivered the sample and cannot see FIFO residence.
+
+* **Heave and sea state accumulate in double.** A measured precision sweep,
+  not a speculative one — the float accumulators were the dominant error term
+  in those two estimators. Attitude is unaffected.
+
+* Sample latency is now instrumented and split into its two terms, FIFO
+  residence and the daemon's own pipeline. Only the second is under imud's
+  control, and only their sum had ever been discussed.
+
 1.8.2
 -----
 A fix release, almost entirely from an external audit of 1.8 and the fuzzing
