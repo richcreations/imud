@@ -24,6 +24,25 @@ cd imud
   requirement.
 - `libmosquitto-dev` — only for building the MQTT bridge.
 
+Nothing above is needed to *check* the documentation: every `make
+check-generated-text` gate is Python 3.11+ and nothing else, which is why CI
+runs them in a job that compiles no C.
+
+**Regenerating** documentation needs more, and only when you change the thing
+it is generated from:
+
+| Tool | Regenerates | When you need it |
+|---|---|---|
+| `help2man` | the ten `man1`/`man8` pages (`make docs-man`) | you changed a `--help` string. **Linux only** — it runs the binaries, and three of them do not link on macOS |
+| `pandoc` | `docs/imud.texi` (`make docs-texi`) and `docs/math.pdf` | you changed `docs/manual.md` or `docs/math.md` |
+| `texinfo` | `imud.info` (`make imud.info`) | always available in CI; also a Debian build dependency |
+| `tectonic` *or* a XeLaTeX | `docs/math.pdf` (`make math-pdf`) | you changed `docs/math.md`. Prefer tectonic: one binary against TeX Live's several GB |
+
+On macOS that is `brew install help2man texinfo pandoc tectonic`; on Debian,
+`apt-get install help2man texinfo pandoc tectonic`. The devbox container
+carries the first three — it is the Linux gate for `make docs-man` — but not
+tectonic, because `math.pdf` is rebuilt wherever `math.md` is edited.
+
 ## Build and test
 
 ```sh
@@ -91,6 +110,7 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 | `check-libimud-api` | `libimud.map`, `imud.h`, `libimud.3` and the libimud spec describe one API |
 | `check-links` | every link resolves — in the repo **and** in the tree `make install` lays down |
 | `check-texi` | `docs/imud.texi` is still `docs/manual.md`: every section has an Info node, the version matches `include/version.h`, every cross-reference resolves, and the Info directory entry is intact |
+| `check-math-pdf-stamp` | `docs/math.pdf` is a render of the `docs/math.md` it ships with, by SHA-256 — not by mtime, which git does not preserve |
 | `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
 
 Run it before you commit; CI runs it on every push. `make test-tools` then

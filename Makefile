@@ -583,9 +583,9 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-libimud-api check-math-citations check-manpages
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
-        check-packet-docs check-driver-docs check-texi docs-config \
-        docs-tables docs-texi docs-man check-generated-man \
-        install-info-doc uninstall-info-doc
+        check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
+        docs-config docs-tables docs-texi docs-man math-pdf \
+        check-generated-man install-info-doc uninstall-info-doc
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
 
@@ -593,7 +593,7 @@ $(CHECK_DOC_TOOLS):
 # touching a document.
 check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
                      check-config-docs check-packet-docs check-driver-docs \
-                     check-texi
+                     check-texi check-math-pdf-stamp
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
 # the man5 entries, the manual tables and the generated defaults test on disk
@@ -665,6 +665,24 @@ install-info-doc: imud.info
 	@if [ -z "$(DESTDIR)" ] && command -v install-info >/dev/null 2>&1; then \
 	  install-info --quiet $(INFODIR)/imud.info $(INFODIR)/dir || true; \
 	fi
+
+# ── math.pdf ─────────────────────────────────────────────────────────────────
+# A rendered copy of docs/math.md for reading the derivations away from a
+# terminal.  Committed, because the alternative is a LaTeX toolchain as a
+# prerequisite for reading the maths.
+#
+# tectonic (one ~30 MB binary) before xelatex (TeX Live, ~4 GB): the script
+# used to hard-require xelatex, so it failed on the box where math.md was
+# being edited and the PDF sat three weeks behind its source.
+math-pdf:
+	@sh tools/build-math-pdf.sh
+
+# The PDF is not reproducible — pandoc, the engine and the fonts all vary —
+# so it cannot be rebuilt-and-diffed.  docs/math.pdf.stamp holds the sha256
+# of the math.md it was built from, and this compares that against math.md.
+# An mtime rule could not work: git does not preserve mtimes.
+check-math-pdf-stamp:
+	@python3 tools/check-math-pdf-stamp.py
 
 uninstall-info-doc:
 	@if [ -z "$(DESTDIR)" ] && command -v install-info >/dev/null 2>&1; then \

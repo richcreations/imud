@@ -9,6 +9,14 @@ struct-field names so a reviewer can place each symbol against its
 implementation. Where the code approximates, deviates from, or specializes
 its cited source, an **As-implemented** note says so explicitly.
 
+**Typeset copy.** `docs/math.pdf` in the source repository renders these
+equations properly for reading away from a terminal. It is committed but not
+packaged — it would only duplicate this file — and it is not linked from here,
+because a relative link to it would be dead in the installed doc tree. It is
+kept honest by `make check-math-pdf-stamp`, which compares it against this
+file by hash; after editing here, run `make math-pdf` and commit both. That
+needs `pandoc` and either `tectonic` (a single binary) or a XeLaTeX.
+
 **Intended reader.** Someone auditing the mathematics itself — an estimation
 or geophysics specialist — who wants to check the equations and their data
 flow without reading C. Familiarity with quaternion attitude estimation,

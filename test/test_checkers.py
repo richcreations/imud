@@ -249,6 +249,12 @@ CASES = [
     ("check-texi", "docs/imud.texi",
      sub(r"^@dircategory .*$", ""),
      "@dircategory"),
+
+    # docs/math.md edited without rebuilding the PDF — the state the tree was
+    # already in when this was written, three weeks deep.
+    ("check-math-pdf-stamp", "docs/math.md",
+     sub(r"^# ", "# Zzz "),
+     "built from a different"),
 ]
 
 
