@@ -1665,6 +1665,28 @@ setting and are not offered, see below.
 @strong{Notes}: @emph{Experimental.} LIS3MDL successor. Fixed ±50 G.
 @end itemize
 
+@item @code{rm3100}
+
+@itemize
+@item
+@strong{Chip}: PNI RM3100
+@item
+@strong{Type}: Magnetometer
+@item
+@strong{I²C address}: 0x20--0x23
+@item
+@strong{GPIO interrupt}: BCM 27 · pin 13
+@item
+@strong{SPI}: yes --- mode 3, 1 MHz
+@item
+@strong{Notes}: @emph{Experimental.} Magneto-inductive, not AMR: no
+SET/RESET coil, so @code{set_period_s} does nothing here. ODR 1--600 Hz,
+but the top two rungs cost resolution --- the cycle count sets both gain
+and rate ceiling, and the driver drops it from 200 to 100 above 150 Hz
+and to 50 above 300 Hz. Three separate coils plus an ASIC, so the axis
+assignment is your wiring: the driver assumes the manual's NED layout.
+@end itemize
+
 @item @code{sim}
 
 @itemize
@@ -2627,7 +2649,7 @@ dependencies.
 @menu
 * Overview::
 * Conventions that must be followed exactly::
-* The I²C helpers::
+* The register helpers::
 * Writing an IMU driver imu_ops_t::
 * Writing a magnetometer driver mag_ops_t::
 * The supported_* tables::
@@ -2789,41 +2811,60 @@ out->field[1] = -(ry - NULL_FIELD) * scale;   /* flip Y: port → starboard */
 out->field[2] =  (rz - NULL_FIELD) * scale;   /* Z already points down */
 @end verbatim
 
-@node The I²C helpers
-@section The I²C helpers
-All drivers share the register helpers in @code{src/drivers/i2c_io.h}
+@node The register helpers
+@section The register helpers
+All drivers share the register helpers in @code{src/drivers/bus_io.h}
 --- include it and call them; do not roll your own:
 
 @verbatim
-#include "i2c_io.h"
+#include "bus_io.h"
 
-i2c_burst_read(fd, addr, reg, buf, len);  /* combined write-then-read */
-i2c_reg_write(fd, addr, reg, val);
-i2c_reg_read(fd, addr, reg, &val);        /* burst_read of length 1 */
-i2c_s16le(p);  i2c_s16be(p);              /* int16 from a register byte pair */
+bus_burst_read(bus, reg, buf, len);   /* combined write-then-read */
+bus_reg_write (bus, reg, val);
+bus_reg_read  (bus, reg, &val);       /* burst_read of length 1 */
+reg_s16le(p);  reg_s16be(p);          /* int16 from a register byte pair */
+reg_s24be(p);                         /* int24, sign-extended (RM3100) */
 @end verbatim
 
-@code{i2c_burst_read} issues a combined write-then-read in one I²C
-transaction (no repeated-start gap), saving ~40 µs vs two transactions
-at 400 kHz. If your chip needs a sub-address modifier for auto-increment
-(LIS3MDL's @code{0x80} bit), apply it at the call site:
-@code{i2c_burst_read(fd, addr, (uint8_t)(reg | 0x80), @dots{})}.
+They take the @code{imud_bus_t *} the daemon handed your op, not a
+descriptor and an address: the handle carries the transport, the slave
+address and the SPI framing, which is what lets one body of register
+logic run on either bus. @code{bus_burst_read} dispatches to a combined
+write-then-read in a single I²C transaction (no repeated-start gap, ~40
+µs saved against two transactions at 400 kHz), or to a command byte plus
+data inside one @code{SPI_IOC_MESSAGE} so chip select stays asserted
+across both.
+
+If your chip needs a sub-address modifier and only on one transport,
+name the transport rather than ORing the bit unconditionally ---
+@code{src/drivers/lis3mdl.c} is the worked example:
+
+@verbatim
+uint8_t out_reg = REG_OUT_X_L;
+if (bus->kind == BUS_I2C) out_reg |= 0x80;   /* I²C auto-increment */
+@end verbatim
+
+The SPI half of that is not a call-site decision at all: it rides in the
+handle as @code{spi_inc_mask}, from the driver's @code{bus_caps}. Beware
+datasheets that tabulate a "read address" --- on some parts (the RM3100)
+that column is the SPI command byte with the read bit already set, and
+using it as an I²C sub-address addresses a register that does not exist.
 
 The helpers are @code{static inline}, so each driver still issues its
-own single @code{ioctl(fd, I2C_RDWR, &xfer)} per transfer --- which is
-exactly what the mock-I2C test harness (@code{test/i2c_mock.c},
-@code{--wrap=ioctl}) intercepts. Keep any new I/O on this path; SMBus
-calls or @code{read()}/@code{write()} would bypass the mock.
+own single @code{ioctl()} per transfer --- which is exactly what the
+mock bus (@code{test/bus_mock.c}, @code{--wrap=ioctl}) intercepts. Keep
+any new I/O on this path; SMBus calls, @code{I2C_SLAVE}, or
+@code{read()}/@code{write()} would bypass the mock.
 
 @node Writing an IMU driver imu_ops_t
 @section Writing an IMU driver (imu_ops_t)
 
 @menu
 * Static driver state::
-* probefd addr → 0 or -1::
-* resetfd addr → 0 or -1::
-* initfd addr cfg → 0 or -1::
-* readfd addr buf max *n_out → 0 1 or -1::
+* probebus → 0 or -1::
+* resetbus → 0 or -1::
+* initbus cfg → 0 or -1::
+* readbus buf max *n_out → 0 1 or -1::
 * Hardware timestamps has_hw_timestamp::
 @end menu
 
@@ -2845,17 +2886,17 @@ static struct {
 It must @strong{never reset} while the daemon runs --- the fusion thread
 uses gaps in @code{seq} to detect dropped samples.
 
-@node probefd addr → 0 or -1
-@subsection probe(fd, addr) → 0 or -1
+@node probebus → 0 or -1
+@subsection probe(bus) → 0 or -1
 Read the WHO_AM_I (or equivalent) register and verify it against the
 datasheet value. Log a clear error with the received and expected values
 on mismatch.
 
 @verbatim
-static int myimu_probe(int fd, uint8_t addr)
+static int myimu_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("myimu: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -2872,20 +2913,25 @@ Use the @code{LOG_E} / @code{LOG_W} / @code{LOG_I} macros from
 @code{include/log.h} for all driver output, not bare @code{fprintf} ---
 they respect the operator's @code{logging.level}.
 
-@node resetfd addr → 0 or -1
-@subsection reset(fd, addr) → 0 or -1
+@node resetbus → 0 or -1
+@subsection reset(bus) → 0 or -1
 Trigger a software reset and wait for the bit to self-clear. Always add
 the chip's specified power-on time after the reset bit clears ---
 skipping this causes init failures on slower hardware.
 
+Not every part has a reset bit. The RM3100 has none at all, so its
+@code{reset()} restores the power-on register values by hand; if yours
+is like that, say so in the function's comment rather than leaving the
+absence to look like an oversight.
+
 @verbatim
-static int myimu_reset(int fd, uint8_t addr)
+static int myimu_reset(const imud_bus_t *bus)
 {
-    if (i2c_reg_write(fd, addr, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
+    if (bus_reg_write(bus, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
     for (int i = 0; i < 50; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_CTRL, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_CTRL, &val) < 0) return -1;
         if (!(val & 0x01)) goto done;
     }
     LOG_W("myimu: SW_RESET did not clear after 50 ms\n");
@@ -2896,8 +2942,8 @@ done:
 }
 @end verbatim
 
-@node initfd addr cfg → 0 or -1
-@subsection init(fd, addr, cfg) → 0 or -1
+@node initbus cfg → 0 or -1
+@subsection init(bus, cfg) → 0 or -1
 Configure ODR, full-scale range, FIFO mode (if applicable), and
 interrupt routing. Save the resulting sensitivity values to the static
 @code{s} struct. @code{cfg->odr_hz} is already resolved: the daemon asks
@@ -2908,15 +2954,15 @@ back here, so your own rounding is a no-op on it. Round the same way
 rate.
 
 @verbatim
-static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int myimu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_hz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
-    if (i2c_reg_write(fd, addr, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
+    if (bus_reg_write(bus, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
     /* ... FIFO, interrupt config ... */
 
     s.accel_scale = accel_scale;
@@ -2926,8 +2972,8 @@ static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
 }
 @end verbatim
 
-@node readfd addr buf max *n_out → 0 1 or -1
-@subsection read(fd, addr, buf, max, *n_out) → 0, 1, or -1
+@node readbus buf max *n_out → 0 1 or -1
+@subsection read(bus, buf, max, *n_out) → 0, 1, or -1
 The hot path --- called at the configured ODR. Fill @code{buf[]} with up
 to @code{max} calibrated @code{imu_sample_t} samples, set @code{*n_out}
 to the number produced, and return:
@@ -3029,7 +3075,7 @@ the wall-clock anchor on every burst.
 
 @menu
 * probe reset init::
-* readfd addr *out → 0 1 or -1::
+* readbus *out → 0 1 or -1::
 * set_reset optional::
 * has_interrupt::
 @end menu
@@ -3041,8 +3087,8 @@ enables continuous measurement. If the chip has an interrupt pin, enable
 it during @code{init} so the mag reader thread can wake on a GPIO edge
 rather than polling.
 
-@node readfd addr *out → 0 1 or -1
-@subsection read(fd, addr, *out) → 0, 1, or -1
+@node readbus *out → 0 1 or -1
+@subsection read(bus, *out) → 0, 1, or -1
 @multitable @columnfractions 0.09 0.91 
 @headitem 
 Return
@@ -3218,7 +3264,8 @@ heading      increases ~6°/s from a 60° start
 ☐ @code{probe()} reads and validates the chip identity register.
 @item
 ☐ @code{reset()} waits for the reset bit to self-clear @strong{and} adds
-the datasheet startup time afterward.
+the datasheet startup time afterward --- or, on a part with no reset
+bit, restores the power-on register values and says so in a comment.
 @item
 ☐ @code{init()} stores sensitivity values to the static struct before
 returning.

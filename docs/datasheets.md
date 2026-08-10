@@ -19,6 +19,7 @@ search the part number on the linked page if a deep link has rotted.
 | AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | I²C only | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
 | ST LIS2MDL | magnetometer, experimental | `lis2mdl` | I²C only | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |
 | ST LIS3MDL | magnetometer, experimental | `lis3mdl` | I²C + SPI | <https://www.st.com/en/mems-and-sensors/lis3mdl.html> |
+| PNI RM3100 | magnetometer, experimental | `rm3100` | I²C + SPI | <https://www.pnicorp.com/rm3100/> (the *RM3100 & RM2100 Sensor Suite User Manual* is the register reference; the RM3100-CB manual covers the module) |
 
 The **Bus** column is what `[imu] bus` / `[mag] bus` accepts today, not what
 the silicon can do. "I²C only" is a property of the part — the AKM compasses

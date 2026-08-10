@@ -6,8 +6,8 @@
  * rate_ladder.h — every sample rate this project claims to support.
  *
  * The union of supported_odr_hz across all registered drivers: 29 IMU rates
- * spanning 12 Hz to 32 kHz, and 13 magnetometer rates from 1 Hz to 1 kHz.  Any
- * of the 377 pairings is a configuration a user can select and the daemon will
+ * spanning 12 Hz to 32 kHz, and 21 magnetometer rates from 1 Hz to 1 kHz.  Any
+ * of the 609 pairings is a configuration a user can select and the daemon will
  * accept.
  *
  * WHY THIS IS A HAND-MAINTAINED LIST, and why that is safe.  The natural way to
@@ -51,9 +51,11 @@ static const int rate_ladder_imu[] = {
  *   10,20,50,100                  ak09916, lis2mdl
  *   1,2,5,10,20,40,80,155         lis3mdl
  *   8,100                         ak8963
+ *   1,2,4,9,18,37,75,150,300,600  rm3100
  */
 static const int rate_ladder_mag[] = {
-    1, 2, 5, 8, 10, 20, 40, 50, 80, 100, 155, 200, 1000
+    1, 2, 4, 5, 8, 9, 10, 18, 20, 37, 40, 50, 75, 80, 100, 150, 155, 200,
+    300, 600, 1000
 };
 #define RATE_LADDER_MAG_N \
     ((int)(sizeof rate_ladder_mag / sizeof rate_ladder_mag[0]))

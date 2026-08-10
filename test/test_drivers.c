@@ -8,13 +8,12 @@
  * test_drivers.c — register-level decode/encode tests over the mock I2C bus
  * (test/bus_mock.c, --wrap=ioctl).
  *
- * Covers ALL TEN hardware drivers: the two hardware-validated ones
- * (ism330dhcx, mmc5983ma), the MPU-925x pair, and the six that until now had
- * no functional coverage at all — lsm6dso, icm42688p, icm20948, ak09916,
- * lis3mdl, lis2mdl.  Those six are also the ones still flagged
- * `experimental`, so before this nothing had ever executed a line of them and
- * a transposed register or a sign error would have waited for silicon that
- * may never arrive.
+ * Covers ALL ELEVEN hardware drivers: the two hardware-validated ones
+ * (ism330dhcx, mmc5983ma), the MPU-925x pair, and the seven flagged
+ * `experimental` — lsm6dso, icm42688p, icm20948, ak09916, lis3mdl, lis2mdl,
+ * rm3100.  For those, nothing else has ever executed a line: a transposed
+ * register or a sign error would otherwise wait for silicon that may never
+ * arrive.
  *
  * A mock cannot replace bench validation (ROADMAP §1) — it cannot tell you
  * the chip→board axis remap matches the physical part.  What it does catch is
@@ -638,6 +637,7 @@ extern const imu_ops_t icm20948_ops;
 extern const mag_ops_t ak09916_ops;
 extern const mag_ops_t lis3mdl_ops;
 extern const mag_ops_t lis2mdl_ops;
+extern const mag_ops_t rm3100_ops;
 
 /* ── LSM6DSO (near-twin of the ISM330DHCX) ───────────────────────────────── */
 
@@ -1112,6 +1112,197 @@ static void test_lis2mdl(void)
     end(fb);
 }
 
+/* ── RM3100 ──────────────────────────────────────────────────────────────── */
+
+/*
+ * The odd one out in three ways, each of which is what these cases exist for:
+ * no identity register (so probe() is a write/read-back), no software reset
+ * (so reset() is a state restoration), and a cycle count that trades gain
+ * against rate (so init() writes two coupled fields rather than one).
+ */
+
+#define RM_ADDR 0x20   /* SA1 = SA0 = 0; the range is 0x20-0x23 */
+
+/* Stage a three-axis result: nine bytes of 24-bit big-endian at 0x24. */
+static void rm_set_output(int32_t x, int32_t y, int32_t z)
+{
+    const int32_t v[3] = { x, y, z };
+    uint8_t raw[9];
+    for (int i = 0; i < 3; i++) {
+        uint32_t u = (uint32_t)v[i] & 0xFFFFFFu;
+        raw[i * 3 + 0] = (uint8_t)(u >> 16);
+        raw[i * 3 + 1] = (uint8_t)(u >> 8);
+        raw[i * 3 + 2] = (uint8_t)u;
+    }
+    i2cmock_set_regs(RM_ADDR, 0x24, raw, 9);
+}
+
+/* The 16-bit cycle count as the part stores it, MSB first. */
+static uint16_t rm_get_cc(uint8_t reg)
+{
+    return (uint16_t)(((uint16_t)i2cmock_get_reg(RM_ADDR, reg) << 8) |
+                      i2cmock_get_reg(RM_ADDR, (uint8_t)(reg + 1)));
+}
+
+static void test_rm3100_probe(void)
+{
+    begin("test_rm3100_probe");
+    int fb = g_fail;
+    const mag_ops_t *d = &rm3100_ops;
+
+    /*
+     * There is no WHO_AM_I and no documented REVID value, so probe cannot
+     * compare against a constant.  It rejects only the two readings a missing
+     * device produces, and proves presence by writing the cycle count and
+     * reading it back.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x36, 0x22);
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) == 0, "probe accepts a plausible REVID");
+    EXPECT(rm_get_cc(0x04) == 200, "probe leaves the power-on cycle count");
+
+    /* Idempotent: probing twice must not accumulate state. */
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) == 0, "probe is repeatable");
+    EXPECT(rm_get_cc(0x04) == 200, "second probe leaves CC unchanged");
+
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x36, 0xFF);        /* floating SDA */
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) != 0, "probe rejects REVID 0xFF");
+
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x36, 0x00);        /* line held low */
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) != 0, "probe rejects REVID 0x00");
+
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x36, 0x22);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) != 0, "probe fails on I2C error");
+
+    end(fb);
+}
+
+static void test_rm3100_reset_and_init(void)
+{
+    begin("test_rm3100_reset_and_init");
+    int fb = g_fail;
+    const mag_ops_t *d = &rm3100_ops;
+
+    /*
+     * reset() is a state restoration, not a self-clearing bit — hence its own
+     * case here rather than a row in the reset table below, which models a
+     * bit the hardware clears.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x01, 0x79);        /* CMM left running */
+    i2cmock_set_reg(RM_ADDR, 0x0B, 0x92);        /* TMRC left at 600 Hz */
+    EXPECT(d->reset(I2CBUS(RM_ADDR)) == 0, "reset succeeds");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x01) == 0x00, "reset stops CMM");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x96, "reset restores TMRC ~37 Hz");
+    EXPECT(rm_get_cc(0x04) == 200 && rm_get_cc(0x06) == 200 &&
+           rm_get_cc(0x08) == 200, "reset restores CC 200 on all three axes");
+
+    i2cmock_reset();
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->reset(I2CBUS(RM_ADDR)) == -1, "reset reports an I2C error");
+
+    /* 100 Hz: below the CC=200 ceiling, so full resolution, TMRC ~150 Hz. */
+    i2cmock_reset();
+    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 100 Hz");
+    EXPECT(rm_get_cc(0x04) == 200 && rm_get_cc(0x06) == 200 &&
+           rm_get_cc(0x08) == 200, "100 Hz keeps CC 200 on all axes");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x94, "100 Hz -> TMRC 0x94");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x01) == 0x79,
+           "CMM starts all three axes with DRDM = 0");
+
+    /*
+     * 600 Hz: unreachable at CC=200, so the driver must drop the cycle count
+     * as well as raising TMRC.  Writing TMRC alone would leave the part
+     * sampling at its cycle-count limit while the filter was tuned for 600 Hz.
+     */
+    i2cmock_reset();
+    cfg.odr_hz = 600;
+    EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 600 Hz");
+    EXPECT(rm_get_cc(0x04) == 50 && rm_get_cc(0x06) == 50 &&
+           rm_get_cc(0x08) == 50, "600 Hz drops CC to 50 on all axes");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x92, "600 Hz -> TMRC 0x92");
+
+    /* And the middle rung, where CC halves but not to the floor. */
+    i2cmock_reset();
+    cfg.odr_hz = 300;
+    EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 300 Hz");
+    EXPECT(rm_get_cc(0x04) == 100, "300 Hz uses CC 100");
+    EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x93, "300 Hz -> TMRC 0x93");
+
+    i2cmock_reset();
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == -1, "init reports an I2C error");
+
+    end(fb);
+}
+
+static void test_rm3100_read_decode(void)
+{
+    begin("test_rm3100_read_decode");
+    int fb = g_fail;
+    const mag_ops_t *d = &rm3100_ops;
+
+    i2cmock_reset();
+    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    d->init(I2CBUS(RM_ADDR), &cfg);              /* CC 200 -> gain 75 LSB/µT */
+    i2cmock_set_reg(RM_ADDR, 0x34, 0x80);        /* STATUS: DRDY set */
+
+    /*
+     * Gain is 75 LSB/µT at CC = 200 (Table 3-1), and the axis map is the
+     * identity, so each axis is just raw/75.  Y is negative on purpose: the
+     * 24-bit sign extension in reg_s24be() is the only new arithmetic in this
+     * driver, and a positive-only payload would never execute it.
+     */
+    rm_set_output( 3750,     /*  +50 µT */
+                  -1500,     /*  -20 µT — exercises the sign extension */
+                   7500);    /* +100 µT */
+
+    mag_sample_t out;
+    memset(&out, 0, sizeof out);
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 0, "read returns 0 when DRDY set");
+    EXPECT(out.valid, "sample marked valid");
+    EXPECT_NEAR(out.field[0],   50.0f, 1e-3, "field X = +50 µT");
+    EXPECT_NEAR(out.field[1],  -20.0f, 1e-3, "field Y = -20 µT (sign-extended)");
+    EXPECT_NEAR(out.field[2],  100.0f, 1e-3, "field Z = +100 µT");
+    EXPECT(out.wall_ns != 0, "wall_ns stamped");
+
+    /* The extremes of the 24-bit range, where an off-by-one in the bias shows. */
+    rm_set_output(8388607, -8388608, 0);
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 0, "read returns 0 at the rails");
+    EXPECT_NEAR(out.field[0],  8388607.0f / 75.0f, 1e-2, "X at +2^23-1");
+    EXPECT_NEAR(out.field[1], -8388608.0f / 75.0f, 1e-2, "Y at -2^23");
+    EXPECT_NEAR(out.field[2],  0.0f,               1e-6, "Z at zero");
+
+    /* Gain follows the cycle count: the same counts at 600 Hz read 3.75x
+     * larger, because CC 50 gives 20 LSB/µT instead of 75. */
+    i2cmock_reset();
+    cfg.odr_hz = 600;
+    d->init(I2CBUS(RM_ADDR), &cfg);
+    i2cmock_set_reg(RM_ADDR, 0x34, 0x80);
+    rm_set_output(1500, 0, 0);
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 0, "read returns 0 at CC 50");
+    EXPECT_NEAR(out.field[0], 75.0f, 1e-3, "gain follows the cycle count");
+
+    /* Not ready: DRDY clear → 1, so the reader waits for the next edge. */
+    i2cmock_set_reg(RM_ADDR, 0x34, 0x00);
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 1, "DRDY clear returns 1");
+
+    /* Bits 0-6 of STATUS are indeterminate and must not be read as ready. */
+    i2cmock_set_reg(RM_ADDR, 0x34, 0x7F);
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 1, "only bit 7 means ready");
+
+    i2cmock_set_reg(RM_ADDR, 0x34, 0x80);
+    i2cmock_fail_next_ioctl();
+    EXPECT(d->read(I2CBUS(RM_ADDR), &out) == -1, "I2C error returns -1");
+
+    end(fb);
+}
+
 /* ── reset(): the self-clearing bit polls ────────────────────────────────── */
 
 /*
@@ -1294,6 +1485,21 @@ static void test_odr_agreement(void)
     EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==
            init_mag_reg(mmc, MMC_ADDR, 0x0B, 200),
            "mmc programs the resolved rate for an off-grid request");
+
+    /*
+     * RM3100 TMRC.  200 is between 150 and 300, so it resolves up to 300 —
+     * and on this part that also moves the CYCLE COUNT, because 300 Hz is
+     * unreachable at the default count.  A two-field odr_encode() is the one
+     * shape that can agree with the resolver on the rate and still disagree
+     * with itself on the register, so both are asserted.
+     */
+    EXPECT(odr_actual_mag(&rm3100_ops, 200) == 300, "rm3100 200 resolves to 300");
+    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 200) ==
+           init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 300),
+           "rm3100 programs the resolved rate for an off-grid request");
+    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 200) ==
+           init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 300),
+           "rm3100 picks the resolved rate's cycle count too");
 
     /* ── The divider-based parts: the hook, not the table. ───────────── */
 
@@ -1849,6 +2055,53 @@ static void test_dual_transport_others(void)
     EXPECT(ls.field[0] != ls.field[1] && ls.field[1] != ls.field[2],
            "lis3mdl: spi burst walked the output registers");
 
+    /*
+     * RM3100 is the inverse case, and the reason it is worth a second read
+     * path here.  Its datasheet lists reads as 0x84/0xA4/0xB4, which looks
+     * like an I2C sub-address modifier and is not — it is the SPI command
+     * byte, and the I2C side sends the plain address.  So real data is staged
+     * ONLY at the unmodified registers: a driver that copied lis3mdl and OR'd
+     * 0x80 on I2C reads zeros here and fails, which is precisely the mistake
+     * the datasheet's table invites.
+     */
+    const uint8_t R_I2C = 0x20, R_SPI = 0x21;
+    i2cmock_reset();
+    spimock_bind(DUAL_SPI_FD, R_SPI, 0);
+
+    /* 3750, -1500, 7500 as 24-bit big-endian -> +50, -20, +100 µT at CC 200. */
+    const uint8_t rout[9] = { 0x00, 0x0E, 0xA6,
+                              0xFF, 0xFA, 0x24,
+                              0x00, 0x1D, 0x4C };
+    for (int k = 0; k < 2; k++) {
+        uint8_t at = k ? R_SPI : R_I2C;
+        i2cmock_set_reg(at, 0x36, 0x22);        /* REVID */
+        i2cmock_set_reg(at, 0x34, 0x80);        /* STATUS: DRDY */
+        i2cmock_set_regs(at, 0x24, rout, 9);
+    }
+
+    imud_bus_t rib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C };
+    imud_bus_t rsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
+                       .spi_inc_mask = 0, .spi_hz = 1000000 };
+    const mag_ops_t *rm = &rm3100_ops;
+    mag_cfg_t rcfg = { .odr_hz = 100, .set_period_s = 0.0f };
+
+    EXPECT(rm->probe(&rib) == 0 && rm->probe(&rsb) == 0, "rm3100: probe on both");
+    EXPECT(rm->init(&rib, &rcfg) == 0 && rm->init(&rsb, &rcfg) == 0,
+           "rm3100: init on both");
+    int rfirst = -1;
+    EXPECT(reg_files_differ(R_I2C, R_SPI, &rfirst) == 0,
+           "rm3100: identical registers after init");
+
+    mag_sample_t rmi = { 0 }, rms = { 0 };
+    EXPECT(rm->read(&rib, &rmi) == 0, "rm3100: i2c read");
+    EXPECT(rm->read(&rsb, &rms) == 0, "rm3100: spi read");
+    EXPECT(memcmp(rmi.field, rms.field, sizeof rmi.field) == 0 &&
+           rmi.valid == rms.valid, "rm3100: same field on both transports");
+    EXPECT_NEAR(rmi.field[0],  50.0f, 1e-3, "rm3100: i2c read hit the plain "
+                                            "register, not 0xA4");
+    EXPECT_NEAR(rms.field[1], -20.0f, 1e-3, "rm3100: spi burst walked all nine "
+                                            "result bytes");
+
     end(fb);
 }
 
@@ -2057,6 +2310,10 @@ int main(void)
     test_ak099_probe_and_read();
     test_lis3mdl();
     test_lis2mdl();
+
+    test_rm3100_probe();
+    test_rm3100_reset_and_init();
+    test_rm3100_read_decode();
 
     test_driver_resets();
     test_ak099_init_modes();

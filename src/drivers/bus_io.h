@@ -132,4 +132,20 @@ static inline int16_t reg_s16be(const uint8_t *p)   /* high byte first */
     return (int16_t)(((uint16_t)p[0] << 8) | p[1]);
 }
 
+/*
+ * Signed 24-bit big-endian, the width the RM3100's measurement registers use.
+ *
+ * The obvious spellings are both wrong by this project's standard. A signed
+ * right shift of a negative value is implementation-defined, and so is
+ * converting an out-of-range unsigned (0xFF800000u) to int32_t. Biasing
+ * instead keeps every step defined: (u ^ 0x800000) is in [0, 0xFFFFFF], which
+ * int32_t can represent, so the conversion is value-preserving, and the
+ * subtraction lands in [-0x800000, 0x7FFFFF] without overflow.
+ */
+static inline int32_t reg_s24be(const uint8_t *p)   /* high byte first */
+{
+    uint32_t u = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+    return (int32_t)(u ^ 0x800000u) - 0x800000;
+}
+
 #endif /* IMUD_DRIVERS_BUS_IO_H */

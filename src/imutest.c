@@ -335,6 +335,11 @@ static const imt_regmap_t imt_regmaps[] = {
       .skip = { 0x02, 0x03, 0x09 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
+    /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
+     * so a sweep through them would consume the sample the next check is
+     * waiting for. */
+    { .driver = "rm3100",     .lo = 0x00, .hi = 0x3F,
+      .nrd_lo = 0x24, .nrd_hi = 0x2C },
 };
 
 static const imt_regmap_t *regmap_for(const char *driver)

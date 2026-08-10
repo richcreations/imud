@@ -304,6 +304,7 @@ static const mag_ops_t *mag_registry[] = {
     &ak8963_ops,       /* AK8963 — compass on MPU-925x     [experimental] */
     &lis3mdl_ops,      /* LIS3MDL         [I2C + SPI]      [experimental] */
     &lis2mdl_ops,      /* LIS2MDL                          [experimental] */
+    &rm3100_ops,       /* RM3100          [I2C + SPI]      [experimental] */
     &sim_mag_ops,      /* synthetic driver for testing without hardware */
     NULL
 };
@@ -925,7 +926,7 @@ fifo_wm        = 64              # FIFO watermark in sample-sets (ignored if no 
 
 [mag]
 # [restart]
-driver         = "mmc5983ma"     # mmc5983ma | ak09916 | lis3mdl | lis2mdl | sim
+driver         = "mmc5983ma"     # mmc5983ma | ak09916 | ak8963 | lis3mdl | lis2mdl | rm3100 | sim
 i2c_addr       = 0x30
 int_gpio       = 27              # BCM GPIO for measurement-done interrupt; 0 = timer fallback
 odr_hz         = 100             # > 0; rounds UP: 1/10/20/50/100/200/1000
@@ -1471,7 +1472,8 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c   src/drivers/ak09916.c   \
               src/drivers/icm42688p.c  src/drivers/lsm6dso.c   \
               src/drivers/lis3mdl.c    src/drivers/lis2mdl.c   \
-              src/drivers/sim.c
+              src/drivers/mpu925x.c    src/drivers/ak8963.c    \
+              src/drivers/rm3100.c     src/drivers/sim.c
 
 all: imud imud-cal imud-status imud-mon
 

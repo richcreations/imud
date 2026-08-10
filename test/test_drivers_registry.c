@@ -51,7 +51,8 @@ static const char *imu_names[] = {
     "mpu9250", "mpu9255", "sim", NULL
 };
 static const char *mag_names[] = {
-    "mmc5983ma", "ak09916", "ak8963", "lis3mdl", "lis2mdl", "sim", NULL
+    "mmc5983ma", "ak09916", "ak8963", "lis3mdl", "lis2mdl", "rm3100",
+    "sim", NULL
 };
 
 /* ── Shared table validator ──────────────────────────────────────────────── */
@@ -167,7 +168,7 @@ static void test_mag_lookups(void)
     int n = 0;
     for (const char **p = mag_names; *p; p++, n++)
         check_mag_ops(mag_driver_find(*p), *p);
-    EXPECT(n == 6, "6 mag drivers registered");
+    EXPECT(n == 7, "7 mag drivers registered");
     end(fb);
 }
 
@@ -175,8 +176,8 @@ static void test_mag_lookups(void)
  * The rate ladder in test/rate_ladder.h must cover every rung the drivers
  * actually advertise.
  *
- * test_fusion walks that ladder to exercise the filter's derivations at all 351
- * IMU x mag pairings.  It cannot walk the registry itself: the registries here
+ * test_fusion walks that ladder to exercise the filter's derivations at every
+ * IMU x mag pairing.  It cannot walk the registry itself: the registries here
  * are static with no enumeration API, and every driver .c reaches <linux/i2c.h>
  * through i2c_io.h, so a test that links them will not build on a non-Linux dev
  * host — and test_fusion has to build everywhere.
@@ -292,6 +293,7 @@ static void test_spi_capability_declarations(void)
         { "ak8963",     false },   /* no SPI port on the part */
         { "lis3mdl",    true  },   /* the one part needing an MS bit */
         { "lis2mdl",    false },   /* 3-wire default; 4-wire costs DRDY */
+        { "rm3100",     true  },   /* 1 MHz, needs I2CEN tied low on the board */
         { "sim",        true  },
     };
     char msg[96];

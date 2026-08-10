@@ -72,9 +72,10 @@ above move on bench availability rather than on a calendar.
 
 ## 1. Hardware validation matrix  *(bench task — requires the Pi and real silicon)*
 
-Ten drivers are implemented but marked `experimental = true` and have never run on
+Eleven drivers are implemented but marked `experimental = true` and have never run on
 real hardware: `icm20948`, `ak09916`, `icm42688p`, `lsm6dso`, `lsm6dsox`, `lis3mdl`,
-`lis2mdl`, and (added 2026-07-28) `mpu9250`, `mpu9255`, `ak8963`. Each needs a bench
+`lis2mdl`, (added 2026-07-28) `mpu9250`, `mpu9255`, `ak8963`, and (added 2026-08-10)
+`rm3100`. Each needs a bench
 pass (probe/WHO_AM_I, init, ODR verification, FIFO/DRDY behavior, sane values in all
 orientations) before clearing its flag.
 

@@ -49,7 +49,8 @@ DRIVER_SRCS = src/drivers/ism330dhcx.c \
               src/drivers/lis3mdl.c \
               src/drivers/lis2mdl.c \
               src/drivers/mpu925x.c \
-              src/drivers/ak8963.c
+              src/drivers/ak8963.c \
+              src/drivers/rm3100.c
 
 # Full daemon: every module
 IMUD_SRCS   = src/cal.c \
@@ -430,7 +431,8 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/mpu925x.c src/drivers/ak8963.c \
               src/drivers/lsm6dso.c src/drivers/icm42688p.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
-              src/drivers/lis3mdl.c src/drivers/lis2mdl.c src/log.c \
+              src/drivers/lis3mdl.c src/drivers/lis2mdl.c \
+              src/drivers/rm3100.c src/log.c \
               src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
               src/drivers/bus_io.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \

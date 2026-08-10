@@ -650,6 +650,7 @@ Links to the manufacturers' datasheets are collected in
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
 | `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |
 | `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
+| `rm3100` | PNI RM3100 | Magnetometer | 0x20–0x23 | BCM 27 · pin 13 | yes — mode 3, 1 MHz | *Experimental.* Magneto-inductive, not AMR: no SET/RESET coil, so `set_period_s` does nothing here. ODR 1–600 Hz, but the top two rungs cost resolution — the cycle count sets both gain and rate ceiling, and the driver drops it from 200 to 100 above 150 Hz and to 50 above 300 Hz. Three separate coils plus an ASIC, so the axis assignment is your wiring: the driver assumes the manual's NED layout. |
 | `sim` | — | IMU + Magnetometer | — | none | n/a | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
 <!-- END GENERATED: driver-table -->
 
@@ -1346,29 +1347,48 @@ out->field[1] = -(ry - NULL_FIELD) * scale;   /* flip Y: port → starboard */
 out->field[2] =  (rz - NULL_FIELD) * scale;   /* Z already points down */
 ```
 
-### The I²C helpers
+### The register helpers
 
-All drivers share the register helpers in `src/drivers/i2c_io.h` — include it
+All drivers share the register helpers in `src/drivers/bus_io.h` — include it
 and call them; do not roll your own:
 
 ```c
-#include "i2c_io.h"
+#include "bus_io.h"
 
-i2c_burst_read(fd, addr, reg, buf, len);  /* combined write-then-read */
-i2c_reg_write(fd, addr, reg, val);
-i2c_reg_read(fd, addr, reg, &val);        /* burst_read of length 1 */
-i2c_s16le(p);  i2c_s16be(p);              /* int16 from a register byte pair */
+bus_burst_read(bus, reg, buf, len);   /* combined write-then-read */
+bus_reg_write (bus, reg, val);
+bus_reg_read  (bus, reg, &val);       /* burst_read of length 1 */
+reg_s16le(p);  reg_s16be(p);          /* int16 from a register byte pair */
+reg_s24be(p);                         /* int24, sign-extended (RM3100) */
 ```
 
-`i2c_burst_read` issues a combined write-then-read in one I²C transaction (no
-repeated-start gap), saving ~40 µs vs two transactions at 400 kHz. If your
-chip needs a sub-address modifier for auto-increment (LIS3MDL's `0x80` bit),
-apply it at the call site: `i2c_burst_read(fd, addr, (uint8_t)(reg | 0x80), …)`.
+They take the `imud_bus_t *` the daemon handed your op, not a descriptor and
+an address: the handle carries the transport, the slave address and the SPI
+framing, which is what lets one body of register logic run on either bus.
+`bus_burst_read` dispatches to a combined write-then-read in a single I²C
+transaction (no repeated-start gap, ~40 µs saved against two transactions at
+400 kHz), or to a command byte plus data inside one `SPI_IOC_MESSAGE` so chip
+select stays asserted across both.
+
+If your chip needs a sub-address modifier and only on one transport, name the
+transport rather than ORing the bit unconditionally — `src/drivers/lis3mdl.c`
+is the worked example:
+
+```c
+uint8_t out_reg = REG_OUT_X_L;
+if (bus->kind == BUS_I2C) out_reg |= 0x80;   /* I²C auto-increment */
+```
+
+The SPI half of that is not a call-site decision at all: it rides in the
+handle as `spi_inc_mask`, from the driver's `bus_caps`. Beware datasheets that
+tabulate a "read address" — on some parts (the RM3100) that column is the SPI
+command byte with the read bit already set, and using it as an I²C
+sub-address addresses a register that does not exist.
 
 The helpers are `static inline`, so each driver still issues its own single
-`ioctl(fd, I2C_RDWR, &xfer)` per transfer — which is exactly what the mock-I2C
-test harness (`test/i2c_mock.c`, `--wrap=ioctl`) intercepts. Keep any new I/O
-on this path; SMBus calls or `read()`/`write()` would bypass the mock.
+`ioctl()` per transfer — which is exactly what the mock bus
+(`test/bus_mock.c`, `--wrap=ioctl`) intercepts. Keep any new I/O on this path;
+SMBus calls, `I2C_SLAVE`, or `read()`/`write()` would bypass the mock.
 
 ### Writing an IMU driver (`imu_ops_t`)
 
@@ -1390,16 +1410,16 @@ static struct {
 **never reset** while the daemon runs — the fusion thread uses gaps in `seq`
 to detect dropped samples.
 
-#### `probe(fd, addr)` → 0 or -1
+#### `probe(bus)` → 0 or -1
 
 Read the WHO_AM_I (or equivalent) register and verify it against the datasheet
 value. Log a clear error with the received and expected values on mismatch.
 
 ```c
-static int myimu_probe(int fd, uint8_t addr)
+static int myimu_probe(const imud_bus_t *bus)
 {
     uint8_t who;
-    if (i2c_reg_read(fd, addr, REG_WHO_AM_I, &who) < 0) {
+    if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
         LOG_E("myimu: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
@@ -1415,20 +1435,25 @@ static int myimu_probe(int fd, uint8_t addr)
 Use the `LOG_E` / `LOG_W` / `LOG_I` macros from `include/log.h` for all driver
 output, not bare `fprintf` — they respect the operator's `logging.level`.
 
-#### `reset(fd, addr)` → 0 or -1
+#### `reset(bus)` → 0 or -1
 
 Trigger a software reset and wait for the bit to self-clear. Always add the
 chip's specified power-on time after the reset bit clears — skipping this
 causes init failures on slower hardware.
 
+Not every part has a reset bit. The RM3100 has none at all, so its `reset()`
+restores the power-on register values by hand; if yours is like that, say so
+in the function's comment rather than leaving the absence to look like an
+oversight.
+
 ```c
-static int myimu_reset(int fd, uint8_t addr)
+static int myimu_reset(const imud_bus_t *bus)
 {
-    if (i2c_reg_write(fd, addr, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
+    if (bus_reg_write(bus, REG_CTRL, 0x01) < 0) return -1;   /* SW_RESET */
     for (int i = 0; i < 50; i++) {
         usleep(1000);
         uint8_t val;
-        if (i2c_reg_read(fd, addr, REG_CTRL, &val) < 0) return -1;
+        if (bus_reg_read(bus, REG_CTRL, &val) < 0) return -1;
         if (!(val & 0x01)) goto done;
     }
     LOG_W("myimu: SW_RESET did not clear after 50 ms\n");
@@ -1439,7 +1464,7 @@ done:
 }
 ```
 
-#### `init(fd, addr, cfg)` → 0 or -1
+#### `init(bus, cfg)` → 0 or -1
 
 Configure ODR, full-scale range, FIFO mode (if applicable), and interrupt
 routing. Save the resulting sensitivity values to the static `s` struct.
@@ -1449,15 +1474,15 @@ passes that value back here, so your own rounding is a no-op on it. Round the
 same way `actual_odr_hz` reports — by default, up to the next supported rate.
 
 ```c
-static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
+static int myimu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_hz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
-    if (i2c_reg_write(fd, addr, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
-    if (i2c_reg_write(fd, addr, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CFG, (odr << 4) | xlfs) < 0) return -1;
+    if (bus_reg_write(bus, REG_GYRO_CFG,  (odr << 4) | gyfs) < 0) return -1;
     /* ... FIFO, interrupt config ... */
 
     s.accel_scale = accel_scale;
@@ -1467,7 +1492,7 @@ static int myimu_init(int fd, uint8_t addr, const imu_cfg_t *cfg)
 }
 ```
 
-#### `read(fd, addr, buf, max, *n_out)` → 0, 1, or -1
+#### `read(bus, buf, max, *n_out)` → 0, 1, or -1
 
 The hot path — called at the configured ODR. Fill `buf[]` with up to `max`
 calibrated `imu_sample_t` samples, set `*n_out` to the number produced, and
@@ -1543,7 +1568,7 @@ Same pattern as the IMU driver. `init` configures the ODR and enables
 continuous measurement. If the chip has an interrupt pin, enable it during
 `init` so the mag reader thread can wake on a GPIO edge rather than polling.
 
-#### `read(fd, addr, *out)` → 0, 1, or -1
+#### `read(bus, *out)` → 0, 1, or -1
 
 | Return | Meaning |
 |---|---|
@@ -1703,7 +1728,8 @@ heading      increases ~6°/s from a 60° start
 
 - [ ] `probe()` reads and validates the chip identity register.
 - [ ] `reset()` waits for the reset bit to self-clear **and** adds the
-      datasheet startup time afterward.
+      datasheet startup time afterward — or, on a part with no reset bit,
+      restores the power-on register values and says so in a comment.
 - [ ] `init()` stores sensitivity values to the static struct before
       returning.
 - [ ] `read()` returns `-1` only on I²C errors, never on "no data yet".

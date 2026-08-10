@@ -113,3 +113,11 @@ i2c_addr = '0x1E'
 gpio = 'BCM 27 · pin 13'
 spi_override = 'no — 4-wire costs data-ready'
 notes = 'LIS3MDL successor. Fixed ±50 G.'
+
+[drivers.rm3100]
+chip = 'PNI RM3100'
+i2c_addr = '0x20–0x23'
+gpio = 'BCM 27 · pin 13'
+spi_override = ''
+notes = '''
+Magneto-inductive, not AMR: no SET/RESET coil, so `set_period_s` does nothing here. ODR 1–600 Hz, but the top two rungs cost resolution — the cycle count sets both gain and rate ceiling, and the driver drops it from 200 to 100 above 150 Hz and to 50 above 300 Hz. Three separate coils plus an ASIC, so the axis assignment is your wiring: the driver assumes the manual's NED layout.'''

@@ -30,6 +30,7 @@ extern const mag_ops_t ak09916_ops;
 extern const mag_ops_t ak8963_ops;
 extern const mag_ops_t lis3mdl_ops;
 extern const mag_ops_t lis2mdl_ops;
+extern const mag_ops_t rm3100_ops;
 extern const mag_ops_t sim_mag_ops;
 
 static const imu_ops_t *imu_registry[] = {
@@ -50,6 +51,7 @@ static const mag_ops_t *mag_registry[] = {
     &ak8963_ops,
     &lis3mdl_ops,
     &lis2mdl_ops,
+    &rm3100_ops,
     &sim_mag_ops,
     NULL,
 };
