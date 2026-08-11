@@ -68,6 +68,40 @@ new key defaults to the behaviour 1.8.2 had.
   residence and the daemon's own pipeline. Only the second is under imud's
   control, and only their sum had ever been discussed.
 
+Three fixes from a pre-release bench run on a Raspberry Pi 5. **The first is
+the reason to upgrade if you run on ARM at all.**
+
+* **Fix: the daemon could not start on arm64 or armhf under its own systemd
+  unit.** systemd killed it with SIGSYS before it fused a sample. The unit
+  re-allowed `adjtimex` after removing `@privileged`, and that is a syscall
+  *name*: glibc's `adjtimex()` is `adjtimex` on x86-64 but `clock_adjtime` on
+  arm64 (which has no `adjtimex` syscall at all) and `clock_adjtime64` on
+  armhf. The name resolved to nothing on ARM, so nothing was re-allowed. All
+  three are named now. Every existing test ran the binary without the unit's
+  seccomp, and the jobs that did apply it ran on x86 where the wrong list
+  happens to work — so CI now starts the daemon under the shipped filter on an
+  arm64 runner, and a checker pins the list in text.
+
+* **Fix: installing or upgrading could leave a Raspberry Pi 5 unable to open
+  its GPIO chip.** imud's post-install `udevadm trigger --subsystem-match=gpio`
+  fired Pi OS's compatibility rule for `/dev/gpiochip4`, whose
+  `test ! -c /dev/gpiochip4` guard *oscillates*: with the symlink present the
+  rule adds nothing and udev drops it. The daemon then failed with "cannot open
+  /dev/gpiochip4" until the next reboot. imud no longer triggers the gpio
+  subsystem; the group and mode are applied directly instead. If you hit this
+  on an earlier version, re-run the trigger or reboot. `gpio_chip` is now
+  documented as "run `gpiodetect` and use what it lists" — the number comes
+  from probe order and is not stable across kernels, and Pi 5 moved from
+  `gpiochip4` to `gpiochip0` in mid-2024.
+
+* **Fix: `chip_ts` could go backwards between FIFO bursts** on `ism330dhcx`,
+  `lsm6dso` and `icm42688p` — measured at 2–4 reversals per 5 s at 833 Hz.
+  The burst was timed by reading the chip's live counter *after* the drain,
+  which reads "now" rather than the newest sample's time, and that lag varies.
+  No filter output was affected: `imu.c` already refused a non-increasing
+  timestamp and fell back to the nominal period. The driver contract said
+  monotonic, so now it is.
+
 1.8.2
 -----
 A fix release, almost entirely from an external audit of 1.8 and the fuzzing

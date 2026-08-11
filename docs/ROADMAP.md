@@ -124,6 +124,58 @@ duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
 cannot build on the macOS dev host, so CI and the Pi are the only places they
 have ever run.
 
+### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(follow-ons, hardware-gated)*
+
+The 2026-08-10 Pi 5 session on the reference pair produced four findings. Two
+were shipped fixes (the ARM seccomp filter, the gpio udev trigger); these are
+what they left open.
+
+- **Batch the FIFO's own timestamp instead of back-calculating.**
+  `ism330dhcx`, `lsm6dso` and `icm42688p` all time a burst by reading the live
+  counter *after* the drain and stepping back one sample period per sample.
+  That register reads "now", and the lag to the newest sample moves with bus
+  and scheduler jitter, so bursts overlap — measured at 2–4 `chip_ts` reversals
+  per 5 s window. 1.9.0 ships `src/drivers/chip_ts.h`, which enforces
+  monotonicity but does not improve the *estimate*.
+
+  The parts can timestamp where the samples are produced: ST via
+  `DEC_TS_BATCH` + FIFO tag `0x04`, the ICM-42688-P via bytes `[14:15]` of each
+  packet, which it already reads and discards. **Three reasons this waits for
+  hardware**, all established while writing the guard: DS13012 never states
+  whether the timestamp word precedes or follows the sample set it describes
+  (§6.5.7 is silent); batching changes FIFO word traffic and therefore the
+  watermark arithmetic, which moves the very sample-latency figures §3.1 exists
+  to measure; and on the ICM the per-packet stamp is 16-bit at 1 µs, wrapping
+  every 65.5 ms — shorter than a 77 ms drain at the default watermark — so it
+  needs in-burst unwrapping. The ICM half carries none of the watermark risk
+  and can go first.
+
+- **Derive `ts_tick_ns` from `INTERNAL_FREQ_FINE`.** The ST parts report their
+  own timebase error in 0.15% steps at register `0x63`, with
+  `TS_Res = 1/(40000 + 0.0015·FREQ_FINE·40000)` (DS13012 §9.36). The bench's
+  4.1%-fast reference part should declare about +27. 1.9.0 has `imud-imutest`
+  read and report it, so the oscillator explanation is confirmed rather than
+  inferred; the *driver* still declares a constant, because `ts_tick_ns` is a
+  const field in `imu_ops_t` and making it per-part is a `drivers.h` interface
+  change. Low urgency: `ts_anchor_t` already measures the real period at
+  runtime, so this buys principle rather than accuracy.
+
+- **The DRDY edge rate fits no model** *(uncharacterised — measure first)*.
+  `imu.drdy.edges` reported ~18.3 Hz on the reference IMU at 833 Hz with
+  `fifo_wm = 64`. Ruled out by inspection: word accounting predicts 13.6 Hz
+  (2 words per sample-set at the measured 866.7 Hz, plus temperature at 12.5 Hz,
+  against a 128-word watermark — `FIFO_CTRL4 = 0x26` batches no timestamps);
+  the tool drains while counting, so it is not a stalled FIFO; and both the tool
+  and the daemon request rising edges only, so it is not double-counting.
+
+  Remaining hypothesis: `INT1_FIFO_TH` is a *level* condition and the level
+  oscillates across the threshold during the drain, as words are consumed while
+  new ones arrive, with each crossing producing another rising edge. If so, an
+  edge count cannot identify an "interrupt model" at all and that check needs
+  rewording. Test by counting edges with and without the drain callback.
+  **Re-measure after any timestamp-batching change**, which moves the word
+  accounting this rests on.
+
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
 The mechanism shipped in 1.5: cal.json `gyro_temp` per-axis linear

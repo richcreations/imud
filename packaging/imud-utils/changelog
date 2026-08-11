@@ -6,6 +6,16 @@ imud-utils (1.9.0) unstable; urgency=medium
     consumed the sample the next check waits for.
   * Both tools follow the daemon to 1.9.0; no other change.
 
+  * imud-imutest: imu.chipts.wall no longer warns when the chip's timebase
+    runs FAST. Since 1.8 the daemon measures the counter's real period per
+    anchor rather than trusting ts_tick_ns, so ordinary oscillator
+    tolerance is absorbed -- a bench run on the reference ISM330DHCX read
+    1.041 and was flagged as a defect. Chip time running SHORT still
+    warns: that is a dropped counter wrap, which no measured period can
+    recover. The row also reports INTERNAL_FREQ_FINE where the part
+    declares one, so the oscillator explanation is confirmed by the chip
+    rather than inferred from the ratio.
+
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud-utils (1.8.2) unstable; urgency=medium

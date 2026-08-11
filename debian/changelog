@@ -44,6 +44,29 @@ imud (1.9.0-1) unstable; urgency=medium
   * The wire packet is unchanged (v17, 276 bytes) and so is the libimud
     ABI (SONAME libimud.so.0), so consumers need no rebuild.
 
+  * Fix: the daemon was SIGSYS-killed by its own systemd unit on arm64
+    and armhf, before fusing a sample. SystemCallFilter= re-allowed
+    adjtimex, which is a syscall NAME: glibc's adjtimex() is adjtimex on
+    x86-64 but clock_adjtime on arm64 (no adjtimex syscall exists there)
+    and clock_adjtime64 on armhf, so the name resolved to nothing and
+    nothing was re-allowed. All three are named now. CI gained an arm64
+    runtime check that starts the daemon under the shipped filter, plus a
+    text checker over the list -- every prior test ran the binary with no
+    seccomp at all.
+  * Fix: installing or upgrading could leave a Raspberry Pi 5 unable to
+    open /dev/gpiochip4 until the next reboot. The post-install
+    `udevadm trigger --subsystem-match=gpio` re-ran Pi OS's compatibility
+    rule, whose `test ! -c /dev/gpiochip4` guard oscillates: with the
+    symlink present it adds nothing and udev drops the existing one. The
+    gpio subsystem is no longer triggered; group and mode are applied
+    directly to /dev/gpiochip* instead.
+  * Fix: chip_ts could go backwards across FIFO burst boundaries on
+    ism330dhcx, lsm6dso and icm42688p, because the burst was timed from
+    the chip's live counter read after the drain -- "now", not the newest
+    sample's time, with a lag that varies. No filter output was affected;
+    imu.c already rejected a non-increasing timestamp and used the nominal
+    period. The driver contract required monotonic, so it now is.
+
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2-1) unstable; urgency=medium
