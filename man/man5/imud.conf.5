@@ -122,11 +122,20 @@ I2C bus device node.
 .B gpio_chip
 .RI (string,\ default:\ \(dqgpiochip0\(dq)
 gpiochip device name.
-Use
+.B Run
+.B gpiodetect
+and use the chip it lists for the header pins:
+the number is assigned by probe order and is not stable across kernels.
 .B gpiochip0
-on Raspberry Pi 4 and
-.B gpiochip4
-on Raspberry Pi 5 (RP1 GPIO controller).
+is correct on Raspberry Pi 4, and on Raspberry Pi 5 with kernels from
+mid-2024 onward, which renumber the RP1 controller to 0 like every other
+model.
+Earlier Pi 5 kernels exposed it as
+.BR gpiochip4 ,
+and Raspberry Pi OS keeps a
+.B /dev/gpiochip4
+symlink for compatibility \(em a symlink, not a second controller, so
+either name reaches the same device where it exists.
 .TP
 .B sim_file
 .RI (string,\ default:\ \(dq\(dq)

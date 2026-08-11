@@ -143,14 +143,23 @@ md_groups = [["i2c_bus", "gpio_chip", "sim_file", "sim_loop", "sim_speed"]]
   man_style = "tight"
   man = '''
 gpiochip device name.
-Use
+.B Run
+.B gpiodetect
+and use the chip it lists for the header pins:
+the number is assigned by probe order and is not stable across kernels.
 .B gpiochip0
-on Raspberry Pi 4 and
-.B gpiochip4
-on Raspberry Pi 5 (RP1 GPIO controller).'''
+is correct on Raspberry Pi 4, and on Raspberry Pi 5 with kernels from
+mid-2024 onward, which renumber the RP1 controller to 0 like every other
+model.
+Earlier Pi 5 kernels exposed it as
+.BR gpiochip4 ,
+and Raspberry Pi OS keeps a
+.B /dev/gpiochip4
+symlink for compatibility \(em a symlink, not a second controller, so
+either name reaches the same device where it exists.'''
   md_type = 'string'
   md_default = '`"gpiochip0"`'
-  desc = 'gpiochip device name. `"gpiochip0"` on Pi 4; `"gpiochip4"` on Pi 5 (RP1 GPIO controller).'
+  desc = 'gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller.'
 
   [[section.key]]
   names = ["sim_file"]

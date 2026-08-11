@@ -908,11 +908,38 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	    systemctl daemon-reload; \
 	fi
 	# ── udev rule: group access to /dev/i2c-* and /dev/gpiochip* ───────────
+	#
+	# NOTE THE MISSING --subsystem-match=gpio.  It is not an oversight, and
+	# putting it back breaks installs on a Raspberry Pi 5.  Pi OS ships a
+	# compatibility rule that aliases the header GPIO chip to its old name:
+	#
+	#   SUBSYSTEM=="gpio", KERNEL=="gpiochip0", \
+	#     PROGRAM="/usr/bin/test ! -c /dev/gpiochip4", SYMLINK+="gpiochip4"
+	#
+	# (Pi 5's RP1 is on PCIe and used to enumerate late as gpiochip4; kernels
+	# from ~2024-07 renumber it to gpiochip0 like every other Pi.)  That guard
+	# OSCILLATES: with the symlink present, `test ! -c` fails, no SYMLINK+= is
+	# applied, and udev recomputes the device's symlink set WITHOUT it — so the
+	# trigger deletes it.  Trigger again and it comes back.  A 1.9.0 RC bench
+	# run on a Pi 5 caught it: after `make install`, /dev/gpiochip4 was gone and
+	# the daemon died with "cannot open /dev/gpiochip4" until the next reboot.
+	#
+	# i2c-dev and spidev have no such third-party rule, so they still trigger.
+	# The gpio nodes get the same outcome from the direct chgrp/chmod below,
+	# without re-running anybody else's rules; 60-imud.rules covers every boot
+	# and hotplug after this one.
 	install -d -m 0755 $(DESTDIR)$(UDEVDIR)
 	install -m 644 etc/60-imud.rules $(DESTDIR)$(UDEVDIR)/60-imud.rules
 	@if [ -z "$(DESTDIR)" ] && command -v udevadm >/dev/null 2>&1; then \
 	    udevadm control --reload-rules || true; \
-	    udevadm trigger --subsystem-match=i2c-dev --subsystem-match=gpio || true; \
+	    udevadm trigger --subsystem-match=i2c-dev --subsystem-match=spidev || true; \
+	fi
+	@if [ -z "$(DESTDIR)" ]; then \
+	    for n in /dev/gpiochip*; do \
+	        [ -e "$$n" ] || continue; \
+	        chgrp gpio "$$n" 2>/dev/null || true; \
+	        chmod 0660 "$$n" 2>/dev/null || true; \
+	    done; \
 	fi
 	# ── Client libraries ───────────────────────────────────────────────────
 	# imud_client.h is DEPRECATED and no longer installed (vendor from the

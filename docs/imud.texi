@@ -563,8 +563,13 @@ pins are used.
 @code{gpio_chip}
  @tab string
  @tab @code{"gpiochip0"}
- @tab gpiochip device name. @code{"gpiochip0"} on Pi 4;
-@code{"gpiochip4"} on Pi 5 (RP1 GPIO controller).
+ @tab gpiochip device name. @strong{Run @code{gpiodetect} and use the
+chip it lists for the header pins} --- the number comes from probe order
+and is not stable across kernels. @code{"gpiochip0"} is right on Pi 4,
+and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1
+controller to 0 like every other model). Earlier Pi 5 kernels exposed it
+as @code{"gpiochip4"}, and Pi OS keeps a @code{/dev/gpiochip4} symlink
+for compatibility --- a symlink, not a second controller.
 @item 
 @code{sim_file}
  @tab string
@@ -2580,9 +2585,20 @@ CE.
 comes from the chip select, so suspect @code{spi_dev} instead.
 @item 
 GPIO open/permission errors
- @tab @code{gpio_chip} must match the Pi model (@code{gpiochip0} on Pi
-4, @code{gpiochip4} on Pi 5). Run as the @code{imud} service user or a
+ @tab Run @code{gpiodetect} and set @code{gpio_chip} to the chip it
+lists for the header pins --- the number comes from probe order, so it
+is not stable across kernels (Pi 5 moved from @code{gpiochip4} to
+@code{gpiochip0} in mid-2024). Run as the @code{imud} service user or a
 member of the @code{gpio}/@code{i2c}/@code{spi} groups.
+@item 
+@code{/dev/gpiochip4} vanished after an upgrade, on a Pi 5
+ @tab Pi OS aliases the header chip to its old name with a udev rule
+guarded by @code{test ! -c /dev/gpiochip4}. That guard oscillates: any
+@code{udevadm trigger --subsystem-match=gpio} deletes the symlink when
+it exists and recreates it when it does not. Re-trigger, or reboot, to
+get it back --- and prefer @code{gpiochip0}, which is the real device.
+imud stopped triggering the @code{gpio} subsystem in 1.9.0 for exactly
+this reason.
 @item 
 Bus or GPIO open fails only under systemd, but works when run by hand
  @tab The unit's @code{DevicePolicy=closed} allows a fixed list of

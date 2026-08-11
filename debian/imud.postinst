@@ -21,12 +21,28 @@ case "$1" in
         done
         # Device nodes need the group bits too — 60-imud.rules provides them on
         # distributions with no equivalent of Pi OS's 99-com.rules.
+        #
+        # gpio is deliberately NOT triggered here.  Pi OS aliases the Pi 5
+        # header chip to its old name with
+        #   SUBSYSTEM=="gpio", KERNEL=="gpiochip0",
+        #     PROGRAM="/usr/bin/test ! -c /dev/gpiochip4", SYMLINK+="gpiochip4"
+        # and that guard oscillates: when the symlink already exists the PROGRAM
+        # fails, no SYMLINK+= is applied, and udev drops the existing symlink.
+        # So a gpio trigger DELETES /dev/gpiochip4 on a Pi 5, and an upgrade
+        # left the daemon unable to open the chip its own config names until the
+        # next reboot.  Found on a 1.9.0 RC bench run.  The chgrp/chmod below
+        # reaches the same end state without re-running third-party rules, and
+        # 60-imud.rules handles every subsequent boot and hotplug.
         if command -v udevadm >/dev/null 2>&1; then
             udevadm control --reload-rules || true
             udevadm trigger --subsystem-match=i2c-dev \
-                            --subsystem-match=spidev \
-                            --subsystem-match=gpio || true
+                            --subsystem-match=spidev || true
         fi
+        for n in /dev/gpiochip*; do
+            [ -e "$n" ] || continue
+            chgrp gpio "$n" 2>/dev/null || true
+            chmod 0660 "$n" 2>/dev/null || true
+        done
         ;;
 esac
 
