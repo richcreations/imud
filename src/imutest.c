@@ -1068,21 +1068,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                             * (double)imu->ts_tick_ns * 1e-9;
         double ratio = span > 0 ? elapsed_chip / span : 0.0;
         r->raw.ts_wall_ratio = ratio;
-        double werr = fabs(ratio - 1.0);
-        /*
-         * Deliberately tighter than imu.odr, which is the same ratio measured
-         * a second way.  They are graded differently because they test
-         * different claims: imu.odr asks whether init() programmed the rate it
-         * was asked for, an encoding question where 5% is plenty of room.
-         * This asks whether ts_tick_ns describes the counter, and imu.c
-         * multiplies that constant into every per-sample dt it hands the
-         * filter — so an error here scales integrated rotation one-for-one and
-         * a few percent is worth reading.  The note says so, because a report
-         * that grades the same number PASS in one row and WARN in another
-         * without explaining why reads as a contradiction.
-         */
-        imt_status_t wst = werr <= 0.02 ? IMT_PASS
-                         : werr <= 0.10 ? IMT_WARN : IMT_FAIL;
+        imt_status_t wst = imt_chipts_wall_status(ratio);
         /*
          * Direction matters for the diagnosis and the two causes are opposite.
          * Short: chip time is missing, so the driver dropped a counter wrap.
@@ -1093,14 +1079,16 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         double implied_tick = ratio > 0 ? (double)imu->ts_tick_ns / ratio : 0.0;
         add_check(r, "imu.chipts.wall", "chip_ts against wall clock", wst,
                   fmtbuf(mb, sizeof mb, "%.4f", ratio),
-                  "1.0000 +/-2% (tighter than imu.odr)",
+                  "1.0000 (+/-2% exact; long is tolerated, short is not)",
+                  /* Both must fit imt_check_t.note (192 bytes) once expanded;
+                   * test_imutest asserts no note is truncated. */
                   ratio < 1.0
                   ? "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
-                    "%.0f ns, not %u. Short is chip time gone missing — a lost "
-                    "wrap in the driver's unwrap."
+                    "%.0f ns, not %u. Short is chip time gone missing — a "
+                    "dropped wrap, which no measured period recovers."
                   : "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
-                    "%.0f ns, not %u. Long is no wrap: the counter runs fast "
-                    "and imu.c scales every dt by ts_tick_ns.",
+                    "%.0f ns, not %u. Fast oscillator; imu.c measures the real "
+                    "period per anchor, so this is reported, not faulted.",
                   elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s",
                   implied_tick, imu->ts_tick_ns);
     }
@@ -2489,6 +2477,35 @@ static const char *imt_required_mag[] = {
     "spin.magnitude", "spin.frame_agreement",
     NULL
 };
+
+/*
+ * chip-time / wall-time ratio → a grade.  Declared in imutest.h; see there for
+ * why it is exposed rather than static.
+ *
+ * This used to warn on any deviation past 2%, reasoning that imu.c multiplies
+ * ts_tick_ns into every per-sample dt.  1.8 made that false: ts_anchor_t
+ * measures the counter's real period across consecutive anchors and
+ * chip_to_wall applies THAT (see "Timestamps + per-sample dt" in src/imu.c),
+ * so an oscillator a few percent off is absorbed instead of scaling integrated
+ * rotation.  A Pi 5 bench run on the reference ISM330DHCX reported 1.041 — a
+ * ~4% fast part, well inside its tolerance — and the row read as a defect.  A
+ * check that fires on expected silicon behaviour is one people learn to skip,
+ * which costs more than the row is worth.
+ *
+ * Direction carries the meaning, so the bands are asymmetric:
+ *
+ *   |err| <= 2%     PASS   the tick describes the counter
+ *   ratio > 1       INFO   part runs fast; the anchor absorbs it
+ *   ratio < 1       WARN   chip time MISSING — a dropped wrap, unrecoverable
+ *   |err| >  10%    FAIL   either way, ts_tick_ns is not this counter's period
+ */
+imt_status_t imt_chipts_wall_status(double ratio)
+{
+    double werr = fabs(ratio - 1.0);
+    if (werr <= 0.02) return IMT_PASS;
+    if (werr >  0.10) return IMT_FAIL;
+    return ratio > 1.0 ? IMT_INFO : IMT_WARN;
+}
 
 void imt_decide_verdict(imt_report_t *r)
 {

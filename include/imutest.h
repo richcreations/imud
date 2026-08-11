@@ -341,6 +341,24 @@ const imt_check_t *imt_find(const imt_report_t *r, const char *id);
  */
 void imt_decide_verdict(imt_report_t *r);
 
+/*
+ * Grade chip-time against wall-time, given their ratio.
+ *
+ * Exposed for the same reason as imt_decide_verdict(): it is a pure function
+ * whose bands are the substance, and the mock bus cannot drive a chip counter
+ * to an arbitrary rate — the timestamp is a 32-bit burst read, so a test that
+ * tried would be steering a byte-wise "live register" and grading whatever
+ * ratio fell out, which asserts nothing about the rule.
+ *
+ * The rule is asymmetric on purpose.  A counter running FAST (ratio > 1) is
+ * ordinary part-to-part oscillator tolerance, and since 1.8 imu.c measures the
+ * real period per anchor instead of trusting ts_tick_ns, so it is reported and
+ * not faulted.  A counter running SLOW (ratio < 1) means chip time has gone
+ * missing — a dropped counter wrap, which no measured period can recover — so
+ * it still warns at the same magnitude.
+ */
+imt_status_t imt_chipts_wall_status(double ratio);
+
 /* ── GPIO edge counting (src/imutest_gpio.c) ───────────────────────────────── */
 
 /*

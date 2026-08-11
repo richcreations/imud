@@ -1172,6 +1172,48 @@ static void stage_clean_report(imt_report_t *r, bool imu_exp, bool mag_exp)
     }
 }
 
+/*
+ * The chip-time/wall-time bands, which are asymmetric by design.
+ *
+ * A fast oscillator and a dropped counter wrap produce deviations of the same
+ * magnitude in opposite directions, and only one of them is a defect: since
+ * 1.8 the daemon measures the counter's real period per anchor, so a part
+ * running fast is absorbed, while time that has gone missing cannot be. The
+ * 1.041 the Pi 5 bench reported on the reference ISM330DHCX is the case that
+ * used to warn and now must not.
+ */
+static void test_chipts_wall_bands(void)
+{
+    begin("test_chipts_wall_bands");
+    int fb = g_fail;
+
+    /* Values sit clearly inside each band, never on a boundary: 1.02 - 1.0 is
+     * 0.020000000000000018 in binary, so an exact-edge assertion would test
+     * the float representation rather than the rule. The bands are engineering
+     * tolerances, not contracts anyone reads to three decimal places. */
+    EXPECT(imt_chipts_wall_status(1.0000) == IMT_PASS, "exact ratio passes");
+    EXPECT(imt_chipts_wall_status(1.0150) == IMT_PASS, "+1.5% is inside the pass band");
+    EXPECT(imt_chipts_wall_status(0.9850) == IMT_PASS, "-1.5% is inside the pass band");
+
+    /* The measured bench case, and the reason this function exists. */
+    EXPECT(imt_chipts_wall_status(1.0410) == IMT_INFO,
+           "a 4% fast oscillator is reported, not warned");
+    EXPECT(imt_chipts_wall_status(1.0900) == IMT_INFO, "+9% fast still INFO");
+
+    /* Same magnitude, other direction: chip time missing is never benign. */
+    EXPECT(imt_chipts_wall_status(0.9590) == IMT_WARN,
+           "4% slow warns — a dropped wrap is unrecoverable");
+    EXPECT(imt_chipts_wall_status(0.9100) == IMT_WARN, "-9% slow still WARN");
+
+    /* Past the band the tick simply is not this counter's period. */
+    EXPECT(imt_chipts_wall_status(1.2000) == IMT_FAIL, "+20% fails");
+    EXPECT(imt_chipts_wall_status(0.8000) == IMT_FAIL, "-20% fails");
+    /* A stalled counter reads 0.0 and must not be mistaken for "slow". */
+    EXPECT(imt_chipts_wall_status(0.0)    == IMT_FAIL, "a stopped counter fails");
+
+    end(fb);
+}
+
 static void test_verdict_respects_experimental_flag(void)
 {
     begin("test_verdict_respects_experimental_flag");
@@ -1333,6 +1375,7 @@ int main(void)
     test_spin_frame_agreement();
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
+    test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();
 
     test_terminal_digest();
