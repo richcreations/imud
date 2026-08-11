@@ -296,16 +296,36 @@ typedef struct {
     uint8_t     bank_reg;        /* 0x00 = not banked */
     uint8_t     nrd_lo, nrd_hi;  /* destructive window; lo > hi = none */
     bool        ctrl_writeonly;  /* control registers do not read back at all */
+    /*
+     * Register reporting the part's own timebase error, if it has one.
+     * 0x00 = none.
+     *
+     * The ST 6-axis parts carry INTERNAL_FREQ_FINE (0x63): an 8-bit two's
+     * complement count of 0.15% steps by which this individual part's ODR and
+     * timestamp rate differ from typical (DS13012 §9.36, Table 139), with
+     *
+     *     TS_Res = 1 / (40000 + 0.0015 * FREQ_FINE * 40000)
+     *
+     * That turns imu.chipts.wall's implied tick from an inference into a
+     * cross-check: the bench measured 1.041 on the reference ISM330DHCX, and
+     * if the part also DECLARES roughly +27 steps, the fast oscillator is
+     * confirmed by the chip rather than deduced from a ratio.  If the two
+     * disagree, something other than the oscillator is moving the timebase,
+     * which is a materially different finding.
+     *
+     * Read-only and side-effect-free, so it costs one byte on the wire.
+     */
+    uint8_t     freq_fine_reg;
 } imt_regmap_t;
 
 static const imt_regmap_t imt_regmaps[] = {
     /* ST: FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high). */
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
     /* TDK: FIFO ports and banked register files. */
     { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
@@ -1069,6 +1089,26 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         double ratio = span > 0 ? elapsed_chip / span : 0.0;
         r->raw.ts_wall_ratio = ratio;
         imt_status_t wst = imt_chipts_wall_status(ratio);
+
+        /*
+         * Ask the part what IT thinks its timebase error is, where it can say.
+         * Turns the implied tick from an inference into a cross-check: if the
+         * chip declares the same deviation the ratio implies, the oscillator
+         * explanation is confirmed rather than deduced, and if it does not,
+         * something else is moving the timebase — a different finding.
+         */
+        char fine[80];
+        fine[0] = '\0';
+        const imt_regmap_t *fm = regmap_for(imu->name);
+        uint8_t ff = 0;
+        if (fm && fm->freq_fine_reg &&
+            bus_reg_read(d->bus, fm->freq_fine_reg, &ff) == 0) {
+            /* DS13012 Table 139: 8-bit two's complement, 0.15% per step. */
+            int    steps    = (int)(int8_t)ff;
+            double declared = (double)imu->ts_tick_ns / (1.0 + 0.0015 * steps);
+            snprintf(fine, sizeof fine,
+                     " FREQ_FINE %+d = %.0f ns.", steps, declared);
+        }
         /*
          * Direction matters for the diagnosis and the two causes are opposite.
          * Short: chip time is missing, so the driver dropped a counter wrap.
@@ -1084,13 +1124,12 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                    * test_imutest asserts no note is truncated. */
                   ratio < 1.0
                   ? "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
-                    "%.0f ns, not %u. Short is chip time gone missing — a "
-                    "dropped wrap, which no measured period recovers."
+                    "%.0f ns, not %u. Chip time missing — a dropped wrap.%s"
                   : "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
-                    "%.0f ns, not %u. Fast oscillator; imu.c measures the real "
-                    "period per anchor, so this is reported, not faulted.",
+                    "%.0f ns, not %u. Fast oscillator; imu.c measures the "
+                    "real period.%s",
                   elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s",
-                  implied_tick, imu->ts_tick_ns);
+                  implied_tick, imu->ts_tick_ns, fine);
     }
 }
 
