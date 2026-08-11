@@ -173,6 +173,24 @@ CASES = [
          "usr/share/man/man1/imud-mon.1.gz\nusr/share/man/man9/imud-zzz.9.gz"),
      "imud-zzz"),
 
+    # ── The seccomp re-allow list losing an architecture ─────────────────────
+    # This is the 1.9.0 RC bug, restaged. Reverting to the x86-only name is
+    # invisible to every x86 test and to the whole doc family; on arm64 it is
+    # SIGSYS before the first sample. The mutation has to be the REAL one —
+    # dropping the two ARM names while leaving a plausible line behind — or it
+    # would prove only that the checker notices an empty list.
+    ("check-seccomp", "etc/imud.service.in",
+     sub(r"^SystemCallFilter=adjtimex clock_adjtime clock_adjtime64$",
+         "SystemCallFilter=adjtimex"),
+     "clock_adjtime"),
+
+    # The deny line going away entirely. Then nothing needs re-allowing, the
+    # re-allow list is cargo cult, and the checker should say so rather than
+    # pass because every name it wanted is present.
+    ("check-seccomp", "etc/imud.service.in",
+     sub(r"^SystemCallFilter=~@privileged @resources$", ""),
+     "@privileged"),
+
     # ── The registry describing a parser that no longer exists ───────────────
     # Every generated surface is rendered from docs/config-keys.toml, so a
     # registry that has drifted from apply_kv() does not fail — it publishes.

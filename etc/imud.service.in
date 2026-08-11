@@ -89,7 +89,26 @@ SystemCallFilter=~@privileged @resources
 # CapabilityBoundingSet= above, so ProtectClock= — which would block adjtimex
 # outright, with no way to allow it back — is deliberately NOT set here.  The
 # five bridge units do set it; none of them calls adjtimex.
-SystemCallFilter=adjtimex
+#
+# ALL THREE NAMES ARE REQUIRED, and listing only the first killed the daemon on
+# every arm64 board until a Pi 5 bench run found it.  SystemCallFilter= takes
+# syscall NAMES, which systemd resolves per architecture — and glibc's
+# adjtimex() is not one syscall:
+#
+#   x86-64   adjtimex (159)          the name resolves; the allowlist works
+#   arm64    clock_adjtime (266)     there is NO adjtimex syscall on this ABI
+#   armhf    clock_adjtime64 (405)   glibc >= 2.34 uses the time64 call
+#
+# A name that resolves to nothing on the running architecture allows nothing,
+# so on arm64 the line above restored a syscall the daemon never issues while
+# clock_adjtime stayed blocked by ~@privileged (it is in @clock too).  The
+# result was SIGSYS — status=31/SYS — before the first sample was fused.
+# imud ships armhf debs as well as arm64, so both extra names earn their place.
+# Unknown names are ignored with a log note, so one line is correct everywhere.
+#
+# tools/check-seccomp.py pins this list, and ci.yml runs the daemon under these
+# very lines on an arm64 runner, because no x86 test can see the difference.
+SystemCallFilter=adjtimex clock_adjtime clock_adjtime64
 
 # 0027, not 0077: the daemon's own files carry explicit modes (fileio.h), but
 # /var/log/imud.log is opened 0640 so imud-group members can tail it, and 0077

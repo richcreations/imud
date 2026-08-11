@@ -146,7 +146,15 @@ static void clock_health_check(void)
      * imud.service therefore sets no ProtectClock= and re-allows adjtimex
      * after its ~@privileged line.  Test the return anyway: without it a
      * blocked call lands in the tx.tai == 0 branch below and blames chrony
-     * for a filter the operator installed. */
+     * for a filter the operator installed.
+     *
+     * Note what this call compiles to, because it is not one syscall: glibc
+     * issues adjtimex on x86-64, clock_adjtime on arm64 (which has no
+     * adjtimex at all), and clock_adjtime64 on armhf.  A SystemCallFilter=
+     * naming only "adjtimex" therefore allows nothing on ARM and the process
+     * dies of SIGSYS here rather than reaching the branches below — which is
+     * exactly what shipped in the 1.9.0 RC.  See the comment on
+     * SystemCallFilter= in etc/imud.service.in. */
     struct timex tx;
     memset(&tx, 0, sizeof(tx));
     if (adjtimex(&tx) < 0) {

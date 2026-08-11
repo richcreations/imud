@@ -242,6 +242,75 @@ jobs:
       - name: Build bridges
         run: make bridges
 
+      # The daemon under its own seccomp filter, on a real kernel.
+      #
+      # THIS IS THE ONLY CHECK THAT CATCHES THE 1.9.0 RC BUG. SystemCallFilter=
+      # takes syscall NAMES resolved against the running architecture, and
+      # glibc's adjtimex() is adjtimex on x86-64 but clock_adjtime on arm64 and
+      # clock_adjtime64 on armhf. A unit naming only "adjtimex" therefore
+      # allows nothing on ARM, ~@privileged keeps clock_adjtime blocked, and
+      # the daemon is SIGSYS-killed before fusing a sample. Every other test in
+      # this repo runs the binary with NO seccomp at all, and the x86 leg gets
+      # the right syscall by accident — so nothing saw it until a Pi 5 did.
+      #
+      # The filter lines are READ OUT OF THE SHIPPED UNIT, never retyped: a
+      # copy here would drift from the thing it is supposed to guard, and would
+      # then pass while the unit was broken.
+      #
+      # Runs on both matrix legs. The arm64 leg is the one with teeth; the
+      # amd64 leg proves the wider list did not regress the architecture that
+      # already worked.
+      - name: Daemon starts under its own SystemCallFilter
+        run: |
+          set -euo pipefail
+          # Generate rather than reuse: the .service is not built by `all`, and
+          # a stale one would let this pass against a unit nobody ships.
+          make etc/imud.service
+          # The sim driver needs no hardware; int_gpio = 0 uses the timer path.
+          cat > /tmp/seccomp-sim.conf <<'EOF'
+          [imu]
+          driver   = "sim"
+          int_gpio = 0
+          [mag]
+          driver   = "sim"
+          int_gpio = 0
+          [stream]
+          socket   = "/tmp/imud-seccomp-test.sock"
+          [logging]
+          level    = "info"
+          EOF
+          props=()
+          while IFS= read -r line; do
+              props+=(--property="$line")
+          done < <(grep '^SystemCallFilter=' etc/imud.service)
+          echo "Applying ${#props[@]} filter line(s) from etc/imud.service:"
+          printf '  %s\n' "${props[@]}"
+
+          sudo systemd-run --unit=imud-seccomp-test --collect \
+               "${props[@]}" \
+               "$PWD/imud" --config /tmp/seccomp-sim.conf
+          sleep 5
+
+          result=$(systemctl show imud-seccomp-test -p Result --value || true)
+          status=$(systemctl show imud-seccomp-test -p ExecMainStatus --value || true)
+          journalctl -u imud-seccomp-test --no-pager | tail -20 || true
+          sudo systemctl stop imud-seccomp-test 2>/dev/null || true
+
+          # status 31 is SIGSYS — the seccomp kill. Anything else that stopped
+          # it is also a failure here, but name the seccomp case explicitly
+          # because that is the regression this step exists for.
+          if [ "$status" = "31" ]; then
+              echo "::error::imud was SIGSYS-killed under its own SystemCallFilter=." \
+                   "A syscall the daemon issues on $(uname -m) is not re-allowed." \
+                   "See the SystemCallFilter= comment in etc/imud.service.in."
+              exit 1
+          fi
+          if [ "$result" != "success" ] && [ -n "$result" ]; then
+              echo "::error::imud did not survive 5 s under its own filter (Result=$result, status=$status)"
+              exit 1
+          fi
+          echo "OK: daemon ran 5 s under the shipped SystemCallFilter= on $(uname -m)"
+
       # make test builds and runs all host-side test binaries; it must run
       # from the repo root (test_wmm loads data/WMM.COF by relative path).
       - name: Test
