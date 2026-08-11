@@ -26,6 +26,7 @@
 
 #include "drivers.h"
 #include "bus_io.h"
+#include "chip_ts.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -70,7 +71,11 @@ static struct {
                                  * slower than the FIFO is drained) */
     uint32_t seq;
     uint32_t ticks_per_sample;
+    chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ls;
+
+/* One second of 25 us ticks; see chip_ts.h. */
+#define TS_MAX_JITTER_TICKS  40000u
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
@@ -196,6 +201,7 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ls.accel_scale      = accel_scale;
     ls.gyro_scale       = gyro_scale;
     ls.seq              = 0;
+    chip_ts_guard_reset(&ls.ts_guard);
     ls.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
 
     return 0;
@@ -271,14 +277,24 @@ static int lsm_read(const imud_bus_t *bus,
     if (produced > 0) {
         uint8_t ts[4];
         if (bus_burst_read(bus, REG_TIMESTAMP0, ts, 4) == 0) {
+            /* Read AFTER the drain, so it is "now" rather than the newest
+             * sample's time, and the lag varies with bus and scheduler
+             * jitter — which makes consecutive bursts overlap.  chip_ts.h
+             * carries the correction and the full reasoning. */
             uint32_t burst_ts = (uint32_t)ts[0]
                               | ((uint32_t)ts[1] <<  8)
                               | ((uint32_t)ts[2] << 16)
                               | ((uint32_t)ts[3] << 24);
+            uint32_t span  = (uint32_t)(produced - 1) * ls.ticks_per_sample;
+            uint32_t first = burst_ts - span;
+            burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
+                                            ls.ticks_per_sample,
+                                            TS_MAX_JITTER_TICKS);
             for (int i = 0; i < produced; i++) {
                 uint32_t age = (uint32_t)(produced - 1 - i) * ls.ticks_per_sample;
                 buf[i].chip_ts = burst_ts - age;
             }
+            chip_ts_guard_note(&ls.ts_guard, buf[produced - 1].chip_ts);
         }
     }
 

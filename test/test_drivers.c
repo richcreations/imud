@@ -1303,6 +1303,114 @@ static void test_rm3100_read_decode(void)
     end(fb);
 }
 
+/* ── chip_ts monotonicity across burst seams ─────────────────────────────── */
+
+/*
+ * The defect a Pi 5 bench run caught on the reference ISM330DHCX:
+ * imu.chipts.monotonic FAIL, 2-4 reversals per 5 s window, no counter wraps.
+ *
+ * These drivers time a burst by reading the chip's live timestamp register
+ * AFTER draining the FIFO and stepping back one sample period per sample. That
+ * register reads "now", not when the newest sample was taken, and the lag
+ * between them moves with bus timing and scheduler jitter — so a low-lag drain
+ * following a high-lag one computes a first sample at or before the previous
+ * burst's last, and chip_ts goes backwards.
+ *
+ * Nothing in the suite constructed that: every existing case reads one burst,
+ * or reads two without caring where the second lands. The scenario needs the
+ * anchor to move LESS between two drains than the samples drained, which is
+ * exactly what the mock can stage and hardware took a bench session to show.
+ */
+
+/* Stage `n` sample-sets in the FIFO and park the timestamp register at `ts`.
+ * DIFF_FIFO (0x3A/0x3B) counts WORDS, and a sample-set is two of them — the
+ * driver drains exactly that many, so an unset level yields no samples. */
+static void ism_stage_burst(int n, uint32_t ts)
+{
+    for (int i = 0; i < n; i++) {
+        ism_push_word(0x02, 100, 200, 300);   /* accel */
+        ism_push_word(0x01, 10,  20,  30);    /* gyro  */
+    }
+    int words = n * 2;
+    i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(words & 0xFF));
+    i2cmock_set_reg(ISM_ADDR, 0x3B, (uint8_t)((words >> 8) & 0x03));
+    uint8_t t[4] = { (uint8_t)(ts), (uint8_t)(ts >> 8),
+                     (uint8_t)(ts >> 16), (uint8_t)(ts >> 24) };
+    i2cmock_set_regs(ISM_ADDR, 0x40, t, 4);
+}
+
+static void test_chip_ts_monotonic_across_bursts(void)
+{
+    begin("test_chip_ts_monotonic_across_bursts");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 4 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
+
+    imu_sample_t a[16] = { 0 }, b[16] = { 0 };
+    int na = 0, nb = 0;
+
+    /* Burst 1: 8 sample-sets, anchor at t = 1000000 ticks. Deliberately far
+     * from zero so the reset case below is a jump the guard must NOT treat as
+     * jitter — see TS_MAX_JITTER_TICKS. */
+    ism_stage_burst(8, 1000000);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), a, 16, &na) == 0, "first read ok");
+    EXPECT(na == 8, "first burst produced 8 samples");
+
+    /*
+     * Burst 2: another 8 sample-sets, but the anchor advances by only 100
+     * ticks — about two sample periods at 48 ticks each, against the eight
+     * sample-sets being drained. Un-guarded, this burst's oldest sample lands
+     * ~236 ticks BEFORE the previous burst's newest, which is precisely the
+     * reversal the bench measured.
+     */
+    ism_stage_burst(8, 1000100);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), b, 16, &nb) == 0, "second read ok");
+    EXPECT(nb == 8, "second burst produced 8 samples");
+
+    /* The contract drivers.h states, across the seam and within each burst. */
+    bool mono = true;
+    for (int i = 1; i < na; i++)
+        if ((int32_t)(a[i].chip_ts - a[i - 1].chip_ts) <= 0) mono = false;
+    for (int i = 1; i < nb; i++)
+        if ((int32_t)(b[i].chip_ts - b[i - 1].chip_ts) <= 0) mono = false;
+    EXPECT(mono, "chip_ts strictly increases within each burst");
+    EXPECT((int32_t)(b[0].chip_ts - a[na - 1].chip_ts) > 0,
+           "chip_ts strictly increases ACROSS the burst seam");
+
+    /* The correction is minimal: exactly one sample period past the last
+     * timestamp emitted, so the shift never inflates dt more than it must. */
+    EXPECT(b[0].chip_ts - a[na - 1].chip_ts == 48,
+           "the shifted burst resumes one sample period on");
+
+    /* Within-burst spacing is the chip's own information and must survive. */
+    bool spacing = true;
+    for (int i = 1; i < nb; i++)
+        if (b[i].chip_ts - b[i - 1].chip_ts != 48) spacing = false;
+    EXPECT(spacing, "within-burst spacing is untouched by the shift");
+
+    /*
+     * A backward jump too large to be jitter is a counter reset, and must NOT
+     * be dragged forward — that would pin the clock to a stale anchor for
+     * every future burst. The guard re-seeds; imu.c's anchor absorbs it.
+     */
+    ism_stage_burst(4, 5);            /* counter restarted near zero: ~1e6
+                                       * ticks back, far past the 40000-tick
+                                       * jitter bound, so it reads as a reset */
+    imu_sample_t c[16] = { 0 };
+    int nc = 0;
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), c, 16, &nc) == 0, "third read ok");
+    EXPECT(nc == 4, "third burst produced 4 samples");
+    EXPECT((int32_t)(c[0].chip_ts - b[nb - 1].chip_ts) < 0,
+           "a counter reset is accepted, not shifted forward");
+
+    end(fb);
+}
+
 /* ── reset(): the self-clearing bit polls ────────────────────────────────── */
 
 /*
@@ -1885,14 +1993,35 @@ static void test_dual_transport_ism330dhcx(void)
      * read_done_ns is a CLOCK_REALTIME reading — comparing either would be
      * comparing noise. seq is excluded for the same reason as last_temp above:
      * it is a counter that keeps climbing across both calls.
+     *
+     * chip_ts is excluded on exactly that ground too, and it is worth saying
+     * why since it used to be compared. The mock returns one fixed value from
+     * the timestamp register, so both reads compute the same burst time — an
+     * overlap — and the monotonic guard (chip_ts.h) correctly pushes the second
+     * burst past the first. Requiring the two to be EQUAL would be requiring
+     * the driver to emit a timestamp it has already used, which is the defect
+     * the guard exists to prevent. What transport equivalence actually claims
+     * about time is asserted below: identical within-burst spacing.
      */
     bool same = (in == sn);
     for (int i = 0; same && i < in; i++)
         same = memcmp(ibuf[i].accel, sbuf[i].accel, sizeof ibuf[i].accel) == 0
             && memcmp(ibuf[i].gyro,  sbuf[i].gyro,  sizeof ibuf[i].gyro)  == 0
-            && ibuf[i].temp_c  == sbuf[i].temp_c
-            && ibuf[i].chip_ts == sbuf[i].chip_ts;
-    EXPECT(same, "both transports decoded identical accel/gyro/temp/chip_ts");
+            && ibuf[i].temp_c  == sbuf[i].temp_c;
+    EXPECT(same, "both transports decoded identical accel/gyro/temp");
+
+    /* The per-sample spacing is what the chip supplies and what the transport
+     * must not change; the burst's absolute offset is the guard's business. */
+    bool same_dt = (in == sn);
+    for (int i = 1; same_dt && i < in; i++)
+        same_dt = (ibuf[i].chip_ts - ibuf[i - 1].chip_ts)
+               == (sbuf[i].chip_ts - sbuf[i - 1].chip_ts);
+    EXPECT(same_dt, "both transports decoded identical chip_ts spacing");
+
+    /* And the guard did push the second burst clear of the first. */
+    if (in > 0 && sn > 0)
+        EXPECT((int32_t)(sbuf[0].chip_ts - ibuf[in - 1].chip_ts) > 0,
+               "the second burst starts after the first ended");
 
     end(fb);
 }
@@ -2315,6 +2444,7 @@ int main(void)
     test_rm3100_reset_and_init();
     test_rm3100_read_decode();
 
+    test_chip_ts_monotonic_across_bursts();
     test_driver_resets();
     test_ak099_init_modes();
     test_odr_agreement();

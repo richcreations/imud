@@ -28,6 +28,7 @@
 
 #include "drivers.h"
 #include "bus_io.h"
+#include "chip_ts.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -81,7 +82,11 @@ static struct {
     uint32_t ticks_per_sample;  /* µs between adjacent samples */
     uint32_t ts_last_raw;       /* last raw 20-bit TMSTVAL read */
     uint32_t ts_hi;             /* accumulated wrap carry (multiples of 2^20) */
+    chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ic;
+
+/* TMSTVAL ticks at 1 us, so one second of ticks; see chip_ts.h. */
+#define TS_MAX_JITTER_TICKS  1000000u
 
 /* ── ODR and full-scale encoding ───────────────────────────────────────────── */
 
@@ -247,6 +252,7 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.ticks_per_sample = (uint32_t)(1000000u / (unsigned)odr_actual(cfg->odr_hz));
     ic.ts_last_raw      = 0;    /* counter restarts with the chip */
     ic.ts_hi            = 0;
+    chip_ts_guard_reset(&ic.ts_guard);
 
     return 0;
 }
@@ -331,11 +337,22 @@ static int icm_read(const imud_bus_t *bus,
                 if (raw < ic.ts_last_raw)
                     ic.ts_hi += 1u << 20;
                 ic.ts_last_raw = raw;
+                /* Same "now, not the newest sample" problem as the ST
+                 * parts: TMSTVAL is read after the drain, so the lag varies
+                 * and consecutive bursts can overlap.  chip_ts.h holds the
+                 * correction; this part's own per-packet timestamp (bytes
+                 * [14:15]) is the better source and is a ROADMAP item. */
                 uint32_t burst_ts = ic.ts_hi + raw;
+                uint32_t span  = (uint32_t)(produced - 1) * ic.ticks_per_sample;
+                uint32_t first = burst_ts - span;
+                burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
+                                                ic.ticks_per_sample,
+                                                TS_MAX_JITTER_TICKS);
                 for (int i = 0; i < produced; i++) {
                     uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;
                 }
+                chip_ts_guard_note(&ic.ts_guard, buf[produced - 1].chip_ts);
             }
             bus_reg_write(bus, REG_BANK_SEL, 0);
         }

@@ -20,6 +20,7 @@
 
 #include "drivers.h"
 #include "bus_io.h"
+#include "chip_ts.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -64,7 +65,13 @@ static struct {
                                  * 12.5 Hz, slower than we drain the FIFO) */
     uint32_t seq;               /* monotonic sample counter across all bursts */
     uint32_t ticks_per_sample;  /* chip timer ticks between adjacent samples */
+    chip_ts_guard_t ts_guard;   /* keeps chip_ts increasing across burst seams */
 } s;
+
+/* A backward step larger than this is a counter reset, not read jitter, and is
+ * re-seeded rather than corrected — see chip_ts.h.  One second of 25 µs ticks,
+ * generous next to the millisecond-scale lag being corrected. */
+#define TS_MAX_JITTER_TICKS  40000u
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
@@ -237,6 +244,7 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
         }
     }
     s.seq              = 0;
+    chip_ts_guard_reset(&s.ts_guard);
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
      *
      * Integer division, and it is inexact at most rungs — the 25 µs tick is
@@ -355,15 +363,29 @@ static int ism_read(const imud_bus_t *bus,
              * burst_ts ≈ timestamp of the most-recent (newest) sample.
              * Sample 0 is the oldest in the burst; sample (produced-1) newest.
              * Step back by ticks_per_sample for each older sample.
+             *
+             * "≈" is load-bearing: this register reads NOW, and the newest
+             * sample was taken some time before this read completed.  That lag
+             * varies with bus timing and scheduler jitter, so two bursts can
+             * overlap and chip_ts can go backwards across the seam — measured
+             * on a Pi 5 at 2-4 reversals per 5 s.  chip_ts.h holds the
+             * correction and the reasoning, including why batching the FIFO's
+             * own timestamp is the real fix and is not done here.
              */
             uint32_t burst_ts = (uint32_t)ts[0]
                               | ((uint32_t)ts[1] <<  8)
                               | ((uint32_t)ts[2] << 16)
                               | ((uint32_t)ts[3] << 24);
+            uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
+            uint32_t first = burst_ts - span;
+            burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
+                                            s.ticks_per_sample,
+                                            TS_MAX_JITTER_TICKS);
             for (int i = 0; i < produced; i++) {
                 uint32_t age = (uint32_t)(produced - 1 - i) * s.ticks_per_sample;
                 buf[i].chip_ts = burst_ts - age;
             }
+            chip_ts_guard_note(&s.ts_guard, buf[produced - 1].chip_ts);
         }
         /* If the timestamp read fails, chip_ts stays 0; anchor detects this. */
     }

@@ -434,7 +434,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c \
               src/drivers/rm3100.c src/log.c \
               src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
-              src/drivers/bus_io.h include/bus.h
+              src/drivers/bus_io.h src/drivers/chip_ts.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 
@@ -453,7 +453,7 @@ test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
               test/bus_mock.c test/test_imutest.c \
-              src/drivers/bus_io.h include/bus.h
+              src/drivers/bus_io.h src/drivers/chip_ts.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 
