@@ -73,20 +73,52 @@
 #define FIFO_HDR_ACCEL  0x40   /* accel data valid */
 #define FIFO_HDR_GYRO   0x20   /* gyro data valid */
 
+/*
+ * HEADER_TIMESTAMP_FSYNC, bits [3:2] (DS-000347 Rev 1.6 §6.2):
+ *   00  no timestamp or FSYNC data in this packet
+ *   01  reserved
+ *   10  bytes [14:15] are an ODR timestamp   <- what this driver wants
+ *   11  bytes [14:15] are FSYNC time, first ODR after an FSYNC event
+ * icm_init leaves TMST_FSYNC_EN clear in TMST_CONFIG, so 11 should never
+ * appear; the check is written to accept only 10 rather than to reject 11,
+ * so a part configured differently degrades instead of misreading FSYNC
+ * time as a sample time.
+ */
+#define FIFO_HDR_TS_MASK  0x0C
+#define FIFO_HDR_TS_ODR   0x08
+
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
 static struct {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
     uint32_t seq;
-    uint32_t ticks_per_sample;  /* µs between adjacent samples */
+    uint32_t ticks_per_sample;  /* chip-timer ticks between adjacent samples,
+                                 * at 32/30 µs each — see icm_init */
     uint32_t ts_last_raw;       /* last raw 20-bit TMSTVAL read */
     uint32_t ts_hi;             /* accumulated wrap carry (multiples of 2^20) */
+    bool     ts_fifo_usable;    /* the configured ODR's sample period fits
+                                 * inside the FIFO stamp's 16-bit repeat */
+    uint64_t ts_rejects;        /* bursts whose batched stamps failed the
+                                 * plausibility check and fell back */
+    uint64_t ts_reject_next;    /* next count worth a log line — see icm_read */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ic;
 
-/* TMSTVAL ticks at 1 us, so one second of ticks; see chip_ts.h. */
-#define TS_MAX_JITTER_TICKS  1000000u
+/* One second of ticks at 32/30 us; see chip_ts.h. */
+#define TS_MAX_JITTER_TICKS  937500u
+
+/*
+ * The FIFO's own timestamp field is 16 bits, so it repeats every 65536 ticks
+ * (~70 ms).  Its epoch is recovered from the 32-bit TMSTVAL read after the
+ * drain, which only works while the newest sample is less than one repeat
+ * behind that read.  Reject well short of the boundary rather than at it: a
+ * burst whose newest sample is more than three quarters of a repeat old is
+ * one where the next scheduling hiccup would land on the wrong side, and a
+ * whole-wrap error in chip_ts is far worse than falling back.
+ */
+#define TS_FIFO_WRAP_TICKS   65536u
+#define TS_FIFO_MAX_LAG      49152u   /* 3/4 of a repeat, ~52 ms */
 
 /* ── ODR and full-scale encoding ───────────────────────────────────────────── */
 
@@ -258,6 +290,19 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.ticks_per_sample = (uint32_t)(937500u / (unsigned)odr_actual(cfg->odr_hz));
     ic.ts_last_raw      = 0;    /* counter restarts with the chip */
     ic.ts_hi            = 0;
+    /*
+     * Can the per-packet FIFO timestamp be unwrapped at this rate?  Only if
+     * adjacent samples are less than one 16-bit repeat apart, since that is
+     * what makes the newest-to-oldest walk in icm_read unambiguous.  Every
+     * rung from 25 Hz up clears it easily (37500 ticks at 25 Hz, 937 at
+     * 1 kHz); 12 Hz does not — 78125 ticks is more than the 65536-tick
+     * repeat, so two adjacent samples there could be one repeat apart and
+     * read as adjacent.  That rung keeps the back-calculated timestamps.
+     * The bound carries margin rather than sitting at the repeat itself.
+     */
+    ic.ts_fifo_usable   = (ic.ticks_per_sample <= TS_FIFO_MAX_LAG);
+    ic.ts_rejects       = 0;
+    ic.ts_reject_next   = 1;
     chip_ts_guard_reset(&ic.ts_guard);
 
     return 0;
@@ -275,7 +320,22 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
  *   [9–10] gyro  Y
  *   [11–12] gyro Z
  *   [13]   temperature (int8_t, 1°C/LSB, 0 = 25°C)
- *   [14–15] FIFO timestamp (unused; absolute TS read from Bank 1 after drain)
+ *   [14–15] FIFO timestamp, big endian, valid when the header says so
+ *
+ * TIMESTAMPS.  Bytes [14:15] are the chip's own record of when it took the
+ * sample, so they are used where every packet in the burst carries them.  That
+ * is strictly better than the fallback below, which reads the live TMSTVAL
+ * counter AFTER the drain and calls that the newest sample's time: that
+ * register reads *now*, the lag to the newest sample moves with bus and
+ * scheduler jitter, and consecutive bursts can therefore overlap (see
+ * chip_ts.h).  The batched stamps have no such lag, and they cost nothing —
+ * the driver was already reading those two bytes and discarding them.
+ *
+ * The field is only 16 bits, repeating every 65536 ticks (~70 ms), so its
+ * epoch still comes from TMSTVAL: reconstruct newest-first, stepping back one
+ * repeat whenever a candidate would land after the sample that follows it.
+ * If that reconstruction fails its plausibility checks the burst falls back to
+ * the old path whole, rather than mixing two notions of time in one burst.
  */
 static int icm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
@@ -293,7 +353,12 @@ static int icm_read(const imud_bus_t *bus,
     }
 
     /* ── 2. Drain FIFO packets ──────────────────────────────────────────── */
-    int produced = 0;
+    int  produced    = 0;
+    /* Every packet must carry an ODR timestamp for the batched path to be
+     * used.  One that does not makes the whole burst fall back, because a
+     * burst half-stamped by the chip and half back-calculated would have a
+     * seam in the middle of it and no way to tell which side is which. */
+    bool all_stamped = true;
 
     for (int i = 0; i < n_pkts && produced < max; i++) {
         uint8_t pkt[16];
@@ -322,7 +387,15 @@ static int icm_read(const imud_bus_t *bus,
         buf[produced].gyro[2]  = -gz * ic.gyro_scale;
         buf[produced].temp_c   = (float)(int8_t)pkt[13] + 25.0f;
         buf[produced].seq      = ic.seq++;
-        buf[produced].chip_ts  = 0;
+        /* Park the raw 16-bit stamp here; phase 3 either widens it in place or
+         * overwrites the lot with the back-calculation.  Using the field
+         * itself avoids a second 128-entry array on the hot path. */
+        if ((hdr & FIFO_HDR_TS_MASK) == FIFO_HDR_TS_ODR) {
+            buf[produced].chip_ts = ((uint32_t)pkt[14] << 8) | pkt[15];
+        } else {
+            buf[produced].chip_ts = 0;
+            all_stamped = false;
+        }
         produced++;
     }
 
@@ -343,20 +416,102 @@ static int icm_read(const imud_bus_t *bus,
                 if (raw < ic.ts_last_raw)
                     ic.ts_hi += 1u << 20;
                 ic.ts_last_raw = raw;
-                /* Same "now, not the newest sample" problem as the ST
-                 * parts: TMSTVAL is read after the drain, so the lag varies
-                 * and consecutive bursts can overlap.  chip_ts.h holds the
-                 * correction; this part's own per-packet timestamp (bytes
-                 * [14:15]) is the better source and is a ROADMAP item. */
-                uint32_t burst_ts = ic.ts_hi + raw;
-                uint32_t span  = (uint32_t)(produced - 1) * ic.ticks_per_sample;
-                uint32_t first = burst_ts - span;
-                burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
-                                                ic.ticks_per_sample,
-                                                TS_MAX_JITTER_TICKS);
-                for (int i = 0; i < produced; i++) {
-                    uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
-                    buf[i].chip_ts = burst_ts - age;
+
+                uint32_t now_ts = ic.ts_hi + raw;
+                bool     batched = false;
+
+                /*
+                 * Preferred path: widen each packet's own 16-bit stamp into
+                 * the epoch TMSTVAL just established.
+                 *
+                 * Walk newest to oldest.  Each candidate starts in the epoch
+                 * of the sample after it and drops one repeat if that would
+                 * place it later — which is the whole unwrap.  Note what it
+                 * does NOT require: the burst may span many repeats (at 25 Hz
+                 * a 64-packet watermark spans 36 of them), because only each
+                 * ADJACENT pair has to be under one repeat apart.  Whether
+                 * that holds is a property of the ODR, decided once in init
+                 * as ts_fifo_usable.
+                 *
+                 * Differences are taken as signed 32-bit so the arithmetic
+                 * stays correct across the counter's own 32-bit wrap.
+                 */
+                if (all_stamped && ic.ts_fifo_usable) {
+                    uint32_t prev = now_ts;
+                    batched = true;
+
+                    for (int i = produced - 1; i >= 0; i--) {
+                        uint32_t cand = (prev & ~(TS_FIFO_WRAP_TICKS - 1))
+                                      | (buf[i].chip_ts & (TS_FIFO_WRAP_TICKS - 1));
+                        if ((int32_t)(cand - prev) > 0)
+                            cand -= TS_FIFO_WRAP_TICKS;
+                        /* Strictly increasing within the burst.  A field that
+                         * is stuck, zeroed, or not a timestamp at all repeats
+                         * a value and fails here on the second packet. */
+                        if (i < produced - 1 && cand == prev) { batched = false; break; }
+                        buf[i].chip_ts = cand;
+                        prev = cand;
+                    }
+
+                    /*
+                     * The epoch seed has to be sound too: the newest sample is
+                     * placed relative to a TMSTVAL read taken after the drain,
+                     * and if that gap approaches a repeat the epoch was a coin
+                     * flip.  The gap is bounded in practice by the drain
+                     * duration plus one sample period, both far short of it.
+                     */
+                    if (batched &&
+                        (uint32_t)(now_ts - buf[produced - 1].chip_ts) > TS_FIFO_MAX_LAG)
+                        batched = false;
+
+                    /*
+                     * Say so, at 1, 10, 100, ... rejections.  A one-shot line
+                     * cannot distinguish a part that stumbled once from one
+                     * whose timestamp field is not what this driver thinks it
+                     * is, and that distinction is the whole diagnosis; logging
+                     * every burst would bury it at 13 drains a second.
+                     */
+                    if (!batched && ++ic.ts_rejects >= ic.ts_reject_next) {
+                        LOG_W("icm42688p: %llu burst(s) with FIFO timestamps "
+                              "that failed their plausibility check — using "
+                              "the post-drain TMSTVAL read for chip_ts\n",
+                              (unsigned long long)ic.ts_rejects);
+                        ic.ts_reject_next *= 10;
+                    }
+                }
+
+                /*
+                 * Fallback: read the counter after the drain and step back one
+                 * sample period per sample.  That register reads *now*, and
+                 * the lag to the newest sample moves with bus and scheduler
+                 * jitter, so consecutive bursts can overlap and chip_ts can go
+                 * backwards across the seam — which is what chip_ts.h corrects.
+                 */
+                if (!batched) {
+                    uint32_t burst_ts = now_ts;
+                    uint32_t span  = (uint32_t)(produced - 1) * ic.ticks_per_sample;
+                    uint32_t first = burst_ts - span;
+                    burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
+                                                    ic.ticks_per_sample,
+                                                    TS_MAX_JITTER_TICKS);
+                    for (int i = 0; i < produced; i++) {
+                        uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
+                        buf[i].chip_ts = burst_ts - age;
+                    }
+                } else {
+                    /* The batched path cannot produce the seam overlap the
+                     * guard exists for, since the stamps come from the chip at
+                     * the sample instant rather than being inferred after the
+                     * fact.  Run it anyway: it is a contract check that costs
+                     * two comparisons and should never fire here, and the two
+                     * paths must not leave it holding a stale anchor if a
+                     * later burst falls back. */
+                    uint32_t shift = chip_ts_guard_shift(&ic.ts_guard,
+                                                         buf[0].chip_ts,
+                                                         ic.ticks_per_sample,
+                                                         TS_MAX_JITTER_TICKS);
+                    for (int i = 0; shift && i < produced; i++)
+                        buf[i].chip_ts += shift;
                 }
                 chip_ts_guard_note(&ic.ts_guard, buf[produced - 1].chip_ts);
             }

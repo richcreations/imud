@@ -878,6 +878,36 @@ static void icm42_push_packet(uint8_t hdr, int16_t ax, int16_t ay, int16_t az,
     i2cmock_fifo_push(ICM42_ADDR, p, 16);
 }
 
+/*
+ * The same packet with the chip's own timestamp in [14:15] and the header bits
+ * that say so (HEADER_TIMESTAMP_FSYNC = 10, DS-000347 §6.2).  Only the header
+ * and the stamp matter to the timestamp path, so the sample payload is fixed.
+ *
+ * Takes the FULL counter value and truncates, so callers can write the absolute
+ * time a sample was taken and let the chip's 16-bit field do to it exactly what
+ * the silicon would — which is the behaviour the unwrap has to undo.
+ */
+static void icm42_push_stamped(uint32_t ts)
+{
+    uint8_t p[16];
+    memset(p, 0, sizeof p);
+    p[0]  = 0x68;                            /* accel | gyro | ODR timestamp */
+    p[14] = (uint8_t)((ts >> 8) & 0xFF);     /* big endian, like everything here */
+    p[15] = (uint8_t)(ts & 0xFF);
+    i2cmock_fifo_push(ICM42_ADDR, p, 16);
+}
+
+/* Stage the FIFO byte count and port, and Bank 1 TMSTVAL (20-bit, LE regs). */
+static void icm42_stage_fifo(int n_pkts, uint32_t tmstval)
+{
+    i2cmock_set_reg(ICM42_ADDR, 0x2E, (uint8_t)((n_pkts * 16) >> 8));
+    i2cmock_set_reg(ICM42_ADDR, 0x2F, (uint8_t)((n_pkts * 16) & 0xFF));
+    i2cmock_set_fifo_reg(ICM42_ADDR, 0x30);
+    i2cmock_set_reg(ICM42_ADDR, 0x62, (uint8_t)(tmstval & 0xFF));
+    i2cmock_set_reg(ICM42_ADDR, 0x63, (uint8_t)((tmstval >> 8) & 0xFF));
+    i2cmock_set_reg(ICM42_ADDR, 0x64, (uint8_t)((tmstval >> 16) & 0x0F));
+}
+
 static void test_icm42_probe_and_init(void)
 {
     begin("test_icm42_probe_and_init");
@@ -963,6 +993,150 @@ static void test_icm42_read_decode(void)
 
     i2cmock_fail_next_ioctl();
     EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == -1, "I2C error returns -1");
+    end(fb);
+}
+
+/*
+ * The ICM's per-packet FIFO timestamps (bytes [14:15]).
+ *
+ * Why this path exists: the fallback reads TMSTVAL after the drain and calls
+ * that the newest sample's time, but the register reads *now* and the lag to
+ * the newest sample moves with bus and scheduler jitter — which is how the
+ * 2026-08-10 bench measured 2-4 chip_ts reversals per 5 s on the ST twin of
+ * this design.  The chip stamps each packet at the sample instant instead, and
+ * the driver was already reading and discarding those two bytes.
+ *
+ * The awkward part is that the field is 16 bits and repeats every 65536 ticks
+ * (~70 ms), so the epoch has to come from somewhere.  These tests pin the
+ * unwrap, and pin every condition under which the driver refuses it.
+ */
+static void test_icm42_batched_timestamps(void)
+{
+    begin("test_icm42_batched_timestamps");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm42688p_ops;
+    imu_sample_t buf[16];
+    int n = -1;
+
+    /* ── The ordinary case: four stamped packets, no wrap ───────────────── */
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+
+    /* TMSTVAL "now" = 0x05000, samples at 937-tick spacing ending 500 before. */
+    icm42_stage_fifo(4, 0x05000);
+    icm42_push_stamped(0x05000 - 500 - 937 * 3);
+    icm42_push_stamped(0x05000 - 500 - 937 * 2);
+    icm42_push_stamped(0x05000 - 500 - 937 * 1);
+    icm42_push_stamped(0x05000 - 500);
+
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 16, &n) == 0 && n == 4,
+           "four stamped packets decode");
+    EXPECT(buf[3].chip_ts == 0x05000u - 500u,
+           "newest sample carries the chip's own stamp, not the read time");
+    EXPECT(buf[0].chip_ts == 0x05000u - 500u - 937u * 3u, "oldest likewise");
+    EXPECT(buf[1].chip_ts - buf[0].chip_ts == 937u &&
+           buf[2].chip_ts - buf[1].chip_ts == 937u,
+           "spacing comes from the stamps, not from ticks_per_sample");
+
+    /* ── A 16-bit repeat inside one burst ───────────────────────────────── */
+    /* The field rolls through zero mid-burst; the unwrap must carry the epoch
+     * down rather than letting chip_ts leap backwards by 65536. */
+    i2cmock_reset();
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    icm42_stage_fifo(4, 0x10400);
+    icm42_push_stamped(0xFE00);   /* below the boundary: epoch 0x0____ */
+    icm42_push_stamped(0xFF00);
+    icm42_push_stamped(0x0000);   /* rolls */
+    icm42_push_stamped(0x0100);
+
+    n = -1;
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 16, &n) == 0 && n == 4,
+           "burst spanning a 16-bit repeat decodes");
+    EXPECT(buf[0].chip_ts == 0x0FE00u && buf[1].chip_ts == 0x0FF00u,
+           "pre-roll samples sit in the lower epoch");
+    EXPECT(buf[2].chip_ts == 0x10000u && buf[3].chip_ts == 0x10100u,
+           "post-roll samples carry into the next epoch");
+    for (int i = 1; i < 4; i++)
+        EXPECT((int32_t)(buf[i].chip_ts - buf[i - 1].chip_ts) > 0,
+               "chip_ts strictly increases across the repeat");
+
+    /* ── Refusals.  Each must fall back, never emit a wrong stamp ───────── */
+
+    /* (a) No ODR-timestamp bits in the header. */
+    i2cmock_reset();
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    icm42_stage_fifo(2, 0x05000);
+    icm42_push_packet(0x60, 1, 2, 3, 4, 5, 6, 0);
+    icm42_push_packet(0x60, 1, 2, 3, 4, 5, 6, 0);
+    n = -1;
+    (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x05000u,
+           "header without the timestamp bits falls back to TMSTVAL");
+
+    /* (b) Mixed: one unstamped packet poisons the whole burst, because a
+     *     burst half-stamped and half-inferred has a seam nothing can find. */
+    i2cmock_reset();
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    icm42_stage_fifo(2, 0x05000);
+    icm42_push_stamped(0x04000);
+    icm42_push_packet(0x60, 1, 2, 3, 4, 5, 6, 0);
+    n = -1;
+    (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x05000u,
+           "one unstamped packet makes the whole burst fall back");
+
+    /* (c) A stuck or zeroed field repeats a value, which is not a clock. */
+    i2cmock_reset();
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    icm42_stage_fifo(3, 0x05000);
+    icm42_push_stamped(0x4444);
+    icm42_push_stamped(0x4444);
+    icm42_push_stamped(0x4444);
+    n = -1;
+    (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
+    EXPECT(n == 3 && buf[2].chip_ts == 0x05000u,
+           "a stamp that does not advance is rejected");
+
+    /* (d) The newest sample too far behind the TMSTVAL read: the epoch seed
+     *     would be a coin flip, so the burst is refused rather than guessed. */
+    i2cmock_reset();
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    icm42_stage_fifo(2, 0x20000);
+    icm42_push_stamped(0x20000u - 60000u - 937u);
+    icm42_push_stamped(0x20000u - 60000u);   /* 60000 > TS_FIFO_MAX_LAG */
+    n = -1;
+    (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x20000u,
+           "a newest sample nearly a full repeat old is rejected");
+
+    /*
+     * (e) 12 Hz: 78125 ticks per sample is MORE than the 65536-tick repeat, so
+     *     two adjacent samples can read as adjacent when they are in fact a
+     *     repeat apart.  Refused for the whole session, at init.
+     *
+     *     The numbers are chosen so this is the ONLY thing that refuses it:
+     *     the newest sample sits 1000 ticks behind the TMSTVAL read, well
+     *     inside the epoch-lag bound, and the two stamps do increase.  Without
+     *     the init gate the unwrap succeeds and confidently reports the older
+     *     sample 12589 ticks back instead of 78125 — the exact silent error
+     *     the gate exists to prevent, which is why it is worth a case of its
+     *     own rather than leaning on the lag check to catch it by accident.
+     */
+    i2cmock_reset();
+    imu_cfg_t slow = { .odr_hz = 12, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(I2CBUS(ICM42_ADDR), &slow);
+    icm42_stage_fifo(2, 0x30000);
+    icm42_push_stamped(0x30000u - 1000u - 78125u);
+    icm42_push_stamped(0x30000u - 1000u);
+    n = -1;
+    (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x30000u,
+           "12 Hz keeps the back-calculated path — its sample period exceeds "
+           "the FIFO stamp's repeat");
+    EXPECT(buf[1].chip_ts - buf[0].chip_ts == 937500u / 12u,
+           "and is spaced by ticks_per_sample, as before");
+
     end(fb);
 }
 
@@ -2528,6 +2702,7 @@ int main(void)
 
     test_icm42_probe_and_init();
     test_icm42_read_decode();
+    test_icm42_batched_timestamps();
 
     test_icm209_probe();
     test_icm209_read_decode();
