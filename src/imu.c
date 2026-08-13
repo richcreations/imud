@@ -262,7 +262,9 @@ void *ism_reader_thread(void *arg)
     int reset_failures = 0;
     bool anchor_valid = false;
     struct timespec anchor_last = {0, 0};
-    bool tick_reported = false;   /* one-shot log of the measured tick period */
+    /* Latches once ts_anchor_t has a real tick period.  Drives the re-anchor
+     * interval below and gates the one-shot log of what was measured. */
+    bool tick_measured = false;
     imud_config_t cfg;
     while (!ctx->stop) {
         if (ctx->imu_line) {
@@ -357,12 +359,29 @@ void *ism_reader_thread(void *arg)
 
         /* Update anchor:
          *   - Always on first read.
-         *   - Every 60 s when hw timestamp is available (chip counter drift).
+         *   - Every 25 s until the tick period has been measured, 60 s after.
          *   - Every burst when no hw timestamp (chip_ts=0 always, so anchor
-         *     IS the per-sample timestamp; must stay current). */
+         *     IS the per-sample timestamp; must stay current).
+         *
+         * The two intervals do different jobs.  60 s tracks oscillator drift,
+         * which is slow, and there is no reason to pay for it more often.  The
+         * shorter one exists because chip_to_wall() has no measured period at
+         * all until the SECOND anchor lands — anchor_update needs two, 20 s
+         * apart (ANCHOR_MIN_INTERVAL_NS) — and until then it extrapolates from
+         * the declared tick.  A part a percent or two off nominal drifts far
+         * enough during that window to stop the sample-latency histogram
+         * recording, which is how the 2026-08-11 bench got no latency data out
+         * of six 40 s runs.  25 s clears the 20 s guard with margin, so the
+         * measurement is exactly as trustworthy as it was, and costs one extra
+         * anchor per daemon lifetime.
+         *
+         * ts_tick_ns_actual (see imu_ctx_open) shrinks the error inside that
+         * window rather than the window itself; the two are complementary, and
+         * this half is what covers parts with no trim register to read. */
+        double want = tick_measured ? 60.0 : 25.0;
         bool do_anchor = !anchor_valid
                          || !ctx->imu_ops->has_hw_timestamp
-                         || elapsed >= 60.0;
+                         || elapsed >= want;
         if (do_anchor) {
             uint64_t wall_mid = (ts_ns(&t_before) + ts_ns(&t_after)) / 2;
             /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
@@ -382,11 +401,11 @@ void *ism_reader_thread(void *arg)
              * grades the same number, and a reading this far out is a hardware
              * characteristic rather than a driver defect.
              */
-            if (!tick_reported && ctx->imu_ops->has_hw_timestamp) {
+            if (!tick_measured && ctx->imu_ops->has_hw_timestamp) {
                 double meas = anchor_measured_tick_ns(&ctx->anchor);
                 double nom  = (double)ctx->ts_tick_ns;
                 if (meas > 0.0 && nom > 0.0) {
-                    tick_reported = true;
+                    tick_measured = true;
                     if (fabs(meas - nom) / nom > 0.01)
                         LOG_I("[imu] chip timer measured at %.1f ns/tick "
                               "against the declared %.0f (%+.1f%%); using the "
@@ -1126,25 +1145,28 @@ void *fusion_thread(void *arg)
             clock_gettime(CLOCK_REALTIME, &t_now);
             uint64_t now_ns = ts_ns(&t_now);
 
-            /* Clamp rather than wrap: an anchor refresh can momentarily put
-             * `wall` slightly ahead of the read stamp, and an unsigned
-             * underflow there would land in the top bucket and poison p99. */
-            if (s.read_done_ns > wall)
-                lat_record(&ctx->lat_fifo, s.read_done_ns - wall);
-            if (now_ns > s.read_done_ns)
-                lat_record(&ctx->lat_pipe, now_ns - s.read_done_ns);
+            /*
+             * Record and publish in one step, so the recording clamps and the
+             * two independent window gates live together where they can be
+             * tested — see lat_step in imu_math.h for both.  The window is
+             * `actual_odr_hz` samples, which self-paces to about a second at
+             * any ODR.  main.c prints the clause when either p99 is nonzero,
+             * so a split publish still reads as one line.
+             */
+            lat_pub_t pf, pp;
+            lat_step(&ctx->lat_fifo, &ctx->lat_pipe,
+                     (uint64_t)ctx->actual_odr_hz,
+                     wall, s.read_done_ns, now_ns, &pf, &pp);
 
-            /* Publish about once a second, self-paced by the sample count so
-             * it holds at any ODR, then roll the window. */
-            if (ctx->lat_fifo.count >= (uint64_t)ctx->actual_odr_hz) {
-                atomic_store(&ctx->lat_fifo_p50, lat_percentile(&ctx->lat_fifo, 0.50));
-                atomic_store(&ctx->lat_fifo_p99, lat_percentile(&ctx->lat_fifo, 0.99));
-                atomic_store(&ctx->lat_fifo_max, ctx->lat_fifo.max_ever_ns);
-                atomic_store(&ctx->lat_pipe_p50, lat_percentile(&ctx->lat_pipe, 0.50));
-                atomic_store(&ctx->lat_pipe_p99, lat_percentile(&ctx->lat_pipe, 0.99));
-                atomic_store(&ctx->lat_pipe_max, ctx->lat_pipe.max_ever_ns);
-                lat_reset_window(&ctx->lat_fifo);
-                lat_reset_window(&ctx->lat_pipe);
+            if (pf.valid) {
+                atomic_store(&ctx->lat_fifo_p50, pf.p50);
+                atomic_store(&ctx->lat_fifo_p99, pf.p99);
+                atomic_store(&ctx->lat_fifo_max, pf.max_ever);
+            }
+            if (pp.valid) {
+                atomic_store(&ctx->lat_pipe_p50, pp.p50);
+                atomic_store(&ctx->lat_pipe_p99, pp.p99);
+                atomic_store(&ctx->lat_pipe_max, pp.max_ever);
             }
         }
 

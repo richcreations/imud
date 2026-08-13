@@ -225,6 +225,30 @@ void lat_reset_window(lat_hist_t *h)
     /* max_ever_ns intentionally survives — see imu_math.h. */
 }
 
+/* Publish and roll one window if it is full; otherwise say nothing happened. */
+static void lat_pub_if_ready(lat_hist_t *h, uint64_t need, lat_pub_t *out)
+{
+    out->valid = (need > 0 && h->count >= need);
+    if (!out->valid) return;
+
+    out->p50      = lat_percentile(h, 0.50);
+    out->p99      = lat_percentile(h, 0.99);
+    out->max_ever = h->max_ever_ns;
+    lat_reset_window(h);
+}
+
+void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
+              uint64_t wall_ns, uint64_t read_done_ns, uint64_t now_ns,
+              lat_pub_t *out_fifo, lat_pub_t *out_pipe)
+{
+    if (read_done_ns > wall_ns)      lat_record(fifo, read_done_ns - wall_ns);
+    if (now_ns       > read_done_ns) lat_record(pipe, now_ns - read_done_ns);
+
+    /* Two calls, never one condition covering both — see imu_math.h. */
+    lat_pub_if_ready(fifo, need, out_fifo);
+    lat_pub_if_ready(pipe, need, out_pipe);
+}
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 int nearest_odr(const int supported[], int requested)

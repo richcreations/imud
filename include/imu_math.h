@@ -157,6 +157,38 @@ uint64_t lat_percentile(const lat_hist_t *h, double p);
  * per-window reset would hide it from anyone not watching that window. */
 void lat_reset_window(lat_hist_t *h);
 
+/* What one histogram publishes when its window fills.  `valid` is false when
+ * the window was not full on that call and the other three are untouched. */
+typedef struct {
+    uint64_t p50, p99, max_ever;
+    bool     valid;
+} lat_pub_t;
+
+/*
+ * One sample's worth of latency accounting: record both terms where each is
+ * measurable, then publish and roll whichever window has reached `need`.
+ *
+ * The two histograms gate INDEPENDENTLY, and that is the whole point of this
+ * function rather than two lines at the call site.  They do not fill at the
+ * same rate: `pipe` records on essentially every sample, while `fifo` records
+ * only while `wall_ns` still trails `read_done_ns`.  That condition really can
+ * fail for a whole window — before ts_anchor_t has measured the chip's tick
+ * period, a part a percent or two off nominal makes the extrapolated `wall_ns`
+ * outrun the read stamp, and `fifo` simply stops filling until the next anchor.
+ * Sharing one gate meant `pipe` — the term the daemon controls and can be held
+ * to a budget — was withheld for as long as a DIFFERENT histogram stayed short.
+ * On the 2026-08-11 bench that was every 40 s run in the matrix.
+ *
+ * Both differences are clamped rather than allowed to wrap: an anchor refresh
+ * can momentarily put `wall_ns` past the read stamp, and an unsigned underflow
+ * there would land in the top bucket and poison p99 for the window.
+ *
+ * Caller keeps the histograms; this does no locking and no allocation.
+ */
+void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
+              uint64_t wall_ns, uint64_t read_done_ns, uint64_t now_ns,
+              lat_pub_t *out_fifo, lat_pub_t *out_pipe);
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 /*

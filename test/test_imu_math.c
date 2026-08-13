@@ -566,6 +566,141 @@ static void test_lat_reset_keeps_all_time_max(void)
     end(fb);
 }
 
+/*
+ * lat_step: the two windows publish independently.
+ *
+ * The defect.  Both terms used to share one gate, keyed off the FIFO
+ * histogram's count.  `pipe` records on essentially every sample, but `fifo`
+ * records only while the reconstructed sample time still trails the read
+ * stamp — and before ts_anchor_t has measured the chip's tick period, a part a
+ * few percent fast makes the extrapolation outrun the read stamp and `fifo`
+ * stops filling entirely.  With a shared gate that withheld `pipe` too, which
+ * is why the 2026-08-11 Pi 5 latency matrix produced no numbers at all in six
+ * 40 s runs while the 30-minute soak, which outlived the first re-anchor,
+ * captured them fine.
+ */
+static void test_lat_step_windows_are_independent(void)
+{
+    begin("test_lat_step_windows_are_independent");
+    int fb = g_fail;
+
+    lat_hist_t fifo, pipe;
+    lat_pub_t  pf, pp;
+    const uint64_t need = 100;
+
+    memset(&fifo, 0, sizeof fifo);
+    memset(&pipe, 0, sizeof pipe);
+
+    /*
+     * wall AHEAD of the read stamp on every sample, which is exactly the state
+     * an unmeasured tick period produces.  fifo can never record; pipe must
+     * still publish on schedule.
+     */
+    int fifo_pubs = 0, pipe_pubs = 0;
+    for (uint64_t i = 0; i < 250; i++) {
+        uint64_t read_done = 1000000000ull + i * 1000000ull;
+        lat_step(&fifo, &pipe, need,
+                 /*wall*/ read_done + 40000000ull,   /* 40 ms ahead */
+                 read_done,
+                 /*now*/  read_done + 300000ull,     /* 0.3 ms pipeline */
+                 &pf, &pp);
+        if (pf.valid) fifo_pubs++;
+        if (pp.valid) pipe_pubs++;
+    }
+    EXPECT(fifo.count == 0, "fifo records nothing while wall runs ahead");
+    EXPECT(fifo_pubs == 0,  "and therefore never publishes");
+    EXPECT(pipe_pubs == 2,  "pipe publishes twice in 250 samples at need=100 "
+                            "— NOT held back by the empty fifo window");
+    EXPECT(pp.p99 > 0, "the published pipeline percentile is real");
+
+    /* And the reverse: a full fifo window does not drag pipe along with it. */
+    memset(&fifo, 0, sizeof fifo);
+    memset(&pipe, 0, sizeof pipe);
+    for (uint64_t i = 0; i < need; i++) {
+        uint64_t read_done = 1000000000ull + i * 1000000ull;
+        /* now == read_done, so the pipe term is not recordable this pass. */
+        lat_step(&fifo, &pipe, need, read_done - 30000000ull, read_done,
+                 read_done, &pf, &pp);
+    }
+    EXPECT(pf.valid,  "fifo publishes on its own count");
+    EXPECT(!pp.valid, "pipe stays silent on an empty window rather than "
+                      "publishing a zero that reads as a measurement");
+    EXPECT(fifo.count == 0, "the published window was rolled");
+
+    end(fb);
+}
+
+/*
+ * lat_step clamps both differences instead of subtracting into a wrap.  An
+ * anchor refresh can momentarily put the reconstructed time past the read
+ * stamp; an unsigned underflow there lands in the top bucket and poisons p99
+ * for the whole window.
+ */
+static void test_lat_step_clamps_rather_than_wraps(void)
+{
+    begin("test_lat_step_clamps_rather_than_wraps");
+    int fb = g_fail;
+
+    lat_hist_t fifo, pipe;
+    lat_pub_t  pf, pp;
+    memset(&fifo, 0, sizeof fifo);
+    memset(&pipe, 0, sizeof pipe);
+
+    /* wall one ns past the read stamp, and now one ns before it. */
+    lat_step(&fifo, &pipe, 1, /*wall*/ 1000001, /*read_done*/ 1000000,
+             /*now*/ 999999, &pf, &pp);
+
+    EXPECT(fifo.count == 0, "wall past the read stamp records nothing");
+    EXPECT(pipe.count == 0, "now before the read stamp records nothing");
+    EXPECT(fifo.max_ever_ns == 0 && pipe.max_ever_ns == 0,
+           "no 18-exasecond outlier reached either histogram");
+
+    end(fb);
+}
+
+/*
+ * The re-anchor interval has to clear ANCHOR_MIN_INTERVAL_NS or the tick period
+ * is never measured at all.  imu.c re-anchors at 25 s until it has one, then
+ * settles to 60 s; this pins the claim that 25 s is enough and that the guard
+ * still rejects a shorter gap, so neither number can drift into the other.
+ */
+static void test_anchor_interval_bounds(void)
+{
+    begin("test_anchor_interval_bounds");
+    int fb = g_fail;
+
+    /* 25 s: what the reader uses before the tick is known. */
+    {
+        ts_anchor_t a;
+        anchor_init(&a);
+        const uint64_t gap = 25000000000ULL;
+        anchor_update(&a, 0, 0, 0, 0, NOM_TICK_NS);
+        anchor_update(&a, ticks_over(gap, FAST_PCT), gap, gap, gap,
+                      NOM_TICK_NS);
+        double meas = anchor_measured_tick_ns(&a);
+        double want = (double)NOM_TICK_NS / (1.0 + FAST_PCT / 100.0);
+        EXPECT(meas > 0.0, "a 25 s gap measures the tick period");
+        EXPECT(fabs(meas - want) < 1.0, "and measures it correctly");
+        pthread_mutex_destroy(&a.mtx);
+    }
+
+    /* 19 s: still inside the guard, so deliberately no measurement.  The guard
+     * exists to keep read-position jitter under 0.2% of the interval. */
+    {
+        ts_anchor_t a;
+        anchor_init(&a);
+        const uint64_t gap = 19000000000ULL;
+        anchor_update(&a, 0, 0, 0, 0, NOM_TICK_NS);
+        anchor_update(&a, ticks_over(gap, FAST_PCT), gap, gap, gap,
+                      NOM_TICK_NS);
+        EXPECT(anchor_measured_tick_ns(&a) == 0.0,
+               "a 19 s gap is rejected — under ANCHOR_MIN_INTERVAL_NS");
+        pthread_mutex_destroy(&a.mtx);
+    }
+
+    end(fb);
+}
+
 static void test_ts_ns(void)
 {
     begin("test_ts_ns");
@@ -731,6 +866,9 @@ int main(void)
     test_tick_estimate_is_filtered();
     test_lat_buckets_and_percentiles();
     test_lat_reset_keeps_all_time_max();
+    test_lat_step_windows_are_independent();
+    test_lat_step_clamps_rather_than_wraps();
+    test_anchor_interval_bounds();
     test_ts_ns();
     test_mount_rotation();
     test_apply_imu_cal();
