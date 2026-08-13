@@ -21,6 +21,7 @@
 #include "drivers.h"
 #include "bus_io.h"
 #include "chip_ts.h"
+#include "st_freq_fine.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -261,6 +262,17 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 }
 
 /*
+ * This die's own timestamp period, from the factory trim (see st_freq_fine.h).
+ * The bench part declares +27 steps = 24027 ns against the 25000 typical, which
+ * agrees with the 24029 ns the wall-clock ratio implied — the chip and the
+ * measurement telling the same story from opposite directions.
+ */
+static uint32_t ism_ts_tick_ns_actual(const imud_bus_t *bus)
+{
+    return st_freq_fine_tick_ns(bus, 25000);
+}
+
+/*
  * ism_read — drain FIFO and return calibrated sample-pairs.
  *
  * Each FIFO word is 7 bytes: 1 tag byte + 6 data bytes (X_L/H, Y_L/H, Z_L/H).
@@ -410,7 +422,8 @@ const imu_ops_t ism330dhcx_ops = {
     .read             = ism_read,
     .has_fifo         = true,
     .has_hw_timestamp = true,
-    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick */
+    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
+    .ts_tick_ns_actual = ism_ts_tick_ns_actual,
     /* DS13012 Rev 7 Table 43 (CTRL1_XL, §9.12) and Table 46 (CTRL2_G, §9.13):
      * both give 0x9 = 3.33 kHz and 0xA = 6.66 kHz in high-performance mode.
      * The two tables agreeing at the top is what makes writing one shared odr

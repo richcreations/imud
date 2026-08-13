@@ -643,6 +643,80 @@ extern const mag_ops_t rm3100_ops;
 
 #define LSM_ADDR 0x6A
 
+/*
+ * ts_tick_ns_actual: the ST parts read INTERNAL_FREQ_FINE (0x63) and hand back
+ * THIS die's timer period instead of the datasheet typical.
+ *
+ * Worth a test of its own because the value scales every per-sample dt until
+ * ts_anchor_t has measured the real period, and because the sign is easy to get
+ * backwards: a POSITIVE trim means a faster oscillator, so a SHORTER tick.
+ */
+static void test_st_freq_fine_tick(void)
+{
+    begin("test_st_freq_fine_tick");
+    int fb = g_fail;
+
+    /* All three ST descriptors, because lsm6dso.c backs two of them and a
+     * hook wired into only one would be invisible from either driver file. */
+    struct { const imu_ops_t *ops; int addr; } parts[] = {
+        { ism,           ISM_ADDR },
+        { &lsm6dso_ops,  LSM_ADDR },
+        { &lsm6dsox_ops, LSM_ADDR },
+    };
+
+    for (unsigned p = 0; p < sizeof parts / sizeof parts[0]; p++) {
+        const imu_ops_t *o = parts[p].ops;
+        int a = parts[p].addr;
+
+        EXPECT(o->ts_tick_ns_actual != NULL, "ST part exposes ts_tick_ns_actual");
+        if (!o->ts_tick_ns_actual) continue;
+
+        i2cmock_reset();
+
+        /* Exactly typical: the hook must not perturb a part with no trim. */
+        i2cmock_set_reg(a, 0x63, 0x00);
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 25000,
+               "FREQ_FINE 0 leaves the declared 25000 ns tick");
+
+        /*
+         * +27 is what the reference ISM330DHCX on the bench declares.
+         * 25000 / (1 + 0.0015*27) = 25000 / 1.0405 = 24026.91 -> 24027, which
+         * is the 24029 ns the wall-clock ratio implied, from the other side.
+         */
+        i2cmock_set_reg(a, 0x63, 27);
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 24027,
+               "FREQ_FINE +27 gives a 24027 ns tick");
+
+        /* Negative trim: slower oscillator, longer tick.  0xE5 = -27. */
+        i2cmock_set_reg(a, 0x63, 0xE5);
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 26055,
+               "FREQ_FINE -27 gives a 26055 ns tick");
+
+        /*
+         * Both ends of the field.  These are the bounds the header claims make
+         * a range check unreachable, so they belong in a test rather than only
+         * in a comment: +127 -> /1.1905, -128 -> /0.808.
+         */
+        i2cmock_set_reg(a, 0x63, 0x7F);
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 21000,
+               "FREQ_FINE +127 saturates at a 21000 ns tick");
+        i2cmock_set_reg(a, 0x63, 0x80);
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 30941,
+               "FREQ_FINE -128 saturates at a 30941 ns tick");
+
+        /* A failed read must return the "no answer" sentinel, so the caller
+         * keeps the declared constant.  It must not invent a period, and it
+         * must not be mistaken for a real one — imu.c and imutest both treat
+         * 0 as "leave ts_tick_ns alone". */
+        i2cmock_set_reg(a, 0x63, 27);
+        i2cmock_fail_next_ioctl();
+        EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 0,
+               "a failed FREQ_FINE read returns 0, not a guess");
+    }
+
+    end(fb);
+}
+
 static void lsm_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
 {
     uint8_t w[7] = {
@@ -869,6 +943,17 @@ static void test_icm42_read_decode(void)
     EXPECT_NEAR(buf[0].gyro[2],  -30 * gs, 1e-6, "gyro Z flipped");
     EXPECT_NEAR(buf[0].temp_c, 30.0f, 1e-3, "temp = int8 + 25");
     EXPECT(buf[1].seq == buf[0].seq + 1, "seq increments across packets");
+
+    /*
+     * Chip-timer arithmetic.  The counter's LSB is 32/30 µs, not the 1 µs
+     * TMST_RES nominally selects (DS-000347 §12.7), so one second is 937500
+     * ticks and a 1 kHz sample period is 937 of them — not 1000.  Both halves
+     * have to agree or the daemon's dt is wrong by 6.7% until ts_anchor_t
+     * measures the real period, so assert them together.
+     */
+    EXPECT(icm42688p_ops.ts_tick_ns == 1067, "ts_tick_ns is 32/30 µs, not 1 µs");
+    EXPECT((uint32_t)(buf[1].chip_ts - buf[0].chip_ts) == 937,
+           "adjacent samples are 937 ticks apart at 1 kHz");
 
     /* Empty FIFO. */
     i2cmock_set_reg(ICM42_ADDR, 0x2E, 0);
@@ -1844,20 +1929,30 @@ static void test_ticks_per_sample_across_rates(void)
     }
 
     /*
-     * TDK: 1 µs/tick, so 1000000/rate.  Exact through 8 kHz; 16 kHz truncates
-     * 62.5 to 62 and 32 kHz 31.25 to 31, both 0.8% short.  Bounded per burst
-     * rather than cumulative — the anchor is re-read every drain.
+     * TDK: 32/30 µs per tick, NOT the 1 µs TMST_RES names — DS-000347 §12.7
+     * scales the counter by 32/30 whenever the part is not clocked from CLKIN,
+     * which is every configuration this driver programs.  So one second is
+     * 937500 ticks and the spacing is 937500/rate.  Getting this wrong is a
+     * 6.7% error on every per-sample dt until ts_anchor_t measures the real
+     * period, which is why it is pinned rate by rate rather than spot-checked.
+     *
+     * 937500 = 2^2 * 3 * 5^7, so it divides 12, 25, 50, 100 and 500 exactly and
+     * nothing else on the ladder: 200 Hz is 0.011% short, 1 kHz 0.053%, 2-8 kHz
+     * 0.16%, and the top two rungs 1.0%.  Bounded per burst rather than
+     * cumulative — the anchor is re-read every drain.
      */
     static const int tdk_rates[] = { 12, 25, 50, 100, 200, 500, 1000, 2000,
                                      4000, 8000, 16000, 32000 };
     for (size_t i = 0; i < sizeof tdk_rates / sizeof tdk_rates[0]; i++) {
-        const uint32_t want = 1000000u / (uint32_t)tdk_rates[i];
+        const uint32_t want = 937500u / (uint32_t)tdk_rates[i];
         snprintf(msg, sizeof msg, "icm42688p %d Hz spaces samples %u ticks",
                  tdk_rates[i], want);
         EXPECT(icm42_burst_ts_delta(tdk_rates[i]) == want, msg);
     }
-    EXPECT(icm42_burst_ts_delta(16000) == 62, "16 kHz truncates 62.5 to 62");
-    EXPECT(icm42_burst_ts_delta(32000) == 31, "32 kHz truncates 31.25 to 31");
+    /* The three rungs where the truncation is worth naming outright. */
+    EXPECT(icm42_burst_ts_delta(1000)  == 937, "1 kHz truncates 937.5 to 937");
+    EXPECT(icm42_burst_ts_delta(16000) == 58,  "16 kHz truncates 58.59 to 58");
+    EXPECT(icm42_burst_ts_delta(32000) == 29,  "32 kHz truncates 29.30 to 29");
 
     /*
      * Off-grid requests round UP to the next advertised rate, and the spacing
@@ -1869,9 +1964,9 @@ static void test_ticks_per_sample_across_rates(void)
            "ism 5000 Hz is spaced for its resolved 6664, not the old 1660 cap");
     EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 99000) == 40000u / 6664u,
            "ism clamps above the top rung and spaces for it");
-    EXPECT(icm42_burst_ts_delta(300) == 1000000u / 500u,
+    EXPECT(icm42_burst_ts_delta(300) == 937500u / 500u,
            "icm42688p 300 Hz is spaced for 500, the rate 0x0F selects");
-    EXPECT(icm42_burst_ts_delta(99000) == 1000000u / 32000u,
+    EXPECT(icm42_burst_ts_delta(99000) == 937500u / 32000u,
            "icm42688p clamps above the top rung and spaces for it");
 
     end(fb);
@@ -2425,6 +2520,7 @@ int main(void)
     test_ak_init_and_fuse_rom();
     test_ak_read_decode();
 
+    test_st_freq_fine_tick();
     test_lsm_probe();
     test_lsm_init_registers();
     test_lsm_read_decode();

@@ -1542,6 +1542,17 @@ the counter has to advance monotonically at a rate that does not depend on bus
 traffic or ODR. Get the period roughly right (within 10%, or the measurement is
 rejected as implausible) and the daemon handles the rest.
 
+If your part can say what *its own* timer period is, implement the optional
+`ts_tick_ns_actual` hook and hand it back. The daemon calls it once after
+`init()`, with the bus open, and uses the answer everywhere it would have used
+your constant. Return 0 — on a failed read, or when there is nothing to ask —
+and the declared value stands. This does not replace the runtime measurement
+above; it fixes the *first minute*, before two anchors exist. On a part several
+percent off nominal that window is not cosmetic: the extrapolated sample time
+drifts far enough from the host clock that the sample-latency histogram stops
+recording. The ST 6-axis parts carry the answer in `INTERNAL_FREQ_FINE` (0x63),
+and `src/drivers/st_freq_fine.h` does the arithmetic for all of them.
+
 The ISM330DHCX has a 32-bit counter at 40000 ticks/s (25 µs/tick). If your
 chip has an equivalent:
 

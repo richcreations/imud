@@ -238,18 +238,24 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.accel_scale      = accel_scale;
     ic.gyro_scale       = gyro_scale;
     ic.seq              = 0;
-    /* 1 µs/tick timestamp; ticks between adjacent samples at the actual ODR.
+    /* Ticks between adjacent samples at the actual ODR.
      *
-     * Whole microseconds, and the division stops being exact at the top of the
-     * ladder: every rate through 8 kHz divides 1000000 evenly, but 16 kHz is
-     * 62.5 -> 62 and 32 kHz is 31.25 -> 31, both 0.8 % short.  Deliberate.
-     * The value only walks backwards from a per-burst anchor (see the age
-     * calculation in icm_read), so the error is bounded by the watermark
-     * depth rather than accumulating across bursts — about 16 µs at a
-     * 64-sample watermark, half a sample period at 32 kHz.  Widening this to
-     * sub-microsecond ticks would buy nothing the chip timestamp resolution
-     * can support. */
-    ic.ticks_per_sample = (uint32_t)(1000000u / (unsigned)odr_actual(cfg->odr_hz));
+     * NOT 1000000/ODR.  The timestamp counter's LSB is 32/30 µs, not the 1 µs
+     * TMST_RES nominally selects — DS-000347 §12.7, which gives the scaling
+     * explicitly and works the example: at 1 kHz the FIFO interval reads 937/938
+     * for a true 1000 µs, and 937.5 * 32/30 = 1000.  The 32/30 branch is the
+     * unconditional one here, since it applies whenever the part is not clocked
+     * from an external RTC on CLKIN, and this driver never sets RTC_MODE.  So
+     * one second is 937500 ticks, and ts_tick_ns is 1067 to match.
+     *
+     * 937500 = 2^2 * 3 * 5^7, so the division is exact at 12, 25, 50, 100 and
+     * 500 Hz and nowhere else on the ladder: 200 Hz lands 0.011 % short, 1 kHz
+     * 0.053 %, 2-8 kHz 0.16 %, and the top two rungs 1.0 %.  Deliberate, and
+     * the same trade the previous constant made.  The value only walks backwards
+     * from a per-burst anchor (see the age calculation in icm_read), so the
+     * error is bounded by the watermark depth rather than accumulating across
+     * bursts.  Sub-tick resolution would buy nothing the counter can support. */
+    ic.ticks_per_sample = (uint32_t)(937500u / (unsigned)odr_actual(cfg->odr_hz));
     ic.ts_last_raw      = 0;    /* counter restarts with the chip */
     ic.ts_hi            = 0;
     chip_ts_guard_reset(&ic.ts_guard);
@@ -380,7 +386,16 @@ const imu_ops_t icm42688p_ops = {
     .read             = icm_read,
     .has_fifo         = true,
     .has_hw_timestamp = true,
-    .ts_tick_ns       = 1000,    /* TMSTVAL: 1 µs/tick (unwrapped to 32 bits) */
+    /* TMSTVAL, unwrapped to 32 bits.  1067 = 32/30 µs, not the 1 µs TMST_RES
+     * names: DS-000347 §12.7 scales the counter by 32/30 whenever the part is
+     * not clocked from CLKIN, which is every configuration this driver
+     * programs.  There is no ts_tick_ns_actual hook because the correction is
+     * a property of the clock source rather than of the individual die, and
+     * the part exposes no trim register to ask.  Whether TMSTVAL shares the
+     * scaling with the FIFO's own timestamp field is not stated — it is the
+     * same counter, and imud-imutest's imu.chipts.wall prints the implied tick,
+     * so one bench run settles it either way. */
+    .ts_tick_ns       = 1067,
     /*
      * Everything the silicon does (DS-000347 Rev 1.6 §5.6), including the two
      * rates a Raspberry Pi will not survive.

@@ -190,7 +190,17 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "| has_fifo / has_hw_timestamp | %s / %s",
             r->imu_has_fifo ? "true" : "false",
             r->imu_has_hw_ts ? "true" : "false");
-    if (r->imu_has_hw_ts) fprintf(f, " (ts_tick_ns = %u)", r->imu_ts_tick_ns);
+    if (r->imu_has_hw_ts) {
+        /* Print both only when the part disagreed with its datasheet typical:
+         * that difference is the whole reason ts_tick_ns_actual exists, and
+         * burying it would make a 4%-fast part look like a plain one. */
+        if (r->imu_ts_tick_actual_ns &&
+            r->imu_ts_tick_actual_ns != r->imu_ts_tick_ns)
+            fprintf(f, " (ts_tick_ns = %u typical, %u from this part)",
+                    r->imu_ts_tick_ns, r->imu_ts_tick_actual_ns);
+        else
+            fprintf(f, " (ts_tick_ns = %u)", r->imu_ts_tick_ns);
+    }
     fprintf(f, " |\n");
     fprintf(f, "| supported_odr_hz | ");   write_int_table(f, r->imu_odr_tab, 16);
     fprintf(f, " |\n| supported_accel_g | "); write_int_table(f, r->imu_accel_tab, 8);

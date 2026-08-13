@@ -465,6 +465,13 @@ static int reg_diff(const uint8_t *before, const uint8_t *after,
 typedef struct {
     const imu_ops_t *ops;
     const imud_bus_t *bus;
+    /*
+     * The tick period to grade against: what imu.c will actually use, which is
+     * the part's own declared period where it has one.  Grading against the
+     * datasheet typical instead would report a healthy part as a defect —
+     * the reference ISM330DHCX is 4% off typical and entirely in spec.
+     */
+    uint32_t         tick_ns;
     /* Running contract observations, accumulated across every drain. */
     bool             have_seq;
     uint32_t         last_seq;
@@ -477,6 +484,11 @@ static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, const imud_bus_t *b
 {
     memset(d, 0, sizeof *d);
     d->ops = ops; d->bus = bus;
+    d->tick_ns = ops->ts_tick_ns;
+    if (ops->ts_tick_ns_actual) {
+        uint32_t part = ops->ts_tick_ns_actual(bus);
+        if (part != 0) d->tick_ns = part;
+    }
 }
 
 /*
@@ -1034,7 +1046,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
 
     add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
               IMT_PASS, "nonzero", "nonzero",
-              "declared tick %u ns", imu->ts_tick_ns);
+              "tick in use %u ns", d->tick_ns);
 
     r->raw.ts_first     = ts_first;
     r->raw.ts_last      = ts_last;
@@ -1065,7 +1077,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             ts_deltas[j + 1] = v;
         }
         double med = ts_deltas[n_deltas / 2];
-        double expect = 1e9 / ((double)eff_odr * (double)imu->ts_tick_ns);
+        double expect = 1e9 / ((double)eff_odr * (double)d->tick_ns);
         double implied = med > 0 ? 1e9 / ((double)eff_odr * med) : 0.0;
         r->raw.ts_median_delta    = med;
         r->raw.ts_implied_tick_ns = implied;
@@ -1079,44 +1091,42 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         add_check(r, "imu.chipts.rate", "chip_ts tick period", st,
                   fmtbuf(mb, sizeof mb, "%.2f ticks/sample", med),
                   fmtbuf(eb, sizeof eb, "%.2f +/-5%%", expect),
-                  "implied ts_tick_ns = %.0f against the declared %u, against "
+                  "implied ts_tick_ns = %.0f against the %u in use, against "
                   "the nominal %d Hz — chip against chip, so see "
                   "imu.chipts.wall for the timebase itself",
-                  implied, imu->ts_tick_ns, eff_odr);
+                  implied, d->tick_ns, eff_odr);
 
         double elapsed_chip = (double)(uint32_t)(ts_last - ts_first)
-                            * (double)imu->ts_tick_ns * 1e-9;
+                            * (double)d->tick_ns * 1e-9;
         double ratio = span > 0 ? elapsed_chip / span : 0.0;
         r->raw.ts_wall_ratio = ratio;
         imt_status_t wst = imt_chipts_wall_status(ratio);
 
         /*
-         * Ask the part what IT thinks its timebase error is, where it can say.
-         * Turns the implied tick from an inference into a cross-check: if the
-         * chip declares the same deviation the ratio implies, the oscillator
-         * explanation is confirmed rather than deduced, and if it does not,
-         * something else is moving the timebase — a different finding.
+         * Report the part's own declared timebase error where it has one.  The
+         * driver now APPLIES this (ts_tick_ns_actual), so it is no longer a
+         * cross-check against a constant the daemon was about to get wrong —
+         * it says which trim produced the tick the ratio above was graded
+         * with, and a ratio still off 1.0 with a plausible FREQ_FINE means
+         * something other than the oscillator is moving the timebase.
          */
         char fine[80];
         fine[0] = '\0';
         const imt_regmap_t *fm = regmap_for(imu->name);
         uint8_t ff = 0;
         if (fm && fm->freq_fine_reg &&
-            bus_reg_read(d->bus, fm->freq_fine_reg, &ff) == 0) {
+            bus_reg_read(d->bus, fm->freq_fine_reg, &ff) == 0)
             /* DS13012 Table 139: 8-bit two's complement, 0.15% per step. */
-            int    steps    = (int)(int8_t)ff;
-            double declared = (double)imu->ts_tick_ns / (1.0 + 0.0015 * steps);
             snprintf(fine, sizeof fine,
-                     " FREQ_FINE %+d = %.0f ns.", steps, declared);
-        }
+                     " Part declares FREQ_FINE %+d.", (int)(int8_t)ff);
         /*
          * Direction matters for the diagnosis and the two causes are opposite.
          * Short: chip time is missing, so the driver dropped a counter wrap.
          * Long: chip time is running ahead of the wall, which a wrap cannot
-         * cause — the counter is ticking faster than the declared ts_tick_ns,
-         * and imu.c scales every per-sample dt by that constant.
+         * cause — the counter is ticking faster than the tick in use, and
+         * imu.c scales every per-sample dt by that number.
          */
-        double implied_tick = ratio > 0 ? (double)imu->ts_tick_ns / ratio : 0.0;
+        double implied_tick = ratio > 0 ? (double)d->tick_ns / ratio : 0.0;
         add_check(r, "imu.chipts.wall", "chip_ts against wall clock", wst,
                   fmtbuf(mb, sizeof mb, "%.4f", ratio),
                   "1.0000 (+/-2% exact; long is tolerated, short is not)",
@@ -1129,7 +1139,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                     "%.0f ns, not %u. Fast oscillator; imu.c measures the "
                     "real period.%s",
                   elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s",
-                  implied_tick, imu->ts_tick_ns, fine);
+                  implied_tick, d->tick_ns, fine);
     }
 }
 
@@ -2154,7 +2164,7 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     imu_sample_t buf[128];
     int n = 0;
 
-    bool use_ts = imu->has_hw_timestamp && imu->ts_tick_ns != 0;
+    bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
     double dt_nominal = 1.0 / (double)eff_odr;
 
     for (int t = 0; t < 3 && !g_abort; t++) {
@@ -2192,7 +2202,7 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     if (have_prev_ts) {
                         uint32_t delta = buf[i].chip_ts - prev_ts;
                         if (delta > 0 && delta < 0x80000000u)
-                            dt = (double)delta * (double)imu->ts_tick_ns * 1e-9;
+                            dt = (double)delta * (double)d->tick_ns * 1e-9;
                     }
                     prev_ts = buf[i].chip_ts;
                     have_prev_ts = true;
@@ -2317,7 +2327,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     uint64_t got = 0;
     double gyro_z_deg = 0, heading_unwrapped = 0, prev_heading = 0;
     bool have_heading = false;
-    bool use_ts = imu->has_hw_timestamp && imu->ts_tick_ns != 0;
+    bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
     double dt_nominal = 1.0 / (double)eff_odr;
     bool have_prev_ts = false;
     uint32_t prev_ts = 0;
@@ -2335,7 +2345,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     if (have_prev_ts) {
                         uint32_t delta = ibuf[i].chip_ts - prev_ts;
                         if (delta > 0 && delta < 0x80000000u)
-                            dt = (double)delta * (double)imu->ts_tick_ns * 1e-9;
+                            dt = (double)delta * (double)d->tick_ns * 1e-9;
                     }
                     prev_ts = ibuf[i].chip_ts;
                     have_prev_ts = true;
@@ -2756,6 +2766,9 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
 
     drain_ctx_t d;
     drain_init(&d, imu, ibus);
+    /* Resolved after bringup, so the header records what the checks below
+     * actually graded against rather than the descriptor's typical. */
+    r->imu_ts_tick_actual_ns = d.tick_ns;
 
     if (opts->phases & IMT_PHASE_PASSIVE) {
         check_odr_seq_ts(r, opts, &d, imu, r->eff_odr_hz);

@@ -202,7 +202,11 @@ typedef struct {
     int      mag_req_odr_hz, mag_eff_odr_hz;
     float    mag_set_period_s;
     bool     imu_has_fifo, imu_has_hw_ts;
-    uint32_t imu_ts_tick_ns;
+    uint32_t imu_ts_tick_ns;         /* the driver's declared typical */
+    uint32_t imu_ts_tick_actual_ns;  /* what the checks graded against: the
+                                      * part's own period where it declares
+                                      * one (imu_ops_t.ts_tick_ns_actual),
+                                      * else a copy of the above */
     int      imu_odr_tab[16], imu_accel_tab[8], imu_gyro_tab[8];
     bool     mag_has_interrupt, mag_has_set_reset, mag_set_reset_nonnull;
     int      mag_odr_tab[16];

@@ -92,8 +92,37 @@ typedef struct {
     bool has_fifo;           /* false → single-sample DRDY read per wakeup */
     bool has_hw_timestamp;   /* chip has internal sample timer */
     uint32_t ts_tick_ns;     /* ns per chip-timer tick (e.g. 25000 for the ST
-                              * 25 µs counter, 1000 for the ICM-42688-P);
-                              * required when has_hw_timestamp */
+                              * 25 µs counter, 1067 for the ICM-42688-P);
+                              * required when has_hw_timestamp.  This is the
+                              * TYPICAL period from the datasheet — see
+                              * ts_tick_ns_actual for the per-part value */
+
+    /*
+     * Optional: ask THIS part what its timer period really is.  Returns ns per
+     * tick, or 0 to keep ts_tick_ns as declared.  Called once after init(),
+     * with the bus already open, so it may read registers.
+     *
+     * Why this exists.  ts_tick_ns is a datasheet typical, and the tolerance on
+     * it is not small: the reference ISM330DHCX on the bench runs 4.05% fast,
+     * and the part says so — the ST 6-axis family carries INTERNAL_FREQ_FINE
+     * (0x63), a factory-trim count of 0.15% steps (DS13012 §9.41, Table 139).
+     * A const field cannot express that, since it is silicon-specific rather
+     * than part-number-specific.
+     *
+     * imu.c's ts_anchor_t does measure the real period at runtime, but only
+     * once it holds two anchors 20 s apart.  Until then chip_to_wall() falls
+     * back to this number, and on a 4%-fast part the extrapolated sample time
+     * gains ~40 ms per second of elapsed time — enough to make the sample
+     * latency histogram stop recording entirely.  Getting the declared value
+     * right is what makes the first minute behave like the rest of the run.
+     *
+     * Implementations must be defensive: a wrong period is worse than the
+     * typical one, because every per-sample dt is scaled by it.  Return 0 on
+     * any bus error, and satisfy yourself that whatever the register can hold
+     * cannot produce an absurd period — bound it if it can.
+     */
+    uint32_t (*ts_tick_ns_actual)(const imud_bus_t *bus);
+
     int  supported_odr_hz[16];   /* ascending, 0-terminated */
     int  supported_accel_g[8];   /* ascending, 0-terminated */
     int  supported_gyro_dps[8];  /* ascending, 0-terminated */

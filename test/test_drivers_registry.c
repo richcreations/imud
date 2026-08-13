@@ -127,6 +127,11 @@ static void check_imu_ops(const imu_ops_t *o, const char *key)
      * chip_to_wall offset math silently collapses to zero. */
     if (o->has_hw_timestamp)
         EXPECT(o->ts_tick_ns != 0, "has_hw_timestamp implies ts_tick_ns != 0");
+    /* The hook refines a period; with no timer there is no period to refine,
+     * and imu.c would never call it. */
+    if (o->ts_tick_ns_actual)
+        EXPECT(o->has_hw_timestamp,
+               "ts_tick_ns_actual implies has_hw_timestamp");
     check_odr_resolution(o->supported_odr_hz, o->actual_odr_hz != NULL,
                          resolve_imu, o, "imu ODR resolves to a usable rate");
 }

@@ -27,6 +27,7 @@
 #include "drivers.h"
 #include "bus_io.h"
 #include "chip_ts.h"
+#include "st_freq_fine.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -207,6 +208,19 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     return 0;
 }
 
+/*
+ * This die's own timestamp period, from the factory trim (see st_freq_fine.h).
+ * DS12140 Rev 3 §9.52 documents INTERNAL_FREQ_FINE identically to the
+ * ISM330DHCX — same address, same 0.15% step, same "effective ODR (and
+ * timestamp rate)" wording — but does not restate the TS_Res formula, so the
+ * arithmetic is DS13012's applied to a register this datasheet defines the
+ * same way.
+ */
+static uint32_t lsm_ts_tick_ns_actual(const imud_bus_t *bus)
+{
+    return st_freq_fine_tick_ns(bus, 25000);
+}
+
 static int lsm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
@@ -318,7 +332,8 @@ const imu_ops_t lsm6dso_ops = {
     .read             = lsm_read,
     .has_fifo         = true,
     .has_hw_timestamp = true,
-    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick */
+    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
+    .ts_tick_ns_actual = lsm_ts_tick_ns_actual,
     .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
@@ -335,7 +350,8 @@ const imu_ops_t lsm6dsox_ops = {
     .read             = lsm_read,
     .has_fifo         = true,
     .has_hw_timestamp = true,
-    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick */
+    .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
+    .ts_tick_ns_actual = lsm_ts_tick_ns_actual,
     .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },

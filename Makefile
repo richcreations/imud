@@ -403,7 +403,9 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # the new tables against the old ladder — or the reverse — and pass.
 test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
                        src/imu_math.c test/test_drivers_registry.c \
-                       test/rate_ladder.h
+                       test/rate_ladder.h \
+                       src/drivers/bus_io.h src/drivers/chip_ts.h \
+                       src/drivers/st_freq_fine.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
@@ -434,7 +436,8 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c \
               src/drivers/rm3100.c src/log.c \
               src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
-              src/drivers/bus_io.h src/drivers/chip_ts.h include/bus.h
+              src/drivers/bus_io.h src/drivers/chip_ts.h \
+              src/drivers/st_freq_fine.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 
@@ -453,7 +456,8 @@ test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
               test/bus_mock.c test/test_imutest.c \
-              src/drivers/bus_io.h src/drivers/chip_ts.h include/bus.h
+              src/drivers/bus_io.h src/drivers/chip_ts.h \
+              src/drivers/st_freq_fine.h include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
 

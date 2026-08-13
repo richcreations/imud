@@ -75,6 +75,13 @@ struct imu_ctx {
      * for — see the resolution comment in imu_ctx_open. */
     int              actual_odr_hz;
     int              actual_mag_odr_hz;
+    /*
+     * Chip-timer period actually in force: the driver's declared ts_tick_ns,
+     * or what ts_tick_ns_actual() said this individual part's timer runs at.
+     * Resolved once in imu_ctx_open after init() and read-only afterwards, so
+     * every consumer of the tick agrees.  0 when the part has no timer.
+     */
+    uint32_t         ts_tick_ns;
 
     struct gpiod_chip  *gpio_chip;
     imu_gpio_line_t    *imu_line;   /* GPIO for IMU FIFO watermark interrupt */
@@ -364,7 +371,7 @@ void *ism_reader_thread(void *arg)
             anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_mid,
                           ts_ns(&t_tai), ts_ns(&now),
                           ctx->imu_ops->has_hw_timestamp
-                              ? ctx->imu_ops->ts_tick_ns : 0);
+                              ? ctx->ts_tick_ns : 0);
             anchor_last  = now;
             anchor_valid = true;
 
@@ -377,7 +384,7 @@ void *ism_reader_thread(void *arg)
              */
             if (!tick_reported && ctx->imu_ops->has_hw_timestamp) {
                 double meas = anchor_measured_tick_ns(&ctx->anchor);
-                double nom  = (double)ctx->imu_ops->ts_tick_ns;
+                double nom  = (double)ctx->ts_tick_ns;
                 if (meas > 0.0 && nom > 0.0) {
                     tick_reported = true;
                     if (fabs(meas - nom) / nom > 0.01)
@@ -941,13 +948,16 @@ void *fusion_thread(void *arg)
          * the predict step wants.
          *
          * That interval is only as good as the tick period it is scaled by.
-         * Using the driver's declared ts_tick_ns did NOT remove the chip's
-         * oscillator tolerance — it preserved it exactly, because the interval
-         * is ticks times that constant, so a counter running a few percent
-         * fast made every dt a few percent long and scaled all integrated
-         * rotation by the same factor.  ts_anchor_t now measures the real
-         * period across consecutive anchors and chip_to_wall applies it, which
-         * is what makes this paragraph true rather than aspirational.
+         * A datasheet typical did NOT remove the chip's oscillator tolerance —
+         * it preserved it exactly, because the interval is ticks times that
+         * constant, so a counter running a few percent fast made every dt a few
+         * percent long and scaled all integrated rotation by the same factor.
+         * ts_anchor_t measures the real period across consecutive anchors and
+         * chip_to_wall applies it, which is what makes this paragraph true
+         * rather than aspirational.  ctx->ts_tick_ns is what it falls back to
+         * before two anchors exist, and is the part's own declared period where
+         * the driver could ask for it (imu_ops_t.ts_tick_ns_actual) rather than
+         * the typical — so the first minute is close too, not just the rest.
          *
          * Clamped to [0.5x, 2x] nominal so FIFO-overflow gaps and anchor
          * resets fall back to the nominal period.
@@ -957,7 +967,7 @@ void *fusion_thread(void *arg)
         bool have_ts  = (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp);
         float dt      = f.dt;
         if (have_ts) {
-            chip_to_wall(&ctx->anchor, s.chip_ts, ctx->imu_ops->ts_tick_ns,
+            chip_to_wall(&ctx->anchor, s.chip_ts, ctx->ts_tick_ns,
                          &wall, &tai, &gen);
             if (ctx->imu_ops->has_hw_timestamp && s.chip_ts != 0 &&
                 prev_wall_ns != 0 && gen == prev_gen && wall > prev_wall_ns) {
@@ -1269,6 +1279,28 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         LOG_E("[imu] %s init failed\n", ctx->imu_ops->name);
         goto fail;
     }
+    /*
+     * Ask the part what its timer period really is, now that the bus is up and
+     * init() has run.  Resolved once and never again: the parts that answer do
+     * so from a factory trim register, which a reset cannot change, so the
+     * error-recovery re-init path above deliberately does not re-read it —
+     * that is the least healthy moment to add a bus transfer for a value that
+     * cannot have moved.  A driver with no hook, or one whose read fails,
+     * leaves the declared constant in place, which is what shipped before.
+     */
+    ctx->ts_tick_ns = ctx->imu_ops->ts_tick_ns;
+    if (ctx->imu_ops->ts_tick_ns_actual) {
+        uint32_t part = ctx->imu_ops->ts_tick_ns_actual(&ctx->imu_bus);
+        if (part != 0 && part != ctx->ts_tick_ns) {
+            LOG_I("[imu] %s declares a %u ns timer tick against the %u ns "
+                  "typical (%+.2f%%); using the part's own value\n",
+                  ctx->imu_ops->name, part, ctx->ts_tick_ns,
+                  ((double)part - (double)ctx->ts_tick_ns)
+                      / (double)ctx->ts_tick_ns * 100.0);
+            ctx->ts_tick_ns = part;
+        }
+    }
+
     if (ctx->actual_odr_hz != cfg->imu_odr_hz)
         LOG_I("[imu] %s 0x%02X OK — ODR %d Hz requested, %d Hz actual\n",
                 ctx->imu_ops->name, cfg->imu_addr,
