@@ -1,4 +1,4 @@
-\input texinfo  @c -*-texinfo-*-
+\input texinfo
 @c GENERATED from docs/manual.md by tools/gen-texi.py — do not edit.
 @c Edit the manual, then run `make docs-texi`.
 @setfilename imud.info
@@ -9,8 +9,6 @@
 @direntry
 * imud: (imud).                 IMU daemon for Raspberry Pi.
 @end direntry
-@settitle imud Manual
-
 @documentencoding UTF-8
 
 @ifnottex
@@ -82,6 +80,7 @@ formats, timestamp architecture), see
 
 @node 1 Overview
 @chapter 1. Overview
+@anchor{#1-overview}
 imud is a general-purpose IMU daemon --- @emph{gpsd for IMUs}. It owns
 the inertial sensor and does the real-time work once: it reads a
 gyroscope/accelerometer (IMU) and a magnetometer over I²C or SPI, fuses
@@ -164,6 +163,7 @@ exporter (see @ref{9a Bridges,,§9a Bridges}).
 
 @node 2 Building and installing
 @chapter 2. Building and installing
+@anchor{#2-building-and-installing}
 
 @menu
 * Prerequisites::
@@ -173,6 +173,7 @@ exporter (see @ref{9a Bridges,,§9a Bridges}).
 
 @node Prerequisites
 @section Prerequisites
+@anchor{#prerequisites}
 @itemize
 @item
 A Linux system with an I²C @strong{or} SPI bus and a GPIO character
@@ -205,6 +206,7 @@ sudo apt update && sudo apt install -y build-essential libgpiod-dev
 
 @node Build
 @section Build
+@anchor{#build}
 
 @verbatim
 make            # builds imud, imud-cal, imud-imutest, imud-status, imud-mon
@@ -216,6 +218,7 @@ make test       # builds and runs the host-side unit tests (no hardware needed)
 
 @node Install
 @section Install
+@anchor{#install}
 
 @verbatim
 sudo make install
@@ -310,6 +313,7 @@ Packagers also override @code{UDEVDIR} (default
 
 @node 3 Running imud
 @chapter 3. Running imud
+@anchor{#3-running-imud}
 
 @menu
 * In the foreground testing::
@@ -320,6 +324,7 @@ Packagers also override @code{UDEVDIR} (default
 
 @node In the foreground testing
 @section In the foreground (testing)
+@anchor{#in-the-foreground-testing}
 
 @verbatim
 imud --config config/imud.conf
@@ -334,6 +339,7 @@ imud --config config/sim.conf
 
 @node As a systemd service
 @section As a systemd service
+@anchor{#as-a-systemd-service}
 
 @verbatim
 sudo systemctl enable --now imud     # start now and on boot
@@ -396,6 +402,7 @@ socket) are created at mode 0660 rather than chmod'd down after
 
 @node Command-line options
 @section Command-line options
+@anchor{#command-line-options}
 
 @verbatim
 imud [OPTIONS]
@@ -418,6 +425,7 @@ an error (built-in defaults are used).
 
 @node Signals
 @section Signals
+@anchor{#signals}
 @multitable @columnfractions 0.26 0.74 
 @headitem 
 Signal
@@ -447,6 +455,7 @@ Reload with @code{sudo systemctl reload imud} or
 
 @node 4 Configuration reference
 @chapter 4. Configuration reference
+@anchor{#4-configuration-reference}
 imud is configured with a single TOML-like text file.
 
 @strong{Default locations.} @code{--config /path/to/imud.conf} names the
@@ -544,6 +553,7 @@ key inline and is the fastest way to see a working configuration.
 
 @node [device]
 @section [device]
+@anchor{#device}
 Hardware bus and GPIO controller. @strong{[restart]}
 
 @multitable @columnfractions 0.15 0.09 0.19 0.56 
@@ -596,6 +606,7 @@ the pipeline accepts.
 
 @node [imu]
 @section [imu]
+@anchor{#imu}
 IMU (gyroscope + accelerometer) driver settings. @strong{[restart]}
 
 @multitable @columnfractions 0.19 0.09 0.19 0.53 
@@ -676,11 +687,17 @@ rates of some parts are beyond what a Raspberry Pi can sustain.
  @tab int
  @tab @code{64}
  @tab FIFO watermark in sample-sets. Controls interrupt latency vs. CPU
-wake-up frequency. At 833 Hz, @code{32} ≈ 38 ms; @code{64} ≈ 77 ms.
+wake-up frequency. At 833 Hz, @code{32} ≈ 38 ms; @code{64} ≈ 77 ms ---
+those are the age of the @emph{oldest} sample in a full burst, so the
+median is about half. On the ST parts a watermark of 8 or more also
+batches the chip timestamp into the FIFO (see @code{docs/ROADMAP.md}
+§1.1); at 32 and above that costs 1.6% of the word budget, so the same
+watermark holds about 63 sample-sets rather than 64.
 @end multitable
 
 @node [mag]
 @section [mag]
+@anchor{#mag}
 Magnetometer driver settings. @strong{[restart]}
 
 @multitable @columnfractions 0.19 0.09 0.18 0.54 
@@ -747,6 +764,7 @@ gradual magnetisation of the sensor. Set @code{0} to disable.
 
 @node [fusion]
 @section [fusion]
+@anchor{#fusion}
 MEKF noise parameters and tuning knobs. @strong{[hot]}
 
 Applied live on SIGHUP. The @code{mekf_*} noise densities are
@@ -909,6 +927,7 @@ less. Only active when @code{engine_vibration_g2 > 0}.
 
 @node [calibration]
 @section [calibration]
+@anchor{#calibration}
 Calibration file and startup behaviour. @strong{[restart]}
 
 @multitable @columnfractions 0.27 0.09 0.29 0.35 
@@ -958,6 +977,7 @@ Set @code{0} to skip bias estimation.
 
 @node [nmea]
 @section [nmea]
+@anchor{#nmea}
 NMEA 0183 output --- UDP broadcast and/or a TCP listener, independently
 enabled (both off by default; since 1.6 a stock daemon emits only on the
 local @code{[stream]} socket). @strong{[restart]}: @code{enabled},
@@ -1018,6 +1038,7 @@ host-local.
 
 @node [highrate]
 @section [highrate]
+@anchor{#highrate}
 High-rate binary UDP stream (500 Hz by default). @strong{[restart]}:
 @code{enabled}, @code{dest_addr}, @code{dest_port}, @code{coord_frame}.
 @strong{[hot]}: @code{rate_hz}.
@@ -1068,6 +1089,7 @@ mag vector fields in the binary packet.
 
 @node [stream]
 @section [stream]
+@anchor{#stream}
 Local AF_UNIX subscription stream --- the same 276-byte binary packets
 as @code{[highrate]}, but over a @code{SOCK_STREAM} socket. Same-host
 consumers get a loss-free stream and subscribe by connecting (up to 8 at
@@ -1124,6 +1146,7 @@ host-local.
 
 @node [capture]
 @section [capture]
+@anchor{#capture}
 The black box: records every raw sensor sample (pre-mount,
 pre-calibration --- exactly as the driver delivered it) to rotating
 @code{.imucap} files. Replay with @code{imud --replay}; analyze with
@@ -1172,6 +1195,7 @@ truncated tail.
 
 @node Bridge sections their own files
 @section Bridge sections (their own files)
+@anchor{#bridge-sections-their-own-files}
 The optional bridge daemons --- @code{imud-signalk}, @code{imud-mqtt},
 @code{imud-influxdb}, @code{imud-mavlink}, @code{imud-prometheus} ---
 each read their @strong{own} config file
@@ -1184,6 +1208,7 @@ position @emph{from} Signal K.)
 
 @node [mount]
 @section [mount]
+@anchor{#mount}
 Board-to-body rotation for installations where the chip X axis does not
 point along the platform's forward axis (the bow, on a vessel).
 @strong{[restart]}
@@ -1236,6 +1261,7 @@ preset = "yaw_180"
 
 @node [logging]
 @section [logging]
+@anchor{#logging}
 Diagnostic log output. @strong{[hot]}: @code{level}, @code{stats_hz}.
 @strong{[restart]}: @code{file} (path changes; the file itself is
 reopened on every reload).
@@ -1244,6 +1270,17 @@ Repeated identical messages are suppressed and logged as a
 @code{last message repeated N times} count. The most recent
 warnings/errors are also shown by @code{imud-status} ("Recent
 warnings").
+
+The @code{[stats]} line ends with a sample-latency clause ---
+@code{fifo=p50/p99 pipe=p50/p99 max=@dots{}} in milliseconds --- on
+parts that have a hardware timestamp counter. @code{fifo} is FIFO
+residence, which @code{fifo_wm} buys deliberately; @code{pipe} is the
+daemon's own cost from read to fused state, and is the term to hold to a
+budget. Two things are normal rather than faults: the clause is
+@strong{absent entirely} on @code{icm20948} and @code{mpu925x}, which
+have no chip timer to measure against, and it takes a few seconds to
+appear on the others, because the chip's real tick period has to be
+measured against the host clock before FIFO residence means anything.
 
 @multitable @columnfractions 0.14 0.09 0.12 0.65 
 @headitem 
@@ -1278,6 +1315,7 @@ it (@code{postrotate: systemctl reload imud}).
 
 @node [position]
 @section [position]
+@anchor{#position}
 Magnetic declination and true heading. @strong{[hot]:}
 @code{declination_deg}, @code{lat_deg}, @code{lon_deg}, @code{wmm_file}
 --- declination and the WMM field reference are recomputed on SIGHUP (a
@@ -1447,6 +1485,7 @@ declination valid indefinitely. After the window expires without a fix,
 
 @node 5 Supported drivers
 @chapter 5. Supported drivers
+@anchor{#5-supported-drivers}
 The names below are the values for @code{imu.driver} and
 @code{mag.driver} in the config. Drivers live in @code{src/drivers/} and
 are registered in @code{src/drivers.c}. Links to the manufacturers'
@@ -1750,6 +1789,7 @@ have.
 
 @node Sample rates and which ones your host can actually run
 @section Sample rates, and which ones your host can actually run
+@anchor{#sample-rates-and-which-ones-your-host-can-actually-run}
 Each driver advertises exactly the rates its part can be programmed to.
 Ask for something else and imud rounds @strong{up} to the next one the
 chip supports, tunes the filter for that rate, and logs
@@ -1815,6 +1855,7 @@ writes.
 
 @node Fitting an MPU-9250 or MPU-9255
 @section Fitting an MPU-9250 or MPU-9255
+@anchor{#fitting-an-mpu-9250-or-mpu-9255}
 Wiring, the @code{config.txt} I²C settings, and a ready-made
 @code{imud.conf} follow.
 
@@ -1859,6 +1900,7 @@ error from the mag driver.
 
 @node Running a sensor on SPI
 @section Running a sensor on SPI
+@anchor{#running-a-sensor-on-spi}
 SPI moves the same registers over a faster link. That matters in two
 places: the high sample rates a part advertises stop being limited by
 the bus, and the FIFO drain --- which @code{imud-mon} reports separately
@@ -1919,6 +1961,7 @@ I²C.
 
 @node 6 Calibration
 @chapter 6. Calibration
+@anchor{#6-calibration}
 Calibration is strongly recommended before first use. Stop the daemon
 first (@code{imud-cal} talks to the hardware directly):
 
@@ -1986,6 +2029,7 @@ cal.json. Never touches the sensors.
 
 @node The six accelerometer positions
 @section The six accelerometer positions
+@anchor{#the-six-accelerometer-positions}
 Remember that the board frame has @strong{Z pointing down} (§11), so the
 axis pointing @strong{up} reads +g and the axis pointing @strong{down}
 reads −g. Flat and component-side up therefore reads
@@ -2053,6 +2097,7 @@ degrading and the swing should be repeated.
 
 @node Checking the filter against real water
 @section Checking the filter against real water
+@anchor{#checking-the-filter-against-real-water}
 Two knobs decide how much the filter trusts the accelerometer, and they
 are not interchangeable:
 
@@ -2147,10 +2192,11 @@ sudo systemctl start imud
 
 @node 7 Output streams
 @chapter 7. Output streams
+@anchor{#7-output-streams}
 imud publishes on up to three streams simultaneously. Full wire formats
 are in
 @uref{https://github.com/richcreations/imud/blob/main/spec.md,spec.md
-§7--8@comma{} §10}.
+§7--8, §10}.
 
 @quotation
 @strong{Default posture (since 1.6):} a stock daemon enables only the
@@ -2169,6 +2215,7 @@ of the box.
 
 @node NMEA 0183 --- UDP broadcast and/or TCP listener port 10110 default off
 @section NMEA 0183 --- UDP broadcast and/or TCP listener, port 10110 (default off)
+@anchor{#nmea-0183--udp-broadcast-andor-tcp-listener-port-10110-default-off}
 Text sentences for chartplotters, autopilots, and marine software
 (Signal K, OpenCPN). Two transports, independently enabled:
 
@@ -2213,6 +2260,7 @@ configured.
 
 @node High-rate binary --- UDP port 10111 default off
 @section High-rate binary --- UDP port 10111 (default off)
+@anchor{#high-rate-binary--udp-port-10111-default-off}
 A fixed 276-byte little-endian packet (wire v17) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance,
@@ -2237,6 +2285,7 @@ sentences above, which are Euler by definition.
 
 @node Local subscription stream --- AF_UNIX socket default on + TCP listener default off
 @section Local subscription stream --- AF_UNIX socket (default on) + TCP listener (default off)
+@anchor{#local-subscription-stream--af_unix-socket-default-on--tcp-listener-default-off}
 @quotation
 This is the one output a stock daemon enables --- the bridges and
 libimud consumers read it.
@@ -2270,6 +2319,7 @@ sockets are bound.
 
 @node NMEA 2000 --- via Signal K recipe no imud code involved
 @section NMEA 2000 --- via Signal K (recipe, no imud code involved)
+@anchor{#nmea-2000--via-signal-k-recipe-no-imud-code-involved}
 imud has no direct N2K output by design: the Signal K server already
 owns the hard device-level work (ISO address claim, product info) and
 its
@@ -2358,6 +2408,7 @@ themselves.
 
 @node 8 Monitoring and diagnostics
 @chapter 8. Monitoring and diagnostics
+@anchor{#8-monitoring-and-diagnostics}
 
 @menu
 * imud-status::
@@ -2369,6 +2420,7 @@ themselves.
 
 @node imud-status
 @section imud-status
+@anchor{#imud-status}
 Query a running daemon over its Unix socket:
 
 @verbatim
@@ -2383,6 +2435,7 @@ warnings" section listing the last few warning/error log lines. Use
 
 @node imud-mon
 @section imud-mon
+@anchor{#imud-mon}
 A receive-side monitor that listens on the UDP output ports from any
 host on the LAN (it needs no access to the daemon's socket):
 
@@ -2398,6 +2451,7 @@ and validates each binary packet (magic + CRC) before display.
 
 @node imud-imutest
 @section imud-imutest
+@anchor{#imud-imutest}
 Validates a sensor driver against real hardware and writes a Markdown
 report suitable for attaching to an issue. Ships in @code{imud-utils};
 full documentation is in @code{man 8 imud-imutest} and under
@@ -2421,6 +2475,7 @@ open an issue with the report.
 
 @node Raw capture with netcat
 @section Raw capture with netcat
+@anchor{#raw-capture-with-netcat}
 
 @verbatim
 nc -u -l 10110                    # watch NMEA sentences (UDP broadcast)
@@ -2432,6 +2487,7 @@ nc HOST 10112 | xxd | head        # framed binary stream over TCP
 
 @node Logging
 @section Logging
+@anchor{#logging-1}
 imud logs to stderr (captured by journald under systemd) or to a file
 set by @code{logging.file}. The verbosity is @code{logging.level} and is
 hot-reloadable. Repeated identical messages are collapsed into a repeat
@@ -2449,6 +2505,7 @@ reopened on SIGHUP). See the @ref{[logging],,[logging]} config section.
 
 @node 9 Consumer libraries
 @chapter 9. Consumer libraries
+@anchor{#9-consumer-libraries}
 The @code{lib/} directory has ready-to-use clients for the binary
 stream, and a microcontroller client lives in its own repository:
 
@@ -2498,6 +2555,7 @@ package ships fuller usage examples under
 
 @node 9a Bridges
 @chapter 9a. Bridges
+@anchor{#9a-bridges}
 imud has optional @strong{bridge daemons} that republish its stream into
 other ecosystems. Each is a @strong{separate, optional package} with its
 own config file, systemd service, man pages, and documentation (README +
@@ -2561,6 +2619,7 @@ with a warning.)
 
 @node 10 Troubleshooting
 @chapter 10. Troubleshooting
+@anchor{#10-troubleshooting}
 @multitable @columnfractions 0.34 0.66 
 @headitem 
 Symptom
@@ -2655,6 +2714,7 @@ failure modes are in
 
 @node 11 Writing a driver
 @chapter 11. Writing a driver
+@anchor{#11-writing-a-driver}
 This section explains how to add support for a new IMU or magnetometer
 chip. The driver abstraction lives in @code{include/drivers.h}; existing
 drivers in @code{src/drivers/} are the best reference. Start by reading
@@ -2677,6 +2737,7 @@ dependencies.
 
 @node Overview
 @section Overview
+@anchor{#overview}
 imud separates chips into two independent driver types:
 
 @multitable @columnfractions 0.38 0.33 0.28 
@@ -2739,6 +2800,7 @@ depends on).
 
 @node Conventions that must be followed exactly
 @section Conventions that must be followed exactly
+@anchor{#conventions-that-must-be-followed-exactly}
 Getting these wrong produces silently wrong attitude output.
 
 @menu
@@ -2751,6 +2813,7 @@ Getting these wrong produces silently wrong attitude output.
 
 @node Output coordinate frame --- NED-compatible board frame
 @subsection Output coordinate frame --- NED-compatible board frame
+@anchor{#output-coordinate-frame--ned-compatible-board-frame}
 All drivers must output sensor data in the @strong{NED-compatible board
 frame}:
 
@@ -2776,6 +2839,7 @@ Only yaw needs setting when the chip X axis does not align with the bow.
 
 @node Accelerometer output --- specific force m/s²
 @subsection Accelerometer output --- specific force, m/s²
+@anchor{#accelerometer-output--specific-force-ms²}
 Drivers report @strong{specific force} in the NED-compatible board
 frame.
 
@@ -2794,6 +2858,7 @@ reach the board frame above.
 
 @node Gyroscope output --- rad/s right-hand rule
 @subsection Gyroscope output --- rad/s, right-hand rule
+@anchor{#gyroscope-output--rads-right-hand-rule}
 Scale raw counts to @strong{rad/s} (not deg/s):
 
 @verbatim
@@ -2806,12 +2871,14 @@ from above (yaw right) in the NED Z-down convention.
 
 @node Magnetometer output --- µT
 @subsection Magnetometer output --- µT
+@anchor{#magnetometer-output--µt}
 Output magnetic field in @strong{microtesla (µT)} in the same board
 frame as the IMU. If your datasheet gives mGauss/LSB or counts/Gauss,
 convert with @code{1 Gauss = 100 µT}.
 
 @node Axis remapping for the magnetometer
 @subsection Axis remapping for the magnetometer
+@anchor{#axis-remapping-for-the-magnetometer}
 Many magnetometers share a PCB with the IMU but with one or more axes
 physically inverted. After scaling, apply the sign flips needed so the
 mag output is in the same NED-compatible board frame as the IMU.
@@ -2829,6 +2896,7 @@ out->field[2] =  (rz - NULL_FIELD) * scale;   /* Z already points down */
 
 @node The register helpers
 @section The register helpers
+@anchor{#the-register-helpers}
 All drivers share the register helpers in @code{src/drivers/bus_io.h}
 --- include it and call them; do not roll your own:
 
@@ -2874,6 +2942,7 @@ any new I/O on this path; SMBus calls, @code{I2C_SLAVE}, or
 
 @node Writing an IMU driver imu_ops_t
 @section Writing an IMU driver (imu_ops_t)
+@anchor{#writing-an-imu-driver-imu_ops_t}
 
 @menu
 * Static driver state::
@@ -2886,6 +2955,7 @@ any new I/O on this path; SMBus calls, @code{I2C_SLAVE}, or
 
 @node Static driver state
 @subsection Static driver state
+@anchor{#static-driver-state}
 Because the daemon runs exactly one IMU at a time, each driver stores
 its runtime state in a file-scoped static struct:
 
@@ -2904,6 +2974,7 @@ uses gaps in @code{seq} to detect dropped samples.
 
 @node probebus → 0 or -1
 @subsection probe(bus) → 0 or -1
+@anchor{#probebus--0-or--1}
 Read the WHO_AM_I (or equivalent) register and verify it against the
 datasheet value. Log a clear error with the received and expected values
 on mismatch.
@@ -2931,6 +3002,7 @@ they respect the operator's @code{logging.level}.
 
 @node resetbus → 0 or -1
 @subsection reset(bus) → 0 or -1
+@anchor{#resetbus--0-or--1}
 Trigger a software reset and wait for the bit to self-clear. Always add
 the chip's specified power-on time after the reset bit clears ---
 skipping this causes init failures on slower hardware.
@@ -2960,6 +3032,7 @@ done:
 
 @node initbus cfg → 0 or -1
 @subsection init(bus, cfg) → 0 or -1
+@anchor{#initbus-cfg--0-or--1}
 Configure ODR, full-scale range, FIFO mode (if applicable), and
 interrupt routing. Save the resulting sensitivity values to the static
 @code{s} struct. @code{cfg->odr_hz} is already resolved: the daemon asks
@@ -2990,6 +3063,7 @@ static int myimu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 
 @node readbus buf max *n_out → 0 1 or -1
 @subsection read(bus, buf, max, *n_out) → 0, 1, or -1
+@anchor{#readbus-buf-max-n_out--0-1-or--1}
 The hot path --- called at the configured ODR. Fill @code{buf[]} with up
 to @code{max} calibrated @code{imu_sample_t} samples, set @code{*n_out}
 to the number produced, and return:
@@ -3045,6 +3119,7 @@ buf[i].chip_ts   /* see Hardware timestamps below */
 
 @node Hardware timestamps has_hw_timestamp
 @subsection Hardware timestamps (has_hw_timestamp)
+@anchor{#hardware-timestamps-has_hw_timestamp}
 Set @code{has_hw_timestamp = true} only if your chip has an internal
 sample timer that increments at a @strong{fixed rate independent of the
 I²C clock}.
@@ -3061,6 +3136,19 @@ rotation by the same 4%. What the driver must get right is the
 monotonically at a rate that does not depend on bus traffic or ODR. Get
 the period roughly right (within 10%, or the measurement is rejected as
 implausible) and the daemon handles the rest.
+
+If your part can say what @emph{its own} timer period is, implement the
+optional @code{ts_tick_ns_actual} hook and hand it back. The daemon
+calls it once after @code{init()}, with the bus open, and uses the
+answer everywhere it would have used your constant. Return 0 --- on a
+failed read, or when there is nothing to ask --- and the declared value
+stands. This does not replace the runtime measurement above; it fixes
+the @emph{first minute}, before two anchors exist. On a part several
+percent off nominal that window is not cosmetic: the extrapolated sample
+time drifts far enough from the host clock that the sample-latency
+histogram stops recording. The ST 6-axis parts carry the answer in
+@code{INTERNAL_FREQ_FINE} (0x63), and @code{src/drivers/st_freq_fine.h}
+does the arithmetic for all of them.
 
 The ISM330DHCX has a 32-bit counter at 40000 ticks/s (25 µs/tick). If
 your chip has an equivalent:
@@ -3088,6 +3176,7 @@ the wall-clock anchor on every burst.
 
 @node Writing a magnetometer driver mag_ops_t
 @section Writing a magnetometer driver (mag_ops_t)
+@anchor{#writing-a-magnetometer-driver-mag_ops_t}
 
 @menu
 * probe reset init::
@@ -3098,6 +3187,7 @@ the wall-clock anchor on every burst.
 
 @node probe reset init
 @subsection probe, reset, init
+@anchor{#probe-reset-init}
 Same pattern as the IMU driver. @code{init} configures the ODR and
 enables continuous measurement. If the chip has an interrupt pin, enable
 it during @code{init} so the mag reader thread can wake on a GPIO edge
@@ -3105,6 +3195,7 @@ rather than polling.
 
 @node readbus *out → 0 1 or -1
 @subsection read(bus, *out) → 0, 1, or -1
+@anchor{#readbus-out--0-1-or--1}
 @multitable @columnfractions 0.09 0.91 
 @headitem 
 Return
@@ -3135,6 +3226,7 @@ issue.
 
 @node set_reset optional
 @subsection set_reset (optional)
+@anchor{#set_reset-optional}
 Some magnetometers have a SET/RESET degaussing coil that restores the
 AMR sensing elements after exposure to a strong field. If your chip has
 one, implement @code{set_reset} and set @code{has_set_reset = true}; the
@@ -3144,6 +3236,7 @@ coil (e.g. AK09916).
 
 @node has_interrupt
 @subsection has_interrupt
+@anchor{#has_interrupt}
 Set @code{has_interrupt = true} if the chip asserts an external
 interrupt pin on measurement complete --- the mag reader thread requests
 a GPIO edge on @code{[mag] int_gpio} and calls @code{read()} on each
@@ -3152,6 +3245,7 @@ in bypass mode); the reader falls back to a 10 ms poll loop.
 
 @node The supported_* tables
 @section The supported_* tables
+@anchor{#the-supported_-tables}
 Zero-terminated ascending integer arrays telling the daemon which rates
 your chip supports. @code{imu.c} resolves the operator's requested rate
 against these before it reaches your @code{init()} --- see the next
@@ -3173,6 +3267,7 @@ The last element must be @code{0} (sentinel); keep the list ascending.
 
 @node The actual_odr_hz hook
 @section The actual_odr_hz hook
+@anchor{#the-actual_odr_hz-hook}
 
 @verbatim
 int (*actual_odr_hz)(int requested);
@@ -3215,6 +3310,7 @@ probably mean" --- and must not be used to decide tuning.
 
 @node Registering the driver
 @section Registering the driver
+@anchor{#registering-the-driver}
 Edit @code{src/drivers.c} --- two additions per driver:
 
 @verbatim
@@ -3247,6 +3343,7 @@ in its ops struct so the daemon warns at startup.
 
 @node Testing without hardware --- the sim driver
 @section Testing without hardware --- the sim driver
+@anchor{#testing-without-hardware--the-sim-driver}
 @code{src/drivers/sim.c} implements both @code{sim_imu_ops} and
 @code{sim_mag_ops}. It simulates a small boat under way, yawing at 6°/s
 from a 60° start heading with wave-induced roll and pitch. To exercise
@@ -3275,6 +3372,7 @@ heading      increases ~6°/s from a 60° start
 
 @node Pre-submission checklist
 @section Pre-submission checklist
+@anchor{#pre-submission-checklist}
 @itemize
 @item
 ☐ @code{probe()} reads and validates the chip identity register.

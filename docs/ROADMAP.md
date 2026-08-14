@@ -27,9 +27,18 @@ it intends *not* to do. Items name the section that carries the detail.
   simulation. This gates confidence in most of §10.
 - **Fit real gyro temperature coefficients (§2).** The mechanism shipped in
   1.5; what is missing is a cold-boot-to-warm capture from real hardware.
-- **Measure sample latency on silicon and fix spec §14 (§3.1).** The instrument
-  shipped; the FIFO-residence term cannot be validated under sim, and one of the
-  three budgeted numbers looks wrong as written. Same bench session as §1 and §2.
+- **Finish measuring sample latency on silicon and fix spec §14 (§3.1).** The
+  pipeline term is now measured — 0.26 ms p99 on a Pi 5, against a 1.5 ms
+  budget. FIFO residence is measured on I²C but is drain-rate-bound rather
+  than watermark-bound, which ties it to §1.1's DRDY item; SPI is unmeasured
+  entirely. One of the three budgeted numbers still looks wrong as written.
+  Same bench session as §1 and §2.
+- **Confirm 1.9.0's timestamp sourcing on silicon (§1.1).** All three
+  follow-ons from the 1.9.0 RC bench run are implemented and unit-tested, and
+  two of them rest on datasheet behaviour no hardware has confirmed: the ST
+  tag-`0x04` payload layout and whether `TAG_CNT` participates for it. Both
+  are cross-checked at runtime and degrade rather than corrupt, but a bench
+  pass is what turns "degrades safely" into "works".
 - **Build the two missing benchmark scenarios (§10.3, §10.5).** Both remaining
   filter items are blocked on scenarios that do not exist — a vibration case
   and a calm-water case. The scenario *is* the work: 1.7 refuted two
@@ -124,57 +133,111 @@ duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
 cannot build on the macOS dev host, so CI and the Pi are the only places they
 have ever run.
 
-### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(follow-ons, hardware-gated)*
+### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(closed in code — awaiting bench confirmation)*
 
 The 2026-08-10 Pi 5 session on the reference pair produced four findings. Two
-were shipped fixes (the ARM seccomp filter, the gpio udev trigger); these are
-what they left open.
+were shipped fixes (the ARM seccomp filter, the gpio udev trigger); the rest
+are below. All three are now **implemented and unit-tested**, and none has met
+silicon. What each one still owes the bench is stated with it.
 
-- **Batch the FIFO's own timestamp instead of back-calculating.**
-  `ism330dhcx`, `lsm6dso` and `icm42688p` all time a burst by reading the live
+- **Batch the FIFO's own timestamp instead of back-calculating** — *done*.
+  `ism330dhcx`, `lsm6dso` and `icm42688p` timed a burst by reading the live
   counter *after* the drain and stepping back one sample period per sample.
   That register reads "now", and the lag to the newest sample moves with bus
   and scheduler jitter, so bursts overlap — measured at 2–4 `chip_ts` reversals
-  per 5 s window. 1.9.0 ships `src/drivers/chip_ts.h`, which enforces
-  monotonicity but does not improve the *estimate*.
+  per 5 s window. `src/drivers/chip_ts.h` enforced monotonicity; the estimate
+  itself is now fixed at source.
 
-  The parts can timestamp where the samples are produced: ST via
-  `DEC_TS_BATCH` + FIFO tag `0x04`, the ICM-42688-P via bytes `[14:15]` of each
-  packet, which it already reads and discards. **Three reasons this waits for
-  hardware**, all established while writing the guard: DS13012 never states
-  whether the timestamp word precedes or follows the sample set it describes
-  (§6.5.7 is silent); batching changes FIFO word traffic and therefore the
-  watermark arithmetic, which moves the very sample-latency figures §3.1 exists
-  to measure; and on the ICM the per-packet stamp is 16-bit at 1 µs, wrapping
-  every 65.5 ms — shorter than a 77 ms drain at the default watermark — so it
-  needs in-burst unwrapping. The ICM half carries none of the watermark risk
-  and can go first.
+  ST parts batch the counter into the FIFO as tag-`0x04` words
+  (`src/drivers/st_fifo_ts.h`) and anchor the burst on one. The ICM-42688-P
+  uses bytes `[14:15]` of each packet, which it was already reading and
+  discarding. Both fall back to the old path, whole, when their checks fail.
 
-- **Derive `ts_tick_ns` from `INTERNAL_FREQ_FINE`.** The ST parts report their
-  own timebase error in 0.15% steps at register `0x63`, with
-  `TS_Res = 1/(40000 + 0.0015·FREQ_FINE·40000)` (DS13012 §9.36). The bench's
-  4.1%-fast reference part should declare about +27. 1.9.0 has `imud-imutest`
-  read and report it, so the oscillator explanation is confirmed rather than
-  inferred; the *driver* still declares a constant, because `ts_tick_ns` is a
-  const field in `imu_ops_t` and making it per-part is a `drivers.h` interface
-  change. Low urgency: `ts_anchor_t` already measures the real period at
-  runtime, so this buys principle rather than accuracy.
+  Two of the three original blockers dissolved on a closer read, and the third
+  was designed around:
 
-- **The DRDY edge rate fits no model** *(uncharacterised — measure first)*.
-  `imu.drdy.edges` reported ~18.3 Hz on the reference IMU at 833 Hz with
-  `fifo_wm = 64`. Ruled out by inspection: word accounting predicts 13.6 Hz
-  (2 words per sample-set at the measured 866.7 Hz, plus temperature at 12.5 Hz,
-  against a 128-word watermark — `FIFO_CTRL4 = 0x26` batches no timestamps);
-  the tool drains while counting, so it is not a stalled FIFO; and both the tool
-  and the daemon request rising edges only, so it is not double-counting.
+  - *Ordering.* DS13012 never says whether the timestamp word precedes or
+    follows its sample set — and never has to. `FIFO_DATA_OUT_TAG` carries
+    `TAG_CNT`, "a 2-bit counter which identifies sensor time slot"
+    (Table 158), so the word is matched to its slot rather than its position.
+  - *Watermark arithmetic.* Real only at `DEC_TS_BATCH = 01` (+50% words). At
+    `11` (÷32) it is **+1.6%**, so a 128-word watermark holds ~63 sample-sets
+    instead of 64 and §3.1's figures stay comparable. Below `fifo_wm = 8`
+    nothing is batched at all.
+  - *The ICM's 16-bit stamp.* Unwrapped in-burst against the 32-bit `TMSTVAL`
+    read, walking newest to oldest. Only *adjacent* samples need to be under
+    one repeat apart, which is a property of the ODR — so 12 Hz (78125 ticks
+    against a 65536-tick repeat) keeps the back-calculated path, decided once
+    at init.
+
+  **Owed to the bench.** The tag-`0x04` payload layout (LE-32 in the X/Y
+  bytes) is ST's and Linux's convention, not a documented one, so it is
+  cross-checked against the post-drain register read at runtime rather than
+  trusted; a rejection counter logs at 1, 10, 100. Confirm it reads zero.
+  Confirm `TAG_CNT` actually participates for tag `0x04` — if it does not, the
+  match degrades to off-by-one-sample (1.2 ms at 833 Hz, constant across a
+  burst, so `dt` is unaffected). And confirm `imu.chipts.monotonic` still
+  reports zero reversals, now for the right reason.
+
+- **Derive `ts_tick_ns` from `INTERNAL_FREQ_FINE`** — *done*. The ST parts
+  report their own timebase error in 0.15% steps at register `0x63`, with
+  `TS_Res = 1/(40000 + 0.0015·FREQ_FINE·40000)` (DS13012 §9.41). `imu_ops_t`
+  gained an optional `ts_tick_ns_actual` hook, resolved once after `init()`;
+  `src/drivers/st_freq_fine.h` does the arithmetic for all three ST
+  descriptors. The bench part's +27 becomes a 24027 ns tick against the 25000
+  typical.
+
+  This turned out not to be the principle-only item it was filed as. §3.1's
+  latency instrument produced no data at all in the 2026-08-11 matrix because
+  `chip_to_wall()` falls back to the declared tick until `ts_anchor_t` has two
+  anchors 20 s apart, and at 4% fast the extrapolated sample time outruns the
+  read stamp within seconds. Getting the declared value right is what makes
+  the first minute behave like the rest of the run.
+
+  Also found and fixed: the **ICM-42688-P's declared tick was wrong by 6.7%**.
+  DS-000347 §12.7 scales the timestamp counter by 32/30 whenever the part is
+  not clocked from CLKIN, which is every configuration this driver programs —
+  so `ts_tick_ns` is 1067, not 1000, and `ticks_per_sample` divides 937500.
+
+  **Owed to the bench.** That `FREQ_FINE` reads about +27 on the reference
+  part, and that `imu.chipts.wall` now sits at ~1.0000 rather than 1.041.
+  Whether the ICM's `TMSTVAL` shares the FIFO field's 32/30 scaling is not
+  stated in DS-000347; `imu.chipts.wall` prints the implied tick, so one run
+  settles it.
+
+  **Deliberately not done.** `FREQ_FINE` scales the *effective ODR* by the
+  same factor — `ODR_Actual = (6667 + 0.0015·FREQ_FINE·6667)/ODR_Coeff`
+  (Table 139) — which is why the bench measured 866.7 Hz against a nominal
+  833. Correcting `actual_odr_hz` for it is defensible but much wider: that
+  value is also the requested-rate contract that config validation, the MEKF
+  tuning, the latency publish gates and the generated documentation tables all
+  key off, and it is resolved before the bus is open. `ts_anchor_t` measures
+  the true sample interval at runtime regardless.
+
+- **The DRDY edge rate fits no model** *(instrument shipped — measurement
+  still owed)*. `imu.drdy.edges` reported ~18.3 Hz on the reference IMU at
+  833 Hz with `fifo_wm = 64`. Ruled out by inspection: word accounting
+  predicts 13.6 Hz (2 words per sample-set at the measured 866.7 Hz, plus
+  temperature at 12.5 Hz, against a 128-word watermark); the tool drains while
+  counting, so it is not a stalled FIFO; and both the tool and the daemon
+  request rising edges only, so it is not double-counting.
 
   Remaining hypothesis: `INT1_FIFO_TH` is a *level* condition and the level
-  oscillates across the threshold during the drain, as words are consumed while
-  new ones arrive, with each crossing producing another rising edge. If so, an
-  edge count cannot identify an "interrupt model" at all and that check needs
-  rewording. Test by counting edges with and without the drain callback.
-  **Re-measure after any timestamp-batching change**, which moves the word
-  accounting this rests on.
+  oscillates across the threshold during the drain, as words are consumed
+  while new ones arrive, with each crossing producing another rising edge.
+
+  `imud-imutest` now counts twice over the same window — once draining on
+  every edge, once not — which separates the candidates: a level condition
+  asserts once and stays asserted with nothing emptying the FIFO, while an
+  edge-per-sample line keeps pulsing. Both counts are in the report appendix.
+  The check no longer grades a part down for fitting neither model, because an
+  edge count never could identify one; 0 edges still FAILs, and a rate above
+  the part's own sample rate still WARNs.
+
+  **Owed to the bench.** The second number. Note the word accounting above
+  rests on `FIFO_CTRL4 = 0x26`, which is now `0xE6` at the shipped watermark —
+  the ÷32 timestamp words add 1.6%, moving the prediction from 13.6 to about
+  13.4 Hz, which does not change the conclusion that 18.3 fits neither model.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
@@ -192,7 +255,7 @@ warm it gently mid-capture).
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
 
-### 3.1 spec §14's latency budgets are unvalidated, and one looks wrong  *(bench — instrument shipped, measurement owed)*
+### 3.1 spec §14's latency budgets, one of them now measured  *(the pipeline term is in; FIFO residence and SPI still owed)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
 end-to-end at 3 ms. Nothing measured any of them until now, and the end-to-end
@@ -214,6 +277,32 @@ nominal rate rather than tracking elapsed time, so its FIFO column reports the
 sim's own batching. Reading it as FIFO residence would be an instrument artifact
 of exactly the kind §10.9 was written to avoid. The pipeline column *is* real
 and measured ~0.5–1.0 ms p50 in a container, but that is a loaded laptop, not a Pi.
+
+**Half of it is now measured.** The 2026-08-11 Pi 5 soak (30 minutes,
+`ism330dhcx` on I²C at 833 Hz, `fifo_wm = 64`) gave:
+
+| term | p50 | p99 | against |
+|---|---|---|---|
+| `pipe` — read complete → state fused | — | **0.26 ms** | 1.5 ms budget |
+| `fifo` — sample taken → read complete | 16.4–32.8 ms | 32.8 ms | `wm/odr` = 77 ms |
+
+So the term imud actually controls comes in **6× under budget** on a Pi 5,
+which is the number §14's fusion-latency row was always about. Two cautions on
+reading the other one:
+
+- **`fifo` is drain-rate-bound, not watermark-bound.** 77 ms is the residence
+  of the *oldest* sample in a full burst; the tool reports p50/p99 across all
+  samples, so the right expectations are `p50 ≈ wm/(2·odr)` and
+  `p99 ≈ wm/odr`. Even against those, the measured 33 ms p99 is short — it
+  corresponds to draining at ~18.6 Hz rather than the 13 Hz a watermark-paced
+  drain would give, which is the same phenomenon §1.1's DRDY item is chasing,
+  seen from the other side. The two findings corroborate each other.
+- **The same run's 40 s matrix produced no data at all**, because the chip's
+  tick period was still unmeasured for the first minute. Fixed in 1.9.0 (§1.1,
+  bullet 2, plus the publish-gate split) — but any future matrix window must
+  outlive the first re-anchor, now 25 s.
+
+Still owed: the same pair on SPI, and at the rates only SPI can carry.
 
 **Then fix §14.** The likely defect is the label rather than the number — "I2C
 sample" probably meant the sample as delivered by the read, making the row a

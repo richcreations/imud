@@ -485,10 +485,18 @@ ISM330DHCX: {values}.'''
   man_style = "tight"
   man = '''
 FIFO watermark in sample-sets.
-At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.'''
+At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.
+Those figures are the age of the
+.I oldest
+sample in a full burst; a drain carries a spread, so expect
+about half of it at the median.
+On the ST parts a watermark of 8 or more also batches the chip
+timestamp into the FIFO, which costs 1.6\~% of the word budget at
+32 and above \(en so the same watermark holds about 63 sample-sets
+rather than 64.'''
   md_type = 'int'
   md_default = '`64`'
-  desc = 'FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms.'
+  desc = '''FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms — those are the age of the *oldest* sample in a full burst, so the median is about half. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (see `docs/ROADMAP.md` §1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64.'''
 
 [[section]]
 name = "mag"

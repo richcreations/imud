@@ -44,6 +44,20 @@ imud (1.9.0) unstable; urgency=medium
     imu.c already rejected a non-increasing timestamp and used the nominal
     period. The driver contract required monotonic, so it now is.
 
+  * Fix: chip_ts is now taken from the FIFO itself on ism330dhcx, lsm6dso
+    and icm42688p, rather than from a counter read after the drain whose
+    lag varies. The ST parts batch the counter into the stream and anchor
+    the burst on it; icm42688p uses the per-packet stamp it already read.
+    Both fall back for the whole burst if the value fails its cross-check.
+    Costs 1.6 % of the ST FIFO word budget at fifo_wm 32 and above.
+  * Fix: the chip timer's period comes from the part where it declares one
+    (INTERNAL_FREQ_FINE on the ST parts), not from the datasheet typical.
+    Until the daemon has measured the real period -- two anchors, 20 s
+    apart -- a 4 %-fast part drifted far enough to stop the sample-latency
+    telemetry recording. Re-anchoring is also 25 s until measured, and the
+    two latency terms publish independently instead of sharing one gate.
+  * Fix: icm42688p's timestamp tick is 1067 ns, not 1000 -- the counter
+    runs at 32/30 us per LSB without an external RTC (DS-000347 12.7).
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2) unstable; urgency=medium

@@ -66,6 +66,34 @@ imud (1.9.0-1) unstable; urgency=medium
     sample's time, with a lag that varies. No filter output was affected;
     imu.c already rejected a non-increasing timestamp and used the nominal
     period. The driver contract required monotonic, so it now is.
+  * All three parts now take the timestamp from the FIFO instead of from a
+    read after it, so the varying lag is not there at all: the ST parts
+    batch the counter into the stream as tag-0x04 words (DEC_TS_BATCH) and
+    anchor the burst on one, matched to its sample-set by TAG_CNT rather
+    than by position; icm42688p uses the per-packet stamp in bytes [14:15]
+    that it already read and discarded. Both cross-check the result against
+    the post-drain register read and fall back for the whole burst if it
+    fails. On the ST parts this costs 1.6 % of the FIFO word budget at
+    fifo_wm 32 and above -- so a watermark holds about 63 sample-sets
+    rather than 64 -- and below fifo_wm 8 nothing is batched.
+  * Fix: the chip timer's period now comes from the part rather than the
+    datasheet. imu_ops_t gains an optional ts_tick_ns_actual hook; the ST
+    6-axis parts implement it from INTERNAL_FREQ_FINE (0x63), a factory
+    trim in 0.15 % steps. The reference part declares +27, so 24027 ns
+    against the 25000 typical. This matters before ts_anchor_t has measured
+    the real period, which needs two anchors 20 s apart: until then
+    chip_to_wall extrapolates from the declared value, and on a part 4 %
+    fast that outruns the host clock in seconds and stops the sample
+    latency histogram recording.
+  * Also on latency: the daemon re-anchors at 25 s until it has measured
+    the tick period (60 s after, as before), and the FIFO-residence and
+    pipeline terms now publish on their own counts. Previously one gate
+    covered both, so an empty residence window suppressed the pipeline
+    figure with it and a short run reported no latency at all.
+  * Fix: icm42688p declared a 1 us timestamp tick. DS-000347 12.7 scales
+    the counter by 32/30 whenever the part is not clocked from CLKIN,
+    which is every configuration this driver programs, so the tick is
+    1067 ns and one second is 937500 ticks -- a 6.7 % correction.
 
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 

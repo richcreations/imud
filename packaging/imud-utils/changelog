@@ -16,6 +16,17 @@ imud-utils (1.9.0) unstable; urgency=medium
     declares one, so the oscillator explanation is confirmed by the chip
     rather than inferred from the ratio.
 
+  * imud-imutest counts DRDY edges twice over the same window, once
+    draining the FIFO on every edge and once not. A watermark interrupt is
+    a level condition -- it asserts once and stays asserted when nothing
+    empties the FIFO -- while a per-sample data-ready keeps pulsing, and a
+    single count cannot tell those apart. Both rates are reported, and the
+    check no longer grades a part down for matching neither model, which
+    the healthy reference part does. No edges at all still fails, and more
+    edges than the part has samples still warns.
+  * imud-imutest grades chip_ts against the tick period the daemon will
+    actually use, including one a part declares for itself, rather than
+    against the driver's datasheet typical.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud-utils (1.8.2) unstable; urgency=medium

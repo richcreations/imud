@@ -257,6 +257,14 @@ ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.
 .RI (int,\ default:\ 64)
 FIFO watermark in sample-sets.
 At 833\~Hz, 32 ~= 38\~ms latency; 64 ~= 77\~ms.
+Those figures are the age of the
+.I oldest
+sample in a full burst; a drain carries a spread, so expect
+about half of it at the median.
+On the ST parts a watermark of 8 or more also batches the chip
+timestamp into the FIFO, which costs 1.6\~% of the word budget at
+32 and above \(en so the same watermark holds about 63 sample-sets
+rather than 64.
 .\" END GENERATED: config-keys imu
 .SS [mag]
 Magnetometer driver settings.

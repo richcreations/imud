@@ -344,7 +344,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
-| `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms. |
+| `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms — those are the age of the *oldest* sample in a full burst, so the median is about half. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (see `docs/ROADMAP.md` §1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64. |
 <!-- END GENERATED: config-keys imu.1 -->
 
 ### `[mag]`
@@ -536,6 +536,16 @@ Diagnostic log output. **[hot]**: `level`, `stats_hz`. **[restart]**: `file`
 Repeated identical messages are suppressed and logged as a `last message
 repeated N times` count. The most recent warnings/errors are also shown by
 `imud-status` ("Recent warnings").
+
+The `[stats]` line ends with a sample-latency clause —
+`fifo=p50/p99 pipe=p50/p99 max=…` in milliseconds — on parts that have a
+hardware timestamp counter. `fifo` is FIFO residence, which `fifo_wm` buys
+deliberately; `pipe` is the daemon's own cost from read to fused state, and
+is the term to hold to a budget. Two things are normal rather than faults:
+the clause is **absent entirely** on `icm20948` and `mpu925x`, which have no
+chip timer to measure against, and it takes a few seconds to appear on the
+others, because the chip's real tick period has to be measured against the
+host clock before FIFO residence means anything.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
