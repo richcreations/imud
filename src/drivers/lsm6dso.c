@@ -28,6 +28,7 @@
 #include "bus_io.h"
 #include "chip_ts.h"
 #include "st_freq_fine.h"
+#include "st_fifo_ts.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -72,6 +73,8 @@ static struct {
                                  * slower than the FIFO is drained) */
     uint32_t seq;
     uint32_t ticks_per_sample;
+    uint64_t ts_rejects;        /* bursts whose batched anchor was refused */
+    uint64_t ts_reject_next;    /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ls;
 
@@ -184,9 +187,13 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;
     if (bus_reg_write(bus, REG_FIFO_CTRL2, (uint8_t)((wm >> 8) & 0x01)) < 0) return -1;
     if (bus_reg_write(bus, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
-    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10),
-     * matching ism330dhcx.c — temp feeds thermal comp and imud-cal fit-temp. */
-    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
+    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10)
+     * + the decimated chip timestamp (DEC_TS_BATCH), matching ism330dhcx.c —
+     * temp feeds thermal comp and imud-cal fit-temp, and the timestamp words
+     * let lsm_read date a burst without a post-drain read (st_fifo_ts.h). */
+    if (bus_reg_write(bus, REG_FIFO_CTRL4,
+                      (uint8_t)((st_fifo_ts_dec_batch(cfg->fifo_wm) << 6) | 0x26))
+                                                                        < 0) return -1;
     if (bus_reg_write(bus, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
     /* Seed last_temp from the live temperature register (see ism330dhcx.c). */
@@ -202,6 +209,8 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ls.accel_scale      = accel_scale;
     ls.gyro_scale       = gyro_scale;
     ls.seq              = 0;
+    ls.ts_rejects       = 0;
+    ls.ts_reject_next   = 1;
     chip_ts_guard_reset(&ls.ts_guard);
     ls.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
 
@@ -240,6 +249,9 @@ static int lsm_read(const imud_bus_t *bus,
     int   have_accel = 0;
     int   have_gyro  = 0;
     int   produced   = 0;
+    uint8_t set_tag  = 0;
+    st_fifo_ts_t fts;
+    st_fifo_ts_begin(&fts);
 
     for (int i = 0; i < n_words && produced < max; i++) {
         uint8_t word[7];
@@ -256,13 +268,19 @@ static int lsm_read(const imud_bus_t *bus,
             p_accel[1] = raw_y * ls.accel_scale;
             p_accel[2] = raw_z * ls.accel_scale;
             have_accel = 1;
+            set_tag    = word[0];
             break;
 
         case TAG_GYRO_NC:
             p_gyro[0] = raw_x * ls.gyro_scale;
             p_gyro[1] = raw_y * ls.gyro_scale;
             p_gyro[2] = raw_z * ls.gyro_scale;
-            have_gyro = 1;
+            have_gyro  = 1;
+            set_tag    = word[0];
+            break;
+
+        case ST_TAG_TIMESTAMP:
+            st_fifo_ts_note_word(&fts, word, produced);   /* st_fifo_ts.h */
             break;
 
         case TAG_TEMP:
@@ -285,28 +303,53 @@ static int lsm_read(const imud_bus_t *bus,
             buf[produced].chip_ts  = 0;
             produced++;
             have_accel = have_gyro = 0;
+            st_fifo_ts_note_set(&fts, set_tag);
         }
     }
 
     if (produced > 0) {
         uint8_t ts[4];
         if (bus_burst_read(bus, REG_TIMESTAMP0, ts, 4) == 0) {
-            /* Read AFTER the drain, so it is "now" rather than the newest
-             * sample's time, and the lag varies with bus and scheduler
-             * jitter — which makes consecutive bursts overlap.  chip_ts.h
-             * carries the correction and the full reasoning. */
-            uint32_t burst_ts = (uint32_t)ts[0]
-                              | ((uint32_t)ts[1] <<  8)
-                              | ((uint32_t)ts[2] << 16)
-                              | ((uint32_t)ts[3] << 24);
-            uint32_t span  = (uint32_t)(produced - 1) * ls.ticks_per_sample;
-            uint32_t first = burst_ts - span;
-            burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
-                                            ls.ticks_per_sample,
-                                            TS_MAX_JITTER_TICKS);
-            for (int i = 0; i < produced; i++) {
-                uint32_t age = (uint32_t)(produced - 1 - i) * ls.ticks_per_sample;
-                buf[i].chip_ts = burst_ts - age;
+            uint32_t now_ts = (uint32_t)ts[0]
+                            | ((uint32_t)ts[1] <<  8)
+                            | ((uint32_t)ts[2] << 16)
+                            | ((uint32_t)ts[3] << 24);
+
+            /* Anchor on the chip's own batched timestamp where one landed in
+             * this drain; st_fifo_ts.h holds the reasoning and the checks,
+             * and takes now_ts as its cross-check.  Same shape as
+             * ism330dhcx.c, which carries the fuller commentary. */
+            bool anchored = st_fifo_ts_apply(&fts, buf, produced,
+                                             ls.ticks_per_sample, now_ts);
+
+            if (!anchored) {
+                /* Read AFTER the drain, so it is "now" rather than the newest
+                 * sample's time, and the lag varies with bus and scheduler
+                 * jitter — which makes consecutive bursts overlap.  chip_ts.h
+                 * carries the correction and the full reasoning. */
+                uint32_t burst_ts = now_ts;
+                uint32_t span  = (uint32_t)(produced - 1) * ls.ticks_per_sample;
+                uint32_t first = burst_ts - span;
+                burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
+                                                ls.ticks_per_sample,
+                                                TS_MAX_JITTER_TICKS);
+                for (int i = 0; i < produced; i++) {
+                    uint32_t age = (uint32_t)(produced - 1 - i) * ls.ticks_per_sample;
+                    buf[i].chip_ts = burst_ts - age;
+                }
+                if (fts.have_word && ++ls.ts_rejects >= ls.ts_reject_next) {
+                    LOG_W("lsm6dso: %llu burst(s) whose batched FIFO timestamp "
+                          "failed its check — using the post-drain TIMESTAMP0 "
+                          "read for chip_ts\n",
+                          (unsigned long long)ls.ts_rejects);
+                    ls.ts_reject_next *= 10;
+                }
+            } else {
+                uint32_t shift = chip_ts_guard_shift(&ls.ts_guard, buf[0].chip_ts,
+                                                     ls.ticks_per_sample,
+                                                     TS_MAX_JITTER_TICKS);
+                for (int i = 0; shift && i < produced; i++)
+                    buf[i].chip_ts += shift;
             }
             chip_ts_guard_note(&ls.ts_guard, buf[produced - 1].chip_ts);
         }

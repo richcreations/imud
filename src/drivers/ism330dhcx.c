@@ -22,6 +22,7 @@
 #include "bus_io.h"
 #include "chip_ts.h"
 #include "st_freq_fine.h"
+#include "st_fifo_ts.h"
 #include "log.h"
 
 #ifndef M_PI
@@ -66,6 +67,9 @@ static struct {
                                  * 12.5 Hz, slower than we drain the FIFO) */
     uint32_t seq;               /* monotonic sample counter across all bursts */
     uint32_t ticks_per_sample;  /* chip timer ticks between adjacent samples */
+    uint64_t ts_rejects;        /* bursts whose batched anchor failed its
+                                 * check and fell back — see ism_read */
+    uint64_t ts_reject_next;    /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* keeps chip_ts increasing across burst seams */
 } s;
 
@@ -223,10 +227,16 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * It diverges only at 0xB — 6.5 Hz on the gyro, 1.6 Hz on the accel —
      * which no ODR code can reach through (odr << 4) | odr. */
     if (bus_reg_write(bus, REG_FIFO_CTRL3, (uint8_t)((odr << 4) | odr)) < 0) return -1;
-    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10).
+    /* Continuous mode + temperature batched at 12.5 Hz (ODR_T_BATCH = 10)
+     * + the chip's own timestamp, decimated (DEC_TS_BATCH, bits [7:6]).
      * Temp words feed gyro thermal compensation and imud-cal fit-temp; at
-     * 12.5 Hz they add ~1.5% FIFO traffic next to 833 Hz accel+gyro. */
-    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x26)                        < 0) return -1;
+     * 12.5 Hz they add ~1.5% FIFO traffic next to 833 Hz accel+gyro.  The
+     * timestamp words are what let ism_read date a burst without reading the
+     * counter after the drain — see st_fifo_ts.h, including why the
+     * decimation is what it is and what it costs the watermark. */
+    if (bus_reg_write(bus, REG_FIFO_CTRL4,
+                      (uint8_t)((st_fifo_ts_dec_batch(cfg->fifo_wm) << 6) | 0x26))
+                                                                        < 0) return -1;
     /* Assert INT1 on FIFO watermark threshold (INT1_FIFO_TH = bit 3) */
     if (bus_reg_write(bus, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
@@ -245,6 +255,8 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
         }
     }
     s.seq              = 0;
+    s.ts_rejects       = 0;
+    s.ts_reject_next   = 1;
     chip_ts_guard_reset(&s.ts_guard);
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
      *
@@ -306,6 +318,9 @@ static int ism_read(const imud_bus_t *bus,
     int      have_accel = 0;
     int      have_gyro  = 0;
     int      produced   = 0;
+    uint8_t  set_tag    = 0;   /* tag byte of the word that completes a set */
+    st_fifo_ts_t fts;
+    st_fifo_ts_begin(&fts);
 
     for (int i = 0; i < n_words && produced < max; i++) {
         uint8_t word[7];
@@ -322,6 +337,7 @@ static int ism_read(const imud_bus_t *bus,
             p_accel[1] = raw_y * s.accel_scale;
             p_accel[2] = raw_z * s.accel_scale;
             have_accel = 1;
+            set_tag    = word[0];
             break;
 
         case TAG_GYRO_NC:
@@ -329,6 +345,14 @@ static int ism_read(const imud_bus_t *bus,
             p_gyro[1] = raw_y * s.gyro_scale;
             p_gyro[2] = raw_z * s.gyro_scale;
             have_gyro = 1;
+            set_tag    = word[0];
+            break;
+
+        case ST_TAG_TIMESTAMP:
+            /* The chip's own counter, written into the stream alongside the
+             * samples it dates.  st_fifo_ts.h holds the payload layout, the
+             * TAG_CNT slot match, and what happens when either is wrong. */
+            st_fifo_ts_note_word(&fts, word, produced);
             break;
 
         case TAG_TEMP:
@@ -363,39 +387,83 @@ static int ism_read(const imud_bus_t *bus,
             buf[produced].chip_ts  = 0;  /* filled below */
             produced++;
             have_accel = have_gyro = 0;
+            st_fifo_ts_note_set(&fts, set_tag);
         }
     }
 
-    /* ── 3. Timestamp: read chip counter once, back-calculate per sample ── */
+    /* ── 3. Timestamp the burst ─────────────────────────────────────────── */
 
     if (produced > 0) {
         uint8_t ts[4];
         if (bus_burst_read(bus, REG_TIMESTAMP0, ts, 4) == 0) {
+            uint32_t now_ts = (uint32_t)ts[0]
+                            | ((uint32_t)ts[1] <<  8)
+                            | ((uint32_t)ts[2] << 16)
+                            | ((uint32_t)ts[3] << 24);
+
             /*
-             * burst_ts ≈ timestamp of the most-recent (newest) sample.
-             * Sample 0 is the oldest in the burst; sample (produced-1) newest.
-             * Step back by ticks_per_sample for each older sample.
-             *
-             * "≈" is load-bearing: this register reads NOW, and the newest
-             * sample was taken some time before this read completed.  That lag
-             * varies with bus timing and scheduler jitter, so two bursts can
-             * overlap and chip_ts can go backwards across the seam — measured
-             * on a Pi 5 at 2-4 reversals per 5 s.  chip_ts.h holds the
-             * correction and the reasoning, including why batching the FIFO's
-             * own timestamp is the real fix and is not done here.
+             * Preferred: anchor on a timestamp word the chip wrote into the
+             * FIFO alongside the samples, so nothing depends on when this
+             * read happened.  st_fifo_ts.h carries the reasoning and the
+             * checks; the register read above is kept as its cross-check even
+             * on this path, which is the point of passing it in.
              */
-            uint32_t burst_ts = (uint32_t)ts[0]
-                              | ((uint32_t)ts[1] <<  8)
-                              | ((uint32_t)ts[2] << 16)
-                              | ((uint32_t)ts[3] << 24);
-            uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
-            uint32_t first = burst_ts - span;
-            burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
-                                            s.ticks_per_sample,
-                                            TS_MAX_JITTER_TICKS);
-            for (int i = 0; i < produced; i++) {
-                uint32_t age = (uint32_t)(produced - 1 - i) * s.ticks_per_sample;
-                buf[i].chip_ts = burst_ts - age;
+            bool anchored = st_fifo_ts_apply(&fts, buf, produced,
+                                             s.ticks_per_sample, now_ts);
+
+            if (!anchored) {
+                /*
+                 * Fallback: treat now_ts as the newest sample's time and step
+                 * back one sample period per older sample.
+                 *
+                 * "Treat" is load-bearing: this register reads NOW, and the
+                 * newest sample was taken some time before this read
+                 * completed.  That lag varies with bus timing and scheduler
+                 * jitter, so two bursts can overlap and chip_ts can go
+                 * backwards across the seam — measured on a Pi 5 at 2-4
+                 * reversals per 5 s.  chip_ts.h holds that correction.
+                 *
+                 * Reached whenever no timestamp word landed in this drain,
+                 * which is normal at small watermarks and expected at
+                 * fifo_wm < 8, where nothing is batched at all.
+                 */
+                uint32_t burst_ts = now_ts;
+                uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
+                uint32_t first = burst_ts - span;
+                burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
+                                                s.ticks_per_sample,
+                                                TS_MAX_JITTER_TICKS);
+                for (int i = 0; i < produced; i++) {
+                    uint32_t age = (uint32_t)(produced - 1 - i) * s.ticks_per_sample;
+                    buf[i].chip_ts = burst_ts - age;
+                }
+
+                /*
+                 * Only a word that was PRESENT and then refused is a finding.
+                 * Say so at 1, 10, 100, ...: one line cannot tell a part that
+                 * stumbled once from a payload layout that is not what
+                 * st_fifo_ts.h assumes, and that distinction is the diagnosis.
+                 */
+                if (fts.have_word && ++s.ts_rejects >= s.ts_reject_next) {
+                    LOG_W("ism330dhcx: %llu burst(s) whose batched FIFO "
+                          "timestamp failed its check — using the post-drain "
+                          "TIMESTAMP0 read for chip_ts\n",
+                          (unsigned long long)s.ts_rejects);
+                    s.ts_reject_next *= 10;
+                }
+            } else {
+                /*
+                 * The anchored path cannot produce the seam overlap the guard
+                 * exists for, since the stamp came from the chip rather than
+                 * from a read after the fact.  Run it anyway: two comparisons
+                 * that should never fire, and the guard must not be left
+                 * holding a stale anchor if a later burst falls back.
+                 */
+                uint32_t shift = chip_ts_guard_shift(&s.ts_guard, buf[0].chip_ts,
+                                                     s.ticks_per_sample,
+                                                     TS_MAX_JITTER_TICKS);
+                for (int i = 0; shift && i < produced; i++)
+                    buf[i].chip_ts += shift;
             }
             chip_ts_guard_note(&s.ts_guard, buf[produced - 1].chip_ts);
         }

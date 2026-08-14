@@ -49,7 +49,8 @@
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag — see test_odr_agreement */
 #include "bus_mock.h"
-#include "drivers/bus_io.h"   /* the framing under test in test_spi_framing */
+#include "drivers/bus_io.h"     /* the framing under test in test_spi_framing */
+#include "drivers/st_fifo_ts.h" /* ST_TAG_TIMESTAMP and the tag-byte layout */
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -152,8 +153,237 @@ static void test_ism_init_registers(void)
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x07) == 0x80, "FIFO_CTRL1 = WTM[7:0]");
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x08) == 0x00, "FIFO_CTRL2 = WTM[8]");
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x09) == 0x55, "FIFO_CTRL3 = BDR gy|xl");
-    EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0A) == 0x26, "FIFO_CTRL4 = cont|temp batch");
+    EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0A) == 0xE6,
+           "FIFO_CTRL4 = DEC_TS_BATCH/32 | temp batch | continuous");
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0D) == 0x08, "INT1_CTRL = FIFO_TH");
+
+    end(fb);
+}
+
+/* FIFO tag sensor codes, DS13012 Table 159.  The drivers keep their own
+ * copies; naming them here keeps the timestamp test readable next to the
+ * bare 0x01/0x02 the older tests use. */
+#define TAG_GYRO_NC   0x01
+#define TAG_ACCEL_NC  0x02
+
+/* A tag-0x04 word: 32-bit counter little-endian in the X/Y payload bytes. */
+static void ism_push_ts_word(uint8_t tag_cnt, uint32_t ts)
+{
+    uint8_t w[7] = {
+        (uint8_t)((ST_TAG_TIMESTAMP << 3) | ((tag_cnt & 0x03) << 1)),
+        (uint8_t)(ts & 0xFF), (uint8_t)((ts >> 8) & 0xFF),
+        (uint8_t)((ts >> 16) & 0xFF), (uint8_t)((ts >> 24) & 0xFF),
+        0, 0,
+    };
+    i2cmock_fifo_push(ISM_ADDR, w, 7);
+}
+
+/* An accel or gyro word carrying an explicit TAG_CNT slot number. */
+static void ism_push_word_cnt(uint8_t tag, uint8_t tag_cnt,
+                              int16_t x, int16_t y, int16_t z)
+{
+    uint8_t w[7] = {
+        (uint8_t)((tag << 3) | ((tag_cnt & 0x03) << 1)),
+        (uint8_t)(x & 0xFF), (uint8_t)((x >> 8) & 0xFF),
+        (uint8_t)(y & 0xFF), (uint8_t)((y >> 8) & 0xFF),
+        (uint8_t)(z & 0xFF), (uint8_t)((z >> 8) & 0xFF),
+    };
+    i2cmock_fifo_push(ISM_ADDR, w, 7);
+}
+
+/* Stage DIFF_FIFO (in WORDS, not sample-sets) and the FIFO port. */
+static void ism_stage_fifo(int n_words, uint32_t timestamp0)
+{
+    i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(n_words & 0xFF));
+    i2cmock_set_reg(ISM_ADDR, 0x3B, (uint8_t)((n_words >> 8) & 0x03));
+    i2cmock_set_fifo_reg(ISM_ADDR, 0x78);
+    for (int i = 0; i < 4; i++)
+        i2cmock_set_reg(ISM_ADDR, (uint8_t)(0x40 + i),
+                        (uint8_t)((timestamp0 >> (8 * i)) & 0xFF));
+}
+
+/*
+ * The ST parts' batched FIFO timestamp (tag 0x04).
+ *
+ * Why: the fallback reads TIMESTAMP0 after the drain and calls that the newest
+ * sample's time.  The register reads *now*, the lag to the newest sample moves
+ * with bus and scheduler jitter, and the 2026-08-10 bench measured 2-4 chip_ts
+ * reversals per 5 s because of it.  A timestamp word written into the stream
+ * has no such lag.
+ *
+ * What is assumed, and therefore tested: the payload layout (LE-32 in X/Y,
+ * which DS13012 never states) and the TAG_CNT slot match that makes the word's
+ * position in the stream irrelevant.
+ */
+static void test_ism_batched_timestamp(void)
+{
+    begin("test_ism_batched_timestamp");
+    int fb = g_fail;
+    imu_sample_t buf[16];
+    int n = -1;
+
+    /* The decimation ladder.  It exists so a watermark-depth drain usually
+     * contains a word, without paying the +50% word traffic that per-sample
+     * batching costs — which would silently redefine fifo_wm. */
+    struct { int wm; uint8_t ctrl4; const char *why; } dec[] = {
+        { 64, 0xE6, "fifo_wm 64 batches every 32 sets (+1.6% words)" },
+        { 32, 0xE6, "fifo_wm 32 is the boundary and still takes /32" },
+        { 31, 0xA6, "fifo_wm 31 drops to /8 so a word still lands"   },
+        {  8, 0xA6, "fifo_wm 8 is the /8 boundary"                   },
+        {  7, 0x26, "fifo_wm 7 batches nothing — those watermarks are "
+                    "chosen for latency and must not be perturbed"   },
+    };
+    for (unsigned i = 0; i < sizeof dec / sizeof dec[0]; i++) {
+        i2cmock_reset();
+        i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+        i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+        imu_cfg_t c = { .odr_hz = 833, .accel_g = 4, .gyro_dps = 500,
+                        .fifo_wm = dec[i].wm };
+        (void)ism->init(I2CBUS(ISM_ADDR), &c);
+        EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0A) == dec[i].ctrl4, dec[i].why);
+    }
+
+    /*
+     * Anchoring.  Three sample-sets in slots 0,1,2 with a timestamp word for
+     * slot 1, and a TIMESTAMP0 that reads late — 5000 ticks past the newest
+     * sample, which is the very lag the batched path is immune to.
+     *
+     * ticks_per_sample at 833 Hz is 40000/833 = 48.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+
+    const uint32_t T = 0x00100000u;   /* the timestamp word's value */
+    ism_stage_fifo(7, T + 48 + 5000);  /* 6 sample words + 1 timestamp word */
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  1, 4, 5, 6);
+    ism_push_ts_word(1, T);            /* dates slot 1, arriving after it */
+    ism_push_word_cnt(TAG_ACCEL_NC, 2, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  2, 4, 5, 6);
+
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), buf, 16, &n) == 0 && n == 3,
+           "three sample-sets decode alongside a timestamp word");
+    EXPECT(buf[1].chip_ts == T,
+           "the set the word names carries the word's value exactly");
+    EXPECT(buf[0].chip_ts == T - 48u, "older sample steps back one period");
+    EXPECT(buf[2].chip_ts == T + 48u, "newer sample steps forward one");
+
+    /*
+     * The same burst with the word BEFORE its slot rather than after it.
+     * DS13012 never says which way round the chip writes them, and this is
+     * why it does not have to: TAG_CNT names the slot, position does not.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+    ism_stage_fifo(7, T + 48 + 5000);
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_ts_word(1, T);            /* dates slot 1, arriving before it */
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  1, 4, 5, 6);
+    ism_push_word_cnt(TAG_ACCEL_NC, 2, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  2, 4, 5, 6);
+
+    n = -1;
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), buf, 16, &n) == 0 && n == 3,
+           "same burst, word ahead of its slot");
+    EXPECT(buf[1].chip_ts == T,
+           "TAG_CNT still lands it on slot 1 — ordering is not used");
+
+    /* No word in the drain: the fallback still works, unchanged. */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+    ism_stage_fifo(4, 0x2000);
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  1, 4, 5, 6);
+    n = -1;
+    (void)ism->read(I2CBUS(ISM_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x2000u,
+           "a drain with no timestamp word takes the post-drain read");
+
+    /*
+     * A word whose value does not survive the cross-check is refused whole.
+     * This is what protects the undocumented payload layout: if LE-32-in-X/Y
+     * is wrong, the decoded value is garbage and lands nowhere near
+     * TIMESTAMP0, so the burst degrades to the old path instead of shipping
+     * a corrupt sample clock.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+    ism_stage_fifo(5, 0x2000);
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_ts_word(0, 0xDEADBEEFu);   /* nothing to do with 0x2000 */
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  1, 4, 5, 6);
+    n = -1;
+    (void)ism->read(I2CBUS(ISM_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && buf[1].chip_ts == 0x2000u,
+           "an implausible timestamp word is refused, not used");
+
+    /*
+     * A word naming a slot no sample-set reached — the FIFO ended mid-set.
+     * Applying it would index past the samples that exist.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+    ism_stage_fifo(4, 0x2000);
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_ts_word(1, 0x2000u - 48u);  /* names slot 1 ... */
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);   /* ... which never pairs */
+    n = -1;
+    (void)ism->read(I2CBUS(ISM_ADDR), buf, 16, &n);
+    EXPECT(n == 1 && buf[0].chip_ts == 0x2000u,
+           "a word naming a set that never completed is refused");
+
+    /*
+     * The seam the whole thing exists to close.  Two drains whose post-drain
+     * reads land at the SAME counter value — the classic high-lag-then-low-lag
+     * pair — but whose batched words advance properly.  Under the fallback the
+     * second burst would start at or before the first burst's last sample.
+     */
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+    i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
+    (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
+
+    ism_stage_fifo(5, T + 3000);
+    ism_push_word_cnt(TAG_ACCEL_NC, 0, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  0, 4, 5, 6);
+    ism_push_ts_word(0, T);
+    ism_push_word_cnt(TAG_ACCEL_NC, 1, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  1, 4, 5, 6);
+    n = -1;
+    (void)ism->read(I2CBUS(ISM_ADDR), buf, 16, &n);
+    uint32_t first_burst_last = buf[n - 1].chip_ts;
+
+    ism_stage_fifo(5, T + 3000);          /* identical "now" — the pathology */
+    ism_push_word_cnt(TAG_ACCEL_NC, 2, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  2, 4, 5, 6);
+    ism_push_ts_word(2, T + 96);          /* but the chip's own time advanced */
+    ism_push_word_cnt(TAG_ACCEL_NC, 3, 1, 2, 3);
+    ism_push_word_cnt(TAG_GYRO_NC,  3, 4, 5, 6);
+    n = -1;
+    (void)ism->read(I2CBUS(ISM_ADDR), buf, 16, &n);
+    EXPECT(n == 2 && (int32_t)(buf[0].chip_ts - first_burst_last) > 0,
+           "the second burst starts after the first ends, even though both "
+           "post-drain reads returned the same counter value");
 
     end(fb);
 }
@@ -728,6 +958,83 @@ static void lsm_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
     i2cmock_fifo_push(LSM_ADDR, w, 7);
 }
 
+/* The two above with an explicit TAG_CNT slot, for the timestamp test. */
+static void lsm_push_word_cnt(uint8_t tag, uint8_t tag_cnt,
+                              int16_t x, int16_t y, int16_t z)
+{
+    uint8_t w[7] = {
+        (uint8_t)((tag << 3) | ((tag_cnt & 0x03) << 1)),
+        (uint8_t)(x & 0xFF), (uint8_t)((x >> 8) & 0xFF),
+        (uint8_t)(y & 0xFF), (uint8_t)((y >> 8) & 0xFF),
+        (uint8_t)(z & 0xFF), (uint8_t)((z >> 8) & 0xFF),
+    };
+    i2cmock_fifo_push(LSM_ADDR, w, 7);
+}
+
+static void lsm_push_ts_word(uint8_t tag_cnt, uint32_t ts)
+{
+    uint8_t w[7] = {
+        (uint8_t)((ST_TAG_TIMESTAMP << 3) | ((tag_cnt & 0x03) << 1)),
+        (uint8_t)(ts & 0xFF), (uint8_t)((ts >> 8) & 0xFF),
+        (uint8_t)((ts >> 16) & 0xFF), (uint8_t)((ts >> 24) & 0xFF),
+        0, 0,
+    };
+    i2cmock_fifo_push(LSM_ADDR, w, 7);
+}
+
+/*
+ * The batched-timestamp wiring on the OTHER driver that uses st_fifo_ts.h.
+ *
+ * The header is shared but the calls into it are not: lsm6dso.c has its own
+ * drain loop, and a note_word/note_set left out or misplaced there would be
+ * invisible from the ism330dhcx tests, which is exactly the kind of
+ * copy-paste gap two near-identical drivers produce.  So this proves the
+ * anchoring works here too, and leaves the corner cases to the ism suite.
+ */
+static void test_lsm_batched_timestamp(void)
+{
+    begin("test_lsm_batched_timestamp");
+    int fb = g_fail;
+    const imu_ops_t *d = &lsm6dso_ops;
+    imu_sample_t buf[8];
+    int n = -1;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(I2CBUS(LSM_ADDR), &cfg);
+
+    /* 208 Hz → 40000/208 = 192 ticks per sample. */
+    const uint32_t T = 0x00080000u;
+    i2cmock_set_reg(LSM_ADDR, 0x3A, 5);      /* 4 sample words + 1 timestamp */
+    i2cmock_set_reg(LSM_ADDR, 0x3B, 0);
+    i2cmock_set_fifo_range(LSM_ADDR, 0x78, 0x7E);
+    for (int i = 0; i < 4; i++)              /* TIMESTAMP0..3: a late read */
+        i2cmock_set_reg(LSM_ADDR, (uint8_t)(0x40 + i),
+                        (uint8_t)(((T + 192 + 5000) >> (8 * i)) & 0xFF));
+
+    /*
+     * Both pairs, then the word dating slot 1 — deliberately AFTER the slot
+     * it names.  That ordering is the one that needs TAG_CNT: placing the
+     * word by position would put it on the set still being assembled, one
+     * sample late.  The "word first" ordering resolves correctly even with
+     * TAG_CNT ignored, so testing only that would leave note_set unexercised
+     * here, which is the whole reason this test exists.
+     */
+    lsm_push_word_cnt(TAG_ACCEL_NC, 0, 100, 200, 300);
+    lsm_push_word_cnt(TAG_GYRO_NC,  0, 10, 20, 30);
+    lsm_push_word_cnt(TAG_ACCEL_NC, 1, 100, 200, 300);
+    lsm_push_word_cnt(TAG_GYRO_NC,  1, 10, 20, 30);
+    lsm_push_ts_word(1, T);
+
+    EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 8, &n) == 0 && n == 2,
+           "two sample-sets decode alongside a timestamp word");
+    EXPECT(buf[1].chip_ts == T,
+           "the slot the word names carries its value, not the late read");
+    EXPECT(buf[0].chip_ts == T - 192u, "older sample steps back one period");
+
+    end(fb);
+}
+
 static void test_lsm_probe(void)
 {
     begin("test_lsm_probe");
@@ -774,8 +1081,8 @@ static void test_lsm_init_registers(void)
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x07) == (uint8_t)(128 & 0xFF),
            "FIFO_CTRL1 = watermark*2 low byte");
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x08) == 0, "FIFO_CTRL2 high bit clear at 128");
-    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x0A) == 0x26,
-           "FIFO_CTRL4 = continuous + 12.5 Hz temp batching");
+    EXPECT(i2cmock_get_reg(LSM_ADDR, 0x0A) == 0xE6,
+           "FIFO_CTRL4 = DEC_TS_BATCH/32 + 12.5 Hz temp + continuous");
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x0D) == 0x08, "INT1_CTRL = FIFO threshold");
 
     /* A watermark past the 511-word cap must clamp, not wrap. */
@@ -2677,6 +2984,7 @@ int main(void)
 
     test_ism_probe();
     test_ism_init_registers();
+    test_ism_batched_timestamp();
     test_ism_read_decode();
     test_ism_read_overflow_and_empty();
 
@@ -2695,6 +3003,7 @@ int main(void)
     test_ak_read_decode();
 
     test_st_freq_fine_tick();
+    test_lsm_batched_timestamp();
     test_lsm_probe();
     test_lsm_init_registers();
     test_lsm_read_decode();
