@@ -141,8 +141,14 @@ typedef struct {
     double        fifo_wait_s[IMT_MAX_FIFO_STEPS];
     int           fifo_depth[IMT_MAX_FIFO_STEPS];
     double        overflow_after_s;
-    int           gpio_edges;
-    double        gpio_window_s, gpio_rate_hz;
+    /*
+     * DRDY edges, counted twice over the same window: once draining the FIFO
+     * on every edge (what the daemon does), once not draining at all.  The
+     * pair is the discriminator the single count never was — see check_drdy.
+     */
+    int           gpio_edges, gpio_edges_idle;
+    double        gpio_window_s, gpio_rate_hz, gpio_rate_idle_hz;
+    bool          gpio_idle_valid;   /* the second pass ran and succeeded */
     imt_gpio_why_t gpio_why;
     int           n_fs_accel, n_fs_gyro;
     imt_fs_row_t  fs_accel[IMT_MAX_FS_ROWS], fs_gyro[IMT_MAX_FS_ROWS];

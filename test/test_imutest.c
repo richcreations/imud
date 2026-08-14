@@ -57,8 +57,15 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
 /*
  * Replaces src/imutest_gpio.c so the test links without libgpiod.  Both
  * branches of the caller's handling get exercised by flipping g_gpio_edges.
+ *
+ * check_drdy counts twice over the same window — once draining on every edge,
+ * once not — so the stub answers the two passes separately.  That split IS
+ * the thing under test: a level-triggered watermark interrupt yields a normal
+ * count while something empties the FIFO and about one edge when nothing
+ * does, and only the pair can tell that from an edge-per-sample line.
  */
 static int g_gpio_edges = -1;             /* <0 → report "no chip" */
+static int g_gpio_edges_idle = 1;         /* the undrained pass */
 static imt_gpio_why_t g_gpio_why = IMT_GPIO_ENOCHIP;
 
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
@@ -66,8 +73,9 @@ int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          imt_gpio_why_t *why)
 {
     (void)chip; (void)gpio; (void)window_ms;
-    if (drain) drain(user);
     *why = g_gpio_why;
+    if (!drain) return g_gpio_edges < 0 ? g_gpio_edges : g_gpio_edges_idle;
+    drain(user);
     return g_gpio_edges;
 }
 
@@ -807,6 +815,75 @@ static void test_gpio_both_branches(void)
     end(fb);
 }
 
+/*
+ * The two-pass DRDY count.
+ *
+ * ROADMAP section 1.1 left the reference part's edge rate uncharacterised:
+ * ~18.3 Hz at 833 Hz with fifo_wm 64 fits neither the per-sample model (833)
+ * nor the watermark model (13), and a single count cannot say why.  The
+ * surviving hypothesis was that INT1_FIFO_TH is a LEVEL condition oscillating
+ * across the threshold while the drain empties it — in which case the number
+ * is an artifact of draining, not a rate.
+ *
+ * Counting again with nothing draining separates the candidates: a level
+ * condition asserts once and stays asserted, an edge-per-sample line keeps
+ * pulsing.  What is asserted here is that the tool reports both and stops
+ * grading a part down for fitting neither model, which is what the reference
+ * part — healthy — actually does.
+ */
+static void test_drdy_two_pass(void)
+{
+    begin("test_drdy_two_pass");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    cfg.imu_int_gpio = 17;
+    g_gpio_why = IMT_GPIO_OK;
+
+    /* A level condition: edges while draining, one when not. */
+    mock_base(); script_reset(&o);
+    g_gpio_edges      = 12;
+    g_gpio_edges_idle = 1;
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(status_of(r, "imu.drdy.edges") == IMT_PASS,
+           "a rate fitting neither model is no longer graded down");
+    EXPECT(r->raw.gpio_edges == 12 && r->raw.gpio_edges_idle == 1,
+           "both counts reach the report");
+    EXPECT(r->raw.gpio_idle_valid, "the second pass is marked valid");
+    EXPECT(note_contains(r, "imu.drdy.edges", "level condition"),
+           "and the note names the level condition, which is the finding");
+    free(r);
+
+    /* An edge per sample: the undrained count tracks the drained one. */
+    mock_base(); script_reset(&o);
+    g_gpio_edges      = 12;
+    g_gpio_edges_idle = 12;
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "imu.drdy.edges") == IMT_PASS, "edge-per-sample passes");
+    EXPECT(note_contains(r, "imu.drdy.edges", "undrained too"),
+           "the note says the line pulses independently of the drain");
+    free(r);
+
+    /*
+     * More edges than the part has samples is still a finding — it cannot be
+     * an interrupt this part raised, so the line is floating or shared.
+     */
+    mock_base(); script_reset(&o);
+    g_gpio_edges      = 100000;
+    g_gpio_edges_idle = 1;
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "imu.drdy.edges") == IMT_WARN,
+           "a rate above the sample rate still warns");
+    free(r);
+
+    g_gpio_edges      = -1;
+    g_gpio_edges_idle = 1;
+    g_gpio_why        = IMT_GPIO_ENOCHIP;
+    end(fb);
+}
+
 static void test_faces_good_and_swapped(void)
 {
     begin("test_faces_good_and_swapped");
@@ -1369,6 +1446,7 @@ int main(void)
     test_gravity_and_stuck_axis();
     test_temperature_placeholder();
     test_gpio_both_branches();
+    test_drdy_two_pass();
     test_faces_good_and_swapped();
     test_faces_skipped_not_absent();
     test_gyro_sign();

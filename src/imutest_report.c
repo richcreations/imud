@@ -301,6 +301,24 @@ int imt_write_md(const imt_report_t *r, const char *path,
                    "%.0f ns, wall ratio %.4f, %d wraps\n",
                 w->ts_median_delta, w->ts_implied_tick_ns, w->ts_wall_ratio,
                 w->ts_wraps);
+    /*
+     * Both DRDY counts, as counts.  The pair is the measurement, not the
+     * verdict: an interrupt that only fires while something drains the FIFO
+     * is a level condition, and only the second number can say so.  Worth
+     * spelling out in the appendix rather than leaving inside a check note,
+     * since this is the number ROADMAP section 1.1 is waiting on.
+     */
+    if (w->gpio_why == IMT_GPIO_OK && w->gpio_edges >= 0) {
+        char idle[64];
+        if (w->gpio_idle_valid)
+            snprintf(idle, sizeof idle, "%d undrained (%.1f Hz)",
+                     w->gpio_edges_idle, w->gpio_rate_idle_hz);
+        else
+            snprintf(idle, sizeof idle, "undrained pass did not run");
+        fprintf(f, "DRDY edges         %d draining (%.1f Hz), %s, "
+                   "%.1f s window\n",
+                w->gpio_edges, w->gpio_rate_hz, idle, w->gpio_window_s);
+    }
     fprintf(f, "```\n\n");
 
     fprintf(f, "### 5.2 Noise and gravity at rest\n\n");

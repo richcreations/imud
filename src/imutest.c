@@ -1725,6 +1725,8 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 
     imt_gpio_why_t why = IMT_GPIO_OK;
     long ms = (long)(o->drdy_window_s * 1e3);
+
+    /* Pass 1: drain on every edge, which is what the daemon does. */
     drain_flush(d);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
                                      drain_cb, d, &why);
@@ -1744,35 +1746,100 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     }
 
     /*
-     * The tool cannot know which interrupt the driver programmed, so it
-     * measures and reports which model the edge rate fits rather than
-     * asserting one.
+     * Pass 2: the same window with the FIFO left alone.
+     *
+     * This is the experiment ROADMAP section 1.1 asked for.  The 2026-08-10
+     * bench measured ~18.3 Hz on the reference part at 833 Hz with fifo_wm 64,
+     * which fits neither the per-sample model (833) nor the watermark model
+     * (13), and an edge count alone cannot say why.  The surviving hypothesis
+     * was that INT1_FIFO_TH is a LEVEL condition oscillating across the
+     * threshold during the drain — words consumed while new ones arrive, each
+     * crossing producing another rising edge — in which case the number is an
+     * artifact of draining and not a rate at all.
+     *
+     * Stop draining and the two candidates separate cleanly.  A level
+     * condition latches: it asserts once, stays asserted because nothing
+     * empties the FIFO, and yields about one rising edge for the whole window.
+     * A genuine per-sample data-ready keeps pulsing at the ODR regardless.
+     *
+     * Deliberately left until after check_fifo, which already provokes an
+     * overflow: this pass fills the FIFO on purpose, and the flush afterwards
+     * is what keeps that out of the checks that follow.
      */
+    drain_flush(d);
+    imt_gpio_why_t why_idle = IMT_GPIO_OK;
+    int idle = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
+                                    NULL, NULL, &why_idle);
+    drain_flush(d);
+
+    r->raw.gpio_idle_valid   = (idle >= 0);
+    r->raw.gpio_edges_idle   = idle;
+    r->raw.gpio_rate_idle_hz = idle > 0 ? idle / o->drdy_window_s : 0.0;
+
     double per_sample = eff_odr;
     double watermark  = fifo_wm > 0 ? (double)eff_odr / fifo_wm : 0.0;
     double rate = r->raw.gpio_rate_hz;
-    bool fits_sample = per_sample > 0 && fabs(rate - per_sample) / per_sample < 0.20;
-    bool fits_wm     = watermark  > 0 && fabs(rate - watermark)  / watermark  < 0.20;
 
-    if (edges == 0)
+    if (edges == 0) {
         add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
                   IMT_FAIL, "0 edges", "> 0",
                   "no edges on BCM %d in %.1f s. The line is not wired, the "
                   "interrupt is not enabled in init(), or the BCM number is "
                   "wrong.", cfg->imu_int_gpio, o->drdy_window_s);
-    else if (fits_sample || fits_wm)
-        add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
-                  IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz (%d edges)", rate, edges),
-                  fmtbuf(eb, sizeof eb, "%.0f or %.1f Hz", per_sample, watermark),
-                  "matches the %s model on BCM %d",
-                  fits_sample ? "per-sample data-ready" : "FIFO watermark",
-                  cfg->imu_int_gpio);
+        return;
+    }
+
+    /*
+     * ONE format string, ONE argument list.  The verdict varies, the prose
+     * does not: imt_check_t.note is 192 bytes and test_imutest fails a
+     * truncated one, and a format that forks mid-call would have to consume
+     * identical arguments on both sides to be safe at all.  Building the two
+     * variable clauses separately sidesteps the whole problem.
+     *
+     * Budget: base ~47 + lead ~47 + idle ~88 = ~182 against the 192.  The
+     * idle buffer is sized for an int of any width even though the branch
+     * that prints one bounds it at 2, because the compiler checks the format
+     * and not the branch, and a -Wformat-truncation warning is not worth
+     * arguing with over eight bytes.
+     */
+    char idle_note[96];
+    if (!r->raw.gpio_idle_valid)
+        snprintf(idle_note, sizeof idle_note, "Second pass could not run.");
+    else if (idle <= 2)
+        snprintf(idle_note, sizeof idle_note,
+                 "%d undrained: level condition, so the drained count is "
+                 "drain-paced, not a rate.", idle);
+    else if (per_sample > 0 && fabs(idle / o->drdy_window_s - per_sample)
+                                   / per_sample < 0.20)
+        snprintf(idle_note, sizeof idle_note,
+                 "%.0f Hz undrained too: an edge per sample.",
+                 idle / o->drdy_window_s);
     else
-        add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
-                  IMT_WARN, fmtbuf(mb, sizeof mb, "%.1f Hz (%d edges)", rate, edges),
-                  fmtbuf(eb, sizeof eb, "%.0f or %.1f Hz", per_sample, watermark),
-                  "edges are present but match neither the per-sample (%.0f Hz) "
-                  "nor the watermark (%.1f Hz) model.", per_sample, watermark);
+        snprintf(idle_note, sizeof idle_note,
+                 "%.0f Hz undrained: fits no model.", idle / o->drdy_window_s);
+
+    /*
+     * More edges than the part has samples cannot be an interrupt it raised,
+     * so that is still worth flagging.  Everything below it passes.  The tool
+     * deliberately no longer grades a part down for fitting neither model:
+     * the reference part does exactly that and is healthy, which is what made
+     * the old WARN noise rather than a finding, and an edge count on its own
+     * was never able to identify a model in the first place.
+     */
+    bool too_fast = per_sample > 0 && rate > per_sample * 1.2;
+    char lead[56];
+    lead[0] = '\0';
+    if (too_fast)
+        snprintf(lead, sizeof lead, "Above the sample rate: floating or "
+                                    "shared line. ");
+
+    add_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+              too_fast ? IMT_WARN : IMT_PASS,
+              fmtbuf(mb, sizeof mb, "%.1f Hz drained, %.1f Hz idle",
+                     rate, r->raw.gpio_rate_idle_hz),
+              fmtbuf(eb, sizeof eb, "%.0f or %.1f Hz", per_sample, watermark),
+              "BCM %d: %.1f Hz vs %.0f/%.1f (sample/wm). %s%s",
+              cfg->imu_int_gpio, rate, per_sample, watermark, lead, idle_note);
 }
 
 /* ── Phase A: magnetometer ────────────────────────────────────────────────── */
