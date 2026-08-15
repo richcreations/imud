@@ -66,10 +66,19 @@ new key defaults to the behaviour 1.8.2 had.
 
 * Sample latency is now instrumented and split into its two terms, FIFO
   residence and the daemon's own pipeline. Only the second is under imud's
-  control, and only their sum had ever been discussed.
+  control, and only their sum had ever been discussed. Measured on a
+  Raspberry Pi 5: the pipeline term is **0.26 ms p99**, six times under the
+  1.5 ms the spec budgets for it.
 
-Three fixes from a pre-release bench run on a Raspberry Pi 5. **The first is
-the reason to upgrade if you run on ARM at all.**
+  **`fifo_wm` is documented differently as a result.** It bounds buffer depth
+  and overflow headroom; it does not set latency, because the reader also wakes
+  on a 10 ms timeout and drains whatever is there. `fifo_wm / odr_hz` — the
+  "64 at 833 Hz is 77 ms" arithmetic the manual used to invite — was never the
+  residence in any configuration anyone runs. Nothing about the daemon changed
+  here; what changed is that it had been measured.
+
+The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
+**The first is the reason to upgrade if you run on ARM at all.**
 
 * **Fix: the daemon could not start on arm64 or armhf under its own systemd
   unit.** systemd killed it with SIGSYS before it fused a sample. The unit
@@ -130,6 +139,25 @@ the reason to upgrade if you run on ARM at all.**
   Separately, `icm42688p`'s declared tick was wrong by 6.7%: its timestamp
   counter runs at 32/30 µs per LSB, not 1 µs, whenever the part is not clocked
   from an external RTC — which is every configuration this driver programs.
+
+* **Fix: sample timestamps carried two offsets.** `ts_wall_ns` / `ts_tai_ns`
+  are documented as the instant the sensor sampled, and were not.
+
+  The anchor that maps chip time to host time paired the newest sample's
+  counter value with the *midpoint* of the burst read. That was right while
+  that value came from reading the counter after the drain; once the driver
+  started reporting when the sample was actually taken (above), the midpoint
+  put every timestamp late by about half a read — 2–3 ms at 833 Hz on I²C,
+  more at deeper watermarks or slower buses. And separately, the conversion
+  took its tick delta as unsigned, so a sample *older* than the anchor came out
+  29.8 hours in the future; the reader anchors on a burst's newest sample and
+  publishes the rest of that burst afterwards, so roughly eight samples a
+  minute at 833 Hz went out that way. That one predates 1.9.0.
+
+  Neither reached the filter — the dt clamp and the anchor-generation check
+  discard the discontinuity, and a constant offset cancels out of a difference
+  — so attitude was never affected. Anyone correlating an imud packet with an
+  external event, which is what these fields exist for, was.
 
 * **`imud-imutest` counts DRDY edges twice**, once draining the FIFO on every
   edge and once not. A watermark interrupt is a level condition, so it asserts

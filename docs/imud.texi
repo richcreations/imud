@@ -686,13 +686,20 @@ rates of some parts are beyond what a Raspberry Pi can sustain.
 @code{fifo_wm}
  @tab int
  @tab @code{64}
- @tab FIFO watermark in sample-sets. Controls interrupt latency vs. CPU
-wake-up frequency. At 833 Hz, @code{32} ≈ 38 ms; @code{64} ≈ 77 ms ---
-those are the age of the @emph{oldest} sample in a full burst, so the
-median is about half. On the ST parts a watermark of 8 or more also
-batches the chip timestamp into the FIFO (see @code{docs/ROADMAP.md}
-§1.1); at 32 and above that costs 1.6% of the word budget, so the same
-watermark holds about 63 sample-sets rather than 64.
+ @tab FIFO watermark in sample-sets: how deep the chip buffers before
+raising its interrupt. This bounds @strong{buffer depth and overflow
+headroom} --- it does @emph{not} set sample latency, despite what
+@code{64 / 833 Hz ≈ 77 ms} arithmetic suggests. The reader also wakes on
+a 10 ms timeout and drains whatever is there, so residence is bounded by
+that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz,
+worst case over 120 s was 24 ms at @code{64} and 55--57 ms at @code{8}
+and @code{32} --- it does not scale with this key, and the shallow
+settings measured @emph{worse} (@code{docs/ROADMAP.md} §3.1). Raise it
+if a busy host is overflowing; lowering it to chase latency does not
+work. On the ST parts a watermark of 8 or more also batches the chip
+timestamp into the FIFO (§1.1); at 32 and above that costs 1.6% of the
+word budget, so the same watermark holds about 63 sample-sets rather
+than 64.
 @end multitable
 
 @node [mag]
@@ -1272,15 +1279,33 @@ warnings/errors are also shown by @code{imud-status} ("Recent
 warnings").
 
 The @code{[stats]} line ends with a sample-latency clause ---
-@code{fifo=p50/p99 pipe=p50/p99 max=@dots{}} in milliseconds --- on
-parts that have a hardware timestamp counter. @code{fifo} is FIFO
-residence, which @code{fifo_wm} buys deliberately; @code{pipe} is the
-daemon's own cost from read to fused state, and is the term to hold to a
-budget. Two things are normal rather than faults: the clause is
-@strong{absent entirely} on @code{icm20948} and @code{mpu925x}, which
-have no chip timer to measure against, and it takes a few seconds to
-appear on the others, because the chip's real tick period has to be
-measured against the host clock before FIFO residence means anything.
+@code{fifo=p50/p99 pipe=p50/p99 max=fifo/pipe} in milliseconds --- on
+parts that have a hardware timestamp counter. @code{fifo} is the age of
+a sample when its read completed; @code{pipe} is the daemon's own cost
+from there to fused state, and is the term to hold to a budget (0.26 ms
+p99 on a Pi 5 at 833 Hz).
+
+Three things about reading it:
+
+@itemize
+@item
+@strong{The percentiles are bucket upper edges, and @code{max=} is
+exact.} The histogram is log₂-spaced, so a reported @code{p99} of
+@code{16.4 ms} means the true value is somewhere in @code{[8.2, 16.4)}.
+It never flatters, but it can overstate by up to 2×. When you want a
+number rather than a bound, use @code{max=}.
+@item
+@strong{@code{fifo} is bounded by how often the reader drains, not by
+@code{fifo_wm}.} The reader wakes on the watermark interrupt @emph{or} a
+10 ms timeout, whichever comes first, so @code{fifo_wm / odr_hz} is not
+the residence in any shipped configuration. See the @code{fifo_wm} entry
+above.
+@item
+@strong{It takes a few seconds to appear}, because the chip's real tick
+period has to be measured against the host clock first. On
+@code{icm20948} and @code{mpu925x}, which have no chip timer, it is
+absent entirely --- both are normal rather than faults.
+@end itemize
 
 @multitable @columnfractions 0.14 0.09 0.12 0.65 
 @headitem 

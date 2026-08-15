@@ -133,12 +133,45 @@ duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
 cannot build on the macOS dev host, so CI and the Pi are the only places they
 have ever run.
 
-### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(closed in code — awaiting bench confirmation)*
+### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(confirmed on silicon 2026-08-14)*
 
 The 2026-08-10 Pi 5 session on the reference pair produced four findings. Two
 were shipped fixes (the ARM seccomp filter, the gpio udev trigger); the rest
-are below. All three are now **implemented and unit-tested**, and none has met
-silicon. What each one still owes the bench is stated with it.
+are below.
+
+**All three are now confirmed on hardware** by the 2026-08-14 run: `chip_ts`
+monotonic with 0 reversals, the batched FIFO timestamp **accepted** on this die
+with no fallback logged, `imu.chipts.wall` **0.9998** against 1.041 before the
+part's own `FREQ_FINE +27` trim was applied, and the header reading
+`ts_tick_ns = 25000 typical, 24027 from this part`. The bench notes each item
+still owes are kept below for the next part that is not this one.
+
+**That run also found two defects in what happens to a timestamp after the
+driver produces it** — both reaching `ts_wall_ns` and neither reaching the
+filter, so neither was visible in attitude:
+
+- **The anchor paired the newest sample's `chip_ts` with the midpoint of the
+  burst read.** Correct while `chip_ts` meant "the counter as read *after* the
+  drain"; batching made it mean "when the sample was taken", which is earlier
+  than the read began, so every reconstructed timestamp landed late by about
+  half a read — 2–3 ms at 833 Hz over I²C, more at deeper watermarks or slower
+  buses. `imu.chipts.wall` cannot see it: that check grades the chip/wall
+  *ratio*, which a constant offset leaves at 1.0000. Fixed by pairing with the
+  pre-read instant (`anchor_wall_ns`).
+- **`chip_to_wall` took the tick delta as unsigned**, so a sample *older* than
+  the anchor became a ~2³²-tick jump forward — 29.8 hours at 25 µs/tick. Not a
+  corner case: the reader anchors on the newest sample of a burst and pushes
+  the burst afterwards, so roughly eight samples a minute at 833 Hz shipped a
+  timestamp a day in the future. The dt clamp and the anchor-generation check
+  reject the discontinuity before the filter, and the latency histogram drops a
+  sample whose `wall` is after its own read stamp — so it reached the wire and
+  nowhere else. **Pre-existing, not a 1.9.0 regression.** Fixed by taking the
+  delta signed.
+
+The bench proposed the first from its effect on sample latency and had the
+direction inverted — an offset of this shape *deflates* the FIFO-residence term
+rather than inflating it. What actually explained their headline number was
+§3.1's model and the histogram's bucket resolution, both documentation.
 
 - **Batch the FIFO's own timestamp instead of back-calculating** — *done*.
   `ism330dhcx`, `lsm6dso` and `icm42688p` timed a burst by reading the live
@@ -258,68 +291,87 @@ latency should be measured against the Pi 4 baseline once hardware testing start
 ### 3.1 spec §14's latency budgets, one of them now measured  *(the pipeline term is in; FIFO residence and SPI still owed)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
-end-to-end at 3 ms. Nothing measured any of them until now, and the end-to-end
-row does not survive contact with the shipped config: `fifo_wm = 64` at 833 Hz is
-77 ms of buffering on its own — 615 ms at `odr_hz = 104` — against a 3 ms budget.
-`docs/manual.md` documents that 77 ms as a deliberate knob three files away from
-the budget it blows.
+end-to-end at 3 ms. Nothing measured any of them for a long time, and the
+end-to-end row looked impossible against the shipped config — `fifo_wm = 64` at
+833 Hz reads as 77 ms of buffering on its own, against a 3 ms budget.
 
-**The instrument now exists** (`lat_hist_t` in `imu_math.c`, wired in `imu.c`,
+**The instrument exists** (`lat_hist_t` in `imu_math.c`, wired in `imu.c`,
 reported on the `[stats]` line). It splits the chain into the two terms only ever
 discussed as a sum:
 
-    FIFO residence   sample taken -> I2C read complete   ~ fifo_wm/odr, the operator's knob
+    FIFO residence   sample taken -> I2C read complete   bounded by the drain cadence
     pipeline         read complete -> state fused        imud's own cost
 
-**What is owed is a measurement on real silicon**, because sim cannot supply it:
-the sim driver synthesises `chip_ts` as `seq*ticks_per`, advancing at exactly
-nominal rate rather than tracking elapsed time, so its FIFO column reports the
-sim's own batching. Reading it as FIFO residence would be an instrument artifact
-of exactly the kind §10.9 was written to avoid. The pipeline column *is* real
-and measured ~0.5–1.0 ms p50 in a container, but that is a loaded laptop, not a Pi.
+**Sim cannot supply the first term**: the sim driver synthesises `chip_ts` as
+`seq*ticks_per`, advancing at exactly nominal rate rather than tracking elapsed
+time, so its FIFO column reports the sim's own batching. Reading that as FIFO
+residence would be an instrument artifact of exactly the kind §10.9 was written
+to avoid.
 
-**Half of it is now measured.** The 2026-08-11 Pi 5 soak (30 minutes,
-`ism330dhcx` on I²C at 833 Hz, `fifo_wm = 64`) gave:
+**Measured, on the 2026-08-14 Pi 5 run** — the full matrix, 120 s per
+combination, `ism330dhcx` on I²C, six combinations all at `ovf = 0`. Worst
+case (`max=`, which is exact; see the caution below):
 
-| term | p50 | p99 | against |
-|---|---|---|---|
-| `pipe` — read complete → state fused | — | **0.26 ms** | 1.5 ms budget |
-| `fifo` — sample taken → read complete | 16.4–32.8 ms | 32.8 ms | `wm/odr` = 77 ms |
+| `odr_hz` | `fifo_wm` | `fifo` worst | `pipe` p99 | `wm/odr` says |
+|---|---|---|---|---|
+| 104 | 8 / 32 / 64 | 12.7 / 26.0 / 25.5 ms | 0.06 ms | 77 / 308 / 615 ms |
+| 833 | 8 / 32 / 64 | 56.8 / 55.5 / 24.4 ms | **0.26 ms** | 9.6 / 38 / 77 ms |
 
-So the term imud actually controls comes in **6× under budget** on a Pi 5,
-which is the number §14's fusion-latency row was always about. Two cautions on
-reading the other one:
+**`pipe` — the term imud controls — is 0.26 ms p99, six times under §14's
+1.5 ms budget**, and identical across every combination. That is the number
+§14's fusion-latency row was always about, and §3.1's original purpose.
 
-- **`fifo` is drain-rate-bound, not watermark-bound.** 77 ms is the residence
-  of the *oldest* sample in a full burst; the tool reports p50/p99 across all
-  samples, so the right expectations are `p50 ≈ wm/(2·odr)` and
-  `p99 ≈ wm/odr`. Even against those, the measured 33 ms p99 is short — it
-  corresponds to draining at ~18.6 Hz rather than the 13 Hz a watermark-paced
-  drain would give, which is the same phenomenon §1.1's DRDY item is chasing,
-  seen from the other side. The two findings corroborate each other.
-- **The same run's 40 s matrix produced no data at all**, because the chip's
-  tick period was still unmeasured for the first minute. Fixed in 1.9.0 (§1.1,
-  bullet 2, plus the publish-gate split) — but any future matrix window must
-  outlive the first re-anchor, now 25 s.
+`fifo` is the interesting one, and it says something other than what this
+section assumed:
+
+- **It does not scale with `fifo_wm` at all**, and the shallow settings
+  measured *worse*. That is because the watermark is not what triggers a
+  drain: the reader waits with a **10 ms timeout** (`src/imu.c`) and drains
+  whatever is there when it expires, so residence is bounded by that cadence
+  plus the read itself. `imud-imutest` measured the same thing independently
+  as `max read-loop gap 10.2 ms`. At 833/64 that predicts ~10 ms of
+  accumulation plus ~3 ms of bus time, against a measured 24.4 ms worst case;
+  at 104 Hz roughly one sample per drain, against 12.7 ms. §1.1's finding that
+  `INT1_FIFO_TH` is a *level* condition is the same fact from the other side.
+- **`wm/odr` was never the right model**, and this section said it was. It is
+  the residence of the oldest sample in a burst *drained at the watermark*,
+  which is not the configuration anyone runs.
+- **Reported percentiles are log₂-bucket upper edges.** A `p99` of `16.4 ms`
+  means the true value is in `[8.2, 16.4)`. The 2026-08-14 run's own data
+  proves it: at 104/8 the exact `max = 12.7 ms` sits *below* the reported
+  `p99 = 16.4 ms`. Conservative by design (`imu_math.h`), but it means a
+  percentile compared against a point model overstates by up to 2×. Use
+  `max=` for a number.
+
+**Open, and the one thing here that no model predicts.** At 833 Hz, `wm = 8`
+and `wm = 32` measured 56.8 and 55.5 ms worst case against `wm = 64`'s
+24.4 ms — 2.3× *worse* at a shallower watermark. Everything above says the
+drain cadence should dominate and the watermark should barely matter. To
+settle it: log per-drain sample counts and the wake reason (edge vs timeout)
+at `wm = 8` against `wm = 64`, which distinguishes a longer cycle from deeper
+bursts.
 
 Still owed: the same pair on SPI, and at the rates only SPI can carry.
 
-**Then fix §14.** The likely defect is the label rather than the number — "I2C
-sample" probably meant the sample as delivered by the read, making the row a
-budget for the daemon's own pipeline with FIFO residence excluded. Three things
-support that reading: the adjacent 1.5 ms fusion row has the same structure and
-would be equally impossible under the broad reading; the jitter row's own
-parenthetical calls the FIFO a jitter absorber, so the author knew it buffers;
-and `manual.md` presents `fifo_wm` as a chosen latency cost. But that is a
-reconstruction, and as written the row is wrong under its plain meaning.
+**Then fix §14** *(still owed — the numbers to do it with now exist)*. The likely
+defect is the label rather than the number — "I2C sample" probably meant the
+sample as delivered by the read, making the row a budget for the daemon's own
+pipeline with FIFO residence excluded. Three things support that reading: the
+adjacent 1.5 ms fusion row has the same structure and would be equally
+impossible under the broad reading; the jitter row's own parenthetical calls the
+FIFO a jitter absorber, so the author knew it buffers; and `manual.md` used to
+present `fifo_wm` as a chosen latency cost. But that is a reconstruction, and as
+written the row is wrong under its plain meaning.
 
 Do not simply relabel it. The number a control-loop or camera-sync consumer needs
-is total sample age, and that appears nowhere. Define the chain, publish both
-terms, and cross-reference from `manual.md`'s `fifo_wm` entry so the 77 ms and
-the budget stop contradicting each other across two files.
+is total sample age, and that appears nowhere. Define the chain and publish both
+terms — which the `[stats]` clause now does, with `pipe` at 0.26 ms p99 measured
+against the 1.5 ms row. What still blocks a rewrite of the end-to-end row is the
+open `wm = 8` question above: total sample age is `fifo + pipe`, and `fifo` is
+not yet predictable from configuration.
 
-Fold the measurement into the same bench session as §1 and §2 — it needs nothing
-the hardware validation pass does not already require.
+`manual.md`'s `fifo_wm` entry and the 77 ms arithmetic no longer contradict the
+budget across two files — that entry now says what the key actually bounds.
 
 ## 4. ISM330DHCX MLC engine detection  *(pre-existing spec §16 item, optional)*
 

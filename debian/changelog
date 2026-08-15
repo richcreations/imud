@@ -95,6 +95,24 @@ imud (1.9.0-1) unstable; urgency=medium
     which is every configuration this driver programs, so the tick is
     1067 ns and one second is 937500 ticks -- a 6.7 % correction.
 
+  * Fix: ts_wall_ns and ts_tai_ns carried two offsets, neither of which
+    reached the filter. The anchor paired the newest sample's chip_ts with
+    the MIDPOINT of the burst read, which was right while that value came
+    from a counter read after the drain and wrong once the driver began
+    reporting the true sample instant -- every timestamp landed late by
+    about half a read, 2-3 ms at 833 Hz over I2C. Separately, chip_to_wall
+    took its tick delta as unsigned, so a sample older than the anchor came
+    out 29.8 hours in the future; the reader anchors on a burst's newest
+    sample and publishes the rest of that burst after, so about eight
+    samples a minute at 833 Hz went out that way. The second predates
+    1.9.0. imud-imutest's imu.chipts.wall could not catch either: it grades
+    the chip/wall ratio, which a constant offset leaves at 1.0000.
+  * Sample latency measured on a Raspberry Pi 5: the pipeline term is
+    0.26 ms p99 against a 1.5 ms budget. fifo_wm is documented differently
+    as a result -- it bounds buffer depth and overflow headroom, not
+    latency, because the reader also wakes on a 10 ms timeout and drains
+    whatever is there. No daemon behaviour changed; the documentation had
+    simply never been measured against.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2-1) unstable; urgency=medium

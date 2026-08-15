@@ -58,6 +58,16 @@ imud (1.9.0) unstable; urgency=medium
     two latency terms publish independently instead of sharing one gate.
   * Fix: icm42688p's timestamp tick is 1067 ns, not 1000 -- the counter
     runs at 32/30 us per LSB without an external RTC (DS-000347 12.7).
+  * Fix: ts_wall_ns / ts_tai_ns are the instant the sensor sampled, and now
+    actually are. The anchor paired the newest sample with the midpoint of
+    the burst read (late by half a read once the driver started reporting
+    true sample instants), and chip_to_wall took its tick delta unsigned, so
+    a sample older than the anchor came out 29.8 hours ahead. Neither
+    reached the filter; both reached the wire.
+  * fifo_wm is documented as what it bounds -- buffer depth and overflow
+    headroom -- rather than as a latency knob. The reader also wakes on a
+    10 ms timeout, so fifo_wm/odr_hz was never the residence. Measured on a
+    Pi 5: pipeline latency 0.26 ms p99 against a 1.5 ms budget.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2) unstable; urgency=medium

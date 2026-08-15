@@ -344,7 +344,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `12`, `26`, `52`, `104`, `208`, `416`, `833`, `1660`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
-| `fifo_wm` | int | `64` | FIFO watermark in sample-sets. Controls interrupt latency vs. CPU wake-up frequency. At 833 Hz, `32` ≈ 38 ms; `64` ≈ 77 ms — those are the age of the *oldest* sample in a full burst, so the median is about half. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (see `docs/ROADMAP.md` §1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64. |
+| `fifo_wm` | int | `64` | FIFO watermark in sample-sets: how deep the chip buffers before raising its interrupt. This bounds **buffer depth and overflow headroom** — it does *not* set sample latency, despite what `64 / 833 Hz ≈ 77 ms` arithmetic suggests. The reader also wakes on a 10 ms timeout and drains whatever is there, so residence is bounded by that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz, worst case over 120 s was 24 ms at `64` and 55–57 ms at `8` and `32` — it does not scale with this key, and the shallow settings measured *worse* (`docs/ROADMAP.md` §3.1). Raise it if a busy host is overflowing; lowering it to chase latency does not work. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (§1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64. |
 <!-- END GENERATED: config-keys imu.1 -->
 
 ### `[mag]`
@@ -538,14 +538,25 @@ repeated N times` count. The most recent warnings/errors are also shown by
 `imud-status` ("Recent warnings").
 
 The `[stats]` line ends with a sample-latency clause —
-`fifo=p50/p99 pipe=p50/p99 max=…` in milliseconds — on parts that have a
-hardware timestamp counter. `fifo` is FIFO residence, which `fifo_wm` buys
-deliberately; `pipe` is the daemon's own cost from read to fused state, and
-is the term to hold to a budget. Two things are normal rather than faults:
-the clause is **absent entirely** on `icm20948` and `mpu925x`, which have no
-chip timer to measure against, and it takes a few seconds to appear on the
-others, because the chip's real tick period has to be measured against the
-host clock before FIFO residence means anything.
+`fifo=p50/p99 pipe=p50/p99 max=fifo/pipe` in milliseconds — on parts that have
+a hardware timestamp counter. `fifo` is the age of a sample when its read
+completed; `pipe` is the daemon's own cost from there to fused state, and is
+the term to hold to a budget (0.26 ms p99 on a Pi 5 at 833 Hz).
+
+Three things about reading it:
+
+- **The percentiles are bucket upper edges, and `max=` is exact.** The
+  histogram is log₂-spaced, so a reported `p99` of `16.4 ms` means the true
+  value is somewhere in `[8.2, 16.4)`. It never flatters, but it can overstate
+  by up to 2×. When you want a number rather than a bound, use `max=`.
+- **`fifo` is bounded by how often the reader drains, not by `fifo_wm`.** The
+  reader wakes on the watermark interrupt *or* a 10 ms timeout, whichever comes
+  first, so `fifo_wm / odr_hz` is not the residence in any shipped
+  configuration. See the `fifo_wm` entry above.
+- **It takes a few seconds to appear**, because the chip's real tick period
+  has to be measured against the host clock first. On `icm20948` and
+  `mpu925x`, which have no chip timer, it is absent entirely — both are normal
+  rather than faults.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
