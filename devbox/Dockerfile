@@ -53,8 +53,9 @@ RUN printf '%s\n' \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential pkgconf libgpiod-dev libmosquitto-dev python3 \
         lsof curl netcat-openbsd procps file git ca-certificates
-# lsof/nc/curl are not padding: they are the tools audit.md §2 names for the
-# L3 (close-on-exec on a live daemon) and L6 (silent scraper) runtime checks.
+# lsof/nc/curl are not padding: they are what the runtime checks need — the
+# close-on-exec sweep against a live daemon, and the silent-scraper check that
+# a connection sending nothing cannot stall the exporter.
 
 # 2. packaging + units: dpkg-buildpackage, dch, hardening-check, lintian, and
 #    systemd-analyze verify/security (systemd is never PID 1 in here).

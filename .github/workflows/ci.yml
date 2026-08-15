@@ -102,14 +102,14 @@ jobs:
           fi
           echo "wire revision $h agrees across all three"
 
-      # Audit D1/D3 were the same bug twice: a key that parses and works but
+      # The same bug turned up twice: a key that parses and works but
       # never reached the shipped template or the bridge manual.  Nothing
       # checked it, so nothing complained.
       - name: Every parsed config key reached its docs
         run: make check-docs
 
-      # Audit N2: the shipped config named a gpiochip the shipped unit
-      # forbade, so no combination of the two was correct on any board.
+      # A real defect once: the shipped config named a gpiochip the shipped
+      # unit forbade, so no combination of the two was correct on any board.
       # systemd-analyze verify passes either way — the mismatch only bites at
       # device-open time on real hardware, which no CI job has.
       - name: Every configured device node is allowed by the unit

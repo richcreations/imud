@@ -683,7 +683,7 @@ TEST(test_get_state_euler_extraction)
 /*
  * A non-finite state must never reach a packet, and must not be permanent.
  *
- * The audit case: a gyro bias of NaN — which reached f->bias straight from
+ * The motivating case: a gyro bias of NaN — which reached f->bias straight from
  * cal.json — made w = gyro - bias non-finite on every predict step.
  * q_from_rotvec then takes its else branch (NaN < 1e-7f is false) and
  * q_normalize declines to repair the result, because NaN fails its

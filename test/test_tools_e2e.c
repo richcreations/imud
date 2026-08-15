@@ -7,8 +7,8 @@
 /*
  * test_tools_e2e.c — imud-status and imud-mon end to end, main() included
  *
- * Audit L2: status_main.c (64 lines) and mon_main.c (285) are in no test
- * binary. Their pure halves were extracted and covered earlier — status_fmt.c
+ * status_main.c (64 lines) and mon_main.c (285) were in no test binary.
+ * Their pure halves were extracted and covered earlier — status_fmt.c
  * formats the report, mon_parse.c decodes the streams — and what stayed behind
  * is the part that touches the world: connect to a socket and copy it to
  * stdout; bind two UDP ports, select, drain, render.

@@ -170,7 +170,7 @@ static void test_imud(void)
         EXPECT(strcmp(a.config_path, "/etc/imud/imud.conf") == 0, "default config");
         /* config_path is pre-filled either way, so this flag is the only thing
          * that distinguishes the default from an operator naming that exact
-         * path — and imud gives only the latter a $HOME fallback (audit N5). */
+         * path — and imud gives only the latter a $HOME fallback. */
         EXPECT(!a.config_explicit, "the pre-filled default is not 'explicit'");
         EXPECT(a.replay_path[0] == '\0', "no replay by default");
         EXPECT(!a.skip_bias_cal && !a.no_nmea && !a.no_hirate, "no flags set");

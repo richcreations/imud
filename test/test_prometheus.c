@@ -199,7 +199,7 @@ static void test_buffer_too_small(void)
     end(fb);
 }
 
-/* ── src/prom_http.c — the scrape connection (audit L6) ──────────────────── */
+/* ── src/prom_http.c — the scrape connection ─────────────────────────────── */
 
 /* A connected pair standing in for accept()'s result and the scraper. */
 static int pair_open(int *srv, int *cli)
@@ -356,7 +356,7 @@ static void test_http_drop_paths(void)
 }
 
 /* The adopted fd must be non-blocking (else service() would stall, which is
- * the whole finding) and close-on-exec (audit L3), and the page write must be
+ * the whole finding) and close-on-exec, and the page write must be
  * able to put it back to blocking for bridge_write_all. */
 static void test_http_fd_flags(void)
 {

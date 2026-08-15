@@ -7,7 +7,7 @@
 # container:  devbox/run devbox/unitcheck.sh
 #
 # ci.yml runs `systemd-analyze verify` as a hard gate and `security` with
-# `|| true`, discarding the scores — audit L4/L5 notes they have never actually
+# `|| true`, discarding the scores — so in practice they have never actually
 # been read.  This prints every one of them and keeps the full tables.
 #
 # `verify` matters because systemd only WARNS about a misspelled directive, at

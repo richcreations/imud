@@ -37,7 +37,7 @@
  * Linux's accept4() and falls back to accept()+fcntl everywhere else.
  *
  * There is no fork/exec anywhere in imud, so nothing leaks today; this is
- * consistency and defense in depth for consumers who do exec (audit L3).
+ * consistency and defense in depth for consumers who do exec.
  *
  * lib/libimud.c and lib/imud_client.h deliberately carry their own copies:
  * the client library must compile standalone against nothing but libc.

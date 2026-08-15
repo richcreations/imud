@@ -404,7 +404,7 @@ static void test_check_fix_ttl(void)
  */
 
 /*
- * Audit L3 — position.c's client socket must be close-on-exec.
+ * position.c's client socket must be close-on-exec.
  *
  * It lives inside pos_ctx_t and is closed again the moment position_thread
  * stops, so the only instant it can be observed from outside is between the
@@ -548,7 +548,7 @@ static void test_gpsd_live_session(void)
     EXPECT_NEAR_D(g_last_speed, 3.5, 1e-4, "speed over ground propagated");
     EXPECT(g_last_mref_h > 0.0f, "magnetic reference H set from the fix");
     EXPECT(g_srv_cloexec_leaks == 0,
-           "gpsd client socket is close-on-exec (audit L3)");
+           "gpsd client socket is close-on-exec");
 
     close(g_srv_listen); g_srv_listen = -1;
     end(fb);
@@ -634,7 +634,7 @@ static void test_signalk_live_poll(void)
     EXPECT(g_last_decl > 0.0f && g_last_decl < 25.0f,
            "declination is plausible for the fix location");
     EXPECT(g_srv_cloexec_leaks == 0,
-           "SignalK client socket is close-on-exec (audit L3)");
+           "SignalK client socket is close-on-exec");
 
     close(g_srv_listen); g_srv_listen = -1;
     end(fb);

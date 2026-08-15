@@ -8,7 +8,7 @@
 check-docs.py — every config key imud parses must reach every doc surface,
 and docs/config-keys.toml must describe the parser that actually exists.
 
-Audit D1 and D3 were the same bug twice: a key that parses, works, and is
+The same bug turned up twice: a key that parses, works, and is
 documented in its man page, but never made it into the shipped .conf
 template or the bridge manual. Nothing checked, so nothing complained.
 

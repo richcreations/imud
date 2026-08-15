@@ -2153,7 +2153,7 @@ static void test_odr_agreement(void)
            init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 104, 4, 500),
            "lsm programs the resolved rate for an off-grid request");
 
-    /* MMC5983MA CTRL2 (Cmm_en|CM_Freq). 137 is the case the audit found:
+    /* MMC5983MA CTRL2 (Cmm_en|CM_Freq). 137 is the interesting case:
      * nearest_odr() said 100, the driver programs 200. */
     EXPECT(odr_actual_mag(mmc, 137) == 200, "mmc 137 resolves to 200");
     EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==

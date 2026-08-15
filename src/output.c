@@ -569,7 +569,7 @@ void out_ctx_stop(out_ctx_t *ctx)
 }
 
 /*
- * See the header for why these exist (audit N6).  Both are only reached when
+ * See the header for why these exist.  Both are only reached when
  * pthread_create failed, so no thread owns these fds and closing them here
  * races with nothing.
  */

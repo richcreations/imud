@@ -102,17 +102,17 @@ devbox/run bash
       -e 's|^driver .*|driver = "sim"|' -e 's|^int_gpio.*|int_gpio = 0|' \
       config/imud.conf > /work/sim.conf
   ./imud --config /work/sim.conf &
-  lsof +f g -p $(pidof imud)                   # every fd close-on-exec (audit L3)
+  lsof +f g -p $(pidof imud)                   # every fd must be close-on-exec
 
   sed -e 's|^http_enabled.*|http_enabled = true|' \
       config/imud-prometheus.conf > /work/prom.conf
   ./imud-prometheus --config /work/prom.conf &
-  nc 127.0.0.1 9815 &                          # connect, send nothing (audit L6)
+  nc 127.0.0.1 9815 &                          # connect, send nothing
   curl -s 127.0.0.1:9815/metrics | head        # must still answer immediately
 ```
 
-The exporter listens on **9815**, not 9100 — `audit.md` says 9100 in its
-verification notes and is wrong about it.
+The exporter listens on **9815** (the `listen_port` default), not the 9100 you
+might assume from node_exporter.
 
 A unit *starting* under `systemctl` needs systemd as PID 1, which this container
 is not — `unitcheck.sh` verifies the unit files offline instead.

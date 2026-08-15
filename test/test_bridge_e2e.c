@@ -7,7 +7,7 @@
 /*
  * test_bridge_e2e.c — the bridge daemons end to end, main() included
  *
- * Audit L2: five bridge entry points, ~1,300 lines, in no test binary. Every
+ * Five bridge entry points, ~1,300 lines, were in no test binary. Every
  * ingredient was already covered — the delta/line/frame/metric encoders, the
  * shared scaffolding in bridge.c, netserv, libimud — and none of the WIRING
  * was: which reload keys are hot and which need a restart, whether a dropped

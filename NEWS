@@ -169,8 +169,8 @@ The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
 
 1.8.2
 -----
-A fix release, almost entirely from an external audit of 1.8 and the fuzzing
-that followed it. No wire-format change: the packet stays v17 / 276 bytes, and
+A fix release, almost entirely from a review of 1.8 and the fuzzing that
+followed it. No wire-format change: the packet stays v17 / 276 bytes, and
 one previously reserved flag bit gains a meaning. Nothing here asks you to
 change a configuration — but three classes of bad value that used to load
 silently are now refused at startup, so read the first entry before upgrading a

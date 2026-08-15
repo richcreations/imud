@@ -8,7 +8,8 @@
 check-devices.py — every device node the shipped config names must be one the
 shipped unit allows.
 
-Audit N2: config/imud.conf shipped `gpio_chip = "gpiochip4"` (right for a Pi 5)
+This was a real defect: config/imud.conf shipped `gpio_chip = "gpiochip4"`
+(right for a Pi 5)
 while etc/imud.service.in allowed only /dev/gpiochip0, with the gpiochip4 line
 commented out under DevicePolicy=closed. So the daemon was forbidden from the
 very chip its own default config asked for, and no combination of the two

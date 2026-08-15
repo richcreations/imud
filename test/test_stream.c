@@ -16,7 +16,7 @@
  *   - a disconnected subscriber is pruned and a new one can join
  *   - clean thread stop and socket unlink
  *   - the AF_UNIX listener is 0660 whatever umask the daemon was started
- *     under, and opening it leaves that umask untouched (audit L5)
+ *     under, and opening it leaves that umask untouched
  *   - the TCP listener ([stream] tcp_*) serves the same framed packets
  *     alongside the AF_UNIX path, and its subscribers get the final
  *     FLAG_SHUTDOWN packet on stop
@@ -322,7 +322,7 @@ static void test_reload_and_shutdown(void)
 
 /*
  * The AF_UNIX listener's permission mode does not depend on the umask it was
- * started under (audit L5).
+ * started under.
  *
  * The window this closes — between bind() and chmod(), where the socket sat at
  * 0777 & ~umask — is not observable from outside the process, so no test here

@@ -14,9 +14,8 @@
  * printing.
  *
  * All four functions are pure — they were already, but they were static in a
- * TU no test binary linked (audit.md L2).  mon_parse_nmea in particular runs
- * on bytes off the wire, so its bounds are worth an assertion rather than a
- * reading.
+ * TU no test binary linked.  mon_parse_nmea in particular runs on bytes off
+ * the wire, so its bounds are worth an assertion rather than a reading.
  */
 
 #ifndef IMUD_MON_PARSE_H

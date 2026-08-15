@@ -7,7 +7,7 @@
 /*
  * test_concurrency.c — drives the real daemon threads under concurrent
  * config reload and stream shutdown, so ThreadSanitizer can prove the
- * hot-reload and shutdown paths are C11-race-free (the 1.5.1 audit fixes).
+ * hot-reload and shutdown paths are C11-race-free (the 1.5.1 race fixes).
  *
  * The normal unit suite never runs the reader/fusion/output threads while
  * another thread mutates config, which is exactly why the data races went

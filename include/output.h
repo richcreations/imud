@@ -57,7 +57,7 @@ void out_ctx_stop(out_ctx_t *ctx);
  * that fails leaves a listener up with nothing behind it: a client connects
  * successfully into the backlog and then waits forever, because the thread
  * that would accept() is the one that failed.  Silence is the worst
- * diagnostic available; ECONNREFUSED is the honest answer.  (audit N6)
+ * diagnostic available; ECONNREFUSED is the honest answer.
  *
  * Call INSTEAD OF starting the thread, never alongside a running one — these
  * close fds the thread would otherwise own.  Safe before out_ctx_free: the fds

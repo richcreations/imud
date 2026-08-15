@@ -200,8 +200,8 @@ src/drivers/%.o: src/drivers/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Entry points compiled as callable functions, for the end-to-end suites: the
-# real main() of a daemon under the name <base>_entry.  Audit L2's remaining
-# dark code is the WIRING inside these main()s — config → sockets → poll →
+# real main() of a daemon under the name <base>_entry.  The remaining untested
+# code is the WIRING inside these main()s — config → sockets → poll →
 # reload → emit → reconnect — every ingredient of which is unit-tested already
 # while the joining of them never was.  Renaming at compile time tests exactly
 # what ships, with no seam invented to hold it.
@@ -321,7 +321,7 @@ test_mavlink: src/mavlink_encode.c test/test_mavlink.c
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-# The bridge daemons end to end, main() included (audit L2).  Links each real
+# The bridge daemons end to end, main() included.  Links each real
 # entry point renamed to <base>_entry by the src/%.entry.o rule, and drives it
 # against test/fakestream.h — so the config→sockets→poll→reload→emit→reconnect
 # wiring, which exists nowhere but inside main(), is finally executed.  Portable:
@@ -340,7 +340,7 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
                  test/test_bridge_e2e.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
 
-# The daemon end to end, main() included (audit L2 + L1): startup with no
+# The daemon end to end, main() included: startup with no
 # sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
 # restart contract, and shutdown ordering.  Linux-only, like test_concurrency —
 # it links the daemon objects and -lgpiod.
@@ -349,7 +349,7 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
 # main.c only: /run/imud/imud.sock is a process-wide singleton, and the suite
 # has to be safe to run on a Pi that is currently serving from it.
 #
-# SYS_CONF is redirected for a different reason (audit N5): an explicit --config
+# SYS_CONF is redirected for a different reason: an explicit --config
 # now skips the $HOME fallback, so the ONLY way a test can reach that branch is
 # to run the daemon with no --config at all — which means the system config has
 # to be a path the suite can rely on being absent.  /etc/imud/imud.conf is not:
@@ -364,17 +364,18 @@ src/main.entry.o: CPPFLAGS += -DPID_FILE='"/tmp/imud_e2e_daemon.pid"' \
 # the previous one compiled in — which cost a debugging round already.
 src/main.entry.o: Makefile
 
-# --wrap=pthread_create is the seam for audit N6: main()'s four warn-and-continue
-# output threads (and the one fatal one) are otherwise unreachable, since nothing
-# a test can do from outside makes pthread_create fail.  The wrapper in
-# test_daemon.c passes every thread through untouched unless the test has named
-# its entry point, so the other cases in the suite are unaffected.  GNU ld only,
+# --wrap=pthread_create is the seam for the thread-failure paths: main()'s four
+# warn-and-continue output threads (and the one fatal one) are otherwise
+# unreachable, since nothing a test can do from outside makes pthread_create
+# fail.  The wrapper in test_daemon.c passes every thread through untouched
+# unless the test has named its entry point, so the other cases in the suite
+# are unaffected.  GNU ld only,
 # like test_drivers — this suite is already Linux-only.
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=pthread_create -o $@ $^ -lgpiod -lm
 
-# imud-status and imud-mon end to end, main() included (audit L2).  Their pure
+# imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
 # what only main() holds is the socket work and the render loop, so this drives
 # the real entry points against sockets the test binds and captures stdout.
@@ -555,8 +556,8 @@ check-docs:
 
 # ── Config ↔ systemd unit device cross-check ─────────────────────────────────
 # Every /dev node config/imud.conf names must be one etc/imud.service.in
-# allows, or DevicePolicy=closed refuses the open.  Audit N2: the template
-# asked for gpiochip4 while the unit allowed only gpiochip0, and nothing
+# allows, or DevicePolicy=closed refuses the open.  This was a real defect: the
+# template asked for gpiochip4 while the unit allowed only gpiochip0, and nothing
 # compared them — systemd-analyze cannot see it, since it only bites at
 # device-open time.  Text only, like check-docs.
 .PHONY: check-devices

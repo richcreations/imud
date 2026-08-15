@@ -10,7 +10,7 @@
  * imud-prometheus is a single poll() loop over the imud stream fd and the
  * HTTP listener. Reading a scrape request with a blocking recv() — even one
  * bounded by SO_RCVTIMEO — stalls that loop, and therefore the stream
- * reader, for as long as the client stays silent (audit L6).
+ * reader, for as long as the client stays silent.
  *
  * So the accepted fd becomes non-blocking and joins the poll set. This holds
  * exactly one connection at a time: Prometheus scrapes are serial, the page

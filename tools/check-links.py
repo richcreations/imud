@@ -62,10 +62,10 @@ def tracked_md():
     """Every .md that ships.
 
     git is the authority when it is available, because it excludes the
-    untracked working notes (AGENTS.md, audit.md) that live in this tree and
-    are nobody's published documentation.  A plain walk is the fallback for
-    the two places git is not available and the distinction does not arise: a
-    fixture tree under test, and an extracted release tarball.
+    untracked working notes that live in this tree and are nobody's published
+    documentation.  A plain walk is the fallback for the two places git is not
+    available and the distinction does not arise: a fixture tree under test,
+    and an extracted release tarball.
     """
     try:
         out = subprocess.run(["git", "-C", ROOT, "ls-files", "*.md"],

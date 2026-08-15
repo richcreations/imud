@@ -11,8 +11,8 @@
  * .imucap recording into per-axis double arrays: count the IMU records and
  * measure their span, then block-average into arrays of at most max_samples
  * entries, skipping a startup settle window.  That is a file parser with
- * arithmetic in it, and it lived inside cal_main.c where nothing could reach
- * it (audit.md L2).
+ * arithmetic in it, and it lived inside cal_main.c where no test binary could
+ * reach it.
  *
  * Both functions are silent.  The originals printed their own progress and
  * warnings; those messages now come from cal_main.c, driven by

@@ -93,6 +93,7 @@ __pycache__/
 # Local agent guidance (not shipped)
 AGENTS.md
 audit.md
+CLAUDE.md
 
 # devbox/ is TRACKED — the Debian build/test container (devbox/README.md) is a
 # contributor tool, not local tooling.  Nothing in the build, the packaging or

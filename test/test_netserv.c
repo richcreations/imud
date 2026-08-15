@@ -102,7 +102,7 @@ static void test_open_ephemeral(void)
 }
 
 /*
- * Audit L3: every fd netserv creates must be close-on-exec.
+ * Every fd netserv creates must be close-on-exec.
  *
  * The accepted clients are the point. POSIX does not carry FD_CLOEXEC across
  * accept(), so the listener's flag says nothing about theirs — before

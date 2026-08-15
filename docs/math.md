@@ -846,7 +846,7 @@ mag pinned at 100 Hz:
 at 32 kHz. A low-power board at 104 Hz gives up essentially nothing, which was
 the question that prompted the work.
 
-The top two rungs arrived later, with the ODR-coverage audit that added
+The top two rungs arrived later, with the ODR-coverage work that added
 icm42688p's 16 kHz and 32 kHz. They did not change the conclusion, and they
 did not reveal a new mechanism either: 3-D attitude RMS has climbed steadily
 above the 833 Hz default for the whole length of this table, and it simply

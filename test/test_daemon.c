@@ -5,12 +5,12 @@
  */
 
 /*
- * test_daemon.c — the daemon itself, start to shutdown (audit L2, L1)
+ * test_daemon.c — the daemon itself, start to shutdown
  *
  * src/main.c is 725 lines that no test binary linked: thread lifecycle, the
  * status-socket responder, the SIGHUP reload block, and shutdown ordering. The
- * audit named the reload block and the responder as its highest-value targets,
- * and listed the whole thing under "nothing has run on a Pi".
+ * reload block and the responder are the highest-value targets of those, and
+ * none of it had ever run outside a Pi.
  *
  * It needs no Pi and no sensor. driver = "sim" skips the GPIO chip entirely
  * (int_gpio = 0), and although imu.c opens i2c_bus unconditionally even in sim
@@ -28,7 +28,7 @@
  * is serving. The tradeoff is that the default path constants are not
  * themselves exercised here.
  *
- * THREAD FAILURE (audit N6): the Makefile links this suite with
+ * THREAD FAILURE: the Makefile links this suite with
  * -Wl,--wrap=pthread_create, so __wrap_pthread_create below can fail one named
  * thread and leave every other one alone. Without that seam main()'s four
  * warn-and-continue output arms and its one fatal one are unreachable from a
@@ -260,7 +260,8 @@ static bool status_line_has(const char *rep, const char *label, const char *want
  * thing standing between SIGHUP and the assertion), and connecting to a socket
  * proves nothing, since out_ctx_open binds every listener in step 7 and a bound
  * listener accepts into its backlog with no thread behind it — the whole of
- * audit finding N6, which two cases below had been using as a start signal.
+ * the thread-failure finding, which two cases below had been using as a
+ * start signal.
  */
 static bool wait_for_status(const char *label, const char *want, int timeout_ms)
 {
@@ -475,7 +476,7 @@ static void test_daemon_refuses_overlong_socket(void)
     end(fb);
 }
 
-/* ── audit N6 — a thread that fails to start leaves nothing bound ────────── */
+/* ── a thread that fails to start leaves nothing bound ───────────────────── */
 
 /* One connect attempt, no retry — the opposite of connect_unix, whose timeout
  * is a budget for waiting on a socket that is expected to appear. Here the
@@ -716,7 +717,7 @@ static void test_daemon_hirate_thread_failure_sends_nothing(void)
     end(fb);
 }
 
-/* ── audit N5 — SIGHUP must resolve config the way startup does ──────────── */
+/* ── SIGHUP must resolve config the way startup does ─────────────────────── */
 
 /* mkdir -p for the one directory these cases need. */
 static void make_home_dir(void)

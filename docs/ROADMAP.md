@@ -1,13 +1,12 @@
 # imud — Roadmap & Deferred Work
 
-Items identified during the 2026-07-06 audit and later passes that remain
-open. Completed work is tracked in git history, NEWS, and spec.md §6, not
-here.
+Items identified from 2026-07-06 onward that remain open. Completed work is
+tracked in git history, NEWS, and spec.md §6, not here.
 
-Sections 1–9 predate the 2026-07-25 external audit
-(`imud-audit-and-aerospace-roadmap.md`); §10 and §11 carry what that audit
-left open after 1.7, plus findings from measuring it. Where the two overlap,
-the older section is authoritative and the newer one cross-references it.
+Sections 1–9 predate §10 and §11, which were added 2026-07-25 and carry the
+filter-mathematics and aerospace items left open after 1.7, plus findings from
+measuring them. Where the two overlap, the older section is authoritative and
+the newer one cross-references it.
 
 ## 0. Direction for the next 12 months  *(2026-08 → 2027-08)*
 
@@ -418,7 +417,7 @@ Still open:
   bridge only serves the no-Signal-K "appliance" install — revisit if that
   demand materializes, or if 127251/127252 on the backbone become must-haves.
 
-## 6. Ideas beyond the audit roadmap  *(brainstorm 2026-07-11, roughly by leverage)*
+## 6. Ideas beyond the roadmap above  *(brainstorm 2026-07-11, roughly by leverage)*
 
 - **Multi-IMU.** Two sensor pairs fused, or at minimum hot-failover with
   cross-checking — the vessel-grade redundancy story (gpsd's multi-receiver
@@ -449,9 +448,9 @@ Still open:
     SPI**: I²C at 400 kHz cannot carry that FIFO drain, so it is the rate the
     transport exists for and the one where a measured-ODR check either
     confirms the part runs there and the FIFO keeps up, or does not. (Those
-    rates were only advertised by the driver from the ODR-coverage audit that
-    followed this work — before it, `supported_odr_hz` stopped at 1660 Hz and
-    the transport could not deliver its own argument.)
+    rates were only advertised by the driver from the ODR-coverage work that
+    followed — before it, `supported_odr_hz` stopped at 1660 Hz and the
+    transport could not deliver its own argument.)
   - **AKM compasses behind an InvenSense host.** icm20948 and mpu925x reach
     their on-die AK09916/AK8963 through I²C *bypass*, which only an I²C host
     can use. SPI needs the aux-I²C-master path — `I2C_SLV0_ADDR/REG/CTRL` plus
@@ -479,10 +478,10 @@ Debian package provides the official NOAA COF format (geographiclib-tools
 only offers a *downloader* for its own binary format), and a marine daemon
 must work offline — keep vendoring.
 
-## 8. Code consolidation  *(next-release candidates — deferred from the 2026-07-15 pre-1.5 audit)*
+## 8. Code consolidation  *(next-release candidates — deferred 2026-07-15, pre-1.5)*
 
-Duplication clusters found by the pre-tag full-repo audit, deferred so a
-refactor just before the release tag would not invalidate the testing 1.5
+Duplication clusters found in a pre-tag pass over the whole repo, deferred so
+a refactor just before the release tag would not invalidate the testing 1.5
 had already had. None blocks anything; each is a mechanical extraction plus
 a re-test.
 
@@ -566,11 +565,10 @@ delete a duplicate, not a refactor undertaken for tidiness.
   subsume the marine leeway question if pursued.
 - Validate capture → replay on real boat captures (the synthetic path is
   regression-tested); the §2 thermal capture can double as the test file.
-## 10. Filter mathematics  *(from the 2026-07-25 external audit + measurements taken while acting on it)*
+## 10. Filter mathematics  *(opened 2026-07-25, with measurements taken while acting on it)*
 
-Findings from `imud-audit-and-aerospace-roadmap.md` (external document) that
-were **not** actioned in 1.7, plus two findings that came out of measuring the
-ones that were. 1.7 shipped the error-state reset Jacobian, the
+Filter-mathematics items that were **not** actioned in 1.7, plus two findings
+that came out of measuring the ones that were. 1.7 shipped the error-state reset Jacobian, the
 reconfigure/engine-detector fixes, the mount-config validation, and the
 update-gate health metrics; those are in NEWS and not repeated here.
 
@@ -651,7 +649,7 @@ re-run):
 - `-DBENCH_SWEEP_RA` and `-DHUBER_VARIANT=n` rebuild switches, so both sweeps
   are re-runnable rather than folklore.
 
-### 10.2 Covariance consistency under Huber capping  *(audit A1 — fix measured and rejected; re-measured 1.7)*
+### 10.2 Covariance consistency under Huber capping  *(fix measured and rejected; re-measured 1.7)*
 
 **The finding is real.** `eskf_update()` scales the innovation when the Huber
 cap fires but leaves `K` — and therefore the Joseph covariance update — at
@@ -668,10 +666,10 @@ taken while the reject gate was corrupting every run. Rebuild with
 | 0 | **current** (ν-capping, shipped) | **5.65°** | **2.31°** | **18.3 / 7.8** | 19.3 / 25.2 |
 | 1 | K ← w·K — exact Joseph for a suboptimal gain | 8.85° | 3.09° | 39.9 / 12.4 | 17.0 / 28.5 |
 | 2 | R → R/w — IRLS-consistent inflation | 7.79° | 5.57° | 31.5 / 40.5 | 15.1 / 43.3 |
-| 3 | R → R/w² — as the audit specifies | 8.48° | 4.74° | 35.0 / 27.9 | 18.2 / 36.3 |
+| 3 | R → R/w² — as prescribed | 8.48° | 4.74° | 35.0 / 27.9 | 18.2 / 36.3 |
 
 Every variant is **both less accurate and less self-consistent** than what
-ships — by a wider margin than before — and the audit's own R/w² prescription
+ships — by a wider margin than before — and the prescribed R/w² variant
 remains among the worst.
 
 **This item is now closed, and the earlier reasoning was wrong.** It was
@@ -689,12 +687,12 @@ Reasoning and measurements are recorded in-code at `eskf_update()` and in
 `docs/math.md` §4.5, with the variants kept behind `HUBER_VARIANT` so this is
 not re-attempted blind.
 
-### 10.3 Quiescence-gated gyro process noise  *(audit A3)*
+### 10.3 Quiescence-gated gyro process noise
 
 `mekf_gyro_noise = 0.007` rad/s/√Hz against a raw sensor floor of ≈ 1.2e-4 is
 a **~58× pad applied statically, at all times**, standing in for wave-induced
 angular dynamics the smooth-rotation-plus-bias process model does not capture.
-The audit proposes making it conditional, mirroring the `Ra_scale` pattern the
+The proposal is to make it conditional, mirroring the `Ra_scale` pattern the
 codebase already trusts for the accelerometer: sensor-realistic Qb when the
 quiescence EMA (`acc_quiet_ema`, already computed and already gating m_ref
 adaptation) says the platform is calm, inflating toward the current value when
@@ -720,7 +718,7 @@ recorded measurement — and validating against it needs a calm-water benchmark
 case measuring gyro-bias settling time, which does not exist yet. Same shape as
 the 10.5 vibration half: the missing scenario is the work.
 
-### 10.4 Geometric refinement of magnetometer fits  *(audit A4 — low priority)*
+### 10.4 Geometric refinement of magnetometer fits  *(low priority)*
 
 `sphere_fit()` and `ellipse_fit()` minimise algebraic, not geometric, residual
 — a known bounded bias for sparse or uneven calibration swings, already
@@ -812,7 +810,7 @@ position source: attitude 0.841°, NEES(strict) 0.22 — now a printed benchmark
 row, previously unmeasured. Full derivation and sweeps in `docs/math.md`
 §4.3 and §4.8.1.
 
-**The vibration half (audit A6) — still open, deferred from 1.7.** 1.7 fixed
+**The vibration half — still open, deferred from 1.7.** 1.7 fixed
 the detector's time constant and added threshold hysteresis, but the response
 is still a hard 4× on/off (`src/imu.c`, `f.Ra_scale = ctx->engine_on ? 4.0f :
 1.0f`): over-deweighted at low vibration, under-deweighted at high. A
@@ -833,7 +831,7 @@ by measuring them properly. Do the scenario first.
 Scope the vibration half together with the MLC hardware-detection option in §4
 — they are the detection and response halves of one problem.
 
-### 10.6 Filter self-monitoring: NEES/NIS  *(audit C1 — NIS shipped 1.7; NEES remains bench-only)*
+### 10.6 Filter self-monitoring: NEES/NIS  *(NIS shipped 1.7; NEES remains bench-only)*
 
 **Shipped.** Rolling NIS is on wire v17 as `nis_accel` / `nis_mag` (τ ≈ 30 s,
 normalised by effective dof so 1.0 = consistent), accumulated pre-cap and
@@ -851,7 +849,7 @@ does not have at runtime. A runtime proxy — e.g. comparing P against the
 observed spread of the state estimate itself — would be a genuinely new thing
 and is the remaining part of this item. Lower priority now that NIS is live.
 
-### 10.7 Online adaptive process noise  *(audit C2 — depends on 10.6, follows 10.3)*
+### 10.7 Online adaptive process noise  *(depends on 10.6, follows 10.3)*
 
 The general form of 10.3: adjust `Qg`/`Qb` (and possibly `Ra`) continuously
 from the live innovation sequence rather than switching between fixed levels
@@ -947,21 +945,21 @@ needs a high-rate-rotation scenario that does not exist. Same shape as §10.3 an
 
 ### Reviewed, no action
 
-- **Heave DC-gain trade-off** *(audit A7)* — the structural high-pass zero at
+- **Heave DC-gain trade-off** — the structural high-pass zero at
   DC trading long-period swell accuracy for drift immunity is already
   documented as deliberate. If long-period swell accuracy ever becomes a
   requirement, the upgrade path is a model-based/complementary estimator (and
   a design doc), not a patch to the leaky integrator. See also 11.3.
-- **Timestamp inter-anchor drift** *(audit A8)* — linear interpolation between
+- **Timestamp inter-anchor drift** — linear interpolation between
   60 s re-anchors carries no oscillator drift model. Below the gyro noise
   floor in practice; revisit only if a specific chip's drift spec says
   otherwise.
-- **GNSS dual-antenna heading** — explicitly dropped by the audit and worth
-  recording as an anti-pattern: it needs hardware not on the target fleet, and
+- **GNSS dual-antenna heading** — considered and dropped, and worth recording
+  as an anti-pattern: it needs hardware not on the target fleet, and
   single-antenna GNSS "heading" is actually COG, so conflating the two would
   silently bias attitude by the leeway/crab angle.
 
-## 11. Aerospace generalization  *(audit Part B — additive; the marine path stays the default)*
+## 11. Aerospace generalization  *(additive; the marine path stays the default)*
 
 `spec.md`'s opening already describes imud as general-purpose across marine,
 robotics, machine vision, and gimbal/pointing use. This section closes the gap
@@ -1027,7 +1025,7 @@ approximation.
 - **Not in scope** *(B7)* — heave, sea-state statistics, and engine-vibration
   detection are marine-specific and simply would not be enabled. No conflict.
 
-### 11.3 Vertical-channel aiding  *(audit C3 — splits into two very differently-sized tickets)*
+### 11.3 Vertical-channel aiding  *(splits into two very differently-sized tickets)*
 
 - **GPS-altitude aiding** *(small)* — reuses 11.1's gpsd plumbing (TPV carries
   altitude). For marine this lets the heave estimator reference an absolute
@@ -1041,7 +1039,7 @@ approximation.
 For aerospace, absolute altitude/vertical-rate is a baseline expected input
 that the filter currently has no path for at all.
 
-### 11.4 Airspeed / air-data aiding  *(audit C5 — depends on 11.1, aerospace only)*
+### 11.4 Airspeed / air-data aiding  *(depends on 11.1, aerospace only)*
 
 Once 11.1 lands, feeding the same 3-D velocity-aided path from airspeed plus a
 wind estimate would keep the filter accurate through GPS-denied segments — a
@@ -1051,12 +1049,12 @@ no driver class, no thread, no config section. This needs a new input channel
 built from scratch, so it is a larger first step than "depends on 11.1"
 suggests. Gate entirely behind the aerospace profile; no marine analog.
 
-### 11.5 Multi-IMU redundancy and voting  *(audit C4)*
+### 11.5 Multi-IMU redundancy and voting
 
-Tracked in §6 as "Multi-IMU". The audit adds two things worth recording: the
-standard name for this architecture is the **federated Kalman filter**
-(Carlson, NAECON 1988), and the scope is confirmed as the largest item in the
-audit — the entire daemon is built around exactly one IMU and one
+Tracked in §6 as "Multi-IMU". Two things worth recording: the standard name
+for this architecture is the **federated Kalman filter**
+(Carlson, NAECON 1988), and it is the largest item in this document
+— the entire daemon is built around exactly one IMU and one
 magnetometer, so this is running the whole per-sensor pipeline N times plus
 new arbitration/voting logic that does not exist anywhere today, not a config
 change. Only pursue against an explicit redundancy or certification
@@ -1065,8 +1063,8 @@ requirement, and write a design doc first.
 ---
 *Compiled 2026-07-06; output-bridges section added 2026-07-08; ideas section
 + N2K demotion added 2026-07-11; pruned of shipped items 2026-07-19 (1.6);
-filter-mathematics and aerospace sections (§10, §11) added 2026-07-25 from the
-external audit, pruned of what 1.7 shipped; triaged 2026-07-26 at the close of
+filter-mathematics and aerospace sections (§10, §11) added 2026-07-25, pruned
+of what 1.7 shipped; triaged 2026-07-26 at the close of
 1.7 — §8's UDP drift fixed, its `AF_INET6` note refuted, `FLAG_MOTION` retired,
 B5 shipped, and the items 1.7 deliberately left (§8 consolidation, §9 heave
 init, §10.3, §10.5 vibration half) annotated with why; §0 forward plan added

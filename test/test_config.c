@@ -688,7 +688,7 @@ static void test_load_rejects_out_of_range_int(void)
     imud_config_t def, cfg;
     config_defaults(&def);
 
-    /* The three rows the audit reproduced, one per failure mode. */
+    /* Three rows, one per failure mode. */
     const char *path = write_tmpconf(160,
         "[nmea]\ndest_port = 4294977414\n"
         "[imu]\ngyro_dps = 500\n");
@@ -1439,7 +1439,7 @@ static void test_bridge_output_enables(void)
  * For step 2 to have teeth, src must differ from dst in EVERY field, so a
  * stray copy of any one of them shows up.  fill_distinct() does that; it was
  * generated from the struct in include/config.h and must gain a line when a
- * field is added (AGENTS.md's add-a-config-key checklist says so).
+ * field is added.
  */
 
 /*
@@ -1618,7 +1618,7 @@ static void fill_distinct(imud_config_t *c)
 /*
  * [mount] preset — the eight quarter-turn shortcuts and their aliases.
  *
- * Untested until audit D1 sent me to look at it: the key is parsed, and it
+ * Untested for a long time: the key is parsed, and it
  * is the one mount key that can be set with a typo. An unrecognised name is
  * deliberately fatal, because starting with a silently wrong mount rotation
  * biases every sample for the life of the run.

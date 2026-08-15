@@ -429,7 +429,7 @@ int main(int argc, char **argv)
 
     /* --config PATH, or else SYS_CONF then ~/.config/imud/imud.conf.  "or
      * else", not "then": an explicit --config names one file and gets no
-     * fallback (audit N5). */
+     * fallback. */
     imud_config_t cfg;
     config_defaults(&cfg);
 
@@ -439,7 +439,7 @@ int main(int argc, char **argv)
      * always the file it was asked for.  Reloading args.config_path instead
      * means a daemon that came up on the $HOME fallback answers every SIGHUP
      * with "reload failed" — re-reading a file that does not exist — so hot
-     * reload is dead for it and the message blames the config (audit N5). */
+     * reload is dead for it and the message blames the config. */
     char cfg_path[sizeof args.config_path];
     snprintf(cfg_path, sizeof cfg_path, "%s", primary);
 
@@ -597,8 +597,8 @@ int main(int argc, char **argv)
     pid_write(PID_FILE);
     /* READY=1 is deliberately NOT sent here.  Sockets being bound is not the
      * daemon being up: step 10 can still fail, and a unit reported active with
-     * no threads behind it is the systemd half of audit N6.  It goes out once
-     * the threads are running. */
+     * no threads behind it is the systemd half of the thread-failure problem.
+     * It goes out once the threads are running. */
 
     /* ── 10. Start threads ───────────────────────────────────────────────── */
 
@@ -698,7 +698,7 @@ int main(int argc, char **argv)
         }
     }
     /*
-     * The stream is the exception, and it is fatal (audit N6).  Since 1.6 the
+     * The stream is the exception, and it is fatal.  Since 1.6 the
      * AF_UNIX stream is the one output enabled by default: the five bridges and
      * every libimud consumer read it and nothing else.  A daemon that cannot
      * run it produces nothing while reporting active, which is worse than not

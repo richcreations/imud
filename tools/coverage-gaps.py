@@ -5,8 +5,7 @@ why, because "missing" currently means two very different things.
 
 `make coverage` runs `make test`, so a translation unit that no test binary
 links emits no .gcno at all: lcov does not list it at 0%, it does not list it.
-That is the signal audit L2 is driven by — which files have never been
-executed.
+That is the signal worth chasing — which files have never been executed.
 
 But a file compiled into MORE THAN ONE test binary goes missing too, for an
 unrelated reason. The test rules compile sources directly into each binary, so
@@ -80,7 +79,7 @@ def main():
 
     if dark:
         total = sum(l for _, l, _ in dark)
-        print("\nIn NO test binary — never executed (audit L2): "
+        print("\nIn NO test binary — never executed: "
               "%d files, %d lines" % (len(dark), total))
         for src, lines, _ in dark:
             print("    %-28s %5d lines" % (src, lines))
