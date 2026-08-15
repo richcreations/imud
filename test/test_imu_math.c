@@ -277,6 +277,137 @@ static uint32_t ticks_over(uint64_t wall_ns, double err_pct)
     return (uint32_t)((double)wall_ns / real_tick + 0.5);
 }
 
+/*
+ * Which host instant the anchor pairs the newest sample's chip_ts with.
+ *
+ * The defect this exists for.  The anchor used to take the MIDPOINT of the
+ * burst read, which was right while a driver's chip_ts for the newest sample
+ * came from reading the chip counter AFTER the drain — that value means "now
+ * at t_after", so the midpoint split the difference.  1.9.0 started batching
+ * the FIFO's own timestamp, and chip_ts became the instant the sample was
+ * actually taken, which is EARLIER than t_before.  Pairing that with the
+ * midpoint placed every reconstructed timestamp late by about half the read
+ * duration.
+ *
+ * Nothing caught it: dt is a difference, so the offset cancelled before it
+ * reached the filter, and imud-imutest's imu.chipts.wall grades the chip/wall
+ * RATIO, which a constant offset leaves at 1.0000.  It surfaced on the
+ * 2026-08-14 bench only as a sample-latency term that read low.
+ */
+static void test_anchor_pairs_the_sample_instant(void)
+{
+    begin("test_anchor_pairs_the_sample_instant");
+    int fb = g_fail;
+
+    /*
+     * One drain, modelled with real proportions: 833 Hz, a 64-sample burst,
+     * and a read that takes 24 ms — twenty sample periods, which is what makes
+     * the midpoint error visible rather than academic.
+     */
+    const uint64_t period   = 1200000ULL;                 /* 1.2 ms @ 833 Hz */
+    const uint64_t t_newest = 1000000000000ULL;           /* newest sample */
+    const uint64_t t_before = t_newest + period / 2;      /* status read */
+    const uint64_t read_dur = 24000000ULL;                /* 24 ms drain */
+    const uint64_t t_after  = t_before + read_dur;
+
+    EXPECT(anchor_wall_ns(t_before, t_after, true) == t_before,
+           "a driver reporting sample instants pairs with the pre-read stamp");
+    EXPECT(anchor_wall_ns(t_before, t_after, false) == t_before + read_dur / 2,
+           "a driver with no chip timer still pairs with the read midpoint");
+
+    /* End to end: anchor on this burst, then reconstruct the newest sample. */
+    ts_anchor_t a;
+    anchor_init(&a);
+    const uint32_t chip_newest = 500000;
+    anchor_update(&a, chip_newest,
+                  anchor_wall_ns(t_before, t_after, true),
+                  /*tai*/ anchor_wall_ns(t_before, t_after, true),
+                  /*mono*/ 0, NOM_TICK_NS);
+
+    uint64_t wall = 0, tai = 0;
+    uint32_t gen = 0;
+    chip_to_wall(&a, chip_newest, NOM_TICK_NS, &wall, &tai, &gen);
+
+    /* Within one sample period of when it was really taken... */
+    EXPECT(wall >= t_newest && wall - t_newest <= period,
+           "the newest sample reconstructs within a sample period of truth");
+    /* ...and specifically NOT half a read late, which is what the midpoint
+     * gives.  Pin the direction: an error that grows with the read is the
+     * defect, an error bounded by the sample period is the residual. */
+    EXPECT(wall - t_newest < read_dur / 2,
+           "and is not late by half the read duration");
+
+    /*
+     * A constant offset must not reach the filter.  Two samples one period
+     * apart must be one period apart after reconstruction, whichever pairing
+     * the anchor used — this is why the defect never moved attitude.
+     */
+    uint64_t w_prev = 0;
+    chip_to_wall(&a, chip_newest - (uint32_t)(period / NOM_TICK_NS),
+                 NOM_TICK_NS, &w_prev, &tai, &gen);
+    EXPECT(wall - w_prev == period, "dt between samples is unchanged by it");
+
+    pthread_mutex_destroy(&a.mtx);
+    end(fb);
+}
+
+/*
+ * A sample OLDER than the anchor must reconstruct behind it, not 29.8 hours
+ * ahead of it.
+ *
+ * This is the ordinary case, not a corner one: the reader anchors on the
+ * NEWEST sample of a burst and then pushes the whole burst, so every other
+ * sample in that burst is older than the anchor by up to a watermark's worth
+ * of ticks.  chip_to_wall took the delta as UNSIGNED, so each of those became
+ * a ~2^32-tick jump forward, and imu.c published it as ts_wall_ns.
+ *
+ * Nothing downstream noticed: the dt clamp and the anchor-generation check
+ * both reject the discontinuity before it reaches the filter, and the latency
+ * histogram drops a sample whose wall lands after its own read stamp.  So it
+ * went out on the wire and nowhere else — which is exactly why it needs a
+ * test rather than a downstream assertion.
+ */
+static void test_samples_older_than_the_anchor(void)
+{
+    begin("test_samples_older_than_the_anchor");
+    int fb = g_fail;
+
+    ts_anchor_t a;
+    anchor_init(&a);
+
+    const uint32_t chip_anchor = 1000000;
+    const uint64_t wall_anchor = 5000000000ULL;
+    anchor_update(&a, chip_anchor, wall_anchor, wall_anchor + 37000000000ULL,
+                  /*mono*/ 0, NOM_TICK_NS);
+
+    uint64_t wall = 0, tai = 0;
+    uint32_t gen = 0;
+
+    /* One tick before the anchor: 25 µs earlier, not 29.8 hours later. */
+    chip_to_wall(&a, chip_anchor - 1, NOM_TICK_NS, &wall, &tai, &gen);
+    EXPECT(wall == wall_anchor - 25000ULL, "one tick before the anchor");
+    EXPECT(tai  == wall_anchor + 37000000000ULL - 25000ULL, "tai follows");
+
+    /* A whole watermark back — 64 sample-sets at 833 Hz is 3072 ticks. */
+    chip_to_wall(&a, chip_anchor - 3072, NOM_TICK_NS, &wall, &tai, &gen);
+    EXPECT(wall == wall_anchor - 3072ULL * 25000ULL,
+           "a full burst before the anchor stays behind it");
+    EXPECT(wall < wall_anchor, "and is emphatically not in the future");
+
+    /* The counter's own 32-bit wrap still resolves the short way round: an
+     * anchor just past the wrap, a sample just before it. */
+    ts_anchor_t w;
+    anchor_init(&w);
+    anchor_update(&w, 0x00000010u, wall_anchor, wall_anchor, 0, NOM_TICK_NS);
+    chip_to_wall(&w, 0xFFFFFFF0u, NOM_TICK_NS, &wall, NULL, NULL);
+    EXPECT(wall == wall_anchor - 32ULL * 25000ULL,
+           "a pre-wrap sample is 32 ticks back, not 2^32 forward");
+    pthread_mutex_destroy(&w.mtx);
+
+    pthread_mutex_destroy(&a.mtx);
+    end(fb);
+}
+
 static void test_tick_measured_from_anchors(void)
 {
     begin("test_tick_measured_from_anchors");
@@ -859,6 +990,8 @@ int main(void)
     test_timestamp_wraparound();
     test_timestamp_no_hw_timer();
     test_anchor_gen_increments();
+    test_anchor_pairs_the_sample_instant();
+    test_samples_older_than_the_anchor();
     test_tick_measured_from_anchors();
     test_no_sawtooth_within_epoch();
     test_dt_between_samples_is_true();

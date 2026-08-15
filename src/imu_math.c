@@ -127,6 +127,17 @@ void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
     pthread_mutex_unlock(&a->mtx);
 }
 
+uint64_t anchor_wall_ns(uint64_t t_before_ns, uint64_t t_after_ns,
+                        bool ts_is_sample_instant)
+{
+    /* See imu_math.h for why these are different, and what it cost when they
+     * were not.  Averaging as (a>>1)+(b>>1) rather than (a+b)/2 keeps the
+     * midpoint correct for realtime nanosecond values near the top of the
+     * range; the low bit it drops is a nanosecond. */
+    if (ts_is_sample_instant) return t_before_ns;
+    return (t_before_ns >> 1) + (t_after_ns >> 1);
+}
+
 double anchor_measured_tick_ns(ts_anchor_t *a)
 {
     pthread_mutex_lock(&a->mtx);
@@ -137,10 +148,26 @@ double anchor_measured_tick_ns(ts_anchor_t *a)
 
 /*
  * Convert a chip counter value to wall + TAI timestamps.
- * Uses 32-bit wrapping arithmetic — safe up to 2^32 ticks between anchors
- * (~29.8 h at the ST parts' 25 µs/tick, ~71.6 min at the ICM-42688-P's
- * 1 µs/tick, which unwraps its 20-bit counter into 32); the 60 s anchor
- * refresh keeps deltas far below either bound.
+ *
+ * The delta is taken as SIGNED, because samples on both sides of the anchor
+ * are ordinary.  The reader anchors on the NEWEST sample of a burst and then
+ * pushes the whole burst, so every other sample in that burst is older than
+ * the anchor by up to a watermark's worth of ticks.  Reading the delta as
+ * unsigned turned each of those into a ~2^32-tick jump FORWARD — about 29.8
+ * hours at 25 µs/tick — and imu.c published it as ts_wall_ns.  The filter
+ * never saw it (the dt clamp and the anchor-generation check both reject the
+ * discontinuity, and the latency histogram drops a sample whose wall is after
+ * its own read), so it reached the wire and nothing else.
+ *
+ * 32-bit wrapping arithmetic still handles the counter's own wrap; taking the
+ * result signed halves the representable span to 2^31 ticks — ~14.9 h at the
+ * ST parts' 25 µs/tick, ~35.8 min at the ICM-42688-P's 1.067 µs/tick, which
+ * unwraps its 20-bit counter into 32.  The 60 s anchor refresh keeps deltas
+ * three orders of magnitude below either bound.
+ *
+ * The magnitude is computed unsigned and the sign applied afterwards: a
+ * right-shift of a negative signed value is implementation-defined, and the
+ * q16 fixed-point path needs that shift.
  *
  * The period used is the measured one once the anchor has it, falling back to
  * the caller's `tick_ns` — imu_ops_t.ts_tick_ns — until then.  That fallback
@@ -152,12 +179,15 @@ void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                   uint32_t *gen_out)
 {
     pthread_mutex_lock(&a->mtx);
-    uint32_t dticks = chip_ts - a->chip_ticks;
+    int32_t  dticks = (int32_t)(chip_ts - a->chip_ticks);
+    bool     before = dticks < 0;
+    /* Widen before negating so INT32_MIN has somewhere to go. */
+    uint64_t mag    = before ? (uint64_t)(-(int64_t)dticks) : (uint64_t)dticks;
     uint64_t offset = a->tick_q16
-                    ? ((uint64_t)dticks * a->tick_q16) >> 16
-                    : (uint64_t)dticks * tick_ns;
-    if (wall_out) *wall_out = a->wall_ns + offset;
-    if (tai_out)  *tai_out  = a->tai_ns  + offset;
+                    ? (mag * a->tick_q16) >> 16
+                    : mag * tick_ns;
+    if (wall_out) *wall_out = before ? a->wall_ns - offset : a->wall_ns + offset;
+    if (tai_out)  *tai_out  = before ? a->tai_ns  - offset : a->tai_ns  + offset;
     if (gen_out)  *gen_out  = a->gen;
     pthread_mutex_unlock(&a->mtx);
 }

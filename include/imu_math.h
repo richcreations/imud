@@ -96,6 +96,40 @@ void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
                    uint64_t wall_ns, uint64_t tai_ns,
                    uint64_t mono_ns, uint32_t nominal_tick_ns);
 
+/*
+ * Which host instant to pair with the newest sample's chip_ts, given the
+ * clock readings either side of the burst read.
+ *
+ * This is the anchor's whole accuracy in one decision, and it turns on what
+ * the driver's chip_ts MEANS.
+ *
+ * `ts_is_sample_instant` — the part has a chip timer and the driver reports
+ * when each sample was actually taken.  The newest sample was already sitting
+ * in the FIFO when the read began, so `t_before_ns` is the right pairing: it
+ * over-states that sample's age by somewhere in [0, one sample period), and
+ * crucially that error does NOT grow with burst depth or bus speed.
+ *
+ * Otherwise — no chip timer, chip_ts is always 0, and the anchor IS the
+ * per-sample timestamp, refreshed every burst.  Nothing is known about where
+ * inside the read any individual sample was taken, so the midpoint is the
+ * best estimate for the burst as a whole.
+ *
+ * WHY NOT THE MIDPOINT FOR BOTH.  It used to be, and it was right when a
+ * driver's chip_ts for the newest sample came from reading the counter AFTER
+ * the drain — that value is "now at t_after", and pairing it with the midpoint
+ * split the difference.  Batching the FIFO's own timestamp (1.9.0) changed the
+ * meaning underneath that choice: chip_ts became the true sample instant, which
+ * is EARLIER than t_before, so pairing it with the midpoint placed every
+ * reconstructed timestamp late by about half the read duration — 2-3 ms at
+ * 833 Hz over I2C, more at deeper watermarks or slower buses.  That is a
+ * constant offset, so it cancels out of dt and never reached the filter, but
+ * ts_wall_ns is documented as the instant the sensor sampled, and it was not.
+ * imu.chipts.wall could not catch it either: that check grades the chip/wall
+ * RATIO, which a constant offset leaves untouched.
+ */
+uint64_t anchor_wall_ns(uint64_t t_before_ns, uint64_t t_after_ns,
+                        bool ts_is_sample_instant);
+
 /* The measured tick period in ns, or 0.0 while still using the nominal one.
  * For logging and for `imud-status`; not needed to convert a timestamp. */
 double anchor_measured_tick_ns(ts_anchor_t *a);

@@ -348,8 +348,10 @@ void *ism_reader_thread(void *arg)
             apply_imu_cal(&ctx->cal, &buf[i]);
         }
 
-        /* Update timestamp anchor at startup and every 60 s thereafter.
-         * Midpoint of the I2C read is paired with the newest sample's chip_ts. */
+        /* Update timestamp anchor at startup and every 60 s thereafter.  The
+         * newest sample's chip_ts is paired with the host instant that sample
+         * was taken at — see anchor_wall_ns, which owns that choice and the
+         * reason it is not simply the middle of the read. */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         double elapsed = anchor_valid
@@ -383,11 +385,12 @@ void *ism_reader_thread(void *arg)
                          || !ctx->imu_ops->has_hw_timestamp
                          || elapsed >= want;
         if (do_anchor) {
-            uint64_t wall_mid = (ts_ns(&t_before) + ts_ns(&t_after)) / 2;
+            uint64_t wall_at = anchor_wall_ns(ts_ns(&t_before), ts_ns(&t_after),
+                                              ctx->imu_ops->has_hw_timestamp);
             /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
              * runs on; the REALTIME pair is only the absolute reference, and
              * an NTP step in it must not be read as the oscillator drifting. */
-            anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_mid,
+            anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_at,
                           ts_ns(&t_tai), ts_ns(&now),
                           ctx->imu_ops->has_hw_timestamp
                               ? ctx->ts_tick_ns : 0);
