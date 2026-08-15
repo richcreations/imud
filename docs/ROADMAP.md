@@ -132,7 +132,7 @@ duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
 cannot build on the macOS dev host, so CI and the Pi are the only places they
 have ever run.
 
-### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(confirmed on silicon 2026-08-14)*
+### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(defects confirmed on silicon 2026-08-14; fixes confirmed 2026-08-15)*
 
 The 2026-08-10 Pi 5 session on the reference pair produced four findings. Two
 were shipped fixes (the ARM seccomp filter, the gpio udev trigger); the rest
@@ -171,6 +171,21 @@ The bench proposed the first from its effect on sample latency and had the
 direction inverted — an offset of this shape *deflates* the FIFO-residence term
 rather than inflating it. What actually explained their headline number was
 §3.1's model and the histogram's bucket resolution, both documentation.
+
+**Both fixes confirmed on silicon by the 2026-08-15 run**, by a measurement the
+2026-08-14 session had called impossible from outside the daemon — sample age
+on the wire, `now - ts_wall_ns` over the TCP stream:
+
+- The unsigned-delta defect is **absent**: 0 grossly mis-timed packets in
+  99,961 over 120 s, where a deliberately broken build produces one in 45 s. A
+  real negative, not a blind instrument.
+- The late-anchor defect is **fixed**: age `p50 = 33.79 ms` against that run's
+  `fifo` p50 + `pipe` p50 of 32.93 ms — the 0.86 ms socket hop, and *above* the
+  sum rather than below, which is the direction that distinguishes a corrected
+  anchor from the old one.
+
+The deflation that hid the first defect also explains an anomaly §3.1 had
+recorded as unexplained; see the retraction there.
 
 - **Batch the FIFO's own timestamp instead of back-calculating** — *done*.
   `ism330dhcx`, `lsm6dso` and `icm42688p` timed a burst by reading the live
@@ -307,48 +322,80 @@ time, so its FIFO column reports the sim's own batching. Reading that as FIFO
 residence would be an instrument artifact of exactly the kind §10.9 was written
 to avoid.
 
-**Measured, on the 2026-08-14 Pi 5 run** — the full matrix, 120 s per
-combination, `ism330dhcx` on I²C, six combinations all at `ovf = 0`. Worst
-case (`max=`, which is exact; see the caution below):
+**Measured twice on a Pi 5**, 120 s per combination, `ism330dhcx` on I²C, all
+six combinations at `ovf = 0` in both runs. The two runs straddle `51b0267`,
+which fixed an anchor that timestamped every sample about half a burst-read
+late — so the second run is the trustworthy one, and the pair together is the
+more interesting reading.
 
-| `odr_hz` | `fifo_wm` | `fifo` worst | `pipe` p99 | `wm/odr` says |
+| `odr_hz` | `fifo_wm` | `fifo` p50 (08-14 → 08-15) | `fifo` exact max | `pipe` p99 |
 |---|---|---|---|---|
-| 104 | 8 / 32 / 64 | 12.7 / 26.0 / 25.5 ms | 0.06 ms | 77 / 308 / 615 ms |
-| 833 | 8 / 32 / 64 | 56.8 / 55.5 / 24.4 ms | **0.26 ms** | 9.6 / 38 / 77 ms |
+| 104 | 8  | 16.4 → **32.8** ms | 12.7 → 49.6 ms | 0.03 ms |
+| 104 | 32 | 8.2 → **8.2** ms | 26.0 → 25.6 ms | 0.06 ms |
+| 104 | 64 | 0.1 → **8.2** ms | 25.5 → 25.9 ms | 0.03 ms |
+| 833 | 8  | 32.8 → **32.8** ms | 56.8 → 34.7 ms | **0.26 ms** |
+| 833 | 32 | 32.8 → **32.8** ms | 55.5 → 56.2 ms | **0.26 ms** |
+| 833 | 64 | 16.4 → **32.8** ms | 24.4 → 54.1 ms | **0.26 ms** |
 
-**`pipe` — the term imud controls — is 0.26 ms p99, six times under §14's
-1.5 ms budget**, and identical across every combination. That is the number
-§14's fusion-latency row was always about, and §3.1's original purpose.
+**`pipe` — the term imud controls — is 0.26 ms p99 at 833 Hz in both runs**,
+six times under §14's 1.5 ms budget and identical across every combination.
+Reproduced across a code change and two boots, this is the solid number here,
+and the one §14's fusion-latency row was always about.
 
-`fifo` is the interesting one, and it says something other than what this
-section assumed:
+`fifo` says something other than what this section assumed:
 
-- **It does not scale with `fifo_wm` at all**, and the shallow settings
-  measured *worse*. That is because the watermark is not what triggers a
+- **It does not scale with `fifo_wm`.** The watermark is not what triggers a
   drain: the reader waits with a **10 ms timeout** (`src/imu.c`) and drains
   whatever is there when it expires, so residence is bounded by that cadence
   plus the read itself. `imud-imutest` measured the same thing independently
-  as `max read-loop gap 10.2 ms`. At 833/64 that predicts ~10 ms of
-  accumulation plus ~3 ms of bus time, against a measured 24.4 ms worst case;
-  at 104 Hz roughly one sample per drain, against 12.7 ms. §1.1's finding that
-  `INT1_FIFO_TH` is a *level* condition is the same fact from the other side.
+  as `max read-loop gap 10.2 ms`. §1.1's finding that `INT1_FIFO_TH` is a
+  *level* condition is the same fact from the other side.
 - **`wm/odr` was never the right model**, and this section said it was. It is
   the residence of the oldest sample in a burst *drained at the watermark*,
   which is not the configuration anyone runs.
 - **Reported percentiles are log₂-bucket upper edges.** A `p99` of `16.4 ms`
-  means the true value is in `[8.2, 16.4)`. The 2026-08-14 run's own data
-  proves it: at 104/8 the exact `max = 12.7 ms` sits *below* the reported
-  `p99 = 16.4 ms`. Conservative by design (`imu_math.h`), but it means a
-  percentile compared against a point model overstates by up to 2×. Use
-  `max=` for a number.
+  means the true value is in `[8.2, 16.4)`. The 08-14 run's own data proves
+  it: at 104/8 the exact `max = 12.7 ms` sat *below* the reported
+  `p99 = 16.4 ms`. Conservative by design (`imu_math.h`), but a percentile
+  compared against a point model overstates by up to 2×. Use `max=` for a
+  number — while reading the next paragraph first.
 
-**Open, and the one thing here that no model predicts.** At 833 Hz, `wm = 8`
-and `wm = 32` measured 56.8 and 55.5 ms worst case against `wm = 64`'s
-24.4 ms — 2.3× *worse* at a shallower watermark. Everything above says the
-drain cadence should dominate and the watermark should barely matter. To
-settle it: log per-drain sample counts and the wake reason (edge vs timeout)
-at `wm = 8` against `wm = 64`, which distinguishes a longer cycle from deeper
-bursts.
+**Retracted: "a shallower watermark measures worse."** This section used to
+record that as the one result no model predicted, on the strength of 08-14's
+833 Hz maxima — 56.8 and 55.5 ms at `wm = 8`/`32` against `wm = 64`'s 24.4 ms.
+The 08-15 run inverts it exactly: 34.7 / 56.2 / **54.1**, with `wm = 64` now
+the worst of the three. The claim does not survive, and the reason it looked
+true is worth keeping:
+
+- **The old anchor deflated `fifo`, and deflated it most where reads are
+  longest.** A sample timestamped late by ~half a read reports a shorter
+  residence than it had, and the read is longest at the deepest watermark.
+  08-14's `wm = 64` was therefore the most under-reported row in the matrix,
+  which is precisely what made it look best. Every `fifo` p50 in the table is
+  now equal or higher, and the two rows that moved a whole bucket — 833/64 and
+  104/64 — are the two deepest watermarks. **08-14's `fifo` column measured
+  the defect as much as it measured the FIFO.**
+- **Exact `max` is one sample in 120 s and moves run to run** — 104/8 went
+  12.7 → 49.6 ms with no change that should affect it. Prefer the p50/p99
+  pair, and treat a single run's maximum as an anecdote. The earlier wording
+  leaned a whole finding on one.
+
+**Still open, stated more carefully this time.** The watermark's effect on
+`fifo` is not settled, and 08-15 is not self-consistent about its direction
+either: at 104 Hz the shallow setting is worse (p50 32.8 ms against 8.2 ms at
+`wm = 32`/`64`), while at 833 Hz it is better at the tail (p99 32.8 ms against
+65.5 ms). No model here predicts a sign that flips with ODR. The measurement
+that would settle it is unchanged: log per-drain sample counts and the wake
+reason (edge vs timeout) at `wm = 8` against `wm = 64`, which distinguishes a
+longer cycle from deeper bursts.
+
+**Independently cross-checked.** The 08-15 run measured sample age on the wire
+— `now - ts_wall_ns` at the TCP stream, 99,961 packets — at `p50 = 33.79 ms`,
+against that run's `fifo` p50 + `pipe` p50 of 32.93 ms for the same
+configuration. The 0.86 ms difference is the socket hop, and it lands *above*
+the sum rather than below, which is the signature of an anchor that is no
+longer late. So the raised `fifo` figures are a truer residence, not a
+regression.
 
 Still owed: the same pair on SPI, and at the rates only SPI can carry.
 

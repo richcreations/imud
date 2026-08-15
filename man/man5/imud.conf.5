@@ -268,9 +268,9 @@ set sample latency, despite what
 arithmetic suggests: the reader also wakes on a 10\~ms timeout and
 drains whatever is there, so residence is bounded by that cadence
 rather than by the watermark.
-Measured on a Raspberry Pi 5 at 833\~Hz, worst case over 120\~s:
-24\~ms at 64, and 55\(en57\~ms at 8 and 32 \(en it does not scale with
-this key, and the shallow settings measured worse.
+Measured on a Raspberry Pi 5 at 833\~Hz over 120\~s: the median
+residence was 33\~ms at every setting of this key, and the worst case
+ranged 35\(en56\~ms with no consistent ordering between them.
 See ROADMAP 3.1.
 On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at

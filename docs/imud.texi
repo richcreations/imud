@@ -693,15 +693,14 @@ raising its interrupt. This bounds @strong{buffer depth and overflow
 headroom} --- it does @emph{not} set sample latency, despite what
 @code{64 / 833 Hz ≈ 77 ms} arithmetic suggests. The reader also wakes on
 a 10 ms timeout and drains whatever is there, so residence is bounded by
-that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz,
-worst case over 120 s was 24 ms at @code{64} and 55--57 ms at @code{8}
-and @code{32} --- it does not scale with this key, and the shallow
-settings measured @emph{worse} (@code{docs/ROADMAP.md} §3.1). Raise it
-if a busy host is overflowing; lowering it to chase latency does not
-work. On the ST parts a watermark of 8 or more also batches the chip
-timestamp into the FIFO (§1.1); at 32 and above that costs 1.6% of the
-word budget, so the same watermark holds about 63 sample-sets rather
-than 64.
+that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz
+over 120 s, the median residence was 33 ms at every setting of this key
+and the worst case ranged 35--56 ms with no consistent ordering between
+them (@code{docs/ROADMAP.md} §3.1). Raise it if a busy host is
+overflowing; lowering it to chase latency does not work. On the ST parts
+a watermark of 8 or more also batches the chip timestamp into the FIFO
+(§1.1); at 32 and above that costs 1.6% of the word budget, so the same
+watermark holds about 63 sample-sets rather than 64.
 @end multitable
 
 @node [mag]
