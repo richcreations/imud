@@ -96,7 +96,7 @@ int __wrap_pthread_create(pthread_t *restrict tid,
 #define T_STATUS_SOCK "/tmp/imud_e2e_daemon.sock"
 #define T_STREAM_SOCK "/tmp/imud_e2e_daemon_stream.sock"
 #define T_CONF        "/tmp/imud_e2e_daemon.conf"
-/* The redirected SYS_CONF.  The N5 cases need it ABSENT — it is what the daemon
+/* The redirected SYS_CONF.  The config-fallback cases need it ABSENT — it is what the daemon
  * reads when no --config is given, and the $HOME fallback only happens when it
  * is missing.  Nothing here ever creates it. */
 #define T_SYS_CONF    "/tmp/imud_e2e_sysconf.conf"
@@ -108,7 +108,7 @@ int __wrap_pthread_create(pthread_t *restrict tid,
  * fallback. */
 #define T_MISSING_CONF "/tmp/imud_e2e_no_such.conf"
 
-/* Ports the N6 cases need a listener or a receiver on, in the same 27xxx block
+/* Ports the thread-failure cases need a listener or a receiver on, in the same 27xxx block
  * as the NMEA dest_port the lifecycle test already uses. */
 #define T_NMEA_TCP_PORT 27111
 #define T_HIRATE_PORT   27112
@@ -130,19 +130,20 @@ static void msleep(int ms)
     nanosleep(&t, NULL);
 }
 
-/* The optional outputs only the N6 cases want: each one is a listener or a
+/* The optional outputs only the thread-failure cases want: each one is a listener or a
  * destination the test can then observe from outside the daemon. */
 typedef struct {
     int  nmea_rate_hz;
     int  imu_odr_hz;
     bool nmea_tcp;   /* [nmea] tcp_enabled  → a listener on T_NMEA_TCP_PORT */
     bool hirate;     /* [highrate] enabled  → UDP to 127.0.0.1:T_HIRATE_PORT */
-    /* NULL → T_CONF.  The N5 fallback case needs a second config on disk at
+    /* NULL → T_CONF.  The fallback case needs a second config on disk at
      * the $HOME path, identical in every other respect. */
     const char *path;
     /* Omit `rate_hz` from [nmea] entirely rather than writing a value.  This is
-     * the N5(b) case: the key is DELETED, which is different from setting it,
-     * and the daemon must fall back to the compiled-in default (10). */
+     * the deleted-key case: the key is ABSENT, which is different from
+     * setting it, and the daemon must fall back to the compiled-in
+     * default (10). */
     bool omit_nmea_rate;
 } conf_opt_t;
 
@@ -150,7 +151,7 @@ static void write_conf_opt(conf_opt_t o)
 {
     FILE *f = fopen(o.path ? o.path : T_CONF, "w");
     if (!f) { perror("fopen"); exit(1); }
-    /* Written as a whole line or not at all: the point of the N5(b) case is
+    /* Written as a whole line or not at all: the point of the deleted-key case is
      * that the key is absent from the file, not that it holds some value. */
     char nmea_rate[32];
     if (o.omit_nmea_rate) nmea_rate[0] = '\0';
@@ -280,8 +281,8 @@ static bool wait_for_status(const char *label, const char *want, int timeout_ms)
  * cross-thread flag; its release also makes `rc` safe to read after it reads 1. */
 typedef struct {
     int rc; pthread_t tid; _Atomic int done;
-    /* NULL — every case before N5 — means the usual `--config T_CONF` form.
-     * The N5 cases need argv the daemon has not seen: no --config at all (the
+    /* NULL — most cases — means the usual `--config T_CONF` form.
+     * The config-fallback cases need argv the daemon has not seen: no --config at all (the
      * only route left to the $HOME fallback), and --config on a missing path. */
     char **argv; int argc;
 } daemon_run_t;
@@ -709,7 +710,7 @@ static void test_daemon_nmea_thread_failure_closes_listener(void)
      * step 10 starts nmea before stream — which is true and irrelevant:
      * out_ctx_open binds every listener back in step 7 (main.c:558), and a
      * bound listener accepts into its backlog with no thread behind it.  That
-     * is the whole of finding N6, so using it as a start signal proves only
+     * is the whole of that finding, so using it as a start signal proves only
      * that step 7 finished, and the window to the nmea arm (main.c:642) is
      * four thread creations wide.  It cost a TSan-only flake to notice.
      *
@@ -860,7 +861,7 @@ static void test_daemon_reload_reverts_a_deleted_key(void)
 }
 
 /*
- * The reported half of N5: startup falls back to $HOME when the system config
+ * Startup falls back to $HOME when the system config
  * is missing, and reload used to re-read args.config_path regardless. A daemon
  * that came up on the fallback therefore answered EVERY SIGHUP with "config
  * reload failed" — hot reload dead, and the message blaming the file it had in
