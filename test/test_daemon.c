@@ -512,7 +512,7 @@ static int connect_tcp(int port)
 }
 
 /* Start the daemon on a thread with SIGTERM blocked here first, so its sigwait
- * is the only consumer. Every N6 case needs the same four lines. */
+ * is the only consumer. Every thread-failure case needs the same four lines. */
 static void daemon_start(daemon_run_t *d, sigset_t *old)
 {
     sigset_t set;
@@ -595,6 +595,88 @@ static void test_daemon_stream_thread_failure_is_fatal(void)
     EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
 
     atomic_store(&g_fail_fn, NULL);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    end(fb);
+}
+
+/* Stands in for a reader thread: created after the signals are blocked, so it
+ * inherits the block exactly as imu.c's readers inherit main.c's. */
+static void *raise_from_worker(void *arg)
+{
+    (void)arg;
+    raise(SIGTERM);   /* thread-directed — goes pending on THIS thread ... */
+    return NULL;      /* ... and is discarded when it exits, right here. */
+}
+
+/*
+ * How a worker asks the daemon to shut down.
+ *
+ * imu.c's reader threads escalate to shutdown after three failed chip resets.
+ * They used to do it with raise(), which is thread-directed — POSIX defines it
+ * as pthread_kill(pthread_self(), sig) — and main.c blocks SIGTERM before
+ * creating any thread, so the signal went pending on the reader, where main's
+ * sigwait could not see it, and was thrown away by the break on the next line.
+ * The daemon carried on reporting active with a dead reader.
+ *
+ * Both halves are asserted here because the second only means something given
+ * the first: raise() really does go nowhere on this platform, and the
+ * process-directed kill() really does reach sigwait.
+ *
+ * What this does NOT cover: the three-reset-failure path into that escalation.
+ * Reaching it needs a driver whose reset() fails repeatedly, and no seam in the
+ * tree provides one — the sim driver's reset always succeeds. The mechanism is
+ * tested; the trigger is not.
+ *
+ * Sending a process-directed signal from inside a test binary is only safe
+ * because daemon_start() blocks the set in this thread first and every thread
+ * here descends from it. A case that spawns a thread outside that mask would
+ * take the whole suite down instead.
+ */
+static void test_daemon_worker_can_signal_shutdown(void)
+{
+    begin("test_daemon_worker_can_signal_shutdown");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    write_conf(10, 833);
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    EXPECT(wait_for_status("IMU ODR:", "833", 15000), "daemon is up");
+
+    /* ── raise() from a worker reaches nobody ─────────────────────────────── */
+    pthread_t w;
+    EXPECT(pthread_create(&w, NULL, raise_from_worker, NULL) == 0,
+           "worker thread started");
+    pthread_join(w, NULL);
+
+    msleep(300);
+    EXPECT(!atomic_load(&d.done),
+           "raise() from a worker does NOT stop the daemon");
+
+    /* ── kill(getpid()) does ──────────────────────────────────────────────── */
+    EXPECT(kill(getpid(), SIGTERM) == 0, "process-directed SIGTERM sent");
+
+    bool exited = false;
+    for (int waited = 0; waited < 15000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "a process-directed SIGTERM reaches main's sigwait");
+    if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+
+    /* Exiting is not enough — it has to leave through §12/§13. */
+    EXPECT(d.rc == 0, "exits 0");
+    struct stat st;
+    EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
+    EXPECT(stat(T_STREAM_SOCK, &st) != 0, "stream socket unlinked");
+
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_CONF);
     end(fb);
@@ -919,6 +1001,7 @@ int main(void)
     test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();
     test_daemon_stream_thread_failure_is_fatal();
+    test_daemon_worker_can_signal_shutdown();
     test_daemon_nmea_thread_failure_closes_listener();
     test_daemon_hirate_thread_failure_sends_nothing();
     test_daemon_reload_reverts_a_deleted_key();

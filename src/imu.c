@@ -306,8 +306,20 @@ void *ism_reader_thread(void *arg)
                     LOG_E("[ism_reader] reset failed (%d/3)\n",
                             ++reset_failures);
                     if (reset_failures >= 3) {
-                        LOG_E("[ism_reader] 3 reset failures — raising SIGTERM\n");
-                        raise(SIGTERM);
+                        LOG_E("[ism_reader] 3 reset failures — "
+                              "signalling shutdown\n");
+                        /*
+                         * PROCESS-directed, deliberately.  raise() is
+                         * thread-directed (POSIX defines it as
+                         * pthread_kill(pthread_self(), sig)), and main.c blocks
+                         * SIGTERM before creating any thread, so this thread
+                         * inherits the block: a raise() here would leave the
+                         * signal pending on THIS thread, where main's sigwait
+                         * cannot see it, and the break below would discard it
+                         * with the thread.  The daemon would then keep
+                         * reporting active with a dead reader.
+                         */
+                        kill(getpid(), SIGTERM);
                         break;
                     }
                 } else {
@@ -521,8 +533,10 @@ void *mag_reader_thread(void *arg)
                     LOG_E("[mag_reader] reset failed (%d/3)\n",
                             ++reset_failures);
                     if (reset_failures >= 3) {
-                        LOG_E("[mag_reader] 3 reset failures — raising SIGTERM\n");
-                        raise(SIGTERM);
+                        LOG_E("[mag_reader] 3 reset failures — "
+                              "signalling shutdown\n");
+                        /* Process-directed — see the ism_reader twin above. */
+                        kill(getpid(), SIGTERM);
                         break;
                     }
                 } else {
