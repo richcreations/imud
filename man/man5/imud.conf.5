@@ -157,6 +157,9 @@ and docs/capture.md.
 .RI (bool,\ default:\ false)
 Repeat the capture forever; sequence numbers and timestamps are rebased so
 downstream consumers see a continuous stream.
+Ignored under
+.BR \-\-replay ,
+which plays a file once and exits.
 .TP
 .B sim_speed
 .RI (float,\ default:\ 1.0)

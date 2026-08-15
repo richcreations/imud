@@ -36,6 +36,7 @@
  */
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <pthread.h>
 #include <string.h>
@@ -228,6 +229,13 @@ typedef struct {
     cap_reader_t rdr;
     bool         open;
     bool         done;         /* EOF with loop disabled, or error */
+    /*
+     * Why `done` alone is not enough to report a finished replay: it is also
+     * set when the file cannot be opened or read, and in that case BOTH
+     * streams set it on their first call.  A caller that treated `done` as
+     * "playback complete" would call a capture that was never read a success.
+     */
+    bool         failed;       /* `done` came from an error, not a clean EOF */
     bool         eof_logged;
     cap_record_t pend;
     bool         have_pend;
@@ -251,6 +259,16 @@ static struct {
     pb_stream_t     mag;
 } pb = { .mtx = PTHREAD_MUTEX_INITIALIZER };
 
+/*
+ * Per-stream playback status, published for sim_playback_state().
+ *
+ * Deliberately OUTSIDE `pb`: sim_set_playback() memsets pb.imu/pb.mag, and a
+ * memset over an _Atomic is not an atomic store.  Written by whichever reader
+ * thread drains the stream, read by the daemon's main thread.
+ */
+static _Atomic int pb_imu_status = SIM_PB_OFF;
+static _Atomic int pb_mag_status = SIM_PB_OFF;
+
 void sim_set_playback(const char *file, bool loop, float speed)
 {
     if (pb.imu.open) cap_reader_close(&pb.imu.rdr);
@@ -265,6 +283,46 @@ void sim_set_playback(const char *file, bool loop, float speed)
     pb.started = false;
     memset(&pb.imu, 0, sizeof(pb.imu));
     memset(&pb.mag, 0, sizeof(pb.mag));
+    /*
+     * Resetting the published status matters: imu_ctx_open() calls this on
+     * every start, and test binaries run several daemons in one process.  A
+     * stale EOF left from the previous run would make the next one decide its
+     * playback had already finished before reading a byte.
+     */
+    int fresh = pb.enabled ? SIM_PB_RUNNING : SIM_PB_OFF;
+    atomic_store_explicit(&pb_imu_status, fresh, memory_order_release);
+    atomic_store_explicit(&pb_mag_status, fresh, memory_order_release);
+}
+
+/*
+ * Publish a stream's terminal status — but only once it has stopped handing
+ * samples out.  Called from the read path, never from pb_fetch: pb_fetch sets
+ * `done` on the same call that still returns a buffer's worth of samples to
+ * the reader, and those have not reached the ring yet.  Publishing there would
+ * let the daemon see "finished" with the last burst still in flight.
+ */
+static void pb_publish(const pb_stream_t *st, _Atomic int *slot)
+{
+    if (!st->done) return;
+    atomic_store_explicit(slot, st->failed ? SIM_PB_ERROR : SIM_PB_EOF,
+                          memory_order_release);
+}
+
+sim_pb_state_t sim_playback_state(void)
+{
+    int i = atomic_load_explicit(&pb_imu_status, memory_order_acquire);
+    int m = atomic_load_explicit(&pb_mag_status, memory_order_acquire);
+
+    if (i == SIM_PB_ERROR || m == SIM_PB_ERROR) return SIM_PB_ERROR;
+    if (i == SIM_PB_OFF   && m == SIM_PB_OFF)   return SIM_PB_OFF;
+    /*
+     * BOTH streams, not either.  A capture holding no mag records at all
+     * reaches end of file on the mag side within one read, while the IMU side
+     * still has the whole file to replay; "either" would end the run before a
+     * single sample was played.
+     */
+    if (i == SIM_PB_EOF && m == SIM_PB_EOF)     return SIM_PB_EOF;
+    return SIM_PB_RUNNING;
 }
 
 static void pb_start_once(void)
@@ -305,7 +363,8 @@ static int pb_fetch(pb_stream_t *st, uint8_t type)
         if (rc != 0) {
             LOG_E("[sim] cannot open capture '%s' (%s)\n", pb.file,
                   rc == CAP_ERR_FORMAT ? "bad format/version" : "I/O error");
-            st->done = true;
+            st->done   = true;
+            st->failed = true;
             return -1;
         }
         st->open = true;
@@ -325,7 +384,8 @@ static int pb_fetch(pb_stream_t *st, uint8_t type)
             return 1;
         }
         if (rc != 0) {            /* read error */
-            st->done = true;
+            st->done   = true;
+            st->failed = true;
             return -1;
         }
         /* EOF */
@@ -352,7 +412,8 @@ static int pb_fetch(pb_stream_t *st, uint8_t type)
             st->seq_off += st->last_seq - st->first_seq + 1;
         st->n_pass = 0;
         if (cap_reader_rewind(&st->rdr) != 0) {
-            st->done = true;
+            st->done   = true;
+            st->failed = true;
             return -1;
         }
     }
@@ -384,6 +445,9 @@ static int pb_imu_read(imu_sample_t *buf, int max, int *n_out)
         pb.imu.have_pend = false;
     }
     *n_out = n;
+    /* Nothing handed out this call, so anything already delivered is in the
+     * reader's hands (same thread, program order) — safe to report the end. */
+    if (n == 0) pb_publish(&pb.imu, &pb_imu_status);
     return 0;
 }
 
@@ -391,7 +455,10 @@ static int pb_mag_read(mag_sample_t *out)
 {
     pb_start_once();
 
-    if (pb_fetch(&pb.mag, CAP_REC_MAG) <= 0) return 1;   /* no data yet */
+    if (pb_fetch(&pb.mag, CAP_REC_MAG) <= 0) {
+        pb_publish(&pb.mag, &pb_mag_status);   /* no-op unless it is done */
+        return 1;                              /* no data yet */
+    }
     uint64_t rel = pb_rel(&pb.mag, pb.mag.pend.mono_ns);
     if (!pb_due(rel)) return 1;
 

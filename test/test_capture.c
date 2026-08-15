@@ -446,6 +446,7 @@ static void test_playback_driver(void)
     sim_set_playback(path, false, 0.0f);
     EXPECT(sim_imu_ops.init(&nobus, &icfg) == 0, "imu init (playback)");
     EXPECT(sim_mag_ops.init(&nobus, &mcfg) == 0, "mag init (playback)");
+    EXPECT(sim_playback_state() == SIM_PB_RUNNING, "armed, nothing read yet");
 
     imu_sample_t buf[128];
     int total = 0, n = 0;
@@ -460,6 +461,11 @@ static void test_playback_driver(void)
     }
     EXPECT(total == 500, "all 500 imu samples replayed");
     EXPECT(seq_ok, "imu seq contiguous");
+    /* The IMU side is spent, the mag side is not — and a caller acting on
+     * "either stream finished" would stop a replay with records still to
+     * play, so this has to still read as running. */
+    EXPECT(sim_playback_state() == SIM_PB_RUNNING,
+           "not finished while another stream still has records");
 
     mag_sample_t m;
     int mags = 0;
@@ -473,6 +479,7 @@ static void test_playback_driver(void)
     EXPECT(mags == 50, "all 50 mag samples replayed");
     EXPECT(wall_ok, "mag wall_ns strictly increasing (remapped)");
     EXPECT(sim_mag_ops.read(&nobus, &m) == 1, "mag EOF reports no-data");
+    EXPECT(sim_playback_state() == SIM_PB_EOF, "both streams done → EOF");
 
     /* ── loop mode: seq/chip_ts stay monotonic across the wrap ─────────── */
     sim_set_playback(path, true, 0.0f);
@@ -493,9 +500,22 @@ static void test_playback_driver(void)
     }
     EXPECT(got == 1500, "loop mode keeps delivering");
     EXPECT(mono_ok, "seq +1 contiguous and chip_ts monotonic across wraps");
+    EXPECT(sim_playback_state() == SIM_PB_RUNNING,
+           "a looping playback never reports EOF");
+
+    /* ── a capture that cannot be read is not a finished one ──────────── */
+    sim_set_playback(path_in_dir("no-such-file.imucap"), false, 0.0f);
+    EXPECT(sim_playback_state() == SIM_PB_RUNNING, "armed before the first read");
+    sim_imu_ops.read(&nobus, buf, 128, &n);
+    sim_mag_ops.read(&nobus, &m);
+    /* Both streams set `done` on a failed open, so anything keying off that
+     * alone would call this a completed replay and exit 0. */
+    EXPECT(sim_playback_state() == SIM_PB_ERROR,
+           "an unreadable capture reports ERROR, not EOF");
 
     /* back to synthesis so later tests see default behavior */
     sim_set_playback(NULL, false, 1.0f);
+    EXPECT(sim_playback_state() == SIM_PB_OFF, "synthesis reports OFF");
     end(fb);
 }
 

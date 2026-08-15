@@ -14,6 +14,23 @@ unchanged — still v17 / 276 bytes — and so is the libimud ABI, so nothing he
 forces you to redeploy consumers. Existing configurations keep working: every
 new key defaults to the behaviour 1.8.2 had.
 
+* **`imud --replay` now ends when the capture does.** It used to log
+  `[sim] playback finished` and then sit there until killed, which made it
+  unusable in a script and easy to mistake for a hang. It now exits 0 once the
+  file runs out — after waiting for the last samples to reach the filter, so
+  the tail is not thrown away — and exits 1 if the capture cannot be opened or
+  read, instead of idling on a mistyped path. It also ignores `sim_loop`, since
+  the flag's contract should not depend on a line in whichever config happens
+  to be installed. Configuring playback the other way, through
+  `[device] sim_file`, is unchanged: the daemon keeps running at end of file.
+
+* **A reader thread that gives up now actually stops the daemon.** After three
+  failed chip resets the IMU and magnetometer readers escalate to shutdown.
+  They did it with `raise()`, which signals only the calling thread, and since
+  the daemon blocks SIGTERM before starting any thread the signal went nowhere
+  and was discarded when the reader exited. The daemon carried on reporting
+  active with a dead reader. It now signals the process.
+
 * **SPI transport for the IMU and the magnetometer.** `[imu]` and `[mag]` each
   gain `bus`, `spi_dev` and `spi_speed_hz`. The default is `bus = "i2c"`, so a
   config that says nothing behaves exactly as before. The two sections choose

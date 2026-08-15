@@ -197,10 +197,13 @@ and docs/capture.md.'''
   man_style = "tight"
   man = '''
 Repeat the capture forever; sequence numbers and timestamps are rebased so
-downstream consumers see a continuous stream.'''
+downstream consumers see a continuous stream.
+Ignored under
+.BR \-\-replay ,
+which plays a file once and exits.'''
   md_type = 'bool'
   md_default = '`false`'
-  desc = 'Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic.'
+  desc = 'Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits.'
 
   [[section.key]]
   names = ["sim_speed"]

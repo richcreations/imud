@@ -59,6 +59,8 @@
 
 #include "types.h"
 #include "output.h"     /* the three output thread entry points, for the wrap */
+#include "capture.h"    /* cap_writer_* — the --replay cases build their own */
+#include "drivers.h"    /* sim_synth_imu / sim_synth_mag */
 
 int main_entry(int argc, char **argv);
 
@@ -145,6 +147,19 @@ typedef struct {
      * setting it, and the daemon must fall back to the compiled-in
      * default (10). */
     bool omit_nmea_rate;
+    /*
+     * Tuned for the --replay cases, and each value earns its place:
+     *
+     * sim_speed = 0 plays the capture as fast as the reader threads take it.
+     * At the default 1.0 a 3 s capture costs 3 s of wall clock, and CI runs
+     * this suite three times over (plain, ASan/UBSan, TSan).
+     *
+     * The settle and align windows default to 5 s EACH, counted in samples at
+     * the configured rate — so a short capture would be consumed entirely by
+     * startup and the fusion thread would never reach its main loop.  The
+     * drain these cases exist to prove would then hold vacuously.
+     */
+    bool replay;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
@@ -193,6 +208,13 @@ static void write_conf_opt(conf_opt_t o)
         o.nmea_tcp ? "true" : "false", T_NMEA_TCP_PORT,
         o.hirate   ? "true" : "false", T_HIRATE_PORT,
         T_STREAM_SOCK);
+    if (o.replay)
+        fprintf(f,
+            "[device]\n"
+            "sim_speed = 0.0\n"
+            "[fusion]\n"
+            "startup_settle_sec = 0.0\n"
+            "align_window_sec = 0.5\n");
     fclose(f);
 }
 
@@ -683,6 +705,139 @@ static void test_daemon_worker_can_signal_shutdown(void)
     end(fb);
 }
 
+/* ── --replay reaches the end of a capture and returns ───────────────────── */
+
+#define T_REPLAY_CAP "/tmp/imud_e2e_daemon_replay.imucap"
+
+/*
+ * 3 s at 100 Hz IMU with mag at 10 Hz.
+ *
+ * The mag rate is the wall-clock budget here, not the file length: the mag ops
+ * hand back one sample per call and the mag reader polls every 10 ms, so even
+ * at sim_speed = 0 the replay costs ~10 ms per mag record however fast the IMU
+ * side runs (it is batched, up to 128 a call).  30 records ≈ 300 ms; a 100 Hz
+ * mag capture would make this case slower than the thing it is testing.
+ */
+static const char *make_replay_capture(void)
+{
+    cap_writer_t w;
+    if (cap_writer_open(&w, T_REPLAY_CAP, 100, "sim", "sim", "1.9.0", 0, 0) != 0) {
+        perror("cap_writer_open");
+        exit(1);
+    }
+    for (int i = 0; i < 300; i++) {
+        double t = i / 100.0;
+        imu_sample_t s;
+        sim_synth_imu(t, &s);
+        s.seq     = (uint32_t)i;
+        s.chip_ts = (uint32_t)(t * 1e9 / 25000.0);   /* 25 µs ticks */
+        cap_writer_imu(&w, &s, (uint64_t)(t * 1e9));
+        if (i % 10 == 0) {
+            mag_sample_t m;
+            sim_synth_mag(t, &m);
+            cap_writer_mag(&w, &m, (uint64_t)(t * 1e9));
+        }
+    }
+    cap_writer_close(&w);
+    return T_REPLAY_CAP;
+}
+
+/*
+ * A replay is a one-shot run over a finite file, so it has to end by itself.
+ * It used to log "[sim] playback finished" and then sit in sigwait forever:
+ * the sim driver knew, and nothing carried that up to main.
+ *
+ * Polling rather than joining outright, for the same reason as the
+ * thread-failure cases: a regression here does not return a bad code, it
+ * blocks, so a straight join would hang the suite instead of failing it.
+ */
+static void test_daemon_replay_exits_at_end_of_capture(void)
+{
+    begin("test_daemon_replay_exits_at_end_of_capture");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    unlink(T_PID_FILE);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 100,
+                                 .replay = true });
+    const char *cap = make_replay_capture();
+
+    char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
+                     (char *)"--replay", (char *)cap,
+                     (char *)"--skip-bias-cal", NULL };
+    sigset_t old;
+    daemon_run_t d = { .argv = argv, .argc = 6 };
+    daemon_start(&d, &old);
+
+    bool exited = false;
+    for (int waited = 0; waited < 20000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "--replay returns when the capture runs out");
+    if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+
+    EXPECT(d.rc == 0, "a finished replay is a success, not a failure");
+
+    /* Exiting is not enough: it has to leave through the normal unwind. */
+    struct stat st;
+    EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
+    EXPECT(stat(T_STREAM_SOCK, &st) != 0, "stream socket unlinked");
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_REPLAY_CAP);
+    end(fb);
+}
+
+/*
+ * A capture that cannot be opened is not a completed one.  Both playback
+ * streams mark themselves done on a failed open, so anything keying off that
+ * alone would report success; `imud --replay /typo` would exit 0 having
+ * replayed nothing — or, before this, idle forever having said so once.
+ */
+static void test_daemon_replay_missing_capture_exits_1(void)
+{
+    begin("test_daemon_replay_missing_capture_exits_1");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    unlink(T_PID_FILE);
+    unlink(T_REPLAY_CAP);                        /* the point: it is absent */
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 100,
+                                 .replay = true });
+
+    char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
+                     (char *)"--replay", (char *)T_REPLAY_CAP,
+                     (char *)"--skip-bias-cal", NULL };
+    sigset_t old;
+    daemon_run_t d = { .argv = argv, .argc = 6 };
+    daemon_start(&d, &old);
+
+    bool exited = false;
+    for (int waited = 0; waited < 10000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "does not sit idle on a capture it cannot read");
+    if (!exited) pthread_kill(d.tid, SIGTERM);
+    pthread_join(d.tid, NULL);
+
+    EXPECT(d.rc == 1, "exits 1 — nothing was replayed");
+
+    struct stat st;
+    EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    end(fb);
+}
+
 /*
  * NMEA is opt-in, so its thread failing stays a warning — but the TCP listener
  * out_ctx_open already bound has to go with it. Before the fix connect()
@@ -1003,6 +1158,8 @@ int main(void)
     test_daemon_lifecycle();
     test_daemon_stream_thread_failure_is_fatal();
     test_daemon_worker_can_signal_shutdown();
+    test_daemon_replay_exits_at_end_of_capture();
+    test_daemon_replay_missing_capture_exits_1();
     test_daemon_nmea_thread_failure_closes_listener();
     test_daemon_hirate_thread_failure_sends_nothing();
     test_daemon_reload_reverts_a_deleted_key();

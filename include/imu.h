@@ -77,6 +77,16 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 void imu_ctx_stop(imu_ctx_t *ctx);
 
 /*
+ * Samples read but not yet consumed by the fusion thread.
+ *
+ * For shutting down a finished replay without discarding its tail:
+ * imu_ctx_stop() makes imu_ring_pop() return at once, so whatever is still
+ * queued is dropped.  Waiting for this to reach zero first means every
+ * recorded sample got through the filter.
+ */
+int imu_ctx_ring_backlog(imu_ctx_t *ctx);
+
+/*
  * Push updated hot-reloadable fusion config into a running context.
  * Copies the MEKF noise and threshold fields from new_cfg into the
  * context's internal config copy and signals fusion_thread to recompute

@@ -60,10 +60,27 @@ sim_speed = 1.0     # pacing: 2.0 = double speed, 0 = as fast as possible
 ```
 
 Playback preserves the recorded chip timestamps and IMU/mag relative timing
-(both anchored to the capture header's start time). At end of file with
-`sim_loop = false` the stream simply stops (the log says so, and
-`imud-status` goes stale). Set `[imu] odr_hz` near the capture's rate — the
-per-sample timing always comes from the recorded timestamps.
+(both anchored to the capture header's start time). Set `[imu] odr_hz` near
+the capture's rate — the per-sample timing always comes from the recorded
+timestamps.
+
+**The two forms end differently, on purpose.**
+
+`--replay` is a one-shot run over a finite file, so it **exits when the file
+runs out** — after waiting for the last samples to reach the filter, so the
+tail is not lost. It exits `0` on a completed replay and `1` if the capture
+cannot be opened or read, which makes `imud --replay f.imucap && …` work and
+stops a mistyped path from idling. It ignores `sim_loop`: the contract of the
+flag should not depend on a line in whatever config happens to be installed.
+
+The **config form** (`[device] sim_file`) is unchanged: at end of file with
+`sim_loop = false` the stream simply stops — the log says so and `imud-status`
+goes stale — and the daemon keeps running, because it is a daemon.
+
+One practical note for short captures: `[fusion] startup_settle_sec` and
+`align_window_sec` default to 5 s **each**, counted in samples at the
+configured rate, so the first ~10 s of any replay is consumed by startup.
+Lower both when replaying a file shorter than that.
 
 With no `sim_file`, `driver = "sim"` synthesizes the classic test scenario
 (yaw sweep + waves) exactly as before — and running THAT with `[capture]

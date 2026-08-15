@@ -78,6 +78,14 @@ int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, _Atomic int *stop)
     return 0;
 }
 
+int imu_ring_count(imu_ring_t *r)
+{
+    pthread_mutex_lock(&r->lock);
+    int n = (int)r->count;
+    pthread_mutex_unlock(&r->lock);
+    return n;
+}
+
 /* ── Mag ring ────────────────────────────────────────────────────────────── */
 
 void mag_ring_init(mag_ring_t *r)

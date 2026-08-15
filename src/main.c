@@ -56,6 +56,7 @@
 #include "cli.h"
 #include "cloexec.h"
 #include "config.h"
+#include "drivers.h"     /* sim_playback_state — the --replay end-of-file watch */
 #include "fileio.h"
 #include "imu.h"
 #include "imu_math.h"    /* ts_add_ns */
@@ -93,6 +94,12 @@
 #endif
 #define STATS_BUF     512
 #define STATUS_BUF    4096   /* status text + recent-warnings section */
+
+/* --replay only: how often to look up from sigwait to see whether the capture
+ * has run out, and how long to let its tail reach the filter before giving up
+ * on the drain.  The ordinary daemon never polls — see the signal loop. */
+#define REPLAY_POLL_MS      200
+#define REPLAY_DRAIN_MAX_MS 5000
 
 /* ── Global state ────────────────────────────────────────────────────────── */
 
@@ -359,6 +366,69 @@ static void join_thread(pthread_t tid, const char *name)
         LOG_E("[main] join %s failed: %s\n", name, strerror(rc));
 }
 
+/* ── End of a --replay run ───────────────────────────────────────────────── */
+
+/*
+ * Progress of the replay watch.  Lives in the caller's frame rather than in a
+ * static: test binaries call main() several times in one process, and a
+ * leftover "already drained" would end the next run early.
+ */
+typedef struct {
+    bool draining;      /* end of capture seen; waiting for the ring */
+    int  drain_ms;      /* how long we have waited for it */
+} replay_watch_t;
+
+/*
+ * One poll of a --replay run.  Returns true when the daemon should shut down,
+ * with *rc set to the status to exit with.
+ *
+ * Draining before teardown: imu_ctx_stop() makes the fusion thread's
+ * imu_ring_pop() return immediately, so shutting down the moment the file ends
+ * would discard whatever the reader had queued but fusion had not consumed —
+ * a replay that quietly loses its last samples.
+ *
+ * In practice the backlog here measures zero: EOF is only published by a read
+ * that returned nothing, and the poll below runs REPLAY_POLL_MS later, which
+ * is ample for fusion to catch up.  The wait is what stops that timing from
+ * being load-bearing — shorten the poll interval and it still holds — so it is
+ * insurance, not a hot path.  It is bounded for the same reason: a wedged
+ * fusion thread must not turn "the replay finished" into "it never returns".
+ */
+static bool replay_poll(imu_ctx_t *imu, const char *file,
+                        replay_watch_t *w, int *rc)
+{
+    if (!w->draining) {
+        switch (sim_playback_state()) {
+        case SIM_PB_ERROR:
+            LOG_E("[main] replay failed: %s (see above) — exiting\n", file);
+            *rc = 1;
+            return true;
+        case SIM_PB_EOF:
+            LOG_I("[main] replay reached the end of %s — draining\n", file);
+            w->draining = true;
+            break;
+        default:
+            return false;       /* still playing, or not replaying at all */
+        }
+    }
+
+    int backlog = imu_ctx_ring_backlog(imu);
+    if (backlog > 0 && w->drain_ms < REPLAY_DRAIN_MAX_MS) {
+        w->drain_ms += REPLAY_POLL_MS;
+        return false;
+    }
+    if (backlog > 0) {
+        /* Bounded on purpose: a wedged fusion thread must not turn "the
+         * replay finished" into "it never comes back". Say what was lost. */
+        LOG_W("[main] replay drain gave up with %d sample(s) unfused\n",
+              backlog);
+    }
+
+    LOG_I("[main] replay complete: %s — shutting down\n", file);
+    *rc = 0;
+    return true;
+}
+
 /* ── WMM declination ─────────────────────────────────────────────────────── */
 
 /*
@@ -516,6 +586,13 @@ int main(int argc, char **argv)
         snprintf(cfg.sim_file,   sizeof(cfg.sim_file),   "%s", args.replay_path);
         cfg.imu_int_gpio = 0;
         cfg.mag_int_gpio = 0;
+        /* --replay plays a file once and returns.  Honouring [device]
+         * sim_loop here would make that contract depend on an unrelated line
+         * in whatever config happens to be installed. */
+        if (cfg.sim_loop) {
+            LOG_W("[main] --replay ignores [device] sim_loop = true\n");
+            cfg.sim_loop = false;
+        }
         LOG_I("[main] replay mode: %s\n", cfg.sim_file);
     }
 
@@ -743,9 +820,32 @@ int main(int argc, char **argv)
 
     /* ── 11. Signal loop ─────────────────────────────────────────────────── */
 
+    /*
+     * A replay has a natural end, so in that mode the wait has to be able to
+     * look up and notice it.  Everywhere else the loop keeps the plain,
+     * timeout-free sigwait: an idle daemon should not wake five times a second
+     * for the benefit of a debugging flag it is not using.
+     *
+     * sigtimedwait is POSIX and absent on macOS, which does not matter — this
+     * file is only ever compiled for Linux (imu.c needs libgpiod).
+     */
+    const bool     replay_mode = args.replay_path[0] != '\0';
+    replay_watch_t replay      = {0};
+
     int sig;
     for (;;) {
-        sigwait(&sigset, &sig);
+        if (replay_mode) {
+            struct timespec tmo = { 0, REPLAY_POLL_MS * 1000000L };
+            sig = sigtimedwait(&sigset, NULL, &tmo);
+            if (sig < 0) {
+                if (errno == EINTR) continue;
+                /* EAGAIN: nothing pending, so this is our poll tick. */
+                if (replay_poll(imu, cfg.sim_file, &replay, &exit_rc)) break;
+                continue;
+            }
+        } else {
+            sigwait(&sigset, &sig);
+        }
 
         if (sig == SIGTERM || sig == SIGINT) {
             LOG_I("[main] caught signal %d — shutting down\n", sig);

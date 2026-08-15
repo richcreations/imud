@@ -177,4 +177,26 @@ void sim_synth_mag(double t, mag_sample_t *out);
  */
 void sim_set_playback(const char *file, bool loop, float speed);
 
+/* How far a .imucap playback has got.  Values are published per stream and
+ * combined by sim_playback_state(). */
+typedef enum {
+    SIM_PB_OFF = 0,   /* not replaying a file (synthesis, or no sim driver) */
+    SIM_PB_RUNNING,   /* armed, and not finished */
+    SIM_PB_EOF,       /* every stream reached end of file cleanly */
+    SIM_PB_ERROR      /* the capture could not be opened or read */
+} sim_pb_state_t;
+
+/*
+ * Playback progress, safe to call from any thread.
+ *
+ * SIM_PB_EOF is reported only after every stream has RETURNED empty, not
+ * merely reached end of file internally — so once this says EOF, every sample
+ * the file contained has already been handed to its reader.  Callers can act
+ * on it without racing the last burst.
+ *
+ * Stays SIM_PB_RUNNING forever when looping is on, because a looping playback
+ * never ends.
+ */
+sim_pb_state_t sim_playback_state(void);
+
 #endif /* IMUD_DRIVERS_H */

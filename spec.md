@@ -343,7 +343,11 @@ Earth field into body frame using the full attitude matrix.
 (recorded by the `[capture]` black box), both sim ops replay the recorded raw
 samples instead of synthesizing — identical pacing model, timing anchored to
 the capture header, `sim_loop`/`sim_speed` control repetition and rate.
-`imud --replay FILE` is the shortcut form. The capture file format is
+`imud --replay FILE` is the shortcut form, and differs in how it ends: it
+plays the file once and exits (0 at end of capture after draining the last
+samples through the filter, 1 if the capture cannot be read), ignoring
+`sim_loop`. Configured via `sim_file`, the daemon keeps running at end of
+file and the stream simply stops. The capture file format is
 specified in docs/capture.md and include/capture.h; it is a separate,
 append-only format — NOT the wire packet.
 

@@ -408,7 +408,8 @@ socket) are created at mode 0660 rather than chmod'd down after
 imud [OPTIONS]
   --config PATH      Config file (default: /etc/imud/imud.conf)
   --replay FILE      Replay an .imucap capture through the full pipeline
-                     (forces both sensors onto the sim driver; docs/capture.md)
+                     (forces both sensors onto the sim driver, plays the file
+                     once and exits; docs/capture.md)
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
@@ -595,7 +596,8 @@ the shortcut. See
  @tab bool
  @tab @code{false}
  @tab Repeat the capture forever; timestamps and sequence numbers are
-rebased to stay monotonic.
+rebased to stay monotonic. Ignored under @code{--replay}, which plays a
+file once and exits.
 @item 
 @code{sim_speed}
  @tab float

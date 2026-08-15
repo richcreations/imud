@@ -236,7 +236,8 @@ than chmod'd down after `bind()`, so they are never momentarily wider — howeve
 imud [OPTIONS]
   --config PATH      Config file (default: /etc/imud/imud.conf)
   --replay FILE      Replay an .imucap capture through the full pipeline
-                     (forces both sensors onto the sim driver; docs/capture.md)
+                     (forces both sensors onto the sim driver, plays the file
+                     once and exits; docs/capture.md)
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
@@ -324,7 +325,7 @@ Hardware bus and GPIO controller. **[restart]**
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller. |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
-| `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. |
+| `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits. |
 | `sim_speed` | float | `1.0` | Playback pacing: `2.0` = double speed, `0` = as fast as the pipeline accepts. |
 <!-- END GENERATED: config-keys device.1 -->
 

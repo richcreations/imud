@@ -238,8 +238,9 @@ imud [--config PATH] [--replay FILE] [--skip-bias-cal]
     <dt>A flight recorder built in.</dt>
     <dd>The capture black box records every raw sensor sample to rotating
     files. <code>imud --replay</code> plays a capture back through the full
-    pipeline, and <code>imud-cal</code> measures your unit's actual noise (Allan
-    variance) and gyro temperature drift from those same files.</dd>
+    pipeline and exits when it ends, and <code>imud-cal</code> measures your
+    unit's actual noise (Allan variance) and gyro temperature drift from those
+    same files.</dd>
 
     <dt>An ABI-stable client library.</dt>
     <dd><code>libimud</code> decodes the binary stream for C programs and keeps

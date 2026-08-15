@@ -69,9 +69,19 @@ configuration.
 takes an .imucap capture \(em recorded by the [capture] black box, or a
 synthetic scenario \(em and replays it through the full pipeline, with both
 sensors forced onto the sim driver in playback mode.
-Pacing and looping come from the [device] sim_* keys; see
+Pacing comes from the [device] sim_speed key; see
 .BR imud.conf (5)
 and docs/capture.md.
+.PP
+A replay plays the file once and then exits, waiting first for the last
+samples to reach the filter.
+.B \-\-replay
+therefore ignores
+.I sim_loop
+\(em looping would mean it never returned.
+Configuring playback through
+.I [device] sim_file
+instead leaves the daemon running at end of file, as a daemon should.
 
 [SIGNALS]
 .TP
@@ -200,9 +210,13 @@ silicon; imud logs a warning at startup when one is selected.
 
 [EXIT STATUS]
 .B 0
-on graceful shutdown,
+on graceful shutdown, and on a
+.B \-\-replay
+that reached the end of its capture,
 .B 1
-on configuration or hardware initialisation error, or if the
+on configuration or hardware initialisation error, on a
+.B \-\-replay
+capture that cannot be opened or read, or if the
 .B [stream]
 output thread cannot be started \(em that stream is the one output a stock
 daemon provides and every bridge reads it, so running without it would produce

@@ -41,6 +41,14 @@ int imu_ring_push(imu_ring_t *r, const imu_sample_t *s, int n);
  */
 int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, _Atomic int *stop);
 
+/*
+ * Samples pushed but not yet popped.  A snapshot — by the time it returns the
+ * reader may have pushed more — which is all its one caller needs: waiting for
+ * a finished replay's tail to reach the filter, where the producer has already
+ * stopped.  Do not build a synchronisation scheme on it.
+ */
+int imu_ring_count(imu_ring_t *r);
+
 /* ── Mag ring ────────────────────────────────────────────────────────────── */
 
 /* Push one sample; drops oldest if full. */

@@ -114,6 +114,18 @@ static void test_imu_ring_count_accurate(void)
 
     imu_ring_pop(&r, &out, &stop);
     EXPECT(r.count == 0, "count == 0 after draining");
+
+    /*
+     * imu_ring_count() is the same number taken under the lock, for callers
+     * outside this file — the replay drain waits on it to decide the tail has
+     * reached the filter.  Asserted against the field so the two cannot drift.
+     */
+    EXPECT(imu_ring_count(&r) == 0, "accessor agrees: drained");
+    imu_ring_push(&r, &s, 1);
+    EXPECT(imu_ring_count(&r) == 1, "accessor agrees: one queued");
+    EXPECT(imu_ring_count(&r) == (int)r.count, "accessor matches the field");
+    imu_ring_pop(&r, &out, &stop);
+    EXPECT(imu_ring_count(&r) == 0, "accessor agrees: empty again");
     end(fb);
 }
 

@@ -1515,6 +1515,17 @@ void imu_ctx_stop(imu_ctx_t *ctx)
     pthread_cond_broadcast(&ctx->imu_ring.ready);
 }
 
+int imu_ctx_ring_backlog(imu_ctx_t *ctx)
+{
+    /*
+     * The context is opaque, so a caller outside this file cannot reach the
+     * ring itself.  Only the IMU ring is reported: the mag ring is
+     * overwrite-on-full by design and carries corrections rather than the
+     * sample stream, so samples left in it are not work owed to anyone.
+     */
+    return ctx ? imu_ring_count(&ctx->imu_ring) : 0;
+}
+
 void imu_ctx_free(imu_ctx_t *ctx)
 {
     if (!ctx) return;
