@@ -338,14 +338,23 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     /*
-     * Mags.  0x08 on the MMC is read-to-clear status, and its three control
-     * registers (CTRL0 0x09, CTRL1 0x0A, CTRL2 0x0B) are write-only — the
-     * datasheet gives them as W, and src/drivers/mmc5983ma.c marks them so.
-     * A readback diff across init() is therefore structurally empty on this
-     * part, which is a fact about the silicon and not a finding about the
-     * driver; ctrl_writeonly makes the check SKIP and say that.
+     * Mags.  The MMC5983MA's readable file ends at 0x08, which is read-to-clear
+     * status; its FOUR control registers (CTRL0 0x09, CTRL1 0x0A, CTRL2 0x0B,
+     * CTRL3 0x0C) are write-only — Rev A gives them as Mode W, and
+     * src/drivers/mmc5983ma.c marks them so.  A readback diff across init() is
+     * therefore structurally empty on this part, which is a fact about the
+     * silicon and not a finding about the driver; ctrl_writeonly makes the
+     * check SKIP and say that.
+     *
+     * hi used to be 0x1F, which named a range this part does not have: it
+     * covered all four write-only registers and 0x0D-0x1F of reserved space.
+     * Nothing read them, because ctrl_writeonly skips the snapshot outright —
+     * but a map that describes a register file the silicon does not have is a
+     * loaded gun for whoever clears that flag or copies the entry for a part
+     * with a mixed control file.  0x08 is the last readable register, and it
+     * is itself read-to-clear, so the swept set is 0x00-0x07.
      */
-    { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x1F,
+    { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x08,
       .skip = { 0x08 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0,
       .ctrl_writeonly = true },
     /* AKM: ST1/data/ST2 — reading any of them completes a measurement. */

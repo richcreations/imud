@@ -35,6 +35,7 @@ static int     g_fifo_reg_hi[NADDR]; /* last FIFO-port register */
 static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_alias[NADDR][REGSZ];      /* write also lands here, or -1 */
+static uint32_t g_reads[NADDR][REGSZ];     /* per-register read tally */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
@@ -61,6 +62,7 @@ void i2cmock_reset(void)
     memset(g_fifo_tail, 0, sizeof g_fifo_tail);
     memset(g_selfclear, 0, sizeof g_selfclear);
     memset(g_live, 0, sizeof g_live);
+    memset(g_reads, 0, sizeof g_reads);
     for (int i = 0; i < NADDR; i++) {
         g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1;
         for (int r = 0; r < REGSZ; r++) g_alias[i][r] = -1;
@@ -98,6 +100,11 @@ void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step)
 void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also)
 {
     g_alias[addr & (NADDR - 1)][reg] = also;
+}
+
+uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg)
+{
+    return g_reads[addr & (NADDR - 1)][reg];
 }
 
 void i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val)
@@ -177,6 +184,7 @@ static uint8_t dev_read(int a, int *reg_ptr, bool advance)
 
     uint8_t r = (uint8_t)*reg_ptr;
     uint8_t v = g_reg[a][r];
+    g_reads[a][r]++;
     /* Self-clearing bits read back set once, then drop — the behaviour every
      * reset()/trigger poll is waiting for. */
     if (g_selfclear[a][r]) g_reg[a][r] &= (uint8_t)~g_selfclear[a][r];

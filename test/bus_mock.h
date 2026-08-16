@@ -104,6 +104,16 @@ void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step);
  */
 void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also);
 
+/*
+ * How many times `reg` on `addr` has been read since i2cmock_reset().
+ *
+ * For asserting that code does NOT touch a register — a write-only control
+ * register, a reserved address — which no readback can show, because the
+ * damage of reading one is the read itself.  Reads inside a FIFO window are
+ * not counted: they pop the queue rather than address a register.
+ */
+uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg);
+
 /* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
  * Drives the drivers' "I2C error" branches. */
 void i2cmock_fail_next_ioctl(void);

@@ -371,6 +371,34 @@ static imt_status_t status_of(const imt_report_t *r, const char *id)
     return c ? c->status : (imt_status_t)-1;
 }
 
+/*
+ * Nearest supported IMU ODR at or below / at or above `hz`; 0 if the grid has
+ * none.  The rate checks pick their configured ODR FROM what the host actually
+ * measured, so a slow or contended box cannot drift a case across the
+ * tolerance band and fail a precondition instead of the behaviour under test.
+ * A fixed 208 Hz against a ~400 Hz loop looks like plenty of margin until the
+ * dev box — a dual-core 1.6 GHz i5 running a 4 GB VM — has something else on it
+ * the loop halves.  The multipliers below are deliberately generous for the
+ * same reason: the grid is coarse enough that a 3x ask costs nothing.
+ */
+static int grid_below(const imt_report_t *r, double hz)
+{
+    int best = 0;
+    for (int i = 0; i < 16 && r->imu_odr_tab[i]; i++)
+        if (r->imu_odr_tab[i] <= hz && r->imu_odr_tab[i] > best)
+            best = r->imu_odr_tab[i];
+    return best;
+}
+
+static int grid_above(const imt_report_t *r, double hz)
+{
+    int best = 0;
+    for (int i = 0; i < 16 && r->imu_odr_tab[i]; i++)
+        if (r->imu_odr_tab[i] >= hz && (best == 0 || r->imu_odr_tab[i] < best))
+            best = r->imu_odr_tab[i];
+    return best;
+}
+
 static bool note_contains(const imt_report_t *r, const char *id, const char *needle)
 {
     const imt_check_t *c = imt_find(r, id);
@@ -756,17 +784,31 @@ static void test_rate_above_configured_odr_fails(void)
      * over-rate reading INSIDE the warn band: widen odr_tol_fail past the
      * error and the old ladder would have graded it WARN. Direction has to win
      * over margin, so it is a FAIL.
+     *
+     * The configured rate is chosen FROM the measured one rather than fixed,
+     * so a slow or contended host cannot drift the case across the boundary
+     * and fail a precondition instead of the behaviour.
      */
-    EXPECT(r->raw.odr_measured_hz > r->eff_odr_hz * (1.0 + o.odr_tol_warn),
-           "the IMU loop also overshoots its configured rate");
+    int slow = grid_below(r, r->raw.odr_measured_hz / 2.0);
+    free(r);
+    EXPECT(slow > 0, "the ISM330 grid has an entry well under the loop rate");
+    if (slow <= 0) { end(fb); return; }
+
+    cfg.imu_odr_hz = slow;
+    mock_base();
+    script_reset(&o);
+    r = run(&cfg, &o);
+
     double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz;
     free(r);
 
     mock_base();
     script_reset(&o);
-    o.odr_tol_fail = imu_err * 2.0;      /* the error is now inside the warn band */
+    o.odr_tol_fail = imu_err * 4.0;      /* the error is now inside the warn band */
     r = run(&cfg, &o);
 
+    EXPECT(r->raw.odr_measured_hz > r->eff_odr_hz * (1.0 + o.odr_tol_warn),
+           "the IMU loop overshoots the rate picked for it");
     EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz
            <= o.odr_tol_fail,
            "the over-rate error really is inside the widened warn band");
@@ -798,15 +840,24 @@ static void test_rate_below_configured_odr_warns(void)
 
     mock_base();
     imud_config_t cfg; base_config(&cfg);
-    cfg.imu_odr_hz = 833;                /* on the ISM330 grid, above the loop */
     imt_opts_t o;      fast_opts(&o);
     o.phases = IMT_PHASE_PASSIVE;
     script_reset(&o);
 
+    /* Measure first, then ask for a grid rate at twice what the host managed,
+     * so the shortfall is guaranteed rather than assumed. */
     imt_report_t *probe = run(&cfg, &o);
-    EXPECT(probe->eff_odr_hz == 833, "833 Hz is on the ISM330 grid");
+    int fast = grid_above(probe, probe->raw.odr_measured_hz * 3.0);
+    free(probe);
+    EXPECT(fast > 0, "the ISM330 grid has an entry well above the loop rate");
+    if (fast <= 0) { end(fb); return; }
+
+    cfg.imu_odr_hz = fast;
+    mock_base();
+    script_reset(&o);
+    probe = run(&cfg, &o);
     EXPECT(probe->raw.odr_measured_hz < probe->eff_odr_hz * (1.0 - o.odr_tol_warn),
-           "the loop really does fall short of 833 Hz");
+           "the loop really does fall short of the rate picked for it");
     double err = fabs(probe->raw.odr_measured_hz - probe->eff_odr_hz)
                  / probe->eff_odr_hz;
     free(probe);
@@ -824,6 +875,60 @@ static void test_rate_below_configured_odr_warns(void)
            "a rate below the configured ODR stays a WARN");
     EXPECT(!note_contains(r, "imu.odr", "ABOVE"),
            "a low reading is not described as over-rate");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * imutest must never READ a write-only register.
+ *
+ * The MMC5983MA's CTRL0..CTRL3 (0x09-0x0C) are Mode W in Rev A, and its
+ * readable file ends at 0x08 — 0x0D-0x2E is reserved, 0x2F is the product ID.
+ * Reading a write-only register returns undefined data that the volatile scan
+ * and the diff would then reason about, and on another part could have side
+ * effects.
+ *
+ * Two independent things keep it off them, and this pins the OUTCOME rather
+ * than either mechanism: ctrl_writeonly skips the mag snapshot entirely, and
+ * the regmap range stops at the last readable register.  Losing one is
+ * survivable; losing both is the defect.
+ *
+ * Only a read TALLY can show this. A readback proves nothing, because the harm
+ * of reading a write-only register IS the read.
+ */
+static void test_sweep_avoids_write_only_registers(void)
+{
+    begin("test_sweep_avoids_write_only_registers");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases  = IMT_PHASE_PASSIVE;
+    o.regdiff = true;                    /* the sweep only runs for regdiff */
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    /*
+     * Non-degeneracy: the tally has to be live, or every zero below is
+     * meaningless.  0x2F is the product ID, which probe() reads.
+     */
+    EXPECT(i2cmock_read_count(MMC_ADDR, 0x2F) > 0,
+           "the read tally is recording mag reads at all");
+
+    for (uint8_t reg = 0x09; reg <= 0x0C; reg++) {
+        char msg[64];
+        snprintf(msg, sizeof msg, "write-only CTRL 0x%02X was never read", reg);
+        EXPECT(i2cmock_read_count(MMC_ADDR, reg) == 0, msg);
+    }
+    EXPECT(i2cmock_read_count(MMC_ADDR, 0x10) == 0, "reserved 0x10 was never read");
+    EXPECT(i2cmock_read_count(MMC_ADDR, 0x1F) == 0, "reserved 0x1F was never read");
+
+    /* The check itself still SKIPs, and still for the silicon's reason. */
+    EXPECT(status_of(r, "mag.init.regdiff") == IMT_SKIP,
+           "regdiff SKIPs on a write-only control file");
 
     free(r);
     end(fb);
@@ -1719,6 +1824,7 @@ int main(void)
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
+    test_sweep_avoids_write_only_registers();
     test_rate_above_configured_odr_fails();
     test_rate_below_configured_odr_warns();
     test_odr_and_seq();
