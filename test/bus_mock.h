@@ -135,6 +135,27 @@ void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also);
  */
 uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg);
 
+/*
+ * The order registers were written in, since i2cmock_reset().
+ *
+ * Final register values cannot express order — a driver that starts a sensor
+ * before configuring it and one that configures it first leave identical bytes
+ * behind. Where the part cares, that difference is the whole bug: the
+ * MMC5983MA must have CTRL1's bandwidth in place before CTRL2 enables
+ * continuous mode (Rev A p.15 makes BW an input to what CM_Freq means), and
+ * must have nothing written at all in the ~45 ms after it (measured on
+ * hardware 2026-08-16 — a write inside that window leaves the bridge
+ * saturated).
+ *
+ * i2cmock_write_at returns the register written at 0-based position `n`, or -1
+ * past the end or past the recorded prefix. i2cmock_last_write is tracked
+ * separately so it stays correct however many writes ran. Both count only the
+ * addressed register: a write alias is a side effect of one write, not two.
+ */
+uint32_t i2cmock_writes(uint8_t addr);
+int      i2cmock_write_at(uint8_t addr, uint32_t n);
+int      i2cmock_last_write(uint8_t addr);
+
 /* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
  * Drives the drivers' "I2C error" branches. */
 void i2cmock_fail_next_ioctl(void);

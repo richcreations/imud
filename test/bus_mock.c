@@ -25,6 +25,7 @@
 #define REGSZ   256     /* one 8-bit register file per address */
 #define FIFOSZ  4096    /* per-address FIFO byte queue */
 #define NSPIFD  8       /* bound spidev descriptors */
+#define WLOGSZ  64      /* recorded prefix of the write-order log */
 
 static uint8_t g_reg[NADDR][REGSZ];
 static uint8_t g_fifo[NADDR][FIFOSZ];
@@ -36,6 +37,9 @@ static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_alias[NADDR][REGSZ];      /* write also lands here, or -1 */
 static uint32_t g_reads[NADDR][REGSZ];     /* per-register read tally */
+static uint8_t  g_wlog[NADDR][WLOGSZ];     /* registers written, in order */
+static uint32_t g_wlog_n[NADDR];           /* total writes; may exceed WLOGSZ */
+static int      g_wlast[NADDR];            /* last register written, or -1 */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
@@ -64,8 +68,11 @@ void i2cmock_reset(void)
     memset(g_selfclear, 0, sizeof g_selfclear);
     memset(g_live, 0, sizeof g_live);
     memset(g_reads, 0, sizeof g_reads);
+    memset(g_wlog, 0, sizeof g_wlog);
+    memset(g_wlog_n, 0, sizeof g_wlog_n);
     for (int i = 0; i < NADDR; i++) {
         g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1;
+        g_wlast[i] = -1;
         for (int r = 0; r < REGSZ; r++) g_alias[i][r] = -1;
     }
     memset(g_spi_inc_mask, 0, sizeof g_spi_inc_mask);
@@ -114,6 +121,23 @@ void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also)
 uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg)
 {
     return g_reads[addr & (NADDR - 1)][reg];
+}
+
+uint32_t i2cmock_writes(uint8_t addr)
+{
+    return g_wlog_n[addr & (NADDR - 1)];
+}
+
+int i2cmock_write_at(uint8_t addr, uint32_t n)
+{
+    int a = addr & (NADDR - 1);
+    if (n >= g_wlog_n[a] || n >= WLOGSZ) return -1;
+    return g_wlog[a][n];
+}
+
+int i2cmock_last_write(uint8_t addr)
+{
+    return g_wlast[addr & (NADDR - 1)];
 }
 
 void i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val)
@@ -214,6 +238,11 @@ static void dev_write(int a, int *reg_ptr, uint8_t v)
 {
     uint8_t r = (uint8_t)*reg_ptr;
     g_reg[a][r] = v;
+    /* Order log. The alias below is a side effect of this one write, not a
+     * write of its own, so only the addressed register is recorded. */
+    if (g_wlog_n[a] < WLOGSZ) g_wlog[a][g_wlog_n[a]] = r;
+    g_wlog_n[a]++;
+    g_wlast[a] = r;
     /* A part that applies one write to two registers. Real: the MMC5983MA
      * lands a CTRL0 write in CTRL1 as well, which is how INT_en's bit 2 turns
      * into X-inhibit. Without this the mock cannot tell a correct write order

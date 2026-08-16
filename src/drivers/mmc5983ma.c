@@ -136,6 +136,66 @@ static int mmc_reset(const imud_bus_t *bus)
     return 0;
 }
 
+/*
+ * mmc_init — configure the part, then start it.
+ *
+ * Two properties of this sequence are load-bearing, and both were established
+ * on hardware (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16).
+ *
+ * 1. CTRL1 is written after every CTRL0 write, or the alias documented above
+ *    leaves X-inhibit set and the X axis silently stops measuring.
+ *
+ * 2. CTRL2 is written LAST, and is followed by a quiet period.
+ *
+ *    Order: BW is an input to what CM_Freq means. Rev A p.15 introduces the
+ *    CM_Freq table with "the frequency is based on the assumption that
+ *    BW[1:0] = 00", and two rows carry a prerequisite in the row itself — 110
+ *    needs BW=01, 111 needs BW=11. Enabling continuous mode before CTRL1 runs
+ *    the part at the reset default BW=00, rated for 50 Hz (p.4), against
+ *    whatever CM_Freq was just programmed.
+ *
+ *    That is not theoretical. At odr_hz = 1000 (CM_Freq=111, which needs
+ *    BW=11) the stock order intermittently fails to start continuous mode at
+ *    all — the first read waits 500 ms for Meas_M_Done and gives up:
+ *
+ *      CTRL2 before CTRL1   failed to start 7 of 20 runs
+ *      CTRL2 after  CTRL1   failed to start 0 of 20 runs
+ *
+ *    (12 of 33 vs 0 of 33 across every run of the session.) In the daemon that
+ *    surfaces as init() succeeding — every write is ACKed — followed by a mag
+ *    that never produces a sample.
+ *
+ *    Quiet: writing anything within ~40 ms of enabling continuous mode leaves
+ *    the bridge saturated — every axis reads a few hundred µT and stays there
+ *    for the rest of the run, and CM_Freq does not take, so the measured rate
+ *    runs to ~256 Hz against a configured 100. Five runs per point:
+ *
+ *      post-CTRL2 quiet    0    10   20   30   40   50   60   80  100 ms
+ *      healthy runs       0/5  0/5  0/5  4/5  5/5  5/5  5/5  5/5  5/5
+ *
+ *    Both this order and the stock one give that same table, so writing CTRL2
+ *    last does NOT shorten the wait — it was tried for exactly that and did
+ *    not deliver. 100 ms is ~2.5x the boundary.
+ *
+ *    It is this window specifically, not write spacing in general: a quiet
+ *    period after CTRL0 or CTRL1 alone does not help, and writes issued once
+ *    the window has passed are harmless. It is not the bus — the same
+ *    threshold appears at 10 MHz, 1 MHz and 100 kHz — and it is not warm-up,
+ *    because delaying the first measurement by up to 2 s while writing
+ *    back-to-back does not help at all.
+ *
+ *    The over-rate in the order argument is NOT this mechanism: more time at
+ *    BW=00 is measurably healthier, which runs backwards. It is a spec
+ *    violation worth not committing, not an explanation.
+ *
+ * Nothing may follow the CTRL2 write inside that window, here or in the
+ * caller — mmc_read's per-sample STATUS write lands in it if the mag reader
+ * starts promptly, which is why the wait is inside init rather than left to
+ * the caller.
+ *
+ * No datasheet number backs the ~40 ms. Rev A gives a 10 ms power-on time for
+ * SW_RST and says nothing about entering continuous mode.
+ */
 static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
     uint8_t bw, cmfreq;
@@ -144,54 +204,24 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Clear CTRL0: disable Auto_SR_en; we do periodic manual SET instead. */
     if (bus_reg_write(bus, REG_CTRL0, 0x00) < 0) return -1;
 
-    /* Enable continuous mode: Cmm_en=1 (bit 3) | CM_Freq. */
-    if (bus_reg_write(bus, REG_CTRL2, (uint8_t)(0x08u | cmfreq)) < 0) return -1;
-
-    /*
-     * Then leave the part alone for a while. Writing anything within ~45 ms of
-     * enabling continuous mode leaves the bridge saturated: every axis reads a
-     * few hundred µT and stays there for the rest of the run.
-     *
-     * Measured on an MMC5983MA (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16),
-     * five runs per point, X mean in µT — saturated is ~320, healthy ~4.4:
-     *
-     *   10/20/30 ms  saturated 5/5      45 ms  1/5 healthy — marginal
-     *   40 ms        1/5 healthy        50 ms  healthy 5/5
-     *                                   60 ms  healthy 5/5
-     *
-     * It is this write specifically. Applying the delay after any ONE of the
-     * four init writes and not the others, only CTRL2 helps: after CTRL0 or
-     * CTRL1 the part still comes up saturated. It is also not the bus — the
-     * same threshold appears at 10 MHz, 1 MHz and 100 kHz — and it is not
-     * "needs time to warm up", because delaying the first measurement by up to
-     * 2 s while writing back-to-back does not help at all. What matters is
-     * quiet between enabling the mode and the next write, which is consistent
-     * with the first conversion being in flight: at the reset default BW = 00
-     * a measurement takes 8 ms.
-     *
-     * No datasheet number backs this. Rev A gives a 10 ms power-on time for
-     * SW_RST and says nothing about entering continuous mode, so 100 ms is
-     * chosen for margin over a measured ~45-50 ms boundary rather than derived.
-     * It costs one 100 ms wait per init, and init runs at startup and after a
-     * bus error.
-     *
-     * Applied on both transports. The I²C baseline predates the write ordering
-     * below and never exercised this sequence, so there is no evidence it is
-     * exempt — and a needless 100 ms at startup is a great deal cheaper than a
-     * magnetometer that reads a few hundred µT on every axis.
-     */
-    usleep(100000);
-
-    /* Enable INT pin on measurement completion (do this after CMM starts). */
+    /* Enable INT pin on measurement completion. */
     if (bus_reg_write(bus, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
 
     /*
-     * Measurement bandwidth (affects noise and max ODR) — and LAST, because
-     * the CTRL0 write above also lands in CTRL1 and would otherwise leave
-     * X-inhibit set. See the g_ctrl1 comment near the top of this file.
+     * Measurement bandwidth — after every CTRL0 write, because a CTRL0 write
+     * also lands in CTRL1 and would otherwise leave X-inhibit set. See the
+     * g_ctrl1 comment near the top of this file.
      */
     if (bus_reg_write(bus, REG_CTRL1, bw) < 0) return -1;
     atomic_store(&g_ctrl1, bw);
+
+    /* Start continuous mode: Cmm_en=1 (bit 3) | CM_Freq. LAST — nothing may
+     * follow it, here or in the caller, for the settle below. */
+    if (bus_reg_write(bus, REG_CTRL2, (uint8_t)(0x08u | cmfreq)) < 0) return -1;
+
+    /* Then leave the part alone. See the threshold table above: below 30 ms the
+     * bridge saturates every time. 100 ms is ~2.5x the measured boundary. */
+    usleep(100000);
 
     return 0;
 }

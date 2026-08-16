@@ -470,7 +470,6 @@ static void test_ism_read_overflow_and_empty(void)
 
 #define MMC_ADDR 0x30
 
-/* Split an 18-bit unsigned reading into the 7 output registers (0x00..0x06). */
 static double now_ms(void)
 {
     struct timespec ts;
@@ -478,6 +477,7 @@ static double now_ms(void)
     return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
 }
 
+/* Split an 18-bit unsigned reading into the 7 output registers (0x00..0x06). */
 static void mmc_set_output_at(uint8_t at, uint32_t rx, uint32_t ry, uint32_t rz)
 {
     uint8_t raw[7] = {
@@ -524,22 +524,45 @@ static void test_mmc_reset_and_init(void)
 
     /* 100 Hz → BW=01, CM_Freq=101. */
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
+    i2cmock_reset();
     double t0 = now_ms();
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
     double init_ms = now_ms() - t0;
     /*
-     * Writing within ~45 ms of enabling continuous mode leaves the bridge
-     * saturated on real silicon; the mock cannot model that, so what is
-     * testable is that the settle is still there at all. The bound is
-     * deliberately far below the 100 ms the driver waits: it must fail if
-     * someone deletes the sleep (init would return in microseconds) without
+     * The part saturates if anything touches it within ~40 ms of the CTRL2
+     * write, so init holds the bus quiet for 100 ms afterwards. The mock cannot
+     * model saturation, so what is testable is that the wait is still there.
+     * The bound sits far below 100 ms deliberately: it must fail if someone
+     * deletes the sleep — init would then return in microseconds — without
      * blocking a future retune to any value that could plausibly be right.
-     * A duration floor cannot flake — a sleep only ever overruns.
+     * A duration floor cannot flake; a sleep only ever overruns.
      */
-    EXPECT(init_ms >= 30.0, "init stays quiet after enabling continuous mode");
+    EXPECT(init_ms >= 30.0, "init holds the bus quiet after starting continuous mode");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x01, "CTRL1 = BW bits");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0B) == 0x0D, "CTRL2 = Cmm_en|CM_Freq");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x04, "CTRL0 ends at INT_EN");
+
+    /*
+     * The write ORDER, which the final bytes above cannot show: every ordering
+     * of these four writes leaves exactly the same register file behind, and
+     * two of them are broken on real silicon.
+     *
+     * CTRL1 must follow both CTRL0 writes, or the alias below leaves X-inhibit
+     * set. CTRL2 must be last, because enabling continuous mode before CTRL1
+     * runs the part at the reset default BW=00 — rated for 50 Hz (Rev A p.4)
+     * against a CM_Freq of 100 — and because a write within ~45 ms of that
+     * enable leaves the bridge saturated for the rest of the run.
+     *
+     * The count is pinned too: it is what would catch a settle implemented as
+     * a poll loop, which cannot work here (CTRL0/1/2 are write-only) but reads
+     * plausibly enough to be attempted.
+     */
+    EXPECT(i2cmock_writes(MMC_ADDR) == 4, "init issues exactly four writes");
+    EXPECT(i2cmock_write_at(MMC_ADDR, 0) == 0x09, "1st: CTRL0 cleared");
+    EXPECT(i2cmock_write_at(MMC_ADDR, 1) == 0x09, "2nd: CTRL0 = INT_EN");
+    EXPECT(i2cmock_write_at(MMC_ADDR, 2) == 0x0A, "3rd: CTRL1 = BW, after both CTRL0 writes");
+    EXPECT(i2cmock_write_at(MMC_ADDR, 3) == 0x0B, "4th: CTRL2 starts continuous mode");
+    EXPECT(i2cmock_last_write(MMC_ADDR) == 0x0B, "nothing is written after CTRL2");
 
     /*
      * Now with the part's real quirk modelled: a CTRL0 write lands in CTRL1
