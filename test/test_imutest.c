@@ -813,10 +813,11 @@ static void test_rate_above_configured_odr_fails(void)
            "the pacing excuse is not offered for an over-rate reading");
 
     /*
-     * imu.odr has the same shape and the same fix. The interesting case is an
-     * over-rate reading INSIDE the warn band: widen odr_tol_fail past the
-     * error and the old ladder would have graded it WARN. Direction has to win
-     * over margin, so it is a FAIL.
+     * imu.odr has the same shape. Direction decides which excuses apply, but
+     * NOT the grade: a part's own oscillator tolerance can exceed odr_tol_warn
+     * on good silicon — the reference MMC5983MA runs 5.4% fast — so an
+     * over-rate reading is graded on the same ladder and only FAILs past
+     * odr_tol_fail. Both sides of that are pinned below.
      *
      * The configured rate is chosen FROM the measured one rather than fixed,
      * so a slow or contended host cannot drift the case across the boundary
@@ -835,21 +836,36 @@ static void test_rate_above_configured_odr_fails(void)
     double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz;
     free(r);
 
+    /* Far above the configured rate: past odr_tol_fail, so a FAIL. */
     mock_base();
     script_reset(&o);
-    o.odr_tol_fail = imu_err * 4.0;      /* the error is now inside the warn band */
     r = run(&cfg, &o);
-
     EXPECT(r->raw.odr_measured_hz > r->eff_odr_hz * (1.0 + o.odr_tol_warn),
            "the IMU loop overshoots the rate picked for it");
-    EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz
-           <= o.odr_tol_fail,
-           "the over-rate error really is inside the widened warn band");
+    EXPECT(imu_err > o.odr_tol_fail, "and by more than the fail tolerance");
     EXPECT(status_of(r, "imu.odr") == IMT_FAIL,
-           "an over-rate imu.odr FAILs even inside the warn band");
+           "a large over-rate imu.odr FAILs");
     EXPECT(note_contains(r, "imu.odr", "ABOVE") ||
            note_contains(r, "imu.odr", "instead"),
            "the note explains an over-rate reading");
+    free(r);
+
+    /*
+     * The same overshoot, inside a widened warn band: still a WARN. Promoting
+     * this to FAIL is what a bench run caught as wrong — the reference
+     * magnetometer measures 105.4 Hz against a configured 100 on both
+     * transports, which is the die's oscillator, not a driver defect.
+     */
+    mock_base();
+    script_reset(&o);
+    o.odr_tol_fail = imu_err * 4.0;
+    r = run(&cfg, &o);
+
+    EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz
+           <= o.odr_tol_fail,
+           "the over-rate error really is inside the widened warn band");
+    EXPECT(status_of(r, "imu.odr") == IMT_WARN,
+           "an over-rate reading inside the band stays a WARN");
 
     free(r);
     end(fb);

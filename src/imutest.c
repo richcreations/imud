@@ -983,13 +983,15 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
          * the driver. Neither can explain one above it: nothing in the read
          * path invents samples the part did not produce, so an over-rate
          * reading means init()'s rate write did not land or is encoded wrong.
-         * That is a driver defect at any margin, so it FAILs outright rather
-         * than passing through the warn band. (`over` already implies
-         * err > odr_tol_warn, so this never overrides a PASS.)
+         * An over-rate reading therefore keeps whatever the tolerance ladder
+         * gave it: WARN in the warn band, FAIL past odr_tol_fail. It is NOT
+         * promoted straight to FAIL — the part's own oscillator tolerance can
+         * exceed odr_tol_warn on a perfectly good die. The reference
+         * MMC5983MA measures 105.5 Hz against a configured 100 on both
+         * transports, and a check that fires on expected silicon behaviour is
+         * one people learn to skip, which costs more than the row is worth.
          */
-        if (over)
-            st = IMT_FAIL;
-        else if (st == IMT_FAIL && (starved || !imu->has_fifo))
+        if (!over && st == IMT_FAIL && (starved || !imu->has_fifo))
             st = IMT_WARN;
 
         if (st == IMT_PASS)
@@ -2251,19 +2253,25 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
          * as a WARN nobody read.  The poll loop can only ever undercount, so a
          * LOW reading may be pacing and stays a WARN.  Nothing in the sampling
          * path can invent samples the part did not produce, so a HIGH reading
-         * says the part is not running at the rate init() asked for — either
-         * the rate write did not land or it was encoded wrong.  That is a
-         * driver defect and it FAILs.
+         * says the part is not running at the rate init() asked for.  Past
+         * odr_tol_fail that is a driver defect and FAILs; inside the warn band
+         * it stays a WARN, because a part's continuous-mode oscillator is
+         * specified as typical and the reference die runs 5.4% fast.
          */
         bool over = r->raw.mag_rate_hz > eff_odr * (1.0 + o->odr_tol_warn);
         add_check(r, "mag.rate", "Measured mag rate",
-                  err <= o->odr_tol_warn ? IMT_PASS : over ? IMT_FAIL : IMT_WARN,
+                  err <= o->odr_tol_warn      ? IMT_PASS
+                : (over && err > o->odr_tol_fail) ? IMT_FAIL : IMT_WARN,
                   fmtbuf(mb, sizeof mb, "%.1f Hz", r->raw.mag_rate_hz),
                   fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%", eff_odr,
                          o->odr_tol_warn * 100),
-                  over ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
+                  (over && err > o->odr_tol_fail)
+                       ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
                          "rate — the poll loop cannot outrun the part, so "
                          "init()'s rate write did not land or is encoded wrong."
+                  : over ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
+                         "rate. The poll loop cannot cause that, so it is the "
+                         "part's own oscillator unless the margin grows."
                        : "%llu samples in %.2f s (%.1f%% low); the poll loop "
                          "bounds this from above, so a low reading can be "
                          "pacing rather than the chip.",

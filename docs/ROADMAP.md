@@ -386,10 +386,21 @@ differentials.
 
 **Open.**
 
-- **Acceptance on hardware is owed.** Both fixes are measured piecemeal on the
-  bench but no `imud-imutest --all` has been run from a cold daemon start with
-  the fixed driver installed. That is what turns this from "the mechanism is
-  understood" into "the part works", and it is the gate on the tag.
+- **The field magnitude reads about 25% low, and is not explained.** From a
+  recovered bridge the differential field is **36.6 µT** (raw `|B|` 41.6, bridge
+  offset 8.8) where mid-latitude Earth field is ~48-52. `mag.field_magnitude`
+  PASSes it, because 25-65 µT is wide enough to accept it — the same criticism
+  this section makes of a green tick elsewhere. Two candidates, and **one
+  measurement separates them**: rotate the board and watch `|field|`. Constant
+  at 36.6 in every orientation means a scale error, in the driver's 16384
+  counts/G or below it. Swinging with orientation means local hard iron, which
+  is a bench property and not a defect — the differential separates the
+  *sensor's* bias from the field, not Earth's field from a steel desk, and the
+  board carries no calibration. Do this before concluding anything about the
+  driver.
+- **Guided-phase acceptance is owed.** The passive phase now runs clean (below),
+  but `--faces`, `--gyro` and `--spin` need an operator, and `spin.*` is where
+  the magnetometer's frame agreement with the gyro is established.
 - **No mechanism for the 45 ms.** Nothing in Rev A explains why the part needs
   that long after `Cmm_en` before it will accept another write. The first
   conversion at BW = 00 takes 8 ms, which is the right order of magnitude and
@@ -404,6 +415,34 @@ differentials.
 - **A yaw rotation by hand** confirming `field[0]` tracks the real field. The
   raw bytes and the inhibit sweep already settled "frozen" versus "legitimately
   perpendicular", but nothing yet shows the axis following the field end to end.
+
+**Acceptance, 2026-08-16.** `imud-imutest --passive` against the fixed driver,
+from a recovered bridge: `mag.noise` non-zero on all three axes (0.34/0.33/0.38
+µT), `mag.field_magnitude` PASS, `mag.degauss.differential` PASS with all three
+axes inverting (SET [4.0 10.0 40.2] vs RESET [9.4 -2.5 -31.6]), `mag.rate` WARN
+at 105.6 Hz, `mag.burst_framing` PASS. The one FAIL left in that run is
+`imu.chipts.monotonic` — the ISM330DHCX over SPI, unrelated to any of this and
+owed its own investigation.
+
+Two things that run found, neither of which the piecemeal bench measurements
+could have:
+
+- **A saturated bridge is not recoverable by the driver.** The first acceptance
+  attempt read 1136 µT with SET and RESET identical, because the packaged
+  daemon had been running the pre-fix driver and left the part saturated.
+  `reset()` does not cure it — `SW_RST` clears registers, not magnetisation —
+  and the 500 ns SET pulse is too weak. Recovery took a sustained self-test
+  coil drive (`CTRL3` `St_enp`/`St_enm`, ~150 ms each way, three times).
+  **Nothing in imud can do that**, so a part saturated in the field by a strong
+  magnet stays saturated. Worth deciding whether `reset()` should attempt a
+  coil-based recovery, which is its own change with its own risks.
+- **`mag.rate` was graded too strictly**, by this session's own change. An
+  over-rate reading was promoted straight to FAIL, and the reference die runs
+  105.5 Hz against a configured 100 on *both* transports — the datasheet gives
+  its continuous-mode frequencies as typical. Corrected to grade an over-rate
+  on the same tolerance ladder as an under-rate, so it FAILs only past
+  `odr_tol_fail`; direction still decides which excuses apply, but no longer
+  the grade. A check that fires on expected silicon is one people learn to skip.
 
 **What the tooling gained from this**, since the diagnosis kept running into
 tests that could not fail: the mock can now model a write landing in two
