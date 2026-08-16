@@ -710,6 +710,125 @@ static void test_bringup_bad_whoami(void)
     end(fb);
 }
 
+/*
+ * A rate ABOVE the configured ODR is a different finding from one below it,
+ * and grading them alike is how an MMC5983MA reading 130 Hz against a
+ * configured 100 Hz reached a bench report as a WARN nobody acted on.
+ *
+ * Below: the poll loop bounds the measurement from above, so a low reading may
+ * be pacing — WARN.  Above: nothing in the sampling path can invent samples
+ * the part did not produce, so the part is not running at the rate init()
+ * asked for — FAIL.
+ *
+ * The lever is the CONFIGURED rate, not the loop: at a configured 1 Hz the
+ * mock's poll loop overshoots by orders of magnitude whatever speed the host
+ * manages, so the direction is deterministic even though the rate is not.
+ */
+static void test_rate_above_configured_odr_fails(void)
+{
+    begin("test_rate_above_configured_odr_fails");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    cfg.mag_odr_hz = 1;                  /* on the MMC grid; loop far outruns it */
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(r->mag_eff_odr_hz == 1, "1 Hz is on the MMC grid");
+    EXPECT(r->raw.mag_n >= 5, "enough samples to grade the rate at all");
+    EXPECT(r->raw.mag_rate_hz > r->mag_eff_odr_hz * (1.0 + o.odr_tol_warn),
+           "the measurement really is above the configured rate");
+    EXPECT(status_of(r, "mag.rate") == IMT_FAIL,
+           "a mag rate above the configured ODR FAILs");
+    EXPECT(note_contains(r, "mag.rate", "ABOVE"),
+           "the note says which direction it is off");
+    EXPECT(note_contains(r, "mag.rate", "did not land"),
+           "the note names the likely cause");
+    EXPECT(!note_contains(r, "mag.rate", "can be pacing"),
+           "the pacing excuse is not offered for an over-rate reading");
+
+    /*
+     * imu.odr has the same shape and the same fix. The interesting case is an
+     * over-rate reading INSIDE the warn band: widen odr_tol_fail past the
+     * error and the old ladder would have graded it WARN. Direction has to win
+     * over margin, so it is a FAIL.
+     */
+    EXPECT(r->raw.odr_measured_hz > r->eff_odr_hz * (1.0 + o.odr_tol_warn),
+           "the IMU loop also overshoots its configured rate");
+    double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz;
+    free(r);
+
+    mock_base();
+    script_reset(&o);
+    o.odr_tol_fail = imu_err * 2.0;      /* the error is now inside the warn band */
+    r = run(&cfg, &o);
+
+    EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz
+           <= o.odr_tol_fail,
+           "the over-rate error really is inside the widened warn band");
+    EXPECT(status_of(r, "imu.odr") == IMT_FAIL,
+           "an over-rate imu.odr FAILs even inside the warn band");
+    EXPECT(note_contains(r, "imu.odr", "ABOVE") ||
+           note_contains(r, "imu.odr", "instead"),
+           "the note explains an over-rate reading");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * The other side, and the reason the split is not just "grade everything off
+ * FAIL": a low reading keeps its WARN, because the read loop genuinely can be
+ * what bounded it.
+ *
+ * Driven on imu.odr, where both directions are reachable: the mock's IMU loop
+ * manages a few hundred Hz, so configuring 833 Hz produces a real shortfall.
+ * The mag path cannot express this — its poll loop outruns the MMC5983MA's
+ * fastest grid entry (1000 Hz), so mag.rate can only ever measure high here.
+ * Same rule, same shape, one site of it exercised.
+ */
+static void test_rate_below_configured_odr_warns(void)
+{
+    begin("test_rate_below_configured_odr_warns");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    cfg.imu_odr_hz = 833;                /* on the ISM330 grid, above the loop */
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *probe = run(&cfg, &o);
+    EXPECT(probe->eff_odr_hz == 833, "833 Hz is on the ISM330 grid");
+    EXPECT(probe->raw.odr_measured_hz < probe->eff_odr_hz * (1.0 - o.odr_tol_warn),
+           "the loop really does fall short of 833 Hz");
+    double err = fabs(probe->raw.odr_measured_hz - probe->eff_odr_hz)
+                 / probe->eff_odr_hz;
+    free(probe);
+
+    /* Widen the fail bound past the shortfall: a low reading in the warn band
+     * must stay a WARN, where an equally-sized overshoot became a FAIL above. */
+    mock_base();
+    script_reset(&o);
+    o.odr_tol_fail = err * 2.0;
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(r->raw.odr_measured_hz < r->eff_odr_hz,
+           "still measuring below the configured rate");
+    EXPECT(status_of(r, "imu.odr") == IMT_WARN,
+           "a rate below the configured ODR stays a WARN");
+    EXPECT(!note_contains(r, "imu.odr", "ABOVE"),
+           "a low reading is not described as over-rate");
+
+    free(r);
+    end(fb);
+}
+
 static void test_odr_and_seq(void)
 {
     begin("test_odr_and_seq");
@@ -1600,6 +1719,8 @@ int main(void)
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
+    test_rate_above_configured_odr_fails();
+    test_rate_below_configured_odr_warns();
     test_odr_and_seq();
     test_error_contract_both_ways();
     test_gravity_and_stuck_axis();

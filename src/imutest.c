@@ -929,10 +929,24 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     } else {
         double err = fabs(hz - eff_odr) / (double)eff_odr;
         bool starved = max_gap_ms > 0.20 * o->odr_window_s * 1e3;
+        bool over    = hz > eff_odr * (1.0 + o->odr_tol_warn);
         imt_status_t st = (err <= o->odr_tol_warn) ? IMT_PASS
                         : (err <= o->odr_tol_fail) ? IMT_WARN : IMT_FAIL;
-        /* A starved reader undercounts; that is scheduling, not the driver. */
-        if (st == IMT_FAIL && (starved || !imu->has_fifo)) st = IMT_WARN;
+        /*
+         * Direction decides which excuses apply, and they only run one way.
+         * A stalled reader and a missing FIFO both LOSE samples, so they can
+         * explain a measurement below the configured rate — scheduling, not
+         * the driver. Neither can explain one above it: nothing in the read
+         * path invents samples the part did not produce, so an over-rate
+         * reading means init()'s rate write did not land or is encoded wrong.
+         * That is a driver defect at any margin, so it FAILs outright rather
+         * than passing through the warn band. (`over` already implies
+         * err > odr_tol_warn, so this never overrides a PASS.)
+         */
+        if (over)
+            st = IMT_FAIL;
+        else if (st == IMT_FAIL && (starved || !imu->has_fifo))
+            st = IMT_WARN;
 
         if (st == IMT_PASS)
             /*
@@ -966,7 +980,10 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                       fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
                       "off by %.1f%%%s", err * 100,
-                      starved ? "; the read loop stalled for up to "
+                      over ? " — ABOVE the configured rate; the read loop cannot "
+                             "cause that, so init()'s rate write did not land "
+                             "or is encoded wrong"
+                      : starved ? "; the read loop stalled for up to "
                                 "20%+ of the window, so this may be scheduling "
                                 "rather than the driver" : "");
     }
@@ -2093,15 +2110,29 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                   span, rc1, rcneg);
     } else {
         double err = fabs(r->raw.mag_rate_hz - eff_odr) / (double)eff_odr;
+        /*
+         * Low and high are not the same finding, and grading them alike is how
+         * the MMC5983MA's 130 Hz-against-a-configured-100 Hz reached a report
+         * as a WARN nobody read.  The poll loop can only ever undercount, so a
+         * LOW reading may be pacing and stays a WARN.  Nothing in the sampling
+         * path can invent samples the part did not produce, so a HIGH reading
+         * says the part is not running at the rate init() asked for — either
+         * the rate write did not land or it was encoded wrong.  That is a
+         * driver defect and it FAILs.
+         */
+        bool over = r->raw.mag_rate_hz > eff_odr * (1.0 + o->odr_tol_warn);
         add_check(r, "mag.rate", "Measured mag rate",
-                  err <= o->odr_tol_warn ? IMT_PASS
-                : err <= o->odr_tol_fail ? IMT_WARN : IMT_WARN,
+                  err <= o->odr_tol_warn ? IMT_PASS : over ? IMT_FAIL : IMT_WARN,
                   fmtbuf(mb, sizeof mb, "%.1f Hz", r->raw.mag_rate_hz),
                   fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%", eff_odr,
                          o->odr_tol_warn * 100),
-                  "%llu samples in %.2f s; the poll loop bounds this from "
-                  "above, so a low reading can be pacing rather than the chip.",
-                  (unsigned long long)got, span);
+                  over ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
+                         "rate — the poll loop cannot outrun the part, so "
+                         "init()'s rate write did not land or is encoded wrong."
+                       : "%llu samples in %.2f s (%.1f%% low); the poll loop "
+                         "bounds this from above, so a low reading can be "
+                         "pacing rather than the chip.",
+                  (unsigned long long)got, span, err * 100);
     }
 
     /*
