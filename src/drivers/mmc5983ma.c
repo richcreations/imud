@@ -200,21 +200,44 @@ static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
 }
 
 /*
- * mmc_set_reset — issue one SET pulse to degauss the sensor bridge.
+ * mmc_degauss — issue one degauss pulse in the requested direction.
  *
  * A strong external field (motors, alternator, steel structure) can residually
- * magnetise the AMR elements. The SET pulse applies a large restoring current
- * for ~500 ns, resetting the internal magnetisation direction.
+ * magnetise the AMR elements. The pulse applies a large current for ~500 ns,
+ * forcing the internal magnetisation to a known direction.
  *
- * The caller (mag_reader thread) invokes this on the configured interval
- * (default 5 s). The driver sleeps 1 ms after the pulse for bridge settling
- * before the next measurement is accepted.
+ * SET and RESET drive it opposite ways, which flips the sign of the field term
+ * in a subsequent reading while leaving the bridge's own offset alone — see
+ * mag_ops_t::degauss in include/drivers.h for what a caller does with that.
+ *
+ * INT_EN is re-asserted with the pulse bit, not left out of the write. CTRL0's
+ * Set and Reset bits self-clear, but INT_en does NOT — it is a persistent mode
+ * bit (datasheet Rev A §Register Map, and the CTRL0 comment above). Writing the
+ * pulse bit alone therefore also switches off the measurement-done interrupt
+ * that mmc_init() enabled, which is what this driver used to do: after the
+ * first periodic SET the INT line went quiet for the rest of the run and
+ * mag_reader silently fell back to its 20 ms poll.
+ *
+ * The driver sleeps 1 ms after the pulse for bridge settling before the next
+ * measurement is accepted.
+ */
+static int mmc_degauss(const imud_bus_t *bus, mag_degauss_t dir)
+{
+    uint8_t pulse = (dir == MAG_DEGAUSS_RESET) ? CTRL0_RESET : CTRL0_SET;
+    if (bus_reg_write(bus, REG_CTRL0, (uint8_t)(CTRL0_INT_EN | pulse)) < 0)
+        return -1;
+    usleep(1000);  /* 1 ms settling before next read */
+    return 0;
+}
+
+/*
+ * mmc_set_reset — the production degauss, invoked by the mag_reader thread on
+ * the configured interval (default 5 s). SET is the direction that leaves the
+ * part measuring the field in the polarity the read path expects.
  */
 static int mmc_set_reset(const imud_bus_t *bus)
 {
-    if (bus_reg_write(bus, REG_CTRL0, CTRL0_SET) < 0) return -1;
-    usleep(1000);  /* 1 ms settling before next read */
-    return 0;
+    return mmc_degauss(bus, MAG_DEGAUSS_SET);
 }
 
 /* ── Driver descriptor ─────────────────────────────────────────────────────── */
@@ -234,6 +257,7 @@ const mag_ops_t mmc5983ma_ops = {
     .init             = mmc_init,
     .read             = mmc_read,
     .set_reset        = mmc_set_reset,
+    .degauss          = mmc_degauss,
     .has_interrupt    = true,
     .has_set_reset    = true,
     .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },

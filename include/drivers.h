@@ -132,6 +132,17 @@ typedef struct {
 
 /* ── Magnetometer driver operations ───────────────────────────────────────── */
 
+/*
+ * Which way to magnetise an AMR bridge.  SET and RESET drive the film in
+ * opposite directions, so the field-dependent term of a reading flips sign
+ * between them while the bridge's own offset does not — which is what lets a
+ * caller separate the two.  See degauss() below.
+ */
+typedef enum {
+    MAG_DEGAUSS_SET = 0,
+    MAG_DEGAUSS_RESET
+} mag_degauss_t;
+
 typedef struct {
     const char *name;   /* must match config [mag] driver = "..." */
     bool experimental;  /* true → print warning at startup; not validated on hardware */
@@ -145,6 +156,26 @@ typedef struct {
 
     /* Issue a SET (degaussing) pulse. NULL if chip has no coil. */
     int (*set_reset)(const imud_bus_t *bus);
+
+    /*
+     * Optional: one degauss pulse in a chosen direction.  NULL on a part that
+     * cannot drive the RESET half, and on every part with no coil at all.
+     *
+     * DIAGNOSTIC ONLY.  The daemon never calls this — set_reset() above is the
+     * production path and its behaviour is unchanged.  imud-imutest uses the
+     * pair to split one reading into the true field and the bridge offset:
+     *
+     *     vS = +S*B + offset      (after MAG_DEGAUSS_SET)
+     *     vR = -S*B + offset      (after MAG_DEGAUSS_RESET)
+     *       field  = (vS - vR) / 2
+     *       offset = (vS + vR) / 2
+     *
+     * which is the only way to tell a genuine external field from a bridge
+     * offset without a second transport or a known reference field.  A driver
+     * implementing this must leave the part in the SET state when the caller is
+     * done; imutest asks for that explicitly rather than assuming it.
+     */
+    int (*degauss)(const imud_bus_t *bus, mag_degauss_t dir);
 
     bool has_interrupt;
     bool has_set_reset;

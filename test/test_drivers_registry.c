@@ -329,6 +329,46 @@ static void test_spi_capability_declarations(void)
     end(fb);
 }
 
+/*
+ * degauss() is optional and diagnostic — imud-imutest uses the SET/RESET pair
+ * to split a reading into true field and bridge offset. This list is written
+ * from the parts, independently of the ops structs, so adding the op to a
+ * driver without deciding it belongs there fails here.
+ */
+static void test_mag_degauss_presence(void)
+{
+    begin("test_mag_degauss_presence");
+    int fb = g_fail;
+
+    static const struct { const char *name; bool degauss; } mag_dg[] = {
+        { "mmc5983ma",  true  },   /* CTRL0 Set (0x08) and Reset (0x10) */
+        { "ak09916",    false },   /* no coil */
+        { "ak8963",     false },   /* no coil */
+        { "lis3mdl",    false },   /* no coil */
+        { "lis2mdl",    false },   /* has an OFF_CANC mode, not a driven pulse */
+        { "rm3100",     false },   /* PNI part degausses inside its own cycle */
+        { "sim",        false },
+    };
+    char msg[96];
+
+    for (unsigned i = 0; i < sizeof mag_dg / sizeof mag_dg[0]; i++) {
+        const mag_ops_t *o = mag_driver_find(mag_dg[i].name);
+        snprintf(msg, sizeof msg, "%s: degauss %s",
+                 mag_dg[i].name, mag_dg[i].degauss ? "present" : "absent");
+        EXPECT(o && (o->degauss != NULL) == mag_dg[i].degauss, msg);
+
+        /* A directional degauss without the plain SET is a contradiction: the
+         * production path would have no way to pulse the part. */
+        if (o && o->degauss) {
+            snprintf(msg, sizeof msg, "%s: degauss implies set_reset and the flag",
+                     mag_dg[i].name);
+            EXPECT(o->set_reset != NULL && o->has_set_reset, msg);
+        }
+    }
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver registry tests ===");
@@ -339,6 +379,7 @@ int main(void)
     test_unknown_lookups();
     test_validated_not_experimental();
     test_spi_capability_declarations();
+    test_mag_degauss_presence();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

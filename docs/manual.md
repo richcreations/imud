@@ -1630,6 +1630,36 @@ implement `set_reset` and set `has_set_reset = true`; the function issues the
 pulse and sleeps for the settling time. Set `set_reset = NULL` and
 `has_set_reset = false` if there is no coil (e.g. AK09916).
 
+Write the whole control register, not just the pulse bit. On parts where the
+pulse bits share a register with persistent mode bits — the MMC5983MA's CTRL0
+carries `INT_en` beside `Set` and `Reset` — writing the pulse alone clears the
+mode bits `init()` set, and the symptom is silent: the interrupt line simply
+stops and the reader falls back to polling.
+
+#### `degauss` (optional, diagnostic)
+
+If the coil can be driven both ways, also implement
+`degauss(bus, MAG_DEGAUSS_SET | MAG_DEGAUSS_RESET)` — the same pulse, with the
+direction chosen by the caller. Leave it `NULL` otherwise; nothing requires it,
+and `set_reset` stays the production path either way.
+
+It exists because SET and RESET magnetise the film in opposite directions, so
+the field term of a reading flips sign between them while the bridge's own
+offset does not:
+
+```
+vS = +S*B + offset      (after SET)
+vR = -S*B + offset      (after RESET)
+  field  = (vS - vR) / 2
+  offset = (vS + vR) / 2
+```
+
+`imud-imutest --passive` uses that to separate a genuine external field from a
+bridge offset, which is otherwise indistinguishable without a second transport
+or a known reference field. Implement it in terms of one shared helper with
+`set_reset`, so the two cannot drift apart, and leave the part in the SET state
+when done.
+
 #### `has_interrupt`
 
 Set `has_interrupt = true` if the chip asserts an external interrupt pin on

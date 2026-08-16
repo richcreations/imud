@@ -3208,6 +3208,7 @@ the wall-clock anchor on every burst.
 * probe reset init::
 * readbus *out → 0 1 or -1::
 * set_reset optional::
+* degauss optional diagnostic::
 * has_interrupt::
 @end menu
 
@@ -3259,6 +3260,39 @@ one, implement @code{set_reset} and set @code{has_set_reset = true}; the
 function issues the pulse and sleeps for the settling time. Set
 @code{set_reset = NULL} and @code{has_set_reset = false} if there is no
 coil (e.g. AK09916).
+
+Write the whole control register, not just the pulse bit. On parts where
+the pulse bits share a register with persistent mode bits --- the
+MMC5983MA's CTRL0 carries @code{INT_en} beside @code{Set} and
+@code{Reset} --- writing the pulse alone clears the mode bits
+@code{init()} set, and the symptom is silent: the interrupt line simply
+stops and the reader falls back to polling.
+
+@node degauss optional diagnostic
+@subsection degauss (optional, diagnostic)
+@anchor{#degauss-optional-diagnostic}
+If the coil can be driven both ways, also implement
+@code{degauss(bus, MAG_DEGAUSS_SET | MAG_DEGAUSS_RESET)} --- the same
+pulse, with the direction chosen by the caller. Leave it @code{NULL}
+otherwise; nothing requires it, and @code{set_reset} stays the
+production path either way.
+
+It exists because SET and RESET magnetise the film in opposite
+directions, so the field term of a reading flips sign between them while
+the bridge's own offset does not:
+
+@verbatim
+vS = +S*B + offset      (after SET)
+vR = -S*B + offset      (after RESET)
+  field  = (vS - vR) / 2
+  offset = (vS + vR) / 2
+@end verbatim
+
+@code{imud-imutest --passive} uses that to separate a genuine external
+field from a bridge offset, which is otherwise indistinguishable without
+a second transport or a known reference field. Implement it in terms of
+one shared helper with @code{set_reset}, so the two cannot drift apart,
+and leave the part in the SET state when done.
 
 @node has_interrupt
 @subsection has_interrupt

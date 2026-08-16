@@ -557,9 +557,51 @@ static void test_mmc_set_reset(void)
     begin("test_mmc_set_reset");
     int fb = g_fail;
 
+    /*
+     * CTRL0 = INT_EN | pulse, not the pulse alone.  Set and Reset self-clear;
+     * INT_en does not, so a write of the bare pulse bit also switches off the
+     * measurement-done interrupt that init() turned on.  This test asserted
+     * exactly that bug (0x08) before it was found on hardware.
+     */
     i2cmock_reset();
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "set_reset succeeds");
-    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x08, "SET pulse bit written to CTRL0");
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x0C,
+           "set_reset writes SET | INT_EN to CTRL0");
+
+    i2cmock_reset();
+    EXPECT(mmc->degauss != NULL, "mmc5983ma offers a directional degauss");
+    EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_SET) == 0, "degauss SET succeeds");
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x0C, "degauss SET writes SET | INT_EN");
+
+    EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_RESET) == 0, "degauss RESET succeeds");
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x14, "degauss RESET writes RESET | INT_EN");
+
+    /* SET and RESET must be different bits, or the differential measures
+     * nothing — the whole point is that they magnetise opposite ways. */
+    EXPECT((0x0C & 0x08) && (0x14 & 0x10) && ((0x0C ^ 0x14) == 0x18),
+           "SET and RESET drive distinct CTRL0 bits");
+
+    /*
+     * The regression the hardware run would have caught: the interrupt init()
+     * enabled must survive a degauss, in both directions.
+     */
+    i2cmock_reset();
+    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
+    EXPECT((i2cmock_get_reg(MMC_ADDR, 0x09) & 0x04) != 0, "init leaves INT_EN set");
+    EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "set_reset after init");
+    EXPECT((i2cmock_get_reg(MMC_ADDR, 0x09) & 0x04) != 0,
+           "INT_EN survives the periodic SET pulse");
+    EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_RESET) == 0, "degauss RESET after init");
+    EXPECT((i2cmock_get_reg(MMC_ADDR, 0x09) & 0x04) != 0,
+           "INT_EN survives a RESET pulse");
+
+    /* Bus error propagates from both entry points. */
+    i2cmock_fail_next_ioctl();
+    EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == -1, "set_reset reports a bus error");
+    i2cmock_fail_next_ioctl();
+    EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_SET) == -1,
+           "degauss reports a bus error");
 
     end(fb);
 }
@@ -2653,11 +2695,23 @@ static void test_dual_transport_mmc5983ma(void)
            im.valid == sm.valid,
            "both transports decoded an identical field vector");
 
-    /* set_reset is a write-only path — it must reach the same register. */
+    /*
+     * set_reset is a write-only path — it must reach the same register. Assert
+     * the VALUE too, not just that the two agree: agreeing on a wrong value is
+     * what this passed on while both transports dropped INT_EN.
+     */
     EXPECT(mmc->set_reset(&ib) == 0, "i2c set_reset");
     EXPECT(mmc->set_reset(&sb) == 0, "spi set_reset");
     EXPECT(i2cmock_get_reg(I2C_AT, 0x09) == i2cmock_get_reg(SPI_AT, 0x09),
            "set_reset wrote the same CTRL0 on both transports");
+    EXPECT(i2cmock_get_reg(I2C_AT, 0x09) == 0x0C,
+           "...and it was SET | INT_EN, on both");
+
+    EXPECT(mmc->degauss(&ib, MAG_DEGAUSS_RESET) == 0, "i2c degauss RESET");
+    EXPECT(mmc->degauss(&sb, MAG_DEGAUSS_RESET) == 0, "spi degauss RESET");
+    EXPECT(i2cmock_get_reg(I2C_AT, 0x09) == i2cmock_get_reg(SPI_AT, 0x09) &&
+           i2cmock_get_reg(I2C_AT, 0x09) == 0x14,
+           "degauss RESET wrote RESET | INT_EN on both transports");
 
     end(fb);
 }
