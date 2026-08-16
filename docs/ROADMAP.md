@@ -286,6 +286,116 @@ recorded as unexplained; see the retraction there.
   the ÷32 timestamp words add 1.6%, moving the prediction from 13.6 to about
   13.4 Hz, which does not change the conclusion that 18.3 fits neither model.
 
+### 1.2 The MMC5983MA over SPI  *(two defects; one fixed 2026-08-16, one open)*
+
+The 2026-08-15 run on the reference pair read `|B| = 1124.7 µT` over SPI where
+I²C had read 64.8, and could not say why. The 2026-08-16 session found **two
+independent defects**, not one. Both are measured; one is fixed.
+
+| | what it is | state |
+|---|---|---|
+| **A — inter-write settle** | control writes need ~100 ms of quiet on SPI or the part ignores them; the bridge comes up saturated and `CM_Freq` never programs | measured, **open** |
+| **B — `CTRL0` write alias** | a `CTRL0` write also lands in `CTRL1`, so `init()`'s own `INT_en` sets X-inhibit and the X axis stops measuring | **fixed** |
+
+Defect A is the original symptom. Defect B was invisible underneath it and
+would have survived A's fix as a green `mag.field_magnitude` hiding a dead
+axis — which is what the "fixed" run of 2026-08-15 actually reported. Neither
+part is `experimental`; this is a shipped driver.
+
+**B — a write to `CTRL0` also lands in `CTRL1`.** Three confirmations, each
+reproducing a `CTRL1` semantic from a `CTRL0` write:
+
+| `CTRL0` write | observed | matches `CTRL1` |
+|---|---|---|
+| `0x04` (INT_en) | X freezes, sigma exactly 0.000 | X-inhibit |
+| `0x18` | Y and Z freeze, X live | YZ-inhibit |
+| `0x80` | continuous mode stops | SW_RST |
+
+`CTRL0` still receives the write — SET and RESET fire and the field term
+inverts — so it is both registers, not the wrong one. **Not a bus artefact:**
+identical at 10 MHz, 1 MHz and 100 kHz. **Specific to `CTRL0`:** a `CTRL1`
+write does not disturb `CTRL2` (which would stop continuous mode) and a `CTRL2`
+write does not disturb `CTRL3` (whose self-test coil moves the mean by
+hundreds of µT and cannot be missed). No published erratum for this exists, and
+Rev A pp.6-7 describe the write framing exactly as the tree implements it, so
+the measurement itself is recorded in the driver.
+
+Fixed by writing `CTRL1` last in `init()` and restoring it after every degauss
+pulse:
+
+| | before | after |
+|---|---|---|
+| X sigma | 0.000 (frozen) | 5.18 counts |
+| X under SET→RESET | no inversion | 5.03 → 9.17 µT |
+| differential field magnitude | 20.1 µT | 37.00 µT, all three axes |
+| rate at a configured 100 Hz | — | 105.39 Hz |
+
+**A — the settle is real and separate.** Re-measured with B's fix in place, so
+the two do not explain each other: 0 / 5 / 25 ms settles all saturate at
+~314 µT and 255.9 Hz; 100 ms gives 4.9 µT and 105.4 Hz. One confound is ruled
+out — a 600 ms quiet gap after a recovery coil with 0 ms settles is still
+saturated, so it is inter-write timing and not film recovery.
+
+**Ruled out by measurement, not argument**, and not to be re-run: external
+field; SPI read framing (two-transfer and single full-duplex, burst and
+bytewise, byte-identical over five static single-shot images — so
+`bus_io.h` is not at fault and there is no shared-path defect affecting every
+SPI driver); register encoding; the STATUS write-to-clear (it does **not**
+alias into `CTRL0`, so it is not triggering measurements); `SW_RST` settle from
+10 ms to 1 s; bus crosstalk; GPIO; thermal damage (documented for reflowed
+boards of this part, but that damage is permanent and this one recovers fully);
+and a missing CAP capacitor (the schematic has 10 µF where the vendor asks for
+it). `Auto_SR_en` was tested and rejected: it holds a recovered bridge in
+isolation but oscillates under measurement, because the part alternates
+SET/RESET per sample and the driver averages them blind.
+
+**Corrections to earlier claims.** The magnetometer's CTRL1 inhibit bits are
+`X-inhibit` at **bit 2** and `YZ-inhibit` at **bits 4:3** — two bits, which is
+why the datasheet prose says "writing 1 to the two bits". An earlier reading
+that placed them at bits 3 and 4 was wrong; a bit position taken from
+`pdftotext` output is a guess, because the column alignment is what carries the
+meaning. Separately, the earlier arithmetic linking a 43 µT SPI reading to the
+64.8 µT I²C baseline is retracted: raw `|B|` includes the bridge offset, which
+is a property of the part's magnetisation at that moment and not comparable
+across sessions. Measured offset here was (7.1, −9.7, 4.0) µT, which reconciles
+a 37.0 µT field with a 43.9 µT raw reading exactly. Compare differentials to
+differentials.
+
+**Open.**
+
+- **Defect A is not fixed.** Measure whether the settle requirement survives a
+  **100 kHz clock** before choosing a remedy: the aliasing did, but the settle
+  has only been measured at 10 MHz. If it disappears at low clock the fix is to
+  clamp the magnetometer's SPI clock, which is a config-shaped answer; if it
+  persists it is ~400 ms of startup sleep, which is not. That measurement
+  decides the shape of the whole fix, so it comes before narrowing the
+  threshold or deciding whether the driver, `spi_reg_write` or a `bus_caps_t`
+  field should own it.
+- **No mechanism for the 100 ms.** Nothing in Rev A explains why a part would
+  need that long between control writes. Until there is one the number is
+  empirical and must be documented as such.
+- **`|field|` = 37.0 µT is low** for a ~50 µT locale. It is the differential,
+  so not bridge offset, and magnitude is orientation-invariant, so not how the
+  board sits. It is inside `mag.field_magnitude`'s 25–65 µT band, so that check
+  will not catch it. Test in order: local iron on the bench (move the board a
+  metre and re-measure), then the sensitivity constant, then residual
+  saturation. The WMM ships with imud, so the expected value at the bench's own
+  coordinates is available for free.
+- **A yaw rotation by hand** confirming `field[0]` tracks the real field. The
+  raw bytes and the inhibit sweep already settled "frozen" versus "legitimately
+  perpendicular", but nothing yet shows the axis following the field end to end.
+
+**What the tooling gained from this**, since the diagnosis kept running into
+tests that could not fail: the mock can now model a write landing in two
+registers, count reads (for asserting that code does *not* touch a register,
+which no readback can show), and state whether a part's address auto-increments
+rather than inferring it from the mask. The dual-transport tests take their SPI
+framing from the driver's own `bus_caps`, as `bus_open()` does, instead of
+from a literal copied out of the driver — without which a wrong `spi_inc_mask`
+agreed with itself and failed nothing. And `imud-imutest` grades a rate *above*
+the configured ODR as a defect rather than a warning, which is the signal that
+was present in the 2026-08-15 report and went unread.
+
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
 The mechanism shipped in 1.5: cal.json `gyro_temp` per-axis linear
