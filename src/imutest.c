@@ -295,6 +295,15 @@ typedef struct {
     int         nskip;
     uint8_t     bank_reg;        /* 0x00 = not banked */
     uint8_t     nrd_lo, nrd_hi;  /* destructive window; lo > hi = none */
+    /*
+     * The part's measurement-output window, if it has a contiguous one.
+     * lo > hi = not declared, and the framing check below SKIPs.
+     *
+     * Used only by check_burst_framing(), which reads it two ways and compares.
+     * It has to be a window the driver itself bursts, because the claim under
+     * test is that this part's multi-byte read lands where the driver assumes.
+     */
+    uint8_t     out_lo, out_hi;
     bool        ctrl_writeonly;  /* control registers do not read back at all */
     /*
      * Register reporting the part's own timebase error, if it has one.
@@ -356,13 +365,17 @@ static const imt_regmap_t imt_regmaps[] = {
      */
     { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x08,
       .skip = { 0x08 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0,
+      .out_lo = 0x00, .out_hi = 0x06,   /* XOUT0..XYZOUT2, the driver's burst */
       .ctrl_writeonly = true },
     /* AKM: ST1/data/ST2 — reading any of them completes a measurement. */
     { .driver = "ak09916",    .lo = 0x00, .hi = 0x3F,
       .skip = { 0x10, 0x11, 0x18 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "ak8963",     .lo = 0x00, .hi = 0x1F,
       .skip = { 0x02, 0x03, 0x09 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
-    { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
+    /* lis3mdl is the one part with a real auto-increment bit, so it is the one
+     * where the framing check has something to catch: OUT_X_L..OUT_Z_H. */
+    { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+      .out_lo = 0x28, .out_hi = 0x2D },
     { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
     /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
      * so a sweep through them would consume the sample the next check is
@@ -1934,6 +1947,97 @@ static uint64_t mag_collect_mean(const mag_ops_t *mag, const imud_bus_t *bus,
 }
 
 /*
+ * Does a multi-byte read land where a sequence of single reads does?
+ *
+ * This is the on-hardware half of the spi_inc_mask claim. bus_burst_read()
+ * passes the mask only when len > 1, so an N-byte burst and N one-byte reads
+ * take genuinely different paths through the command byte: the burst asserts
+ * the part's auto-increment bit, the singles do not. If the declared mask is
+ * wrong the burst walks somewhere else — or does not walk at all and returns
+ * one register N times — and the two disagree. On the LIS3MDL, the one part
+ * here with a real increment bit, that is the whole question.
+ *
+ * What it does NOT cover, and the report should not be read as saying it does:
+ * bus_reg_read() is bus_burst_read(len=1), so both sides share
+ * spi_burst_read(). This cannot see a fault in that helper's two-transfer
+ * framing — a bench comparison against a single full-duplex transfer settled
+ * that separately, byte-identical over five single-shot images.
+ *
+ * The window is live, so a bare comparison would fail whenever a measurement
+ * lands mid-read. Bracketing the singles between two bursts and requiring
+ * those to match means the sample did not move while they were taken; only
+ * then does a difference mean anything. If no quiet window turns up, that is a
+ * SKIP rather than a guess.
+ */
+static void check_burst_framing(imt_report_t *r, const char *id, const char *name,
+                                const imud_bus_t *bus, const imt_regmap_t *m,
+                                uint8_t *hex_out, int *hex_n)
+{
+    if (!m || m->out_lo > m->out_hi) {
+        skip_check(r, id, name,
+                   "no measurement-output window declared for this driver in "
+                   "imt_regmaps[], so there is nothing to read two ways");
+        return;
+    }
+
+    int n = m->out_hi - m->out_lo + 1;
+    uint8_t burst[32], again[32], single[32];
+    if (n > (int)sizeof burst) n = (int)sizeof burst;
+
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (bus_burst_read(bus, m->out_lo, burst, (uint16_t)n) < 0 ||
+            bus_burst_read(bus, m->out_lo, again, (uint16_t)n) < 0) {
+            add_check(r, id, name, IMT_FAIL, "read failed", "matching bytes",
+                      "the output window could not be read.");
+            return;
+        }
+        if (memcmp(burst, again, (size_t)n) != 0) continue;  /* sample moved */
+
+        for (int i = 0; i < n; i++) {
+            if (bus_reg_read(bus, (uint8_t)(m->out_lo + i), &single[i]) < 0) {
+                add_check(r, id, name, IMT_FAIL, "read failed", "matching bytes",
+                          "a single-register read of the output window failed.");
+                return;
+            }
+        }
+        /* Confirm nothing moved underneath the singles either. */
+        if (bus_burst_read(bus, m->out_lo, again, (uint16_t)n) < 0) continue;
+        if (memcmp(burst, again, (size_t)n) != 0) continue;
+
+        if (hex_out && hex_n) {
+            memcpy(hex_out, burst, (size_t)n);
+            memcpy(hex_out + n, single, (size_t)n);
+            *hex_n = n;
+        }
+
+        int bad = 0, first = -1;
+        for (int i = 0; i < n; i++)
+            if (burst[i] != single[i]) { bad++; if (first < 0) first = i; }
+
+        char mb[64], eb[64];
+        if (bad == 0)
+            add_check(r, id, name, IMT_PASS,
+                      fmtbuf(mb, sizeof mb, "%d bytes agree", n),
+                      "identical",
+                      "0x%02X-0x%02X reads the same whether bursted or taken one "
+                      "register at a time", m->out_lo, m->out_hi);
+        else
+            add_check(r, id, name, IMT_FAIL,
+                      fmtbuf(mb, sizeof mb, "%d of %d bytes differ", bad, n),
+                      fmtbuf(eb, sizeof eb, "%d identical", n),
+                      "first at 0x%02X: burst 0x%02X, single 0x%02X. The burst "
+                      "is not landing where single reads do — check "
+                      "spi_inc_mask against the datasheet.",
+                      (unsigned)(m->out_lo + first), burst[first], single[first]);
+        return;
+    }
+
+    skip_check(r, id, name,
+               "the output registers changed under every attempt, so burst and "
+               "single reads could not be compared on the same sample");
+}
+
+/*
  * mag.degauss.differential — is a high reading a field, or an offset?
  *
  * SET and RESET magnetise the AMR film opposite ways, so the field term of a
@@ -2217,6 +2321,23 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                   ? "every sample carried a non-decreasing CLOCK_REALTIME stamp"
                   : "wall_ns must be set on every valid sample and never go "
                     "backwards — fusion timestamps mag updates with it.");
+    }
+
+    /*
+     * Framing, before the degauss: it only reads, but it needs a window where
+     * the sample holds still, and the coil pulses below deliberately move it.
+     */
+    {
+        uint8_t hex[64];
+        int hexn = 0;
+        check_burst_framing(r, "mag.burst_framing",
+                            "Burst read lands where single reads do",
+                            bus, regmap_for(mag->name), hex, &hexn);
+        if (hexn > 0) {
+            r->raw.mag_bf_n = hexn;
+            memcpy(r->raw.mag_bf_burst,  hex,        (size_t)hexn);
+            memcpy(r->raw.mag_bf_single, hex + hexn, (size_t)hexn);
+        }
     }
 
     /*

@@ -428,13 +428,9 @@ static imt_report_t *run(imud_config_t *cfg, imt_opts_t *o)
     return r;
 }
 
-/* The same run over SPI.  Bind after mock_base(), which resets the mock and
- * forgets every binding with it. */
-static imt_report_t *run_spi(imud_config_t *cfg, imt_opts_t *o)
+/* The same run over SPI, with whatever bindings the caller has already set. */
+static imt_report_t *run_spi_bound(imud_config_t *cfg, imt_opts_t *o)
 {
-    spimock_bind(SPI_FD_IMU, ISM_ADDR, 0);
-    spimock_bind(SPI_FD_MAG, MMC_ADDR, 0);
-
     imt_report_t *r = calloc(1, sizeof *r);
     char err[256] = "";
     int rc = imt_run_ops(SPIBUS(SPI_FD_IMU), SPIBUS(SPI_FD_MAG),
@@ -442,6 +438,15 @@ static imt_report_t *run_spi(imud_config_t *cfg, imt_opts_t *o)
                          err, sizeof err);
     if (rc < 0) fprintf(stderr, "  imt_run_ops(spi): %s\n", err);
     return r;
+}
+
+/* Bind both parts as parts that walk the address unaided, then run.  Bind
+ * after mock_base(), which resets the mock and forgets every binding. */
+static imt_report_t *run_spi(imud_config_t *cfg, imt_opts_t *o)
+{
+    spimock_bind_inc(SPI_FD_IMU, ISM_ADDR, SPIMOCK_INC_ALWAYS, 0);
+    spimock_bind_inc(SPI_FD_MAG, MMC_ADDR, SPIMOCK_INC_ALWAYS, 0);
+    return run_spi_bound(cfg, o);
 }
 
 /* ── Tests ───────────────────────────────────────────────────────────────── */
@@ -905,6 +910,62 @@ static void test_rate_below_configured_odr_warns(void)
            "a low reading is not described as over-rate");
 
     free(r);
+    end(fb);
+}
+
+/*
+ * mag.burst_framing: an N-byte burst must land where N single reads do.
+ *
+ * bus_burst_read() passes spi_inc_mask only when len > 1, so the two take
+ * different paths through the command byte — the burst asserts the part's
+ * auto-increment bit, the singles do not. A wrong mask makes them disagree,
+ * which is the on-hardware half of what test_drivers proves against the mock.
+ *
+ * It cannot see a fault inside spi_burst_read() itself, since bus_reg_read()
+ * is bus_burst_read(len=1) and both sides go through it. That is stated in the
+ * check's own comment so the report is not over-read.
+ */
+static void test_burst_framing(void)
+{
+    begin("test_burst_framing");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    mock_base();
+    script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(status_of(r, "mag.burst_framing") == IMT_PASS,
+           "burst and single reads agree on a part that walks the address");
+    EXPECT(r->raw.mag_bf_n == 7, "the whole 0x00-0x06 window was captured raw");
+    EXPECT(memcmp(r->raw.mag_bf_burst, r->raw.mag_bf_single,
+                  (size_t)r->raw.mag_bf_n) == 0,
+           "...and the two recorded halves are identical");
+    /* Non-degeneracy: staged output, not seven zeroes agreeing with themselves. */
+    EXPECT(r->raw.mag_bf_burst[0] != r->raw.mag_bf_burst[2],
+           "the captured window holds real staged data");
+    free(r);
+
+    /*
+     * Now the failure it exists to catch: a part whose address does not walk.
+     * The burst returns register 0x00 over and over while the singles step
+     * correctly, which is exactly what a wrong spi_inc_mask produces.
+     */
+    mock_base();
+    spimock_bind_inc(SPI_FD_IMU, ISM_ADDR, SPIMOCK_INC_ALWAYS, 0);
+    spimock_bind_inc(SPI_FD_MAG, MMC_ADDR, SPIMOCK_INC_NEVER, 0);
+    script_reset(&o);
+    imt_report_t *stuck = run_spi_bound(&cfg, &o);
+
+    EXPECT(status_of(stuck, "mag.burst_framing") == IMT_FAIL,
+           "a burst that does not walk the address FAILs the framing check");
+    EXPECT(note_contains(stuck, "mag.burst_framing", "spi_inc_mask"),
+           "the note names the field to go and check");
+    free(stuck);
+
     end(fb);
 }
 
@@ -1906,6 +1967,7 @@ int main(void)
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
+    test_burst_framing();
     test_probe_reject_skips_on_spi();
     test_sweep_avoids_write_only_registers();
     test_rate_above_configured_odr_fails();

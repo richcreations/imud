@@ -440,6 +440,17 @@ int imt_write_md(const imt_report_t *r, const char *path,
                     w->mag_dg_offset[0], w->mag_dg_offset[1], w->mag_dg_offset[2],
                     w->mag_dg_offset_norm);
         }
+        if (w->mag_bf_n > 0) {
+            /* Raw, because a verdict cannot distinguish an off-by-one shift
+             * from a pointer that never moved, and the bytes can. */
+            fprintf(f, "\nburst  ");
+            for (int i = 0; i < w->mag_bf_n; i++)
+                fprintf(f, "%02X ", w->mag_bf_burst[i]);
+            fprintf(f, "\nsingle ");
+            for (int i = 0; i < w->mag_bf_n; i++)
+                fprintf(f, "%02X ", w->mag_bf_single[i]);
+            fprintf(f, "\n");
+        }
         fprintf(f, "```\n\n");
     }
 

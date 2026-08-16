@@ -176,6 +176,17 @@ typedef struct {
     double        mag_dg_set[3], mag_dg_reset[3];
     double        mag_dg_field[3], mag_dg_offset[3];
     double        mag_dg_field_norm, mag_dg_offset_norm;
+
+    /*
+     * mag.burst_framing: the output window read as one burst and again one
+     * register at a time.  Raw bytes, because the check reports a verdict and
+     * the bytes are what anyone diagnosing a mismatch actually needs — an
+     * off-by-one shift and a stuck pointer look identical in a pass/fail.
+     * mag_bf_n is 0 when the check did not run.
+     */
+    int           mag_bf_n;                     /* bytes in each half */
+    uint8_t       mag_bf_burst[32];
+    uint8_t       mag_bf_single[32];
     int           n_regdiff_mag;
     imt_regdiff_t regdiff_mag[IMT_MAX_REGDIFF];
     bool          regdiff_mag_mapped;
