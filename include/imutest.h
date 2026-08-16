@@ -166,6 +166,16 @@ typedef struct {
     int           mag_rc1, mag_rcneg;
     imt_stats3_t  magf;
     double        mag_norm_mean, mag_norm_min, mag_norm_max;
+
+    /*
+     * SET/RESET differential.  mag_dg_n is 0 when the part has no directional
+     * degauss or the pair could not be collected; everything below is only
+     * meaningful when it is non-zero.  See imt_degauss_split().
+     */
+    uint64_t      mag_dg_n;                     /* samples in the smaller half */
+    double        mag_dg_set[3], mag_dg_reset[3];
+    double        mag_dg_field[3], mag_dg_offset[3];
+    double        mag_dg_field_norm, mag_dg_offset_norm;
     int           n_regdiff_mag;
     imt_regdiff_t regdiff_mag[IMT_MAX_REGDIFF];
     bool          regdiff_mag_mapped;
@@ -368,6 +378,27 @@ void imt_decide_verdict(imt_report_t *r);
  * it still warns at the same magnitude.
  */
 imt_status_t imt_chipts_wall_status(double ratio);
+
+/*
+ * Split a SET/RESET pair into the field it measured and the bridge offset it
+ * carried.  Pure, and exposed for the same reason as the two above: the
+ * arithmetic is the substance, and the mock bus cannot magnetise anything.
+ *
+ * An AMR bridge reads +/-S*B + offset.  SET and RESET drive the film opposite
+ * ways, so between the two the field term changes sign and the offset does
+ * not:
+ *
+ *     vS = +S*B + offset      vR = -S*B + offset
+ *       field  = (vS - vR) / 2
+ *       offset = (vS + vR) / 2
+ *
+ * Either output may be NULL.  This is what separates "the sensor is looking at
+ * a strong magnet" from "the sensor has a large offset it is not removing" —
+ * two explanations for one high reading that are otherwise indistinguishable
+ * without a second transport or a known reference field.
+ */
+void imt_degauss_split(const double vS[3], const double vR[3],
+                       double field[3], double offset[3]);
 
 /* ── GPIO edge counting (src/imutest_gpio.c) ───────────────────────────────── */
 

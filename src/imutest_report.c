@@ -427,6 +427,19 @@ int imt_write_md(const imt_report_t *r, const char *path,
                 w->magf.sigma[0], w->magf.sigma[1], w->magf.sigma[2]);
         fprintf(f, "|B|         %.2f uT (range %.2f .. %.2f)\n",
                 w->mag_norm_mean, w->mag_norm_min, w->mag_norm_max);
+        if (w->mag_dg_n > 0) {
+            fprintf(f, "\n");
+            fprintf(f, "SET mean    %.2f / %.2f / %.2f uT\n",
+                    w->mag_dg_set[0], w->mag_dg_set[1], w->mag_dg_set[2]);
+            fprintf(f, "RESET mean  %.2f / %.2f / %.2f uT\n",
+                    w->mag_dg_reset[0], w->mag_dg_reset[1], w->mag_dg_reset[2]);
+            fprintf(f, "field       %.2f / %.2f / %.2f uT  |%.2f|   (SET-RESET)/2\n",
+                    w->mag_dg_field[0], w->mag_dg_field[1], w->mag_dg_field[2],
+                    w->mag_dg_field_norm);
+            fprintf(f, "offset      %.2f / %.2f / %.2f uT  |%.2f|   (SET+RESET)/2\n",
+                    w->mag_dg_offset[0], w->mag_dg_offset[1], w->mag_dg_offset[2],
+                    w->mag_dg_offset_norm);
+        }
         fprintf(f, "```\n\n");
     }
 

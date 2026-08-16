@@ -571,6 +571,95 @@ static void test_fifo_port_window_not_swept(void)
  * the only honest result.  Grading it WARN — which is what happened before —
  * blamed the MMC5983MA driver for a property of the silicon.
  */
+/* Position of a check in the report, so ordering can be asserted. -1 if absent. */
+static int index_of(const imt_report_t *r, const char *id)
+{
+    for (int i = 0; i < r->n_checks; i++)
+        if (strcmp(r->check[i].id, id) == 0) return i;
+    return -1;
+}
+
+/*
+ * The degauss pulse must land BEFORE the field is measured, and the SET/RESET
+ * pair must leave the part SET.
+ *
+ * Ordering is the whole point: run last, as it was, mag.field_magnitude and
+ * mag.noise graded whatever magnetisation the part arrived in. The mock has no
+ * coil, so the differential correctly recovers no field here — which is the
+ * dead-coil signature, and is exactly what the check should say.
+ */
+static void test_mag_degauss_ordering_and_restore(void)
+{
+    begin("test_mag_degauss_ordering_and_restore");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    int i_set = index_of(r, "mag.set_reset");
+    int i_fld = index_of(r, "mag.field_magnitude");
+    EXPECT(i_set >= 0 && i_fld >= 0, "both checks ran");
+    EXPECT(i_set < i_fld, "the degauss pulse is graded before the field is");
+    EXPECT(note_contains(r, "mag.set_reset", "before the measurements"),
+           "the note says which way round it runs");
+
+    /* The differential ran, and on a coil that does nothing it reports the
+     * reading as offset rather than as field. */
+    EXPECT(status_of(r, "mag.degauss.differential") != (imt_status_t)-1,
+           "the differential ran");
+    EXPECT(index_of(r, "mag.degauss.differential") > i_fld,
+           "the differential runs after the steady-state measurements");
+
+    /*
+     * CTRL0 is left in the SET state. RESET inverts the field term, so
+     * finishing there would hand a sign-flipped magnetometer to anything that
+     * ran next — including a daemon started straight after imutest.
+     */
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x0C,
+           "the part is left SET, not RESET");
+
+    free(r);
+    end(fb);
+}
+
+/* A driver with no directional degauss must SKIP, not fail or crash. */
+static void test_mag_degauss_skips_without_the_op(void)
+{
+    begin("test_mag_degauss_skips_without_the_op");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    /* Same part, with the optional op withheld — every other mag driver. */
+    mag_ops_t noop = mmc5983ma_ops;
+    noop.degauss = NULL;
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                &ism330dhcx_ops, &noop, &cfg, &o, r, err, sizeof err);
+
+    EXPECT(status_of(r, "mag.degauss.differential") == IMT_SKIP,
+           "no directional degauss skips the differential");
+    EXPECT(note_contains(r, "mag.degauss.differential", "RESET"),
+           "the skip says what is missing");
+    /* The plain SET pulse still runs — set_reset is unaffected. */
+    EXPECT(status_of(r, "mag.set_reset") == IMT_PASS,
+           "the production degauss is unaffected");
+
+    free(r);
+    end(fb);
+}
+
 static void test_mag_writeonly_ctrl_skips(void)
 {
     begin("test_mag_writeonly_ctrl_skips");
@@ -1259,6 +1348,74 @@ static void stage_clean_report(imt_report_t *r, bool imu_exp, bool mag_exp)
  * 1.041 the Pi 5 bench reported on the reference ISM330DHCX is the case that
  * used to warn and now must not.
  */
+/*
+ * The SET/RESET split. Pure arithmetic, so it is asserted directly rather than
+ * through the mock: nothing on a software bus can magnetise a bridge, and a
+ * test that staged two register blocks and read the difference back would be
+ * grading its own staging.
+ */
+static bool near_d(double a, double b) { return fabs(a - b) < 1e-9; }
+
+static void test_degauss_split(void)
+{
+    begin("test_degauss_split");
+    int fb = g_fail;
+
+    double field[3], offset[3];
+
+    /* The case the check exists for, and the 2026-08-15 bench numbers it was
+     * written against: a ~50 uT field buried under a ~1100 uT bridge offset.
+     * Both halves read far out of range; only the split says which is which. */
+    const double vS[3] = { 1130.0,  -30.0,  1150.0 };
+    const double vR[3] = { 1070.0,  -70.0,  1050.0 };
+    imt_degauss_split(vS, vR, field, offset);
+    EXPECT(near_d(field[0], 30.0), "field X = (vS-vR)/2");
+    EXPECT(near_d(field[1], 20.0), "field Y = (vS-vR)/2");
+    EXPECT(near_d(field[2], 50.0), "field Z = (vS-vR)/2");
+    EXPECT(near_d(offset[0], 1100.0), "offset X = (vS+vR)/2");
+    EXPECT(near_d(offset[1], -50.0), "offset Y = (vS+vR)/2");
+    EXPECT(near_d(offset[2], 1100.0), "offset Z = (vS+vR)/2");
+
+    /* A part with no offset: RESET is the exact negation of SET, so the field
+     * is the whole reading and the offset vanishes. */
+    const double pS[3] = {  20.0, -30.0,  45.0 };
+    const double pR[3] = { -20.0,  30.0, -45.0 };
+    imt_degauss_split(pS, pR, field, offset);
+    EXPECT(near_d(field[0], 20.0), "no offset: field is the reading");
+    EXPECT(near_d(field[2], 45.0), "no offset: field is the reading (Z)");
+    EXPECT(near_d(offset[0], 0.0), "no offset: offset is zero");
+    EXPECT(near_d(offset[2], 0.0), "no offset: offset is zero (Z)");
+
+    /* A dead coil: the pulse changes nothing, so both halves are identical.
+     * The whole reading lands in the offset and the field is zero — which is
+     * how a degauss path that is not working reports itself. */
+    const double dS[3] = { 320.0, -764.0, -761.0 };
+    imt_degauss_split(dS, dS, field, offset);
+    EXPECT(near_d(field[0], 0.0), "dead coil: no field recovered");
+    EXPECT(near_d(field[1], 0.0), "dead coil: no field recovered (Y)");
+    EXPECT(near_d(field[2], 0.0), "dead coil: no field recovered (Z)");
+    EXPECT(near_d(offset[0], 320.0), "dead coil: reading is all offset");
+    EXPECT(near_d(offset[2], -761.0), "dead coil: reading is all offset (Z)");
+
+    /* Sign convention: swapping the two halves flips the field and leaves the
+     * offset alone. A driver that had SET and RESET the wrong way round would
+     * report a negated field, not a wrong magnitude — so |field| cannot catch
+     * it and the vector in the report is what a reader needs. */
+    double f2[3], o2[3];
+    imt_degauss_split(vR, vS, f2, o2);
+    imt_degauss_split(vS, vR, field, offset);
+    EXPECT(near_d(f2[0], -field[0]), "swapping the halves negates the field");
+    EXPECT(near_d(o2[0], offset[0]), "swapping the halves leaves the offset");
+
+    /* Either output is optional. */
+    imt_degauss_split(vS, vR, field, NULL);
+    EXPECT(near_d(field[2], 50.0), "NULL offset is accepted");
+    imt_degauss_split(vS, vR, NULL, offset);
+    EXPECT(near_d(offset[2], 1100.0), "NULL field is accepted");
+
+    end(fb);
+}
+
 static void test_chipts_wall_bands(void)
 {
     begin("test_chipts_wall_bands");
@@ -1440,6 +1597,8 @@ int main(void)
     test_bringup_bad_whoami();
     test_volatile_registers_filtered();
     test_fifo_port_window_not_swept();
+    test_mag_degauss_ordering_and_restore();
+    test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
     test_odr_and_seq();
     test_error_contract_both_ways();
@@ -1453,6 +1612,7 @@ int main(void)
     test_spin_frame_agreement();
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
+    test_degauss_split();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();
 

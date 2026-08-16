@@ -1844,6 +1844,160 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 
 /* ── Phase A: magnetometer ────────────────────────────────────────────────── */
 
+static double norm3d(const double v[3])
+{
+    return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+/*
+ * Average `secs` worth of magnetometer samples into out[3].
+ *
+ * The first two completed samples are discarded, because a degauss pulse only
+ * affects the NEXT measurement to start: at 100 Hz a measurement takes several
+ * ms and the driver's settling sleep is 1 ms, so the first sample out of the
+ * part after a pulse was very likely already in flight when the pulse landed.
+ * Averaging it in would drag both halves of a differential toward each other
+ * and understate the very thing the differential exists to measure.
+ *
+ * Returns the number of samples averaged; 0 means the caller must not use out.
+ */
+static uint64_t mag_collect_mean(const mag_ops_t *mag, const imud_bus_t *bus,
+                                 double secs, double poll, double out[3])
+{
+    double sum[3] = { 0, 0, 0 };
+    uint64_t n = 0, seen = 0;
+    double deadline = now_s() + secs;
+
+    for (int k = 0; k < 3; k++) out[k] = 0.0;
+
+    while (now_s() < deadline && !g_abort) {
+        mag_sample_t s;
+        memset(&s, 0, sizeof s);
+        if (mag->read(bus, &s) == 0 && s.valid) {
+            if (++seen > 2) {
+                for (int k = 0; k < 3; k++) sum[k] += s.field[k];
+                n++;
+            }
+        }
+        sleep_s(poll);
+    }
+    if (n) for (int k = 0; k < 3; k++) out[k] = sum[k] / (double)n;
+    return n;
+}
+
+/*
+ * mag.degauss.differential — is a high reading a field, or an offset?
+ *
+ * SET and RESET magnetise the AMR film opposite ways, so the field term of a
+ * reading flips sign between them and the bridge's own offset does not.  One
+ * measurement each way therefore separates the two (imt_degauss_split), and
+ * that is the only way to make the distinction on a bench with one transport
+ * and no reference field.
+ *
+ * Both numbers are reported whatever the verdict.  The offset is not a
+ * secondary detail here: a part reading far outside Earth's range with a SMALL
+ * offset is looking at real iron, and the same part with a LARGE offset is
+ * failing to remove its own bias — the same symptom, opposite causes, and only
+ * this check tells them apart.
+ */
+static void check_mag_degauss(imt_report_t *r, const imt_opts_t *o,
+                              const mag_ops_t *mag, const imud_bus_t *bus,
+                              int eff_odr)
+{
+    char mb[96], eb[56];
+
+    if (!mag->degauss) {
+        skip_check(r, "mag.degauss.differential",
+                   "True field vs bridge offset",
+                   mag->has_set_reset
+                   ? "this driver pulses SET but cannot drive RESET, so the "
+                     "two directions cannot be compared"
+                   : "this part has no degauss coil");
+        return;
+    }
+
+    double period = eff_odr > 0 ? 1.0 / eff_odr : 0.01;
+    double poll   = period / 4;
+    if (poll > 0.002) poll = 0.002;
+    double half = o->mag_window_s / 2.0;
+    if (half < 1.0) half = 1.0;
+
+    double vS[3] = { 0, 0, 0 }, vR[3] = { 0, 0, 0 };
+    uint64_t nS = 0, nR = 0;
+    int rcS = mag->degauss(bus, MAG_DEGAUSS_SET);
+    if (rcS == 0) {
+        ui_progress(o, "mag.degauss.differential", 0.25, "SET");
+        nS = mag_collect_mean(mag, bus, half, poll, vS);
+    }
+    int rcR = rcS == 0 ? mag->degauss(bus, MAG_DEGAUSS_RESET) : 0;
+    if (rcS == 0 && rcR == 0) {
+        ui_progress(o, "mag.degauss.differential", 0.75, "RESET");
+        nR = mag_collect_mean(mag, bus, half, poll, vR);
+    }
+
+    /*
+     * Leave the part SET however this went.  RESET inverts the field term, so
+     * a run that ended there would hand every later check — and the daemon, if
+     * one is started straight afterwards — a sign-flipped magnetometer.
+     */
+    (void)mag->degauss(bus, MAG_DEGAUSS_SET);
+
+    if (rcS != 0 || rcR != 0) {
+        add_check(r, "mag.degauss.differential", "True field vs bridge offset",
+                  IMT_FAIL, "pulse failed", "0",
+                  "degauss() returned %d for SET and %d for RESET; the coil "
+                  "could not be driven, so nothing was measured.", rcS, rcR);
+        return;
+    }
+    if (nS < 3 || nR < 3) {
+        skip_check(r, "mag.degauss.differential", "True field vs bridge offset",
+                   "too few samples between the pulses to average");
+        return;
+    }
+
+    double field[3], offset[3];
+    imt_degauss_split(vS, vR, field, offset);
+    double fn = norm3d(field), on = norm3d(offset);
+
+    for (int k = 0; k < 3; k++) {
+        r->raw.mag_dg_set[k]    = vS[k];
+        r->raw.mag_dg_reset[k]  = vR[k];
+        r->raw.mag_dg_field[k]  = field[k];
+        r->raw.mag_dg_offset[k] = offset[k];
+    }
+    r->raw.mag_dg_n           = nS < nR ? nS : nR;
+    r->raw.mag_dg_field_norm  = fn;
+    r->raw.mag_dg_offset_norm = on;
+
+    imt_status_t st = (fn >= 25.0 && fn <= 65.0) ? IMT_PASS
+                    : (fn >= 15.0 && fn <= 100.0) ? IMT_WARN : IMT_FAIL;
+
+    /*
+     * The interpretation is the payload, so spell it out rather than leaving a
+     * reader to work out which of the two numbers matters.
+     */
+    const char *reading =
+        st == IMT_PASS
+        ? (on > 100.0
+           ? "the part measures Earth's field correctly; the reading is high "
+             "because a large bridge offset is riding on it and is not being "
+             "removed"
+           : "field and offset are both where they should be")
+        : (on > fn
+           ? "the offset dominates the field, so a high |B| is the bridge, "
+             "not the environment"
+           : "the field itself is out of range, so the part really is seeing "
+             "this much flux — look for iron on or near the board");
+
+    add_check(r, "mag.degauss.differential", "True field vs bridge offset", st,
+              fmtbuf(mb, sizeof mb, "field %.1f uT, offset %.1f uT", fn, on),
+              fmtbuf(eb, sizeof eb, "field 25 .. 65 uT"),
+              "SET [%.1f %.1f %.1f] vs RESET [%.1f %.1f %.1f] over %llu/%llu "
+              "samples: %s.",
+              vS[0], vS[1], vS[2], vR[0], vR[1], vR[2],
+              (unsigned long long)nS, (unsigned long long)nR, reading);
+}
+
 static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                               const mag_ops_t *mag, const imud_bus_t *bus,
                               int eff_odr)
@@ -1851,6 +2005,40 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
     char mb[56], eb[56];
     welford3_t w;
     w3_init(&w);
+
+    /*
+     * Degauss BEFORE measuring, not after.
+     *
+     * This check used to run at the end of the phase, which meant every
+     * number above it — field magnitude, noise, the whole of §5.7 — graded the
+     * bridge in whatever magnetisation state the part happened to be left in
+     * by whatever last touched it.  That is not a property of the driver, and
+     * on 2026-08-15 it produced a 1124.7 uT field reading that nothing in the
+     * report could attribute.  Pulsing first makes the state a known one.
+     */
+    if (mag->has_set_reset) {
+        if (!mag->set_reset) {
+            add_check(r, "mag.set_reset", "SET/RESET degauss pulse", IMT_FAIL,
+                      "NULL", "non-NULL",
+                      "has_set_reset is true but set_reset is NULL — the "
+                      "daemon would call through a null pointer.");
+        } else {
+            int rc = mag->set_reset(bus);
+            add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
+                      rc == 0 ? IMT_PASS : IMT_FAIL,
+                      fmtbuf(mb, sizeof mb, "%d", rc), "0",
+                      rc == 0 ? "the degauss pulse was issued, before the "
+                                "measurements below rather than after them"
+                              : "set_reset() failed.");
+        }
+    } else {
+        add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
+                  mag->set_reset == NULL ? IMT_PASS : IMT_FAIL,
+                  mag->set_reset ? "non-NULL" : "NULL", "NULL",
+                  mag->set_reset == NULL
+                  ? "no coil declared and none exposed, which is consistent"
+                  : "has_set_reset is false but set_reset is not NULL.");
+    }
 
     double period = eff_odr > 0 ? 1.0 / eff_odr : 0.01;
     double poll   = period / 4;
@@ -1969,29 +2157,13 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                     "backwards — fusion timestamps mag updates with it.");
     }
 
-    /* SET/RESET coil, if the driver claims one. */
-    if (mag->has_set_reset) {
-        if (!mag->set_reset) {
-            add_check(r, "mag.set_reset", "SET/RESET degauss pulse", IMT_FAIL,
-                      "NULL", "non-NULL",
-                      "has_set_reset is true but set_reset is NULL — the "
-                      "daemon would call through a null pointer.");
-        } else {
-            int rc = mag->set_reset(bus);
-            add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
-                      rc == 0 ? IMT_PASS : IMT_FAIL,
-                      fmtbuf(mb, sizeof mb, "%d", rc), "0",
-                      rc == 0 ? "the degauss pulse was issued"
-                              : "set_reset() failed.");
-        }
-    } else {
-        add_check(r, "mag.set_reset", "SET/RESET degauss pulse",
-                  mag->set_reset == NULL ? IMT_PASS : IMT_FAIL,
-                  mag->set_reset ? "non-NULL" : "NULL", "NULL",
-                  mag->set_reset == NULL
-                  ? "no coil declared and none exposed, which is consistent"
-                  : "has_set_reset is false but set_reset is not NULL.");
-    }
+    /*
+     * Now split the reading into the field and the offset.  Last, because it
+     * drives the coil both ways and leaves the part re-SET behind it — the
+     * numbers above are measured under one steady magnetisation, this one
+     * deliberately changes it twice.
+     */
+    check_mag_degauss(r, o, mag, bus, eff_odr);
 }
 
 /* ── Phase B: guided six-face accelerometer / axis-sign test ──────────────── */
@@ -2621,6 +2793,15 @@ imt_status_t imt_chipts_wall_status(double ratio)
     if (werr <= 0.02) return IMT_PASS;
     if (werr >  0.10) return IMT_FAIL;
     return ratio > 1.0 ? IMT_INFO : IMT_WARN;
+}
+
+void imt_degauss_split(const double vS[3], const double vR[3],
+                       double field[3], double offset[3])
+{
+    for (int k = 0; k < 3; k++) {
+        if (field)  field[k]  = (vS[k] - vR[k]) / 2.0;
+        if (offset) offset[k] = (vS[k] + vR[k]) / 2.0;
+    }
 }
 
 void imt_decide_verdict(imt_report_t *r)
