@@ -39,18 +39,39 @@
 void i2cmock_reset(void);
 
 /*
+ * How the part's address pointer behaves during a multi-byte SPI transfer.
+ *
+ * Stated rather than inferred from the mask, because inferring it is what made
+ * the mask untestable: a driver declaring spi_inc_mask = 0 and a mock reading
+ * "mask 0 means it always increments" agree because the test copied the
+ * driver's literal, not because the part behaves that way.  SPIMOCK_INC_NEVER
+ * is the state the mock could not previously express, and it is the one that
+ * shows what a wrong mask costs — the burst returns one register over and over
+ * and the decode is silently wrong.
+ */
+typedef enum {
+    SPIMOCK_INC_ALWAYS = 0,  /* part walks the address on its own */
+    SPIMOCK_INC_ON_BIT,      /* walks only when `mask` is set in the command */
+    SPIMOCK_INC_NEVER,       /* never walks: the same register every byte */
+} spimock_inc_t;
+
+/*
  * Point a spidev descriptor at one of the register files.
  *
  * SPI puts no address on the wire — the chip select does the addressing — so
  * a transfer on `fd` is serviced by the file `addr` names, and a driver
  * exercised on both transports sees one device rather than two mocks.
- * `inc_mask` is the part's multi-byte auto-increment bit (0 for the parts
- * that increment on their own), stripped from the command byte before the
- * register is decoded.
+ * `mask` is the part's multi-byte auto-increment bit, stripped from the
+ * command byte before the register is decoded.
  *
  * A transfer on an unbound descriptor fails with ENODEV rather than defaulting
  * to file 0, so a forgotten bind shows up as a test failure.
  */
+void spimock_bind_inc(int fd, uint8_t addr, spimock_inc_t mode, uint8_t mask);
+
+/* Convenience form: mask 0 binds ALWAYS, non-zero binds ON_BIT with that mask.
+ * That is the historical behaviour, and fine where the increment is incidental
+ * to what is being tested; reach for spimock_bind_inc when it is the point. */
 void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask);
 
 /* Register-file access (addr is the 7-bit I2C address). */

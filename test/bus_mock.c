@@ -44,6 +44,7 @@ static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 static int     g_spi_fd[NSPIFD];     /* bound descriptor, or -1 */
 static uint8_t g_spi_addr[NSPIFD];
 static uint8_t g_spi_inc_mask[NADDR];
+static spimock_inc_t g_spi_inc_mode[NADDR];
 
 static int spi_addr_for_fd(int fd)
 {
@@ -68,14 +69,16 @@ void i2cmock_reset(void)
         for (int r = 0; r < REGSZ; r++) g_alias[i][r] = -1;
     }
     memset(g_spi_inc_mask, 0, sizeof g_spi_inc_mask);
+    memset(g_spi_inc_mode, 0, sizeof g_spi_inc_mode);
     for (int i = 0; i < NSPIFD; i++) { g_spi_fd[i] = -1; g_spi_addr[i] = 0; }
     g_fail_next = 0;
     g_fail_all  = 0;
 }
 
-void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask)
+void spimock_bind_inc(int fd, uint8_t addr, spimock_inc_t mode, uint8_t mask)
 {
-    g_spi_inc_mask[addr & (NADDR - 1)] = inc_mask;
+    g_spi_inc_mask[addr & (NADDR - 1)] = mask;
+    g_spi_inc_mode[addr & (NADDR - 1)] = mode;
     for (int i = 0; i < NSPIFD; i++) {
         if (g_spi_fd[i] == fd || g_spi_fd[i] < 0) {
             g_spi_fd[i]   = fd;
@@ -85,6 +88,12 @@ void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask)
     }
     /* Out of slots: leave it unbound so dispatch_spi fails loudly rather than
      * quietly aliasing onto someone else's register file. */
+}
+
+void spimock_bind(int fd, uint8_t addr, uint8_t inc_mask)
+{
+    spimock_bind_inc(fd, addr, inc_mask ? SPIMOCK_INC_ON_BIT : SPIMOCK_INC_ALWAYS,
+                     inc_mask);
 }
 
 void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask)
@@ -275,11 +284,17 @@ static int dispatch_spi(int fd, unsigned long request,
     /*
      * On a part with an explicit auto-increment bit, the address only walks
      * when that bit is set — with it clear the same register is returned for
-     * every byte (LIS3MDL DS9463 Rev 7 §5.2). Parts that increment on their
-     * own declare inc_mask 0 and always advance.
+     * every byte (LIS3MDL DS9463 Rev 7 §5.2). Parts that increment on their own
+     * are bound ALWAYS. The binding says which, rather than the mask implying
+     * it: deriving "no mask means it always walks" from the same literal the
+     * driver declares makes the driver's claim agree with itself.
      */
-    bool advance = g_spi_inc_mask[a] == 0 ||
-                   (tx0[0] & g_spi_inc_mask[a]) != 0;
+    bool advance;
+    switch (g_spi_inc_mode[a]) {
+    case SPIMOCK_INC_NEVER:  advance = false; break;
+    case SPIMOCK_INC_ON_BIT: advance = (tx0[0] & g_spi_inc_mask[a]) != 0; break;
+    default:                 advance = true;  break;
+    }
 
     if (is_read) {
         if (n < 2) { errno = EINVAL; return -1; }

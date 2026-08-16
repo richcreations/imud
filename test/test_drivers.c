@@ -470,7 +470,7 @@ static void test_ism_read_overflow_and_empty(void)
 #define MMC_ADDR 0x30
 
 /* Split an 18-bit unsigned reading into the 7 output registers (0x00..0x06). */
-static void mmc_set_output(uint32_t rx, uint32_t ry, uint32_t rz)
+static void mmc_set_output_at(uint8_t at, uint32_t rx, uint32_t ry, uint32_t rz)
 {
     uint8_t raw[7] = {
         (uint8_t)((rx >> 10) & 0xFF), (uint8_t)((rx >> 2) & 0xFF),
@@ -478,7 +478,12 @@ static void mmc_set_output(uint32_t rx, uint32_t ry, uint32_t rz)
         (uint8_t)((rz >> 10) & 0xFF), (uint8_t)((rz >> 2) & 0xFF),
         (uint8_t)(((rx & 3) << 6) | ((ry & 3) << 4) | ((rz & 3) << 2)),
     };
-    i2cmock_set_regs(MMC_ADDR, 0x00, raw, 7);
+    i2cmock_set_regs(at, 0x00, raw, 7);
+}
+
+static void mmc_set_output(uint32_t rx, uint32_t ry, uint32_t rz)
+{
+    mmc_set_output_at(MMC_ADDR, rx, ry, rz);
 }
 
 static void test_mmc_probe(void)
@@ -2596,8 +2601,12 @@ static void test_dual_transport_ism330dhcx(void)
     }
 
     imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    /* Framing from the driver's own caps, as bus_open() does — see the
+     * mmc5983ma case below for why a literal here is circular. */
     imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
-                      .spi_mode = 3, .spi_inc_mask = 0, .spi_hz = 10000000 };
+                      .spi_mode     = ism->bus_caps.spi_mode,
+                      .spi_inc_mask = ism->bus_caps.spi_inc_mask,
+                      .spi_hz       = 10000000 };
 
     EXPECT(ism->probe(&ib) == 0, "i2c probe");
     EXPECT(ism->probe(&sb) == 0, "spi probe");
@@ -2699,7 +2708,13 @@ static void test_dual_transport_mmc5983ma(void)
     const uint8_t I2C_AT = 0x30, SPI_AT = 0x31;
 
     i2cmock_reset();
-    spimock_bind(DUAL_SPI_FD, SPI_AT, 0);
+    /*
+     * Ground truth about the silicon, written here independently of the
+     * driver: Rev A pp.6-7 say a multi-byte transfer simply adds 8-clock
+     * blocks, so the MMC5983MA walks the address on its own and has no
+     * auto-increment bit to set.
+     */
+    spimock_bind_inc(DUAL_SPI_FD, SPI_AT, SPIMOCK_INC_ALWAYS, 0);
 
     for (int i = 0; i < 2; i++) {
         uint8_t at = i ? SPI_AT : I2C_AT;
@@ -2711,8 +2726,17 @@ static void test_dual_transport_mmc5983ma(void)
     }
 
     imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    /*
+     * The bus takes its framing FROM the driver's declared caps, exactly as
+     * bus_open() does in production.  Writing the mask as a literal here made
+     * the whole comparison circular: the test asserted its own copy of the
+     * driver's number against the mock bound with that same number, so a wrong
+     * declaration agreed with itself and nothing failed.
+     */
     imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
-                      .spi_mode = 3, .spi_inc_mask = 0, .spi_hz = 10000000 };
+                      .spi_mode      = mmc->bus_caps.spi_mode,
+                      .spi_inc_mask  = mmc->bus_caps.spi_inc_mask,
+                      .spi_hz        = 10000000 };
 
     EXPECT(mmc->probe(&ib) == 0, "i2c probe");
     EXPECT(mmc->probe(&sb) == 0, "spi probe");
@@ -2759,6 +2783,53 @@ static void test_dual_transport_mmc5983ma(void)
     EXPECT(i2cmock_get_reg(I2C_AT, 0x09) == i2cmock_get_reg(SPI_AT, 0x09) &&
            i2cmock_get_reg(I2C_AT, 0x09) == 0x14,
            "degauss RESET wrote RESET | INT_EN on both transports");
+
+    /*
+     * Everything above compares the two transports against each other, which
+     * says they agree and nothing about whether either is right.  Stage a known
+     * field on the SPI side and assert the absolute value.
+     */
+    i2cmock_set_reg(SPI_AT, 0x08, 0x01);
+    mmc_set_output_at(SPI_AT, 131072 + 16384,    /* +1 G  -> +100 uT      */
+                              131072 - 16384,    /* -1 G, Y flipped -> +100 */
+                              131072 +  8192);   /* +0.5 G -> +50 uT      */
+    mag_sample_t abs_s = { 0 };
+    EXPECT(mmc->read(&sb, &abs_s) == 0, "spi read of a staged field");
+    EXPECT_NEAR(abs_s.field[0], 100.0f, 0.1, "spi decodes X = +100 uT");
+    EXPECT_NEAR(abs_s.field[1], 100.0f, 0.1, "spi decodes Y flipped = +100 uT");
+    EXPECT_NEAR(abs_s.field[2],  50.0f, 0.1, "spi decodes Z = +50 uT");
+    /* And the burst walked, rather than returning 0x00 seven times — the
+     * guard lis3mdl carries, and the one this test lacked. */
+    EXPECT(abs_s.field[0] != abs_s.field[2],
+           "the spi burst walked the output registers");
+
+    /*
+     * Now the part the mock could not previously express.  mmc5983ma declares
+     * spi_inc_mask = 0, meaning "this part walks the address by itself".  Bind
+     * the same address INC_NEVER — a part that needs an explicit bit, which is
+     * what a wrong declaration would amount to — and the identical driver code
+     * must now decode WRONG.  Without this, the mask assertion is the test
+     * agreeing with the literal it copied out of the driver.
+     */
+    i2cmock_reset();
+    spimock_bind_inc(DUAL_SPI_FD, SPI_AT, SPIMOCK_INC_NEVER, 0);
+    i2cmock_set_reg(SPI_AT, 0x2F, 0x30);
+    i2cmock_set_reg(SPI_AT, 0x08, 0x01);
+    mmc_set_output_at(SPI_AT, 131072 + 16384, 131072 - 16384, 131072 + 8192);
+
+    mag_sample_t stuck = { 0 };
+    EXPECT(mmc->read(&sb, &stuck) == 0, "spi read against a non-incrementing part");
+    EXPECT(!(fabsf(stuck.field[0] - 100.0f) < 0.1f &&
+             fabsf(stuck.field[2] -  50.0f) < 0.1f),
+           "a part that does not auto-increment decodes wrong, so the mask matters");
+    /*
+     * X and Z were staged a factor of two apart. With the pointer stuck they
+     * decode to the same magnitude, because every byte of the burst came from
+     * register 0x00 — the low two bits differ only because XYZOUT2's three
+     * bit-fields are read out of that one repeated byte.
+     */
+    EXPECT(fabsf(fabsf(stuck.field[0]) - fabsf(stuck.field[2])) < 1.0f,
+           "...because the burst returned one register over and over");
 
     end(fb);
 }
@@ -2828,7 +2899,9 @@ static void test_dual_transport_others(void)
      */
     const uint8_t L_I2C = 0x1C, L_SPI = 0x3C;
     i2cmock_reset();
-    spimock_bind(DUAL_SPI_FD, L_SPI, 0x40);
+    /* Ground truth: DS9463 Rev 7 §5.2 — the address walks only when MS (0x40)
+     * is set in the command byte.  Written here, not read from the driver. */
+    spimock_bind_inc(DUAL_SPI_FD, L_SPI, SPIMOCK_INC_ON_BIT, 0x40);
 
     const uint8_t out[6] = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01 };  /* 100,200,300 */
     for (int k = 0; k < 2; k++) {
@@ -2840,8 +2913,10 @@ static void test_dual_transport_others(void)
     }
 
     imud_bus_t lib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C };
-    imud_bus_t lsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
-                       .spi_inc_mask = 0x40, .spi_hz = 10000000 };
+    imud_bus_t lsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+                       .spi_mode     = lis3mdl_ops.bus_caps.spi_mode,
+                       .spi_inc_mask = lis3mdl_ops.bus_caps.spi_inc_mask,
+                       .spi_hz       = 10000000 };
     const mag_ops_t *l3 = &lis3mdl_ops;
     mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
 
@@ -2887,7 +2962,8 @@ static void test_dual_transport_others(void)
 
     imud_bus_t rib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C };
     imud_bus_t rsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
-                       .spi_inc_mask = 0, .spi_hz = 1000000 };
+                       .spi_inc_mask = rm3100_ops.bus_caps.spi_inc_mask,
+                       .spi_hz = 1000000 };
     const mag_ops_t *rm = &rm3100_ops;
     mag_cfg_t rcfg = { .odr_hz = 100, .set_period_s = 0.0f };
 
