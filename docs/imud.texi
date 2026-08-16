@@ -1659,7 +1659,9 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{SPI}: @strong{yes} --- mode 3, 10 MHz
 @item
-@strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil.
+@strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil. On SPI a
+CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after
+every one.
 @end itemize
 
 @item @code{ak09916}

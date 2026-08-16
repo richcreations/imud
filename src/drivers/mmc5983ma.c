@@ -17,6 +17,7 @@
  */
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -38,7 +39,7 @@
 #define REG_TOUT        0x07  /* temperature, 0.8 °C/LSB, 0x00 = -75 °C */
 #define REG_STATUS      0x08  /* R/W: Meas_M_Done[0], Meas_T_Done[1]; write 1 to clear */
 #define REG_CTRL0       0x09  /* W: TM_M[0] TM_T[1] INT_en[2] Set[3] Reset[4] AutoSR[5] */
-#define REG_CTRL1       0x0A  /* W: BW[1:0] X_inhibit[2] YZ_inhibit[3] SW_RST[7] */
+#define REG_CTRL1       0x0A  /* W: BW[1:0] X_inhibit[2] YZ_inhibit[4:3] SW_RST[7] */
 #define REG_CTRL2       0x0B  /* W: CM_Freq[2:0] Cmm_en[3] Prd_set[6:4] En_prd_set[7] */
 #define REG_PRODUCT_ID  0x2F  /* R: fixed 0x30 */
 
@@ -54,6 +55,37 @@
 #define PRODUCT_ID_VALUE  0x30u
 #define NULL_FIELD        131072u   /* 2^17 — unsigned raw output for zero field */
 #define STATUS_M_DONE     0x01u
+
+/*
+ * ── A write to CTRL0 also lands in CTRL1 ───────────────────────────────────
+ *
+ * Measured on an MMC5983MA (SparkFun 9DoF SEN-19895) over SPI on a Pi 5,
+ * 2026-08-16. Writing CTRL0 applies the same byte to CTRL1 as well:
+ *
+ *   CTRL0 = 0x04 (INT_en)   → CTRL1 = 0x04 → X-inhibit; X stops measuring
+ *   CTRL0 = 0x18 (Set|Reset)→ CTRL1 = 0x18 → YZ-inhibit; Y and Z stop
+ *   CTRL0 = 0x80            → CTRL1 = 0x80 → SW_RST; continuous mode stops
+ *
+ * CTRL0 still receives the write — the SET and RESET pulses do fire, and the
+ * field term inverts between them. It is both registers, not the wrong one.
+ *
+ * The effect is specific to CTRL0: a CTRL1 write does not disturb CTRL2 (which
+ * would stop continuous mode) and a CTRL2 write does not disturb CTRL3 (whose
+ * self-test coil moves the mean by hundreds of µT and is unmistakable). It is
+ * also not a bus-timing artefact — identical at 10 MHz, 1 MHz and 100 kHz.
+ *
+ * The consequence for this driver: X-inhibit is set by init()'s own last
+ * write, so the X axis silently stops measuring while Y and Z look fine. That
+ * is a dead magnetometer axis presented as a working one — heading comes from
+ * atan2(-my, mx), so it takes the heading with it.
+ *
+ * The fix is ordering: CTRL1 is written LAST, after every CTRL0 write, which
+ * puts the intended value back. mmc_degauss() has to do the same, so the
+ * programmed CTRL1 is remembered here. Written by init() (from main at startup,
+ * or from the mag_reader thread on error recovery) and read by degauss() on the
+ * mag_reader thread, so it is _Atomic — see CLAUDE.md's concurrency rule.
+ */
+static _Atomic uint8_t g_ctrl1 = 0;
 
 /* ── ODR encoding ──────────────────────────────────────────────────────────── */
 
@@ -109,9 +141,6 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     uint8_t bw, cmfreq;
     odr_encode(cfg->odr_hz, &bw, &cmfreq);
 
-    /* Set measurement bandwidth (affects noise and max ODR). */
-    if (bus_reg_write(bus, REG_CTRL1, bw) < 0) return -1;
-
     /* Clear CTRL0: disable Auto_SR_en; we do periodic manual SET instead. */
     if (bus_reg_write(bus, REG_CTRL0, 0x00) < 0) return -1;
 
@@ -120,6 +149,14 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 
     /* Enable INT pin on measurement completion (do this after CMM starts). */
     if (bus_reg_write(bus, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
+
+    /*
+     * Measurement bandwidth (affects noise and max ODR) — and LAST, because
+     * the CTRL0 write above also lands in CTRL1 and would otherwise leave
+     * X-inhibit set. See the g_ctrl1 comment near the top of this file.
+     */
+    if (bus_reg_write(bus, REG_CTRL1, bw) < 0) return -1;
+    atomic_store(&g_ctrl1, bw);
 
     return 0;
 }
@@ -218,6 +255,12 @@ static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
  * first periodic SET the INT line went quiet for the rest of the run and
  * mag_reader silently fell back to its 20 ms poll.
  *
+ * The CTRL1 write that follows is not redundant: this CTRL0 write also lands in
+ * CTRL1, where INT_en's bit 2 reads as X-inhibit and stops the X axis dead.
+ * Restoring the programmed value is what keeps a degauss from costing an axis —
+ * and the periodic SET runs every 5 s, so without it X measures for exactly one
+ * degauss interval after startup and never again.
+ *
  * The driver sleeps 1 ms after the pulse for bridge settling before the next
  * measurement is accepted.
  */
@@ -225,6 +268,8 @@ static int mmc_degauss(const imud_bus_t *bus, mag_degauss_t dir)
 {
     uint8_t pulse = (dir == MAG_DEGAUSS_RESET) ? CTRL0_RESET : CTRL0_SET;
     if (bus_reg_write(bus, REG_CTRL0, (uint8_t)(CTRL0_INT_EN | pulse)) < 0)
+        return -1;
+    if (bus_reg_write(bus, REG_CTRL1, atomic_load(&g_ctrl1)) < 0)
         return -1;
     usleep(1000);  /* 1 ms settling before next read */
     return 0;

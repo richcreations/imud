@@ -92,6 +92,18 @@ void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask);
  */
 void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step);
 
+/*
+ * Declare that a write to `reg` on `addr` also writes `also` with the same
+ * byte.  The MMC5983MA does exactly this from CTRL0 into CTRL1 (measured on
+ * hardware 2026-08-16, at 10 MHz, 1 MHz and 100 kHz alike), which turns
+ * INT_en's bit 2 into CTRL1's X-inhibit and stops the X axis measuring.
+ *
+ * It exists because the ordering fix is otherwise untestable: a driver that
+ * writes CTRL1 first and one that writes it last leave the same final bytes in
+ * a mock that models one write as one register.  i2cmock_reset() forgets it.
+ */
+void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also);
+
 /* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
  * Drives the drivers' "I2C error" branches. */
 void i2cmock_fail_next_ioctl(void);

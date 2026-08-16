@@ -34,6 +34,7 @@ static int     g_fifo_reg[NADDR];    /* first FIFO-port register, or -1 */
 static int     g_fifo_reg_hi[NADDR]; /* last FIFO-port register */
 static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
+static int     g_alias[NADDR][REGSZ];      /* write also lands here, or -1 */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
@@ -60,7 +61,10 @@ void i2cmock_reset(void)
     memset(g_fifo_tail, 0, sizeof g_fifo_tail);
     memset(g_selfclear, 0, sizeof g_selfclear);
     memset(g_live, 0, sizeof g_live);
-    for (int i = 0; i < NADDR; i++) { g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1; }
+    for (int i = 0; i < NADDR; i++) {
+        g_fifo_reg[i] = -1; g_fifo_reg_hi[i] = -1;
+        for (int r = 0; r < REGSZ; r++) g_alias[i][r] = -1;
+    }
     memset(g_spi_inc_mask, 0, sizeof g_spi_inc_mask);
     for (int i = 0; i < NSPIFD; i++) { g_spi_fd[i] = -1; g_spi_addr[i] = 0; }
     g_fail_next = 0;
@@ -89,6 +93,11 @@ void i2cmock_set_selfclear(uint8_t addr, uint8_t reg, uint8_t mask)
 void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step)
 {
     g_live[addr & (NADDR - 1)][reg] = step;
+}
+
+void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also)
+{
+    g_alias[addr & (NADDR - 1)][reg] = also;
 }
 
 void i2cmock_set_reg(uint8_t addr, uint8_t reg, uint8_t val)
@@ -186,7 +195,13 @@ static uint8_t dev_read(int a, int *reg_ptr, bool advance)
 
 static void dev_write(int a, int *reg_ptr, uint8_t v)
 {
-    g_reg[a][(uint8_t)(*reg_ptr)] = v;
+    uint8_t r = (uint8_t)*reg_ptr;
+    g_reg[a][r] = v;
+    /* A part that applies one write to two registers. Real: the MMC5983MA
+     * lands a CTRL0 write in CTRL1 as well, which is how INT_en's bit 2 turns
+     * into X-inhibit. Without this the mock cannot tell a correct write order
+     * from a broken one, because both leave the same final bytes. */
+    if (g_alias[a][r] >= 0) g_reg[a][g_alias[a][r]] = v;
     (*reg_ptr)++;
 }
 

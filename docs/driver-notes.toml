@@ -83,7 +83,7 @@ chip = 'MEMSIC MMC5983MA'
 i2c_addr = '0x30'
 gpio = 'BCM 27 · pin 13'
 spi_override = ''
-notes = 'Primary reference mag. 18-bit, SET/RESET coil.'
+notes = 'Primary reference mag. 18-bit, SET/RESET coil. On SPI a CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after every one.'
 
 [drivers.ak09916]
 chip = 'AKM AK09916'
