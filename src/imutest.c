@@ -566,19 +566,32 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
      * A probe that ignores WHO_AM_I, or swallows the ioctl error, passes the
      * check above for the wrong reason.  Nothing answers at the reserved
      * address, so a driver that accepts it is not identifying anything.
+     *
+     * Only on I2C.  The lever is i2c_addr, and on SPI the chip select does the
+     * addressing — the field is not on the wire at all, so the "bogus" probe
+     * reads the same part, gets the right WHO_AM_I back, and returns 0.  That
+     * is the check misfiring, not the driver failing it, and left as a FAIL it
+     * put two phantom rows and a nonzero exit on every SPI report forever.
      */
-    imud_bus_t ibogus = *ibus;
-    ibogus.i2c_addr = IMT_BOGUS_ADDR;
-    if (imu->probe(&ibogus) == 0)
-        add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
-                  IMT_FAIL, "accepted", "rejected",
-                  "probe() returned 0 at unused address 0x%02X — it is not "
-                  "checking WHO_AM_I, or it is discarding the I2C error.",
-                  IMT_BOGUS_ADDR);
-    else
-        add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
-                  IMT_PASS, "rejected", "rejected",
-                  "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+    if (ibus->kind == BUS_SPI) {
+        skip_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+                   "chip select addresses the part on SPI, so i2c_addr never "
+                   "reaches the wire and a bogus one reads the same chip; "
+                   "probing a neighbouring chip select could disturb it");
+    } else {
+        imud_bus_t ibogus = *ibus;
+        ibogus.i2c_addr = IMT_BOGUS_ADDR;
+        if (imu->probe(&ibogus) == 0)
+            add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+                      IMT_FAIL, "accepted", "rejected",
+                      "probe() returned 0 at unused address 0x%02X — it is not "
+                      "checking WHO_AM_I, or it is discarding the I2C error.",
+                      IMT_BOGUS_ADDR);
+        else
+            add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+                      IMT_PASS, "rejected", "rejected",
+                      "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+    }
 
     /* ── reset ───────────────────────────────────────────────────────────── */
     double t0 = now_s();
@@ -749,16 +762,25 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
               fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->mag_addr),
               "accepted", "driver '%s' recognised the part", mag->name);
 
-    imud_bus_t mbogus = *mbus;
-    mbogus.i2c_addr = IMT_BOGUS_ADDR;
-    if (mag->probe(&mbogus) == 0)
-        add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
-                  IMT_FAIL, "accepted", "rejected",
-                  "probe() returned 0 at unused address 0x%02X.", IMT_BOGUS_ADDR);
-    else
-        add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
-                  IMT_PASS, "rejected", "rejected",
-                  "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+    /* Same reasoning as imu.probe.reject above: i2c_addr is not on the SPI
+     * wire, so there is no bogus address to probe. */
+    if (mbus->kind == BUS_SPI) {
+        skip_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+                   "chip select addresses the part on SPI, so i2c_addr never "
+                   "reaches the wire and a bogus one reads the same chip; "
+                   "probing a neighbouring chip select could disturb it");
+    } else {
+        imud_bus_t mbogus = *mbus;
+        mbogus.i2c_addr = IMT_BOGUS_ADDR;
+        if (mag->probe(&mbogus) == 0)
+            add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+                      IMT_FAIL, "accepted", "rejected",
+                      "probe() returned 0 at unused address 0x%02X.", IMT_BOGUS_ADDR);
+        else
+            add_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+                      IMT_PASS, "rejected", "rejected",
+                      "no false positive at unused address 0x%02X", IMT_BOGUS_ADDR);
+    }
 
     t0 = now_s();
     rc = mag->reset(mbus);
@@ -2889,8 +2911,9 @@ void imt_decide_verdict(imt_report_t *r)
                  "trustworthy. Re-run with the daemon stopped.");
     else if (blocker)
         snprintf(r->verdict, sizeof r->verdict,
-                 "No failures, but `%s` did not run, so this report does not "
-                 "yet support clearing `experimental` for `%s`.",
+                 "No failures, but `%s` did not run — see its row for why — so "
+                 "this report does not yet support clearing `experimental` "
+                 "for `%s`.",
                  blocker, r->imu_driver);
     else if (r->phases_requested != IMT_PHASE_ALL)
         snprintf(r->verdict, sizeof r->verdict,

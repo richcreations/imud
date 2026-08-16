@@ -93,6 +93,18 @@ extern const mag_ops_t mmc5983ma_ops;
 #define I2CBUS(a) (&(const imud_bus_t){ .kind = BUS_I2C, \
                                         .fd = FD, .i2c_addr = (a) })
 
+/*
+ * The same two parts reached over SPI.  There is no address on the wire, so
+ * the descriptor stands in for the chip select and spimock_bind() maps it onto
+ * the register file the I2C side addresses by number — one device, two
+ * framings, which is what makes a transport-conditional check testable.
+ */
+#define SPI_FD_IMU 71
+#define SPI_FD_MAG 72
+#define SPIBUS(f) (&(const imud_bus_t){ .kind = BUS_SPI, .fd = (f), \
+                                        .spi_mode = 3, .spi_inc_mask = 0, \
+                                        .spi_hz = 10000000 })
+
 /* ── Staging helpers ─────────────────────────────────────────────────────── */
 
 /* Accel/gyro counts the ISM330 driver will decode at +/-4 g, +/-500 dps. */
@@ -413,6 +425,22 @@ static imt_report_t *run(imud_config_t *cfg, imt_opts_t *o)
                          &ism330dhcx_ops, &mmc5983ma_ops, cfg, o, r,
                          err, sizeof err);
     if (rc < 0) fprintf(stderr, "  imt_run_ops: %s\n", err);
+    return r;
+}
+
+/* The same run over SPI.  Bind after mock_base(), which resets the mock and
+ * forgets every binding with it. */
+static imt_report_t *run_spi(imud_config_t *cfg, imt_opts_t *o)
+{
+    spimock_bind(SPI_FD_IMU, ISM_ADDR, 0);
+    spimock_bind(SPI_FD_MAG, MMC_ADDR, 0);
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    int rc = imt_run_ops(SPIBUS(SPI_FD_IMU), SPIBUS(SPI_FD_MAG),
+                         &ism330dhcx_ops, &mmc5983ma_ops, cfg, o, r,
+                         err, sizeof err);
+    if (rc < 0) fprintf(stderr, "  imt_run_ops(spi): %s\n", err);
     return r;
 }
 
@@ -877,6 +905,60 @@ static void test_rate_below_configured_odr_warns(void)
            "a low reading is not described as over-rate");
 
     free(r);
+    end(fb);
+}
+
+/*
+ * probe.reject cannot be run over SPI, and must say so rather than fail.
+ *
+ * The check mutates bus.i2c_addr to a reserved address and requires probe() to
+ * reject it.  On SPI the chip select does the addressing and i2c_addr never
+ * reaches the wire, so the "bogus" probe reads the same part, gets the right
+ * WHO_AM_I, and returns 0 — the check misfiring, not the driver failing it.
+ * Graded FAIL it put two phantom rows and a nonzero exit on every SPI report.
+ *
+ * SKIP is deliberately still a blocker for clearing `experimental`: the
+ * evidence genuinely was not obtained, and the honest report of that is "not
+ * verified here", not "verified".
+ */
+static void test_probe_reject_skips_on_spi(void)
+{
+    begin("test_probe_reject_skips_on_spi");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    /* I2C first: the check is real there and must keep working. */
+    mock_base();
+    script_reset(&o);
+    imt_report_t *i2c = run(&cfg, &o);
+    EXPECT(status_of(i2c, "imu.probe.reject") == IMT_PASS,
+           "on I2C the IMU bogus-address probe still runs and passes");
+    EXPECT(status_of(i2c, "mag.probe.reject") == IMT_PASS,
+           "on I2C the mag bogus-address probe still runs and passes");
+    free(i2c);
+
+    mock_base();
+    script_reset(&o);
+    imt_report_t *spi = run_spi(&cfg, &o);
+
+    /* Non-degeneracy: the SPI run has to have got far enough to probe at all,
+     * or the SKIPs below would just be absent checks. */
+    EXPECT(status_of(spi, "imu.probe") == IMT_PASS, "the IMU probed over SPI");
+    EXPECT(status_of(spi, "mag.probe") == IMT_PASS, "the mag probed over SPI");
+
+    EXPECT(status_of(spi, "imu.probe.reject") == IMT_SKIP,
+           "imu.probe.reject SKIPs on SPI rather than failing");
+    EXPECT(status_of(spi, "mag.probe.reject") == IMT_SKIP,
+           "mag.probe.reject SKIPs on SPI rather than failing");
+    EXPECT(note_contains(spi, "imu.probe.reject", "chip select"),
+           "the SKIP says why it cannot be tested");
+    EXPECT(note_contains(spi, "mag.probe.reject", "chip select"),
+           "the mag SKIP says why too");
+
+    free(spi);
     end(fb);
 }
 
@@ -1824,6 +1906,7 @@ int main(void)
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
+    test_probe_reject_skips_on_spi();
     test_sweep_avoids_write_only_registers();
     test_rate_above_configured_odr_fails();
     test_rate_below_configured_odr_warns();

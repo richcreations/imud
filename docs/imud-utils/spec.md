@@ -62,7 +62,7 @@ run. Anything not listed is recorded as `INFO` for the record.
 | id | Asserts |
 | --- | --- |
 | `imu.probe` | `probe()` accepts the part at the configured address. |
-| `imu.probe.reject` | `probe()` returns −1 at an unused reserved address. A driver that passes here but not this one is not checking WHO_AM_I, or is swallowing the I²C error. |
+| `imu.probe.reject` | `probe()` returns −1 at an unused reserved address. A driver that passes here but not this one is not checking WHO_AM_I, or is swallowing the I²C error. **SKIPs on SPI**, where chip select does the addressing: the `i2c_addr` field never reaches the wire, so the "bogus" probe reads the same part and returns 0 — the check misfiring rather than the driver failing it. Probing a neighbouring chip select is not a safe substitute, because the foreign register address landed on could be write-only or read-to-clear on that part, and disturbing the other sensor mid-run costs more than the row is worth. The SKIP still blocks the `experimental` recommendation: the evidence genuinely was not obtained, and reporting that honestly is not the same as reporting a pass. |
 | `imu.reset.rc` / `.ms` | `reset()` returns 0; elapsed time is recorded. Under 1 ms warns — the datasheet turn-on time is probably not being waited out. |
 | `imu.init.rc` | `init()` returns 0 for the configured rate and full scales. |
 | `imu.init.regdiff` | Control registers changed across `init()`. The diff is printed raw: decoding it needs the datasheet. |
