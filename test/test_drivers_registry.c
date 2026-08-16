@@ -276,30 +276,50 @@ static void test_validated_not_experimental(void)
  *
  * A driver that declares SPI must also declare a mode and a maximum clock:
  * bus_open has nothing to program the bus with otherwise.
+ *
+ * spi_inc_mask is pinned to a value written HERE, from the part's datasheet,
+ * rather than checked for plausibility. It is the one field in bus_caps that
+ * encodes a claim about silicon instead of a configuration choice, and getting
+ * it wrong is silent: the burst returns one register repeatedly and the decode
+ * is quietly garbage. Mode and clock are wrong loudly by comparison. The value
+ * is meaningless without spi_capable, so it is only asserted for the parts
+ * that declare it.
  */
 static void test_spi_capability_declarations(void)
 {
     begin("test_spi_capability_declarations");
     int fb = g_fail;
 
-    static const struct { const char *name; bool spi; } imu_spi[] = {
-        { "ism330dhcx", true  },
-        { "lsm6dso",    true  },
-        { "lsm6dsox",   true  },
-        { "icm42688p",  true  },
-        { "icm20948",   false },   /* AKM compass sits behind the I2C bypass */
-        { "mpu9250",    false },   /* ditto */
-        { "mpu9255",    false },
-        { "sim",        true  },   /* never touches the handle */
+    static const struct { const char *name; bool spi; uint8_t inc; } imu_spi[] = {
+        /* IF_INC lives in CTRL3_C, so the increment is a REGISTER bit that
+         * init() sets — nothing in the command byte (DS13012 Rev 7 §6.2.1). */
+        { "ism330dhcx", true,  0x00 },
+        { "lsm6dso",    true,  0x00 },   /* same family, same IF_INC */
+        { "lsm6dsox",   true,  0x00 },
+        /* DS-000347 Rev 1.6 §9.6: burst reads auto-increment unaided. Not
+         * verifiable from this tree — no local copy of that datasheet. */
+        { "icm42688p",  true,  0x00 },
+        { "icm20948",   false, 0x00 },   /* AKM compass sits behind the I2C bypass */
+        { "mpu9250",    false, 0x00 },   /* ditto */
+        { "mpu9255",    false, 0x00 },
+        { "sim",        true,  0x00 },   /* never touches the handle */
     };
-    static const struct { const char *name; bool spi; } mag_spi[] = {
-        { "mmc5983ma",  true  },
-        { "ak09916",    false },   /* no SPI port on the part */
-        { "ak8963",     false },   /* no SPI port on the part */
-        { "lis3mdl",    true  },   /* the one part needing an MS bit */
-        { "lis2mdl",    false },   /* 3-wire default; 4-wire costs DRDY */
-        { "rm3100",     true  },   /* 1 MHz, needs I2CEN tied low on the board */
-        { "sim",        true  },
+    static const struct { const char *name; bool spi; uint8_t inc; } mag_spi[] = {
+        /* Rev A pp.6-7: "in multiple read/write commands further blocks of 8
+         * clock periods will be added" — the address walks unaided. */
+        { "mmc5983ma",  true,  0x00 },
+        { "ak09916",    false, 0x00 },   /* no SPI port on the part */
+        { "ak8963",     false, 0x00 },   /* no SPI port on the part */
+        /* DS9463 Rev 7: command byte bit 1 counting from the MSb is MS, "when
+         * 0 the address remains unchanged in multiple read/write commands" —
+         * bit 1 MSb-first is mask 0x40. The one part that needs one. */
+        { "lis3mdl",    true,  0x40 },
+        { "lis2mdl",    false, 0x00 },   /* 3-wire default; 4-wire costs DRDY */
+        /* V11.0 §4.4: "assuming SSN stays low and SCLK continues, multiple
+         * registers can be written to or read from as the MagI2C will
+         * automatically increment to the next register address." */
+        { "rm3100",     true,  0x00 },   /* 1 MHz, needs I2CEN tied low on the board */
+        { "sim",        true,  0x00 },
     };
     char msg[96];
 
@@ -312,6 +332,9 @@ static void test_spi_capability_declarations(void)
             snprintf(msg, sizeof msg, "%s: declares a SPI mode and clock",
                      imu_spi[i].name);
             EXPECT(o->bus_caps.spi_mode <= 3 && o->bus_caps.spi_max_hz > 0, msg);
+            snprintf(msg, sizeof msg, "%s: spi_inc_mask == 0x%02X",
+                     imu_spi[i].name, imu_spi[i].inc);
+            EXPECT(o->bus_caps.spi_inc_mask == imu_spi[i].inc, msg);
         }
     }
     for (unsigned i = 0; i < sizeof mag_spi / sizeof mag_spi[0]; i++) {
@@ -323,6 +346,9 @@ static void test_spi_capability_declarations(void)
             snprintf(msg, sizeof msg, "%s: declares a SPI mode and clock",
                      mag_spi[i].name);
             EXPECT(o->bus_caps.spi_mode <= 3 && o->bus_caps.spi_max_hz > 0, msg);
+            snprintf(msg, sizeof msg, "%s: spi_inc_mask == 0x%02X",
+                     mag_spi[i].name, mag_spi[i].inc);
+            EXPECT(o->bus_caps.spi_inc_mask == mag_spi[i].inc, msg);
         }
     }
 
