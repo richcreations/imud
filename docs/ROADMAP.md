@@ -286,7 +286,7 @@ recorded as unexplained; see the retraction there.
   the ÷32 timestamp words add 1.6%, moving the prediction from 13.6 to about
   13.4 Hz, which does not change the conclusion that 18.3 fits neither model.
 
-### 1.2 The MMC5983MA over SPI  *(two defects; one fixed 2026-08-16, one open)*
+### 1.2 The MMC5983MA over SPI  *(two defects, both fixed 2026-08-16)*
 
 The 2026-08-15 run on the reference pair read `|B| = 1124.7 µT` over SPI where
 I²C had read 64.8, and could not say why. The 2026-08-16 session found **two
@@ -294,7 +294,7 @@ independent defects**, not one. Both are measured; one is fixed.
 
 | | what it is | state |
 |---|---|---|
-| **A — inter-write settle** | control writes need ~100 ms of quiet on SPI or the part ignores them; the bridge comes up saturated and `CM_Freq` never programs | measured, **open** |
+| **A — continuous-mode settle** | writing anything within ~45 ms of enabling continuous mode leaves the bridge saturated | **fixed** |
 | **B — `CTRL0` write alias** | a `CTRL0` write also lands in `CTRL1`, so `init()`'s own `INT_en` sets X-inhibit and the X axis stops measuring | **fixed** |
 
 Defect A is the original symptom. Defect B was invisible underneath it and
@@ -330,11 +330,34 @@ pulse:
 | differential field magnitude | 20.1 µT | 37.00 µT, all three axes |
 | rate at a configured 100 Hz | — | 105.39 Hz |
 
-**A — the settle is real and separate.** Re-measured with B's fix in place, so
-the two do not explain each other: 0 / 5 / 25 ms settles all saturate at
-~314 µT and 255.9 Hz; 100 ms gives 4.9 µT and 105.4 Hz. One confound is ruled
-out — a 600 ms quiet gap after a recovery coil with 0 ms settles is still
-saturated, so it is inter-write timing and not film recovery.
+**A — the settle is real, separate, and narrower than it first looked.**
+Re-measured with B's fix in place, so the two do not explain each other:
+0 / 5 / 25 ms settles all saturate at ~314 µT and 255.9 Hz; 100 ms gives 4.9 µT
+and 105.4 Hz. Three follow-up measurements each moved the fix:
+
+- **Not the clock.** The same threshold appears at 10 MHz, 1 MHz and 100 kHz,
+  so clamping the magnetometer's SPI clock — which would have been a
+  config-shaped remedy — is not it.
+- **One write, not four.** Applying the settle after exactly one of `init()`'s
+  four writes and not the others: only the `CTRL2` write that enables
+  continuous mode helps (X mean 4.5 µT); after `CTRL0` or `CTRL1` the part
+  still comes up saturated at ~320 µT. So the fix is a single delay, not the
+  400 ms of blanket startup sleep this was heading towards.
+- **Not warm-up.** Writing back-to-back and then waiting up to 2 s before
+  measuring does not help at all, and a 600 ms quiet gap after a recovery coil
+  with 0 ms settles is still saturated. What is required is quiet *between*
+  enabling the mode and the next write — consistent with the first conversion
+  being in flight, 8 ms at the reset default BW = 00.
+
+Threshold, five runs per point, X mean in µT (saturated ~320, healthy ~4.4):
+10/20/30 ms saturated 5/5; 40 ms 1/5 healthy; 45 ms marginal; 50 and 60 ms
+healthy 5/5. Fixed with a 100 ms wait after the `CTRL2` write, for margin over
+a measured ~45-50 ms boundary. Rev A gives a 10 ms power-on time for `SW_RST`
+and says nothing about entering continuous mode, so the number is empirical and
+the driver says so. Applied on both transports: the I²C baseline predates the
+write ordering and never exercised this sequence, so there is no evidence it is
+exempt, and a needless 100 ms at startup is far cheaper than a magnetometer
+reading a few hundred µT on every axis.
 
 **Ruled out by measurement, not argument**, and not to be re-run: external
 field; SPI read framing (two-transfer and single full-duplex, burst and
@@ -363,17 +386,14 @@ differentials.
 
 **Open.**
 
-- **Defect A is not fixed.** Measure whether the settle requirement survives a
-  **100 kHz clock** before choosing a remedy: the aliasing did, but the settle
-  has only been measured at 10 MHz. If it disappears at low clock the fix is to
-  clamp the magnetometer's SPI clock, which is a config-shaped answer; if it
-  persists it is ~400 ms of startup sleep, which is not. That measurement
-  decides the shape of the whole fix, so it comes before narrowing the
-  threshold or deciding whether the driver, `spi_reg_write` or a `bus_caps_t`
-  field should own it.
-- **No mechanism for the 100 ms.** Nothing in Rev A explains why a part would
-  need that long between control writes. Until there is one the number is
-  empirical and must be documented as such.
+- **Acceptance on hardware is owed.** Both fixes are measured piecemeal on the
+  bench but no `imud-imutest --all` has been run from a cold daemon start with
+  the fixed driver installed. That is what turns this from "the mechanism is
+  understood" into "the part works", and it is the gate on the tag.
+- **No mechanism for the 45 ms.** Nothing in Rev A explains why the part needs
+  that long after `Cmm_en` before it will accept another write. The first
+  conversion at BW = 00 takes 8 ms, which is the right order of magnitude and
+  not the number. Until there is a mechanism the delay is empirical.
 - **`|field|` = 37.0 µT is low** for a ~50 µT locale. It is the differential,
   so not bridge offset, and magnitude is orientation-invariant, so not how the
   board sits. It is inside `mag.field_magnitude`'s 25–65 µT band, so that check

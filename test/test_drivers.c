@@ -44,6 +44,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <time.h>
 #include <math.h>
 
 #include "drivers.h"
@@ -470,6 +471,13 @@ static void test_ism_read_overflow_and_empty(void)
 #define MMC_ADDR 0x30
 
 /* Split an 18-bit unsigned reading into the 7 output registers (0x00..0x06). */
+static double now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e3 + (double)ts.tv_nsec / 1e6;
+}
+
 static void mmc_set_output_at(uint8_t at, uint32_t rx, uint32_t ry, uint32_t rz)
 {
     uint8_t raw[7] = {
@@ -516,7 +524,19 @@ static void test_mmc_reset_and_init(void)
 
     /* 100 Hz → BW=01, CM_Freq=101. */
     mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
+    double t0 = now_ms();
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
+    double init_ms = now_ms() - t0;
+    /*
+     * Writing within ~45 ms of enabling continuous mode leaves the bridge
+     * saturated on real silicon; the mock cannot model that, so what is
+     * testable is that the settle is still there at all. The bound is
+     * deliberately far below the 100 ms the driver waits: it must fail if
+     * someone deletes the sleep (init would return in microseconds) without
+     * blocking a future retune to any value that could plausibly be right.
+     * A duration floor cannot flake — a sleep only ever overruns.
+     */
+    EXPECT(init_ms >= 30.0, "init stays quiet after enabling continuous mode");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x01, "CTRL1 = BW bits");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0B) == 0x0D, "CTRL2 = Cmm_en|CM_Freq");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x04, "CTRL0 ends at INT_EN");

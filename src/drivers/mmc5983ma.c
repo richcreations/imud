@@ -147,6 +147,41 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Enable continuous mode: Cmm_en=1 (bit 3) | CM_Freq. */
     if (bus_reg_write(bus, REG_CTRL2, (uint8_t)(0x08u | cmfreq)) < 0) return -1;
 
+    /*
+     * Then leave the part alone for a while. Writing anything within ~45 ms of
+     * enabling continuous mode leaves the bridge saturated: every axis reads a
+     * few hundred µT and stays there for the rest of the run.
+     *
+     * Measured on an MMC5983MA (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16),
+     * five runs per point, X mean in µT — saturated is ~320, healthy ~4.4:
+     *
+     *   10/20/30 ms  saturated 5/5      45 ms  1/5 healthy — marginal
+     *   40 ms        1/5 healthy        50 ms  healthy 5/5
+     *                                   60 ms  healthy 5/5
+     *
+     * It is this write specifically. Applying the delay after any ONE of the
+     * four init writes and not the others, only CTRL2 helps: after CTRL0 or
+     * CTRL1 the part still comes up saturated. It is also not the bus — the
+     * same threshold appears at 10 MHz, 1 MHz and 100 kHz — and it is not
+     * "needs time to warm up", because delaying the first measurement by up to
+     * 2 s while writing back-to-back does not help at all. What matters is
+     * quiet between enabling the mode and the next write, which is consistent
+     * with the first conversion being in flight: at the reset default BW = 00
+     * a measurement takes 8 ms.
+     *
+     * No datasheet number backs this. Rev A gives a 10 ms power-on time for
+     * SW_RST and says nothing about entering continuous mode, so 100 ms is
+     * chosen for margin over a measured ~45-50 ms boundary rather than derived.
+     * It costs one 100 ms wait per init, and init runs at startup and after a
+     * bus error.
+     *
+     * Applied on both transports. The I²C baseline predates the write ordering
+     * below and never exercised this sequence, so there is no evidence it is
+     * exempt — and a needless 100 ms at startup is a great deal cheaper than a
+     * magnetometer that reads a few hundred µT on every axis.
+     */
+    usleep(100000);
+
     /* Enable INT pin on measurement completion (do this after CMM starts). */
     if (bus_reg_write(bus, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
 
