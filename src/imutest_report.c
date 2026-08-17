@@ -297,10 +297,16 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "read() rc          %d overflow, %d error (last errno %d)\n",
             w->rc1_count, w->rcneg_count, w->last_errno);
     if (r->imu_has_hw_ts)
+        /* Zero-stamped samples belong here rather than only inside a check
+         * note: they are excluded from the delta accounting, so without the
+         * count there is no way to tell a clean window from one where the
+         * driver's timestamp read kept failing. */
         fprintf(f, "chip_ts            median %.2f ticks/sample, implied tick "
-                   "%.0f ns, wall ratio %.4f, %d wraps\n",
+                   "%.0f ns, wall ratio %.4f, %d wraps, %d reversals, "
+                   "%d repeats, %d zero-stamped\n",
                 w->ts_median_delta, w->ts_implied_tick_ns, w->ts_wall_ratio,
-                w->ts_wraps);
+                w->ts_wraps, w->ts_backwards, w->ts_repeats,
+                w->ts_zero_count);
     /*
      * Both DRDY counts, as counts.  The pair is the measurement, not the
      * verdict: an interrupt that only fires while something drains the FIFO

@@ -136,7 +136,10 @@ typedef struct {
     int           temp_distinct;
     uint32_t      ts_first, ts_last;
     double        ts_median_delta, ts_implied_tick_ns, ts_wall_ratio;
-    int           ts_backwards, ts_zero_count, ts_wraps;
+    /* Reversals and repeats are separate faults: a repeat is one reading
+     * stamped across a burst, a reversal is a later sample carrying an
+     * earlier tick. Zero-stamped samples are excluded from both. */
+    int           ts_backwards, ts_repeats, ts_zero_count, ts_wraps;
     int           fifo_steps;
     double        fifo_wait_s[IMT_MAX_FIFO_STEPS];
     int           fifo_depth[IMT_MAX_FIFO_STEPS];
@@ -389,6 +392,40 @@ void imt_decide_verdict(imt_report_t *r);
  * it still warns at the same magnitude.
  */
 imt_status_t imt_chipts_wall_status(double ratio);
+
+/*
+ * chip_ts accounting over a window, one sample at a time.
+ *
+ * Zero-initialised is "nothing seen yet". Exposed and factored out for the same
+ * reason as the helpers around it: the classification is the substance, and the
+ * mock bus drives the counter through a real driver, so it cannot stage the
+ * three cases that matter — a zero stamp, a repeated tick, a genuine reversal —
+ * as a chosen sequence. A test that went through the fake part would grade
+ * whatever the driver happened to emit.
+ *
+ * Three distinct outcomes, deliberately not merged:
+ *
+ *   zeros      the stamp is absent, not early. ism330dhcx.c and lsm6dso.c leave
+ *              a whole burst at 0 when the post-drain timestamp read fails.
+ *              Excluded from every comparison, because comparing one scores a
+ *              reversal going in and then hands the next real sample a delta of
+ *              most of the counter coming out — which would land in the median
+ *              that imu.chipts.rate reports.
+ *   repeats    consecutive samples carry the identical tick: a burst stamped
+ *              from one reading rather than per sample.
+ *   reversals  a later sample carries an earlier tick, which on a counter
+ *              narrower than 32 bits is usually a missing unwrap.
+ *
+ * Returns the forward delta to feed the rate estimate, or 0 when this sample
+ * contributed none (zero, repeat, or reversal).
+ */
+typedef struct {
+    bool     have;                 /* a nonzero stamp has been seen */
+    uint32_t first, prev, last;
+    int      reversals, repeats, zeros, wraps;
+} imt_ts_acc_t;
+
+uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts);
 
 /*
  * Split a SET/RESET pair into the field it measured and the bridge offset it

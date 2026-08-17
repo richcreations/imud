@@ -889,9 +889,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     d->total = 0;
     d->have_seq = false;
 
-    bool     have_ts = false;
-    uint32_t ts_first = 0, ts_last = 0, ts_prev = 0;
-    int      ts_backwards = 0, ts_zero = 0, ts_wraps = 0;
+    imt_ts_acc_t tsa = { 0 };
     double   ts_deltas[512];
     int      n_deltas = 0;
     uint32_t seq_first = 0;
@@ -916,20 +914,8 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             last_t = t;
 
             for (int i = 0; i < n; i++) {
-                uint32_t ts = buf[i].chip_ts;
-                if (ts == 0) ts_zero++;
-                if (!have_ts) {
-                    if (ts != 0) { ts_first = ts_prev = ts; have_ts = true; }
-                } else {
-                    uint32_t delta = ts - ts_prev;   /* wrap-safe */
-                    if (delta == 0 || delta >= 0x80000000u) ts_backwards++;
-                    else {
-                        if (delta > 0 && n_deltas < 512) ts_deltas[n_deltas++] = delta;
-                        if (ts < ts_prev) ts_wraps++;
-                    }
-                    ts_prev = ts;
-                    ts_last = ts;
-                }
+                uint32_t d = imt_ts_acc_step(&tsa, buf[i].chip_ts);
+                if (d && n_deltas < 512) ts_deltas[n_deltas++] = d;
             }
         }
         ui_progress(o, "imu.odr", (now_s() - t0) / o->odr_window_s, NULL);
@@ -1071,7 +1057,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
 
     /* chip_ts contract */
     if (!imu->has_hw_timestamp) {
-        if (ts_zero == (int)d->total)
+        if (tsa.zeros == (int)d->total)
             add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
                       IMT_PASS, "always 0", "0",
                       "has_hw_timestamp is false and every chip_ts was 0, as "
@@ -1080,7 +1066,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
                       IMT_FAIL,
                       fmtbuf(mb, sizeof mb, "%d of %llu nonzero",
-                             (int)d->total - ts_zero, (unsigned long long)d->total),
+                             (int)d->total - tsa.zeros, (unsigned long long)d->total),
                       "always 0",
                       "has_hw_timestamp is false, so chip_ts must be 0 on every "
                       "sample — imu.c re-anchors wall-clock time when it is.");
@@ -1093,7 +1079,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         return;
     }
 
-    if (!have_ts) {
+    if (!tsa.have) {
         add_check(r, "imu.chipts.presence", "chip_ts matches has_hw_timestamp",
                   IMT_FAIL, "always 0", "nonzero",
                   "has_hw_timestamp is true but chip_ts stayed 0 — the "
@@ -1111,22 +1097,30 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
               IMT_PASS, "nonzero", "nonzero",
               "tick in use %u ns", d->tick_ns);
 
-    r->raw.ts_first     = ts_first;
-    r->raw.ts_last      = ts_last;
-    r->raw.ts_backwards = ts_backwards;
-    r->raw.ts_zero_count = ts_zero;
-    r->raw.ts_wraps     = ts_wraps;
+    r->raw.ts_first     = tsa.first;
+    r->raw.ts_last      = tsa.last;
+    r->raw.ts_backwards = tsa.reversals;
+    r->raw.ts_repeats   = tsa.repeats;
+    r->raw.ts_zero_count = tsa.zeros;
+    r->raw.ts_wraps     = tsa.wraps;
 
     add_check(r, "imu.chipts.monotonic", "chip_ts is monotonic",
-              ts_backwards == 0 ? IMT_PASS : IMT_FAIL,
-              fmtbuf(mb, sizeof mb, "%d reversals", ts_backwards), "0",
-              ts_backwards == 0
-              ? "unsigned deltas advanced on every sample (%d counter wrap%s "
-                "seen and handled)"
-              : "chip_ts went backwards — for a counter narrower than 32 bits "
-                "this is usually a missing unwrap in the driver (%d wrap%s in "
-                "this window)",
-              ts_wraps, ts_wraps == 1 ? "" : "s");
+              (tsa.reversals == 0 && tsa.repeats == 0) ? IMT_PASS : IMT_FAIL,
+              fmtbuf(mb, sizeof mb, "%d reversals / %d repeats",
+                     tsa.reversals, tsa.repeats), "0 / 0",
+              tsa.reversals != 0
+              ? "chip_ts went backwards: a later sample carries an earlier "
+                "tick. For a counter narrower than 32 bits that is usually a "
+                "missing unwrap in the driver (%d wrap%s, %d zero-stamped "
+                "sample%s skipped)"
+              : tsa.repeats != 0
+              ? "chip_ts repeated: consecutive samples carry the identical "
+                "tick, so a burst is being stamped from one reading rather "
+                "than per sample (%d wrap%s, %d zero-stamped sample%s skipped)"
+              : "unsigned deltas advanced on every sample (%d counter wrap%s "
+                "seen and handled, %d zero-stamped sample%s skipped)",
+              tsa.wraps, tsa.wraps == 1 ? "" : "s",
+              tsa.zeros,  tsa.zeros  == 1 ? "" : "s");
 
     if (n_deltas < 4) {
         skip_check(r, "imu.chipts.rate", "chip_ts tick period",
@@ -1159,7 +1153,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                   "imu.chipts.wall for the timebase itself",
                   implied, d->tick_ns, eff_odr);
 
-        double elapsed_chip = (double)(uint32_t)(ts_last - ts_first)
+        double elapsed_chip = (double)(uint32_t)(tsa.last - tsa.first)
                             * (double)d->tick_ns * 1e-9;
         double ratio = span > 0 ? elapsed_chip / span : 0.0;
         r->raw.ts_wall_ratio = ratio;
@@ -1201,7 +1195,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                   : "%.3f s chip vs %.3f s wall over %d wrap%s; implied tick "
                     "%.0f ns, not %u. Fast oscillator; imu.c measures the "
                     "real period.%s",
-                  elapsed_chip, span, ts_wraps, ts_wraps == 1 ? "" : "s",
+                  elapsed_chip, span, tsa.wraps, tsa.wraps == 1 ? "" : "s",
                   implied_tick, d->tick_ns, fine);
     }
 }
@@ -2984,6 +2978,30 @@ imt_status_t imt_chipts_wall_status(double ratio)
     if (werr <= 0.02) return IMT_PASS;
     if (werr >  0.10) return IMT_FAIL;
     return ratio > 1.0 ? IMT_INFO : IMT_WARN;
+}
+
+uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts)
+{
+    /* Absent, not early: skip it entirely rather than comparing it. See the
+     * header for what comparing one costs the rate estimate. */
+    if (ts == 0) { a->zeros++; return 0; }
+
+    if (!a->have) {
+        a->first = a->prev = a->last = ts;
+        a->have  = true;
+        return 0;                       /* no predecessor to measure against */
+    }
+
+    uint32_t delta = ts - a->prev;       /* modular, so a wrap reads forward */
+    uint32_t out   = 0;
+    if (delta == 0)                a->repeats++;
+    else if (delta >= 0x80000000u) a->reversals++;
+    else {
+        out = delta;
+        if (ts < a->prev) a->wraps++;    /* forward across the 32-bit end */
+    }
+    a->prev = a->last = ts;
+    return out;
 }
 
 void imt_degauss_split(const double vS[3], const double vR[3],

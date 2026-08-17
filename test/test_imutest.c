@@ -1799,6 +1799,74 @@ static void test_degauss_split(void)
     end(fb);
 }
 
+/*
+ * chip_ts accounting. Driven directly rather than through the fake part,
+ * because the mock reaches the counter only through a real driver and cannot
+ * stage the three cases that matter as a chosen sequence.
+ */
+static void test_chipts_accounting(void)
+{
+    begin("test_chipts_accounting");
+    int fb = g_fail;
+
+    /* An ordinary run: each stamp one sample period after the last. */
+    imt_ts_acc_t a = { 0 };
+    EXPECT(imt_ts_acc_step(&a, 1000) == 0, "the first stamp yields no delta");
+    EXPECT(imt_ts_acc_step(&a, 1192) == 192, "the second yields the period");
+    EXPECT(imt_ts_acc_step(&a, 1384) == 192, "and so does the third");
+    EXPECT(a.reversals == 0 && a.repeats == 0 && a.zeros == 0,
+           "a clean run scores no faults");
+    EXPECT(a.first == 1000 && a.last == 1384, "both endpoints are tracked");
+
+    /*
+     * A zero stamp is what ism330dhcx.c and lsm6dso.c leave across a whole
+     * burst when the post-drain timestamp read fails. Comparing it used to
+     * score a reversal going in and then hand the next real sample a delta of
+     * most of the counter coming out — which imu.chipts.rate takes the median
+     * of, so one failed register read moved two checks.
+     */
+    imt_ts_acc_t z = { 0 };
+    imt_ts_acc_step(&z, 1000);
+    EXPECT(imt_ts_acc_step(&z, 0) == 0, "a zero stamp yields no delta");
+    EXPECT(z.zeros == 1, "the zero is counted");
+    EXPECT(z.reversals == 0 && z.repeats == 0, "but is neither fault");
+    EXPECT(imt_ts_acc_step(&z, 1192) == 192,
+           "the sample after a zero measures from the last real stamp");
+
+    /* A zero before anything else must not become the window's start. */
+    imt_ts_acc_t z0 = { 0 };
+    EXPECT(imt_ts_acc_step(&z0, 0) == 0, "a leading zero yields no delta");
+    EXPECT(!z0.have, "and does not open the window");
+    EXPECT(imt_ts_acc_step(&z0, 500) == 0, "the first real stamp opens it");
+    EXPECT(z0.first == 500, "the window starts at the first real stamp");
+
+    /* A repeat is one reading stamped across a burst, not a reversal. */
+    imt_ts_acc_t rp = { 0 };
+    imt_ts_acc_step(&rp, 1000);
+    EXPECT(imt_ts_acc_step(&rp, 1000) == 0, "a repeated tick yields no delta");
+    EXPECT(rp.repeats == 1 && rp.reversals == 0,
+           "an identical tick is a repeat, not a reversal");
+
+    /* A genuine reversal. */
+    imt_ts_acc_t rv = { 0 };
+    imt_ts_acc_step(&rv, 1000);
+    EXPECT(imt_ts_acc_step(&rv, 900) == 0, "a reversal yields no delta");
+    EXPECT(rv.reversals == 1 && rv.repeats == 0, "and is counted as a reversal");
+
+    /*
+     * A 32-bit wrap is a forward step. This is what the modular difference
+     * buys: 0xFFFFFF80 + 192 is 0x40, so the delta reads as the period and not
+     * as a jump back across the whole counter.
+     */
+    imt_ts_acc_t w = { 0 };
+    imt_ts_acc_step(&w, 0xFFFFFF80u);
+    EXPECT(imt_ts_acc_step(&w, 0x00000040u) == 192, "a wrap reads forward");
+    EXPECT(w.wraps == 1, "and is counted as a wrap");
+    EXPECT(w.reversals == 0 && w.repeats == 0, "not as a fault");
+
+    end(fb);
+}
+
 static void test_chipts_wall_bands(void)
 {
     begin("test_chipts_wall_bands");
@@ -2001,6 +2069,7 @@ int main(void)
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
     test_degauss_split();
+    test_chipts_accounting();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();
 
