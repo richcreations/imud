@@ -286,24 +286,25 @@ recorded as unexplained; see the retraction there.
   the ÷32 timestamp words add 1.6%, moving the prediction from 13.6 to about
   13.4 Hz, which does not change the conclusion that 18.3 fits neither model.
 
-### 1.2 The MMC5983MA over SPI  *(three defects, all fixed 2026-08-16)*
+### 1.2 The MMC5983MA over SPI  *(four defects, all fixed; validated 2026-08-17)*
 
 The 2026-08-15 run on the reference pair read `|B| = 1124.7 µT` over SPI where
-I²C had read 64.8, and could not say why. The 2026-08-16 session found **three
-independent defects**, not one. All are measured and fixed.
+I²C had read 64.8, and could not say why. Four independent defects were behind
+it. None of them is visible on I²C, and this is a shipped driver — not
+`experimental`.
 
-| | what it is | state |
-|---|---|---|
-| **A — continuous-mode settle** | writing anything within ~40 ms of enabling continuous mode leaves the bridge saturated | **fixed** |
-| **B — `CTRL0` write alias** | a `CTRL0` write also lands in `CTRL1`, so `init()`'s own `INT_en` sets X-inhibit and the X axis stops measuring | **fixed** |
-| **C — bandwidth programmed after the mode started** | `CM_Freq`'s meaning depends on BW, so starting continuous mode first intermittently fails to start it at all at 1000 Hz | **fixed** |
+| | what it is |
+|---|---|
+| **A — continuous-mode settle** | a control write within ~40 ms of enabling continuous mode leaves the bridge saturated |
+| **B — `CTRL0` write alias** | a `CTRL0` write also lands in `CTRL1`, so `init()`'s own `INT_en` sets X-inhibit and the X axis stops measuring |
+| **C — bandwidth after the mode started** | `CM_Freq`'s meaning depends on BW, so starting continuous mode first intermittently fails to start it at all at 1000 Hz |
+| **D — three advertised ODRs unhonoured** | `CM_Freq` 010/100/110 are ignored; the part free-runs while fusion sizes noise for the requested rate |
 
-Defect A is the original symptom. Defect B was invisible underneath it and
-would have survived A's fix as a green `mag.field_magnitude` hiding a dead
-axis — which is what the "fixed" run of 2026-08-15 actually reported. Neither
-part is `experimental`; this is a shipped driver.
+B was invisible underneath A, and would have survived A's fix as a green
+`mag.field_magnitude` hiding a dead axis — which is what the "fixed" run of
+2026-08-15 actually reported.
 
-**B — a write to `CTRL0` also lands in `CTRL1`.** Three confirmations, each
+**B — a `CTRL0` write also lands in `CTRL1`.** Three confirmations, each
 reproducing a `CTRL1` semantic from a `CTRL0` write:
 
 | `CTRL0` write | observed | matches `CTRL1` |
@@ -312,293 +313,174 @@ reproducing a `CTRL1` semantic from a `CTRL0` write:
 | `0x18` | Y and Z freeze, X live | YZ-inhibit |
 | `0x80` | continuous mode stops | SW_RST |
 
-`CTRL0` still receives the write — SET and RESET fire and the field term
-inverts — so it is both registers, not the wrong one. **Not a bus artefact:**
-identical at 10 MHz, 1 MHz and 100 kHz. **Specific to `CTRL0`:** a `CTRL1`
-write does not disturb `CTRL2` (which would stop continuous mode) and a `CTRL2`
-write does not disturb `CTRL3` (whose self-test coil moves the mean by
-hundreds of µT and cannot be missed). No published erratum for this exists, and
-Rev A pp.6-7 describe the write framing exactly as the tree implements it, so
-the measurement itself is recorded in the driver.
+`CTRL0` still receives the write — SET and RESET fire and the field term inverts
+— so it is both registers, not the wrong one. **Specific to `CTRL0`, so it is a
+register quirk and not something about what imud puts on the wire:** a `CTRL1`
+write does not disturb `CTRL2` (106 output changes/s straight after one, which
+clearing `Cmm_en` would have stopped), a `CTRL2` write does not fire `CTRL3`'s
+self-test coil, and a `STATUS` write does not set `TM_M`. Not bus timing either —
+identical at 10 MHz, 1 MHz and 100 kHz. No published erratum exists and Rev A
+pp.6-7 describe the write framing exactly as the tree implements it, so the
+measurement itself is recorded in the driver. Fixed by writing `CTRL1` last,
+in `init()` and after every degauss pulse; X sigma went 0.000 → 5.18 counts and
+the differential field 20.1 → 37.0 µT on all three axes.
 
-Fixed by writing `CTRL1` last in `init()` and restoring it after every degauss
-pulse:
+**Do not replace that ordering rule with one paired 3-byte write.** It looks
+strictly better — the address does walk, so byte 2 reaches `CTRL1` and lands
+after the aliased copy, and byte 2 reproduces `CTRL1`'s semantics exactly
+(`0x04|bw` inhibits X, `0x18|bw` inhibits Y and Z) with `init()` running at a
+healthy 105 changes/s. It cannot be used for the degauss, which is where it
+would matter most: with a Set or Reset bit in byte 1 the part stops measuring.
 
-| | before | after |
-|---|---|---|
-| X sigma | 0.000 (frozen) | 5.18 counts |
-| X under SET→RESET | no inversion | 5.03 → 9.17 µT |
-| differential field magnitude | 20.1 µT | 37.00 µT, all three axes |
-| rate at a configured 100 Hz | — | 105.39 Hz |
+| degauss form | rate after the pulse |
+|---|---|
+| SET / RESET as two writes | 106 / 105 changes/s |
+| SET / RESET as one 3-byte write | 1 / 1 changes/s |
 
-**A — the settle is real, separate, and narrower than it first looked.**
-Re-measured with B's fix in place, so the two do not explain each other:
-0 / 5 / 25 ms settles all saturate at ~314 µT and 255.9 Hz; 100 ms gives 4.9 µT
-and 105.4 Hz. Three follow-up measurements each moved the fix:
+The ~500 ns coil current does not tolerate a second byte inside the same
+chip-select assertion. Pairing in `init()` alone would leave two idioms and an
+unstated landmine, so the rule stays uniformly.
 
-- **Not the clock.** The same threshold appears at 10 MHz, 1 MHz and 100 kHz,
-  so clamping the magnetometer's SPI clock — which would have been a
-  config-shaped remedy — is not it.
-- **One write, not four.** Applying the settle after exactly one of `init()`'s
-  four writes and not the others: only the `CTRL2` write that enables
-  continuous mode helps (X mean 4.5 µT); after `CTRL0` or `CTRL1` the part
-  still comes up saturated at ~320 µT. So the fix is a single delay, not the
-  400 ms of blanket startup sleep this was heading towards.
-- **Not warm-up.** Writing back-to-back and then waiting up to 2 s before
-  measuring does not help at all, and a 600 ms quiet gap after a recovery coil
-  with 0 ms settles is still saturated. What is required is quiet *between*
-  enabling the mode and the next write — consistent with the first conversion
-  being in flight, 8 ms at the reset default BW = 00.
-
-Threshold, re-measured 2026-08-16 with the write order below in place, five
-runs per point:
+**A — quiet after enabling continuous mode.** Five runs per point:
 
 | post-`CTRL2` quiet | 0 | 10 | 20 | 30 | 40 | 50 | 60 | 80 | 100 ms |
 |---|---|---|---|---|---|---|---|---|---|
 | healthy runs | 0/5 | 0/5 | 0/5 | 4/5 | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
 
-Fixed with a 100 ms wait after the `CTRL2` write, ~2.5× the measured boundary.
-Rev A gives a 10 ms power-on time for `SW_RST` and says nothing about entering
-continuous mode, so the number is empirical and the driver says so. Applied on
-both transports: the I²C baseline predates the write ordering and never
-exercised this sequence, so there is no evidence it is exempt, and a needless
-100 ms at startup is far cheaper than a magnetometer reading a few hundred µT
-on every axis.
+Fixed with a 100 ms wait after the `CTRL2` write, ~2.5× the boundary. Three
+things it is **not**: not the clock (same threshold at 10 MHz, 1 MHz and
+100 kHz, so clamping the mag's SPI clock is not the remedy); not general write
+spacing (a delay after `CTRL0` or `CTRL1` alone does not help — only after
+`CTRL2`, and writes issued once the window has passed are harmless); and not
+warm-up (writing back-to-back and then waiting up to 2 s before measuring does
+not help at all). Writing `CTRL2` last does **not** retire the wait, which is
+what the reorder was tried for: `read()`'s per-sample `STATUS` write enters the
+window as soon as the mag reader starts. The wait therefore lives inside
+`init()`, not in the caller.
 
-**C — the write order, and what it did and did not buy.** `init()` now writes
-`CTRL0` (clear), `CTRL0` (`INT_en`), `CTRL1` (BW), `CTRL2` (`Cmm_en`) — so
-continuous mode starts last, after the part is fully configured. Rev A p.15
-makes BW an input to what `CM_Freq` means: the frequency table is stated "based
-on the assumption that BW[1:0] = 00", and two rows carry a prerequisite in the
-row itself — `110` needs BW=01, `111` needs BW=11. The old order enabled
-continuous mode while `CTRL1` still held the reset default.
-
-Measured consequence at `odr_hz = 1000` (`CM_Freq=111`, needs BW=11), where the
-part intermittently fails to start continuous mode at all and the first read
-waits 500 ms for `Meas_M_Done` and gives up:
+**C — bandwidth before `CM_Freq`.** Rev A p.15 makes BW an input to what
+`CM_Freq` means: the frequency table is stated "based on the assumption that
+BW[1:0] = 00", and two rows carry a prerequisite in the row itself — `110` needs
+BW=01, `111` needs BW=11. The old order enabled continuous mode while `CTRL1`
+still held the reset default. At `odr_hz = 1000` the part then intermittently
+fails to start at all, the first read waiting 500 ms for `Meas_M_Done`:
 
 | | failed to start |
 |---|---|
 | `CTRL2` before `CTRL1` (old) | 7 of 20 |
 | `CTRL2` after `CTRL1` (new) | 0 of 20 |
 
-12 of 33 versus 0 of 33 across every run of the session. In the daemon that
-shape of failure is `init()` returning success — every write is ACKed — and
-then a magnetometer that never produces a sample.
+12 of 33 against 0 of 33 across every run of that session. In the daemon the
+shape of the failure is `init()` returning success — every write ACKed — and a
+magnetometer that never produces a sample.
 
-**It does not retire the settle**, which is what it was tried for. Both orders
-give the identical threshold table above: writing `CTRL2` last means `init()`
-issues nothing into the vulnerable window, but `read()`'s per-sample `STATUS`
-write lands in it as soon as the mag reader starts. The wait therefore stays,
-inside `init()` rather than left to the caller.
+**D — three of the seven advertised ODRs are not honoured.** Counted as distinct
+output images per second with **no `STATUS` write**, because a rate counted by
+polling `Meas_M_Done` may be the loop's own speed (Rev A p.13 says that bit
+"will remain '1' till next measurement" while a write "will clear the
+corresponding interrupt", which does not settle whether the write clears the
+bit). Every code against every bandwidth:
 
-**A paired write was tried as a better fix for B, and rejected on measurement.**
-Sending `CTRL0` and `CTRL1` as one 3-byte transfer should beat the ordering rule
-outright: the address does walk on this part, so byte 2 reaches `CTRL1` and lands
-*after* the aliased copy, making the pair correct by construction. Confirmed —
-byte 2 reproduces `CTRL1`'s documented semantics exactly (`0x04|bw` inhibits X,
-`0x18|bw` inhibits Y and Z), and an `init()` built that way runs at a healthy
-105 changes/s. It fails at the degauss, which is where it would matter most:
-when byte 1 carries a Set or Reset pulse the part stops measuring, both
-directions, ~105 changes/s before and 1/s after. The ~500 ns coil current does
-not tolerate a second byte inside the same chip-select assertion. Pairing in
-`init()` only would leave two idioms and an unstated landmine, so the ordering
-rule stays uniformly. **This is also the answer to "is the alias a framing
-artefact rather than silicon" — it is not:** a `CTRL1` write does not disturb
-`CTRL2` (106 changes/s straight after one), a `CTRL2` write does not fire
-`CTRL3`'s coil, and a `STATUS` write does not set `TM_M`, so the collateral is
-specific to `CTRL0` and not to what imud puts on the wire.
+| cfg Hz | `CM_Freq` | BW=00 | BW=01 | BW=10 | BW=11 |
+|---|---|---|---|---|---|
+| 1 | 001 | **1** | 1 | 1 | 1 |
+| 10 | 010 | 130 | 256 | 497 | 1689 |
+| 20 | 011 | **22** | 21 | 21 | 21 |
+| 50 | 100 | 130 | 256 | 497 | 1689 |
+| 100 | 101 | 106 | **105** | 105 | 105 |
+| 200 | 110 | 130 | 256 | 497 | 1690 |
+| 1000 | 111 | 120 | 241 | 402 | **1206** |
 
-**A harness lesson worth more than the result.** The first matrix run said the
-reorder *did* retire the settle, convincingly and reproducibly. It was wrong:
-the bench tool's prologue ran the stock `init()` before the candidate one, so
-every `-t 0` cell saturated the bridge before the code under test executed, and
-a saturated bridge is not undone by a later `init()`. The tell was two
-configurations that were textually equivalent disagreeing 5/5 against 5/5 —
-which is not noise and should never have been read as a threshold effect.
-A fixture that runs the real thing before the thing under test decides the
-answer in advance.
+`010`, `100` and `110` do not take at **any** bandwidth — those rows are each
+BW's conversion ceiling (8 ms → 125, 4 ms → 250, 2 ms → 500, 0.5 ms → 2000).
+`001`, `011` and `101` take at every bandwidth; `111` only at BW=11, exactly as
+p.15 annotates, which is the mechanism behind C. **Bandwidth is therefore not
+the constraint**, so do not "fix" 200 Hz by moving it to BW=10 on the strength
+of p.4's max-output-rate table (which does contradict p.15's `110 (BW=01)`
+annotation) — `110` free-runs at BW=10 too. Nor is it how `CTRL2` is written:
+splitting the frequency from the enable, with or without a delay, and stopping
+the mode first, all give the identical table.
+
+Fixed by advertising only what the part delivers: `supported_odr_hz` is
+`{1, 20, 100, 1000}` and `odr_encode()` emits only those codes, so
+`snap_odr_up()` rounds a request across the gap — 10 → 20, 50 → 100,
+200 → 1000 — instead of programming a code the part ignores. `test_drivers`
+pins the rounding and sweeps 1..1000 Hz asserting no request reaches an
+unhonoured code. **This is one die**, which cannot separate a part-wide
+limitation from this sample's; if a part turns up that honours the even codes,
+`odr_encode()` and `supported_odr_hz` are what to revisit, and
+`imud-imutest`'s `mag.rate` is the check that would show it.
+
+**The field magnitude is not a defect** *(resolved 2026-08-17)*. It read
+36.6 µT differential where the WMM gives 47.42 µT for the bench's own
+coordinates. A `.imucap` capture of ~45 s of hand tumbling, fitted as a sphere:
+
+| | |
+|---|---|
+| radius (true field) | **45.18 µT** vs WMM **47.42** — **−4.7%** |
+| centre (board-fixed offset) | `[22.45, 1.48, 11.26]` µT, **\|c\| = 25.16** |
+| residual RMS | 1.96 µT, 8 of 8 octants, 2106 samples |
+
+−4.7% is inside the part's own 5% sensitivity tolerance (Rev A p.4), so the
+16384 counts/G constant is right and there is no scale error. The shortfall is
+the 25 µT offset, which at the bolted-down orientation opposed the field:
+47.4 − 25 ≈ 36.6. Direction agrees independently — the angle between the field
+and the accelerometer, offset-corrected and so orientation-free, implies an
+inclination of 61.35° against the WMM's 61.15°. A magnetised mounting screw was
+the largest contributor, found by unmounting; a magnetic screwdriver magnetises
+a steel screw in one insertion, and A2/304 stainless goes weakly ferromagnetic
+when cold-worked, which a thread is. Brass or nylon avoids it. `imud-cal`
+removes the remainder. That also retires the owed yaw-rotation check, more
+thoroughly than a yaw sweep would: a stuck or mis-scaled axis cannot fit a
+sphere to a 1.96 µT residual.
+
+**Compare differentials to differentials.** Raw `|B|` includes the bridge
+offset, which is a property of the part's magnetisation at that moment and is
+not comparable across sessions — an earlier attempt to reconcile a 43 µT SPI
+reading with the 64.8 µT I²C baseline was meaningless for that reason.
 
 **Ruled out by measurement, not argument**, and not to be re-run: external
 field; SPI read framing (two-transfer and single full-duplex, burst and
-bytewise, byte-identical over five static single-shot images — so
-`bus_io.h` is not at fault and there is no shared-path defect affecting every
-SPI driver); register encoding; the STATUS write-to-clear (it does **not**
-alias into `CTRL0`, so it is not triggering measurements); `SW_RST` settle from
-10 ms to 1 s; bus crosstalk; GPIO; thermal damage (documented for reflowed
-boards of this part, but that damage is permanent and this one recovers fully);
-and a missing CAP capacitor (the schematic has 10 µF where the vendor asks for
-it). `Auto_SR_en` was tested and rejected: it holds a recovered bridge in
-isolation but oscillates under measurement, because the part alternates
-SET/RESET per sample and the driver averages them blind.
+bytewise, byte-identical over five static single-shot images — so `bus_io.h` is
+not at fault and there is no shared-path defect affecting every SPI driver);
+register encoding and the 18-bit output layout; the `STATUS` write-to-clear;
+`SW_RST` settle from 10 ms to 1 s; bus crosstalk; GPIO; thermal damage
+(documented for reflowed boards of this part, but that damage is permanent and
+this one recovers fully); and a missing CAP capacitor (the schematic has 10 µF
+where the vendor asks for it). `Auto_SR_en` was tested and rejected: it holds a
+recovered bridge in isolation but oscillates under measurement, because the part
+alternates SET/RESET per sample and the driver averages them blind.
 
-**Corrections to earlier claims.** The magnetometer's CTRL1 inhibit bits are
-`X-inhibit` at **bit 2** and `YZ-inhibit` at **bits 4:3** — two bits, which is
-why the datasheet prose says "writing 1 to the two bits". An earlier reading
-that placed them at bits 3 and 4 was wrong; a bit position taken from
-`pdftotext` output is a guess, because the column alignment is what carries the
-meaning. Separately, the earlier arithmetic linking a 43 µT SPI reading to the
-64.8 µT I²C baseline is retracted: raw `|B|` includes the bridge offset, which
-is a property of the part's magnetisation at that moment and not comparable
-across sessions. Measured offset here was (7.1, −9.7, 4.0) µT, which reconciles
-a 37.0 µT field with a 43.9 µT raw reading exactly. Compare differentials to
-differentials.
+**A saturated bridge is not recoverable by the driver.** `reset()` does not cure
+it — `SW_RST` clears registers, not magnetisation — and the 500 ns SET pulse is
+too weak. Recovery took a sustained self-test coil drive (`CTRL3`
+`St_enp`/`St_enm`, ~150 ms each way, three times). Nothing in imud can do that,
+so a part saturated in the field by a strong magnet stays saturated. Worth
+deciding whether `reset()` should attempt a coil-based recovery, which is its
+own change with its own risks.
+
+**Acceptance.** `imud-imutest --passive` against the fixed driver, from a
+recovered bridge: `mag.noise` non-zero on all three axes,
+`mag.degauss.differential` PASS with all three axes inverting,
+`mag.field_magnitude` PASS, `mag.burst_framing` PASS, `mag.rate` WARN at
+105.5 Hz (the die runs ~5% fast on both transports; the datasheet gives its
+continuous-mode frequencies as typical). Run it with the daemon **stopped** —
+imud and imud-imutest open the same device and drain the same FIFO, and a run
+that races the daemon produces plausible-looking nonsense.
 
 **Open.**
 
-- ~~The field magnitude reads about 25% low.~~ **RESOLVED 2026-08-17: local
-  hard iron, not the sensor.** The reading was 36.6 µT differential where the
-  WMM gives 47.42 for the bench's own coordinates, and the resolution came from
-  a `.imucap` capture of ~45 s of hand tumbling, fitted as a sphere:
-
-  | | |
-  |---|---|
-  | radius (true field) | **45.18 µT** vs WMM **47.42** — **−4.7%** |
-  | centre (board-fixed offset) | `[22.45, 1.48, 11.26]` µT, **\|c\| = 25.16** |
-  | residual RMS | 1.96 µT, 8 of 8 octants, 2106 samples |
-
-  −4.7% is **inside the part's own 5% sensitivity tolerance** (Rev A p.4), so
-  the 16384 counts/G constant is right and there is no scale error. The
-  apparent shortfall is entirely the 25 µT offset, which at the bolted-down
-  orientation opposed the field: 47.4 − 25 ≈ 36.6. Two independent estimates
-  agree — a 17 µT residual computed from the mounted vector against the WMM,
-  and a ≥9.3 µT floor implied by the total swinging 36.33 → 54.89 µT between
-  two orientations.
-
-  Direction confirms it. The angle between the field and the accelerometer
-  vector, offset-corrected and orientation-free, is **151.35°**; since the
-  accelerometer measures specific force and so points *up* at rest, the WMM
-  prediction is 180 − 28.85 = 151.15°, an **inclination of 61.35° against
-  61.15° — 0.2°**.
-
-  A magnetised mounting screw was the largest contributor, found by unmounting;
-  a magnetic screwdriver will magnetise a steel screw in one insertion, and
-  A2/304 stainless goes weakly ferromagnetic when cold-worked, which a thread
-  is. Brass or nylon hardware avoids it. The Pi sat 6 inches away, which is
-  close for a dipole. Neither is a defect in imud, and `imud-cal` is what
-  removes the remainder.
-
-  Two lessons from the fitting, both of which cost a wrong answer first: a
-  plain least-squares sphere fit has no resistance to outliers, and **two
-  railed samples out of 4450 moved the fitted centre to 592 µT**; and the
-  capture must be windowed to the moving part, because 60 s of stillness either
-  side weights the fit onto two orientations.
-- **Guided-phase acceptance is owed.** The passive phase now runs clean (below),
-  but `--faces`, `--gyro` and `--spin` need an operator, and `spin.*` is where
-  the magnetometer's frame agreement with the gyro is established.
 - **No mechanism for the 40 ms.** Nothing in Rev A explains why the part needs
   that long after `Cmm_en` before it will accept another write. The first
-  conversion at BW = 00 takes 8 ms, which is the right order of magnitude and
-  not the number. Until there is a mechanism the delay is empirical.
-- **Three of the seven advertised ODRs do not take, and this is NOT the write
-  order** — both orders behave identically. Measured rate against configured,
-  five runs each, from a correctly initialised part:
-
-  | configured | 10 | 20 | 50 | 100 | 200 | 1000 |
-  |---|---|---|---|---|---|---|
-  | `CM_Freq` | 010 | 011 | 100 | 101 | 110 | 111 |
-  | measured Hz | 130.0 | 21.1 | 130.0 | 105.5 | 256.1 | 1205.7 |
-  | tracks? | no | yes | no | yes | no | yes |
-
-  The three that fail are exactly the **even** `CM_Freq` codes. Confirmed
-  without the `Meas_M_Done` poll, which is the confound that had to be
-  excluded first: Rev A p.13 says that bit "will remain '1' till next
-  measurement" while a write to it "will clear the corresponding interrupt",
-  wording that does not settle whether the write clears the bit. A rate
-  counted by polling it could therefore be the loop's own speed. So the table
-  below counts **distinct output images per second with no `STATUS` write at
-  all**, sweeping every code against every bandwidth (`mmcx odrscan`):
-
-  | cfg Hz | `CM_Freq` | BW=00 | BW=01 | BW=10 | BW=11 |
-  |---|---|---|---|---|---|
-  | 1 | 001 | **1** | 1 | 1 | 1 |
-  | 10 | 010 | 130 | 256 | 497 | 1689 |
-  | 20 | 011 | **22** | 21 | 21 | 21 |
-  | 50 | 100 | 130 | 256 | 497 | 1689 |
-  | 100 | 101 | 106 | **105** | 105 | 105 |
-  | 200 | 110 | 130 | 256 | 497 | 1690 |
-  | 1000 | 111 | 120 | 241 | 402 | **1206** |
-
-  `010`, `100` and `110` do not take at **any** bandwidth — those rows are
-  simply each BW's conversion ceiling (8 ms → 125, 4 ms → 250, 2 ms → 500,
-  0.5 ms → 2000). `001`, `011` and `101` take at every bandwidth. `111` takes
-  only at BW=11, exactly as p.15 annotates, which is the mechanism behind the
-  1000 Hz start failures that defect C fixed.
-
-  **Nor is it how `CTRL2` is written.** Splitting the frequency and the enable
-  into separate writes, with or without a delay between them, and stopping the
-  mode first, all give the identical table. The one variant that changed
-  anything — writing the enable twice — broke the *working* codes too (1 → 130,
-  20 → 129, 100 → 256, 1000 → 1690), which is defect A again: the second write
-  lands inside the ~40 ms window. Wrong lever, but an independent confirmation
-  of A.
-
-  **Two retractions, recorded because both were nearly committed.** The p.4
-  "Max Output data rate" table (BW=01 → 100 Hz) contradicts p.15's
-  `110 (BW=01)` annotation, and that looked like a plain driver bug: 200 Hz
-  asking for a bandwidth rated for half of it, fixable by moving to BW=10
-  (rated 225 Hz). The scan says otherwise — `110` free-runs at BW=10 too, so
-  bandwidth is not the constraint and that one-line fix would have changed
-  nothing. And the "latched mid-transition" reading of p.15's "in order to
-  enter the continuous mode, CM_Freq cannot be 000" is dead by the same table.
-
-  **Fixed** by advertising only what the part delivers:
-  `supported_odr_hz` is now `{1, 20, 100, 1000}` and `odr_encode()` emits only
-  those four codes, so `snap_odr_up()` rounds a request across the gap —
-  10 → 20, 50 → 100, 200 → 1000 — instead of programming a code the part
-  ignores. Before this, `[mag] odr_hz = 50` ran at ~130 Hz while fusion sized
-  the magnetometer's noise variance for 50. `test_drivers` pins the rounding
-  and sweeps 1..1000 Hz asserting no request can reach an unhonoured code.
-
-  **This is one die**, which cannot separate a part-wide limitation from this
-  sample's. If a part turns up that honours the even codes, `odr_encode()` and
-  `supported_odr_hz` are what to revisit, and `imud-imutest`'s `mag.rate` is
-  the check that would show it. Rounding up costs a higher rate than asked for,
-  which is the safe direction; the previous behaviour was a wrong rate reported
-  as the right one.
-- ~~A yaw rotation by hand confirming `field[0]` tracks the real field.~~
-  **DONE 2026-08-17**, and more thoroughly than a yaw sweep: the tumbling
-  capture above covers all 8 octants, and every axis tracks — the cloud fits a
-  sphere to a 1.96 µT residual, which a stuck or mis-scaled axis could not do.
-
-**Acceptance, 2026-08-16.** `imud-imutest --passive` against the fixed driver,
-from a recovered bridge: `mag.noise` non-zero on all three axes (0.34/0.33/0.38
-µT), `mag.field_magnitude` PASS, `mag.degauss.differential` PASS with all three
-axes inverting (SET [4.0 10.0 40.2] vs RESET [9.4 -2.5 -31.6]), `mag.rate` WARN
-at 105.6 Hz, `mag.burst_framing` PASS. The one FAIL left in that run is
-`imu.chipts.monotonic` — the ISM330DHCX over SPI, unrelated to any of this and
-owed its own investigation.
-
-Two things that run found, neither of which the piecemeal bench measurements
-could have:
-
-- **A saturated bridge is not recoverable by the driver.** The first acceptance
-  attempt read 1136 µT with SET and RESET identical, because the packaged
-  daemon had been running the pre-fix driver and left the part saturated.
-  `reset()` does not cure it — `SW_RST` clears registers, not magnetisation —
-  and the 500 ns SET pulse is too weak. Recovery took a sustained self-test
-  coil drive (`CTRL3` `St_enp`/`St_enm`, ~150 ms each way, three times).
-  **Nothing in imud can do that**, so a part saturated in the field by a strong
-  magnet stays saturated. Worth deciding whether `reset()` should attempt a
-  coil-based recovery, which is its own change with its own risks.
-- **`mag.rate` was graded too strictly**, by this session's own change. An
-  over-rate reading was promoted straight to FAIL, and the reference die runs
-  105.5 Hz against a configured 100 on *both* transports — the datasheet gives
-  its continuous-mode frequencies as typical. Corrected to grade an over-rate
-  on the same tolerance ladder as an under-rate, so it FAILs only past
-  `odr_tol_fail`; direction still decides which excuses apply, but no longer
-  the grade. A check that fires on expected silicon is one people learn to skip.
-
-**What the tooling gained from this**, since the diagnosis kept running into
-tests that could not fail: the mock can now model a write landing in two
-registers, count reads (for asserting that code does *not* touch a register,
-which no readback can show), and state whether a part's address auto-increments
-rather than inferring it from the mask. The dual-transport tests take their SPI
-framing from the driver's own `bus_caps`, as `bus_open()` does, instead of
-from a literal copied out of the driver — without which a wrong `spi_inc_mask`
-agreed with itself and failed nothing. And `imud-imutest` grades a rate *above*
-the configured ODR as a defect rather than a warning, which is the signal that
-was present in the 2026-08-15 report and went unread.
+  conversion at BW = 00 takes 8 ms, the right order of magnitude and not the
+  number. Until there is a mechanism the delay is empirical.
+- **Guided-phase acceptance is owed.** The passive phase runs clean, but
+  `--faces`, `--gyro` and `--spin` need an operator, and `spin.*` is where the
+  magnetometer's frame agreement with the gyro is established.
+- **`imu.chipts.monotonic` still FAILs** on the ISM330DHCX over SPI, with
+  genuine reversals — 0 repeats and 0 zero-stamped samples — so `chip_ts.h`'s
+  seam guard has a hole. Unrelated to the magnetometer and owed its own
+  investigation.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 

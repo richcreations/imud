@@ -137,6 +137,35 @@ The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
   `fifo_wm` 32 and above, so a watermark holds about 63 sample-sets rather
   than 64; below 8 nothing is batched at all.
 
+* **Fix: the MMC5983MA lost its X axis over SPI.** A write to `CTRL0` also
+  lands in `CTRL1` on this part, and `INT_en`'s bit 2 reads there as
+  X-inhibit — so `init()`'s own interrupt-enable stopped the X axis measuring
+  while Y and Z carried on looking healthy, and the periodic SET re-applied it
+  every 5 seconds. Heading is `atan2(-my, mx)`, so a dead X axis takes the
+  heading with it. `CTRL1` is now written after every `CTRL0` write, in
+  `init()` and after each degauss pulse.
+
+  Two more faults on the same part, found alongside it. It could come up
+  **saturated** — a few hundred µT on every axis, for the rest of the run —
+  because a control write within ~40 ms of enabling continuous mode is not
+  tolerated; `init()` now holds the bus quiet for 100 ms afterwards. And at
+  `[mag] odr_hz = 1000` it could **fail to start at all**, 7 times in 20, with
+  `init()` returning success and no sample ever arriving: `CM_Freq`'s meaning
+  depends on the bandwidth, and continuous mode was being enabled before the
+  bandwidth was programmed. Both are fixed, and none of the three is visible
+  on I²C.
+
+* **Behaviour change: `[mag] odr_hz` offers four rates on the MMC5983MA, not
+  seven.** The part does not honour three of the seven output rates its
+  datasheet lists: asking for 10, 50 or 200 Hz left it free-running at about
+  130, 130 and 256 Hz while fusion sized the magnetometer noise variance for
+  the rate you asked for — a wrong rate reported as the right one. The driver
+  now advertises `1`, `20`, `100` and `1000`, and a request rounds **up** to
+  one of those as the documentation always said it would: 10 → 20, 50 → 100,
+  200 → 1000. The default, 100 Hz, is unchanged and unaffected. This is one
+  die; `imud-imutest`'s `mag.rate` is the check that would show a part which
+  behaves differently.
+
 * **Fix: the chip timer's period is now taken from the part, not the
   datasheet.** A datasheet tick period is a typical, and the tolerance is not
   small — the reference ISM330DHCX runs 4.05% fast, which is ordinary silicon

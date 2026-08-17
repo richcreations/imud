@@ -38,18 +38,17 @@ imud (1.9.0) unstable; urgency=medium
     gpio subsystem is no longer triggered; group and mode are applied
     directly to /dev/gpiochip* instead.
   * Fix: chip_ts could go backwards across FIFO burst boundaries on
-    ism330dhcx, lsm6dso and icm42688p, because the burst was timed from
-    the chip's live counter read after the drain -- "now", not the newest
-    sample's time, with a lag that varies. No filter output was affected;
-    imu.c already rejected a non-increasing timestamp and used the nominal
-    period. The driver contract required monotonic, so it now is.
-
-  * Fix: chip_ts is now taken from the FIFO itself on ism330dhcx, lsm6dso
-    and icm42688p, rather than from a counter read after the drain whose
-    lag varies. The ST parts batch the counter into the stream and anchor
-    the burst on it; icm42688p uses the per-packet stamp it already read.
-    Both fall back for the whole burst if the value fails its cross-check.
-    Costs 1.6 % of the ST FIFO word budget at fifo_wm 32 and above.
+    ism330dhcx, lsm6dso and icm42688p -- 2 to 4 reversals per 5 s at
+    833 Hz -- because the burst was timed from the chip's live counter read
+    after the drain: "now", not the newest sample's time, with a lag that
+    varies. No filter output was affected; imu.c already rejected a
+    non-increasing timestamp and used the nominal period. The driver
+    contract required monotonic, so it now is. All three parts now take the
+    timestamp from the FIFO itself, so the lag is not there to vary: the ST
+    parts batch the counter into the stream and anchor the burst on it,
+    icm42688p uses the per-packet stamp it already read, and each falls back
+    for the whole burst if the value fails its cross-check. Costs 1.6 % of
+    the ST FIFO word budget at fifo_wm 32 and above.
   * Fix: the chip timer's period comes from the part where it declares one
     (INTERNAL_FREQ_FINE on the ST parts), not from the datasheet typical.
     Until the daemon has measured the real period -- two anchors, 20 s
@@ -68,6 +67,36 @@ imud (1.9.0) unstable; urgency=medium
     headroom -- rather than as a latency knob. The reader also wakes on a
     10 ms timeout, so fifo_wm/odr_hz was never the residence. Measured on a
     Pi 5: pipeline latency 0.26 ms p99 against a 1.5 ms budget.
+
+  * Fix: mmc5983ma lost its X axis over SPI. A write to CTRL0 also lands in
+    CTRL1 on this part, where INT_en's bit 2 reads as X-inhibit, so init()'s
+    own interrupt-enable stopped X measuring while Y and Z looked healthy --
+    and heading is atan2(-my, mx), so it took the heading with it. The
+    periodic SET re-applied it every 5 s. CTRL1 is now written after every
+    CTRL0 write, in init() and after each degauss pulse.
+  * Fix: mmc5983ma could come up saturated, reading a few hundred uT on
+    every axis for the rest of the run, because a control write within
+    ~40 ms of enabling continuous mode is not tolerated. init() now holds
+    the bus quiet for 100 ms afterwards. The number is empirical: Rev A
+    gives a 10 ms power-on time for SW_RST and says nothing about entering
+    continuous mode.
+  * Fix: at [mag] odr_hz = 1000 the magnetometer could fail to start at all,
+    7 times in 20, with init() returning success and no sample ever
+    arriving. CM_Freq's meaning depends on the bandwidth (Rev A p.15), and
+    continuous mode was being enabled before CTRL1 was programmed. Order
+    reversed; 0 failures in 20 after.
+  * Behaviour change: [mag] odr_hz advertises 1, 20, 100 and 1000 Hz for
+    mmc5983ma, not seven rates. The part does not honour CM_Freq 010, 100
+    or 110, and free-ran at ~130, ~130 and ~256 Hz while fusion sized the
+    magnetometer noise variance for the rate that was asked for. Requests
+    round up to a rate that works, as documented -- 10 to 20, 50 to 100,
+    200 to 1000 -- rather than silently running at a wrong one.
+  * imud-imutest: imu.chipts.monotonic reports repeated timestamps
+    separately from reversed ones, since a repeat means a burst stamped from
+    one reading while a reversal is usually a missing unwrap, and samples
+    whose chip_ts is 0 (the drivers' "timestamp read failed" signal) are
+    excluded from both and from imu.chipts.rate rather than being compared
+    as times. The appendix prints all four counts.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2) unstable; urgency=medium
