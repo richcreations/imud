@@ -2290,12 +2290,34 @@ static void test_odr_agreement(void)
            init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 104, 4, 500),
            "lsm programs the resolved rate for an off-grid request");
 
-    /* MMC5983MA CTRL2 (Cmm_en|CM_Freq). 137 is the interesting case:
-     * nearest_odr() said 100, the driver programs 200. */
-    EXPECT(odr_actual_mag(mmc, 137) == 200, "mmc 137 resolves to 200");
+    /*
+     * MMC5983MA CTRL2 (Cmm_en|CM_Freq). The part honours only four of the
+     * seven documented CM_Freq codes — 10, 50 and 200 Hz are entered and then
+     * ignored, the part free-running at its bandwidth's ceiling — so the
+     * driver advertises 1/20/100/1000 and a request rounds up across the gap.
+     * 137 lands on 1000 because 200 is not on offer; measured table is above
+     * odr_encode() in the driver.
+     */
+    EXPECT(odr_actual_mag(mmc, 137) == 1000, "mmc 137 resolves to 1000");
     EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==
-           init_mag_reg(mmc, MMC_ADDR, 0x0B, 200),
+           init_mag_reg(mmc, MMC_ADDR, 0x0B, 1000),
            "mmc programs the resolved rate for an off-grid request");
+    /* The three unhonoured rates round up rather than being programmed. */
+    EXPECT(odr_actual_mag(mmc, 10) == 20,   "mmc 10 rounds up to 20");
+    EXPECT(odr_actual_mag(mmc, 50) == 100,  "mmc 50 rounds up to 100");
+    EXPECT(odr_actual_mag(mmc, 200) == 1000, "mmc 200 rounds up to 1000");
+    /* CM_Freq 010/100/110 must never reach the part. */
+    for (int hz = 1; hz <= 1000; hz++) {
+        uint8_t ctrl2 = init_mag_reg(mmc, MMC_ADDR, 0x0B, hz);
+        if ((ctrl2 & 0x07u) == 0x2u || (ctrl2 & 0x07u) == 0x4u ||
+            (ctrl2 & 0x07u) == 0x6u) {
+            char m[96];
+            snprintf(m, sizeof m, "%d Hz programmed unhonoured CM_Freq %u",
+                     hz, ctrl2 & 0x07u);
+            EXPECT(0, m);
+            break;
+        }
+    }
 
     /*
      * RM3100 TMRC.  200 is between 150 and 300, so it resolves up to 300 —

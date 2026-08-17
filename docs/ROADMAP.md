@@ -458,16 +458,62 @@ differentials.
   | measured Hz | 130.0 | 21.1 | 130.0 | 105.5 | 256.1 | 1205.7 |
   | tracks? | no | yes | no | yes | no | yes |
 
-  The three that fail are exactly the **even** `CM_Freq` codes, and each
-  free-runs at its bandwidth's conversion ceiling — 130 Hz is BW=00's 8 ms,
-  256 Hz is BW=01's 4 ms — so `Cmm_en` took and `CM_Freq` did not. A longer
-  post-`CTRL2` quiet does not help (100/200/300/500 ms all read 130 Hz at a
-  configured 10). `mmc5983ma_ops.supported_odr_hz` advertises all seven, and
-  `docs/config-keys.toml` generates the man page's list from it, so a user
-  setting `[mag] odr_hz = 50` currently gets 130 Hz with no warning. Establish
-  whether this is the part, the die revision, or another decode defect of the
-  same family as B before deciding between fixing it and narrowing the
-  advertised list. The default, 100 Hz, is one of the working codes.
+  The three that fail are exactly the **even** `CM_Freq` codes. Confirmed
+  without the `Meas_M_Done` poll, which is the confound that had to be
+  excluded first: Rev A p.13 says that bit "will remain '1' till next
+  measurement" while a write to it "will clear the corresponding interrupt",
+  wording that does not settle whether the write clears the bit. A rate
+  counted by polling it could therefore be the loop's own speed. So the table
+  below counts **distinct output images per second with no `STATUS` write at
+  all**, sweeping every code against every bandwidth (`mmcx odrscan`):
+
+  | cfg Hz | `CM_Freq` | BW=00 | BW=01 | BW=10 | BW=11 |
+  |---|---|---|---|---|---|
+  | 1 | 001 | **1** | 1 | 1 | 1 |
+  | 10 | 010 | 130 | 256 | 497 | 1689 |
+  | 20 | 011 | **22** | 21 | 21 | 21 |
+  | 50 | 100 | 130 | 256 | 497 | 1689 |
+  | 100 | 101 | 106 | **105** | 105 | 105 |
+  | 200 | 110 | 130 | 256 | 497 | 1690 |
+  | 1000 | 111 | 120 | 241 | 402 | **1206** |
+
+  `010`, `100` and `110` do not take at **any** bandwidth — those rows are
+  simply each BW's conversion ceiling (8 ms → 125, 4 ms → 250, 2 ms → 500,
+  0.5 ms → 2000). `001`, `011` and `101` take at every bandwidth. `111` takes
+  only at BW=11, exactly as p.15 annotates, which is the mechanism behind the
+  1000 Hz start failures that defect C fixed.
+
+  **Nor is it how `CTRL2` is written.** Splitting the frequency and the enable
+  into separate writes, with or without a delay between them, and stopping the
+  mode first, all give the identical table. The one variant that changed
+  anything — writing the enable twice — broke the *working* codes too (1 → 130,
+  20 → 129, 100 → 256, 1000 → 1690), which is defect A again: the second write
+  lands inside the ~40 ms window. Wrong lever, but an independent confirmation
+  of A.
+
+  **Two retractions, recorded because both were nearly committed.** The p.4
+  "Max Output data rate" table (BW=01 → 100 Hz) contradicts p.15's
+  `110 (BW=01)` annotation, and that looked like a plain driver bug: 200 Hz
+  asking for a bandwidth rated for half of it, fixable by moving to BW=10
+  (rated 225 Hz). The scan says otherwise — `110` free-runs at BW=10 too, so
+  bandwidth is not the constraint and that one-line fix would have changed
+  nothing. And the "latched mid-transition" reading of p.15's "in order to
+  enter the continuous mode, CM_Freq cannot be 000" is dead by the same table.
+
+  **Fixed** by advertising only what the part delivers:
+  `supported_odr_hz` is now `{1, 20, 100, 1000}` and `odr_encode()` emits only
+  those four codes, so `snap_odr_up()` rounds a request across the gap —
+  10 → 20, 50 → 100, 200 → 1000 — instead of programming a code the part
+  ignores. Before this, `[mag] odr_hz = 50` ran at ~130 Hz while fusion sized
+  the magnetometer's noise variance for 50. `test_drivers` pins the rounding
+  and sweeps 1..1000 Hz asserting no request can reach an unhonoured code.
+
+  **This is one die**, which cannot separate a part-wide limitation from this
+  sample's. If a part turns up that honours the even codes, `odr_encode()` and
+  `supported_odr_hz` are what to revisit, and `imud-imutest`'s `mag.rate` is
+  the check that would show it. Rounding up costs a higher rate than asked for,
+  which is the safe direction; the previous behaviour was a wrong rate reported
+  as the right one.
 - **A yaw rotation by hand** confirming `field[0]` tracks the real field. The
   raw bytes and the inhibit sweep already settled "frozen" versus "legitimately
   perpendicular", but nothing yet shows the axis following the field end to end.

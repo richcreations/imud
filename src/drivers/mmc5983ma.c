@@ -92,23 +92,54 @@ static _Atomic uint8_t g_ctrl1 = 0;
 /*
  * Map requested ODR to BW bits (CTRL1[1:0]) and CM_Freq bits (CTRL2[2:0]).
  *
- * BW selection drives measurement duration and noise floor:
+ * BW selection drives measurement duration and noise floor (Rev A pp.4, 15):
  *   BW=00  8 ms  0.4 mG RMS  max ODR  50 Hz
  *   BW=01  4 ms  0.6 mG RMS  max ODR 100 Hz
  *   BW=10  2 ms  0.8 mG RMS  max ODR 225 Hz
  *   BW=11  0.5ms 1.2 mG RMS  max ODR 580/1000 Hz
  *
  * We pick the minimum BW that supports the requested ODR (lowest noise).
+ *
+ * ── Only four of the seven CM_Freq codes work ──────────────────────────────
+ *
+ * The datasheet lists seven continuous rates. On the reference part three of
+ * them are not honoured: the part enters continuous mode and then free-runs at
+ * whatever its bandwidth allows, ignoring CM_Freq entirely. Every CM_Freq code
+ * against every bandwidth, counted as distinct output images per second with
+ * no STATUS write involved (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16):
+ *
+ *   CM_Freq          BW=00   BW=01   BW=10   BW=11     nominal
+ *   001               *1       1       1       1         1 Hz
+ *   010              130     256     497    1689        10 Hz   never taken
+ *   011              *22      21      21      21        20 Hz
+ *   100              130     256     497    1689        50 Hz   never taken
+ *   101              106     *105    105     105       100 Hz
+ *   110              130     256     497    1690       200 Hz   never taken
+ *   111              120     241     402   *1206      1000 Hz
+ *
+ * The three failing rows are exactly each bandwidth's conversion ceiling
+ * (8 ms → 125, 4 ms → 250, 2 ms → 500, 0.5 ms → 2000), so bandwidth is not the
+ * constraint — the codes simply do not take. Nor is it how CTRL2 is written:
+ * splitting the frequency and the enable into separate writes, with or without
+ * a delay between them, and stopping the mode first, all give the identical
+ * table. 111 needing BW=11 is real and is documented on p.15; the rest is not
+ * documented anywhere.
+ *
+ * So the driver advertises only what the part delivers — see supported_odr_hz
+ * below, which snap_odr_up() rounds a request up to. Advertising the other
+ * three meant `[mag] odr_hz = 50` silently ran at ~130 Hz while fusion sized
+ * the magnetometer's noise variance for 50.
+ *
+ * This is one die. If a part is found that honours the even codes, this and
+ * supported_odr_hz are what to revisit; imud-imutest's mag.rate is the check
+ * that shows it.
  */
 static void odr_encode(int hz, uint8_t *bw_out, uint8_t *cmfreq_out)
 {
-    if (hz <=   1) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }
-    if (hz <=  10) { *bw_out = 0x0; *cmfreq_out = 0x2; return; }
-    if (hz <=  20) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }
-    if (hz <=  50) { *bw_out = 0x0; *cmfreq_out = 0x4; return; }
-    if (hz <= 100) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }  /* BW=01 required */
-    if (hz <= 200) { *bw_out = 0x1; *cmfreq_out = 0x6; return; }  /* BW=01 required */
-    /* 1000 Hz */    *bw_out = 0x3; *cmfreq_out = 0x7;            /* BW=11 required */
+    if (hz <=    1) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }
+    if (hz <=   20) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }
+    if (hz <=  100) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }
+    /* 1000 Hz */     *bw_out = 0x3; *cmfreq_out = 0x7;   /* BW=11 required */
 }
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
@@ -370,5 +401,7 @@ const mag_ops_t mmc5983ma_ops = {
     .degauss          = mmc_degauss,
     .has_interrupt    = true,
     .has_set_reset    = true,
-    .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
+    /* Four of the datasheet's seven; the other three are not honoured by the
+     * part. Measured table and method are above odr_encode(). */
+    .supported_odr_hz = { 1, 20, 100, 1000, 0 },
 };
