@@ -102,11 +102,18 @@ static struct {
     uint64_t ts_rejects;        /* bursts whose batched stamps failed the
                                  * plausibility check and fell back */
     uint64_t ts_reject_next;    /* next count worth a log line — see icm_read */
+    uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
+    uint64_t ts_fwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ic;
 
 /* One second of ticks at 32/30 us; see chip_ts.h. */
 #define TS_MAX_JITTER_TICKS  937500u
+
+/* A burst that lands this far AHEAD of the previous one means the post-drain
+ * counter read is garbage, not that time passed -- 1067 ns/tick, so 10 s. See
+ * chip_ts_guard_forward_ok(). */
+#define TS_MAX_FWD_TICKS     9375000u
 
 /*
  * The FIFO's own timestamp field is 16 bits, so it repeats every 65536 ticks
@@ -303,6 +310,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.ts_fifo_usable   = (ic.ticks_per_sample <= TS_FIFO_MAX_LAG);
     ic.ts_rejects       = 0;
     ic.ts_reject_next   = 1;
+    ic.ts_fwd_rejects   = 0;
+    ic.ts_fwd_next      = 1;
     chip_ts_guard_reset(&ic.ts_guard);
 
     return 0;
@@ -491,9 +500,30 @@ static int icm_read(const imud_bus_t *bus,
                     uint32_t burst_ts = now_ts;
                     uint32_t span  = (uint32_t)(produced - 1) * ic.ticks_per_sample;
                     uint32_t first = burst_ts - span;
-                    burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
-                                                    ic.ticks_per_sample,
-                                                    TS_MAX_JITTER_TICKS);
+                    /*
+                     * Is now_ts credible at all? A garbage counter read lands
+                     * the whole burst in the future, which the backward guard
+                     * cannot see because it only corrects overlaps. Measured on
+                     * the reference ISM330DHCX, same fallback shape: one burst
+                     * stamped 54 s ahead, recovered only on the burst after.
+                     */
+                    if (!chip_ts_guard_forward_ok(&ic.ts_guard, first,
+                                                  TS_MAX_FWD_TICKS)) {
+                        first    = chip_ts_guard_next(&ic.ts_guard,
+                                                      ic.ticks_per_sample);
+                        burst_ts = first + span;
+                        if (++ic.ts_fwd_rejects >= ic.ts_fwd_next) {
+                            LOG_W("icm42688p: %llu post-drain timestamp "
+                                  "read(s) implausibly far ahead; "
+                                  "extrapolating from the previous burst\n",
+                                  (unsigned long long)ic.ts_fwd_rejects);
+                            ic.ts_fwd_next *= 10;
+                        }
+                    } else {
+                        burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
+                                                        ic.ticks_per_sample,
+                                                        TS_MAX_JITTER_TICKS);
+                    }
                     for (int i = 0; i < produced; i++) {
                         uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
                         buf[i].chip_ts = burst_ts - age;

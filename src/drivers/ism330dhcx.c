@@ -70,6 +70,8 @@ static struct {
     uint64_t ts_rejects;        /* bursts whose batched anchor failed its
                                  * check and fell back — see ism_read */
     uint64_t ts_reject_next;    /* next count worth a log line */
+    uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
+    uint64_t ts_fwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* keeps chip_ts increasing across burst seams */
 } s;
 
@@ -77,6 +79,11 @@ static struct {
  * re-seeded rather than corrected — see chip_ts.h.  One second of 25 µs ticks,
  * generous next to the millisecond-scale lag being corrected. */
 #define TS_MAX_JITTER_TICKS  40000u
+
+/* A burst that lands this far AHEAD of the previous one means the post-drain
+ * counter read is garbage, not that time passed -- 25 us/tick, so 10 s. See
+ * chip_ts_guard_forward_ok(). */
+#define TS_MAX_FWD_TICKS     400000u
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
@@ -257,6 +264,8 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     s.seq              = 0;
     s.ts_rejects       = 0;
     s.ts_reject_next   = 1;
+    s.ts_fwd_rejects   = 0;
+    s.ts_fwd_next      = 1;
     chip_ts_guard_reset(&s.ts_guard);
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
      *
@@ -430,9 +439,32 @@ static int ism_read(const imud_bus_t *bus,
                 uint32_t burst_ts = now_ts;
                 uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
                 uint32_t first = burst_ts - span;
-                burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
-                                                s.ticks_per_sample,
-                                                TS_MAX_JITTER_TICKS);
+                /*
+                 * Before trusting now_ts, ask whether it is credible. A garbage
+                 * counter read lands the whole burst in the future, and the
+                 * backward guard below cannot see that -- it only corrects
+                 * overlaps. st_fifo_ts_apply() above has already rejected its
+                 * anchor for exactly this reason when it fires, so using the
+                 * same now_ts here unchecked is what let one bad read stamp
+                 * nine samples 54 s ahead on the reference part.
+                 */
+                if (!chip_ts_guard_forward_ok(&s.ts_guard, first,
+                                              TS_MAX_FWD_TICKS)) {
+                    first    = chip_ts_guard_next(&s.ts_guard,
+                                                  s.ticks_per_sample);
+                    burst_ts = first + span;
+                    if (++s.ts_fwd_rejects >= s.ts_fwd_next) {
+                        LOG_W("ism330dhcx: %llu post-drain timestamp read(s) "
+                              "implausibly far ahead; extrapolating from the "
+                              "previous burst\n",
+                              (unsigned long long)s.ts_fwd_rejects);
+                        s.ts_fwd_next *= 10;
+                    }
+                } else {
+                    burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
+                                                    s.ticks_per_sample,
+                                                    TS_MAX_JITTER_TICKS);
+                }
                 for (int i = 0; i < produced; i++) {
                     uint32_t age = (uint32_t)(produced - 1 - i) * s.ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;

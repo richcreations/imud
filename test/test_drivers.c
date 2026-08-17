@@ -2114,6 +2114,72 @@ static void test_chip_ts_monotonic_across_bursts(void)
     end(fb);
 }
 
+/*
+ * The FORWARD half of the same contract, and the half that was missing.
+ *
+ * The post-drain TIMESTAMP0 read is trusted as the newest sample's time. When
+ * that read comes back garbage in the forward direction, nothing noticed: the
+ * backward guard only corrects overlaps, so the whole burst was stamped in the
+ * future, and only the NEXT burst's jump back to real time re-seeded it.
+ * Measured on the reference ISM330DHCX from a 94,539-sample capture: one burst
+ * of 9 samples landed 2,163,509 ticks -- 54 s at 25 us/tick -- ahead, with seq
+ * continuous across it. Nothing reached the filter, but ts_wall_ns reached the
+ * wire.
+ *
+ * st_fifo_ts_apply() already refuses its anchor when now_ts fails its
+ * cross-check; the fallback then used that same now_ts unchecked.
+ */
+static void test_chip_ts_forward_garbage_read(void)
+{
+    begin("test_chip_ts_forward_garbage_read");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 4 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
+
+    imu_sample_t a[16] = { 0 }, b[16] = { 0 }, c[16] = { 0 };
+    int na = 0, nb = 0, nc = 0;
+
+    ism_stage_burst(8, 1000000);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), a, 16, &na) == 0, "first read ok");
+    EXPECT(na == 8, "first burst produced 8 samples");
+
+    /* The counter read comes back 54 s ahead — the measured figure exactly. */
+    ism_stage_burst(8, 1000000u + 2163509u);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), b, 16, &nb) == 0, "second read ok");
+    EXPECT(nb == 8, "second burst produced 8 samples");
+
+    EXPECT((int32_t)(b[0].chip_ts - a[na - 1].chip_ts) > 0,
+           "chip_ts still increases across the seam");
+    EXPECT(b[0].chip_ts - a[na - 1].chip_ts == 48,
+           "an implausible forward read is refused: the burst extrapolates "
+           "one sample period on");
+    EXPECT(b[nb - 1].chip_ts - a[na - 1].chip_ts < 40000u,
+           "no sample lands anywhere near the garbage anchor");
+    bool spacing = true;
+    for (int i = 1; i < nb; i++)
+        if (b[i].chip_ts - b[i - 1].chip_ts != 48) spacing = false;
+    EXPECT(spacing, "the extrapolated burst keeps one period per sample");
+
+    /*
+     * And the check must not swallow an ordinary advance: a plausible forward
+     * step is still taken from the counter rather than extrapolated, or the
+     * driver would stop tracking the chip entirely after one bad read.
+     */
+    uint32_t good_anchor = b[nb - 1].chip_ts + 400u;
+    ism_stage_burst(8, good_anchor);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), c, 16, &nc) == 0, "third read ok");
+    EXPECT(nc == 8, "third burst produced 8 samples");
+    EXPECT(c[nc - 1].chip_ts == good_anchor,
+           "a plausible counter read is still used as the newest sample's time");
+
+    end(fb);
+}
+
 /* ── reset(): the self-clearing bit polls ────────────────────────────────── */
 
 /*
@@ -3267,6 +3333,7 @@ int main(void)
     test_rm3100_read_decode();
 
     test_chip_ts_monotonic_across_bursts();
+    test_chip_ts_forward_garbage_read();
     test_driver_resets();
     test_ak099_init_modes();
     test_odr_agreement();

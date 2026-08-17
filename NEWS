@@ -155,6 +155,21 @@ The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
   bandwidth was programmed. Both are fixed, and none of the three is visible
   on I²C.
 
+* **Fix: one corrupted timestamp read could stamp a whole FIFO burst seconds
+  into the future.** The ST and InvenSense drivers take the counter read that
+  follows a FIFO drain as the newest sample's time, and the guard added earlier
+  in this release only corrects timestamps that go *backwards* across a burst
+  seam. A read that came back wrong in the forward direction was never checked
+  — so on the reference ISM330DHCX one burst of 9 samples in 94,539 was stamped
+  2,163,509 ticks, or 54 seconds, ahead, with the sample counter continuous
+  across it. The burst afterwards was correct, because the jump back to real
+  time re-seeded the guard, which is why this looked like a single unexplained
+  reversal. Nothing reached the filter, which rejects a non-increasing
+  timestamp, but `ts_wall_ns` and `ts_tai_ns` carried it to the wire. An
+  implausible forward read is now refused and the burst is extrapolated one
+  sample period from the previous one; a plausible advance is still taken from
+  the counter.
+
 * **Behaviour change: `[mag] odr_hz` offers four rates on the MMC5983MA, not
   seven.** The part does not honour three of the seven output rates its
   datasheet lists: asking for 10, 50 or 200 Hz left it free-running at about

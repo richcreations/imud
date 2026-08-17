@@ -477,10 +477,31 @@ that races the daemon produces plausible-looking nonsense.
 - **Guided-phase acceptance is owed.** The passive phase runs clean, but
   `--faces`, `--gyro` and `--spin` need an operator, and `spin.*` is where the
   magnetometer's frame agreement with the gyro is established.
-- **`imu.chipts.monotonic` still FAILs** on the ISM330DHCX over SPI, with
-  genuine reversals — 0 repeats and 0 zero-stamped samples — so `chip_ts.h`'s
-  seam guard has a hole. Unrelated to the magnetometer and owed its own
-  investigation.
+- ~~`imu.chipts.monotonic` FAILs on the ISM330DHCX over SPI.~~ **Cause found
+  2026-08-17 and fixed**, from a 94,539-sample `.imucap` rather than another
+  imutest run: exactly **one** reversal, 0 repeats, 0 zero-stamped. It is not a
+  seam-correction failure. One burst of 9 samples was stamped **2,163,509 ticks
+  (54 s) AHEAD**, `seq` continuous across it, and the burst after was correct —
+  so the reversal the check reports is the *return* to real time, and the
+  backward guard recovered one burst too late.
+
+  The post-drain `TIMESTAMP0` read is taken as the newest sample's time, and the
+  backward guard only corrects *overlaps*, so a read that comes back garbage in
+  the **forward** direction was never checked. The sharp edge: `st_fifo_ts.h`
+  already rejects its batched anchor when `now_ts` fails its cross-check, and
+  the fallback then used that same `now_ts` as ground truth. Fixed with
+  `chip_ts_guard_forward_ok()`, applied in all three drivers that share the
+  fallback (`ism330dhcx`, `lsm6dso`, `icm42688p`): an implausible forward read
+  is refused and the burst extrapolates one sample period from the previous one,
+  counted and logged rate-limited. A plausible advance is still taken from the
+  counter, so one bad read does not stop the driver tracking the chip.
+
+  Nothing reached the filter — `imu.c` rejects a non-increasing timestamp and
+  falls back to the nominal period — but `ts_wall_ns` carried it to the wire.
+  **Still owed:** a clean `imud-imutest` run confirming the check now passes.
+  The earlier "12 reversals" reading is void, measured while the daemon was
+  racing imutest for the same FIFO; at 1 event per 94,539 samples, 12 inside a
+  5 s window was contention, not this defect.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 

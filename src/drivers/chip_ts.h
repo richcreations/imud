@@ -95,6 +95,50 @@ static inline uint32_t chip_ts_guard_shift(chip_ts_guard_t *g,
     return (uint32_t)(-delta) + step;
 }
 
+/*
+ * Is `first` credible as the next burst's OLDEST stamp, or is the counter read
+ * behind it garbage?
+ *
+ * The backward guard above only corrects overlaps. A post-drain counter read
+ * that comes back wrong in the FORWARD direction is not an overlap, so nothing
+ * caught it — and the fallback path treats that read as the newest sample's
+ * time, so one bad read stamps an entire burst far in the future. Measured on
+ * the reference ISM330DHCX: one burst of 9 samples in 94,539 landed 2,163,509
+ * ticks (54 s) ahead, with `seq` continuous across it. The burst after was
+ * correct, because the backward jump back to real time exceeded max_jitter and
+ * re-seeded — so the guard recovered, one burst too late, having emitted nine
+ * samples with wire timestamps 54 s wrong.
+ *
+ * The irony worth remembering: st_fifo_ts.h ALREADY rejects the batched anchor
+ * when `now_ts` fails its cross-check, and the fallback then uses that very
+ * `now_ts` as ground truth. This is the check the fallback was missing.
+ *
+ * `max_forward` bounds a believable gap between consecutive bursts. Generous on
+ * purpose: a real gap of seconds means the reader was starved for seconds, and
+ * imu.c re-anchors after a stall like that anyway, so a false reject there costs
+ * nothing while a false accept costs a burst of wrong sample times.
+ */
+static inline bool chip_ts_guard_forward_ok(const chip_ts_guard_t *g,
+                                            uint32_t first,
+                                            uint32_t max_forward)
+{
+    if (!g->have) return true;             /* nothing to judge it against */
+    int32_t delta = (int32_t)(first - g->last);
+    if (delta <= 0) return true;           /* backward: the other guard's job */
+    return (uint32_t)delta <= max_forward;
+}
+
+/*
+ * The stamp the next sample should carry when the counter read cannot be
+ * trusted: one sample period after the previous burst ended. Only meaningful
+ * once the guard has seen a burst, which chip_ts_guard_forward_ok() implies
+ * whenever it returns false.
+ */
+static inline uint32_t chip_ts_guard_next(const chip_ts_guard_t *g, uint32_t step)
+{
+    return g->last + step;
+}
+
 /* Record the newest sample of the burst just emitted. */
 static inline void chip_ts_guard_note(chip_ts_guard_t *g, uint32_t newest)
 {

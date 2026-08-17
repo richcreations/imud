@@ -75,11 +75,18 @@ static struct {
     uint32_t ticks_per_sample;
     uint64_t ts_rejects;        /* bursts whose batched anchor was refused */
     uint64_t ts_reject_next;    /* next count worth a log line */
+    uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
+    uint64_t ts_fwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ls;
 
 /* One second of 25 us ticks; see chip_ts.h. */
 #define TS_MAX_JITTER_TICKS  40000u
+
+/* A burst that lands this far AHEAD of the previous one means the post-drain
+ * counter read is garbage, not that time passed -- 25 us/tick, so 10 s. See
+ * chip_ts_guard_forward_ok(). */
+#define TS_MAX_FWD_TICKS     400000u
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
@@ -211,6 +218,8 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ls.seq              = 0;
     ls.ts_rejects       = 0;
     ls.ts_reject_next   = 1;
+    ls.ts_fwd_rejects   = 0;
+    ls.ts_fwd_next      = 1;
     chip_ts_guard_reset(&ls.ts_guard);
     ls.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
 
@@ -330,9 +339,32 @@ static int lsm_read(const imud_bus_t *bus,
                 uint32_t burst_ts = now_ts;
                 uint32_t span  = (uint32_t)(produced - 1) * ls.ticks_per_sample;
                 uint32_t first = burst_ts - span;
-                burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
-                                                ls.ticks_per_sample,
-                                                TS_MAX_JITTER_TICKS);
+                /*
+                 * Before trusting now_ts, ask whether it is credible. A garbage
+                 * counter read lands the whole burst in the future, and the
+                 * backward guard below cannot see that -- it only corrects
+                 * overlaps. st_fifo_ts_apply() above has already rejected its
+                 * anchor for exactly this reason when it fires, so using the
+                 * same now_ts here unchecked is what let one bad read stamp
+                 * nine samples 54 s ahead on the reference part.
+                 */
+                if (!chip_ts_guard_forward_ok(&ls.ts_guard, first,
+                                              TS_MAX_FWD_TICKS)) {
+                    first    = chip_ts_guard_next(&ls.ts_guard,
+                                                  ls.ticks_per_sample);
+                    burst_ts = first + span;
+                    if (++ls.ts_fwd_rejects >= ls.ts_fwd_next) {
+                        LOG_W("lsm6dso: %llu post-drain timestamp read(s) "
+                              "implausibly far ahead; extrapolating from the "
+                              "previous burst\n",
+                              (unsigned long long)ls.ts_fwd_rejects);
+                        ls.ts_fwd_next *= 10;
+                    }
+                } else {
+                    burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
+                                                    ls.ticks_per_sample,
+                                                    TS_MAX_JITTER_TICKS);
+                }
                 for (int i = 0; i < produced; i++) {
                     uint32_t age = (uint32_t)(produced - 1 - i) * ls.ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;

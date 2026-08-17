@@ -85,6 +85,17 @@ imud (1.9.0) unstable; urgency=medium
     arriving. CM_Freq's meaning depends on the bandwidth (Rev A p.15), and
     continuous mode was being enabled before CTRL1 was programmed. Order
     reversed; 0 failures in 20 after.
+  * Fix: a corrupted post-drain timestamp read could stamp an entire FIFO
+    burst seconds into the future on ism330dhcx, lsm6dso and icm42688p. The
+    read is taken as the newest sample's time and the seam guard only
+    corrects backwards motion, so a forward-garbage read went unchecked --
+    measured on the reference part as one burst of 9 samples 2163509 ticks
+    (54 s) ahead, seq continuous, with the next burst correct because the
+    jump back re-seeded the guard. st_fifo_ts already refused its batched
+    anchor when now_ts failed its cross-check, and the fallback then trusted
+    that same now_ts. Nothing reached the filter; ts_wall_ns reached the
+    wire. An implausible forward read is now refused and the burst
+    extrapolates one sample period on, counted and logged rate-limited.
   * Behaviour change: [mag] odr_hz advertises 1, 20, 100 and 1000 Hz for
     mmc5983ma, not seven rates. The part does not honour CM_Freq 010, 100
     or 110, and free-ran at ~130, ~130 and ~256 Hz while fusion sized the
