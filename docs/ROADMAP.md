@@ -392,6 +392,23 @@ issues nothing into the vulnerable window, but `read()`'s per-sample `STATUS`
 write lands in it as soon as the mag reader starts. The wait therefore stays,
 inside `init()` rather than left to the caller.
 
+**A paired write was tried as a better fix for B, and rejected on measurement.**
+Sending `CTRL0` and `CTRL1` as one 3-byte transfer should beat the ordering rule
+outright: the address does walk on this part, so byte 2 reaches `CTRL1` and lands
+*after* the aliased copy, making the pair correct by construction. Confirmed —
+byte 2 reproduces `CTRL1`'s documented semantics exactly (`0x04|bw` inhibits X,
+`0x18|bw` inhibits Y and Z), and an `init()` built that way runs at a healthy
+105 changes/s. It fails at the degauss, which is where it would matter most:
+when byte 1 carries a Set or Reset pulse the part stops measuring, both
+directions, ~105 changes/s before and 1/s after. The ~500 ns coil current does
+not tolerate a second byte inside the same chip-select assertion. Pairing in
+`init()` only would leave two idioms and an unstated landmine, so the ordering
+rule stays uniformly. **This is also the answer to "is the alias a framing
+artefact rather than silicon" — it is not:** a `CTRL1` write does not disturb
+`CTRL2` (106 changes/s straight after one), a `CTRL2` write does not fire
+`CTRL3`'s coil, and a `STATUS` write does not set `TM_M`, so the collateral is
+specific to `CTRL0` and not to what imud puts on the wire.
+
 **A harness lesson worth more than the result.** The first matrix run said the
 reorder *did* retire the settle, convincingly and reproducibly. It was wrong:
 the bench tool's prologue ran the stock `init()` before the candidate one, so
@@ -429,18 +446,43 @@ differentials.
 
 **Open.**
 
-- **The field magnitude reads about 25% low, and is not explained.** From a
-  recovered bridge the differential field is **36.6 µT** (raw `|B|` 41.6, bridge
-  offset 8.8) where mid-latitude Earth field is ~48-52. `mag.field_magnitude`
-  PASSes it, because 25-65 µT is wide enough to accept it — the same criticism
-  this section makes of a green tick elsewhere. Two candidates, and **one
-  measurement separates them**: rotate the board and watch `|field|`. Constant
-  at 36.6 in every orientation means a scale error, in the driver's 16384
-  counts/G or below it. Swinging with orientation means local hard iron, which
-  is a bench property and not a defect — the differential separates the
-  *sensor's* bias from the field, not Earth's field from a steel desk, and the
-  board carries no calibration. Do this before concluding anything about the
-  driver.
+- ~~The field magnitude reads about 25% low.~~ **RESOLVED 2026-08-17: local
+  hard iron, not the sensor.** The reading was 36.6 µT differential where the
+  WMM gives 47.42 for the bench's own coordinates, and the resolution came from
+  a `.imucap` capture of ~45 s of hand tumbling, fitted as a sphere:
+
+  | | |
+  |---|---|
+  | radius (true field) | **45.18 µT** vs WMM **47.42** — **−4.7%** |
+  | centre (board-fixed offset) | `[22.45, 1.48, 11.26]` µT, **\|c\| = 25.16** |
+  | residual RMS | 1.96 µT, 8 of 8 octants, 2106 samples |
+
+  −4.7% is **inside the part's own 5% sensitivity tolerance** (Rev A p.4), so
+  the 16384 counts/G constant is right and there is no scale error. The
+  apparent shortfall is entirely the 25 µT offset, which at the bolted-down
+  orientation opposed the field: 47.4 − 25 ≈ 36.6. Two independent estimates
+  agree — a 17 µT residual computed from the mounted vector against the WMM,
+  and a ≥9.3 µT floor implied by the total swinging 36.33 → 54.89 µT between
+  two orientations.
+
+  Direction confirms it. The angle between the field and the accelerometer
+  vector, offset-corrected and orientation-free, is **151.35°**; since the
+  accelerometer measures specific force and so points *up* at rest, the WMM
+  prediction is 180 − 28.85 = 151.15°, an **inclination of 61.35° against
+  61.15° — 0.2°**.
+
+  A magnetised mounting screw was the largest contributor, found by unmounting;
+  a magnetic screwdriver will magnetise a steel screw in one insertion, and
+  A2/304 stainless goes weakly ferromagnetic when cold-worked, which a thread
+  is. Brass or nylon hardware avoids it. The Pi sat 6 inches away, which is
+  close for a dipole. Neither is a defect in imud, and `imud-cal` is what
+  removes the remainder.
+
+  Two lessons from the fitting, both of which cost a wrong answer first: a
+  plain least-squares sphere fit has no resistance to outliers, and **two
+  railed samples out of 4450 moved the fitted centre to 592 µT**; and the
+  capture must be windowed to the moving part, because 60 s of stillness either
+  side weights the fit onto two orientations.
 - **Guided-phase acceptance is owed.** The passive phase now runs clean (below),
   but `--faces`, `--gyro` and `--spin` need an operator, and `spin.*` is where
   the magnetometer's frame agreement with the gyro is established.
@@ -514,10 +556,10 @@ differentials.
   the check that would show it. Rounding up costs a higher rate than asked for,
   which is the safe direction; the previous behaviour was a wrong rate reported
   as the right one.
-- **A yaw rotation by hand** confirming `field[0]` tracks the real field. The
-  raw bytes and the inhibit sweep already settled "frozen" versus "legitimately
-  perpendicular", but nothing yet shows the axis following the field end to end.
-  This is the same measurement the field-magnitude item above needs.
+- ~~A yaw rotation by hand confirming `field[0]` tracks the real field.~~
+  **DONE 2026-08-17**, and more thoroughly than a yaw sweep: the tumbling
+  capture above covers all 8 octants, and every axis tracks — the cloud fits a
+  sphere to a 1.96 µT residual, which a stuck or mis-scaled axis could not do.
 
 **Acceptance, 2026-08-16.** `imud-imutest --passive` against the fixed driver,
 from a recovered bridge: `mag.noise` non-zero on all three axes (0.34/0.33/0.38

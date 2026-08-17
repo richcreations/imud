@@ -84,6 +84,29 @@
  * programmed CTRL1 is remembered here. Written by init() (from main at startup,
  * or from the mag_reader thread on error recovery) and read by degauss() on the
  * mag_reader thread, so it is _Atomic — see CLAUDE.md's concurrency rule.
+ *
+ * ── Why not one 3-byte write instead of the ordering rule ──────────────────
+ *
+ * Sending CTRL0 and CTRL1 as a single 3-byte transfer looks strictly better: the
+ * address does walk on this part, so byte 2 genuinely reaches CTRL1 and lands
+ * after the aliased copy, making the pair correct by construction with no rule
+ * to preserve. Verified 2026-08-17 — a 3-byte write's second byte reproduces
+ * CTRL1's documented semantics exactly (0x04|bw inhibits X, 0x18|bw inhibits Y
+ * and Z), and init() built that way runs at a healthy 105 changes/s.
+ *
+ * It cannot be used for the degauss, which is where it would matter most. When
+ * byte 1 carries a Set or Reset pulse, the part stops measuring:
+ *
+ *   SET   as two writes  106 changes/s     SET   as one 3-byte write  1/s
+ *   RESET as two writes  105 changes/s     RESET as one 3-byte write  1/s
+ *
+ * The pulse drives a large coil current for ~500 ns, and a second byte arriving
+ * inside the same chip-select assertion does not survive it. Pairing in init()
+ * but not in degauss() would mean two idioms in one driver plus an unstated
+ * landmine — never pair a write whose first byte pulses — to replace a rule that
+ * already works and that test_drivers already pins. So the ordering rule stays,
+ * uniformly. Do not "simplify" this into a paired write without re-reading the
+ * table above.
  */
 static _Atomic uint8_t g_ctrl1 = 0;
 
