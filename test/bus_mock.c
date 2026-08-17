@@ -33,6 +33,7 @@ static int     g_fifo_head[NADDR];   /* next byte to pop */
 static int     g_fifo_tail[NADDR];   /* next free slot */
 static int     g_fifo_reg[NADDR];    /* first FIFO-port register, or -1 */
 static int     g_fifo_reg_hi[NADDR]; /* last FIFO-port register */
+static uint32_t g_fifo_drops[NADDR];  /* pushes discarded at FIFOSZ */
 static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_alias[NADDR][REGSZ];      /* write also lands here, or -1 */
@@ -65,6 +66,7 @@ void i2cmock_reset(void)
     memset(g_fifo, 0, sizeof g_fifo);
     memset(g_fifo_head, 0, sizeof g_fifo_head);
     memset(g_fifo_tail, 0, sizeof g_fifo_tail);
+    memset(g_fifo_drops, 0, sizeof g_fifo_drops);
     memset(g_selfclear, 0, sizeof g_selfclear);
     memset(g_live, 0, sizeof g_live);
     memset(g_reads, 0, sizeof g_reads);
@@ -171,8 +173,26 @@ void i2cmock_set_fifo_range(uint8_t addr, uint8_t lo, uint8_t hi)
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len)
 {
     int a = addr & (NADDR - 1);
-    for (int i = 0; i < len && g_fifo_tail[a] < FIFOSZ; i++)
+    /*
+     * Reclaim a fully drained queue. Without this, head and tail only ever
+     * advance and FIFOSZ becomes a LIFETIME budget rather than a depth: a test
+     * that pushes and drains repeatedly — which is what the timed phases do,
+     * one sample per progress call — silently stops being fed partway through.
+     * That is a capacity limit masquerading as a timing flake, and it scales
+     * with how FAST the machine runs, because more iterations spend more of the
+     * budget. It cost a real debugging session; keep the reclaim.
+     */
+    if (g_fifo_head[a] == g_fifo_tail[a]) g_fifo_head[a] = g_fifo_tail[a] = 0;
+
+    for (int i = 0; i < len; i++) {
+        if (g_fifo_tail[a] >= FIFOSZ) { g_fifo_drops[a]++; continue; }
         g_fifo[a][g_fifo_tail[a]++] = buf[i];
+    }
+}
+
+uint32_t i2cmock_fifo_drops(uint8_t addr)
+{
+    return g_fifo_drops[addr & (NADDR - 1)];
 }
 
 void i2cmock_fail_next_ioctl(void)
@@ -189,8 +209,13 @@ void i2cmock_fail_all(int enable)
 
 static uint8_t fifo_pop(int a)
 {
-    if (g_fifo_head[a] < g_fifo_tail[a])
-        return g_fifo[a][g_fifo_head[a]++];
+    if (g_fifo_head[a] < g_fifo_tail[a]) {
+        uint8_t v = g_fifo[a][g_fifo_head[a]++];
+        /* Drained: reclaim now rather than waiting for the next push, so a
+         * reader that never pushes again still leaves the queue reusable. */
+        if (g_fifo_head[a] == g_fifo_tail[a]) g_fifo_head[a] = g_fifo_tail[a] = 0;
+        return v;
+    }
     return 0;   /* underflow → zero-fill (a malformed-test guard, not a device
                  * behaviour tests should rely on) */
 }

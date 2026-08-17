@@ -95,6 +95,17 @@ void i2cmock_set_fifo_range(uint8_t addr, uint8_t lo, uint8_t hi);
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
 
 /*
+ * Bytes discarded because the queue was full, since i2cmock_reset().
+ *
+ * The queue reclaims itself whenever it drains, so FIFOSZ bounds DEPTH and not
+ * a test's lifetime budget. It did once bound the lifetime, which starved the
+ * later stages of a multi-stage test and looked exactly like a timing flake --
+ * and worse on faster machines, which spend the budget quicker. Assert this is
+ * zero anywhere a test stages more than a few thousand bytes.
+ */
+uint32_t i2cmock_fifo_drops(uint8_t addr);
+
+/*
  * Declare the bits in `mask` at `reg` as self-clearing: a read returns them as
  * currently set, then drops them.  This models the reset and trigger bits that
  * hardware clears once the operation completes — without it, every driver

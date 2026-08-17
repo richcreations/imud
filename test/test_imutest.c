@@ -1356,6 +1356,46 @@ static void test_drdy_two_pass(void)
     end(fb);
 }
 
+/*
+ * A face verdict is a dominant-axis decision on a mean vector, so "sign wrong"
+ * on its own says nothing about why. Print what was actually measured — the
+ * sample count especially, since a collection window that accumulated nothing
+ * leaves the mean at (0,0,0) and makes dominant_axis() arbitrary.
+ */
+/*
+ * The sign check is only reached for a face with >= 10 samples; below that the
+ * phase skips it. Assert the budget actually delivered them, so a too-tight
+ * face_collect_s fails on its own terms instead of showing up as a wrong
+ * verdict somewhere else.
+ */
+static void expect_faces_sampled(const imt_report_t *r)
+{
+    int thin = 0;
+    for (int i = 0; i < r->raw.n_faces; i++)
+        if (r->raw.face[i].n < 10) thin++;
+    EXPECT(thin == 0, "every face collected the 10 samples the sign check needs");
+    /*
+     * The mechanism that starved the later faces: the mock's queue used to let
+     * head and tail only advance, so FIFOSZ was a lifetime budget and the six
+     * faces shared 292 staged samples between them. Faster machines spent it
+     * sooner, which is why it read as a timing flake. Pin it directly.
+     */
+    EXPECT(i2cmock_fifo_drops(ISM_ADDR) == 0,
+           "the mock queue dropped no staged samples");
+}
+
+static void dump_faces_on_failure(const imt_report_t *r, int fail_before)
+{
+    if (g_fail == fail_before) return;
+    for (int i = 0; i < r->raw.n_faces; i++) {
+        const imt_face_row_t *f = &r->raw.face[i];
+        printf("      face %d  n=%-5d a = [%8.4f %8.4f %8.4f]  |a|=%7.4f  "
+               "want axis %d sign %+d, got axis %d sign %+d\n",
+               f->idx + 1, f->n, f->a[0], f->a[1], f->a[2], f->norm,
+               f->exp_axis, f->exp_sign, f->got_axis, f->got_sign);
+    }
+}
+
 static void test_faces_good_and_swapped(void)
 {
     begin("test_faces_good_and_swapped");
@@ -1385,6 +1425,8 @@ static void test_faces_good_and_swapped(void)
     EXPECT(status_of(r, "face.1.sign") == IMT_PASS, "face 1 sign correct");
     EXPECT(status_of(r, "face.5.sign") == IMT_PASS, "face 5 sign correct");
     EXPECT(r->raw.n_faces == 6, "six face rows recorded");
+    expect_faces_sampled(r);
+    dump_faces_on_failure(r, fb);
     free(r);
 
     /* Y and Z swapped — the defect a wrong chip-to-board remap produces. */
@@ -1403,6 +1445,8 @@ static void test_faces_good_and_swapped(void)
     EXPECT(note_contains(r, "face.1.sign", "swapped") ||
            note_contains(r, "face.1.sign", "Y"),
            "diagnosis names the swapped axis");
+    expect_faces_sampled(r);
+    dump_faces_on_failure(r, fb);
     free(r);
 
     /* Z sign inverted only — the other classic remap bug. */
@@ -1416,6 +1460,8 @@ static void test_faces_good_and_swapped(void)
     r = run(&cfg, &o);
     EXPECT(status_of(r, "face.1.sign") == IMT_FAIL, "inverted Z fails");
     EXPECT(note_contains(r, "face.1.sign", "sign"), "diagnosis names the sign");
+    expect_faces_sampled(r);
+    dump_faces_on_failure(r, fb);
     free(r);
 
     end(fb);
