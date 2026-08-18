@@ -54,6 +54,21 @@ def sub(pattern, repl, count=1):
 
 
 CASES = [
+    # ── check-imutest-checks ─────────────────────────────────────────────────
+    # A new check added to the tool and not to the spec. mag.drdy.restore
+    # shipped exactly this way -- the one report line telling a reader to
+    # distrust everything below it, undescribed.
+    ("check-imutest-checks", "src/imutest.c",
+     sub(r'add_check\(r, "mag\.set_reset"',
+         'add_check(r, "mag.zzz_new"'),
+     "mag.zzz_new"),
+
+    # A documented id renamed in the tool, so the spec now describes a verdict
+    # that can never print and says nothing about the one that can.
+    ("check-imutest-checks", "src/imutest.c",
+     sub(r'"imu\.rest\.gravity"', '"imu.rest.gravity2"'),
+     "imu.rest.gravity2"),
+
     # ── check-package-descriptions ───────────────────────────────────────────
     # Each package's description lives in debian/control (what apt shows) and
     # in packaging/<pkg>/description (what the repo documents). This found a
