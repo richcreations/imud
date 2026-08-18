@@ -82,6 +82,10 @@ devbox/run cppcheck --enable=warning,performance,portability --inline-suppr \
                     --error-exitcode=1 --quiet src lib
 devbox/run scan-build --status-bugs --keep-going make all bridges
 
+# CI blocks on this one and `make test` does not run it, so it is easy to
+# discover only after a push.
+devbox/run pyflakes3 lib/imud_client.py tools/*.py test/test_checkers.py
+
 devbox/run dpkg-buildpackage -us -uc -b     # → ~/.cache/imud-devbox/out/
 devbox/run sh -c 'lintian --info /work/*.changes'
 devbox/run devbox/unitcheck.sh              # verify + the six exposure scores

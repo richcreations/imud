@@ -72,6 +72,11 @@ RUN apt-get install -y --no-install-recommends \
 #    makeinfo validate without it), so this list is a superset of ci.yml's,
 #    which the header above already says is the contract.
 #
+#    pyflakes3 is here because CI BLOCKS on it and it is not in `make test`, so
+#    without it the only place the tool Python gets linted is after a push.  It
+#    was missing from this image and from macOS, which made the pyflakes step of
+#    the contributor checklist impossible to perform anywhere locally.
+#
 #    The libFuzzer runtime is a version-suffixed package (libclang-rt-14-dev on
 #    bookworm, -19- on trixie) with no unversioned alias, so resolve it from the
 #    package lists rather than pinning a number that rots at the next release.
@@ -91,7 +96,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' \
         > /etc/apt/apt.conf.d/99devbox-keep-debs && \
     apt-get install -y --no-install-recommends \
-        cppcheck clang clang-tools lcov mandoc \
+        cppcheck clang clang-tools lcov mandoc pyflakes3 \
         help2man texinfo pandoc && \
     rt=$(apt-cache --names-only search '^libclang-rt-[0-9]+-dev$' \
          | awk '{print $1}' | sort -V | tail -1) && \
