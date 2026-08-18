@@ -498,10 +498,17 @@ that races the daemon produces plausible-looking nonsense.
 
   Nothing reached the filter — `imu.c` rejects a non-increasing timestamp and
   falls back to the nominal period — but `ts_wall_ns` carried it to the wire.
-  **Still owed:** a clean `imud-imutest` run confirming the check now passes.
-  The earlier "12 reversals" reading is void, measured while the daemon was
-  racing imutest for the same FIFO; at 1 event per 94,539 samples, 12 inside a
-  5 s window was contention, not this defect.
+
+  **Confirmed on the reference part.** `imu.chipts.monotonic` PASSes,
+  `0 reversals / 0 repeats`, in a run of **40 PASS · 1 WARN · 0 FAIL · 4 SKIP**
+  — no FAIL left on this pair. The sole WARN is `mag.rate` at 105.4 Hz against
+  a configured 100, the die's own oscillator running ~5% fast on both
+  transports, which §1.2 records above as the part rather than the driver.
+
+  Judge a reversal count only against a run the daemon is not in. The earlier
+  "12 reversals" reading is void, measured while the daemon was racing imutest
+  for the same FIFO; at 1 event per 94,539 samples, 12 inside a 5 s window was
+  contention, not this defect.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
