@@ -214,10 +214,28 @@ int main(int argc, char **argv)
                                          BI.tag, &udest, &udestlen);
                 if (udp_fd < 0) { LOG_E("[influx] reload: bad UDP dest — exiting\n"); break; }
             }
-            if (nc.influx_udp_enabled != cfg.influx_udp_enabled ||
-                nc.influx_http_enabled != cfg.influx_http_enabled)
+            /*
+             * The output enables are [restart] keys, in the registry and in
+             * the man page, and this warning says so.  Carry the RUNNING
+             * values across the copy so that is actually true.
+             *
+             * Copying them made the warning a lie in a way that bites: a
+             * reload turning UDP on left udp_fd at -1, because the reopen
+             * above is guarded on the enable that was in force when the
+             * socket was opened.  The publish path then called sendto() on
+             * -1 at the emit rate for the life of the process, logging
+             * EBADF every time.  Turning UDP off had the mirror problem —
+             * it stopped the output immediately, which is the change the
+             * warning promises will not take effect until a restart.
+             */
+            bool udp_on  = cfg.influx_udp_enabled;
+            bool http_on = cfg.influx_http_enabled;
+            if (nc.influx_udp_enabled != udp_on ||
+                nc.influx_http_enabled != http_on)
                 LOG_W("[influx] output enable change needs a restart to apply\n");
             cfg = nc;
+            cfg.influx_udp_enabled  = udp_on;
+            cfg.influx_http_enabled = http_on;
             bridge_reload_done(&BI);
         }
 
@@ -265,7 +283,13 @@ int main(int argc, char **argv)
                             http_ok = true;
                         }
                     }
-                    if (cfg.influx_udp_enabled) {
+                    /* udp_fd is open whenever the enable is set — startup
+                     * refuses to run otherwise, and the enable is now
+                     * restart-scoped — but that correlation is established a
+                     * hundred lines up and survives a struct copy, so it is
+                     * invisible here to a reader and to the analyzer. Say it
+                     * where the descriptor is used. */
+                    if (cfg.influx_udp_enabled && udp_fd >= 0) {
                         if (sendto(udp_fd, line, (size_t)n, 0,
                                    (struct sockaddr *)&udest, udestlen) < 0)
                             LOG_W("[influx] sendto: %s\n", strerror(errno));

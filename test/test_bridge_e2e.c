@@ -363,6 +363,88 @@ static void test_influx_udp_line(void)
     end(fb);
 }
 
+/*
+ * The output enables are [restart] keys, and a reload must leave them alone.
+ *
+ * The interesting direction is DISABLING, because it is the one with a visible
+ * effect: applying it stops the points immediately, which is exactly what the
+ * "needs a restart to apply" warning promises will not happen.  Enabling was
+ * the worse bug — it left udp_fd at -1 while the publish path believed UDP was
+ * on, so sendto() ran on a closed descriptor at the emit rate — but from
+ * outside, a broken enable and a correctly-ignored one both look like silence,
+ * so this asserts on the half that can be seen.
+ *
+ * The reload must also be PROVEN to have happened, or the test passes for the
+ * wrong reason the moment SIGHUP handling breaks.  So the same reload moves a
+ * [hot] key (measurement) and the assertion is that the hot change took effect
+ * while the restart-scoped one did not.
+ */
+static void test_influx_enables_are_restart_scoped(void)
+{
+    begin("test_influx_enables_are_restart_scoped");
+    int fb = g_fail;
+
+    fakestream_t fs;
+    EXPECT(fs_start(&fs, IX_SOCK, 200) == 0, "fake stream started");
+
+    int port = 0;
+    int sink = udp_bind_ephemeral(&port);
+
+    write_conf(IX_CONF,
+               "[imud-influxdb]\n"
+               "enabled = true\n"
+               "socket = \"%s\"\n"
+               "rate_hz = 50\n"
+               "measurement = \"before\"\n"
+               "udp_enabled = true\n"
+               "udp_addr = \"127.0.0.1\"\n"
+               "udp_port = %d\n"
+               "[logging]\nlevel = \"error\"\n",
+               IX_SOCK, port);
+
+    bridge_run_t r;
+    bridge_start(&r, influx_main_entry, IX_CONF);
+
+    char buf[2048];
+    ssize_t n = udp_recv(sink, buf, sizeof buf);
+    EXPECT(n > 0 && strncmp(buf, "before,", 7) == 0, "points flow before the reload");
+
+    /* Turn the output off (restart-scoped) and rename the measurement (hot). */
+    write_conf(IX_CONF,
+               "[imud-influxdb]\n"
+               "enabled = true\n"
+               "socket = \"%s\"\n"
+               "rate_hz = 50\n"
+               "measurement = \"after\"\n"
+               "udp_enabled = false\n"
+               "udp_addr = \"127.0.0.1\"\n"
+               "udp_port = %d\n"
+               "[logging]\nlevel = \"error\"\n",
+               IX_SOCK, port);
+    pthread_kill(r.tid, SIGHUP);
+
+    /*
+     * Read until the hot key lands.  That arrival is the proof the reload ran,
+     * and every point that arrives at all is the proof the disable did not.
+     */
+    bool saw_after = false;
+    for (int i = 0; i < 40 && !saw_after; i++) {
+        n = udp_recv(sink, buf, sizeof buf);
+        if (n <= 0) break;
+        if (strncmp(buf, "after,", 6) == 0) saw_after = true;
+    }
+    EXPECT(saw_after,
+           "points keep flowing and carry the reloaded measurement name");
+
+    bridge_finish(&r);
+    EXPECT(r.rc == 0, "main() returned 0");
+
+    close(sink);
+    fs_stop(&fs);
+    unlink(IX_CONF);
+    end(fb);
+}
+
 /* The other transport influx_main can be configured for. Its encoder is the
  * same either way; the HTTP request framing around it exists only in main(). */
 static void test_influx_http_post(void)
@@ -765,6 +847,7 @@ int main(void)
     test_signalk_reconnects();
     test_signalk_disabled_exits_clean();
     test_influx_udp_line();
+    test_influx_enables_are_restart_scoped();
     test_influx_http_post();
     test_mavlink_udp_frames();
     test_mavlink_tcp_listener();
