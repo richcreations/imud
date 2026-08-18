@@ -175,9 +175,25 @@ typedef struct {
 
     bus_caps_t bus_caps;   /* as for imu_ops_t above */
 
+    /* Return 0 on success, -1 on failure — as for imu_ops_t above. */
     int (*probe)    (const imud_bus_t *bus);
     int (*reset)    (const imud_bus_t *bus);
     int (*init)     (const imud_bus_t *bus, const mag_cfg_t *cfg);
+
+    /*
+     * Read one completed measurement into *out.
+     *
+     * Returns 0 on success, 1 when there is no new measurement yet, and -1 on a
+     * bus error only.  Same three-way contract as the IMU read() above, and the
+     * `1` is load-bearing for the same reason: imu.c must not count a quiet
+     * sensor toward the error-reset threshold.
+     *
+     * What "no new measurement yet" is decided FROM depends on how the caller
+     * waits — see mag_cfg_t.int_driven.  A driver whose data-ready is a latched
+     * interrupt cleared by the same write that clears its status bit cannot use
+     * that bit when the caller blocks on the edge; mmc5983ma.c carries the
+     * measurement and the reasoning.
+     */
     int (*read)     (const imud_bus_t *bus, mag_sample_t *out);
 
     /* Issue a SET (degaussing) pulse. NULL if chip has no coil. */
