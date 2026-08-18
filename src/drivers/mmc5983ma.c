@@ -9,7 +9,7 @@
  * mmc5983ma.c — MMC5983MA magnetometer driver
  *
  * Implements mag_ops_t for the MMC5983MA via Linux I2C_RDWR ioctl.
- * Runs in continuous measurement mode; caller wakes on GPIO27 INT edge,
+ * Runs in continuous measurement mode; caller wakes on the INT edge,
  * then calls read() to pull the completed 18-bit sample.
  *
  * Register references: MMC5983MA datasheet Rev A (MEMSIC, 2019-04-03).
@@ -350,10 +350,9 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 /*
  * mmc_read — read one completed 18-bit sample.
  *
- * Called by mag_reader thread after GPIO27 rising edge (INT active-high).
- *
- * Called by mag_reader thread after GPIO27 rising edge (INT active-high), or
- * by a polling caller such as imud-imutest and imud-cal.
+ * Called by the mag_reader thread after a rising edge on the mag's INT line
+ * (active-high; the line is `[mag] int_gpio`, 27 by default), or by a polling
+ * caller such as imud-imutest and imud-cal.
  *
  * Which of those it is decides how "is there new data?" is answered — see the
  * g_int_driven comment near the top of this file, which is the whole reason the
