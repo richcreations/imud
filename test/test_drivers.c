@@ -5,15 +5,18 @@
  */
 
 /*
- * test_drivers.c — register-level decode/encode tests over the mock I2C bus
- * (test/bus_mock.c, --wrap=ioctl).
+ * test_drivers.c — register-level decode/encode tests over the mock bus
+ * (test/bus_mock.c, --wrap=ioctl), which serves both I2C and spidev.
  *
- * Covers ALL ELEVEN hardware drivers: the two hardware-validated ones
- * (ism330dhcx, mmc5983ma), the MPU-925x pair, and the seven flagged
- * `experimental` — lsm6dso, icm42688p, icm20948, ak09916, lis3mdl, lis2mdl,
- * rm3100.  For those, nothing else has ever executed a line: a transposed
- * register or a sign error would otherwise wait for silicon that may never
- * arrive.
+ * Covers ALL ELEVEN hardware driver files: the two hardware-validated ones
+ * (ism330dhcx, mmc5983ma) and the nine flagged `experimental` — mpu925x (which
+ * holds the MPU-9250/9255 pair), lsm6dso (LSM6DSO/LSM6DSOX), icm42688p,
+ * icm20948, ak09916, ak8963, lis3mdl, lis2mdl, rm3100.  For those, nothing else
+ * has ever executed a line: a transposed register or a sign error would
+ * otherwise wait for silicon that may never arrive.
+ *
+ * Count files, not ops: three of those files register two parts each, so the
+ * registry has fifteen *_ops entries (sim is two of them) against twelve files.
  *
  * A mock cannot replace bench validation (ROADMAP §1) — it cannot tell you
  * the chip→board axis remap matches the physical part.  What it does catch is
