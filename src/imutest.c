@@ -2386,12 +2386,34 @@ static void mag_drdy_cb(void *user)
     else              m->errors++;
 }
 
+/*
+ * Put the magnetometer back into the polled mode the rest of the report needs.
+ *
+ * Failure here is worth a line of its own: every mag check that follows would
+ * be measuring the wrong thing, and without this the operator would see a set
+ * of plausible numbers with nothing to say they are untrustworthy.
+ */
+static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
+                               const imud_bus_t *bus, int eff_odr)
+{
+    mag_cfg_t polled = { .odr_hz = eff_odr, .set_period_s = 0.0f,
+                         .int_driven = false };
+    if (mag->init(bus, &polled) < 0)
+        add_check(r, "mag.drdy.restore", "Mag returned to polled mode",
+                  IMT_FAIL, "init() failed", "ok",
+                  "the magnetometer could not be put back into polled mode "
+                  "after the interrupt-line measurement. Any mag result below "
+                  "this line was read the wrong way and cannot be trusted.");
+}
+
+static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
+                             const mag_ops_t *mag, const imud_bus_t *bus,
+                             const imud_config_t *cfg);
+
 static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                            const mag_ops_t *mag, const imud_bus_t *bus,
                            const imud_config_t *cfg, int eff_odr)
 {
-    char mb[56], eb[56];
-
     r->raw.mag_drdy_edges = -1;
 
     /*
@@ -2412,26 +2434,49 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
 
     /*
      * Re-init as the daemon does, so read() answers "is there new data?" the
-     * way it will in production.  Restored to the polled mode afterwards, since
-     * everything that runs later in the report polls.
+     * way it will in production, then put the part back — everything that runs
+     * later in the report polls.
+     *
+     * The restore is ONE unconditional statement below rather than a step on
+     * each exit path, because a driver may latch the mode before the first bus
+     * write that can fail.  mmc5983ma.c does, deliberately: a half-completed
+     * init must not leave the staleness guard holding a sample taken in the
+     * other mode.  So even a FAILED init() can leave the driver
+     * interrupt-driven, and any early return that skipped the restore would
+     * hand every later mag check a read() that bypasses its status gate,
+     * silently changing what mag.rate, mag.noise and mag.field measure.
+     * Structure it so there is no path to get this wrong on.
      */
     mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
                       .int_driven = true };
-    if (mag->init(bus, &irq) < 0) {
+    if (mag->init(bus, &irq) == 0)
+        measure_mag_drdy(r, o, mag, bus, cfg);
+    else
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                    "re-init in interrupt mode failed");
-        return;
-    }
+
+    mag_restore_polled(r, mag, bus, eff_odr);
+}
+
+/*
+ * The measurement itself: count edges on the mag's interrupt line for the DRDY
+ * window and read behind each one, then grade the rate that produces.
+ *
+ * Split out of check_mag_drdy so that function's init/restore pair brackets a
+ * single call and cannot be escaped by an early return.  Grades into *r and
+ * touches nothing else.
+ */
+static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
+                             const mag_ops_t *mag, const imud_bus_t *bus,
+                             const imud_config_t *cfg)
+{
+    char mb[56], eb[56];
 
     mag_drdy_ctx_t m = { .mag = mag, .bus = bus };
     imt_gpio_why_t why = IMT_GPIO_OK;
     long ms = (long)(o->drdy_window_s * 1e3);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
                                      mag_drdy_cb, &m, &why);
-
-    mag_cfg_t polled = { .odr_hz = eff_odr, .set_period_s = 0.0f,
-                         .int_driven = false };
-    mag->init(bus, &polled);
 
     if (edges < 0) {
         const char *reason =

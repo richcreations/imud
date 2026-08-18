@@ -1353,6 +1353,39 @@ static void test_mag_drdy_rate(void)
     EXPECT(r->raw.mag_drdy_edges == 8, "edge count recorded");
     free(r);
 
+    /*
+     * The part must be left POLLED. check_mag_drdy re-inits the driver
+     * interrupt-driven to measure the line, and the mode is a driver global —
+     * so a run that failed to put it back would leave every later mag check
+     * reading through a path that skips the status gate. Observable from here:
+     * with M_DONE clear, a polled read says "no data" (1); an interrupt-driven
+     * one burst-reads and hands back the stale conversion (0).
+     */
+    mock_base(); script_reset(&o);
+    g_gpio_edges       = 8;
+    g_gpio_why         = IMT_GPIO_OK;
+    g_gpio_drain_calls = 4;
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);      /* M_DONE clear */
+    r = run(&cfg, &o);
+    free(r);
+
+    /*
+     * Stage FRESH output registers with M_DONE still clear. That is the one
+     * state the two modes answer differently: polled consults the status bit
+     * and reports no data (1), interrupt-driven skips it, sees the registers
+     * have advanced, and hands the sample back (0). Leaving the registers
+     * unchanged would NOT do — the staleness guard also returns 1 then, and
+     * the assertion would pass in either mode.
+     */
+    uint8_t fresh[7] = { 0xAA, 0x55, 0xBB, 0x66, 0xCC, 0x77, 0x00 };
+    i2cmock_set_regs(MMC_ADDR, 0x00, fresh, 7);
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);      /* M_DONE still clear */
+
+    mag_sample_t ms;
+    memset(&ms, 0, sizeof ms);
+    EXPECT(mmc5983ma_ops.read(I2CBUS(MMC_ADDR), &ms) == 1,
+           "run leaves the magnetometer in polled mode");
+
     g_gpio_edges       = -1;
     g_gpio_why         = IMT_GPIO_ENOCHIP;
     g_gpio_drain_calls = 1;
