@@ -167,6 +167,17 @@ typedef struct {
     double        mag_rate_hz, mag_window_s;
     uint64_t      mag_n;
     int           mag_rc1, mag_rcneg;
+    /*
+     * The same rate measured the way the DAEMON gets it: waiting on the mag
+     * interrupt instead of polling.  Kept separate because the two can disagree
+     * — on a part whose DRDY is a latched interrupt, acknowledging the edge is
+     * what clears the status bit a polled read gates on, so a driver that gates
+     * unconditionally stalls until its timeout and the polled figure describes a
+     * rate the daemon cannot reach.  mag_drdy_edges < 0 means the check did not
+     * run (no interrupt configured, or the line was unavailable).
+     */
+    double        mag_drdy_rate_hz, mag_drdy_window_s;
+    int           mag_drdy_edges, mag_drdy_samples;
     imt_stats3_t  magf;
     double        mag_norm_mean, mag_norm_min, mag_norm_max;
 

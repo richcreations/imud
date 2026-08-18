@@ -137,6 +137,33 @@ The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
   `fifo_wm` 32 and above, so a watermark holds about 63 sample-sets rather
   than 64; below 8 nothing is batched at all.
 
+* **Fix: the magnetometer ran at a third of its sample rate.** The daemon
+  waits on the MMC5983MA's interrupt line; the driver then confirmed the
+  sample by reading `Meas_M_Done`. But that bit is also the interrupt
+  acknowledge — writing 1 to it is the only way to re-arm the latched INT, and
+  the same write takes the bit away, after which it comes back only while the
+  bus is being polled. A reader blocked on an edge is not polling, so every
+  wake was spent on a read reporting "no data", and with the interrupt latched
+  there was no second edge to recover with: each sample cost a wasted edge plus
+  the reader's full 20 ms timeout. Measured on a Pi 5 over SPI, a part
+  converting at 105.5 Hz delivered 35 Hz. The driver now trusts the edge when
+  the caller is waiting on one, still acknowledges, and drops a sample whose
+  output registers have not advanced — so a broken interrupt line degrades to
+  fewer real samples rather than repeating one. Polling callers (`imud-cal`,
+  `imud-imutest`) are unchanged. Nothing to configure; heading simply gets three
+  times the magnetometer data it was getting.
+
+  The other interrupt-capable magnetometer drivers are not affected: none of
+  them acknowledges DRDY with a write that clears the bit their `read()`
+  checks.
+
+* **`imud-imutest` measures the magnetometer the way the daemon reads it.** A
+  new `mag.drdy.rate` check waits on the mag interrupt line and grades the
+  result against the polled `mag.rate`. Every other magnetometer check in the
+  tool polls, which is why the defect above survived a clean report: the tool
+  was measuring a path the daemon does not use. SKIPs on a part with no
+  interrupt pin, or when `[mag] int_gpio` is 0.
+
 * **Fix: the MMC5983MA lost its X axis over SPI.** A write to `CTRL0` also
   lands in `CTRL1` on this part, and `INT_en`'s bit 2 reads there as
   X-inhibit — so `init()`'s own interrupt-enable stopped the X axis measuring

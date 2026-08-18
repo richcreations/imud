@@ -2351,6 +2351,130 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
     check_mag_degauss(r, o, mag, bus, eff_odr);
 }
 
+/* ── The mag rate the DAEMON gets, not the one a poller can see ───────────── */
+
+/*
+ * Everything above polls the magnetometer.  The daemon does not: it blocks on
+ * the mag interrupt.  On 2026-08-18 that difference was worth a factor of three
+ * — a polled 105.4 Hz against 35 Hz in the daemon — and nothing in this tool
+ * could see it, because every check here measured the path the daemon does not
+ * use.  A validation tool that cannot measure the production path will keep
+ * certifying drivers that do not work in it.
+ *
+ * The mechanism is in mmc5983ma.c: when DRDY is a latched interrupt whose
+ * acknowledge write also clears the status bit read() gates on, the gate and
+ * the edge are mutually exclusive, and a reader blocked on the edge never sees
+ * the bit.  That is a property of the part, so this check states the symptom
+ * — the two rates disagree — rather than assuming the cause.
+ */
+typedef struct {
+    const mag_ops_t   *mag;
+    const imud_bus_t  *bus;
+    int                samples;   /* read() == 0 */
+    int                nodata;    /* read() == 1 */
+    int                errors;    /* read() <  0 */
+} mag_drdy_ctx_t;
+
+static void mag_drdy_cb(void *user)
+{
+    mag_drdy_ctx_t *m = user;
+    mag_sample_t s;
+    memset(&s, 0, sizeof s);
+    int rc = m->mag->read(m->bus, &s);
+    if      (rc == 0) m->samples++;
+    else if (rc > 0)  m->nodata++;
+    else              m->errors++;
+}
+
+static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
+                           const mag_ops_t *mag, const imud_bus_t *bus,
+                           const imud_config_t *cfg, int eff_odr)
+{
+    char mb[56], eb[56];
+
+    r->raw.mag_drdy_edges = -1;
+
+    if (!mag->has_interrupt || cfg->mag_int_gpio <= 0) {
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                   !mag->has_interrupt
+                   ? "this part has no interrupt pin; the reader polls it"
+                   : "mag.int_gpio is 0 — the reader uses a polling timer");
+        return;
+    }
+
+    /*
+     * Re-init as the daemon does, so read() answers "is there new data?" the
+     * way it will in production.  Restored to the polled mode afterwards, since
+     * everything that runs later in the report polls.
+     */
+    mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
+                      .int_driven = true };
+    if (mag->init(bus, &irq) < 0) {
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                   "re-init in interrupt mode failed");
+        return;
+    }
+
+    mag_drdy_ctx_t m = { .mag = mag, .bus = bus };
+    imt_gpio_why_t why = IMT_GPIO_OK;
+    long ms = (long)(o->drdy_window_s * 1e3);
+    int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
+                                     mag_drdy_cb, &m, &why);
+
+    mag_cfg_t polled = { .odr_hz = eff_odr, .set_period_s = 0.0f,
+                         .int_driven = false };
+    mag->init(bus, &polled);
+
+    if (edges < 0) {
+        const char *reason =
+            why == IMT_GPIO_EBUSY   ? "mag GPIO is held by another process — is imud running?"
+          : why == IMT_GPIO_ENOCHIP ? "GPIO chip not found; check device.gpio_chip"
+          : why == IMT_GPIO_UNSUPPORTED ? "built without libgpiod"
+          : "GPIO request failed";
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line", reason);
+        return;
+    }
+
+    double rate = m.samples / o->drdy_window_s;
+    r->raw.mag_drdy_edges    = edges;
+    r->raw.mag_drdy_samples  = m.samples;
+    r->raw.mag_drdy_window_s = o->drdy_window_s;
+    r->raw.mag_drdy_rate_hz  = rate;
+
+    if (m.samples == 0) {
+        add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                  IMT_FAIL, fmtbuf(mb, sizeof mb, "0 Hz"),
+                  fmtbuf(eb, sizeof eb, "~%.1f Hz", r->raw.mag_rate_hz),
+                  "%d edge(s) arrived but read() returned data on none of them "
+                  "(%d not-ready, %d errors). The daemon would get no "
+                  "magnetometer at all.", edges, m.nodata, m.errors);
+        return;
+    }
+
+    /*
+     * Graded against the POLLED rate rather than the configured ODR, because
+     * that is the comparison that isolates the wait: both figures come from the
+     * same part in the same state moments apart, so a gap between them is the
+     * path, not the oscillator.  (mag.rate above already grades against the ODR.)
+     */
+    double ref = r->raw.mag_rate_hz;
+    double err = ref > 0 ? fabs(rate - ref) / ref : 0.0;
+    add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+              err <= o->odr_tol_warn ? IMT_PASS
+            : err >  o->odr_tol_fail ? IMT_FAIL : IMT_WARN,
+              fmtbuf(mb, sizeof mb, "%.1f Hz", rate),
+              fmtbuf(eb, sizeof eb, "%.1f Hz polled +/-%.0f%%", ref,
+                     o->odr_tol_warn * 100),
+              err <= o->odr_tol_warn
+              ? "%d samples from %d edge(s) in %.2f s, matching the polled "
+                "rate — the daemon gets what this report measures."
+              : "%d samples from %d edge(s) in %.2f s, %.0f%% off the polled "
+                "rate. The daemon waits on this line, so THIS is the rate it "
+                "gets. A driver that gates read() on a status bit the interrupt "
+                "acknowledge clears will stall here until its timeout.",
+              m.samples, edges, o->drdy_window_s, err * 100);
+}
+
 /* ── Phase B: guided six-face accelerometer / axis-sign test ──────────────── */
 
 /*
@@ -3133,6 +3257,10 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
     g_abort = 0;
     double t_start = now_s();
 
+    /* -1 = "the check did not run", which a zeroed report cannot say: 0 edges
+     * is a real and damning measurement, so it must not be the default. */
+    r->raw.mag_drdy_edges = -1;
+
     fill_environment(r, cfg);
 
     /* Subject under test */
@@ -3235,9 +3363,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         check_fifo(r, opts, &d, imu, r->eff_odr_hz, cfg->imu_fifo_wm);
         check_rest(r, opts, &d);
         check_drdy(r, opts, &d, cfg, r->eff_odr_hz, cfg->imu_fifo_wm);
-        if (mag_ok)
+        if (mag_ok) {
             check_mag_passive(r, opts, mag, mbus,
                               r->mag_eff_odr_hz);
+            /* After the passive sweep: it needs mag.rate as its reference, and
+             * it re-inits the part twice. */
+            check_mag_drdy(r, opts, mag, mbus, cfg, r->mag_eff_odr_hz);
+        }
         /* last: every init() in the sweep resets the driver's seq counter */
         check_fs_sweep(r, opts, &d, imu, ibus, &icfg);
         r->phases_run |= IMT_PHASE_PASSIVE;

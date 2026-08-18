@@ -590,6 +590,11 @@ static void test_mmc_read_decode(void)
     int fb = g_fail;
 
     i2cmock_reset();
+    /* State the mode rather than inheriting it: int_driven lives in a driver
+     * static, so without this the case would pass or fail depending on which
+     * test ran before it. */
+    mag_cfg_t polled = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = false };
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &polled) == 0, "init in polled mode");
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x01);          /* STATUS: M_DONE set */
 
     /* Null field = 131072 counts, 16384 counts/G, 1 G = 100 µT. */
@@ -613,6 +618,72 @@ static void test_mmc_read_decode(void)
     /* I2C error on the status read. */
     i2cmock_fail_next_ioctl();
     EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == -1, "I2C error returns -1");
+
+    end(fb);
+}
+
+/*
+ * The interrupt path, and the reason it exists.
+ *
+ * On this part the INT is latched: the write that re-arms it also clears
+ * Meas_M_Done, and the bit then only re-asserts while the bus is being polled.
+ * A reader blocked on the edge is by definition not polling, so the gate can
+ * never pass — measured at 35 Hz from a 105.5 Hz part. The pair of assertions
+ * below is the whole fix: identical registers, M_DONE CLEAR, and the answer
+ * depends only on how the caller said it waits.
+ */
+static void test_mmc_int_driven_read(void)
+{
+    begin("test_mmc_int_driven_read");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    mag_cfg_t irq = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = true };
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &irq) == 0, "init in interrupt mode");
+
+    /* M_DONE CLEAR — the state that stalls the shipped driver for 20 ms. */
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
+    mmc_set_output(131072 + 16384, 131072 - 16384, 131072 + 8192);
+
+    mag_sample_t out;
+    memset(&out, 0, sizeof out);
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 0,
+           "edge-driven read returns a sample with M_DONE clear");
+    EXPECT(out.valid, "sample marked valid");
+    EXPECT_NEAR(out.field[0], 100.0f, 0.1, "field X decoded on the edge path");
+    EXPECT_NEAR(out.field[1], 100.0f, 0.1, "field Y decoded on the edge path");
+    EXPECT_NEAR(out.field[2],  50.0f, 0.1, "field Z decoded on the edge path");
+
+    /* The clear still has to happen — it is what re-arms the latched INT. */
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x08) == 0x01,
+           "edge-driven read still writes M_DONE to re-arm the interrupt");
+
+    /*
+     * Staleness guard: unchanged output registers mean no new conversion, so a
+     * dead INT line degrades to fewer real samples rather than a stream of one
+     * duplicate. Without this the daemon cannot tell the two apart.
+     */
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 1,
+           "unchanged output registers report no new data");
+
+    /* A real new conversion is accepted again. */
+    mmc_set_output(131072 + 8192, 131072 - 8192, 131072 + 16384);
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 0, "changed registers read again");
+    EXPECT_NEAR(out.field[2], 100.0f, 0.1, "second sample decoded");
+
+    /* The guard must not carry a sample across a reconfigure. */
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &irq) == 0, "re-init succeeds");
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 0,
+           "init clears the staleness guard");
+
+    /* And the contrast: same registers, same M_DONE, polled caller waits. */
+    mag_cfg_t polled = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = false };
+    EXPECT(mmc->init(I2CBUS(MMC_ADDR), &polled) == 0, "re-init in polled mode");
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
+    EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 1,
+           "polled read still gates on M_DONE");
 
     end(fb);
 }
@@ -3299,6 +3370,7 @@ int main(void)
     test_mmc_probe();
     test_mmc_reset_and_init();
     test_mmc_read_decode();
+    test_mmc_int_driven_read();
     test_mmc_set_reset();
 
     test_mpu_probe();

@@ -1302,6 +1302,15 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     ctx->mag_hw_cfg.odr_hz       = ctx->actual_mag_odr_hz;
     ctx->mag_hw_cfg.set_period_s = cfg->mag_set_period_s;
+    /*
+     * Deliberately the SAME condition that requests the line further down, so
+     * the driver's idea of how it is being read cannot drift from what the
+     * reader thread actually does.  On a part whose gate and interrupt are
+     * mutually exclusive that disagreement is not cosmetic — it is the
+     * difference between every sample and one in three.  See mag_cfg_t.
+     */
+    ctx->mag_hw_cfg.int_driven   = ctx->mag_ops->has_interrupt
+                                && cfg->mag_int_gpio > 0;
 
     /* ── Probe + reset + init IMU ────────────────────────────────────────── */
 

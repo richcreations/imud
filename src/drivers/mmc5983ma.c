@@ -110,6 +110,68 @@
  */
 static _Atomic uint8_t g_ctrl1 = 0;
 
+/*
+ * ── Meas_M_Done and the INT pin cannot both be used ────────────────────────
+ *
+ * Measured on the same part over SPI on a Pi 5, 2026-08-18.
+ *
+ * This part's INT is a LATCHED interrupt. The only way to re-arm it is to write
+ * 1 to Meas_M_Done (Rev A p.13: "Writing 1 into this bit will clear the
+ * corresponding interrupt"), and that same write also takes away the status bit
+ * read() would gate on. The bit then comes back only while the bus is being
+ * actively polled — after a clear, with the bus quiet, a single status read
+ * found it clear in 10 of 10 trials at every delay from 2 ms to 25 ms, which is
+ * nearly three conversion periods.
+ *
+ * Blocking on the edge is exactly the case where the bus IS quiet, so a reader
+ * that waits on DRDY and then checks the gate never passes it:
+ *
+ *   read succeeds → clears Meas_M_Done, INT drops
+ *     │ 9.4 ms
+ *   INT rises → reader wakes → STATUS reads 0x10 (OTP_Read_Done only, no
+ *               measurement flag) → read() reports "no data", edge is spent
+ *     │ the interrupt is latched: there is no second rising edge
+ *   20 ms timeout → read() finally succeeds
+ *
+ * Over 20 iterations: 20 edges, 20 timeouts, 20 successful reads, 20 not-ready
+ * — one wasted edge and one full timeout for every sample. 9.4 + 20 ≈ 29 ms,
+ * so a 105.5 Hz part delivered 35 Hz.
+ *
+ * The gate is the ONE-SHOT idiom in a part running CONTINUOUS. Rev A says of
+ * Meas_M_Done: "When the new measurement command is occurred, this bit turns to
+ * 0" — and in continuous mode there is no measurement command. The part is
+ * always converting and the output registers always hold the last complete
+ * conversion, so the edge is the data-ready signal and the status bit is
+ * answering a question nobody asked.
+ *
+ * So when the caller waits on the edge, read() trusts it. Measured side by side
+ * on healthy silicon, 3 s each:
+ *
+ *   gated tight poll (2 ms)   105.3 Hz   |B| 62.334 µT   σ 0.053
+ *   ungated, edge-driven      106.0 Hz   |B| 62.329 µT   σ 0.051
+ *
+ * Same field, same noise, full rate — and 0 repeats with 0 timeouts over 1200
+ * consecutive edges. Ruled out first, so nobody re-runs them: the read/clear
+ * ORDERING (burst-then-clear, clear-then-burst and clear-alone all return the
+ * bit in an identical 9.4 ms), the INT wiring, bus contention, the periodic
+ * degauss, and a bounded re-poll after the edge — that last one cannot work,
+ * because after the edge the bit still needs a further full conversion period
+ * of polling to appear.
+ *
+ * There is no published erratum for any of this, so the evidence lives here.
+ *
+ * g_prev_raw is the staleness guard for the edge path, holding the last 7 output
+ * bytes packed into one word. Without it a dead INT line would mean the 20 ms
+ * timeout re-reading one unchanged conversion for ever and feeding the filter
+ * duplicates it cannot distinguish from real data; with it, that failure
+ * degrades to roughly 50 Hz of genuine samples. An exact 18-bit match on all
+ * three axes of real noise is vanishingly unlikely — 0 in 1200 measured — so a
+ * repeat means the conversion has not advanced. Both are written by init() from
+ * either thread, so both are _Atomic.
+ */
+static _Atomic bool     g_int_driven = false;
+static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none */
+
 /* ── ODR encoding ──────────────────────────────────────────────────────────── */
 
 /*
@@ -255,6 +317,11 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     uint8_t bw, cmfreq;
     odr_encode(cfg->odr_hz, &bw, &cmfreq);
 
+    /* How this caller waits decides what read() is able to check — and the
+     * staleness guard must not carry a sample across a reconfigure. */
+    atomic_store(&g_int_driven, cfg->int_driven);
+    atomic_store(&g_prev_raw, 0);
+
     /* Clear CTRL0: disable Auto_SR_en; we do periodic manual SET instead. */
     if (bus_reg_write(bus, REG_CTRL0, 0x00) < 0) return -1;
 
@@ -285,26 +352,56 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  *
  * Called by mag_reader thread after GPIO27 rising edge (INT active-high).
  *
+ * Called by mag_reader thread after GPIO27 rising edge (INT active-high), or
+ * by a polling caller such as imud-imutest and imud-cal.
+ *
+ * Which of those it is decides how "is there new data?" is answered — see the
+ * g_int_driven comment near the top of this file, which is the whole reason the
+ * two paths below differ.
+ *
  * Returns:
  *   0  — sample written to *out, out->valid = true
- *   1  — measurement not complete yet (Meas_M_Done not set); caller should
- *         wait for next interrupt rather than spinning
+ *   1  — no new measurement: Meas_M_Done not set (polled), or the output
+ *         registers have not advanced since the last read (edge-driven).
+ *         Caller should wait rather than spinning
  *  -1  — I2C error
  */
 static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
 {
-    /* Confirm data is ready. Should always be true after the GPIO edge, but
-     * a spurious wakeup or race with the clear path can violate that. */
-    uint8_t status;
-    if (bus_reg_read(bus, REG_STATUS, &status) < 0) return -1;
-    if (!(status & STATUS_M_DONE)) return 1;
+    const bool int_driven = atomic_load(&g_int_driven);
+
+    /*
+     * Polled: the status bit is the only signal available, and it works — for a
+     * caller that polls, which is what keeps it re-asserting.
+     */
+    if (!int_driven) {
+        uint8_t status;
+        if (bus_reg_read(bus, REG_STATUS, &status) < 0) return -1;
+        if (!(status & STATUS_M_DONE)) return 1;
+    }
 
     /* Burst-read Xout0…XYZout2 (registers 0x00–0x06, 7 bytes). */
     uint8_t raw[7];
     if (bus_burst_read(bus, REG_XOUT0, raw, 7) < 0) return -1;
 
-    /* Clear the measurement-done interrupt so the next rising edge is clean. */
+    /* Clear the measurement-done interrupt so the next rising edge is clean.
+     * Required on BOTH paths: this write is what re-arms the latched INT. */
     if (bus_reg_write(bus, REG_STATUS, STATUS_M_DONE) < 0) return -1;
+
+    /*
+     * Edge-driven staleness guard. The edge said a conversion landed; if the
+     * output registers say otherwise, believe the registers. This is what stops
+     * a failed INT line from turning the reader's timeout into a stream of one
+     * duplicated sample. The packing is 7 bytes into one word so the compare and
+     * the store are each single and tear-free.
+     */
+    if (int_driven) {
+        uint64_t packed = 0;
+        for (int i = 0; i < 7; i++)
+            packed |= (uint64_t)raw[i] << (8 * i);
+        packed |= (uint64_t)1u << 56;          /* tag: distinguishes "all zero" */
+        if (atomic_exchange(&g_prev_raw, packed) == packed) return 1;
+    }
 
     /*
      * Reconstruct 18-bit unsigned values from split registers.

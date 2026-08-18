@@ -68,6 +68,24 @@ imud (1.9.0) unstable; urgency=medium
     10 ms timeout, so fifo_wm/odr_hz was never the residence. Measured on a
     Pi 5: pipeline latency 0.26 ms p99 against a 1.5 ms budget.
 
+  * Fix: the magnetometer ran at a third of its rate. The daemon waits on the
+    mmc5983ma INT line, and read() then confirmed the sample via Meas_M_Done --
+    but that bit is also the interrupt acknowledge, and the write that re-arms
+    the latched INT clears it, after which it returns only while the bus is
+    polled. A reader blocked on an edge is not polling, so every wake read "no
+    data" and, the interrupt being latched, no second edge followed: each
+    sample cost a wasted edge plus the full 20 ms timeout. A part converting at
+    105.5 Hz delivered 35 Hz on a Pi 5 over SPI. read() now trusts the edge when
+    the caller waits on one, still acknowledges, and rejects a sample whose
+    output registers have not advanced, so a dead INT line degrades to fewer
+    real samples rather than one repeated. Polling callers are unchanged; no
+    configuration change.
+
+  * imud-imutest: new mag.drdy.rate check, measuring the magnetometer over its
+    interrupt line and grading it against the polled mag.rate. Every other mag
+    check polls, so the tool could not see the defect above. SKIPs with no mag
+    interrupt pin or int_gpio 0.
+
   * Fix: mmc5983ma lost its X axis over SPI. A write to CTRL0 also lands in
     CTRL1 on this part, where INT_en's bit 2 reads as X-inhibit, so init()'s
     own interrupt-enable stopped X measuring while Y and Z looked healthy --

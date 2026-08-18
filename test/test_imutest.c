@@ -67,6 +67,14 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
 static int g_gpio_edges = -1;             /* <0 → report "no chip" */
 static int g_gpio_edges_idle = 1;         /* the undrained pass */
 static imt_gpio_why_t g_gpio_why = IMT_GPIO_ENOCHIP;
+/*
+ * How many times the stub invokes drain().  The real function calls it once per
+ * edge; the stub defaults to 1 because check_drdy's cases grade the edge COUNT
+ * and one of them uses 100000 edges, which is not a number to actually iterate.
+ * mag.drdy.rate counts what the drain returns rather than the edges, so its
+ * cases raise this.
+ */
+static int g_gpio_drain_calls = 1;
 
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
@@ -75,7 +83,8 @@ int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
     (void)chip; (void)gpio; (void)window_ms;
     *why = g_gpio_why;
     if (!drain) return g_gpio_edges < 0 ? g_gpio_edges : g_gpio_edges_idle;
-    drain(user);
+    if (g_gpio_edges >= 0)
+        for (int i = 0; i < g_gpio_drain_calls; i++) drain(user);
     return g_gpio_edges;
 }
 
@@ -1288,6 +1297,70 @@ static void test_gpio_both_branches(void)
 }
 
 /*
+ * mag.drdy.rate — the mag rate measured the way the DAEMON gets it.
+ *
+ * Every other mag check in the tool polls.  The daemon does not; it blocks on
+ * the mag interrupt.  On 2026-08-18 that difference was a factor of three on
+ * real silicon (105.4 Hz polled, 35 Hz in the daemon) and no check here could
+ * see it, because none of them measured the production path.
+ *
+ * What the mock CAN decide is the branch structure, which is what these cases
+ * pin: no interrupt configured and an unavailable line must SKIP rather than
+ * blame the driver, and edges arriving with nothing readable behind them must
+ * FAIL.  The rate COMPARISON itself grades two live measurements of the same
+ * part against each other, so it is verified on the bench, not here.
+ */
+static void test_mag_drdy_rate(void)
+{
+    begin("test_mag_drdy_rate");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    /* No mag interrupt: the reader polls, so there is nothing to measure. */
+    mock_base(); script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(status_of(r, "mag.drdy.rate") == IMT_SKIP,
+           "mag.int_gpio 0 -> SKIP");
+    EXPECT(r->raw.mag_drdy_edges < 0, "sentinel says the check did not run");
+    free(r);
+
+    /* Line held by someone else — SKIP, never FAIL: that would blame the
+     * driver for the daemon holding the line. */
+    mock_base(); script_reset(&o);
+    cfg.mag_int_gpio  = 27;
+    g_gpio_edges      = -1;
+    g_gpio_why        = IMT_GPIO_EBUSY;
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "mag.drdy.rate") == IMT_SKIP, "EBUSY -> SKIP not FAIL");
+    free(r);
+
+    /*
+     * Edges arrive, but every read behind them comes back empty.  This is the
+     * shape of the defect the check exists for: the interrupt is working and
+     * the daemon still gets nothing.
+     */
+    mock_base(); script_reset(&o);
+    g_gpio_edges       = 8;
+    g_gpio_why         = IMT_GPIO_OK;
+    g_gpio_drain_calls = 4;
+    i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);      /* M_DONE clear */
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "mag.drdy.rate") != IMT_SKIP,
+           "with a line and edges the check runs");
+    EXPECT(r->raw.mag_drdy_edges == 8, "edge count recorded");
+    free(r);
+
+    g_gpio_edges       = -1;
+    g_gpio_why         = IMT_GPIO_ENOCHIP;
+    g_gpio_drain_calls = 1;
+    cfg.mag_int_gpio   = 0;
+    end(fb);
+}
+
+/*
  * The two-pass DRDY count.
  *
  * ROADMAP section 1.1 left the reference part's edge rate uncharacterised:
@@ -2107,6 +2180,7 @@ int main(void)
     test_gravity_and_stuck_axis();
     test_temperature_placeholder();
     test_gpio_both_branches();
+    test_mag_drdy_rate();
     test_drdy_two_pass();
     test_faces_good_and_swapped();
     test_faces_skipped_not_absent();

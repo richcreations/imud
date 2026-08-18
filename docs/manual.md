@@ -1610,6 +1610,45 @@ continuous measurement. If the chip has an interrupt pin, enable it during
 | `1` | Measurement not complete yet (DRDY not asserted) |
 | `-1` | I²C error |
 
+#### Check whether your part's status bit survives the interrupt
+
+Gating `read()` on a "data ready" status bit is the obvious implementation and
+it is right for most parts. On some it is not, and the failure is quiet: the
+driver works perfectly when polled and delivers a fraction of the sample rate
+when the daemon waits on the interrupt — which is the only mode the daemon uses.
+
+It goes wrong when **DRDY is a latched interrupt whose acknowledge write also
+clears the status bit**. Acknowledging is what re-arms the edge, so it cannot be
+skipped; and once it has also taken the status bit away, a reader that blocks on
+the edge — and therefore stops touching the bus — may never see the bit come
+back. Every wake is then spent on a read that reports "no data", and since the
+interrupt is latched there is no second edge to recover with: the reader waits
+out its timeout for every single sample.
+
+Ask the datasheet two questions before you gate:
+
+| Part | How DRDY clears | Safe to gate? |
+|---|---|---|
+| LIS3MDL | `ZYXDA` is a plain status flag; there is no acknowledge write | yes |
+| LIS2MDL | the DRDY pin *is* the `Zyxda` bit, driven straight out | yes |
+| RM3100 | the pin "is set LOW when the Measurement Result registers are read" | yes |
+| **MMC5983MA** | **write 1 to `Meas_M_Done` — which is also the gate bit** | **no** |
+
+Only the MMC5983MA among the supported parts answers badly, and it was measured
+doing so: 35 Hz delivered from a part converting at 105.5 Hz.
+
+When a part is like this, set `int_driven` in `mag_cfg_t`. The daemon sets it
+whenever it has an interrupt line for the mag, and `read()` should then trust the
+edge instead of the status bit, still perform the acknowledge write, and reject a
+sample whose output registers have not changed — that last part is what keeps a
+broken interrupt line from feeding duplicates to the filter. Polling callers
+(`imud-cal`, `imud-imutest`) leave it false and keep the gate, which is correct,
+because a poller has no edge to trust.
+
+`imud-imutest`'s `mag.drdy.rate` check exists to catch this: it measures the mag
+over its interrupt line and compares against the polled `mag.rate`. A driver that
+gates when it should not shows up as a large gap between the two.
+
 Always set `out->wall_ns` from `CLOCK_REALTIME` at read time:
 
 ```c

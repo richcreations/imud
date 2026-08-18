@@ -760,8 +760,7 @@ Set @code{0} to poll on a timer.
  @tab Output data rate in Hz; must be greater than zero. Rounded
 @strong{up} to a supported rate as for @code{[imu] odr_hz}, and the mag
 noise variance is sized for that actual rate. MMC5983MA supports:
-@code{1}, @code{10}, @code{20}, @code{50}, @code{100}, @code{200},
-@code{1000}.
+@code{1}, @code{20}, @code{100}, @code{1000}.
 @item 
 @code{set_period_s}
  @tab float
@@ -3209,6 +3208,7 @@ the wall-clock anchor on every burst.
 @menu
 * probe reset init::
 * readbus *out → 0 1 or -1::
+* Check whether your part's status bit survives the interrupt::
 * set_reset optional::
 * degauss optional diagnostic::
 * has_interrupt::
@@ -3239,6 +3239,68 @@ Return
 @code{-1}
  @tab I²C error
 @end multitable
+
+@node Check whether your part's status bit survives the interrupt
+@subsection Check whether your part's status bit survives the interrupt
+@anchor{#check-whether-your-parts-status-bit-survives-the-interrupt}
+Gating @code{read()} on a "data ready" status bit is the obvious
+implementation and it is right for most parts. On some it is not, and
+the failure is quiet: the driver works perfectly when polled and
+delivers a fraction of the sample rate when the daemon waits on the
+interrupt --- which is the only mode the daemon uses.
+
+It goes wrong when @strong{DRDY is a latched interrupt whose acknowledge
+write also clears the status bit}. Acknowledging is what re-arms the
+edge, so it cannot be skipped; and once it has also taken the status bit
+away, a reader that blocks on the edge --- and therefore stops touching
+the bus --- may never see the bit come back. Every wake is then spent on
+a read that reports "no data", and since the interrupt is latched there
+is no second edge to recover with: the reader waits out its timeout for
+every single sample.
+
+Ask the datasheet two questions before you gate:
+
+@multitable @columnfractions 0.15 0.67 0.18 
+@headitem 
+Part
+ @tab How DRDY clears
+ @tab Safe to gate?
+@item 
+LIS3MDL
+ @tab @code{ZYXDA} is a plain status flag; there is no acknowledge write
+ @tab yes
+@item 
+LIS2MDL
+ @tab the DRDY pin @emph{is} the @code{Zyxda} bit, driven straight out
+ @tab yes
+@item 
+RM3100
+ @tab the pin "is set LOW when the Measurement Result registers are
+read"
+ @tab yes
+@item 
+@strong{MMC5983MA}
+ @tab @strong{write 1 to @code{Meas_M_Done} --- which is also the gate
+bit}
+ @tab @strong{no}
+@end multitable
+
+Only the MMC5983MA among the supported parts answers badly, and it was
+measured doing so: 35 Hz delivered from a part converting at 105.5 Hz.
+
+When a part is like this, set @code{int_driven} in @code{mag_cfg_t}. The
+daemon sets it whenever it has an interrupt line for the mag, and
+@code{read()} should then trust the edge instead of the status bit,
+still perform the acknowledge write, and reject a sample whose output
+registers have not changed --- that last part is what keeps a broken
+interrupt line from feeding duplicates to the filter. Polling callers
+(@code{imud-cal}, @code{imud-imutest}) leave it false and keep the gate,
+which is correct, because a poller has no edge to trust.
+
+@code{imud-imutest}'s @code{mag.drdy.rate} check exists to catch this:
+it measures the mag over its interrupt line and compares against the
+polled @code{mag.rate}. A driver that gates when it should not shows up
+as a large gap between the two.
 
 Always set @code{out->wall_ns} from @code{CLOCK_REALTIME} at read time:
 

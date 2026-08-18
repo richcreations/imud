@@ -36,9 +36,30 @@ typedef struct {
 
 /* ── Magnetometer driver configuration ────────────────────────────────────── */
 
+/*
+ * int_driven says how the caller waits, which on some parts decides what read()
+ * is even able to check.
+ *
+ * A part whose DRDY is a *latched* interrupt has to be acknowledged by a
+ * register write, and if that write also clears the status bit read() gates on,
+ * then the gate and the interrupt are mutually exclusive: acknowledging to
+ * re-arm the edge is what destroys the evidence the gate wants.  The
+ * MMC5983MA is such a part — measured, see mmc5983ma.c — and there the edge
+ * itself is the data-ready signal, so read() trusts it and skips the gate.
+ *
+ * Most parts are not like this: an unlatched DRDY pin that mirrors a status bit
+ * (LIS3MDL, LIS2MDL) or clears when the data registers are read (RM3100) has no
+ * acknowledge write at all, so it has nothing to destroy.  Check the datasheet
+ * before setting this for a new driver; the driver guide in docs/manual.md §11
+ * has the comparison.
+ *
+ * Callers that poll leave it false and keep the gate — which is right, because
+ * a poller has no edge to trust.
+ */
 typedef struct {
     int   odr_hz;        /* resolved ODR in Hz, as for imu_cfg_t */
     float set_period_s;  /* degauss pulse interval in seconds; 0 = disable */
+    bool  int_driven;    /* caller blocks on the DRDY edge (see above) */
 } mag_cfg_t;
 
 /*
@@ -84,7 +105,12 @@ typedef struct {
      * Samples are written to buf[] in SI units (m/s², rad/s) using datasheet
      * sensitivity — user calibration (offsets, soft-iron) is applied later.
      * *n is set to the number of samples written (0..max).
-     * Returns 0 on success, -1 on bus error.
+     *
+     * Returns 0 on success, 1 when there is no data yet — a DRDY that has not
+     * asserted, or a FIFO overflow, neither of which is an error — and -1 on a
+     * bus error only.  The `1` is load-bearing: ism330dhcx.c really returns it
+     * and imu.c depends on the distinction to avoid counting a quiet sensor
+     * toward the error-reset threshold.  The mag read() below is the same.
      */
     int (*read)   (const imud_bus_t *bus,
                    imu_sample_t *buf, int max, int *n);

@@ -472,6 +472,71 @@ where the vendor asks for it). `Auto_SR_en` was tested and rejected: it holds a
 recovered bridge in isolation but oscillates under measurement, because the part
 alternates SET/RESET per sample and the driver averages them blind.
 
+### 1.2.1 The status gate and the DRDY edge cannot both be used  *(fifth defect, found and fixed 2026-08-18)*
+
+The daemon was reading the magnetometer at **35 Hz from a 105.5 Hz part** — two
+of every three samples discarded, so heading got a third of the information it
+should. Invisible to `imud-imutest`, which polls, and therefore measured a rate
+the daemon could not reach.
+
+`mmc_read()` gated on `Meas_M_Done`. That bit is also the interrupt
+acknowledge: writing 1 to it is the only way to re-arm the latched INT, and the
+same write takes the bit away. It then re-asserts **only while the bus is being
+actively polled** — after a clear, with the bus quiet, a single status read found
+it clear in 10 of 10 trials at every delay from 2 ms to 25 ms, nearly three
+conversion periods. Blocking on the edge is exactly when the bus is quiet:
+
+```
+read succeeds → clears M_DONE, INT drops
+  │ 9.4 ms
+INT rises → reader wakes → STATUS 0x10, no measurement flag → "no data"
+  │ latched: no second rising edge
+20 ms timeout → read finally succeeds        9.4 + 20 ≈ 29 ms → 35 Hz
+```
+
+Per-iteration: 20 edges, 20 timeouts, 20 reads, 20 not-ready. The gate is the
+**one-shot idiom in a part running continuous** — Rev A says the bit "turns to 0
+when the new measurement command is occurred", and continuous mode issues no
+command.
+
+Fixed with `mag_cfg_t.int_driven`, which the daemon sets from the same condition
+that requests the mag GPIO line. In that mode `read()` trusts the edge, still
+performs the acknowledge write, and rejects a sample whose output registers have
+not advanced — that guard is what makes a dead INT line degrade to ~50 Hz of
+genuine data instead of an endless duplicate. Measured side by side on healthy
+silicon:
+
+| | rate | \|B\| mean | sigma |
+|---|---|---|---|
+| gated tight poll (2 ms) | 105.3 Hz | 62.334 µT | 0.053 |
+| **ungated, edge-driven** | **106.0 Hz** | **62.329 µT** | **0.051** |
+
+Same field, same noise, full rate; 0 repeats and 0 timeouts over 1200
+consecutive edges.
+
+**Ruled out by measurement — do not re-run.** The instrument (0 byte-identical
+repeats at 2 ms poll, so imutest's 105.4 Hz was correct); the INT connector
+(reseated, identical 34.94 vs 35.06 Hz); the DRDY line itself; the periodic
+degauss; IMU bus contention; the read/clear **ordering** (burst-then-clear,
+clear-then-burst and clear-alone all return the bit in an identical 9.4 ms); and
+a bounded re-poll after the edge, which cannot work because the bit needs a
+further full conversion period of polling to appear.
+
+**The other three interrupt-capable mag drivers cannot have this defect**, per
+their datasheets: LIS3MDL's `ZYXDA` is a plain status flag with no acknowledge
+write, LIS2MDL drives the `Zyxda` bit straight onto the pin, and the RM3100's
+DRDY "is set LOW when the Measurement Result registers are read" (V11.0, pin 23).
+None has a write that could destroy its own gate. They are documented in the
+driver guide, not modified.
+
+`imud-imutest` gained `mag.drdy.rate`, which measures over the interrupt line and
+grades against the polled figure — the blind spot that let this survive.
+
+**Still open from this.** At `odr_hz = 1000` the edge-driven read reports
+**1687 Hz**, above any rate the datasheet allows, so the INT there fires faster
+than conversions complete. Its own investigation; the daemon runs the mag at
+100 Hz.
+
 **A saturated bridge is not recoverable by the driver.** `reset()` does not cure
 it — `SW_RST` clears registers, not magnetisation — and the 500 ns SET pulse is
 too weak. Recovery took a sustained self-test coil drive (`CTRL3`
