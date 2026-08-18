@@ -363,7 +363,7 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  *   1  — no new measurement: Meas_M_Done not set (polled), or the output
  *         registers have not advanced since the last read (edge-driven).
  *         Caller should wait rather than spinning
- *  -1  — I2C error
+ *  -1  — bus error
  */
 static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
 {

@@ -426,7 +426,7 @@ int imt_write_md(const imt_report_t *r, const char *path,
         fprintf(f, "```\n");
         fprintf(f, "rate        %.2f Hz (%llu samples in %.2f s)\n",
                 w->mag_rate_hz, (unsigned long long)w->mag_n, w->mag_window_s);
-        fprintf(f, "not-ready   %d, I2C errors %d\n", w->mag_rc1, w->mag_rcneg);
+        fprintf(f, "not-ready   %d, bus errors %d\n", w->mag_rc1, w->mag_rcneg);
         /* The rate the daemon actually gets: it waits on the interrupt rather
          * than polling, and on some parts the two differ by a factor of 3. */
         if (w->mag_drdy_edges >= 0)

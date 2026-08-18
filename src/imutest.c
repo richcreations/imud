@@ -598,7 +598,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
             add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
                       IMT_FAIL, "accepted", "rejected",
                       "probe() returned 0 at unused address 0x%02X — it is not "
-                      "checking WHO_AM_I, or it is discarding the I2C error.",
+                      "checking WHO_AM_I, or it is discarding the bus error.",
                       IMT_BOGUS_ADDR);
         else
             add_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
@@ -1217,7 +1217,7 @@ static void check_error_contract(imt_report_t *r, drain_ctx_t *d)
         add_check(r, "imu.err.nodata_not_error",
                   "Empty FIFO returns 0, not -1", IMT_FAIL, "-1", "0",
                   "read() returned -1 on an empty FIFO (errno %d). -1 is "
-                  "reserved for I2C errors; imu.c counts it toward the "
+                  "reserved for bus errors; imu.c counts it toward the "
                   "reset threshold and will restart the chip.", errno);
     else
         add_check(r, "imu.err.nodata_not_error",
@@ -1233,11 +1233,11 @@ static void check_error_contract(imt_report_t *r, drain_ctx_t *d)
     if (neg == 0)
         add_check(r, "imu.err.no_spurious", "No spurious -1 on a healthy bus",
                   IMT_PASS, "0 of 200", "0",
-                  "200 back-to-back reads, no I2C errors reported");
+                  "200 back-to-back reads, no bus errors reported");
     else
         add_check(r, "imu.err.no_spurious", "No spurious -1 on a healthy bus",
                   IMT_FAIL, fmtbuf(mb, sizeof mb, "%d of 200", neg), "0",
-                  "read() reported I2C errors on an otherwise working bus "
+                  "read() reported bus errors on an otherwise working bus "
                   "(last errno %d: %s).", saved_errno, strerror(saved_errno));
 }
 
@@ -1356,7 +1356,7 @@ static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     else if (rc < 0)
         add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
                   IMT_FAIL, "-1", "1",
-                  "read() returned an I2C error while the FIFO was full "
+                  "read() returned a bus error while the FIFO was full "
                   "instead of reporting the overflow.");
     else
         add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
@@ -2237,7 +2237,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
         add_check(r, "mag.rate", "Measured mag rate", IMT_FAIL,
                   fmtbuf(mb, sizeof mb, "%llu samples", (unsigned long long)got),
                   fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
-                  "almost no samples in %.1f s (%d not-ready, %d I2C errors).",
+                  "almost no samples in %.1f s (%d not-ready, %d bus errors).",
                   span, rc1, rcneg);
     } else {
         double err = fabs(r->raw.mag_rate_hz - eff_odr) / (double)eff_odr;
@@ -2284,7 +2284,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
               "0 errors",
               rcneg == 0
               ? "polling faster than the ODR produced %d not-ready returns "
-                "and no I2C errors, which is exactly right"
+                "and no bus errors, which is exactly right"
               : "read() returned -1 on a healthy bus. -1 is reserved for I2C "
                 "faults; DRDY-not-set and overflow must return 1.", rc1);
 

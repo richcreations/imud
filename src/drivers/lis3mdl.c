@@ -121,7 +121,7 @@ static int lis_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  * Returns:
  *   0  — sample written to *out
  *   1  — data not ready (ZYXDA not set); caller should wait for next interrupt
- *  -1  — I2C error
+ *  -1  — bus error
  */
 static int lis_read(const imud_bus_t *bus, mag_sample_t *out)
 {

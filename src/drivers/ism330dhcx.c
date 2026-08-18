@@ -303,7 +303,7 @@ static uint32_t ism_ts_tick_ns_actual(const imud_bus_t *bus)
  * Returns:
  *   0  — success
  *   1  — success, but FIFO overflow was detected (data gap; set FLAG_FIFO_OVERFLOW)
- *  -1  — I2C error
+ *  -1  — bus error
  */
 static int ism_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
