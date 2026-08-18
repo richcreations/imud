@@ -44,6 +44,14 @@ static int      g_wlast[NADDR];            /* last register written, or -1 */
 static int     g_fail_next;          /* one-shot ioctl failure */
 static int     g_fail_all;           /* sticky ioctl failure (wedged bus) */
 
+/* Targeted write failure: fail transfers that write a NAMED register, rather
+ * than the Nth ioctl.  See i2cmock_fail_write_to() in the header for why the
+ * predicate rather than a call index. */
+static int     g_wfail_addr = -1;
+static int     g_wfail_reg  = -1;
+static int     g_wfail_left;         /* >0 = that many; <0 = sticky */
+static int     g_wfail_hit;          /* set by dev_write, read by dispatch */
+
 /* spidev descriptor → register file. SPI puts no address on the wire, so the
  * binding is what stands in for the chip select. */
 static int     g_spi_fd[NSPIFD];     /* bound descriptor, or -1 */
@@ -82,6 +90,10 @@ void i2cmock_reset(void)
     for (int i = 0; i < NSPIFD; i++) { g_spi_fd[i] = -1; g_spi_addr[i] = 0; }
     g_fail_next = 0;
     g_fail_all  = 0;
+    g_wfail_addr = -1;
+    g_wfail_reg  = -1;
+    g_wfail_left = 0;
+    g_wfail_hit  = 0;
 }
 
 void spimock_bind_inc(int fd, uint8_t addr, spimock_inc_t mode, uint8_t mask)
@@ -200,6 +212,14 @@ void i2cmock_fail_next_ioctl(void)
     g_fail_next = 1;
 }
 
+void i2cmock_fail_write_to(uint8_t addr, int reg, int times)
+{
+    g_wfail_addr = addr & (NADDR - 1);
+    g_wfail_reg  = reg;
+    g_wfail_left = (reg < 0) ? 0 : times;
+    g_wfail_hit  = 0;
+}
+
 void i2cmock_fail_all(int enable)
 {
     g_fail_all = enable;
@@ -262,6 +282,17 @@ static uint8_t dev_read(int a, int *reg_ptr, bool advance)
 static void dev_write(int a, int *reg_ptr, uint8_t v)
 {
     uint8_t r = (uint8_t)*reg_ptr;
+
+    /* Armed for this register? Refuse it and leave the byte alone, so the
+     * caller is not told a transfer failed that in fact landed. The dispatch
+     * turns the flag into the -1/EIO the driver sees. */
+    if (g_wfail_left != 0 && a == g_wfail_addr && r == (uint8_t)g_wfail_reg) {
+        if (g_wfail_left > 0) g_wfail_left--;
+        g_wfail_hit = 1;
+        (*reg_ptr)++;
+        return;
+    }
+
     g_reg[a][r] = v;
     /* Order log. The alias below is a side effect of this one write, not a
      * write of its own, so only the addressed register is recorded. */
@@ -373,15 +404,21 @@ static int mock_dispatch(int fd, unsigned long request, void *arg)
         return -1;
     }
 
-    if (request == I2C_RDWR)
-        return dispatch_i2c(arg);
+    if (request == I2C_RDWR) {
+        int rc = dispatch_i2c(arg);
+        if (g_wfail_hit) { g_wfail_hit = 0; errno = EIO; return -1; }
+        return rc;
+    }
 
     if (_IOC_TYPE(request) == SPI_IOC_MAGIC) {
         /* SPI_IOC_MESSAGE(n) is the only spidev request that carries data;
          * the mode/bits/speed setters are accepted and ignored so bus_open()
          * works unchanged against the mock. */
-        if (_IOC_NR(request) == 0)
-            return dispatch_spi(fd, request, arg);
+        if (_IOC_NR(request) == 0) {
+            int rc = dispatch_spi(fd, request, arg);
+            if (g_wfail_hit) { g_wfail_hit = 0; errno = EIO; return -1; }
+            return rc;
+        }
         return 0;
     }
 

@@ -635,6 +635,53 @@ static void test_mmc_read_decode(void)
  * below is the whole fix: identical registers, M_DONE CLEAR, and the answer
  * depends only on how the caller said it waits.
  */
+/*
+ * The targeted write injector itself. It is test infrastructure, so a fault in
+ * it shows up as some other test mysteriously passing -- pin the three things
+ * callers rely on: the transfer fails, the byte does NOT land, and `times`
+ * bounds how many writes are refused.
+ */
+static void test_mock_fail_write_to(void)
+{
+    begin("test_mock_fail_write_to");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(MMC_ADDR, 0x09, 0x11);
+
+    /* One shot: the first write to CTRL0 fails and leaves the byte alone. */
+    i2cmock_fail_write_to(MMC_ADDR, 0x09, 1);
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x22) < 0,
+           "armed write returns -1");
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x11,
+           "a refused write does not land");
+
+    /* The arm is spent: the next one goes through. */
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x22) == 0,
+           "times = 1 refuses exactly one write");
+    EXPECT(i2cmock_get_reg(MMC_ADDR, 0x09) == 0x22, "and then it lands");
+
+    /* Other registers are unaffected while armed. */
+    i2cmock_fail_write_to(MMC_ADDR, 0x09, -1);
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x0A, 0x33) == 0,
+           "a different register is untouched by the arm");
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x44) < 0,
+           "sticky arm refuses again");
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x44) < 0,
+           "and keeps refusing");
+
+    /* Disarm, and reset must clear it too. */
+    i2cmock_fail_write_to(MMC_ADDR, -1, 0);
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x55) == 0, "reg < 0 disarms");
+    i2cmock_fail_write_to(MMC_ADDR, 0x09, -1);
+    i2cmock_reset();
+    i2cmock_set_reg(MMC_ADDR, 0x09, 0x00);
+    EXPECT(bus_reg_write(I2CBUS(MMC_ADDR), 0x09, 0x66) == 0,
+           "i2cmock_reset() disarms");
+
+    end(fb);
+}
+
 static void test_mmc_int_driven_read(void)
 {
     begin("test_mmc_int_driven_read");
@@ -3373,6 +3420,7 @@ int main(void)
     test_mmc_probe();
     test_mmc_reset_and_init();
     test_mmc_read_decode();
+    test_mock_fail_write_to();
     test_mmc_int_driven_read();
     test_mmc_set_reset();
 

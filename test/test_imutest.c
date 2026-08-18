@@ -76,12 +76,24 @@ static imt_gpio_why_t g_gpio_why = IMT_GPIO_ENOCHIP;
  */
 static int g_gpio_drain_calls = 1;
 
+/*
+ * Set to arm a write failure from INSIDE the DRDY window.  check_mag_drdy
+ * re-inits the mag, calls this, then restores -- so this stub is the one place
+ * in a run where the restore can be aimed at without also hitting the several
+ * earlier inits that write the same register.
+ */
+static int g_gpio_fail_addr_after = -1;
+static int g_gpio_fail_reg_after  = -1;
+
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
                          imt_gpio_why_t *why)
 {
     (void)chip; (void)gpio; (void)window_ms;
     *why = g_gpio_why;
+    if (g_gpio_fail_reg_after >= 0)
+        i2cmock_fail_write_to((uint8_t)g_gpio_fail_addr_after,
+                              g_gpio_fail_reg_after, -1);
     if (!drain) return g_gpio_edges < 0 ? g_gpio_edges : g_gpio_edges_idle;
     if (g_gpio_edges >= 0)
         for (int i = 0; i < g_gpio_drain_calls; i++) drain(user);
@@ -1385,6 +1397,26 @@ static void test_mag_drdy_rate(void)
     memset(&ms, 0, sizeof ms);
     EXPECT(mmc5983ma_ops.read(I2CBUS(MMC_ADDR), &ms) == 1,
            "run leaves the magnetometer in polled mode");
+
+    /*
+     * The restore FAILING is its own verdict, and it is the one line in the
+     * report that says "distrust everything below me" -- so it has to be
+     * reachable, not merely written. Arm a sticky failure on the first
+     * register mmc_init writes, from inside the DRDY window, so the restore
+     * cannot succeed.
+     */
+    mock_base(); script_reset(&o);
+    g_gpio_edges           = 8;
+    g_gpio_why             = IMT_GPIO_OK;
+    g_gpio_drain_calls     = 4;
+    g_gpio_fail_addr_after = MMC_ADDR;
+    g_gpio_fail_reg_after   = 0x09;             /* MMC CTRL0 */
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "mag.drdy.restore") == IMT_FAIL,
+           "a failed restore is reported, not swallowed");
+    free(r);
+    g_gpio_fail_reg_after = -1;
+    i2cmock_fail_write_to(MMC_ADDR, -1, 0);
 
     g_gpio_edges       = -1;
     g_gpio_why         = IMT_GPIO_ENOCHIP;

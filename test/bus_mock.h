@@ -178,4 +178,23 @@ void i2cmock_fail_next_ioctl(void);
  */
 void i2cmock_fail_all(int enable);
 
+/*
+ * Fail transfers that WRITE a named register, `times` of them (< 0 = sticky,
+ * reg < 0 = disarm).  The blocked write does not land, and the ioctl carrying
+ * it returns -1/EIO, so the driver sees exactly what a bus error looks like.
+ *
+ * A PREDICATE rather than a call index, deliberately.  The two injectors above
+ * fail the next ioctl or every ioctl, and neither can reach a failure buried in
+ * the middle of a long run — imud-imutest performs hundreds of transfers before
+ * it re-inits the magnetometer, and the one thing worth failing is that init's
+ * first write.  A counted "fail the Nth ioctl" would express it, and would then
+ * silently start testing something else the moment any check above it changed
+ * its transfer count.  A register name does not move.
+ *
+ * `times` is what separates two error paths that arm identically: with 1, a
+ * driver's first init fails and a second one succeeds; with a sticky arm, both
+ * fail, which is the wedged-bus case where recovery cannot work either.
+ */
+void i2cmock_fail_write_to(uint8_t addr, int reg, int times);
+
 #endif /* IMUD_TEST_I2C_MOCK_H */
