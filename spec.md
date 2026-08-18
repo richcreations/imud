@@ -1417,16 +1417,45 @@ plus `imud-<name>(8)`), and its own config file `/etc/imud/imud-<name>.conf`.
 
 ## 14. Performance Targets
 
-|Metric                                       |Target                             |
-|---------------------------------------------|-----------------------------------|
-|ISM330 FIFO read jitter                      |< 5 ms p99 (FIFO absorbs OS jitter)|
-|Fusion latency (sample → quaternion)         |< 1.5 ms                           |
-|End-to-end (I2C sample → UDP emit)           |< 3 ms                             |
-|CPU on Pi 4B at 833 Hz MEKF / 500 Hz out     |< 10% one core                     |
-|CPU on Pi Zero 2W at 416 Hz / 100 Hz out     |< 30% one core                     |
-|Memory footprint                             |< 14 MB RSS                        |
-|High-rate UDP loss (localhost)               |0%                                 |
-|Heading accuracy post-cal, benign environment|±1–2° (chip spec: ±0.5°)           |
+> **Two of the latency rows below are not met as written, and are marked.**
+> They were written before anything measured them. The daemon now instruments
+> the chain itself and reports it on the `[stats]` line, and the measurements
+> disagree with these targets by an order of magnitude. They are left in place,
+> flagged, rather than quietly adjusted to match what was measured — a target
+> is a claim, and replacing it with the observation would erase the fact that
+> the claim was wrong. See the **Measured** column and the notes beneath.
+
+|Metric                                       |Target                             |Measured|
+|---------------------------------------------|-----------------------------------|---|
+|ISM330 FIFO read jitter                      |< 5 ms p99 (FIFO absorbs OS jitter)|**not met** — see note 1|
+|Fusion latency (sample → quaternion)         |< 1.5 ms                           |0.26 ms p99 — met|
+|End-to-end (sample → UDP emit)               |< 3 ms                             |**not met** — see note 2|
+|CPU on Pi 4B at 833 Hz MEKF / 500 Hz out     |< 10% one core                     |unmeasured|
+|CPU on Pi Zero 2W at 416 Hz / 100 Hz out     |< 30% one core                     |unmeasured|
+|Memory footprint                             |< 14 MB RSS                        |unmeasured|
+|High-rate UDP loss (localhost)               |0%                                 |unmeasured|
+|Heading accuracy post-cal, benign environment|±1–2° (chip spec: ±0.5°)           |unmeasured|
+
+**Note 1 — FIFO residence.** Measured on a Pi 5 with `ism330dhcx`, 120 s per
+combination: `fifo` p50 between 8.2 ms and 32.8 ms on I²C depending on rate and
+watermark, and 4.1 ms p50 / 8.2 ms p99 on SPI. The row's parenthetical assumes
+the FIFO absorbs jitter, and it does — but residence is bounded by the reader's
+drain cadence (a 10 ms wait in `src/imu.c`), not by `fifo_wm`, so the buffering
+is real and larger than 5 ms by design.
+
+**Note 2 — end-to-end.** Total sample age is `fifo + pipe`, and with `fifo` as
+above it is tens of milliseconds on I²C. Measured independently at the TCP
+stream as `now - ts_wall_ns` over 99,961 packets: **p50 = 33.79 ms**. The row
+also said "I2C sample" until this release added SPI; the transport is now a
+configuration choice, and the figure differs by roughly 8x between the two.
+
+**What the rewrite is waiting for.** Not the numbers — those exist. `fifo` is
+not yet predictable *from configuration*: the watermark's effect on residence
+inverts between two otherwise identical bench runs, and no model accounts for
+it. Publishing a budget that cannot be derived from a config file would repeat
+the mistake being corrected. The open measurement and the full analysis are in
+`docs/ROADMAP.md` §3.1; the consumer-facing figure to define is total sample
+age, which appears nowhere today.
 
 -----
 

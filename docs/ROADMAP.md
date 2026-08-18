@@ -638,7 +638,7 @@ warm it gently mid-capture).
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
 
-### 3.1 spec §14's latency budgets, one of them now measured  *(the pipeline term is in; FIFO residence and SPI still owed)*
+### 3.1 spec §14's latency budgets, three of them now measured  *(pipeline, FIFO residence and SPI are in; the watermark model and the rewrite are owed)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
 end-to-end at 3 ms. Nothing measured any of them for a long time, and the
@@ -758,6 +758,12 @@ impossible under the broad reading; the jitter row's own parenthetical calls the
 FIFO a jitter absorber, so the author knew it buffers; and `manual.md` used to
 present `fifo_wm` as a chosen latency cost. But that is a reconstruction, and as
 written the row is wrong under its plain meaning.
+
+**spec §14 now carries the caveat** rather than presenting the budgets bare:
+the two rows that are not met are marked "not met", both measurements are
+quoted, and the table says what the rewrite is waiting for. That is deliberate
+in preference to adjusting the targets to match the observations — a target is
+a claim, and rewriting it to fit would erase the fact that the claim was wrong.
 
 Do not simply relabel it. The number a control-loop or camera-sync consumer needs
 is total sample age, and that appears nowhere. Define the chain and publish both
