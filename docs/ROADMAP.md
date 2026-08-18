@@ -16,7 +16,7 @@ it intends *not* to do. Items name the section that carries the detail.
 
 **Planned.**
 
-- **Clear the hardware validation backlog (§1).** Ten drivers ship marked
+- **Clear the hardware validation backlog (§1).** Eleven drivers ship marked
   `experimental = true` and have never met real silicon. `imud-imutest` reduces
   each one to a single command plus three physical checks, so this is bench
   time rather than design work. The reference pair is validated; the rest clear
