@@ -132,6 +132,32 @@ duty from ~13% to ~100% (both §10.5). 1.8 then changed the sample clock itself
 cannot build on the macOS dev host, so CI and the Pi are the only places they
 have ever run.
 
+**`align_window_sec` is confirmed** *(2026-08-18, over SPI, 6/6 runs)*. The
+daemon logs `[fusion] settling 5 s — discarding 4165 samples` and then
+`aligned from 4165 accel + 200 mag samples`. 4165 is 5 x 833 exactly; the
+hardcoded window 1.7 replaced would have read 833. That closes the alignment
+half of this item.
+
+**Still owed here: the `m33_inv` accel-update duty.** Blocked rather than
+skipped — `imud-cal fit-ra` is the instrument, since its probe runs the same
+`m33_inv` and its skip fraction reads the duty directly (~0% fixed, ~87%
+broken), but it refuses to run without magnetometer calibration. Correctly so:
+with no heading updates the covariance diverges and the innovation statistics
+would measure that divergence instead. So this needs a swing first, which needs
+someone at the boat.
+
+**1.8's measured sample clock is confirmed in production, twice over.**
+
+- The part's declared trim reaches the daemon: `ism330dhcx declares a 24027 ns
+  timer tick against the 25000 ns typical (-3.89%); using the part's own
+  value`. This is the *declared* figure being honoured, not `ts_anchor_t`
+  measuring the period at runtime — that half is still unverified.
+- The forward guard added in this cycle fired on real silicon, once in a 90 s
+  run: `ism330dhcx: 1 post-drain timestamp read(s) implausibly far ahead;
+  extrapolating from the previous burst`. First sighting outside imutest, and
+  it is the corrupt-counter-read case reaching the daemon in production rather
+  than a synthesised one.
+
 ### 1.1 Timestamp sourcing, from the 1.9.0 RC bench run  *(defects confirmed on silicon 2026-08-14; fixes confirmed 2026-08-15)*
 
 The 2026-08-10 Pi 5 session on the reference pair produced four findings. Two
@@ -707,7 +733,21 @@ the sum rather than below, which is the signature of an anchor that is no
 longer late. So the raised `fifo` figures are a truer residence, not a
 regression.
 
-Still owed: the same pair on SPI, and at the rates only SPI can carry.
+**The SPI pair is in** *(measured 2026-08-18, from the daemon's own `[stats]`
+line at 833 Hz / `fifo_wm = 64`, `ism330dhcx` over SPI on a Pi 5)*:
+
+| transport | `fifo` p50/p99 | `pipe` p50/p99 |
+|---|---|---|
+| I²C, same config (08-15) | 32.8 / 32.8 ms | — / 0.26 ms |
+| **SPI** | **4.1 / 8.2 ms** | **0.06 / 0.13 ms** |
+
+An eightfold drop in FIFO residence and a halved pipeline term. Note what that
+does *not* say: the drain cadence still bounds residence, and the reader's
+10 ms timeout is unchanged, so this is the read itself getting cheaper rather
+than the cycle getting shorter. It is consistent with the finding above that
+`fifo_wm` is not what triggers a drain.
+
+Still owed: the pair at the rates only SPI can carry (above 833 Hz).
 
 **Then fix §14** *(still owed — the numbers to do it with now exist)*. The likely
 defect is the label rather than the number — "I2C sample" probably meant the
