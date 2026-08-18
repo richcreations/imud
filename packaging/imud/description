@@ -12,3 +12,6 @@ IMU daemon — attitude, heading, and heave for boats ("gpsd for IMUs")
  network monitor ships as imud-utils; protocol bridges are packaged
  separately: imud-signalk, imud-mqtt, imud-influxdb, imud-mavlink,
  imud-prometheus.
+ .
+ Requires a little-endian host: the binary wire packet is sent as a packed
+ struct with no byte-order conversion.

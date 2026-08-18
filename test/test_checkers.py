@@ -54,6 +54,23 @@ def sub(pattern, repl, count=1):
 
 
 CASES = [
+    # ── check-package-descriptions ───────────────────────────────────────────
+    # Each package's description lives in debian/control (what apt shows) and
+    # in packaging/<pkg>/description (what the repo documents). This found a
+    # real drift on its first run: control required a little-endian host and
+    # the packaging copy had lost the paragraph.
+    ("check-package-descriptions", "packaging/imud-influxdb/description",
+     sub(r"^InfluxDB bridge for the imud IMU daemon$",
+         "InfluxDB exporter for the imud IMU daemon"),
+     "synopsis differs"),
+
+    # Body drift is the one that matters more: it is longer, it is what a
+    # reader actually reads, and a removed dependency goes unmentioned there.
+    ("check-package-descriptions", "packaging/imud-mqtt/description",
+     sub(r"^ QoS, retained values, TLS.*$",
+         " QoS and retained values."),
+     "body differs"),
+
     # ── check-flags ──────────────────────────────────────────────────────────
     # The flags word has four independent definitions and no generator. A
     # drifted bit is the worst kind of drift here: the packet still parses and

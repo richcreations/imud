@@ -590,7 +590,7 @@ check-flags:
 CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-mqtt-topics check-bridge-outputs \
                   check-libimud-api check-math-citations check-manpages \
-                  check-seccomp
+                  check-seccomp check-package-descriptions
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
