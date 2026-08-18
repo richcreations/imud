@@ -2394,11 +2394,19 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
 
     r->raw.mag_drdy_edges = -1;
 
-    if (!mag->has_interrupt || cfg->mag_int_gpio <= 0) {
+    /*
+     * `mag` cannot actually be NULL here — the caller runs this only when
+     * check_bringup() set mag_ok, and that is unreachable on the !mag path.
+     * But the correlation travels through an out-parameter in another
+     * function, so it is invisible to a reader and to the static analyzer,
+     * which reports the dereference as a null deref.  State the precondition
+     * where it is used rather than leaving it to be re-derived.
+     */
+    if (!mag || !mag->has_interrupt || cfg->mag_int_gpio <= 0) {
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
-                   !mag->has_interrupt
-                   ? "this part has no interrupt pin; the reader polls it"
-                   : "mag.int_gpio is 0 — the reader uses a polling timer");
+                   (mag && mag->has_interrupt)
+                   ? "mag.int_gpio is 0 — the reader uses a polling timer"
+                   : "this part has no interrupt pin; the reader polls it");
         return;
     }
 
