@@ -760,16 +760,30 @@ jobs:
       # unlike the actions this one does NOT get bumped automatically —
       # refresh the version and the checksum together, by hand, from
       # https://github.com/rhysd/actionlint/releases.
-      # shellcheck is preinstalled on the runner image; actionlint finds it on
-      # PATH by itself, and installing it explicitly keeps that from being
-      # luck.
-      - name: Install actionlint + shellcheck
+      # shellcheck is preinstalled on the runner image and actionlint finds it
+      # on PATH by itself.  ASSERT that rather than reinstalling it: `apt-get
+      # update` reaches the Ubuntu archive on every run, and a slow mirror
+      # takes the whole workflow down with it.  On 2026-08-18 it stalled for
+      # 4.5 minutes, the 5-minute timeout above killed the job, and the run
+      # reported `cancelled` with all sixteen other jobs green — including the
+      # static-analysis fix that push existed to land.  The check keeps the
+      # dependency from being luck, which is why the install was here, and it
+      # fails loudly and instantly if the image ever drops the tool.
+      #
+      # The curl stays: actionlint genuinely is not preinstalled.  It is
+      # checksum-pinned, and fetches from GitHub rather than a distro mirror.
+      - name: Install actionlint, and require shellcheck
         env:
           ACTIONLINT_VERSION: 1.7.12
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          if ! command -v shellcheck >/dev/null; then
+            echo 'shellcheck is not on PATH: the runner image dropped it.' >&2
+            echo 'Reinstate an install step here - actionlint silently skips' >&2
+            echo 'its shell checks when shellcheck is missing.' >&2
+            exit 1
+          fi
+          shellcheck --version
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           curl -fsSL -o "$tarball" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
