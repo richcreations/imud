@@ -261,30 +261,51 @@ recorded as unexplained; see the retraction there.
   key off, and it is resolved before the bus is open. `ts_anchor_t` measures
   the true sample interval at runtime regardless.
 
-- **The DRDY edge rate fits no model** *(instrument shipped — measurement
-  still owed)*. `imu.drdy.edges` reported ~18.3 Hz on the reference IMU at
-  833 Hz with `fifo_wm = 64`. Ruled out by inspection: word accounting
-  predicts 13.6 Hz (2 words per sample-set at the measured 866.7 Hz, plus
-  temperature at 12.5 Hz, against a 128-word watermark); the tool drains while
-  counting, so it is not a stalled FIFO; and both the tool and the daemon
-  request rising edges only, so it is not double-counting.
+- ~~**The DRDY edge rate fits no model**~~ — **answered 2026-08-16, and the
+  question was malformed.** `imu.drdy.edges` had reported ~18.3 Hz on the
+  reference IMU at 833 Hz with `fifo_wm = 64`, against word accounting that
+  predicts about 13.4 Hz (2 words per sample-set at the measured 866.7 Hz,
+  plus temperature at 12.5 Hz and the ÷32 timestamp words' 1.6%, against a
+  128-word watermark). Three candidates were ruled out by inspection: it is
+  not a stalled FIFO, because the tool drains while counting; it is not
+  double-counting, because tool and daemon both request rising edges only; and
+  the remaining hypothesis was that `INT1_FIFO_TH` is a *level* condition
+  whose level oscillates across the threshold during a drain.
 
-  Remaining hypothesis: `INT1_FIFO_TH` is a *level* condition and the level
-  oscillates across the threshold during the drain, as words are consumed
-  while new ones arrive, with each crossing producing another rising edge.
+  `imud-imutest` counts twice over the same window — once draining on every
+  edge, once not — which is what separates those: a level condition asserts
+  once and stays asserted with nothing emptying the FIFO, while an
+  edge-per-sample line keeps pulsing either way. The second number, identical
+  across three consecutive runs at that configuration:
 
-  `imud-imutest` now counts twice over the same window — once draining on
-  every edge, once not — which separates the candidates: a level condition
-  asserts once and stays asserted with nothing emptying the FIFO, while an
-  edge-per-sample line keeps pulsing. Both counts are in the report appendix.
-  The check no longer grades a part down for fitting neither model, because an
-  edge count never could identify one; 0 edges still FAILs, and a rate above
-  the part's own sample rate still WARNs.
+  | | edges | rate |
+  |---|---|---|
+  | draining on every edge | 41 in 3.0 s | 13.7 Hz |
+  | **not draining** | **1 in 3.0 s** | **0.3 Hz** |
 
-  **Owed to the bench.** The second number. Note the word accounting above
-  rests on `FIFO_CTRL4 = 0x26`, which is now `0xE6` at the shipped watermark —
-  the ÷32 timestamp words add 1.6%, moving the prediction from 13.6 to about
-  13.4 Hz, which does not change the conclusion that 18.3 fits neither model.
+  One edge in three seconds with nothing emptying the FIFO is a level
+  condition, and it refutes the edge-per-sample reading outright — that line
+  would have pulsed ~2500 times in the same window. The tool classifies this
+  itself (`src/imutest.c`, the `idle <= 2` branch) and prints "level
+  condition, so the drained count is drain-paced, not a rate", so the next
+  part to be tested says which model it fits without anyone re-deriving this.
+
+  **That is why no model fitted: the drained count was never a rate.** It
+  counts how often the drain loop took the level back under the threshold and
+  the FIFO re-crossed it, which is a property of the loop's cadence against
+  the fill rate, not of the interrupt. Asking which interrupt model produces
+  18.3 Hz had no answer because the premise was wrong.
+
+  The drained figure now sits at 13.7 Hz, one edge per fill-to-watermark
+  cycle, which is what a level condition with a complete drain gives — hence
+  its agreement with the word accounting. **What moved it from 18.3 is not
+  determined**: the tool changed (it now drains differently and counts twice)
+  and so did the driver (batched timestamps add words), and separating those
+  would need the old build back. It is not worth doing. A partial drain
+  re-crossing the threshold early is the expected way to get a number above
+  the fill cycle, the mechanism is understood, and the check no longer grades
+  a part down for it — 0 edges still FAILs, and a rate above the part's own
+  sample rate still WARNs.
 
 ### 1.2 The MMC5983MA over SPI  *(four defects, all fixed; validated 2026-08-17)*
 
