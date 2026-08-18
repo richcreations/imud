@@ -255,6 +255,18 @@ The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
   what it can defend: no edges at all is still a failure, and more edges than
   the part has samples still warns.
 
+* **Fix: `imud-influxdb` half-applied its output enables on SIGHUP.**
+  `udp_enabled` and `http_enabled` are `[restart]` keys and the reload logged
+  as much — and then applied them anyway. Turning UDP **on** with a reload was
+  the damaging half: the socket is opened at startup, guarded on the enable in
+  force at the time, so the reload left the descriptor closed while the publish
+  path believed UDP was live. `sendto()` then ran on a bad descriptor at the
+  emit rate for the life of the process, logging `EBADF` every time. Turning it
+  **off** stopped the output immediately, which is exactly what the warning
+  promises will not happen until a restart. The running enables now survive the
+  reload. If you want an enable change to take effect, restart the bridge — as
+  the manual has always said.
+
 1.8.2
 -----
 A fix release, almost entirely from a review of 1.8 and the fuzzing that

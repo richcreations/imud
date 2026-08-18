@@ -1,3 +1,20 @@
+imud-influxdb (1.9.0) unstable; urgency=medium
+
+  * Fix: udp_enabled and http_enabled are documented [restart] keys, and
+    the reload path said so -- it logged "output enable change needs a
+    restart to apply" -- and then copied the new values over anyway, so
+    the warning was wrong in both directions. Turning UDP on at reload
+    was the damaging half: the socket is opened at startup guarded on
+    the enable in force then, so the reload left udp_fd closed while the
+    publish path believed UDP was live, and sendto() ran on a bad
+    descriptor at the emit rate for the life of the process, logging
+    EBADF each time. Turning UDP off stopped the output immediately,
+    which is precisely what the warning promises will not happen until
+    a restart. The running enables now survive the reload, so the
+    documented contract is the one that executes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Tue, 18 Aug 2026 12:00:00 -0700
+
 imud-influxdb (1.8.2) unstable; urgency=medium
 
   * BEHAVIOUR CHANGE: a bad value in imud-influxdb.conf is now fatal,
