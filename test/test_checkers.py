@@ -54,6 +54,40 @@ def sub(pattern, repl, count=1):
 
 
 CASES = [
+    # ── check-flags ──────────────────────────────────────────────────────────
+    # The flags word has four independent definitions and no generator. A
+    # drifted bit is the worst kind of drift here: the packet still parses and
+    # the wrong bit is read under the right name, so nothing downstream errors.
+    ("check-flags", "lib/imud_client.h",
+     sub(r"^#define IMUD_FLAG_ENGINE_ON(\s+)\(1u << 13\)",
+         r"#define IMUD_FLAG_ENGINE_ON\1(1u << 12)"),
+     "at bit 12"),
+
+    # A flag that never reached one of the clients. The C headers are edited
+    # together often enough to stay in step; the Python client is the one that
+    # gets forgotten.
+    ("check-flags", "lib/imud_client.py",
+     sub(r"^    ENGINE_ON(\s+)= 1 << 13.*$", r"    # removed"),
+     "missing ENGINE_ON"),
+
+    # ── check-devices ────────────────────────────────────────────────────────
+    # The defect this checker was written for: the shipped config names a
+    # device node the shipped unit does not allow. DevicePolicy=closed refuses
+    # the open, and nothing else in the tree compares the two files —
+    # systemd-analyze passes, because the unit is valid; it is just wrong.
+    ("check-devices", "config/imud.conf",
+     sub(r'^gpio_chip(\s+)= "gpiochip4"', r'gpio_chip\1= "gpiochip9"'),
+     "does not allow"),
+
+    # A trailing comment on a DeviceAllow= line. systemd parses the rights
+    # token strictly and discards the whole line if it does not match r/w/m,
+    # so this silently allows NOTHING — which looks like a working unit right
+    # up until the device open fails on hardware.
+    ("check-devices", "etc/imud.service.in",
+     sub(r"^DeviceAllow=/dev/i2c-1 rw$",
+         "DeviceAllow=/dev/i2c-1 rw   # the IMU bus"),
+     "rights token"),
+
     # The wire version, which spent three revisions reading 14 in this table
     # while the header said 17.
     ("gen-packet-docs", "include/types.h",

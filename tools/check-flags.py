@@ -28,7 +28,8 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from checklib import ROOT                                  # noqa: E402
 
 # (path, regex capturing (name, bit), description). Each regex is anchored to
 # a definition line, so prose mentioning a flag cannot satisfy it.

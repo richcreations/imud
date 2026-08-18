@@ -32,7 +32,8 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from checklib import ROOT                                  # noqa: E402
 
 CONF = "config/imud.conf"
 UNIT = "etc/imud.service.in"
