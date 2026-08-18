@@ -14,6 +14,13 @@ Sections 1–11 are the full backlog. This section is the forward plan: what the
 project intends to do over the coming year, and — just as deliberately — what
 it intends *not* to do. Items name the section that carries the detail.
 
+**Measurements live in those sections, not here.** This one says what is left
+to do and points at where the numbers are. It used to restate them, and every
+time a section below advanced, its summary here went quietly stale — §0 claimed
+SPI latency was unmeasured for as long as it took someone to notice, and read
+"ten drivers" against §1's eleven. A forward plan that carries figures is a
+second copy of them with nothing keeping it honest.
+
 **Planned.**
 
 - **Clear the hardware validation backlog (§1).** Eleven drivers ship marked
@@ -21,23 +28,26 @@ it intends *not* to do. Items name the section that carries the detail.
   each one to a single command plus three physical checks, so this is bench
   time rather than design work. The reference pair is validated; the rest clear
   opportunistically as boards become available.
-- **Confirm the 1.7/1.8 changes on hardware (§1).** The alignment window, the
-  accel-update duty fix, and the measured sample clock have run only in CI and
-  simulation. This gates confidence in most of §10.
+- **Confirm the 1.7/1.8 changes on hardware (§1).** The alignment window and
+  the measured sample clock are confirmed; the `m33_inv` accel-update duty is
+  not, and is blocked behind a magnetometer swing rather than merely undone.
+  This gates confidence in most of §10. Figures in §1.
 - **Fit real gyro temperature coefficients (§2).** The mechanism shipped in
   1.5; what is missing is a cold-boot-to-warm capture from real hardware.
-- **Finish measuring sample latency on silicon and fix spec §14 (§3.1).** The
-  pipeline term is now measured — 0.26 ms p99 on a Pi 5, against a 1.5 ms
-  budget. FIFO residence is measured on I²C but is drain-rate-bound rather
-  than watermark-bound, which ties it to §1.1's DRDY item; SPI is unmeasured
-  entirely. One of the three budgeted numbers still looks wrong as written.
-  Same bench session as §1 and §2.
-- **Confirm 1.9.0's timestamp sourcing on silicon (§1.1).** All three
-  follow-ons from the 1.9.0 RC bench run are implemented and unit-tested, and
-  two of them rest on datasheet behaviour no hardware has confirmed: the ST
-  tag-`0x04` payload layout and whether `TAG_CNT` participates for it. Both
-  are cross-checked at runtime and degrade rather than corrupt, but a bench
-  pass is what turns "degrades safely" into "works".
+- **Finish measuring sample latency on silicon and fix spec §14 (§3.1).**
+  All three budgeted terms are now measured, on both transports; `spec.md` §14
+  marks the two it does not meet. What remains is not a number but a model:
+  FIFO residence is bounded by the drain cadence rather than by `fifo_wm`, and
+  the watermark's effect on it inverts between two otherwise identical runs, so
+  residence is not yet predictable *from configuration* — which is what a
+  rewritten budget would have to be derived from. Ties to §1.1's DRDY item.
+  Same bench session as §1 and §2. Figures in §3.1.
+- **Confirm 1.9.0's timestamp sourcing on silicon (§1.1).** The measured
+  clock and the post-drain forward guard have both now been seen working in a
+  running daemon. Two follow-ons still rest on datasheet behaviour no hardware
+  has confirmed: the ST tag-`0x04` payload layout, and whether `TAG_CNT`
+  participates for it. Both are cross-checked at runtime and degrade rather
+  than corrupt, but a bench pass is what turns "degrades safely" into "works".
 - **Build the two missing benchmark scenarios (§10.3, §10.5).** Both remaining
   filter items are blocked on scenarios that do not exist — a vibration case
   and a calm-water case. The scenario *is* the work: 1.7 refuted two
