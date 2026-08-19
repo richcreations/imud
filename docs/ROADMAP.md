@@ -1069,8 +1069,27 @@ delete a duplicate, not a refactor undertaken for tidiness.
   estimate could refine it, but the residual is second-order for typical vessels.
   §11.1 replaces this approximation wholesale for the aerospace path, and would
   subsume the marine leeway question if pursued.
-- Validate capture → replay on real boat captures (the synthetic path is
-  regression-tested); the §2 thermal capture can double as the test file.
+- ~~Validate capture → replay on real captures~~ — **DONE 2026-08-19.** A 24.8 s
+  bench recording (21,645 IMU + 2,612 mag records, `ism330dhcx` + `mmc5983ma`
+  over SPI) replayed in 27 s of wall clock, exited **0** on its own, and the
+  daemon's counters landed on `imu=21645 mag=2612` — every record played, none
+  lost at the tail. That is the first time this path has run on anything but
+  synthetic data.
+
+  **One limitation found, and it is a real trap.** Playback is paced by the
+  reader threads, not by the capture's own timestamps, so a file recorded at a
+  magnetometer rate above what the reader cadences replays in *slower* than
+  real time and looks like a hang. A capture holding 49,401 mag records over
+  41.8 s (mag ODR left at 1000 Hz) was still playing after 180 s and had to be
+  killed, having delivered ~100 mag samples a second. `[sim] playback finished`
+  appears for the stream that ran out while the other keeps going, which is
+  what makes it read as a hang rather than as slow progress. Nothing is lost or
+  wrong — it just takes `captured_rate / replay_rate` times as long, and a
+  reader who does not know that will file a bug.
+
+  Also note `fifo=0.0/0.0ms` throughout a replay: the sim driver synthesises
+  `chip_ts`, so FIFO residence is not measurable there. §3.1 says the same
+  thing from the other direction.
 ## 10. Filter mathematics  *(opened 2026-07-25, with measurements taken while acting on it)*
 
 Filter-mathematics items that were **not** actioned in 1.7, plus two findings
