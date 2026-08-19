@@ -582,6 +582,52 @@ where the vendor asks for it). `Auto_SR_en` was tested and rejected: it holds a
 recovered bridge in isolation but oscillates under measurement, because the part
 alternates SET/RESET per sample and the driver averages them blind.
 
+### 1.2.2 The full ODR ladder, both parts, over SPI  *(2026-08-19, no human)*
+
+`imud-imutest --passive` at every advertised rate of both parts — ten for the
+`ism330dhcx`, four for the `mmc5983ma` — plus daemon runs at each. Four
+findings, and three defects in the TOOL that this was the first thing ever to
+expose (fixed in `af5ddac`, `7e8a039`, `a000b44`).
+
+**The ISM330DHCX runs 4.1% fast, at every rate on its ladder.**
+
+| configured | 12 | 26 | 52 | 104 | 208 | 416 | 833 | 1660 | 3332 | 6664 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| measured (Hz) | 13.6 | 27.1 | 53.8 | 108.2 | 216.6 | 433.0 | 867.1 | 1733.1 | 3468.4 | 6935.6 |
+| ratio | 1.133 | 1.042 | 1.035 | 1.040 | 1.041 | 1.041 | 1.041 | 1.044 | 1.041 | 1.041 |
+
+That is the same oscillator error the part declares through `FREQ_FINE`
+(24027 ns against a 25000 ns nominal, −3.89%) seen from the other side, and the
+two agree to three figures: at 833 Hz the part delivers 867.1 Hz and 48.00
+ticks per sample, and 867.1 × 48 gives a 24.03 µs tick. **Nothing is wrong
+here** — but it is why `imu.chipts.rate` was dividing by the wrong number, and
+`odr_hz = 12` is a genuine outlier at +13.3% that the rest of the ladder is not.
+
+**The MMC5983MA at `odr_hz = 1000` is still the odd one.** It delivers
+**1196.8–1204.4 Hz**, 20% above the configured rate, across every run. The
+driver advertises 1000 for `CM_Freq = 0x7`, and fusion sizes the magnetometer's
+noise variance from what is advertised — which is the exact failure the driver
+comment describes for the three rates it deliberately stopped advertising. Its
+DRDY behaviour there is erratic too: one run counted 3614 samples from 3614
+edges, the next counted **zero edges** in the same window with the same
+configuration. The daemon runs the mag at 100 Hz, where everything is clean
+(105.7 Hz over the interrupt against 105.4 polled, 317 samples from 317 edges),
+so this is not urgent — but `supported_odr_hz` advertising 1000 for a setting
+that yields 1200 is the same class of defect that entry was written to fix.
+
+**Two smaller things, each seen once and not yet reproduced:**
+
+- `imu.fs.a8` FAILed at `odr_hz = 26`: the accelerometer read **11.19 m/s²**
+  against 9.807 at ±8 g, 14% high, while the other three ranges passed. The
+  full-scale sweep re-inits at each range, and at 26 Hz a sample takes 38 ms,
+  so this may be the sweep reading before the part has settled rather than a
+  scale error. Worth reproducing at low ODR before believing either.
+- `imu.init.idempotent` WARNed at 208 Hz (1 register) and 6664 Hz (2), meaning
+  a repeated `init()` lands on a different register image than the first.
+
+**Everything else was clean at every rate**, including 3332 and 6664 Hz, which
+were the two cleanest runs of the ladder.
+
 ### 1.2.1 The status gate and the DRDY edge cannot both be used  *(fifth defect, found and fixed 2026-08-18)*
 
 The daemon was reading the magnetometer at **35 Hz from a 105.5 Hz part** — two
