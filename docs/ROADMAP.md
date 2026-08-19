@@ -803,6 +803,45 @@ than the cycle getting shorter. It is consistent with the finding above that
 
 Still owed: the pair at the rates only SPI can carry (above 833 Hz).
 
+### The watermark question is answered  *(2026-08-19, SPI, 42 s per cell)*
+
+`16451c2` made the daemon report what wakes the reader and how much it finds.
+The answer is a threshold, and it is sharp:
+
+| `odr_hz` | `fifo_wm` | drains edge/timeout | mean n | `fifo` p50/p99 | time to fill `wm` |
+|---|---|---|---|---|---|
+| 104 | 8  | **0 / 4068** | 1.1 | 2.0 / 16.4 ms | 77 ms |
+| 104 | 64 | **0 / 4069** | 1.1 | 4.1 / 16.4 ms | 615 ms |
+| 833 | 8  | **4533 / 2** | 8.0 | 16.4 / 16.4 ms | **9.6 ms** |
+| 833 | 64 | **0 / 3764** | 9.7 | 16.4 / 32.8 ms | 77 ms |
+
+**The watermark interrupt fires in exactly one of the four cells.** Everywhere
+else every single drain is a timeout drain. The rule:
+
+> The reader takes whichever of the watermark and the 10 ms timeout comes
+> first, so `fifo_wm` has an effect **only while `wm / odr_hz < 10 ms`**.
+> Above that it has none at all, and mean burst depth is `odr_hz x 0.010`.
+
+Mean depth predicted as `min(wm, odr x 0.010)` against measurement: 1.04 vs
+1.1, 1.04 vs 1.1, 8.0 vs 8.0, 8.33 vs 9.7. The one loose cell is `833/64`,
+where samples keep arriving during the read itself.
+
+**This explains the retraction above rather than merely repeating it.** At
+`833/8` the two wakeups are 9.6 ms and 10 ms apart — within 4% — so which one
+wins is decided by scheduling noise, and the 4533/2 split here is not
+guaranteed to reproduce on a busier host. That is precisely the cell whose
+maxima inverted between the 08-14 and 08-15 runs. It was never a watermark
+effect; it was a race between two nearly-equal timers, and no model that
+ignores the timeout could have predicted either result.
+
+**So residence IS now predictable from configuration**, which is what §14's
+rewrite was waiting for.
+
+One outlier to keep: `104/64` recorded a `fifo` max of **1569 ms**. `max_ever`
+survives the window reset, so this is a single excursion since start rather
+than a sustained state, and the p50/p99 either side of it are unremarkable.
+Unexplained; worth a second look before anyone quotes a worst case.
+
 **Then fix §14** *(still owed — the numbers to do it with now exist)*. The likely
 defect is the label rather than the number — "I2C sample" probably meant the
 sample as delivered by the read, making the row a budget for the daemon's own
