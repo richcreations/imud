@@ -102,7 +102,7 @@ static int wait_edge(imt_line_t *line, long timeout_ms)
 
 int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why)
+                         imt_gpio_why_t *why, void (*prime)(void *))
 {
     *why = IMT_GPIO_OK;
 
@@ -129,6 +129,28 @@ int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
         gpiod_chip_close(chip);
         return -1;
     }
+
+    /*
+     * Acknowledge once from INSIDE the window, before the first wait.
+     *
+     * A latched data-ready sits HIGH until it is acknowledged, and the only
+     * acknowledge here happens after an edge -- so if the line went high in
+     * the gap between the caller preparing the part and request_line()
+     * returning, there is no rising edge left to see and nothing will ever
+     * create one. The wait then runs out with zero edges against a part that
+     * is working perfectly.
+     *
+     * Measured on an MMC5983MA: conversions and INT edges agree exactly at
+     * every rate from 1 to 1204 Hz, while this function returned 0 edges at
+     * 1204 Hz, 6 of 63 at 21 Hz, and the full count at 105 Hz. The gap is
+     * fixed and the conversion period is not, which is precisely why it looked
+     * rate-dependent -- at 1204 Hz a conversion always lands inside it.
+     *
+     * `prime` is separate from `drain` because this one is not a measurement:
+     * counting its sample would report one more sample than there were edges.
+     * NULL for a level-triggered watermark, which has nothing to re-arm.
+     */
+    if (prime) prime(user);
 
     int  edges = 0;
     long t_end = now_ms() + window_ms;

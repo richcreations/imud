@@ -140,6 +140,7 @@ typedef struct {
      * stamped across a burst, a reversal is a later sample carrying an
      * earlier tick. Zero-stamped samples are excluded from both. */
     int           ts_backwards, ts_repeats, ts_zero_count, ts_wraps;
+    int           ts_seam_backwards;  /* of ts_backwards, at a burst seam */
     int           fifo_steps;
     double        fifo_wait_s[IMT_MAX_FIFO_STEPS];
     int           fifo_depth[IMT_MAX_FIFO_STEPS];
@@ -457,9 +458,28 @@ double imt_rate_quantum(double nominal, double window_s);
  */
 typedef struct {
     bool     have;                 /* a nonzero stamp has been seen */
+    bool     seam;                 /* next sample opens a new burst */
     uint32_t first, prev, last;
     int      reversals, repeats, zeros, wraps;
+    int      seam_reversals;       /* of `reversals`, how many at a seam */
 } imt_ts_acc_t;
+
+/*
+ * Tell the accumulator the next sample begins a new read.
+ *
+ * Where a reversal lands decides what it means.  INSIDE a burst the driver
+ * stamps every sample from one anchor, so time can only go forwards and a
+ * reversal is a decode or unwrap defect.  At a SEAM between bursts the anchor
+ * is re-derived, and when the drain is paced by a timer rather than by the
+ * FIFO watermark the post-drain timestamp read can place the new burst before
+ * the old one ended -- a poll cannot know how old the sample it just read is.
+ *
+ * Measured: the daemon paced by the watermark interrupt scores 0 reversals in
+ * 53,708 samples, while imud-imutest's own 5 ms poll loop scores a handful per
+ * window on the same part in the same minute.  Without the split, that graded
+ * a healthy driver as broken.
+ */
+void imt_ts_acc_seam(imt_ts_acc_t *a);
 
 uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts);
 
@@ -495,8 +515,16 @@ void imt_degauss_split(const double vS[3], const double vR[3],
  * that, a level that stays asserted yields exactly one edge.
  * Returns the edge count, or -1 with *why set.
  */
+/*
+ * `prime`, when non-NULL, is called once after the line is being watched and
+ * before the first wait. A latched data-ready is HIGH until acknowledged, and
+ * `drain` only runs after an edge -- so a line that went high while the caller
+ * was setting up has no edge left to give and nothing to create one. Priming
+ * from inside the window closes that race; it is NOT counted as a sample, so a
+ * level-triggered watermark should pass NULL.
+ */
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why);
+                         imt_gpio_why_t *why, void (*prime)(void *));
 
 #endif /* IMUD_IMUTEST_H */

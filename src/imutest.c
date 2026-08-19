@@ -913,6 +913,9 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             if (!have_first) { first_t = t; seq_first = buf[0].seq; have_first = true; }
             last_t = t;
 
+            /* Each drain_once() is one burst, so its first sample is the
+             * seam where the driver re-derives its anchor. */
+            imt_ts_acc_seam(&tsa);
             for (int i = 0; i < n; i++) {
                 uint32_t d = imt_ts_acc_step(&tsa, buf[i].chip_ts);
                 if (d && n_deltas < 512) ts_deltas[n_deltas++] = d;
@@ -1100,19 +1103,48 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     r->raw.ts_first     = tsa.first;
     r->raw.ts_last      = tsa.last;
     r->raw.ts_backwards = tsa.reversals;
+    r->raw.ts_seam_backwards = tsa.seam_reversals;
     r->raw.ts_repeats   = tsa.repeats;
     r->raw.ts_zero_count = tsa.zeros;
     r->raw.ts_wraps     = tsa.wraps;
 
-    add_check(r, "imu.chipts.monotonic", "chip_ts is monotonic",
-              (tsa.reversals == 0 && tsa.repeats == 0) ? IMT_PASS : IMT_FAIL,
-              fmtbuf(mb, sizeof mb, "%d reversals / %d repeats",
-                     tsa.reversals, tsa.repeats), "0 / 0",
-              tsa.reversals != 0
-              ? "chip_ts went backwards: a later sample carries an earlier "
-                "tick. For a counter narrower than 32 bits that is usually a "
-                "missing unwrap in the driver (%d wrap%s, %d zero-stamped "
-                "sample%s skipped)"
+    /*
+     * Where a reversal happened decides what it means, so they are graded
+     * apart.  Inside a burst the driver stamps every sample from one anchor
+     * and time can only go forwards, so a reversal there is a decode or unwrap
+     * defect and FAILs.  At a seam the anchor is re-derived from a post-drain
+     * timestamp read, and this loop is paced by a 5 ms sleep rather than by
+     * the FIFO watermark -- a poll cannot know how old the sample it just read
+     * is, so the new burst can land before the old one ended.
+     *
+     * Measured on the reference part: the daemon, woken by the watermark
+     * interrupt, scored 0 reversals in 53,708 samples while this check scored
+     * 2 to 7 per window on the same part minutes apart.  Grading those as a
+     * driver fault reported a healthy timestamp chain as broken on every run.
+     * They still WARN, because an interrupt-less install really does drain on
+     * a timer and really does see them.
+     */
+    int inner_rev = tsa.reversals - tsa.seam_reversals;
+    imt_status_t mono_st = (tsa.reversals == 0 && tsa.repeats == 0) ? IMT_PASS
+                         : (inner_rev > 0 || tsa.repeats != 0)      ? IMT_FAIL
+                                                                   : IMT_WARN;
+    add_check(r, "imu.chipts.monotonic", "chip_ts is monotonic", mono_st,
+              fmtbuf(mb, sizeof mb, "%d reversals (%d at a burst seam) / %d repeats",
+                     tsa.reversals, tsa.seam_reversals, tsa.repeats), "0 / 0",
+              inner_rev > 0
+              ? "chip_ts went backwards WITHIN a burst, where every sample is "
+                "stamped from one anchor and time can only move forwards. For "
+                "a counter narrower than 32 bits that is usually a missing "
+                "unwrap in the driver (%d wrap%s, %d zero-stamped sample%s "
+                "skipped)"
+              : tsa.reversals != 0 && tsa.repeats == 0
+              ? "chip_ts went backwards only at burst SEAMS, which this check "
+                "drains on a timer rather than on the watermark interrupt — a "
+                "poll cannot know how old the sample it just read is, so the "
+                "post-drain anchor can place a burst before the previous one "
+                "ended. The daemon, woken by the interrupt, does not do this. "
+                "An install with imu.int_gpio = 0 does (%d wrap%s, %d "
+                "zero-stamped sample%s skipped)"
               : tsa.repeats != 0
               ? "chip_ts repeated: consecutive samples carry the identical "
                 "tick, so a burst is being stamped from one reading rather "
@@ -1803,7 +1835,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     /* Pass 1: drain on every edge, which is what the daemon does. */
     drain_flush(d);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
-                                     drain_cb, d, &why);
+                                     drain_cb, d, &why, NULL);
     r->raw.gpio_why      = why;
     r->raw.gpio_edges    = edges;
     r->raw.gpio_window_s = o->drdy_window_s;
@@ -1843,7 +1875,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     drain_flush(d);
     imt_gpio_why_t why_idle = IMT_GPIO_OK;
     int idle = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
-                                    NULL, NULL, &why_idle);
+                                    NULL, NULL, &why_idle, NULL);
     drain_flush(d);
 
     r->raw.gpio_idle_valid   = (idle >= 0);
@@ -2457,7 +2489,28 @@ static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
 
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg);
+                             const imud_config_t *cfg, int eff_odr);
+
+/*
+ * Acknowledge whatever the interrupt is currently asserting, from inside the
+ * edge window.  This part's DRDY is LATCHED: it goes high when a conversion
+ * completes and is re-armed only by the write that clears Meas_M_Done, which
+ * read() performs.  If it went high while the check was still setting up, the
+ * rising edge is already spent and nothing else will make another.
+ *
+ * Deliberately NOT counted: it is arming, not a measurement, and counting it
+ * would report one more sample than there were edges.
+ *
+ * Return value ignored: 1 (no new measurement) is the ordinary case, and a
+ * bus error shows up immediately in the counters below rather than here.
+ */
+static void mag_drdy_prime(void *user)
+{
+    mag_drdy_ctx_t *m = user;
+    mag_sample_t s;
+    memset(&s, 0, sizeof s);
+    (void)m->mag->read(m->bus, &s);
+}
 
 static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                            const mag_ops_t *mag, const imud_bus_t *bus,
@@ -2499,7 +2552,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
                       .int_driven = true };
     if (mag->init(bus, &irq) == 0)
-        measure_mag_drdy(r, o, mag, bus, cfg);
+        measure_mag_drdy(r, o, mag, bus, cfg, eff_odr);
     else
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                    "re-init in interrupt mode failed");
@@ -2517,40 +2570,15 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
  */
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg)
+                             const imud_config_t *cfg, int eff_odr)
 {
     char mb[56], eb[56];
-
-    /*
-     * Prime the interrupt before counting edges, or a working part scores 0.
-     *
-     * This part's INT is LATCHED: it asserts when a conversion completes and is
-     * re-armed only by the write that clears Meas_M_Done -- which read()
-     * performs.  So the resting state of the line on a part that has been read
-     * at all is HIGH, and a reader waiting for a RISING edge on an
-     * already-high line waits for ever.  Measured on the bench 2026-08-19,
-     * GPIO27 idle-high with nothing running: 0 rising edges in 3 s with
-     * nothing reading the part, 152 in 3 s with a reader acknowledging.
-     *
-     * The daemon does not hit this because its mag reader falls through to a
-     * read when its edge wait times out, which clears the bit and re-arms.
-     * imt_gpio_count_edges only counts, so without one read first this check
-     * reported `0 Hz -- FAIL` against a part delivering a clean 105 Hz to the
-     * daemon at the same moment.
-     *
-     * Return value ignored on purpose: 1 (no new measurement) is the common
-     * and perfectly good case, and a -1 here would show up immediately as
-     * errors in the measurement below rather than being lost.
-     */
-    mag_sample_t prime;
-    memset(&prime, 0, sizeof prime);
-    (void)mag->read(bus, &prime);
 
     mag_drdy_ctx_t m = { .mag = mag, .bus = bus };
     imt_gpio_why_t why = IMT_GPIO_OK;
     long ms = (long)(o->drdy_window_s * 1e3);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
-                                     mag_drdy_cb, &m, &why);
+                                     mag_drdy_cb, &m, &why, mag_drdy_prime);
 
     if (edges < 0) {
         const char *reason =
@@ -2582,6 +2610,22 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
      * working part on two samples where the arithmetic wanted three -- a
      * rounding boundary, not a defect.
      */
+    /*
+     * Can this window conclude anything at all?  One sample of resolution over
+     * `eff_odr * window` expected, so below about 1/tol expected samples the
+     * measurement cannot separate a working part from a broken one -- at 1 Hz
+     * over 3 s it expects three edges, and catching one late is a boundary
+     * rather than a fault.  This gates the zero-sample verdict too: zero is
+     * damning only when many were expected.  At 105 Hz that is 316, so the
+     * defect this check exists for still fails loudly.
+     */
+    if (imt_rate_quantum(eff_odr, o->drdy_window_s) > o->odr_tol_warn) {
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                   "too few edges expected in this window to conclude anything "
+                   "— raise --drdy-window for a low mag ODR");
+        return;
+    }
+
     if (m.samples == 0) {
         add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                   IMT_FAIL, fmtbuf(mb, sizeof mb, "0 Hz"),
@@ -3284,13 +3328,23 @@ uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts)
     uint32_t delta = ts - a->prev;       /* modular, so a wrap reads forward */
     uint32_t out   = 0;
     if (delta == 0)                a->repeats++;
-    else if (delta >= 0x80000000u) a->reversals++;
+    else if (delta >= 0x80000000u) {
+        a->reversals++;
+        /* At a seam the anchor was re-derived; inside a burst it was not. */
+        if (a->seam) a->seam_reversals++;
+    }
     else {
         out = delta;
         if (ts < a->prev) a->wraps++;    /* forward across the 32-bit end */
     }
+    a->seam = false;
     a->prev = a->last = ts;
     return out;
+}
+
+void imt_ts_acc_seam(imt_ts_acc_t *a)
+{
+    a->seam = true;
 }
 
 void imt_degauss_split(const double vS[3], const double vR[3],

@@ -98,14 +98,18 @@ static int g_gpio_last_write_at_entry = -2;
 
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why)
+                         imt_gpio_why_t *why, void (*prime)(void *))
 {
     (void)chip; (void)gpio; (void)window_ms;
     *why = g_gpio_why;
-    g_gpio_last_write_at_entry = i2cmock_last_write(MMC_ADDR);
     if (g_gpio_fail_reg_after >= 0)
         i2cmock_fail_write_to((uint8_t)g_gpio_fail_addr_after,
                               g_gpio_fail_reg_after, -1);
+    if (prime) prime(user);
+    /* Snapshot AFTER priming: the acknowledge now happens inside the window,
+     * which is the whole point -- doing it beforehand left a race the line
+     * could go high in. */
+    g_gpio_last_write_at_entry = i2cmock_last_write(MMC_ADDR);
     if (!drain) return g_gpio_edges < 0 ? g_gpio_edges : g_gpio_edges_idle;
     if (g_gpio_edges >= 0)
         for (int i = 0; i < g_gpio_drain_calls; i++) drain(user);
@@ -1422,7 +1426,7 @@ static void test_mag_drdy_rate(void)
      * that must be the last register written when counting begins.
      */
     EXPECT(g_gpio_last_write_at_entry == 0x08,
-           "the DRDY check acknowledges the interrupt before counting edges");
+           "the DRDY check acknowledges the interrupt inside the edge window");
 
     /*
      * The restore FAILING is its own verdict, and it is the one line in the
@@ -2054,6 +2058,32 @@ static void test_chipts_accounting(void)
      * most of the counter coming out — which imu.chipts.rate takes the median
      * of, so one failed register read moved two checks.
      */
+    /*
+     * A reversal at a burst seam is not the same fault as one inside a burst.
+     * Inside, every sample comes from one anchor and time can only move
+     * forwards. At a seam the anchor is re-derived, and a timer-paced drain
+     * can place the new burst before the old one ended -- the daemon, woken by
+     * the watermark, scored 0 in 53,708 samples where the polled check scored
+     * several per window on the same part.
+     */
+    imt_ts_acc_t sm = { 0 };
+    imt_ts_acc_step(&sm, 1000);
+    imt_ts_acc_step(&sm, 1192);
+    imt_ts_acc_seam(&sm);                 /* next sample opens a new read */
+    imt_ts_acc_step(&sm, 900);            /* lands before the previous burst */
+    EXPECT(sm.reversals == 1, "the seam reversal is counted");
+    EXPECT(sm.seam_reversals == 1, "and attributed to the seam");
+
+    imt_ts_acc_t in = { 0 };
+    imt_ts_acc_step(&in, 1000);
+    imt_ts_acc_seam(&in);
+    imt_ts_acc_step(&in, 1192);           /* the seam sample itself is fine */
+    imt_ts_acc_step(&in, 900);            /* backwards INSIDE the burst */
+    EXPECT(in.reversals == 1, "the in-burst reversal is counted");
+    EXPECT(in.seam_reversals == 0,
+           "and is NOT excused as a seam — only the first sample after a "
+           "seam can be one");
+
     imt_ts_acc_t z = { 0 };
     imt_ts_acc_step(&z, 1000);
     EXPECT(imt_ts_acc_step(&z, 0) == 0, "a zero stamp yields no delta");
