@@ -2438,7 +2438,7 @@ static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
 
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg);
+                             const imud_config_t *cfg, int eff_odr);
 
 static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                            const mag_ops_t *mag, const imud_bus_t *bus,
@@ -2480,7 +2480,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
                       .int_driven = true };
     if (mag->init(bus, &irq) == 0)
-        measure_mag_drdy(r, o, mag, bus, cfg);
+        measure_mag_drdy(r, o, mag, bus, cfg, eff_odr);
     else
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                    "re-init in interrupt mode failed");
@@ -2498,7 +2498,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
  */
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg)
+                             const imud_config_t *cfg, int eff_odr)
 {
     char mb[56], eb[56];
 
@@ -2548,6 +2548,29 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     r->raw.mag_drdy_samples  = m.samples;
     r->raw.mag_drdy_window_s = o->drdy_window_s;
     r->raw.mag_drdy_rate_hz  = rate;
+
+    /*
+     * Can this window resolve the tolerance at all?  Decide from the CONFIGURED
+     * rate, not from the count observed -- otherwise a genuine zero-sample
+     * defect excuses itself as "too few samples", which is the failure this
+     * check exists to catch.  Not from the polled rate either: that is itself
+     * a measurement, and it reads ~0 on exactly the broken part this check is
+     * for, which would turn the defect into a SKIP.
+     *
+     * The rate is a count over a fixed window, so its resolution is one sample,
+     * +/-1/N.  Grading at +/-5% needs N >= 20, and at 1 Hz a 3 s window holds
+     * three.  The bench reported 0.7 Hz against 1.0 Hz polled and FAILed a
+     * working part on two samples where the arithmetic wanted three -- a
+     * rounding boundary, not a defect.
+     */
+    double need   = 1.0 / (o->odr_tol_warn > 0 ? o->odr_tol_warn : 0.05);
+    double expect = (double)eff_odr * o->drdy_window_s;
+    if (expect < need) {
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                   "the window is too short to resolve this tolerance at this "
+                   "mag rate — raise --drdy-window for a low mag ODR");
+        return;
+    }
 
     if (m.samples == 0) {
         add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",

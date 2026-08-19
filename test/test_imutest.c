@@ -1340,6 +1340,11 @@ static void test_mag_drdy_rate(void)
     imud_config_t cfg; base_config(&cfg);
     imt_opts_t o;      fast_opts(&o);
     o.phases = IMT_PHASE_PASSIVE;
+    /* fast_opts uses a 0.05 s window to keep the suite quick. That is far too
+     * short to resolve a rate tolerance, and the check now says so rather than
+     * grading it -- so ask for a window a real run would use. The GPIO stub
+     * ignores the duration, so this costs no wall time. */
+    o.drdy_window_s = 0.3;
 
     /* No mag interrupt: the reader polls, so there is nothing to measure. */
     mock_base(); script_reset(&o);
@@ -1438,6 +1443,24 @@ static void test_mag_drdy_rate(void)
     free(r);
     g_gpio_fail_reg_after = -1;
     i2cmock_fail_write_to(MMC_ADDR, -1, 0);
+
+    /*
+     * A window too short to resolve the tolerance SKIPs rather than grading.
+     * One drain per edge over a handful of edges is a +/-1/N measurement, and
+     * at 1 Hz over 3 s that is +/-33% being judged against +/-5% — which
+     * FAILed a working part on the bench.
+     */
+    mock_base(); script_reset(&o);
+    g_gpio_edges       = 3;
+    g_gpio_why         = IMT_GPIO_OK;
+    g_gpio_drain_calls = 1;
+    double keep_win = o.drdy_window_s;
+    o.drdy_window_s  = 0.01;          /* far too short for any real mag rate */
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "mag.drdy.rate") == IMT_SKIP,
+           "a window too short to resolve the tolerance skips instead of failing");
+    free(r);
+    o.drdy_window_s = keep_win;
 
     g_gpio_edges       = -1;
     g_gpio_why         = IMT_GPIO_ENOCHIP;
