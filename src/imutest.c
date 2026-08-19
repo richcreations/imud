@@ -2472,6 +2472,31 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
 {
     char mb[56], eb[56];
 
+    /*
+     * Prime the interrupt before counting edges, or a working part scores 0.
+     *
+     * This part's INT is LATCHED: it asserts when a conversion completes and is
+     * re-armed only by the write that clears Meas_M_Done -- which read()
+     * performs.  So the resting state of the line on a part that has been read
+     * at all is HIGH, and a reader waiting for a RISING edge on an
+     * already-high line waits for ever.  Measured on the bench 2026-08-19,
+     * GPIO27 idle-high with nothing running: 0 rising edges in 3 s with
+     * nothing reading the part, 152 in 3 s with a reader acknowledging.
+     *
+     * The daemon does not hit this because its mag reader falls through to a
+     * read when its edge wait times out, which clears the bit and re-arms.
+     * imt_gpio_count_edges only counts, so without one read first this check
+     * reported `0 Hz -- FAIL` against a part delivering a clean 105 Hz to the
+     * daemon at the same moment.
+     *
+     * Return value ignored on purpose: 1 (no new measurement) is the common
+     * and perfectly good case, and a -1 here would show up immediately as
+     * errors in the measurement below rather than being lost.
+     */
+    mag_sample_t prime;
+    memset(&prime, 0, sizeof prime);
+    (void)mag->read(bus, &prime);
+
     mag_drdy_ctx_t m = { .mag = mag, .bus = bus };
     imt_gpio_why_t why = IMT_GPIO_OK;
     long ms = (long)(o->drdy_window_s * 1e3);

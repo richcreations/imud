@@ -76,6 +76,10 @@ static imt_gpio_why_t g_gpio_why = IMT_GPIO_ENOCHIP;
  */
 static int g_gpio_drain_calls = 1;
 
+/* Chip addresses, up here because the GPIO stub below asserts against one. */
+#define ISM_ADDR  0x6A
+#define MMC_ADDR  0x30
+
 /*
  * Set to arm a write failure from INSIDE the DRDY window.  check_mag_drdy
  * re-inits the mag, calls this, then restores -- so this stub is the one place
@@ -85,12 +89,20 @@ static int g_gpio_drain_calls = 1;
 static int g_gpio_fail_addr_after = -1;
 static int g_gpio_fail_reg_after  = -1;
 
+/*
+ * The last register written before edge counting started. The DRDY check must
+ * acknowledge a latched interrupt first -- see the priming read in
+ * check_mag_drdy -- and the acknowledge is a write to STATUS.
+ */
+static int g_gpio_last_write_at_entry = -2;
+
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
                          imt_gpio_why_t *why)
 {
     (void)chip; (void)gpio; (void)window_ms;
     *why = g_gpio_why;
+    g_gpio_last_write_at_entry = i2cmock_last_write(MMC_ADDR);
     if (g_gpio_fail_reg_after >= 0)
         i2cmock_fail_write_to((uint8_t)g_gpio_fail_addr_after,
                               g_gpio_fail_reg_after, -1);
@@ -106,8 +118,6 @@ extern const imu_ops_t ism330dhcx_ops;
 extern const mag_ops_t mmc5983ma_ops;
 
 #define FD        3          /* the mock ignores it */
-#define ISM_ADDR  0x6A
-#define MMC_ADDR  0x30
 
 /* Handles on the mock bus; the descriptor is ignored, the address selects
  * which register file a transfer lands in. */
@@ -1397,6 +1407,17 @@ static void test_mag_drdy_rate(void)
     memset(&ms, 0, sizeof ms);
     EXPECT(mmc5983ma_ops.read(I2CBUS(MMC_ADDR), &ms) == 1,
            "run leaves the magnetometer in polled mode");
+
+    /*
+     * The interrupt must be ACKNOWLEDGED before edges are counted. This part's
+     * INT is latched and re-armed only by the write clearing Meas_M_Done, so
+     * its resting state is high and a rising-edge wait on an unprimed line
+     * never fires -- 0 edges in 3 s against a part feeding the daemon 105 Hz,
+     * measured on the bench. The acknowledge is a write to STATUS (0x08), so
+     * that must be the last register written when counting begins.
+     */
+    EXPECT(g_gpio_last_write_at_entry == 0x08,
+           "the DRDY check acknowledges the interrupt before counting edges");
 
     /*
      * The restore FAILING is its own verdict, and it is the one line in the
