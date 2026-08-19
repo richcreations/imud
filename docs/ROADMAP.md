@@ -148,6 +148,36 @@ daemon logs `[fusion] settling 5 s — discarding 4165 samples` and then
 hardcoded window 1.7 replaced would have read 833. That closes the alignment
 half of this item.
 
+**A 10-minute stationary run is clean on resources and diverging on heading**
+*(2026-08-19, SPI, capture off, uncalibrated)*. Resources first, because they
+are the boring half and they are perfect:
+
+| | |
+|---|---|
+| open fds | **9, constant** across all ten minutes |
+| RSS | **2512 kB, constant** — not one page of growth |
+| `ovf` | 0 |
+| warnings in 10 min | **one**, a single batched-timestamp fallback |
+| rates | 866 Hz IMU, 105 Hz mag, sustained |
+
+The filter is the other half. The attitude covariance trace grows
+**monotonically** — `3.8e-02, 4.0e-02, 6.5e-02, 1.2e-01, 2.0e-01, 3.1e-01,
+4.5e-01, 6.1e-01, 7.7e-01, 9.0e-01` rad² at one-minute marks — the
+`converged` flag never sets in ten minutes, and heading slides 310.0° → 295.0°,
+about 1.5°/min, on a board that did not move. Reproduced in a second run
+(3.8e-02 → 1.4e-01 over 240 s).
+
+This is the divergence this section already predicts for an uncalibrated
+magnetometer, now measured rather than reasoned about: with no cal.json the
+heading updates cannot hold yaw, yaw is unobservable from anything else, and
+its variance grows without bound. **The daemon is honest about it** — it never
+claims `FLAG_FUSION_CONVERGED`, so a consumer checking the flag is not misled.
+
+Two things follow. The magnetometer swing below is not a nicety, it is the
+precondition for any heading number from this rig being worth reading. And the
+`m33_inv` duty check being blocked behind it is the same fact from the other
+side, not a separate obstacle.
+
 **Still owed here: the `m33_inv` accel-update duty.** Blocked rather than
 skipped — `imud-cal fit-ra` is the instrument, since its probe runs the same
 `m33_inv` and its skip fraction reads the duty directly (~0% fixed, ~87%
