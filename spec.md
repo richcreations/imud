@@ -1417,45 +1417,70 @@ plus `imud-<name>(8)`), and its own config file `/etc/imud/imud-<name>.conf`.
 
 ## 14. Performance Targets
 
-> **Two of the latency rows below are not met as written, and are marked.**
-> They were written before anything measured them. The daemon now instruments
-> the chain itself and reports it on the `[stats]` line, and the measurements
-> disagree with these targets by an order of magnitude. They are left in place,
-> flagged, rather than quietly adjusted to match what was measured — a target
-> is a claim, and replacing it with the observation would erase the fact that
-> the claim was wrong. See the **Measured** column and the notes beneath.
+Latency is stated as a **chain**, because the figure a consumer needs — how old
+a sample is when it reaches them — is a sum, and budgeting only the daemon's own
+term made the total look ten times smaller than it is.
 
-|Metric                                       |Target                             |Measured|
-|---------------------------------------------|-----------------------------------|---|
-|ISM330 FIFO read jitter                      |< 5 ms p99 (FIFO absorbs OS jitter)|**not met** — see note 1|
-|Fusion latency (sample → quaternion)         |< 1.5 ms                           |0.26 ms p99 — met|
-|End-to-end (sample → UDP emit)               |< 3 ms                             |**not met** — see note 2|
-|CPU on Pi 4B at 833 Hz MEKF / 500 Hz out     |< 10% one core                     |unmeasured|
-|CPU on Pi Zero 2W at 416 Hz / 100 Hz out     |< 30% one core                     |unmeasured|
-|Memory footprint                             |< 14 MB RSS                        |unmeasured|
-|High-rate UDP loss (localhost)               |0%                                 |unmeasured|
-|Heading accuracy post-cal, benign environment|±1–2° (chip spec: ±0.5°)           |unmeasured|
+    FIFO residence   sample taken        -> read completed    set by configuration
+    pipeline         read completed      -> state fused       imud's own cost
+    transport        state fused         -> bytes on a socket
+                     -----------------------------------------------------------
+    sample age       what a consumer actually has
 
-**Note 1 — FIFO residence.** Measured on a Pi 5 with `ism330dhcx`, 120 s per
-combination: `fifo` p50 between 8.2 ms and 32.8 ms on I²C depending on rate and
-watermark, and 4.1 ms p50 / 8.2 ms p99 on SPI. The row's parenthetical assumes
-the FIFO absorbs jitter, and it does — but residence is bounded by the reader's
-drain cadence (a 10 ms wait in `src/imu.c`), not by `fifo_wm`, so the buffering
-is real and larger than 5 ms by design.
+### FIFO residence — the dominant term, and it is yours to set
 
-**Note 2 — end-to-end.** Total sample age is `fifo + pipe`, and with `fifo` as
-above it is tens of milliseconds on I²C. Measured independently at the TCP
-stream as `now - ts_wall_ns` over 99,961 packets: **p50 = 33.79 ms**. The row
-also said "I2C sample" until this release added SPI; the transport is now a
-configuration choice, and the figure differs by roughly 8x between the two.
+The reader drains when the FIFO watermark interrupt fires **or** a 10 ms
+timeout expires, whichever comes first. So:
 
-**What the rewrite is waiting for.** Not the numbers — those exist. `fifo` is
-not yet predictable *from configuration*: the watermark's effect on residence
-inverts between two otherwise identical bench runs, and no model accounts for
-it. Publishing a budget that cannot be derived from a config file would repeat
-the mistake being corrected. The open measurement and the full analysis are in
-`docs/ROADMAP.md` §3.1; the consumer-facing figure to define is total sample
-age, which appears nowhere today.
+> **`fifo_wm` has an effect only while `fifo_wm / odr_hz` is under 10 ms.**
+> Above that the timer decides, and the watermark does nothing at all.
+
+Mean samples per drain is therefore `min(fifo_wm, odr_hz × 0.010)`, and the
+oldest sample in a burst is that many sample-periods old when the read
+completes. Measured on a Pi 5, `ism330dhcx` over SPI, 42 s per row:
+
+|`odr_hz`|`fifo_wm`|woken by watermark / timeout|mean per drain|`fifo` p50|
+|---|---|---|---|---|
+|104|8|0 / 4068|1.1|2.0 ms|
+|104|64|0 / 4069|1.1|4.1 ms|
+|833|8|**4533 / 2**|8.0|16.4 ms|
+|833|64|0 / 3764|9.7|16.4 ms|
+
+The daemon reports its own split on the `[stats]` line (`drains=E/T e/t n=… max=…`),
+so this is checkable on any rig rather than taken on trust.
+
+**Set `fifo_wm` below `odr_hz / 100` to have it matter at all**; leave it above
+and residence is pinned at ~10 ms of samples regardless of what you write.
+
+### The three terms
+
+|Term|Target|Measured (Pi 5, 833 Hz, SPI)|
+|---|---|---|
+|FIFO residence|`min(fifo_wm, odr_hz × 0.010)` sample periods|16.4 ms p50 at `wm = 64`; 4.1 ms p50 on SPI at `wm = 8`|
+|Pipeline (read → fused)|< 1.5 ms|**0.06 ms p50 / 0.26 ms p99** — met with room|
+|Transport (fused → socket)|—|0.86 ms, from 99,961 packets on the TCP stream|
+|**Total sample age**|**`fifo + pipe + transport`**|**33.79 ms p50** measured end to end on I²C at `wm = 64`|
+
+Transport is measured as `now − ts_wall_ns` at the consumer and lands *above*
+the sum of the first two, which is the signature of an anchor that is not late.
+
+**On I²C the same configuration is several times worse**: `fifo` p50 ran
+8.2–32.8 ms against SPI's 4.1. Transport choice moves this term more than any
+tuning does.
+
+### Everything else
+
+|Metric|Target|Measured|
+|---|---|---|
+|CPU on Pi 4B at 833 Hz MEKF / 500 Hz out|< 10% one core|unmeasured|
+|CPU on Pi Zero 2W at 416 Hz / 100 Hz out|< 30% one core|unmeasured|
+|Memory footprint|< 14 MB RSS|unmeasured|
+|High-rate UDP loss (localhost)|0%|unmeasured|
+|Heading accuracy post-cal, benign environment|±1–2° (chip spec: ±0.5°)|unmeasured|
+
+*Unmeasured* is stated rather than left blank: silence in this table used to
+read as agreement, and two of its latency rows were wrong for a long time
+because of it.
 
 -----
 

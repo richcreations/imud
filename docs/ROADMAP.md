@@ -852,11 +852,14 @@ FIFO a jitter absorber, so the author knew it buffers; and `manual.md` used to
 present `fifo_wm` as a chosen latency cost. But that is a reconstruction, and as
 written the row is wrong under its plain meaning.
 
-**spec §14 now carries the caveat** rather than presenting the budgets bare:
-the two rows that are not met are marked "not met", both measurements are
-quoted, and the table says what the rewrite is waiting for. That is deliberate
-in preference to adjusting the targets to match the observations — a target is
-a claim, and rewriting it to fit would erase the fact that the claim was wrong.
+**spec §14 is rewritten** *(2026-08-19)*. It states the chain rather than a
+single end-to-end row, publishes all three terms, gives the residence rule as a
+formula an operator can apply (`min(fifo_wm, odr_hz x 0.010)`), and labels every
+still-unmeasured row as unmeasured instead of leaving silence to read as
+agreement. This item is closed.
+
+The instruction it was written against, kept because it is the reason the
+rewrite took three bench sessions rather than one:
 
 Do not simply relabel it. The number a control-loop or camera-sync consumer needs
 is total sample age, and that appears nowhere. Define the chain and publish both
