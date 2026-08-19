@@ -181,6 +181,50 @@ part's own `FREQ_FINE +27` trim was applied, and the header reading
 `ts_tick_ns = 25000 typical, 24027 from this part`. The bench notes each item
 still owes are kept below for the next part that is not this one.
 
+**`chip_ts` monotonicity depends on what paces the drain** *(measured
+2026-08-19 on the reference pair over SPI, and the reason an acceptance run can
+FAIL a part that is clean)*.
+
+| drain paced by | reversals |
+|---|---|
+| FIFO watermark interrupt — `[imu] int_gpio = 17`, the shipped configuration | **0 / 53,708 samples** |
+| 10 ms timer — `[imu] int_gpio = 0` | 1 / 53,707 |
+| `imud-imutest --passive` (5 ms poll loop) | 2, 5 and 6 per ~4,300-sample window across three runs; a fourth was 0 |
+
+Every timer-paced run logs the same pair, and neither appears in the
+interrupt-paced one:
+
+    ism330dhcx: N burst(s) whose batched FIFO timestamp failed its check
+                — using the post-drain TIMESTAMP0 read for chip_ts
+    ism330dhcx: N post-drain timestamp read(s) implausibly far ahead;
+                extrapolating from the previous burst
+
+So the chain is: a drain paced by a timer rather than by the FIFO's own
+watermark arrives at an arbitrary phase; the batched timestamp fails its
+plausibility check; the driver falls back to the post-drain `TIMESTAMP0` read,
+which assumes the last sample in the burst was taken at the instant of the
+read; and when that assumption is wrong by more than a burst, the next burst
+lands before the previous one ended. **A poll cannot know how old the sample it
+just read is** — that is the whole of it.
+
+Three consequences, and they point in different directions:
+
+1. **The shipped configuration is clean.** 0 reversals in 53,708 samples, with
+   neither fallback logged. The item this section owes is *confirmed* for any
+   install with an IMU interrupt line.
+2. **An interrupt-less install is exposed**, rarely — 1 in 53,707 here. Both
+   guards fire and degrade rather than corrupt, so this is a quality-of-anchor
+   issue and not a correctness hole, but it is real and it is not imutest-only.
+3. **`imud-imutest` grades the driver on evidence its own drain manufactures.**
+   Its drain is `drain_once(); sleep_s(0.005);` with no edge wait, so
+   `imu.chipts.monotonic` can FAIL a part that the daemon is timestamping
+   perfectly at that same moment. This is the mirror of the magnetometer defect
+   this release fixed: there the tool polled and so could not *see* a defect;
+   here the tool polls and so *invents* one. Open question — whether the check
+   should pace its window from `[imu] int_gpio` when one is configured (measure
+   it the way the daemon gets it, as `mag.drdy.rate` does), or keep polling and
+   grade a timer-paced reversal as WARN with the mechanism named.
+
 **That run also found two defects in what happens to a timestamp after the
 driver produces it** — both reaching `ts_wall_ns` and neither reaching the
 filter, so neither was visible in attitude:
