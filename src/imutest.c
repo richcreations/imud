@@ -1134,24 +1134,41 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             ts_deltas[j + 1] = v;
         }
         double med = ts_deltas[n_deltas / 2];
-        double expect = 1e9 / ((double)eff_odr * (double)d->tick_ns);
-        double implied = med > 0 ? 1e9 / ((double)eff_odr * med) : 0.0;
+
+        /*
+         * Both sides of this ratio must come from the CHIP, or it stops being
+         * a tick check.  Use the rate just measured, never the configured one:
+         * a part whose oscillator runs fast produces proportionally fewer
+         * ticks per sample against nominal, and dividing by the nominal rate
+         * reports that as a tick error when imu.odr above already owns it.
+         *
+         * Measured on the reference ISM330DHCX 2026-08-19, which runs 4.1%
+         * fast at every rate on its ladder: at a configured 833 Hz it delivers
+         * 867.1 Hz and 48.00 ticks/sample.  Against nominal that "expects"
+         * 49.96 and reads as a 4% tick error; against the measured rate it
+         * expects 48.00 and matches exactly.  The nominal form put this check
+         * into WARN at 104, 208 and 416 Hz on a part that was fine.
+         *
+         * Falls back to nominal only if the rate measurement did not produce
+         * one, which cannot normally happen — check_odr_seq_ts fills it from
+         * the same window these deltas came from.
+         */
+        double rate = r->raw.odr_measured_hz > 0 ? r->raw.odr_measured_hz
+                                                 : (double)eff_odr;
+        double expect = 1e9 / (rate * (double)d->tick_ns);
+        double implied = med > 0 ? 1e9 / (rate * med) : 0.0;
         r->raw.ts_median_delta    = med;
         r->raw.ts_implied_tick_ns = implied;
 
         double err = fabs(med - expect) / expect;
         imt_status_t st = err <= 0.05 ? IMT_PASS : err <= 0.20 ? IMT_WARN : IMT_FAIL;
-        /* Both sides of this ratio come from the chip, so it cannot see an
-         * oscillator error — a counter running 4% fast still steps the
-         * declared number of ticks per sample.  Only imu.chipts.wall can,
-         * and it prints a different implied tick when that is what is wrong. */
         add_check(r, "imu.chipts.rate", "chip_ts tick period", st,
                   fmtbuf(mb, sizeof mb, "%.2f ticks/sample", med),
                   fmtbuf(eb, sizeof eb, "%.2f +/-5%%", expect),
-                  "implied ts_tick_ns = %.0f against the %u in use, against "
-                  "the nominal %d Hz — chip against chip, so see "
+                  "implied ts_tick_ns = %.0f against the %u in use, at the "
+                  "%.1f Hz measured — chip against chip, so see "
                   "imu.chipts.wall for the timebase itself",
-                  implied, d->tick_ns, eff_odr);
+                  implied, d->tick_ns, rate);
 
         double elapsed_chip = (double)(uint32_t)(tsa.last - tsa.first)
                             * (double)d->tick_ns * 1e-9;

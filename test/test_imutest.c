@@ -2072,6 +2072,48 @@ static void test_chipts_accounting(void)
     end(fb);
 }
 
+/*
+ * imu.chipts.rate must divide by the rate the part is actually running at, not
+ * the one it was asked for. The check exists to compare chip against chip; if
+ * one side is the configured rate then a part whose oscillator is fast reports
+ * a TICK error for what is really an ODR error, which imu.odr already owns.
+ *
+ * Pinned as an invariant rather than by staging a fast part, because the rate
+ * the mock achieves is set by how quickly the poll loop runs and is not ours
+ * to dictate: whatever it turns out to be, the implied tick must be consistent
+ * with THAT and with the measured median delta. Recomputing from eff_odr_hz
+ * breaks it, since the two are never equal in a real run.
+ */
+static void test_chipts_rate_uses_measured(void)
+{
+    begin("test_chipts_rate_uses_measured");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    mock_base(); script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+
+    if (r->raw.ts_median_delta > 0 && r->raw.odr_measured_hz > 0) {
+        double want = 1e9 / (r->raw.odr_measured_hz * r->raw.ts_median_delta);
+        double got  = r->raw.ts_implied_tick_ns;
+        EXPECT(fabs(got - want) <= want * 0.001,
+               "implied tick is derived from the measured rate");
+        /* And demonstrably NOT from the configured one, unless they coincide. */
+        double nominal = 1e9 / ((double)r->eff_odr_hz * r->raw.ts_median_delta);
+        EXPECT(fabs(r->raw.odr_measured_hz - (double)r->eff_odr_hz) < 1e-9
+               || fabs(got - nominal) > want * 0.001,
+               "and not from the configured rate");
+    } else {
+        EXPECT(status_of(r, "imu.chipts.rate") == IMT_SKIP,
+               "no deltas means the check skipped rather than guessed");
+    }
+    free(r);
+    end(fb);
+}
+
 static void test_chipts_wall_bands(void)
 {
     begin("test_chipts_wall_bands");
@@ -2276,6 +2318,7 @@ int main(void)
     test_sim_like_no_recommendation();
     test_degauss_split();
     test_chipts_accounting();
+    test_chipts_rate_uses_measured();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();
 
