@@ -419,6 +419,17 @@ imt_status_t imt_chipts_wall_status(double ratio);
 int imt_rate_dir(double measured, double nominal, double tol);
 
 /*
+ * Fractional resolution of a rate measured by counting over a fixed window:
+ * one sample in `nominal * window_s`.  Below about 20 expected samples this
+ * exceeds a 5% tolerance, so a miss smaller than it cannot be told from a
+ * rounding boundary -- at 1 Hz over 5 s the only readings are 1.0 and 1.2 Hz.
+ * Used to SKIP such a reading rather than grade it, WITHOUT excusing a gross
+ * one: a poll loop cannot invent conversions, so a rate hundreds of percent
+ * high is still a defect however few samples were expected.
+ */
+double imt_rate_quantum(double nominal, double window_s);
+
+/*
  * chip_ts accounting over a window, one sample at a time.
  *
  * Zero-initialised is "nothing seen yet". Exposed and factored out for the same

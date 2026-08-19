@@ -361,7 +361,7 @@ Magnetometer driver settings. **[restart]**
 | `spi_speed_hz` | int | `0` | SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`. |
 | `i2c_addr` | int | `0x30` | I²C address; used only when `bus = "i2c"`. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both. |
 | `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
-| `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `20`, `100`, `1000`. |
+| `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
 <!-- END GENERATED: config-keys mag.1 -->
 
@@ -680,7 +680,7 @@ Links to the manufacturers' datasheets are collected in
 | `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
 | `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
-| `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 3, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. On SPI a CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after every one. |
+| `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 0, 2 MHz | Primary reference mag. 18-bit, SET/RESET coil. On SPI a CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after every one. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
 | `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |

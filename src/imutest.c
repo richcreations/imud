@@ -2277,6 +2277,24 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
          * 21.0 Hz against a configured 20 reported as "5.0% low", which sends
          * a reader looking for a pacing problem when the part is running fast.
          */
+        /*
+         * A count over a fixed window resolves to one sample, +/-1/N, and at a
+         * low ODR that step is wider than the tolerance: at 1 Hz over 5 s the
+         * only readings possible are 1.0 and 1.2 Hz, and 1.2 reads as "20%
+         * ABOVE" -- which FAILed a part running at exactly its rate.
+         *
+         * Skip only when quantisation could BE the whole error, not merely
+         * when the window is short. A reading hundreds of percent high is
+         * unambiguous however few samples were expected -- a poll loop cannot
+         * invent conversions -- and that case must still fail.
+         */
+        double q = imt_rate_quantum(eff_odr, span);
+        if (err > o->odr_tol_warn && err <= o->odr_tol_warn + q) {
+            skip_check(r, "mag.rate", "Measured mag rate",
+                       "the miss is no larger than one sample in this window — "
+                       "raise --odr-window to resolve it at a low mag ODR");
+        } else {
+
         int  dir  = imt_rate_dir(r->raw.mag_rate_hz, (double)eff_odr,
                                  o->odr_tol_warn);
         bool high = dir >= 0;      /* direction: decides the wording */
@@ -2300,6 +2318,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                          "bounds this from above, so a low reading can be "
                          "pacing rather than the chip.",
                   (unsigned long long)got, span, err * 100);
+        }
     }
 
     /*
@@ -2438,7 +2457,7 @@ static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
 
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg, int eff_odr);
+                             const imud_config_t *cfg);
 
 static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                            const mag_ops_t *mag, const imud_bus_t *bus,
@@ -2480,7 +2499,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
                       .int_driven = true };
     if (mag->init(bus, &irq) == 0)
-        measure_mag_drdy(r, o, mag, bus, cfg, eff_odr);
+        measure_mag_drdy(r, o, mag, bus, cfg);
     else
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                    "re-init in interrupt mode failed");
@@ -2498,7 +2517,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
  */
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg, int eff_odr)
+                             const imud_config_t *cfg)
 {
     char mb[56], eb[56];
 
@@ -2563,15 +2582,6 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
      * working part on two samples where the arithmetic wanted three -- a
      * rounding boundary, not a defect.
      */
-    double need   = 1.0 / (o->odr_tol_warn > 0 ? o->odr_tol_warn : 0.05);
-    double expect = (double)eff_odr * o->drdy_window_s;
-    if (expect < need) {
-        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
-                   "the window is too short to resolve this tolerance at this "
-                   "mag rate — raise --drdy-window for a low mag ODR");
-        return;
-    }
-
     if (m.samples == 0) {
         add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                   IMT_FAIL, fmtbuf(mb, sizeof mb, "0 Hz"),
@@ -2590,6 +2600,18 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
      */
     double ref = r->raw.mag_rate_hz;
     double err = ref > 0 ? fabs(rate - ref) / ref : 0.0;
+
+    /* As for mag.rate: one sample of resolution, so a miss no larger than that
+     * cannot be told from a rounding boundary. A zero-sample run is handled
+     * above and still fails, because no window makes that ambiguous. */
+    double q = imt_rate_quantum(ref, o->drdy_window_s);
+    if (err > o->odr_tol_warn && err <= o->odr_tol_warn + q) {
+        skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
+                   "the miss is no larger than one sample in this window — "
+                   "raise --drdy-window to resolve it at a low mag ODR");
+        return;
+    }
+
     add_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
               err <= o->odr_tol_warn ? IMT_PASS
             : err >  o->odr_tol_fail ? IMT_FAIL : IMT_WARN,
@@ -3227,6 +3249,12 @@ static const char *imt_required_mag[] = {
  *   ratio < 1       WARN   chip time MISSING — a dropped wrap, unrecoverable
  *   |err| >  10%    FAIL   either way, ts_tick_ns is not this counter's period
  */
+double imt_rate_quantum(double nominal, double window_s)
+{
+    double n = nominal * window_s;
+    return n > 0.0 ? 1.0 / n : 1.0;
+}
+
 int imt_rate_dir(double measured, double nominal, double tol)
 {
     if (measured <= nominal) return -1;

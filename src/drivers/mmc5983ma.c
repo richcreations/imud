@@ -185,46 +185,84 @@ static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none 
  *
  * We pick the minimum BW that supports the requested ODR (lowest noise).
  *
- * ── Only four of the seven CM_Freq codes work ──────────────────────────────
+ * ── The SPI mode was wrong, and it invented several "silicon quirks" ──────
  *
- * The datasheet lists seven continuous rates. On the reference part three of
- * them are not honoured: the part enters continuous mode and then free-runs at
- * whatever its bandwidth allows, ignoring CM_Freq entirely. Every CM_Freq code
- * against every bandwidth, counted as distinct output images per second with
- * no STATUS write involved (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16):
+ * This part was driven in SPI mode 3 until 2026-08-19, because that is what
+ * the ST and InvenSense parts in this tree use and bus_io.h's helpers were
+ * written to their convention.  It is a MEMSIC part and wants **mode 0**.
  *
- *   CM_Freq          BW=00   BW=01   BW=10   BW=11     nominal
- *   001               *1       1       1       1         1 Hz
- *   010              130     256     497    1689        10 Hz   never taken
- *   011              *22      21      21      21        20 Hz
- *   100              130     256     497    1689        50 Hz   never taken
- *   101              106     *105    105     105       100 Hz
- *   110              130     256     497    1690       200 Hz   never taken
- *   111              120     241     402   *1206      1000 Hz
+ * Mode 3 corrupts WRITES while leaving most reads intact -- the part still
+ * identified, still streamed, still decoded to a healthy field -- so it never
+ * looked like a bus fault.  It looked like a chip with a list of odd habits,
+ * and that list was written down here as fact.  Measured with a standalone
+ * probe, same rig, same wiring, only the mode changed:
  *
- * The three failing rows are exactly each bandwidth's conversion ceiling
- * (8 ms → 125, 4 ms → 250, 2 ms → 500, 0.5 ms → 2000), so bandwidth is not the
- * constraint — the codes simply do not take. Nor is it how CTRL2 is written:
- * splitting the frequency and the enable into separate writes, with or without
- * a delay between them, and stopping the mode first, all give the identical
- * table. 111 needing BW=11 is real and is documented on p.15; the rest is not
- * documented anywhere.
+ *   CM_Freq              001   010   011   100   101   110    111    nominal
+ *   mode 0  delivered      1    11    21    53   106   211   1205
+ *   mode 3  delivered      1   130   130   130   130   256   1690
+ *                                                             1, 10, 20, 50,
+ *                                                             100, 200, 1000
  *
- * So the driver advertises only what the part delivers — see supported_odr_hz
- * below, which snap_odr_up() rounds a request up to. Advertising the other
- * three meant `[mag] odr_hz = 50` silently ran at ~130 Hz while fusion sized
- * the magnetometer's noise variance for 50.
+ * **All seven codes work.**  The claim that only four were honoured, and that
+ * the other three free-ran at the bandwidth ceiling, was mode 3.  So was the
+ * "a CTRL0 write also lands in CTRL1" aliasing: with CTRL0 = INT_EN in mode 0
+ * the X axis keeps its full noise sigma instead of freezing.  In mode 3 even
+ * the product-ID read comes back 0xFF often enough to see.
  *
- * This is one die. If a part is found that honours the even codes, this and
- * supported_odr_hz are what to revisit; imud-imutest's mag.rate is the check
- * that shows it.
+ * Every earlier finding about this part was taken in mode 3 and has to be
+ * treated as suspect until re-measured.  Two pieces of machinery here exist
+ * only to work around what mode 3 did and are candidates for removal once
+ * they have been re-tested: the g_ctrl1 shadow with its "write CTRL1 last"
+ * rule, and the paired-write warnings around the degauss pulse.  They are
+ * harmless as they stand, which is why they are still here rather than ripped
+ * out in the same change that moved the ground under them.
+ *
+ * ── The rates are close to nominal, with one exception ─────────────────────
+ *
+ * In mode 0 every code lands within about 6-10% of its nominal rate, which is
+ * the part's own oscillator -- the same skew the ISM330DHCX shows on this
+ * board.  CM_Freq 111 is the exception at 1205 against a nominal 1000, 20%
+ * out, reproduced across runs and clocks.  Unexplained.
+ *
+ * That gap is why actual_odr_hz exists here: supported_odr_hz is the datasheet
+ * ladder an operator may REQUEST, and actual_odr_hz is what the silicon will
+ * DELIVER.  imu.c passes the resolved rate to both the driver and the filter,
+ * so the noise variance is sized for the rate the part is really producing.
+ *
+ * Mode 0 measured identical at 1, 2 and 10 MHz.
  */
 static void odr_encode(int hz, uint8_t *bw_out, uint8_t *cmfreq_out)
 {
-    if (hz <=    1) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }
-    if (hz <=   20) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }
-    if (hz <=  100) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }
-    /* 1000 Hz */     *bw_out = 0x3; *cmfreq_out = 0x7;   /* BW=11 required */
+    /* Every code the datasheet lists.  BW is the lowest whose Max Output Data
+     * Rate (Rev A p.4: 50/100/225/580) covers the rate, except the two the
+     * CM_Freq table pairs explicitly: 110 with BW=01, 111 with BW=11. */
+    if (hz <=    1) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }   /*    1 */
+    if (hz <=   11) { *bw_out = 0x0; *cmfreq_out = 0x2; return; }   /*   10 */
+    if (hz <=   21) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }   /*   20 */
+    if (hz <=   53) { *bw_out = 0x0; *cmfreq_out = 0x4; return; }   /*   50 */
+    if (hz <=  106) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }   /*  100 */
+    if (hz <=  211) { *bw_out = 0x1; *cmfreq_out = 0x6; return; }   /*  200 */
+    /* 1000 Hz */     *bw_out = 0x3; *cmfreq_out = 0x7;             /* 1000 */
+}
+
+/*
+ * What the codes above really produce, measured (see the table).  Snapping up
+ * over the DELIVERED rates rather than mapping thresholds to them, because
+ * this has to be idempotent: imu.c passes the resolved rate back into the
+ * driver, so actual(actual(x)) must equal actual(x).  A threshold form gets
+ * that wrong in a way nothing else would catch -- 105 is "<= 100 ? no" and
+ * would resolve a second time to 1206.
+ *
+ * Kept beside odr_encode(): one entry here per honoured branch there, and the
+ * two must move together.
+ */
+static int mmc_actual_odr_hz(int requested)
+{
+    static const int delivered[] = { 1, 11, 21, 53, 106, 211, 1205, 0 };
+
+    for (int i = 0; delivered[i]; i++)
+        if (requested <= delivered[i]) return delivered[i];
+    return 1205;                         /* clamp to the fastest */
 }
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
@@ -510,8 +548,20 @@ const mag_ops_t mmc5983ma_ops = {
      * auto-increment bit. The command byte's address field is only six bits
      * wide (bit 6 is don't-care); every register here is <= 0x2F, so reg|0x80
      * addresses them all correctly. */
-    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
-                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
+    /*
+     * SPI MODE 0, and the mode is the whole story -- see the block above
+     * odr_encode().  This is a MEMSIC part, not an ST one; mode 3 corrupts its
+     * WRITES while leaving most reads intact, which is why it presented as
+     * working silicon with odd habits rather than as a broken bus.
+     *
+     * 2 MHz rather than the 10 MHz datasheet maximum: that figure carries the
+     * footnote "based on characterization results, not tested in production"
+     * (Rev A p.4), and SparkFun's library for this exact breakout uses
+     * SPISettings(2000000, MSBFIRST, SPI_MODE0).  Mode 0 measured identical at
+     * 1, 2 and 10 MHz here, so this is headroom, not part of the fix.
+     */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 0,
+                          .spi_max_hz = 2000000, .spi_inc_mask = 0 },
     .probe            = mmc_probe,
     .reset            = mmc_reset,
     .init             = mmc_init,
@@ -522,5 +572,8 @@ const mag_ops_t mmc5983ma_ops = {
     .has_set_reset    = true,
     /* Four of the datasheet's seven; the other three are not honoured by the
      * part. Measured table and method are above odr_encode(). */
-    .supported_odr_hz = { 1, 20, 100, 1000, 0 },
+    /* The datasheet ladder: what may be REQUESTED. What each one actually
+     * delivers is mmc_actual_odr_hz() — see the table above odr_encode(). */
+    .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
+    .actual_odr_hz    = mmc_actual_odr_hz,
 };

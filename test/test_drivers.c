@@ -2478,29 +2478,74 @@ static void test_odr_agreement(void)
            "lsm programs the resolved rate for an off-grid request");
 
     /*
-     * MMC5983MA CTRL2 (Cmm_en|CM_Freq). The part honours only four of the
-     * seven documented CM_Freq codes — 10, 50 and 200 Hz are entered and then
-     * ignored, the part free-running at its bandwidth's ceiling — so the
-     * driver advertises 1/20/100/1000 and a request rounds up across the gap.
-     * 137 lands on 1000 because 200 is not on offer; measured table is above
-     * odr_encode() in the driver.
+     * MMC5983MA CTRL2 (Cmm_en|CM_Freq). Two separate facts, and the driver
+     * keeps them in two separate places — see the table above odr_encode().
+     *
+     * supported_odr_hz carries the full datasheet ladder, because that is what
+     * an operator may ask for. actual_odr_hz reports what the silicon really
+     * produces, because that is what the filter must size its noise for: in
+     * SPI mode 0 all seven codes work and each lands ~6-10% above nominal on
+     * the part's own oscillator, except CM_Freq 111 at 1205 against 1000.
      */
-    EXPECT(odr_actual_mag(mmc, 137) == 1000, "mmc 137 resolves to 1000");
+    EXPECT(odr_actual_mag(mmc, 137) == 211, "mmc 137 resolves to 211");
     EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==
-           init_mag_reg(mmc, MMC_ADDR, 0x0B, 1000),
+           init_mag_reg(mmc, MMC_ADDR, 0x0B, 211),
            "mmc programs the resolved rate for an off-grid request");
-    /* The three unhonoured rates round up rather than being programmed. */
-    EXPECT(odr_actual_mag(mmc, 10) == 20,   "mmc 10 rounds up to 20");
-    EXPECT(odr_actual_mag(mmc, 50) == 100,  "mmc 50 rounds up to 100");
-    EXPECT(odr_actual_mag(mmc, 200) == 1000, "mmc 200 rounds up to 1000");
-    /* CM_Freq 010/100/110 must never reach the part. */
-    for (int hz = 1; hz <= 1000; hz++) {
+    /* Every datasheet rate is reachable, and reports what it delivers rather
+     * than what it is nominally called. */
+    EXPECT(odr_actual_mag(mmc, 1)    ==    1, "1 delivers 1");
+    EXPECT(odr_actual_mag(mmc, 10)   ==   11, "10 delivers 11");
+    EXPECT(odr_actual_mag(mmc, 20)   ==   21, "20 delivers 21");
+    EXPECT(odr_actual_mag(mmc, 50)   ==   53, "50 delivers 53");
+    EXPECT(odr_actual_mag(mmc, 100)  ==  106, "100 delivers 106");
+    EXPECT(odr_actual_mag(mmc, 200)  ==  211, "200 delivers 211");
+    EXPECT(odr_actual_mag(mmc, 1000) == 1205, "1000 delivers 1205");
+    /* Each datasheet rate programs its OWN CM_Freq code -- 001..111 -- which
+     * is what mode 0 restored. Distinct codes, no two the same. */
+    {
+        static const int ladder[] = { 1, 10, 20, 50, 100, 200, 1000 };
+        int seen = 0;
+        for (size_t i = 0; i < sizeof ladder / sizeof ladder[0]; i++) {
+            uint8_t c2 = init_mag_reg(mmc, MMC_ADDR, 0x0B,
+                                      odr_actual_mag(mmc, ladder[i]));
+            int code = c2 & 0x07;
+            EXPECT(code == (int)(i + 1), "each datasheet rate has its own CM_Freq");
+            seen |= 1 << code;
+        }
+        EXPECT(seen == 0xFE, "codes 001..111 are all reachable");
+    }
+    /*
+     * Resolution must be idempotent: imu.c hands the RESOLVED rate back to the
+     * driver, so a second pass has to be a no-op. A threshold form gets this
+     * wrong invisibly -- 105 is not "<= 100" and would resolve on to 1206.
+     */
+    int idem_bad = 0;
+    for (int hz = 1; hz <= 1300; hz++) {
+        int once = odr_actual_mag(mmc, hz);
+        if (odr_actual_mag(mmc, once) != once) idem_bad++;
+    }
+    EXPECT(idem_bad == 0, "mmc resolution is idempotent at every rate 1..1300");
+    /*
+     * CM_Freq 000 must never reach the part, at any requested rate: the
+     * datasheet is explicit that continuous mode cannot be entered with it,
+     * so programming it stops the magnetometer dead.
+     *
+     * This guard used to name 010, 100 and 110 as forbidden too, on a measured
+     * table showing they free-ran at the bandwidth ceiling. That table was
+     * taken in SPI mode 3. In mode 0 all three deliver their datasheet rate,
+     * so the driver programs them and the assertion that it must not is gone.
+     */
+    for (int hz = 1; hz <= 1300; hz++) {
         uint8_t ctrl2 = init_mag_reg(mmc, MMC_ADDR, 0x0B, hz);
-        if ((ctrl2 & 0x07u) == 0x2u || (ctrl2 & 0x07u) == 0x4u ||
-            (ctrl2 & 0x07u) == 0x6u) {
+        if ((ctrl2 & 0x07u) == 0x0u) {
             char m[96];
-            snprintf(m, sizeof m, "%d Hz programmed unhonoured CM_Freq %u",
-                     hz, ctrl2 & 0x07u);
+            snprintf(m, sizeof m, "%d Hz programmed CM_Freq 000 (mode off)", hz);
+            EXPECT(0, m);
+            break;
+        }
+        if ((ctrl2 & 0x08u) == 0u) {
+            char m[96];
+            snprintf(m, sizeof m, "%d Hz left Cmm_en clear", hz);
             EXPECT(0, m);
             break;
         }

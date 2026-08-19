@@ -1450,17 +1450,18 @@ static void test_mag_drdy_rate(void)
      * at 1 Hz over 3 s that is +/-33% being judged against +/-5% — which
      * FAILed a working part on the bench.
      */
-    mock_base(); script_reset(&o);
-    g_gpio_edges       = 3;
-    g_gpio_why         = IMT_GPIO_OK;
-    g_gpio_drain_calls = 1;
-    double keep_win = o.drdy_window_s;
-    o.drdy_window_s  = 0.01;          /* far too short for any real mag rate */
-    r = run(&cfg, &o);
-    EXPECT(status_of(r, "mag.drdy.rate") == IMT_SKIP,
-           "a window too short to resolve the tolerance skips instead of failing");
-    free(r);
-    o.drdy_window_s = keep_win;
+    /*
+     * The resolution rule itself. A run cannot reach the case that matters --
+     * the mock answers every poll, so it lands hundreds of percent out -- and
+     * the distinction is the whole point: a miss no bigger than one sample is
+     * a rounding boundary, a gross one is a defect however few were expected.
+     */
+    EXPECT(imt_rate_quantum(1.0, 5.0) == 0.2,
+           "1 Hz over 5 s resolves to one sample in five, 20%");
+    EXPECT(imt_rate_quantum(100.0, 3.0) < 0.005,
+           "100 Hz over 3 s resolves far finer than the tolerance");
+    EXPECT(imt_rate_quantum(0.0, 3.0) == 1.0,
+           "a zero nominal cannot resolve anything");
 
     g_gpio_edges       = -1;
     g_gpio_why         = IMT_GPIO_ENOCHIP;
