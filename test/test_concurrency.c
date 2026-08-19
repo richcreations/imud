@@ -149,6 +149,19 @@ static void test_reload_race(void)
     imu_get_stats(imu, &s);
     EXPECT(s.imu_samples > 0, "fusion consumed samples under the reload storm");
 
+    /*
+     * Drain accounting. This config has no IMU interrupt line, so the reader
+     * paces itself and EVERY drain must be a timer drain — the edge counter
+     * staying at zero is what says the split is wired to the right branch
+     * rather than to whichever one happens to run.
+     */
+    EXPECT(s.drains_timeout > 0, "timer-paced drains were counted");
+    EXPECT(s.drains_edge == 0,
+           "no interrupt line configured, so no drain is attributed to an edge");
+    EXPECT(s.drain_samples >= s.imu_samples,
+           "every fused sample came from a counted drain");
+    EXPECT(s.drain_max > 0, "the deepest burst was recorded");
+
     char cpath[256]; uint64_t cbytes = 0, cdrops = 0; bool cactive = true;
     imu_get_capture_status(imu, cpath, sizeof cpath, &cbytes, &cdrops, &cactive);
     EXPECT(!cactive, "capture reports inactive once its thread has joined");

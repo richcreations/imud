@@ -137,6 +137,16 @@ struct imu_ctx {
     _Atomic uint64_t lat_fifo_p50, lat_fifo_p99, lat_fifo_max;
     _Atomic uint64_t lat_pipe_p50, lat_pipe_p99, lat_pipe_max;
 
+    /*
+     * Drain accounting.  Written by ism_reader only, read by whoever calls
+     * imu_get_stats(), so _Atomic directly rather than the accumulate-then-
+     * publish shape the histograms above use: these are four increments per
+     * DRAIN (~100/s), not per sample, so the cost is nil and the simpler form
+     * cannot drift out of step with a publisher.
+     */
+    _Atomic uint64_t drains_edge, drains_timeout;
+    _Atomic uint64_t drain_samples, drain_max;
+
     float            vib_ema;       /* EMA of (|a|-g)² for engine detection, ism_reader only */
 
     /* Cross-thread signal flags: _Atomic int rather than volatile so the
@@ -276,11 +286,14 @@ void *ism_reader_thread(void *arg)
                 continue;
             }
             /* gr == 0: 10 ms timeout — fall through to read anyway */
+            atomic_fetch_add(gr > 0 ? &ctx->drains_edge : &ctx->drains_timeout, 1);
         } else {
             /* No interrupt line: pace by sleeping 10 ms between FIFO drains. */
             struct timespec t = { .tv_sec = 0, .tv_nsec = 10 * 1000000L };
             nanosleep(&t, NULL);
             if (ctx->stop) break;
+            /* Every drain is a timer drain here, by construction. */
+            atomic_fetch_add(&ctx->drains_timeout, 1);
         }
 
 
@@ -330,6 +343,17 @@ void *ism_reader_thread(void *arg)
             continue;
         }
         consec_errors = 0;
+
+        /*
+         * Burst depth, recorded before the n == 0 early-out so an empty drain
+         * still counts as a drain.  Dropping those would flatter the mean: a
+         * timer that fires before the part has produced anything is exactly
+         * the case worth seeing, and it is invisible in a per-sample total.
+         */
+        atomic_fetch_add(&ctx->drain_samples, (uint64_t)n);
+        if ((uint64_t)n > atomic_load(&ctx->drain_max))
+            atomic_store(&ctx->drain_max, (uint64_t)n);
+
         if (n == 0) continue;
 
         /* Black-box tap: raw samples exactly as the driver delivered them
@@ -1580,6 +1604,11 @@ void imu_get_stats(imu_ctx_t *ctx, imu_stats_t *out)
     out->fifo_overflows = ctx->fifo_overflow_count;
     out->imu_errors     = ctx->imu_error_count;
     out->mag_errors     = ctx->mag_error_count;
+
+    out->drains_edge    = atomic_load(&ctx->drains_edge);
+    out->drains_timeout = atomic_load(&ctx->drains_timeout);
+    out->drain_samples  = atomic_load(&ctx->drain_samples);
+    out->drain_max      = atomic_load(&ctx->drain_max);
 
     out->lat_fifo_p50_ns = ctx->lat_fifo_p50;
     out->lat_fifo_p99_ns = ctx->lat_fifo_p99;

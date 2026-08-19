@@ -59,6 +59,29 @@ typedef struct {
      */
     uint64_t lat_fifo_p50_ns, lat_fifo_p99_ns, lat_fifo_max_ns;
     uint64_t lat_pipe_p50_ns, lat_pipe_p99_ns, lat_pipe_max_ns;
+
+    /*
+     * How the IMU FIFO is actually being drained, since totals cannot say.
+     *
+     * `fifo_wm` is widely read as setting FIFO residence, and it does not: the
+     * reader waits on the watermark interrupt with a 10 ms timeout and drains
+     * whatever is present when EITHER fires, so residence is bounded by
+     * whichever of the two is shorter.  The split below is what distinguishes
+     * them, and a mean burst depth cannot -- at 833 Hz a watermark of 8 comes
+     * due every 9.6 ms against a 10 ms timeout, so both models predict the
+     * same ~8 samples per drain while being driven by different things.
+     *
+     * drains_edge     woken by the watermark interrupt
+     * drains_timeout  woken by the 10 ms timeout, watermark not yet reached
+     * drain_samples   total samples drained (÷ drains = mean burst depth)
+     * drain_max       deepest single burst since start
+     *
+     * All four are cumulative since start, like imu_samples above.
+     * drains_edge is 0 on an install with no IMU interrupt line, where the
+     * reader paces itself and every drain is a timer drain by construction.
+     */
+    uint64_t drains_edge, drains_timeout;
+    uint64_t drain_samples, drain_max;
 } imu_stats_t;
 
 /* ── API ────────────────────────────────────────────────────────────────── */

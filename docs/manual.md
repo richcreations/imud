@@ -559,6 +559,19 @@ Three things about reading it:
   `mpu925x`, which have no chip timer, it is absent entirely — both are normal
   rather than faults.
 
+A drain clause follows it — `drains=E/T e/t n=MEAN max=DEEPEST` — saying how
+the FIFO is actually being emptied. `E` is drains woken by the watermark
+interrupt, `T` drains woken by the 10 ms timeout, `n` the mean samples per
+drain and `max` the deepest single burst since start.
+
+Read the **split**, not the mean. Because the reader takes whichever of the two
+wakeups comes first, the ratio is what says which one is in charge — and a mean
+burst depth cannot tell them apart, since at 833 Hz a `fifo_wm` of 8 comes due
+at almost exactly the 10 ms timeout, so both models predict the same ~8 samples
+per drain. A `T` that dominates means the watermark is never being reached
+before the timer fires, and lowering `fifo_wm` will not change residence. On an
+install with no IMU interrupt line, `E` is 0 by construction.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys logging.1 -->

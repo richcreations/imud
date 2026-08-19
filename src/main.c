@@ -339,9 +339,33 @@ static void *health_thread(void *arg)
                          st.lat_pipe_p50_ns * 1e-6, st.lat_pipe_p99_ns * 1e-6,
                          st.lat_fifo_max_ns * 1e-6, st.lat_pipe_max_ns * 1e-6);
 
+            /*
+             * How the FIFO is being drained.  Printed only when something has
+             * drained, and as its own clause for the same reason as latency:
+             * on a run that has not started it would be a row of zeros reading
+             * like a stalled reader.
+             *
+             * The edge/timeout split is the point.  fifo_wm does not set FIFO
+             * residence -- the reader takes whichever of the watermark
+             * interrupt and the 10 ms timeout comes first -- and a mean burst
+             * depth cannot tell those apart, because at 833 Hz a watermark of
+             * 8 comes due at almost exactly the timeout.  See ROADMAP §3.1.
+             */
+            char drn[96] = "";
+            {
+                unsigned long long de = (unsigned long long)st.drains_edge;
+                unsigned long long dt = (unsigned long long)st.drains_timeout;
+                if (de + dt)
+                    snprintf(drn, sizeof drn,
+                             "  drains=%llu/%llu e/t n=%.1f max=%llu",
+                             de, dt,
+                             (double)st.drain_samples / (double)(de + dt),
+                             (unsigned long long)st.drain_max);
+            }
+
             LOG_I("[stats] imu=%llu ovf=%llu mag=%llu  "
                 "hdg=%.1f pitch=%.1f roll=%.1f  "
-                "cov=%.1e %s%s\n",
+                "cov=%.1e %s%s%s\n",
                 (unsigned long long)st.imu_samples,
                 (unsigned long long)st.fifo_overflows,
                 (unsigned long long)st.mag_samples,
@@ -350,7 +374,7 @@ static void *health_thread(void *arg)
                 state.roll  * (float)(180.0 / M_PI),
                 state.cov[0] + state.cov[4] + state.cov[8],
                 (state.flags & FLAG_FUSION_CONVERGED) ? "converged" : "converging",
-                lat);
+                lat, drn);
         }
     }
 

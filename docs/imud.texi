@@ -1307,6 +1307,22 @@ period has to be measured against the host clock first. On
 absent entirely --- both are normal rather than faults.
 @end itemize
 
+A drain clause follows it --- @code{drains=E/T e/t n=MEAN max=DEEPEST}
+--- saying how the FIFO is actually being emptied. @code{E} is drains
+woken by the watermark interrupt, @code{T} drains woken by the 10 ms
+timeout, @code{n} the mean samples per drain and @code{max} the deepest
+single burst since start.
+
+Read the @strong{split}, not the mean. Because the reader takes
+whichever of the two wakeups comes first, the ratio is what says which
+one is in charge --- and a mean burst depth cannot tell them apart,
+since at 833 Hz a @code{fifo_wm} of 8 comes due at almost exactly the 10
+ms timeout, so both models predict the same ~8 samples per drain. A
+@code{T} that dominates means the watermark is never being reached
+before the timer fires, and lowering @code{fifo_wm} will not change
+residence. On an install with no IMU interrupt line, @code{E} is 0 by
+construction.
+
 @multitable @columnfractions 0.14 0.09 0.12 0.65 
 @headitem 
 Key
