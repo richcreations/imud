@@ -405,6 +405,20 @@ void imt_decide_verdict(imt_report_t *r);
 imt_status_t imt_chipts_wall_status(double ratio);
 
 /*
+ * Which way a measured rate missed its nominal, independent of whether it
+ * missed by enough to grade.  Returns -1 at or below nominal, 0 above but
+ * inside `tol`, +1 above and outside it.
+ *
+ * Exposed for the same reason as the helpers around it: the case that matters
+ * is a reading ABOVE nominal but INSIDE tolerance, and the mock bus answers
+ * every poll, so a run through it lands hundreds of percent high and can never
+ * reach that case.  It went unnoticed for exactly that reason — direction and
+ * tolerance were one boolean, so 21.0 Hz against a configured 20 was reported
+ * as "5.0% low", pointing a reader at the poll loop while the part ran fast.
+ */
+int imt_rate_dir(double measured, double nominal, double tol);
+
+/*
  * chip_ts accounting over a window, one sample at a time.
  *
  * Zero-initialised is "nothing seen yet". Exposed and factored out for the same

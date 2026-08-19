@@ -2084,6 +2084,56 @@ static void test_chipts_accounting(void)
  * with THAT and with the measured median delta. Recomputing from eff_odr_hz
  * breaks it, since the two are never equal in a real run.
  */
+/*
+ * mag.rate must describe the DIRECTION it measured. The grade and the wording
+ * were driven by one boolean meaning "above nominal AND outside tolerance", so
+ * a reading above nominal but inside the band fell through to the low branch:
+ * the bench read 21.0 Hz against a configured 20 and reported "5.0% low",
+ * which points a reader at the poll loop when the part is running fast.
+ */
+static void test_mag_rate_names_the_direction(void)
+{
+    begin("test_mag_rate_names_the_direction");
+    int fb = g_fail;
+
+    /*
+     * The classification directly, because this is the case a run cannot
+     * reach: the mock answers every poll, so its measured rate lands hundreds
+     * of percent high and only ever exercises dir = +1.
+     */
+    EXPECT(imt_rate_dir(19.0, 20.0, 0.05) == -1, "below nominal is low");
+    EXPECT(imt_rate_dir(20.0, 20.0, 0.05) == -1, "exactly nominal is not high");
+    EXPECT(imt_rate_dir(21.0, 20.0, 0.05) ==  0,
+           "5% high is HIGH, in band — the case that read as \"5.0% low\"");
+    EXPECT(imt_rate_dir(20.9, 20.0, 0.05) ==  0, "just inside the band is high");
+    EXPECT(imt_rate_dir(21.1, 20.0, 0.05) ==  1, "past the band is high and out");
+    EXPECT(imt_rate_dir(1204.0, 1000.0, 0.05) == 1, "the MMC at 1000 Hz is out");
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    mock_base(); script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+
+    /* The mock answers every poll, so the measured rate lands above the
+     * configured one -- that is the case the wording used to get backwards. */
+    if (r->raw.mag_rate_hz > (double)r->mag_eff_odr_hz) {
+        EXPECT(!note_contains(r, "mag.rate", "low"),
+               "a rate above nominal is never described as low");
+        /* "ABOVE" out of band, "above" inside it: the emphasis carries the
+         * severity, so accept either and pin only the direction. */
+        EXPECT(note_contains(r, "mag.rate", "ABOVE")
+               || note_contains(r, "mag.rate", "above"),
+               "and is described as above");
+    } else {
+        EXPECT(note_contains(r, "mag.rate", "low"),
+               "a rate at or below nominal keeps the low wording");
+    }
+    free(r);
+    end(fb);
+}
+
 static void test_chipts_rate_uses_measured(void)
 {
     begin("test_chipts_rate_uses_measured");
@@ -2318,6 +2368,7 @@ int main(void)
     test_sim_like_no_recommendation();
     test_degauss_split();
     test_chipts_accounting();
+    test_mag_rate_names_the_direction();
     test_chipts_rate_uses_measured();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();

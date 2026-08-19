@@ -2269,7 +2269,18 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
          * it stays a WARN, because a part's continuous-mode oscillator is
          * specified as typical and the reference die runs 5.4% fast.
          */
-        bool over = r->raw.mag_rate_hz > eff_odr * (1.0 + o->odr_tol_warn);
+        /*
+         * Two different questions, so two different booleans. `high` is the
+         * DIRECTION and decides the wording; `out` is the tolerance and
+         * decides the grade. One boolean served both, so any reading above
+         * nominal but inside the band was described as "low" -- the bench saw
+         * 21.0 Hz against a configured 20 reported as "5.0% low", which sends
+         * a reader looking for a pacing problem when the part is running fast.
+         */
+        int  dir  = imt_rate_dir(r->raw.mag_rate_hz, (double)eff_odr,
+                                 o->odr_tol_warn);
+        bool high = dir >= 0;      /* direction: decides the wording */
+        bool over = dir > 0;       /* and outside tolerance: decides the grade */
         add_check(r, "mag.rate", "Measured mag rate",
                   err <= o->odr_tol_warn      ? IMT_PASS
                 : (over && err > o->odr_tol_fail) ? IMT_FAIL : IMT_WARN,
@@ -2283,6 +2294,8 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                   : over ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
                          "rate. The poll loop cannot cause that, so it is the "
                          "part's own oscillator unless the margin grows."
+                  : high ? "%llu samples in %.2f s, %.1f%% above the configured "
+                         "rate but inside tolerance."
                        : "%llu samples in %.2f s (%.1f%% low); the poll loop "
                          "bounds this from above, so a low reading can be "
                          "pacing rather than the chip.",
@@ -3191,6 +3204,12 @@ static const char *imt_required_mag[] = {
  *   ratio < 1       WARN   chip time MISSING — a dropped wrap, unrecoverable
  *   |err| >  10%    FAIL   either way, ts_tick_ns is not this counter's period
  */
+int imt_rate_dir(double measured, double nominal, double tol)
+{
+    if (measured <= nominal) return -1;
+    return measured > nominal * (1.0 + tol) ? 1 : 0;
+}
+
 imt_status_t imt_chipts_wall_status(double ratio)
 {
     double werr = fabs(ratio - 1.0);
