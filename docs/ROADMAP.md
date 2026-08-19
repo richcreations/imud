@@ -823,7 +823,14 @@ else every single drain is a timeout drain. The rule:
 > Above that it has none at all, and mean burst depth is `odr_hz x 0.010`.
 
 Mean depth predicted as `min(wm, odr x 0.010)` against measurement: 1.04 vs
-1.1, 1.04 vs 1.1, 8.0 vs 8.0, 8.33 vs 9.7. The one loose cell is `833/64`,
+1.1, 1.04 vs 1.1, 8.0 vs 8.0, 8.33 vs 9.7.
+
+Run twice. The first pass changed `odr_hz` in `[mag]` as well as `[imu]`, so
+the magnetometer ran at 1000 Hz throughout it; the second pinned the mag at
+100 Hz and reproduced every cell — `0/4069`, `0/4071`, `4540/2 n=8.0`,
+`0/3786 n=9.6`. The IMU drain split is a race between the FIFO fill rate and
+the reader's timeout and does not care what the other chip select is doing,
+which is what the pair of runs demonstrates rather than assumes. The one loose cell is `833/64`,
 where samples keep arriving during the read itself.
 
 **This explains the retraction above rather than merely repeating it.** At
