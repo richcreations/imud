@@ -663,8 +663,20 @@ that yields 1200 is the same class of defect that entry was written to fix.
   full-scale sweep re-inits at each range, and at 26 Hz a sample takes 38 ms,
   so this may be the sweep reading before the part has settled rather than a
   scale error. Worth reproducing at low ODR before believing either.
-- `imu.init.idempotent` WARNed at 208 Hz (1 register) and 6664 Hz (2), meaning
-  a repeated `init()` lands on a different register image than the first.
+- ~~`imu.init.idempotent` WARNed at 208 Hz (1 register) and 6664 Hz (2)~~ —
+  **fixed 2026-08-20**, and the rates above are wrong. A sweep of the whole
+  ladder that evening had the check passing at 208, 1660 and 6664 Hz; the case
+  that still reproduced was the *magnetometer* sweep at `mag odr_hz = 1`, where
+  it read "2 registers differ" across 103 non-volatile registers.
+
+  The cause was `ism_init()` writing FIFO Continuous mode straight over
+  Continuous. DS13012 §6.5.1/§6.5.2 make Bypass the only thing that clears FIFO
+  content, so only the first `init()` after a reset — the one transitioning
+  from the `000` the reset left — actually flushed. Both ST drivers now park
+  the FIFO in Bypass first, which is what the other three FIFO drivers here
+  already did. Same case afterwards: PASS, 0 registers differ, over the same
+  103-register comparison set, and 19 runs across ten IMU rates and four mag
+  rates without a recurrence.
 
 **Everything else was clean at every rate**, including 3332 and 6664 Hz, which
 were the two cleanest runs of the ladder.
