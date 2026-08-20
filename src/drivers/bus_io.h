@@ -38,6 +38,22 @@
  * A part that ever disagrees cannot use these helpers unchanged, and this
  * comment is where whoever adds it should notice.
  *
+ * One part already disagrees, and it is worth knowing HOW it got away with it.
+ * The MMC5983MA (MEMSIC, Rev A p.5) spells the command byte as RW, then one
+ * don't-care bit, then a SIX-bit address — so the address sits in bits 5:0,
+ * not 6:0. Every register imud touches on that part is under 0x40, which puts
+ * bit 6 at zero either way, so the helpers happen to frame it correctly and
+ * the difference has never bitten. A part with a register at 0x40 or above
+ * would not be so lucky.
+ *
+ * What did bite was the other half of the same assumption. These helpers were
+ * written to the ST convention and the MMC5983MA was given ST's SPI MODE to
+ * match; it is a mode-0 part, and mode 3 corrupts its writes while leaving
+ * most reads intact. That produced a list of invented silicon quirks before
+ * anyone questioned the mode — see the block above odr_encode() in
+ * mmc5983ma.c. Check a new part's framing AND its mode against its own
+ * datasheet, not against the part next to it on the bus.
+ *
  * Multi-byte reads need an explicit auto-increment bit on some parts and none
  * on others (the ST 6-axis parts increment when CTRL3_C's IF_INC is set,
  * which their init() already does). That difference is a datasheet fact per

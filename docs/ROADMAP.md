@@ -966,7 +966,12 @@ survives the window reset, so this is a single excursion since start rather
 than a sustained state, and the p50/p99 either side of it are unremarkable.
 Unexplained; worth a second look before anyone quotes a worst case.
 
-**Then fix §14** *(still owed — the numbers to do it with now exist)*. The likely
+**§14 is fixed** *(2026-08-19, `b839e3f`)*. It states the chain, publishes all
+three terms, gives residence as a formula an operator can apply, and labels
+every unmeasured row as unmeasured. The reasoning that produced it is kept
+below because it is why the rewrite took three bench sessions rather than one.
+
+The likely
 defect is the label rather than the number — "I2C sample" probably meant the
 sample as delivered by the read, making the row a budget for the daemon's own
 pipeline with FIFO residence excluded. Three things support that reading: the
