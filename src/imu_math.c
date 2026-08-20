@@ -301,6 +301,15 @@ int snap_odr_up(const int supported[], int requested)
     return last;   /* above the top of the table — clamp to the highest */
 }
 
+long imu_int_fallback_ms(int odr_hz)
+{
+    if (odr_hz <= 0) return 20;              /* unknown rate: the old constant */
+    long ms = (long)(500.0 / (double)odr_hz + 0.5);    /* half a sample period */
+    if (ms < 2)   ms = 2;
+    if (ms > 250) ms = 250;
+    return ms;
+}
+
 int odr_actual_imu(const imu_ops_t *ops, int requested)
 {
     if (ops->actual_odr_hz) return ops->actual_odr_hz(requested);

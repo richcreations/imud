@@ -92,10 +92,17 @@ CAL_SRCS    = src/cal.c \
 # Driver-validation tool: hardware access, config, the driver registry, and the
 # swing-coverage helper shared with imud-cal.  src/capture.c is here only
 # because the sim driver's .imucap playback needs it.
+# src/imu.c, src/ring.c and src/fusion.c are linked deliberately: imud-imutest
+# tests the daemon's driver and transport layer, so it must USE that layer
+# rather than reimplement it.  It used to reimplement the GPIO edge wait, and
+# every way the copy differed from the daemon was reported as a driver defect.
 IMUTEST_SRCS = src/cli.c \
                src/config.c \
                src/log.c \
                src/capture.c \
+               src/imu.c \
+               src/ring.c \
+               src/fusion.c \
                src/cal_math.c \
                src/imu_math.c \
                src/bus.c \

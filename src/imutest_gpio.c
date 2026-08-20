@@ -5,14 +5,21 @@
  */
 
 /*
- * imutest_gpio.c — interrupt-line edge counting for imud-imutest.
+ * imutest_gpio.c — edge counting for imud-imutest, on the DAEMON's edge wait.
  *
- * The only translation unit in the tool that includes <gpiod.h>, so
- * everything else links without -lgpiod and test/test_imutest.c can supply
- * its own imt_gpio_count_edges() stub.
+ * This file used to carry its own libgpiod v1/v2 split, a near-copy of the one
+ * in src/imu.c. The copy is gone: imu_gpio_open/wait_edge/close come from
+ * src/imu.c, which is linked into imud-imutest for exactly this reason.
  *
- * The v1/v2 split mirrors src/imu.c: libgpiod 2.x replaced the line API
- * wholesale, and -DGPIOD_V2 is set by the Makefile when pkg-config reports it.
+ * The duplication was not cosmetic. A tool that reimplements the path it is
+ * measuring reports differences between the two copies as defects in the
+ * driver, and this one did: chip_ts reversals the daemon never sees, a DRDY
+ * rate of 0 Hz on a part feeding the daemon 105 Hz, and an interrupt line
+ * called unwired because a window the daemon does not have was too short.
+ *
+ * What remains here is the counting policy, which is imutest's own business:
+ * how long to watch, when to drain, and how to tell a busy line from a broken
+ * one. The waiting itself is the daemon's.
  */
 
 #include <errno.h>
@@ -20,15 +27,9 @@
 #include <string.h>
 #include <time.h>
 
-#include <gpiod.h>
-
 #include "imutest.h"
-
-#ifdef GPIOD_V2
-typedef struct gpiod_line_request imt_line_t;
-#else
-typedef struct gpiod_line         imt_line_t;
-#endif
+#include "imu_gpio.h"
+#include "imu_math.h"
 
 static long now_ms(void)
 {
@@ -37,96 +38,26 @@ static long now_ms(void)
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-static imt_line_t *request_line(struct gpiod_chip *chip, unsigned int offset)
-{
-#ifdef GPIOD_V2
-    struct gpiod_line_settings  *ls = gpiod_line_settings_new();
-    struct gpiod_line_config    *lc = gpiod_line_config_new();
-    struct gpiod_request_config *rc = gpiod_request_config_new();
-    imt_line_t *req = NULL;
-    if (!ls || !lc || !rc) goto out;
-    gpiod_line_settings_set_direction(ls, GPIOD_LINE_DIRECTION_INPUT);
-    gpiod_line_settings_set_edge_detection(ls, GPIOD_LINE_EDGE_RISING);
-    gpiod_line_config_add_line_settings(lc, &offset, 1, ls);
-    gpiod_request_config_set_consumer(rc, "imud-imutest");
-    req = gpiod_chip_request_lines(chip, rc, lc);
-out:
-    if (rc) gpiod_request_config_free(rc);
-    if (lc) gpiod_line_config_free(lc);
-    if (ls) gpiod_line_settings_free(ls);
-    return req;
-#else
-    imt_line_t *line = gpiod_chip_get_line(chip, offset);
-    if (!line) return NULL;
-    if (gpiod_line_request_rising_edge_events(line, "imud-imutest") < 0)
-        return NULL;
-    return line;
-#endif
-}
-
-static void release_line(imt_line_t *line)
-{
-#ifdef GPIOD_V2
-    gpiod_line_request_release(line);
-#else
-    gpiod_line_release(line);
-#endif
-}
-
-/* Wait up to timeout_ms for a rising edge, draining the event.
- * 1 = edge, 0 = timeout, -1 = error. */
-static int wait_edge(imt_line_t *line, long timeout_ms)
-{
-#ifdef GPIOD_V2
-    struct gpiod_edge_event_buffer *evbuf = gpiod_edge_event_buffer_new(1);
-    if (!evbuf) return -1;
-    int r = gpiod_line_request_wait_edge_events(line,
-                (int64_t)timeout_ms * 1000000LL);
-    if (r == 1)
-        gpiod_line_request_read_edge_events(line, evbuf, 1);
-    gpiod_edge_event_buffer_free(evbuf);
-    return r;
-#else
-    struct timespec ts = {
-        .tv_sec  = timeout_ms / 1000,
-        .tv_nsec = (timeout_ms % 1000) * 1000000L,
-    };
-    int r = gpiod_line_event_wait(line, &ts);
-    if (r == 1) {
-        struct gpiod_line_event ev;
-        gpiod_line_event_read(line, &ev);
-    }
-    return r;
-#endif
-}
-
 int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why, void (*prime)(void *))
+                         imt_gpio_why_t *why, void (*prime)(void *),
+                         int odr_hz)
 {
     *why = IMT_GPIO_OK;
 
     if (gpio <= 0) { *why = IMT_GPIO_DISABLED; return -1; }
 
-    char path[80];
-    snprintf(path, sizeof path, "/dev/%s", chip_name);
-
-#ifdef GPIOD_V2
-    struct gpiod_chip *chip = gpiod_chip_open(path);
-#else
-    struct gpiod_chip *chip = gpiod_chip_open(path);
-#endif
-    if (!chip) { *why = IMT_GPIO_ENOCHIP; return -1; }
-
-    imt_line_t *line = request_line(chip, (unsigned)gpio);
+    imu_gpio_line_t *line = imu_gpio_open(chip_name, (unsigned)gpio,
+                                          "imud-imutest");
     if (!line) {
         /*
-         * EBUSY here almost always means the daemon holds the line.  That is
-         * a reason to skip the check, never to fail the driver, so the caller
-         * needs to be able to tell it apart from a real fault.
+         * EBUSY almost always means the daemon holds the line. That is a
+         * reason to skip the check, never to fail the driver, so the caller
+         * needs to tell it apart from a real fault.
          */
-        *why = (errno == EBUSY) ? IMT_GPIO_EBUSY : IMT_GPIO_EIO;
-        gpiod_chip_close(chip);
+        *why = (errno == EBUSY)  ? IMT_GPIO_EBUSY
+             : (errno == ENOENT) ? IMT_GPIO_ENOCHIP
+                                 : IMT_GPIO_EIO;
         return -1;
     }
 
@@ -135,15 +66,15 @@ int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
      *
      * A latched data-ready sits HIGH until it is acknowledged, and the only
      * acknowledge here happens after an edge -- so if the line went high in
-     * the gap between the caller preparing the part and request_line()
-     * returning, there is no rising edge left to see and nothing will ever
+     * the gap between the caller preparing the part and the line being
+     * requested, there is no rising edge left to see and nothing will ever
      * create one. The wait then runs out with zero edges against a part that
      * is working perfectly.
      *
      * Measured on an MMC5983MA: conversions and INT edges agree exactly at
      * every rate from 1 to 1204 Hz, while this function returned 0 edges at
      * 1204 Hz, 6 of 63 at 21 Hz, and the full count at 105 Hz. The gap is
-     * fixed and the conversion period is not, which is precisely why it looked
+     * fixed and the conversion period is not, which is why it looked
      * rate-dependent -- at 1204 Hz a conversion always lands inside it.
      *
      * `prime` is separate from `drain` because this one is not a measurement:
@@ -152,30 +83,79 @@ int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
      */
     if (prime) prime(user);
 
-    int  edges = 0;
+    int  edges = 0, timeouts = 0;
     long t_end = now_ms() + window_ms;
+
+    /*
+     * The daemon's own recovery interval for this rate, from the same helper
+     * its reader threads use -- not a constant chosen here.  That is the whole
+     * point of this file linking src/imu.c: a number the tool picks for itself
+     * is a number that can drift from what the daemon does.
+     */
+    const long fallback_ms = imu_int_fallback_ms(odr_hz);
+    const int  latched     = (prime != NULL);
 
     while (now_ms() < t_end) {
         long remaining = t_end - now_ms();
         if (remaining <= 0) break;
         if (remaining > 200) remaining = 200;
 
-        int r = wait_edge(line, remaining);
-        if (r < 0) { *why = IMT_GPIO_EIO; break; }
-        if (r == 0) continue;
+        /* Only a latched line needs the short cycle -- see below. */
+        if (latched && remaining > fallback_ms) remaining = fallback_ms;
 
-        edges++;
+        int r = imu_gpio_wait_edge(line, remaining);
+        if (r < 0) { *why = IMT_GPIO_EIO; break; }
+
         /*
-         * Drain after every edge.  A watermark interrupt stays asserted until
-         * the FIFO drops below the threshold, so without this the line would
-         * yield exactly one edge and the whole measurement would be wrong.
+         * Drain on an edge AND on a timeout, which is what the daemon does.
+         *
+         * On an edge, because a watermark interrupt stays asserted until the
+         * FIFO drops below the threshold: without this the line would yield
+         * exactly one edge and the measurement would be meaningless.
+         *
+         * On a TIMEOUT, because some parts stop advancing on a quiet bus. The
+         * MMC5983MA does below about 50 Hz: acknowledged, the line goes low;
+         * the status bit then sets and the line goes high, but no edge is
+         * delivered until something touches the bus, and the queued edge then
+         * arrives on the very next call. Waiting purely on edges therefore
+         * measured 2 edges in 3 s at 20 Hz on a part the daemon reads at 21 Hz.
+         *
+         * The daemon's mag reader waits 20 ms and reads anyway; its IMU reader
+         * waits 10 ms and does the same. That fallback is load-bearing, not a
+         * belt-and-braces, and a tool that leaves it out is not measuring the
+         * daemon's path.
          */
-        if (drain) drain(user);
+        if (r == 1) edges++;
+        else        timeouts++;
+
+        /*
+         * Drain on an edge always; on a TIMEOUT only for a latched line.
+         *
+         * The two interrupt shapes need opposite treatment, and doing the same
+         * thing to both breaks one of them.
+         *
+         * A LATCHED data-ready (the magnetometer) asserts on
+         * conversion-complete and is re-armed only by the acknowledge a read
+         * performs, so it yields one rising edge per acknowledge and a missed
+         * edge is unrecoverable without reading anyway. Waiting LONGER there
+         * produces fewer edges, not later ones: 64 edges in 3 s at 20 Hz with
+         * a 20 ms fallback against 36 with a 95 ms one.
+         *
+         * A LEVEL watermark (the IMU FIFO) is the opposite. It asserts while
+         * the FIFO holds at least fifo_wm sets and deasserts when a drain
+         * empties it, so draining on a timeout keeps the FIFO permanently
+         * below the threshold and the watermark never asserts at all --
+         * measured as 0 edges on a line that was working perfectly.
+         *
+         * `latched` is inferred from `prime`: a caller that has something to
+         * re-arm passes one, and a caller with a level watermark does not.
+         */
+        if (drain && (r == 1 || latched)) drain(user);
     }
 
-    release_line(line);
-    gpiod_chip_close(chip);
+    imu_gpio_close(line);
 
+    (void)timeouts;
     if (edges == 0 && *why == IMT_GPIO_OK) *why = IMT_GPIO_NOEDGES;
     return edges;
 }

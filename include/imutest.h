@@ -525,6 +525,7 @@ void imt_degauss_split(const double vS[3], const double vR[3],
  */
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why, void (*prime)(void *));
+                         imt_gpio_why_t *why, void (*prime)(void *),
+                         int odr_hz);
 
 #endif /* IMUD_IMUTEST_H */

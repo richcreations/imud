@@ -98,8 +98,10 @@ static int g_gpio_last_write_at_entry = -2;
 
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
-                         imt_gpio_why_t *why, void (*prime)(void *))
+                         imt_gpio_why_t *why, void (*prime)(void *),
+                         int odr_hz)
 {
+    (void)odr_hz;
     (void)chip; (void)gpio; (void)window_ms;
     *why = g_gpio_why;
     if (g_gpio_fail_reg_after >= 0)

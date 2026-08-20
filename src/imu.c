@@ -31,9 +31,9 @@
 
 /* libgpiod v1 exposes struct gpiod_line *; v2 uses struct gpiod_line_request *. */
 #ifdef GPIOD_V2
-typedef struct gpiod_line_request imu_gpio_line_t;
+typedef struct gpiod_line_request gpio_line_h;
 #else
-typedef struct gpiod_line         imu_gpio_line_t;
+typedef struct gpiod_line         gpio_line_h;
 #endif
 
 /* CLOCK_TAI is Linux ≥ 3.10; fall back to CLOCK_REALTIME on other platforms. */
@@ -43,6 +43,7 @@ typedef struct gpiod_line         imu_gpio_line_t;
 
 #include "capture.h"
 #include "imu.h"
+#include "imu_gpio.h"
 #include "imu_math.h"   /* ts_anchor_t + pure helpers factored out of this file */
 #include "version.h"
 #include "ring.h"
@@ -84,8 +85,8 @@ struct imu_ctx {
     uint32_t         ts_tick_ns;
 
     struct gpiod_chip  *gpio_chip;
-    imu_gpio_line_t    *imu_line;   /* GPIO for IMU FIFO watermark interrupt */
-    imu_gpio_line_t    *mag_line;   /* GPIO for magnetometer measurement-done interrupt */
+    gpio_line_h    *imu_line;   /* GPIO for IMU FIFO watermark interrupt */
+    gpio_line_h    *mag_line;   /* GPIO for magnetometer measurement-done interrupt */
 
     imu_ring_t       imu_ring;
     mag_ring_t       mag_ring;
@@ -176,7 +177,7 @@ struct imu_ctx {
  * Drains the event so the next call sees a fresh edge.
  * Returns 1 on event, 0 on timeout, -1 on error.
  */
-static int wait_gpio_edge(imu_gpio_line_t *line, long timeout_ms)
+static int wait_gpio_edge(gpio_line_h *line, long timeout_ms)
 {
 #ifdef GPIOD_V2
     struct gpiod_edge_event_buffer *evbuf = gpiod_edge_event_buffer_new(1);
@@ -205,8 +206,9 @@ static int wait_gpio_edge(imu_gpio_line_t *line, long timeout_ms)
  * open_gpio_line — request one GPIO line for rising-edge detection.
  * Returns an opaque handle on success, NULL on error.
  */
-static imu_gpio_line_t *open_gpio_line(struct gpiod_chip *chip,
-                                        unsigned int offset)
+static gpio_line_h *open_gpio_line_as(struct gpiod_chip *chip,
+                                      unsigned int offset,
+                                      const char *consumer)
 {
 #ifdef GPIOD_V2
     struct gpiod_line_settings  *ls = gpiod_line_settings_new();
@@ -216,8 +218,8 @@ static imu_gpio_line_t *open_gpio_line(struct gpiod_chip *chip,
     gpiod_line_settings_set_direction(ls, GPIOD_LINE_DIRECTION_INPUT);
     gpiod_line_settings_set_edge_detection(ls, GPIOD_LINE_EDGE_RISING);
     gpiod_line_config_add_line_settings(lc, &offset, 1, ls);
-    gpiod_request_config_set_consumer(rc, "imud");
-    imu_gpio_line_t *req = gpiod_chip_request_lines(chip, rc, lc);
+    gpiod_request_config_set_consumer(rc, consumer);
+    gpio_line_h *req = gpiod_chip_request_lines(chip, rc, lc);
     gpiod_request_config_free(rc);
     gpiod_line_config_free(lc);
     gpiod_line_settings_free(ls);
@@ -228,21 +230,75 @@ fail:
     if (ls) gpiod_line_settings_free(ls);
     return NULL;
 #else
-    imu_gpio_line_t *line = gpiod_chip_get_line(chip, offset);
+    gpio_line_h *line = gpiod_chip_get_line(chip, offset);
     if (!line) return NULL;
-    if (gpiod_line_request_rising_edge_events(line, "imud") < 0)
+    if (gpiod_line_request_rising_edge_events(line, consumer) < 0)
         return NULL;
     return line;
 #endif
 }
 
-static void release_gpio_line(imu_gpio_line_t *line)
+static void release_gpio_line(gpio_line_h *line)
 {
 #ifdef GPIOD_V2
     gpiod_line_request_release(line);
 #else
     gpiod_line_release(line);
 #endif
+}
+
+/* ── The same edge wait, exposed — see include/imu_gpio.h ────────────────── */
+
+/*
+ * imud-imutest waits on an interrupt by calling these, rather than carrying a
+ * second copy of the libgpiod v1/v2 split.  It used to carry one, and every
+ * way the copy differed from the daemon showed up as a defect reported against
+ * the driver.
+ *
+ * The handle owns its chip because libgpiod v1 hands back a line that BORROWS
+ * the chip -- closing the chip there is a use-after-free -- while v2's request
+ * owns what it needs.  Keeping both in one allocation makes that difference
+ * invisible to a caller and impossible to get wrong at the call site.
+ */
+struct imu_gpio_line {
+    struct gpiod_chip *chip;
+    gpio_line_h       *line;
+};
+
+imu_gpio_line_t *imu_gpio_open(const char *chip_name, unsigned int offset,
+                               const char *consumer)
+{
+    char path[80];
+    snprintf(path, sizeof path, "/dev/%s", chip_name);
+
+    imu_gpio_line_t *h = calloc(1, sizeof *h);
+    if (!h) return NULL;
+
+    h->chip = gpiod_chip_open(path);
+    if (!h->chip) { int e = errno; free(h); errno = e; return NULL; }
+
+    h->line = open_gpio_line_as(h->chip, offset, consumer);
+    if (!h->line) {
+        int e = errno;
+        gpiod_chip_close(h->chip);
+        free(h);
+        errno = e;
+        return NULL;
+    }
+    return h;
+}
+
+int imu_gpio_wait_edge(imu_gpio_line_t *h, long timeout_ms)
+{
+    return h ? wait_gpio_edge(h->line, timeout_ms) : -1;
+}
+
+void imu_gpio_close(imu_gpio_line_t *h)
+{
+    if (!h) return;
+    release_gpio_line(h->line);
+    gpiod_chip_close(h->chip);
+    free(h);
 }
 
 /* ── Config snapshot ─────────────────────────────────────────────────────── */
@@ -507,16 +563,33 @@ void *mag_reader_thread(void *arg)
     struct timespec last_set;
     imud_config_t cfg;
     clock_gettime(CLOCK_MONOTONIC, &last_set);
+
+    /*
+     * Missed-interrupt recovery, sized to the rate.
+     *
+     * A latched data-ready is re-armed only by the acknowledge that read()
+     * performs, so it yields exactly one rising edge per acknowledge -- and a
+     * single missed edge leaves the line asserted for ever with nothing to
+     * clear it.  Measured on an MMC5983MA: after one acknowledge and then a
+     * silent bus, 0 further edges in 3 s at 20 Hz and 1 at 100 Hz.  So this
+     * timeout is not a safety net, it is the only way back.
+     *
+     * It was a flat 20 ms, which is fifty reads per conversion at 1 Hz and
+     * twenty-four conversions of latency at 1204.  Two sample periods bounds a
+     * missed edge to about one sample at any rate on the ladder.
+     */
+    const long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_hz);
+
     while (!ctx->stop) {
         if (ctx->mag_line) {
-            /* Interrupt-driven: wait for GPIO edge, 20 ms fallback. */
-            int gr = wait_gpio_edge(ctx->mag_line, 20);
+            /* Interrupt-driven, with a rate-sized fallback: see above. */
+            int gr = wait_gpio_edge(ctx->mag_line, mag_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 usleep(5000);
                 continue;
             }
-            /* gr == 0: 20 ms timeout — fall through */
+            /* gr == 0: the fallback expired — read anyway */
         } else {
             /* No interrupt pin: pace at ~100 Hz.  The driver read() polls
              * DRDY internally so we won't process stale data. */
@@ -1450,7 +1523,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* IMU interrupt line — optional (timer fallback used when absent). */
     if (cfg->imu_int_gpio > 0) {
-        ctx->imu_line = open_gpio_line(ctx->gpio_chip, (unsigned)cfg->imu_int_gpio);
+        ctx->imu_line = open_gpio_line_as(ctx->gpio_chip, (unsigned)cfg->imu_int_gpio, "imud");
         if (!ctx->imu_line) {
             LOG_E("[imu] cannot request GPIO%d: %s\n",
                     cfg->imu_int_gpio, strerror(errno));
@@ -1460,7 +1533,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* Mag interrupt line — only requested when the driver has an external pin. */
     if (ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
-        ctx->mag_line = open_gpio_line(ctx->gpio_chip, (unsigned)cfg->mag_int_gpio);
+        ctx->mag_line = open_gpio_line_as(ctx->gpio_chip, (unsigned)cfg->mag_int_gpio, "imud");
         if (!ctx->mag_line) {
             LOG_E("[imu] cannot request GPIO%d: %s\n",
                     cfg->mag_int_gpio, strerror(errno));

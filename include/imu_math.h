@@ -250,6 +250,31 @@ int snap_odr_up(const int supported[], int requested);
  * both the driver and the filter, and imutest measures against it, so the
  * three cannot disagree.
  */
+/*
+ * How long to wait on a data-ready edge before reading anyway, in ms, for a
+ * sensor running at `odr_hz`.  This is the missed-interrupt recovery, and it
+ * has to exist: a LATCHED data-ready asserts on conversion-complete and is
+ * re-armed only by the acknowledge the read performs, so exactly one rising
+ * edge is produced per acknowledge and a single missed edge leaves the line
+ * high for ever with no way back.  Measured on an MMC5983MA: after one
+ * acknowledge and then a silent bus, 0 further edges in 3 s at 20 Hz and 1 at
+ * 100 Hz, at every rate on its ladder.
+ *
+ * HALF a sample period, so a missed edge costs less than one sample.  It has
+ * to be a fraction rather than a multiple: on this part the acknowledge the
+ * fallback performs is also what re-arms the line, so waiting longer produces
+ * FEWER edges, not merely later ones.  Measured at 20 Hz over 3 s: a 20 ms
+ * fallback yields 64 edges and a 95 ms one yields 36.
+ *
+ * A fixed timeout is wrong at both ends of a ladder spanning 1 Hz to 6664:
+ * 20 ms is fifty reads per conversion at 1 Hz and twenty-four conversions of
+ * latency at 1204.
+ *
+ * Bounded at 2 ms so the fastest rates cannot spin, and at 250 ms so a 1 Hz
+ * part still notices a stalled line within a quarter second.
+ */
+long imu_int_fallback_ms(int odr_hz);
+
 int odr_actual_imu(const imu_ops_t *ops, int requested);
 int odr_actual_mag(const mag_ops_t *ops, int requested);
 

@@ -43,6 +43,49 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
 
 /* ── nearest_odr ─────────────────────────────────────────────────────────── */
 
+/*
+ * The missed-interrupt recovery interval.
+ *
+ * A latched data-ready yields exactly one rising edge per acknowledge, so one
+ * missed edge leaves the line asserted with nothing to clear it -- measured on
+ * an MMC5983MA as 0 further edges in 3 s after a single acknowledge. The
+ * fallback read is the only way back, which makes this interval load-bearing
+ * rather than a safety net, and a flat constant wrong at both ends of a ladder
+ * spanning 1 Hz to 6664.
+ */
+static void test_int_fallback_ms(void)
+{
+    begin("test_int_fallback_ms");
+    int fb = g_fail;
+
+    /* Half a period: the fallback read re-arms the line, so waiting
+     * longer yields fewer edges rather than later ones. */
+    EXPECT(imu_int_fallback_ms(100) == 5, "100 Hz -> 5 ms (half a period)");
+    EXPECT(imu_int_fallback_ms(20)  == 25, "20 Hz -> 25 ms");
+    EXPECT(imu_int_fallback_ms(1000) == 2, "1000 Hz clamps to the floor");
+
+    /* Bounded: the fast end must not spin, the slow end must still notice. */
+    EXPECT(imu_int_fallback_ms(6664) == 2, "6664 Hz clamps to the 2 ms floor");
+    EXPECT(imu_int_fallback_ms(1) == 250, "1 Hz clamps to the 250 ms ceiling");
+
+    /* Monotonic: a faster rate never waits longer than a slower one. */
+    long prev = 1000;
+    static const int ladder[] = { 1, 10, 20, 50, 100, 200, 833, 1000, 6664 };
+    int mono = 1;
+    for (size_t i = 0; i < sizeof ladder / sizeof ladder[0]; i++) {
+        long v = imu_int_fallback_ms(ladder[i]);
+        if (v > prev) mono = 0;
+        prev = v;
+    }
+    EXPECT(mono, "the interval never grows as the rate rises");
+
+    /* An unknown rate falls back to the constant this replaced. */
+    EXPECT(imu_int_fallback_ms(0) == 20, "an unknown rate keeps the old 20 ms");
+    EXPECT(imu_int_fallback_ms(-5) == 20, "and so does a nonsense one");
+
+    end(fb);
+}
+
 static void test_nearest_odr(void)
 {
     begin("test_nearest_odr");
@@ -983,6 +1026,7 @@ int main(void)
 {
     puts("=== imud imu_math tests ===");
 
+    test_int_fallback_ms();
     test_nearest_odr();
     test_snap_odr_up();
     test_odr_actual_resolver();

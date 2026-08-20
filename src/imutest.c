@@ -1894,7 +1894,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     /* Pass 1: drain on every edge, which is what the daemon does. */
     drain_flush(d);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
-                                     drain_cb, d, &why, NULL);
+                                     drain_cb, d, &why, NULL, eff_odr);
     r->raw.gpio_why      = why;
     r->raw.gpio_edges    = edges;
     r->raw.gpio_window_s = o->drdy_window_s;
@@ -1934,7 +1934,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     drain_flush(d);
     imt_gpio_why_t why_idle = IMT_GPIO_OK;
     int idle = imt_gpio_count_edges(cfg->gpio_chip, cfg->imu_int_gpio, ms,
-                                    NULL, NULL, &why_idle, NULL);
+                                    NULL, NULL, &why_idle, NULL, eff_odr);
     drain_flush(d);
 
     r->raw.gpio_idle_valid   = (idle >= 0);
@@ -2637,7 +2637,8 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     imt_gpio_why_t why = IMT_GPIO_OK;
     long ms = (long)(o->drdy_window_s * 1e3);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
-                                     mag_drdy_cb, &m, &why, mag_drdy_prime);
+                                     mag_drdy_cb, &m, &why, mag_drdy_prime,
+                                     r->mag_eff_odr_hz);
 
     if (edges < 0) {
         const char *reason =
