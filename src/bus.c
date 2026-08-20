@@ -94,6 +94,25 @@ static int open_i2c(imud_bus_t *b, const bus_spec_t *spec, const char *who)
     return 0;
 }
 
+/*
+ * Do these two spidev nodes hang off one controller?  /dev/spidevB.C -- B is
+ * the bus, C the chip select, so the bus number decides.
+ *
+ * Compared as text up to the last dot rather than parsed: anything not of that
+ * shape is not a spidev node, and answering "same controller" about it would
+ * be a guess. Two devices on one controller must agree about the clock mode,
+ * because the controller has a single SCLK and mode 0 idles it low while mode
+ * 3 idles it high -- see the check in imu.c that uses this.
+ */
+bool bus_spi_same_controller(const char *a, const char *b)
+{
+    if (!a || !b) return false;
+    const char *da = strrchr(a, '.'), *db = strrchr(b, '.');
+    if (!da || !db) return false;
+    size_t la = (size_t)(da - a), lb = (size_t)(db - b);
+    return la == lb && strncmp(a, b, la) == 0;
+}
+
 int bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
              const char *who)
 {

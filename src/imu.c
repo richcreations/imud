@@ -1307,6 +1307,33 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * and the two sensors are free to live on different buses. */
     bus_spec_t spec;
 
+    /*
+     * Two SPI devices on ONE controller must agree about the clock mode.
+     *
+     * spidev sets the mode per chip select, but the controller has a single
+     * SCLK and can only idle it at one level -- mode 0 idles low, mode 3 high.
+     * Put a mode-3 part on spidev0.0 beside a mode-0 part on spidev0.1 and the
+     * bus corrupts: measured on the reference rig, the daemon opened both
+     * parts, settled, and then never produced a sample. Nothing in the log
+     * said why, because each device was individually configured exactly as its
+     * driver asked.
+     *
+     * Refuse it at startup instead. This is a wiring-and-driver combination
+     * question, not an operator mistake, so the message names both parts and
+     * the modes they want rather than blaming the config.
+     */
+    if (cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
+        ctx->imu_ops->bus_caps.spi_mode != ctx->mag_ops->bus_caps.spi_mode &&
+        bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev)) {
+        LOG_E("[imu] %s wants SPI mode %u and %s wants mode %u, but %s and %s "
+              "share one SPI controller, which has a single clock. Move one "
+              "part to another SPI bus.\n",
+              ctx->imu_ops->name, ctx->imu_ops->bus_caps.spi_mode,
+              ctx->mag_ops->name, ctx->mag_ops->bus_caps.spi_mode,
+              cfg->imu_spi_dev, cfg->mag_spi_dev);
+        goto fail;
+    }
+
     config_imu_bus_spec(cfg, &spec);
     if (bus_open(&ctx->imu_bus, &spec, &ctx->imu_ops->bus_caps, "imu") < 0)
         goto fail;

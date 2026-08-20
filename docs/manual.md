@@ -673,11 +673,11 @@ Links to the manufacturers' datasheets are collected in
 <!-- BEGIN GENERATED: driver-table -->
 | Driver name | Chip | Type | I²C address | GPIO interrupt | SPI | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 3, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
+| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 0, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
 | `icm20948` | TDK ICM-20948 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes a built-in AK09916 mag via I²C master. No hardware timestamp. |
 | `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below. |
-| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
-| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 3, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
+| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
+| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
 | `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 0, 2 MHz | Primary reference mag. 18-bit, SET/RESET coil. On SPI a CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after every one. |

@@ -2459,6 +2459,41 @@ static uint8_t init_mag_reg(const mag_ops_t *d, uint8_t addr, uint8_t reg,
     return i2cmock_get_reg(addr, reg);
 }
 
+/*
+ * Two SPI devices on one controller share its clock, and the controller can
+ * only idle SCLK at one level -- mode 0 low, mode 3 high. Mixing them is not
+ * theoretical: with a mode-3 IMU on spidev0.0 beside a mode-0 magnetometer on
+ * spidev0.1 the daemon opened both parts, settled, and then never produced a
+ * sample, with nothing in the log to say why. imu.c refuses the combination at
+ * startup, and this is the question it asks.
+ */
+static void test_spi_same_controller(void)
+{
+    begin("test_spi_same_controller");
+    int fb = g_fail;
+
+    EXPECT(bus_spi_same_controller("/dev/spidev0.0", "/dev/spidev0.1"),
+           "two chip selects on bus 0 share a controller");
+    EXPECT(!bus_spi_same_controller("/dev/spidev0.0", "/dev/spidev1.0"),
+           "the same chip select on different buses does not");
+    EXPECT(bus_spi_same_controller("/dev/spidev10.0", "/dev/spidev10.3"),
+           "a two-digit bus number is compared as a whole");
+    EXPECT(!bus_spi_same_controller("/dev/spidev1.0", "/dev/spidev10.0"),
+           "bus 1 is not bus 10 — a prefix match would say it was");
+    EXPECT(!bus_spi_same_controller("/dev/i2c-1", "/dev/i2c-1"),
+           "a node with no chip select is not answered about");
+    EXPECT(!bus_spi_same_controller(NULL, "/dev/spidev0.0"), "NULL is safe");
+
+    /*
+     * And the combination that matters: every SPI-capable driver here that
+     * could sit beside the reference magnetometer must agree with it, or the
+     * pair is unusable on a shared bus.
+     */
+    EXPECT(ism330dhcx_ops.bus_caps.spi_mode == mmc5983ma_ops.bus_caps.spi_mode,
+           "the reference pair agrees about the SPI mode");
+    end(fb);
+}
+
 static void test_odr_agreement(void)
 {
     begin("test_odr_agreement");
@@ -3506,6 +3541,7 @@ int main(void)
     test_chip_ts_forward_garbage_read();
     test_driver_resets();
     test_ak099_init_modes();
+    test_spi_same_controller();
     test_odr_agreement();
     test_odr_codes_match_datasheet();
     test_ticks_per_sample_across_rates();

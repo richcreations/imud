@@ -105,4 +105,12 @@ int  bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
 /* Close and mark closed.  Safe on an unopened or already-closed handle. */
 void bus_close(imud_bus_t *b);
 
+/*
+ * True when two spidev node paths name the same SPI controller (the B in
+ * /dev/spidevB.C).  Devices that share a controller share its clock, so their
+ * drivers must agree about the SPI mode; imu.c refuses the combination rather
+ * than letting one part corrupt the other's transfers.
+ */
+bool bus_spi_same_controller(const char *a, const char *b);
+
 #endif /* IMUD_BUS_H */

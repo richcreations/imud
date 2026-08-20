@@ -399,7 +399,19 @@ const imu_ops_t lsm6dso_ops = {
     /* DS12140 Rev 3 §5.1.2 (protocol, mode 3), §4.4.1 Table 5 (10 MHz).
      * Same family as the ISM330DHCX: multi-byte steps the address from
      * CTRL3_C IF_INC, which lsm_init writes as part of 0x44. */
-    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+    /*
+     * Mode 0, not 3. DS13012 §5.1: "The device is compatible with SPI modes 0
+     * and 3." Both sample on the rising edge; they differ only in the level
+     * SCLK idles at.
+     *
+     * Mode 0 is chosen because the IMU and the magnetometer commonly share one
+     * SPI controller (spidev0.0 and 0.1 on the reference rig), the MMC5983MA
+     * requires mode 0, and a controller cannot idle its clock at two levels at
+     * once. Mixing them measurably breaks the bus: with this part left on
+     * mode 3 beside a mode-0 magnetometer the daemon started, settled, and
+     * then never produced a sample.
+     */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = lsm_probe,
     .reset            = lsm_reset,
@@ -417,7 +429,19 @@ const imu_ops_t lsm6dso_ops = {
 const imu_ops_t lsm6dsox_ops = {
     .name             = "lsm6dsox",
     .experimental     = true,
-    .bus_caps         = { .spi_capable = true, .spi_mode = 3,
+    /*
+     * Mode 0, not 3. DS13012 §5.1: "The device is compatible with SPI modes 0
+     * and 3." Both sample on the rising edge; they differ only in the level
+     * SCLK idles at.
+     *
+     * Mode 0 is chosen because the IMU and the magnetometer commonly share one
+     * SPI controller (spidev0.0 and 0.1 on the reference rig), the MMC5983MA
+     * requires mode 0, and a controller cannot idle its clock at two levels at
+     * once. Mixing them measurably breaks the bus: with this part left on
+     * mode 3 beside a mode-0 magnetometer the daemon started, settled, and
+     * then never produced a sample.
+     */
+    .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = lsm_probe,
     .reset            = lsm_reset,

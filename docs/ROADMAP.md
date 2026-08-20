@@ -417,12 +417,53 @@ recorded as unexplained; see the retraction there.
   a part down for it — 0 edges still FAILs, and a rate above the part's own
   sample rate still WARNs.
 
-### 1.2 The MMC5983MA over SPI  *(four defects, all fixed; validated 2026-08-17)*
+### 1.2 The MMC5983MA over SPI — one root cause, not five  *(resolved 2026-08-19)*
 
-The 2026-08-15 run on the reference pair read `|B| = 1124.7 µT` over SPI where
-I²C had read 64.8, and could not say why. Four independent defects were behind
-it. None of them is visible on I²C, and this is a shipped driver — not
-`experimental`.
+**The SPI mode was wrong.** This is a MEMSIC part and wants mode 0; it was
+driven in mode 3, the ST convention `src/drivers/bus_io.h` is built around —
+whose own comment warns "A part that ever disagrees cannot use these helpers
+unchanged." Mode 3 corrupts this part's **writes** while leaving most reads
+intact, so it never looked like a bus fault. It looked like working silicon
+with a list of odd habits, and that list was written down here as five
+separate defects over four days.
+
+The section title was the clue nobody read as a cause: **over SPI**. SPI for
+this pair landed 2026-08-08 (`7a76bdb`); every "quirk" below was recorded on
+2026-08-15 or later. The part had run on I²C since the project began with none
+of them — and I²C has no clock polarity or phase to get wrong.
+
+Measured with a standalone probe, same rig, same wiring, only the mode changed:
+
+| CM_Freq | 001 | 010 | 011 | 100 | 101 | 110 | 111 |
+|---|---|---|---|---|---|---|---|
+| **mode 0** | 1 | **11** | 21 | **53** | 106 | **211** | 1205 |
+| mode 3 | 1 | 130 | 130 | 130 | 130 | 256 | 1690 |
+| nominal | 1 | 10 | 20 | 50 | 100 | 200 | 1000 |
+
+What each recorded "defect" actually was:
+
+| | recorded as | what it was |
+|---|---|---|
+| **B** | a `CTRL0` write also lands in `CTRL1`, setting X-inhibit | mode 3. In mode 0, `CTRL0 = INT_EN` leaves X measuring at full sigma. The `g_ctrl1` shadow and "write CTRL1 last" rule are gone |
+| **D** | `CM_Freq` 010/100/110 ignored, part free-runs | mode 3. All seven codes work; the three deleted rates are restored |
+| **1.2.1** | the status gate and the DRDY edge are mutually exclusive | mode 3. `Meas_M_Done` returns **10/10** on a quiet bus 14 ms after acknowledgement in mode 0, and **0/10** in mode 3 |
+| — | a SET as one 3-byte write drops the part to 1 change/s | mode 3. In mode 0 it measures 106/s, same as the two-write form |
+
+**A** (the continuous-mode settle) is not disproved and the 100 ms settle stays.
+
+Two things came out of it that are real and are kept: `actual_odr_hz`, because
+even in mode 0 the rates run 6–10% above nominal and `CM_Freq 111` gives 1205
+against 1000; and the staleness guard, which protects against a dead INT line
+regardless of mode.
+
+**A second, separate defect fell out of the fix.** The IMU and the
+magnetometer commonly share one SPI controller (`spidev0.0` and `0.1` here),
+and a controller has one clock: mode 0 idles it low, mode 3 high. Leaving the
+ISM330DHCX on mode 3 beside a mode-0 magnetometer broke the bus outright — the
+daemon opened both parts, settled, and never produced a sample, with nothing in
+the log to say why. Both ST parts document "compatible with SPI modes 0 and 3"
+(DS13012 §5.1), so both now declare mode 0, and `imu.c` refuses a mixed-mode
+pair on one controller at startup rather than letting it corrupt silently.
 
 | | what it is |
 |---|---|
@@ -628,7 +669,7 @@ that yields 1200 is the same class of defect that entry was written to fix.
 **Everything else was clean at every rate**, including 3332 and 6664 Hz, which
 were the two cleanest runs of the ladder.
 
-### 1.2.1 The status gate and the DRDY edge cannot both be used  *(fifth defect, found and fixed 2026-08-18)*
+### 1.2.1 ~~The status gate and the DRDY edge cannot both be used~~ — **refuted 2026-08-19**, it was SPI mode 3 (see §1.2)
 
 The daemon was reading the magnetometer at **35 Hz from a 105.5 Hz part** — two
 of every three samples discarded, so heading got a third of the information it
