@@ -2145,6 +2145,48 @@ static void test_chipts_accounting(void)
  * the bench read 21.0 Hz against a configured 20 and reported "5.0% low",
  * which points a reader at the poll loop when the part is running fast.
  */
+/*
+ * The watermark first asserts at fifo_wm/odr seconds. When that is longer than
+ * the window, no edge is possible and grading the absence is grading an
+ * impossibility -- at 12 Hz with the shipped fifo_wm = 64 that is 5.3 s
+ * against a 3 s window, and the check reported "the line is not wired" about a
+ * working line.
+ */
+static void test_drdy_window_must_allow_an_edge(void)
+{
+    begin("test_drdy_window_must_allow_an_edge");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases        = IMT_PHASE_PASSIVE;
+    o.drdy_window_s = 0.3;
+    cfg.imu_int_gpio = 17;
+
+    /* 64 sample-sets at 12 Hz needs 5.3 s; the window is 0.3 s. */
+    mock_base(); script_reset(&o);
+    cfg.imu_odr_hz = 12;
+    cfg.imu_fifo_wm = 64;
+    g_gpio_edges = 0;
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(status_of(r, "imu.drdy.edges") == IMT_SKIP,
+           "a window the watermark cannot fill in skips rather than failing");
+    free(r);
+
+    /* At 833 Hz the same watermark fills in 77 ms, well inside the window, so
+     * an absence of edges really is a defect. */
+    mock_base(); script_reset(&o);
+    cfg.imu_odr_hz = 833;
+    g_gpio_edges = 0;
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "imu.drdy.edges") != IMT_SKIP,
+           "where the watermark can fill, no edges is still graded");
+    free(r);
+
+    cfg.imu_int_gpio = 0;
+    end(fb);
+}
+
 static void test_mag_rate_names_the_direction(void)
 {
     begin("test_mag_rate_names_the_direction");
@@ -2422,6 +2464,7 @@ int main(void)
     test_sim_like_no_recommendation();
     test_degauss_split();
     test_chipts_accounting();
+    test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
     test_chipts_rate_uses_measured();
     test_chipts_wall_bands();

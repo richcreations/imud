@@ -115,8 +115,27 @@ void imt_opts_defaults(imt_opts_t *o)
     o->turn_deg        = 90.0;
     o->turn_timeout_s  = 30.0;
     o->spin_timeout_s  = 180.0;
-    o->grav_tol_warn   = 0.25;
-    o->grav_tol_fail   = 0.60;
+    /*
+     * Gravity tolerance, from the PART's spec rather than from what a good
+     * reading looks like.  ISM330DHCX DS13012: linear acceleration sensitivity
+     * LA_So is -2%/+2%, and the zero-g level offset LA_TyOff is +/-65 mg --
+     * 0.64 m/s^2 on its own, before any sensitivity error.  So an uncalibrated
+     * part that is entirely within specification can read |a| anywhere in
+     * roughly 9.0 to 10.6 m/s^2.
+     *
+     * The old +/-0.25 was tighter than that, and duly failed one: |a| at rest
+     * measured 10.1, and the full-scale sweep FAILed or WARNed a different
+     * range on nearly every run, the range moving with the ODR and between
+     * runs -- scatter inside the part's own tolerance, read as a defect.
+     *
+     * Widening does not blunt the check.  What it exists to catch is a wrong
+     * sensitivity CONSTANT, which is a factor of two or four -- the note
+     * prints the ratio for exactly that -- and 0.85 still separates 9.8 from
+     * 4.9 or 19.6 by a wide margin. Calibration is what closes the gap between
+     * this band and a good reading, and imud-cal is where that belongs.
+     */
+    o->grav_tol_warn   = 0.85;
+    o->grav_tol_fail   = 1.60;
     o->odr_tol_warn    = 0.05;
     o->odr_tol_fail    = 0.15;
     o->fs_sweep        = true;
@@ -1665,6 +1684,28 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     }
 
     /* ── Accelerometer: gravity is the reference at every full scale ─────── */
+    /*
+     * Settle and collect in SAMPLES, not in seconds.
+     *
+     * A fixed 300 ms settle is 250 samples at 833 Hz and under four at 12 Hz,
+     * and a fixed 1 s window is 833 samples against twelve.  The low-rate end
+     * of the ladder was therefore reading the part mid-transient after each
+     * re-init: at 12 and 26 Hz gravity came back 7% out at one range while
+     * every other range passed, and the Z noise floor read 1.6-2.5 m/s^2
+     * against its usual 0.05.  Which range got caught moved between runs,
+     * which is the signature of a transient rather than a scale error.
+     *
+     * Bounded at both ends: the fast rates keep the timings they had, and the
+     * slow ones cannot stretch a four-range sweep past a bench's patience.
+     */
+    double fs_per    = base->odr_hz > 0 ? 1.0 / (double)base->odr_hz : 0.001;
+    double fs_settle = 20.0 * fs_per;
+    double fs_window = 50.0 * fs_per;
+    if (fs_settle < 0.3) fs_settle = 0.3;
+    if (fs_settle > 2.0) fs_settle = 2.0;
+    if (fs_window < 1.0) fs_window = 1.0;
+    if (fs_window > 4.0) fs_window = 4.0;
+
     int na = tab_len(imu->supported_accel_g, 8);
     int failed = 0, worst = 0;
     for (int i = 0; i < na && !g_abort; i++) {
@@ -1681,12 +1722,12 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
             continue;
         }
         drain_flush(d);
-        sleep_s(0.3);
+        sleep_s(fs_settle);
         drain_flush(d);
 
         imt_stats3_t acc;
         double grav = 0;
-        uint64_t gn = collect_stats(o, d, 1.0, "imu.fs", &acc, NULL, &grav);
+        uint64_t gn = collect_stats(o, d, fs_window, "imu.fs", &acc, NULL, &grav);
 
         if (r->raw.n_fs_accel >= IMT_MAX_FS_ROWS) continue;
         imt_fs_row_t *row = &r->raw.fs_accel[r->raw.n_fs_accel++];
@@ -1744,11 +1785,11 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
             continue;
         }
         drain_flush(d);
-        sleep_s(0.3);
+        sleep_s(fs_settle);
         drain_flush(d);
 
         imt_stats3_t gy;
-        collect_stats(o, d, 1.0, "imu.fs", NULL, &gy, NULL);
+        collect_stats(o, d, fs_window, "imu.fs", NULL, &gy, NULL);
         double s = (gy.sigma[0] + gy.sigma[1] + gy.sigma[2]) / 3.0;
 
         if (r->raw.n_fs_gyro >= IMT_MAX_FS_ROWS) continue;
@@ -1826,6 +1867,24 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         skip_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
                    "imu.int_gpio is 0 — the reader uses a polling timer");
         r->raw.gpio_why = IMT_GPIO_DISABLED;
+        return;
+    }
+
+    /*
+     * Can an edge even happen in this window?
+     *
+     * The watermark asserts once `fifo_wm` sample-sets have accumulated, so it
+     * first fires at `fifo_wm / odr` seconds. At 12 Hz with the shipped
+     * `fifo_wm = 64` that is 5.3 s against a 3 s window: no edge is possible,
+     * and the check was reporting "the line is not wired" about a line that is
+     * wired and working. Grading an impossibility is worse than not grading.
+     */
+    double first_edge_s = eff_odr > 0 ? (double)fifo_wm / (double)eff_odr : 0.0;
+    if (first_edge_s >= o->drdy_window_s) {
+        skip_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
+                   "the watermark cannot fill inside this window at this ODR — "
+                   "raise --drdy-window, or lower fifo_wm");
+        r->raw.gpio_why = IMT_GPIO_OK;
         return;
     }
 

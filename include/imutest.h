@@ -328,7 +328,7 @@ typedef struct {
     double turn_deg;         /* 90.0 */
     double turn_timeout_s;   /* 30.0 */
     double spin_timeout_s;   /* 180.0 */
-    double grav_tol_warn;    /* 0.25 m/s² */
+    double grav_tol_warn;    /* 0.85 m/s²: LA_So ±2% + LA_TyOff ±65 mg */
     double grav_tol_fail;    /* 0.60 m/s² */
     double odr_tol_warn;     /* 0.05 fractional */
     double odr_tol_fail;     /* 0.15 fractional */
