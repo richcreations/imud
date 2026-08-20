@@ -783,33 +783,35 @@ static void test_mmc_set_reset(void)
            "INT_EN survives a RESET pulse");
 
     /*
-     * The same alias applies to every degauss, and the periodic SET runs on a
-     * 5 s timer — so a degauss that does not restore CTRL1 costs the X axis
-     * within one interval of startup and keeps it off for the rest of the run.
-     * Both directions, because RESET (0x14) carries bit 2 as well.
+     * The degauss no longer restores CTRL1, because there is nothing to
+     * restore: the "a CTRL0 write also lands in CTRL1" aliasing this used to
+     * repair was an artifact of driving a MEMSIC part in SPI mode 3. In mode 0
+     * a CTRL0 = INT_EN write leaves X measuring with its full noise sigma, and
+     * all four init orderings produce the same 105-106 changes/s.
+     *
+     * What must still hold is that the pulse does not disturb the bandwidth or
+     * the interrupt enable on a part that does NOT alias -- which is every
+     * part, now that the mode is right.
      */
     i2cmock_reset();
-    i2cmock_set_write_alias(MMC_ADDR, 0x09, 0x0A);
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "periodic SET succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x01,
-           "CTRL1 restored after the periodic SET");
+           "CTRL1 still holds BW after the periodic SET");
     EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_RESET) == 0, "degauss RESET succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x01,
-           "CTRL1 restored after a RESET pulse");
+           "CTRL1 still holds BW after a RESET pulse");
     EXPECT((i2cmock_get_reg(MMC_ADDR, 0x09) & 0x04) != 0,
-           "INT_EN still set after the alias-restoring writes");
+           "INT_EN still set after both pulses");
 
-    /* The restored value tracks the configured ODR, rather than a hardcoded
-     * 0x01 that happens to match this test's 100 Hz. */
+    /* The bandwidth tracks the configured ODR and survives a pulse. */
     i2cmock_reset();
-    i2cmock_set_write_alias(MMC_ADDR, 0x09, 0x0A);
     mag_cfg_t slow = { .odr_hz = 10, .set_period_s = 5.0f };   /* BW=00 */
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &slow) == 0, "init at 10 Hz succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x00, "CTRL1 = BW for 10 Hz");
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "periodic SET at 10 Hz");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x00,
-           "degauss restores the 10 Hz BW, not the previous one");
+           "the 10 Hz BW is unchanged by the pulse");
 
     /* Bus error propagates from both entry points. */
     i2cmock_reset();

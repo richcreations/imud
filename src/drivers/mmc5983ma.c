@@ -108,7 +108,6 @@
  * uniformly. Do not "simplify" this into a paired write without re-reading the
  * table above.
  */
-static _Atomic uint8_t g_ctrl1 = 0;
 
 /*
  * ── Meas_M_Done and the INT pin cannot both be used ────────────────────────
@@ -209,13 +208,16 @@ static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none 
  * the X axis keeps its full noise sigma instead of freezing.  In mode 3 even
  * the product-ID read comes back 0xFF often enough to see.
  *
- * Every earlier finding about this part was taken in mode 3 and has to be
- * treated as suspect until re-measured.  Two pieces of machinery here exist
- * only to work around what mode 3 did and are candidates for removal once
- * they have been re-tested: the g_ctrl1 shadow with its "write CTRL1 last"
- * rule, and the paired-write warnings around the degauss pulse.  They are
- * harmless as they stand, which is why they are still here rather than ripped
- * out in the same change that moved the ground under them.
+ * Every earlier finding about this part was taken in mode 3 and had to be
+ * re-measured.  Two pieces of machinery existed only to survive it, and both
+ * are now gone because mode 0 refutes what they were for:
+ *
+ *   - The g_ctrl1 shadow and its "write CTRL1 last" rule, for the aliasing.
+ *     All four init orderings measure 105-106 changes/s in mode 0, and X keeps
+ *     its full noise sigma with CTRL0 = INT_EN.
+ *   - The warning never to pair a write whose first byte pulses.  In mode 3 a
+ *     SET issued as one 3-byte write dropped the part to 1 change/s; in mode 0
+ *     it measures 106/s, the same as the two-write form.
  *
  * ── The rates are close to nominal, with one exception ─────────────────────
  *
@@ -366,13 +368,8 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Enable INT pin on measurement completion. */
     if (bus_reg_write(bus, REG_CTRL0, CTRL0_INT_EN) < 0) return -1;
 
-    /*
-     * Measurement bandwidth — after every CTRL0 write, because a CTRL0 write
-     * also lands in CTRL1 and would otherwise leave X-inhibit set. See the
-     * g_ctrl1 comment near the top of this file.
-     */
+    /* Measurement bandwidth, before continuous mode starts. */
     if (bus_reg_write(bus, REG_CTRL1, bw) < 0) return -1;
-    atomic_store(&g_ctrl1, bw);
 
     /* Start continuous mode: Cmm_en=1 (bit 3) | CM_Freq. LAST — nothing may
      * follow it, here or in the caller, for the settle below. */
@@ -521,8 +518,6 @@ static int mmc_degauss(const imud_bus_t *bus, mag_degauss_t dir)
 {
     uint8_t pulse = (dir == MAG_DEGAUSS_RESET) ? CTRL0_RESET : CTRL0_SET;
     if (bus_reg_write(bus, REG_CTRL0, (uint8_t)(CTRL0_INT_EN | pulse)) < 0)
-        return -1;
-    if (bus_reg_write(bus, REG_CTRL1, atomic_load(&g_ctrl1)) < 0)
         return -1;
     usleep(1000);  /* 1 ms settling before next read */
     return 0;
