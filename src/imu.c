@@ -334,7 +334,7 @@ void *ism_reader_thread(void *arg)
     imud_config_t cfg;
     while (!ctx->stop) {
         if (ctx->imu_line) {
-            int gr = wait_gpio_edge(ctx->imu_line, 10);
+            int gr = wait_gpio_edge(ctx->imu_line, IMU_DRAIN_WAIT_MS);
             if (gr < 0) {
                 if (ctx->stop) break;
                 LOG_E("[ism_reader] GPIO error: %s\n", strerror(errno));
@@ -344,8 +344,9 @@ void *ism_reader_thread(void *arg)
             /* gr == 0: 10 ms timeout — fall through to read anyway */
             atomic_fetch_add(gr > 0 ? &ctx->drains_edge : &ctx->drains_timeout, 1);
         } else {
-            /* No interrupt line: pace by sleeping 10 ms between FIFO drains. */
-            struct timespec t = { .tv_sec = 0, .tv_nsec = 10 * 1000000L };
+            /* No interrupt line: pace by the same cadence between drains. */
+            struct timespec t = { .tv_sec = 0,
+                                  .tv_nsec = IMU_DRAIN_WAIT_MS * 1000000L };
             nanosleep(&t, NULL);
             if (ctx->stop) break;
             /* Every drain is a timer drain here, by construction. */

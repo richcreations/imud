@@ -35,6 +35,8 @@
 #include <sys/utsname.h>
 
 #include "imutest.h"
+#include "imu_gpio.h"
+#include "imu_math.h"
 #include "cal_math.h"
 #include "imu_math.h"
 #include "log.h"
@@ -519,12 +521,62 @@ typedef struct {
     uint64_t         gaps, backwards, max_gap;
     int              rc1, rcneg, last_errno;
     uint64_t         total;
+
+    /*
+     * The interrupt line the DAEMON would wait on, held for the whole run.
+     *
+     * Every check here drains through drain_pace(), which waits on this line
+     * with the daemon's cadence instead of a timer of imutest's own. That
+     * difference used to be invisible and expensive: paced on a 5 ms sleep,
+     * chip_ts reversals appeared at burst seams that the daemon -- woken by
+     * the watermark -- never produces, and the report blamed the driver. The
+     * daemon scored 0 reversals in 53,708 samples while this tool scored
+     * several per window on the same part minutes apart.
+     *
+     * NULL when no line is configured, which is a real deployment: the reader
+     * then paces itself, and so does this.
+     */
+    imu_gpio_line_t *line;
 } drain_ctx_t;
 
-static void drain_init(drain_ctx_t *d, const imu_ops_t *ops, const imud_bus_t *bus)
+/*
+ * One pacing step, exactly as ism_reader performs it: wait on the watermark
+ * with the daemon's timeout, or sleep that long where no line is configured.
+ * Never a shorter timer -- what this tool measures has to be what the daemon
+ * gets, and the pacing is most of that.
+ */
+static void drain_pace(drain_ctx_t *d)
+{
+    /*
+     * Used by the checks that GRADE THE READ PATH -- check_odr_seq_ts, which
+     * owns imu.odr, imu.seq.* and every imu.chipts.* verdict, and check_rest.
+     * Those must traverse the path the way the daemon does, because the thing
+     * they measure is a property of the pacing: a timer-paced drain arrives at
+     * an arbitrary phase, the batched FIFO timestamp is rejected, and the
+     * post-drain anchor can place a burst before the previous one ended. The
+     * daemon, woken by the watermark, scored 0 reversals in 53,708 samples
+     * while this tool scored several per window on the same part.
+     *
+     * Deliberately NOT used by collect_stats() or the guided phases. Those
+     * grade physical orientation and noise while an operator holds the board
+     * still; the drain cadence is not what they measure, and pacing them at it
+     * only collects fewer samples per face than the sign check needs.
+     */
+    if (d->line) {
+        (void)imu_gpio_wait_edge(d->line, IMU_DRAIN_WAIT_MS);
+        return;
+    }
+    sleep_s(IMU_DRAIN_WAIT_MS / 1000.0);
+}
+
+static void drain_init(drain_ctx_t *d, const imu_ops_t *ops,
+                       const imud_bus_t *bus, const imud_config_t *cfg)
 {
     memset(d, 0, sizeof *d);
     d->ops = ops; d->bus = bus;
+    if (cfg && cfg->imu_int_gpio > 0)
+        d->line = imu_gpio_open(cfg->gpio_chip, (unsigned)cfg->imu_int_gpio,
+                                "imud-imutest");
     d->tick_ns = ops->ts_tick_ns;
     if (ops->ts_tick_ns_actual) {
         uint32_t part = ops->ts_tick_ns_actual(bus);
@@ -899,7 +951,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
 
     /* Discard setup residue so the window measures steady state. */
     double t_end = now_s() + 0.3;
-    while (now_s() < t_end && !g_abort) { drain_once(d, buf, 128, &n); sleep_s(0.005); }
+    while (now_s() < t_end && !g_abort) { drain_once(d, buf, 128, &n); drain_pace(d); }
     drain_flush(d);
 
     /* Reset the contract counters so the ODR window is measured cleanly. */
@@ -926,7 +978,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         prev_loop = t;
 
         int rc = drain_once(d, buf, 128, &n);
-        if (rc < 0) { sleep_s(0.002); continue; }
+        if (rc < 0) { drain_pace(d); continue; }
 
         if (n > 0) {
             if (!have_first) { first_t = t; seq_first = buf[0].seq; have_first = true; }
@@ -941,7 +993,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             }
         }
         ui_progress(o, "imu.odr", (now_s() - t0) / o->odr_window_s, NULL);
-        sleep_s(0.002);
+        drain_pace(d);
     }
 
     double span = (last_t > first_t) ? (last_t - first_t) : 0.0;
@@ -1466,7 +1518,7 @@ static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     drain_flush(d);
     double t0 = now_s(), deadline = t0 + o->noise_window_s;
     while (now_s() < deadline && !g_abort) {
-        if (drain_once(d, buf, 128, &n) < 0) { sleep_s(0.002); continue; }
+        if (drain_once(d, buf, 128, &n) < 0) { drain_pace(d); continue; }
         for (int i = 0; i < n; i++) {
             w3_add(&wa, buf[i].accel);
             w3_add(&wg, buf[i].gyro);
@@ -1482,7 +1534,7 @@ static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
             if (!have_tprev || fabsf(t - tprev) > 1e-6f) { tdistinct++; tprev = t; have_tprev = true; }
         }
         ui_progress(o, "imu.noise", (now_s() - t0) / o->noise_window_s, NULL);
-        sleep_s(0.002);
+        drain_pace(d);
     }
 
     w3_finish(&wa, &r->raw.accel);
@@ -1889,7 +1941,20 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     }
 
     imt_gpio_why_t why = IMT_GPIO_OK;
-    long ms = (long)(o->drdy_window_s * 1e3);
+
+    /*
+     * The operator's window, NOT widened by imt_rate_window_s().
+     *
+     * That helper sizes a window to resolve a ±tolerance, and this check does
+     * not grade one: it asks which interrupt model the edge rate fits, per
+     * sample or per watermark, and reports which. A model fit needs enough
+     * edges to tell two rates that differ by orders of magnitude apart, not
+     * enough to resolve 5%. The feasibility gate above already refuses a
+     * window too short for the watermark to fill in at all, which is the only
+     * way this one can be too short.
+     */
+    double win = o->drdy_window_s;
+    long ms = (long)(win * 1e3);
 
     /* Pass 1: drain on every edge, which is what the daemon does. */
     drain_flush(d);
@@ -1897,8 +1962,8 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                                      drain_cb, d, &why, NULL, eff_odr);
     r->raw.gpio_why      = why;
     r->raw.gpio_edges    = edges;
-    r->raw.gpio_window_s = o->drdy_window_s;
-    r->raw.gpio_rate_hz  = edges > 0 ? edges / o->drdy_window_s : 0.0;
+    r->raw.gpio_window_s = win;
+    r->raw.gpio_rate_hz  = edges > 0 ? edges / win : 0.0;
 
     if (edges < 0) {
         const char *reason =
@@ -1950,7 +2015,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                   IMT_FAIL, "0 edges", "> 0",
                   "no edges on BCM %d in %.1f s. The line is not wired, the "
                   "interrupt is not enabled in init(), or the BCM number is "
-                  "wrong.", cfg->imu_int_gpio, o->drdy_window_s);
+                  "wrong.", cfg->imu_int_gpio, win);
         return;
     }
 
@@ -1974,11 +2039,11 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         snprintf(idle_note, sizeof idle_note,
                  "%d undrained: level condition, so the drained count is "
                  "drain-paced, not a rate.", idle);
-    else if (per_sample > 0 && fabs(idle / o->drdy_window_s - per_sample)
+    else if (per_sample > 0 && fabs(idle / win - per_sample)
                                    / per_sample < 0.20)
         snprintf(idle_note, sizeof idle_note,
                  "%.0f Hz undrained too: an edge per sample.",
-                 idle / o->drdy_window_s);
+                 idle / win);
     else
         snprintf(idle_note, sizeof idle_note,
                  "%.0f Hz undrained: fits no model.", idle / o->drdy_window_s);
@@ -2635,7 +2700,11 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
 
     mag_drdy_ctx_t m = { .mag = mag, .bus = bus };
     imt_gpio_why_t why = IMT_GPIO_OK;
-    long ms = (long)(o->drdy_window_s * 1e3);
+    /* Long enough to resolve the tolerance at THIS mag rate. */
+    double win = o->drdy_window_s;
+    double need = imt_rate_window_s(eff_odr, o->odr_tol_warn);
+    if (need > win) win = need;
+    long ms = (long)(win * 1e3);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
                                      mag_drdy_cb, &m, &why, mag_drdy_prime,
                                      r->mag_eff_odr_hz);
@@ -2650,10 +2719,10 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
         return;
     }
 
-    double rate = m.samples / o->drdy_window_s;
+    double rate = m.samples / win;
     r->raw.mag_drdy_edges    = edges;
     r->raw.mag_drdy_samples  = m.samples;
-    r->raw.mag_drdy_window_s = o->drdy_window_s;
+    r->raw.mag_drdy_window_s = win;
     r->raw.mag_drdy_rate_hz  = rate;
 
     /*
@@ -2679,7 +2748,7 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
      * damning only when many were expected.  At 105 Hz that is 316, so the
      * defect this check exists for still fails loudly.
      */
-    if (imt_rate_quantum(eff_odr, o->drdy_window_s) > o->odr_tol_warn) {
+    if (imt_rate_quantum(eff_odr, win) > o->odr_tol_warn) {
         skip_check(r, "mag.drdy.rate", "Mag rate over its interrupt line",
                    "too few edges expected in this window to conclude anything "
                    "— raise --drdy-window for a low mag ODR");
@@ -2729,7 +2798,7 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                 "rate. The daemon waits on this line, so THIS is the rate it "
                 "gets. A driver that gates read() on a status bit the interrupt "
                 "acknowledge clears will stall here until its timeout.",
-              m.samples, edges, o->drdy_window_s, err * 100);
+              m.samples, edges, win, err * 100);
 }
 
 /* ── Phase B: guided six-face accelerometer / axis-sign test ──────────────── */
@@ -3353,10 +3422,25 @@ static const char *imt_required_mag[] = {
  *   ratio < 1       WARN   chip time MISSING — a dropped wrap, unrecoverable
  *   |err| >  10%    FAIL   either way, ts_tick_ns is not this counter's period
  */
+double imt_rate_window_s(int odr_hz, double tol)
+{
+    if (odr_hz <= 0 || tol <= 0.0) return 0.0;
+    double need = 2.0 / (tol * (double)odr_hz);
+    return need > IMT_RATE_WINDOW_CAP_S ? IMT_RATE_WINDOW_CAP_S : need;
+}
+
 double imt_rate_quantum(double nominal, double window_s)
 {
     double n = nominal * window_s;
-    return n > 0.0 ? 1.0 / n : 1.0;
+    /*
+     * TWO samples, not one. A window that is not synchronised to the sample
+     * clock can catch a partial period at each end, so a count of an f Hz
+     * stream over T seconds lands anywhere in floor(fT) .. ceil(fT)+1. At 1 Hz
+     * over 5 s that is 5, 6 or 7 -- 1.0, 1.2 or 1.4 Hz -- and reading the top
+     * of that range as "39.9% ABOVE the configured rate" failed a part running
+     * at its exact rate.
+     */
+    return n > 0.0 ? 2.0 / n : 1.0;
 }
 
 int imt_rate_dir(double measured, double nominal, double tol)
@@ -3630,7 +3714,7 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
     }
 
     drain_ctx_t d;
-    drain_init(&d, imu, ibus);
+    drain_init(&d, imu, ibus, cfg);
     /* Resolved after bringup, so the header records what the checks below
      * actually graded against rather than the descriptor's typical. */
     r->imu_ts_tick_actual_ns = d.tick_ns;

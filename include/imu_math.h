@@ -275,6 +275,22 @@ int snap_odr_up(const int supported[], int requested);
  */
 long imu_int_fallback_ms(int odr_hz);
 
+/*
+ * How long the IMU reader waits on the FIFO watermark before draining anyway.
+ *
+ * A LEVEL watermark needs no recovery -- it stays asserted until the FIFO
+ * drops below the threshold -- so unlike imu_int_fallback_ms() above this is
+ * not about missed edges. It is the drain CADENCE, and it is what actually
+ * bounds FIFO residence: the reader takes whichever of the watermark and this
+ * timeout comes first, so `fifo_wm` has an effect only while wm/odr is under
+ * it. ROADMAP §3.1 and spec.md §14 both quote that rule, and the four-cell
+ * sweep behind it, against this number.
+ *
+ * Shared so imud-imutest paces its drains the way the daemon does rather than
+ * on a timer of its own choosing.
+ */
+#define IMU_DRAIN_WAIT_MS 10
+
 int odr_actual_imu(const imu_ops_t *ops, int requested);
 int odr_actual_mag(const mag_ops_t *ops, int requested);
 

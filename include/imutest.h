@@ -421,7 +421,9 @@ int imt_rate_dir(double measured, double nominal, double tol);
 
 /*
  * Fractional resolution of a rate measured by counting over a fixed window:
- * one sample in `nominal * window_s`.  Below about 20 expected samples this
+ * TWO samples in `nominal * window_s`, because a window unsynchronised to the
+ * sample clock can catch a partial period at each end.  Below about 40 expected
+ * samples this
  * exceeds a 5% tolerance, so a miss smaller than it cannot be told from a
  * rounding boundary -- at 1 Hz over 5 s the only readings are 1.0 and 1.2 Hz.
  * Used to SKIP such a reading rather than grade it, WITHOUT excusing a gross
@@ -429,6 +431,25 @@ int imt_rate_dir(double measured, double nominal, double tol);
  * high is still a defect however few samples were expected.
  */
 double imt_rate_quantum(double nominal, double window_s);
+
+/*
+ * The window a counted-rate check needs to resolve `tol` at `odr_hz`, seconds.
+ *
+ * The counterpart to imt_rate_quantum(): rather than grade a window that
+ * cannot answer and then skip, ask how long an answer takes and wait that
+ * long. Two samples of boundary uncertainty over `odr * window` must come to
+ * less than the tolerance, so the window is 2 / (tol * odr) -- 0.4 s at 100 Hz
+ * and 5% and 40 s at 1 Hz, because resolving 5% of 1 Hz genuinely costs that.
+ *
+ * A fixed window is wrong the same way a fixed fallback was: right in the
+ * middle of a ladder spanning 1 Hz to 6664 and wrong at both ends. Callers
+ * take the longer of this and what the operator asked for, bounded by
+ * IMT_RATE_WINDOW_CAP_S so a mistyped ODR cannot hang a bench run; past the
+ * cap the check still skips rather than guessing.
+ */
+double imt_rate_window_s(int odr_hz, double tol);
+
+#define IMT_RATE_WINDOW_CAP_S 45.0
 
 /*
  * chip_ts accounting over a window, one sample at a time.

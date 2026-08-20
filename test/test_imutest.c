@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "imutest.h"
+#include "imu_gpio.h"
 #include "bus_mock.h"
 /* For the mock self-check below: the same single-byte read path the register
  * sweep uses, so the harness is exercised exactly the way the tool exercises
@@ -56,7 +57,7 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
 
 /*
  * Replaces src/imutest_gpio.c so the test links without libgpiod.  Both
- * branches of the caller's handling get exercised by flipping g_gpio_edges.
+ * branches of the caller's handling get exercised by flipping g_gpio_rate.
  *
  * check_drdy counts twice over the same window — once draining on every edge,
  * once not — so the stub answers the two passes separately.  That split IS
@@ -64,8 +65,20 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * count while something empties the FIFO and about one edge when nothing
  * does, and only the pair can tell that from an edge-per-sample line.
  */
-static int g_gpio_edges = -1;             /* <0 → report "no chip" */
-static int g_gpio_edges_idle = 1;         /* the undrained pass */
+/*
+ * Edge RATES, in Hz, not counts.
+ *
+ * A real interrupt line produces edges at a rate, so a longer window yields
+ * more of them. The stub used to return a fixed count whatever window it was
+ * given, which meant any change to how a window is chosen silently changed
+ * what the tests measured -- and briefly talked me out of a correct design
+ * because widening a window "broke" a test that a faithful stub would not have
+ * noticed. A stub's limitations must not decide production behaviour.
+ *
+ * Negative still means "no chip", which is the caller's error path.
+ */
+static double g_gpio_rate    = -1.0;      /* <0 → report "no chip" */
+static double g_gpio_rate_idle = 1.0;     /* the undrained pass */
 static imt_gpio_why_t g_gpio_why = IMT_GPIO_ENOCHIP;
 /*
  * How many times the stub invokes drain().  The real function calls it once per
@@ -96,6 +109,37 @@ static int g_gpio_fail_reg_after  = -1;
  */
 static int g_gpio_last_write_at_entry = -2;
 
+/*
+ * The daemon's edge wait, stubbed for the same reason imt_gpio_count_edges is:
+ * this suite runs against the mock bus with no GPIO chip, and linking libgpiod
+ * would make it need one. imud-imutest itself links src/imu.c and calls the
+ * real thing -- that is the point of the refactor -- so what is stubbed here is
+ * only the hardware, not the logic under test.
+ *
+ * open() hands back a sentinel rather than NULL so drain_pace() takes the
+ * interrupt-driven branch, and the wait returns at once: a mock bus always has
+ * a sample ready, and making the suite sleep the daemon's real cadence between
+ * drains would buy nothing but wall time. NULL would instead exercise the
+ * self-paced branch and cost 10 ms per drain, which is what the windows here
+ * are far too short to absorb.
+ */
+static int g_fake_line;
+
+imu_gpio_line_t *imu_gpio_open(const char *chip, unsigned int offset,
+                               const char *consumer)
+{
+    (void)chip; (void)offset; (void)consumer;
+    return (imu_gpio_line_t *)&g_fake_line;
+}
+
+int imu_gpio_wait_edge(imu_gpio_line_t *line, long timeout_ms)
+{
+    (void)line; (void)timeout_ms;
+    return 1;                    /* the mock always has data waiting */
+}
+
+void imu_gpio_close(imu_gpio_line_t *line) { (void)line; }
+
 int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          void (*drain)(void *), void *user,
                          imt_gpio_why_t *why, void (*prime)(void *),
@@ -112,10 +156,14 @@ int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
      * which is the whole point -- doing it beforehand left a race the line
      * could go high in. */
     g_gpio_last_write_at_entry = i2cmock_last_write(MMC_ADDR);
-    if (!drain) return g_gpio_edges < 0 ? g_gpio_edges : g_gpio_edges_idle;
-    if (g_gpio_edges >= 0)
-        for (int i = 0; i < g_gpio_drain_calls; i++) drain(user);
-    return g_gpio_edges;
+    /* Edges scale with the window, as a real line's do. */
+    double secs = (double)window_ms / 1000.0;
+    if (!drain)
+        return g_gpio_rate_idle < 0 ? (int)g_gpio_rate_idle
+                                    : (int)(g_gpio_rate_idle * secs + 0.5);
+    if (g_gpio_rate < 0) return (int)g_gpio_rate;
+    for (int i = 0; i < g_gpio_drain_calls; i++) drain(user);
+    return (int)(g_gpio_rate * secs + 0.5);
 }
 
 /* ── Drivers under test ──────────────────────────────────────────────────── */
@@ -1305,7 +1353,7 @@ static void test_gpio_both_branches(void)
      * driver for the daemon holding the line. */
     mock_base(); script_reset(&o);
     cfg.imu_int_gpio = 17;
-    g_gpio_edges = -1;
+    g_gpio_rate = -1.0;
     g_gpio_why   = IMT_GPIO_EBUSY;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_SKIP, "EBUSY -> SKIP not FAIL");
@@ -1313,13 +1361,13 @@ static void test_gpio_both_branches(void)
 
     /* Zero edges on a requested line is a real defect. */
     mock_base(); script_reset(&o);
-    g_gpio_edges = 0;
+    g_gpio_rate = 0.0;
     g_gpio_why   = IMT_GPIO_OK;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_FAIL, "0 edges -> FAIL");
     free(r);
 
-    g_gpio_edges = -1;
+    g_gpio_rate = -1.0;
     g_gpio_why   = IMT_GPIO_ENOCHIP;
     end(fb);
 }
@@ -1350,7 +1398,7 @@ static void test_mag_drdy_rate(void)
      * short to resolve a rate tolerance, and the check now says so rather than
      * grading it -- so ask for a window a real run would use. The GPIO stub
      * ignores the duration, so this costs no wall time. */
-    o.drdy_window_s = 0.3;
+    o.drdy_window_s = 0.6;   /* >= 40 expected samples: see imt_rate_quantum */
 
     /* No mag interrupt: the reader polls, so there is nothing to measure. */
     mock_base(); script_reset(&o);
@@ -1364,7 +1412,7 @@ static void test_mag_drdy_rate(void)
      * driver for the daemon holding the line. */
     mock_base(); script_reset(&o);
     cfg.mag_int_gpio  = 27;
-    g_gpio_edges      = -1;
+    g_gpio_rate      = -1.0;
     g_gpio_why        = IMT_GPIO_EBUSY;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "mag.drdy.rate") == IMT_SKIP, "EBUSY -> SKIP not FAIL");
@@ -1376,7 +1424,7 @@ static void test_mag_drdy_rate(void)
      * the daemon still gets nothing.
      */
     mock_base(); script_reset(&o);
-    g_gpio_edges       = 8;
+    g_gpio_rate       = 13.3;
     g_gpio_why         = IMT_GPIO_OK;
     g_gpio_drain_calls = 4;
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);      /* M_DONE clear */
@@ -1395,7 +1443,7 @@ static void test_mag_drdy_rate(void)
      * one burst-reads and hands back the stale conversion (0).
      */
     mock_base(); script_reset(&o);
-    g_gpio_edges       = 8;
+    g_gpio_rate       = 13.3;
     g_gpio_why         = IMT_GPIO_OK;
     g_gpio_drain_calls = 4;
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);      /* M_DONE clear */
@@ -1438,7 +1486,7 @@ static void test_mag_drdy_rate(void)
      * cannot succeed.
      */
     mock_base(); script_reset(&o);
-    g_gpio_edges           = 8;
+    g_gpio_rate           = 13.3;
     g_gpio_why             = IMT_GPIO_OK;
     g_gpio_drain_calls     = 4;
     g_gpio_fail_addr_after = MMC_ADDR;
@@ -1462,14 +1510,14 @@ static void test_mag_drdy_rate(void)
      * the distinction is the whole point: a miss no bigger than one sample is
      * a rounding boundary, a gross one is a defect however few were expected.
      */
-    EXPECT(imt_rate_quantum(1.0, 5.0) == 0.2,
-           "1 Hz over 5 s resolves to one sample in five, 20%");
-    EXPECT(imt_rate_quantum(100.0, 3.0) < 0.005,
-           "100 Hz over 3 s resolves far finer than the tolerance");
+    EXPECT(imt_rate_quantum(1.0, 5.0) == 0.4,
+           "1 Hz over 5 s: two samples in five, 40% — a window that can\n            hold 5, 6 or 7 of them");
+    EXPECT(imt_rate_quantum(100.0, 3.0) < 0.01,
+           "100 Hz over 3 s still resolves far finer than the tolerance");
     EXPECT(imt_rate_quantum(0.0, 3.0) == 1.0,
            "a zero nominal cannot resolve anything");
 
-    g_gpio_edges       = -1;
+    g_gpio_rate       = -1.0;
     g_gpio_why         = IMT_GPIO_ENOCHIP;
     g_gpio_drain_calls = 1;
     cfg.mag_int_gpio   = 0;
@@ -1505,8 +1553,8 @@ static void test_drdy_two_pass(void)
 
     /* A level condition: edges while draining, one when not. */
     mock_base(); script_reset(&o);
-    g_gpio_edges      = 12;
-    g_gpio_edges_idle = 1;
+    g_gpio_rate      = 240.0;
+    g_gpio_rate_idle = 20.0;
     imt_report_t *r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_PASS,
            "a rate fitting neither model is no longer graded down");
@@ -1519,8 +1567,8 @@ static void test_drdy_two_pass(void)
 
     /* An edge per sample: the undrained count tracks the drained one. */
     mock_base(); script_reset(&o);
-    g_gpio_edges      = 12;
-    g_gpio_edges_idle = 12;
+    g_gpio_rate      = 240.0;
+    g_gpio_rate_idle = 240.0;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_PASS, "edge-per-sample passes");
     EXPECT(note_contains(r, "imu.drdy.edges", "undrained too"),
@@ -1532,15 +1580,15 @@ static void test_drdy_two_pass(void)
      * an interrupt this part raised, so the line is floating or shared.
      */
     mock_base(); script_reset(&o);
-    g_gpio_edges      = 100000;
-    g_gpio_edges_idle = 1;
+    g_gpio_rate      = 2000000.0;
+    g_gpio_rate_idle = 20.0;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_WARN,
            "a rate above the sample rate still warns");
     free(r);
 
-    g_gpio_edges      = -1;
-    g_gpio_edges_idle = 1;
+    g_gpio_rate      = -1.0;
+    g_gpio_rate_idle = 20.0;
     g_gpio_why        = IMT_GPIO_ENOCHIP;
     end(fb);
 }
@@ -2162,14 +2210,14 @@ static void test_drdy_window_must_allow_an_edge(void)
     imud_config_t cfg; base_config(&cfg);
     imt_opts_t o;      fast_opts(&o);
     o.phases        = IMT_PHASE_PASSIVE;
-    o.drdy_window_s = 0.3;
+    o.drdy_window_s = 0.6;   /* >= 40 expected samples: see imt_rate_quantum */
     cfg.imu_int_gpio = 17;
 
     /* 64 sample-sets at 12 Hz needs 5.3 s; the window is 0.3 s. */
     mock_base(); script_reset(&o);
     cfg.imu_odr_hz = 12;
     cfg.imu_fifo_wm = 64;
-    g_gpio_edges = 0;
+    g_gpio_rate = 0.0;
     imt_report_t *r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") == IMT_SKIP,
            "a window the watermark cannot fill in skips rather than failing");
@@ -2179,7 +2227,7 @@ static void test_drdy_window_must_allow_an_edge(void)
      * an absence of edges really is a defect. */
     mock_base(); script_reset(&o);
     cfg.imu_odr_hz = 833;
-    g_gpio_edges = 0;
+    g_gpio_rate = 0.0;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") != IMT_SKIP,
            "where the watermark can fill, no edges is still graded");
