@@ -799,14 +799,32 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
                                "the volatile-register scan could not be read, "
                                "so a compare would be dominated by live data");
                 } else {
-                    /* Only the count matters here; the interesting diff is the
-                     * reset-to-init one already recorded above.  Volatile
-                     * registers are excluded — without that this counts live
-                     * sensor output and reads as a state-dependent init(). */
-                    int ndiff = 0;
-                    for (int reg = rm->lo; reg <= (int)rm->hi; reg++)
-                        if (!regmap_skips(rm, (uint8_t)reg) && !vol[reg] &&
-                            after[reg] != again[reg]) ndiff++;
+                    /* Record WHICH registers moved, not just how many.
+                     * Volatile registers are excluded — without that this
+                     * counts live sensor output and reads as a state-dependent
+                     * init().  reg_diff() applies exactly the same skip and
+                     * volatile filtering the reset-to-init diff above uses, so
+                     * the two cannot drift apart the way two hand-rolled loops
+                     * would. */
+                    int ndiff = reg_diff(after, again, rm, vol,
+                                         r->raw.idem_imu, IMT_MAX_REGDIFF);
+                    r->raw.n_idem_imu = ndiff;
+
+                    /* Name them in the finding itself.  The appendix carries
+                     * the before/after bytes, but a reader scanning the check
+                     * list needs enough to start on without turning the page. */
+                    char rl[160];
+                    size_t rn = 0;
+                    rl[0] = '\0';
+                    for (int i = 0; i < ndiff; i++) {
+                        int w = snprintf(rl + rn, sizeof rl - rn, "%s0x%02X",
+                                         i ? ", " : "", r->raw.idem_imu[i].reg);
+                        if (w < 0 || (size_t)w >= sizeof rl - rn) {
+                            snprintf(rl + rn, sizeof rl - rn, ", ...");
+                            break;
+                        }
+                        rn += (size_t)w;
+                    }
                     add_check(r, "imu.init.idempotent",
                               "IMU init() is idempotent",
                               ndiff == 0 ? IMT_PASS : IMT_WARN,
@@ -816,11 +834,15 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
                               ndiff == 0
                               ? "two consecutive inits leave an identical image "
                                 "across %d non-volatile register%s"
-                              : "a repeated init() lands on a different register "
-                                "image across %d non-volatile register%s — "
-                                "init() depends on prior state (a bank left "
-                                "selected, or a latched enable).",
-                              nscan, nscan == 1 ? "" : "s");
+                              /* The register list goes near the front: note[]
+                               * is 192 bytes and truncates, so the one part a
+                               * reader cannot reconstruct must not be the part
+                               * that gets cut.  The causes this used to
+                               * enumerate live in the spec and the appendix. */
+                              : "%d non-volatile register%s compared; %s differ "
+                                "after a second init — init() depends on the "
+                                "state it was called in.",
+                              nscan, nscan == 1 ? "" : "s", rl);
                 }
             }
         }

@@ -163,6 +163,16 @@ typedef struct {
      * Both are reported: filtering that happens silently reads as a cleaner
      * chip rather than a narrower test. */
     int           n_volatile_imu, n_scanned_imu;
+    /*
+     * The init->init diff: WHICH registers a repeated init() left different,
+     * not merely how many.  imu.init.idempotent reported a bare count for
+     * three bench sessions, which reproduced "2 registers differ" every time
+     * and left nobody able to say which two — a finding nothing can act on is
+     * not a finding.  Same shape as regdiff_imu above: .before is the image
+     * after one init(), .after the image after two.
+     */
+    int           n_idem_imu;
+    imt_regdiff_t idem_imu[IMT_MAX_REGDIFF];
 
     /* Magnetometer, passive */
     double        mag_rate_hz, mag_window_s;

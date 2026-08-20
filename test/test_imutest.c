@@ -665,6 +665,70 @@ static void test_volatile_registers_filtered(void)
 }
 
 /*
+ * A non-idempotent init() must be reported by NAME, not by count.
+ *
+ * The check spent three bench sessions reporting "2 registers differ" at
+ * 208/1660/6664 Hz, which nobody could act on: the count says a defect exists
+ * and withholds every fact needed to find it.  The registers now go into
+ * raw.idem_imu the same way the reset->init diff does, and into the note.
+ *
+ * Driven with a wrapper init() that is deliberately state-dependent — it lands
+ * on a different register the second time it is called — because the mock is a
+ * plain register file and the real driver, once fixed, is idempotent over it.
+ * The register chosen (0x14, CTRL5_C) is one no ST driver here writes, so
+ * nothing else in the run disturbs it, and it is stable between the volatile
+ * scan's reads, so it must survive that filter rather than be excluded by it.
+ */
+static int g_nonidem_calls;
+
+static int init_nonidem(const imud_bus_t *bus, const imu_cfg_t *cfg)
+{
+    int rc = ism330dhcx_ops.init(bus, cfg);
+    if (rc == 0)
+        i2cmock_set_reg(ISM_ADDR, 0x14, g_nonidem_calls++ ? 0x5A : 0x00);
+    return rc;
+}
+
+static void test_nonidempotent_init_names_registers(void)
+{
+    begin("test_nonidempotent_init_names_registers");
+    int fb = g_fail;
+
+    mock_base();
+    g_nonidem_calls = 0;
+
+    imu_ops_t fake = ism330dhcx_ops;
+    fake.init = init_nonidem;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    int rc = imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                         &fake, &mmc5983ma_ops, &cfg, &o, r, err, sizeof err);
+    if (rc < 0) fprintf(stderr, "  imt_run_ops: %s\n", err);
+
+    EXPECT(status_of(r, "imu.init.idempotent") == IMT_WARN,
+           "a state-dependent init() warns");
+    EXPECT(r->raw.n_idem_imu == 1, "exactly one register recorded");
+    if (r->raw.n_idem_imu == 1) {
+        EXPECT(r->raw.idem_imu[0].reg    == 0x14, "the differing register is named");
+        EXPECT(r->raw.idem_imu[0].before == 0x00, "image after one init recorded");
+        EXPECT(r->raw.idem_imu[0].after  == 0x5A, "image after two inits recorded");
+    }
+    /* The note has to carry it too — the appendix is a page away, and a
+     * reader scanning the check list is the one who needs the lead. */
+    EXPECT(note_contains(r, "imu.init.idempotent", "0x14"),
+           "the note names the register");
+
+    free(r);
+    end(fb);
+}
+
+/*
  * The register sweep must not enter the FIFO port window.  On the ST parts
  * FIFO_DATA_OUT is 0x78-0x7E and a read of any of the seven pops a word; a skip
  * list naming only 0x78 and 0x79 left the sweep eating five words per snapshot,
@@ -2490,6 +2554,7 @@ int main(void)
     test_bringup_good();
     test_bringup_bad_whoami();
     test_volatile_registers_filtered();
+    test_nonidempotent_init_names_registers();
     test_fifo_port_window_not_swept();
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();

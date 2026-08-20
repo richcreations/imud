@@ -395,6 +395,23 @@ int imt_write_md(const imt_report_t *r, const char *path,
                         w->regdiff_imu[i].after);
             fprintf(f, "\n");
         }
+        /* The init->init diff belongs with the reset->init one rather than in
+         * a section of its own: same register map, same volatile filter, and
+         * a reader chasing imu.init.idempotent wants both images side by side.
+         * Printed only when it is non-empty — an always-present "no registers
+         * differ" table is noise on the overwhelmingly common pass. */
+        if (w->n_idem_imu > 0) {
+            fprintf(f, "A second `init()` did not reproduce the first image. "
+                       "These registers hold a different value after two "
+                       "`init()` calls than after one, so `init()` depends on "
+                       "the state it was called in:\n\n");
+            fprintf(f, "| reg | after 1st init | after 2nd init |\n|---|---|---|\n");
+            for (int i = 0; i < w->n_idem_imu; i++)
+                fprintf(f, "| 0x%02X | 0x%02X | 0x%02X |\n",
+                        w->idem_imu[i].reg, w->idem_imu[i].before,
+                        w->idem_imu[i].after);
+            fprintf(f, "\n");
+        }
     }
     /* Emitted whenever a magnetometer was under test, even with nothing to
      * show: a section that vanishes leaves a hole in the numbering and reads

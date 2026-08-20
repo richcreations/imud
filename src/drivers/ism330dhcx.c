@@ -224,6 +224,32 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * Each sample-set = 2 FIFO words → multiply by 2 for the 9-bit WTM field.
      * WTM[8:0] spans FIFO_CTRL1 (bits [7:0]) and FIFO_CTRL2 (bit 0).
      */
+    /*
+     * Park the FIFO in Bypass before touching its configuration, so init()
+     * always starts from an empty buffer whatever state the part was in.
+     * Bypass is the ONLY thing that clears FIFO content: DS13012 §6.5.1,
+     * "in Bypass mode the FIFO is not operational and it remains empty",
+     * and §6.5.2, "to reset FIFO content, Bypass mode should be selected by
+     * writing FIFO_CTRL4 (0Ah)(FIFO_MODE_[2:0]) to '000'".
+     *
+     * Writing Continuous over Continuous therefore flushes nothing, and a
+     * second init() on a running part inherits the old buffer and lands on a
+     * different register image than the first — which is exactly what
+     * imud-imutest's imu.init.idempotent reports.  Every other FIFO driver
+     * here already flushes (icm42688p's FIFO_FLUSH, icm20948's and mpu925x's
+     * FIFO_RST pulse); the ST pair was the omission.
+     *
+     * Production behaviour is unchanged: both callers pair reset() with
+     * init(), and SW_RESET leaves FIFO_MODE at its 000 default, so this write
+     * is a no-op on that path.  What it buys is that the guarantee no longer
+     * depends on the caller remembering to reset first.
+     *
+     * No settle wait — the mode bits do not self-clear, and §6.5 has the part
+     * accepting ODR/BDR changes "without disabling FIFO batching", so
+     * reconfiguring on the fly is expected.
+     */
+    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x00)                        < 0) return -1;
+
     int wm = cfg->fifo_wm * 2;
     if (wm > 511) wm = 511;
     if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;

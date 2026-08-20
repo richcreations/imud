@@ -189,6 +189,12 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     /* No DEVICE_CONF write — not present on LSM6DSO */
     if (bus_reg_write(bus, REG_CTRL10_C, 0x20)                                  < 0) return -1;
 
+    /* Park the FIFO in Bypass before reconfiguring it: Bypass is the only
+     * thing that clears FIFO content (DS13012 §6.5.1/§6.5.2), so rewriting
+     * Continuous over Continuous would leave a second init() holding the old
+     * buffer.  See ism330dhcx.c for the full reasoning. */
+    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x00)                        < 0) return -1;
+
     int wm = cfg->fifo_wm * 2;
     if (wm > 511) wm = 511;
     if (bus_reg_write(bus, REG_FIFO_CTRL1, (uint8_t)(wm & 0xFF))        < 0) return -1;

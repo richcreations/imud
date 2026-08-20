@@ -1207,6 +1207,90 @@ static void test_st_freq_fine_tick(void)
     end(fb);
 }
 
+/*
+ * init() must park the FIFO in Bypass before reconfiguring it.
+ *
+ * DS13012 §6.5.1 — "in Bypass mode the FIFO is not operational and it remains
+ * empty" — and §6.5.2 — "to reset FIFO content, Bypass mode should be selected
+ * by writing FIFO_CTRL4 (0Ah)(FIFO_MODE_[2:0]) to '000'".  Bypass is the only
+ * thing that clears the buffer, so writing Continuous straight over Continuous
+ * flushes nothing and a second init() inherits whatever the first accumulated.
+ * imud-imutest's imu.init.idempotent caught that on the bench, and the ST pair
+ * was the only FIFO family here that did not already flush (icm42688p uses
+ * FIFO_FLUSH, icm20948 and mpu925x pulse FIFO_RST).
+ *
+ * Two independent properties, because neither alone is the invariant and the
+ * settled register image shows neither — it holds only the final byte:
+ * ORDERING (the stop comes before the reconfiguration and the restart after
+ * it) and VALUE (what was written really was mode 000, not some other mode).
+ */
+static void test_st_init_flushes_fifo(void)
+{
+    begin("test_st_init_flushes_fifo");
+    int fb = g_fail;
+
+    /* All three ST descriptors: lsm6dso.c backs two of them, and ism330dhcx.c
+     * carries its own copy of the sequence, so a fix applied to one file only
+     * has to be visible from here. */
+    struct { const imu_ops_t *ops; int addr; } parts[] = {
+        { ism,           ISM_ADDR },
+        { &lsm6dso_ops,  LSM_ADDR },
+        { &lsm6dsox_ops, LSM_ADDR },
+    };
+    const imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4,
+                            .gyro_dps = 500, .fifo_wm = 64 };
+
+    for (unsigned p = 0; p < sizeof parts / sizeof parts[0]; p++) {
+        const imu_ops_t *o = parts[p].ops;
+        int a = parts[p].addr;
+
+        i2cmock_reset();
+        i2cmock_set_reg(a, 0x20, 0x00);      /* OUT_TEMP, so last_temp reads */
+        i2cmock_set_reg(a, 0x21, 0x00);
+        EXPECT(o->init(I2CBUS(a), &cfg) == 0, "init succeeds");
+
+        /* FIFO_CTRL4 (0x0A) twice: once before the FIFO_CTRL1 (0x07) watermark
+         * write, once after the FIFO_CTRL3 (0x09) batch-rate write.  The whole
+         * reconfiguration therefore happens with the FIFO stopped. */
+        int first4 = -1, last4 = -1, first1 = -1, last3 = -1;
+        uint32_t nw = i2cmock_writes(a);
+        for (uint32_t i = 0; i < nw; i++) {
+            int reg = i2cmock_write_at(a, i);
+            if (reg == 0x0A) { if (first4 < 0) first4 = (int)i; last4 = (int)i; }
+            if (reg == 0x07 && first1 < 0) first1 = (int)i;
+            if (reg == 0x09) last3 = (int)i;
+        }
+        EXPECT(first4 >= 0 && last4 > first4, "FIFO_CTRL4 is written twice");
+        EXPECT(first1 > first4, "the FIFO is stopped before it is reconfigured");
+        EXPECT(last4 > last3, "the mode write that restarts the FIFO comes last");
+
+        /* The settled image is still Continuous — stopping it must not be the
+         * end state.  Mode bits rather than the whole byte: DEC_TS_BATCH in
+         * the top bits is a watermark-dependent choice tested elsewhere. */
+        EXPECT((i2cmock_get_reg(a, 0x0A) & 0x07) == 0x06,
+               "FIFO_CTRL4 settles in continuous mode");
+
+        /*
+         * VALUE.  Fail the FIFO_CTRL1 write so init() aborts with the
+         * intermediate image still on the part, then read what FIFO_CTRL4 was
+         * holding.  Seeded with a running Continuous value first, so a driver
+         * that skipped the stop would leave 0xE6 here and fail — the register
+         * starting at 0x00 would let a missing write pass.
+         */
+        i2cmock_reset();
+        i2cmock_set_reg(a, 0x20, 0x00);
+        i2cmock_set_reg(a, 0x21, 0x00);
+        i2cmock_set_reg(a, 0x0A, 0xE6);      /* as a previous init left it */
+        i2cmock_fail_write_to(a, 0x07, 1);
+        EXPECT(o->init(I2CBUS(a), &cfg) < 0, "init reports the failed write");
+        EXPECT(i2cmock_get_reg(a, 0x0A) == 0x00,
+               "FIFO_CTRL4 held Bypass (mode 000) across the reconfiguration");
+        i2cmock_fail_write_to(a, -1, 0);     /* disarm */
+    }
+
+    end(fb);
+}
+
 static void lsm_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
 {
     uint8_t w[7] = {
@@ -3516,6 +3600,7 @@ int main(void)
     test_ak_read_decode();
 
     test_st_freq_fine_tick();
+    test_st_init_flushes_fifo();
     test_lsm_batched_timestamp();
     test_lsm_probe();
     test_lsm_init_registers();
