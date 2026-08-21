@@ -4020,11 +4020,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
     };
 
     {
-        char rb[56];
+        char rb[56], qb[16], eb2[16];
         add_check(r, "imu.odr.rounding",
                   "Requested ODR resolves to a programmable rate", IMT_INFO,
-                  fmtbuf(rb, sizeof rb, "%d -> %d Hz",
-                         r->req_odr_mhz, r->eff_odr_mhz),
+                  /* Milli-Hz in the field, Hz on the page. */
+                  fmtbuf(rb, sizeof rb, "%s -> %s Hz",
+                         MHZ_STR(qb, r->req_odr_mhz),
+                         MHZ_STR(eb2, r->eff_odr_mhz)),
                   "-",
                   r->req_odr_mhz == r->eff_odr_mhz
                   ? "the configured rate is on this chip's grid"
@@ -4035,8 +4037,9 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
             add_check(r, "mag.odr.rounding",
                       "Requested mag ODR resolves to a programmable rate",
                       IMT_INFO,
-                      fmtbuf(rb, sizeof rb, "%d -> %d Hz",
-                             r->mag_req_odr_mhz, r->mag_eff_odr_mhz),
+                      fmtbuf(rb, sizeof rb, "%s -> %s Hz",
+                             MHZ_STR(qb, r->mag_req_odr_mhz),
+                             MHZ_STR(eb2, r->mag_eff_odr_mhz)),
                       "-",
                       r->mag_req_odr_mhz == r->mag_eff_odr_mhz
                       ? "the configured rate is on this chip's grid"
