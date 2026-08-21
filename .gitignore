@@ -94,6 +94,7 @@ __pycache__/
 AGENTS.md
 audit.md
 CLAUDE.md
+continuespidrama.md
 openfor1.9.0.md
 
 # devbox/ is TRACKED — the Debian build/test container (devbox/README.md) is a
