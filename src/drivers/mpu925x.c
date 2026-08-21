@@ -243,6 +243,29 @@ static int mpu9255_probe(const imud_bus_t *bus)
     return probe_common(bus, WHO_AM_I_MPU9255, "mpu9255");
 }
 
+/*
+ * fifo_restart — empty the FIFO and resume writing on a packet boundary.
+ *
+ * FIFO_EN (0x23) is cleared first so the part cannot be part-way through
+ * writing a sample-set when the reset lands: with it clear nothing is being
+ * written, so re-enabling it starts the next set at byte 0.  USER_CTRL's
+ * FIFO_RST self-clears after one clock cycle on silicon; the register is
+ * written back explicitly anyway so init() leaves a deterministic image
+ * (`imud-imutest` compares two consecutive inits byte for byte).
+ * I2C_MST_EN stays clear throughout — bypass needs the master disabled.
+ */
+static int fifo_restart(const imud_bus_t *bus)
+{
+    if (bus_reg_write(bus, REG_FIFO_EN, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL,
+                      USER_CTRL_FIFO_EN | USER_CTRL_FIFO_RST) < 0) return -1;
+    usleep(1000);
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
+    if (bus_reg_write(bus, REG_FIFO_EN, FIFO_EN_ACCEL_GYRO) < 0) return -1;
+    return 0;
+}
+
 static int mpu_reset(const imud_bus_t *bus)
 {
     /* H_RESET (bit 7) restores defaults and self-clears. */
@@ -312,18 +335,8 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 
     /* ── FIFO ────────────────────────────────────────────────────────────── */
 
-    /* Enable FIFO access, then pulse FIFO_RST to start clean.  FIFO_RST
-     * self-clears after one clock cycle on silicon; write the register back
-     * explicitly anyway so init() leaves a deterministic register image
-     * (`imud-imutest` compares two consecutive inits byte for byte).
-     * I2C_MST_EN stays clear throughout — bypass needs the master disabled. */
-    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
-    if (bus_reg_write(bus, REG_USER_CTRL,
-                      USER_CTRL_FIFO_EN | USER_CTRL_FIFO_RST) < 0) return -1;
-    usleep(1000);
-    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
-
-    if (bus_reg_write(bus, REG_FIFO_EN, FIFO_EN_ACCEL_GYRO) < 0) return -1;
+    /* Start the FIFO clean and on a packet boundary. */
+    if (fifo_restart(bus) < 0) return -1;
 
     /* Data-ready on INT so a GPIO line can wake the reader.  With no GPIO
      * wired the reader falls back to its 10 ms timer, same as every other
@@ -370,7 +383,28 @@ static int mpu_read(const imud_bus_t *bus,
     if (bus_reg_read(bus, REG_INT_STATUS, &istat) < 0) return -1;
     int overflow = (istat & 0x10) ? 1 : 0;
 
-    if (n_samples == 0) return overflow;
+    /*
+     * An overflow destroys packet framing permanently, so the FIFO has to be
+     * restarted rather than drained.  The buffer is 512 bytes and a sample-set
+     * is 12: 512 % 12 = 8, so when the part drops the oldest data to make room
+     * (CONFIG bit[6] FIFO_MODE = 0, which init() selects) the bytes it drops
+     * are not a whole number of sample-sets.  Every later read is then parsed
+     * one field late, and nothing in the stream reveals it — unlike the ST
+     * parts, this FIFO carries no per-word tag to resync from.
+     *
+     * Draining anyway scrambles accel and gyro across each other: gravity
+     * lands in the accel X slot, the gyro slots carry the *next* sample's
+     * accel X/Y, and |a| still reads ~9.8 whenever one real axis happens to be
+     * vertical — so a magnitude-only check cannot see it either.  Discarding
+     * the buffered samples costs one drain; keeping them costs every drain
+     * after it.
+     */
+    if (overflow) {
+        if (fifo_restart(bus) < 0) return -1;
+        return 1;
+    }
+
+    if (n_samples == 0) return 0;
 
     if (n_samples > max) n_samples = max;
 

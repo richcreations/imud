@@ -994,6 +994,47 @@ static void test_mpu_read_overflow_and_errors(void)
     end(fb);
 }
 
+/*
+ * Overflow means the part dropped the oldest bytes to make room, and
+ * 512 % 12 = 8 — what it dropped is never a whole number of sample-sets.  So
+ * the framing is gone, and this FIFO carries no per-word tag to resync from
+ * (the ST parts do, which is why they can just keep draining).  Parsing on
+ * would put gravity in the accel X slot and the next sample's accel X/Y in
+ * the gyro slots, and |a| still reads ~9.8 whenever one real axis is
+ * vertical — so nothing downstream would catch it either.  read() must
+ * restart the FIFO and discard what is buffered.
+ */
+static void test_mpu_overflow_discards_and_restarts(void)
+{
+    begin("test_mpu_overflow_discards_and_restarts");
+    int fb = g_fail;
+
+    mpu_stage_genuine(0x71);
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
+    (void)mpu->init(I2CBUS(MPU_ADDR), &cfg);
+    i2cmock_set_fifo_reg(MPU_ADDR, 0x74);
+
+    /* Two whole sample-sets pending AND the overflow flag latched. */
+    uint8_t w[24];
+    memset(w, 0, sizeof w);
+    i2cmock_fifo_push(MPU_ADDR, w, sizeof w);
+    i2cmock_set_reg(MPU_ADDR, 0x72, 0x00);   /* FIFO_COUNTH */
+    i2cmock_set_reg(MPU_ADDR, 0x73, 24);     /* FIFO_COUNTL */
+    i2cmock_set_reg(MPU_ADDR, 0x3A, 0x10);   /* INT_STATUS: overflow */
+
+    imu_sample_t buf[8];
+    int n = -1;
+    EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 8, &n) == 1, "overflow returns 1");
+    EXPECT(n == 0, "no samples handed back from a desynchronised FIFO");
+
+    /* The restart must leave the same settled image init() does, or the part
+     * is left not batching at all. */
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x23) == 0x78, "FIFO_EN re-enabled");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6A) == 0x40, "USER_CTRL = FIFO_EN only");
+
+    end(fb);
+}
+
 /* ── AK8963 ──────────────────────────────────────────────────────────────── */
 
 static void test_ak_probe(void)
@@ -1037,6 +1078,56 @@ static void test_ak_init_and_fuse_rom(void)
     EXPECT(ak->init(I2CBUS(AK_ADDR), &slow) == 0, "init at 8 Hz succeeds");
     EXPECT(i2cmock_get_reg(AK_ADDR, 0x0A) == 0x12,
            "CNTL1 = 16-bit | continuous mode 1");
+
+    end(fb);
+}
+
+/*
+ * A die with no fuse ROM to read returns ASA as all-zero or all-ones, and the
+ * adjustment arithmetic does not object: 0x00 becomes a plausible-looking
+ * 0.5x and 0xFF a 1.496x.  A counterfeit part would then produce confidently
+ * mis-scaled field values rather than an error.  init() must still succeed —
+ * degraded is not impossible, and refusing to start the daemon on a heuristic
+ * is the wrong trade — but it must apply no adjustment at all.
+ */
+static void test_ak_absent_fuse_rom_applies_no_adjustment(void)
+{
+    begin("test_ak_absent_fuse_rom_applies_no_adjustment");
+    int fb = g_fail;
+
+    const int16_t hx = 1000, hy = 2000, hz = 3000;
+    uint8_t d[7] = {
+        (uint8_t)hx, (uint8_t)(hx >> 8),
+        (uint8_t)hy, (uint8_t)(hy >> 8),
+        (uint8_t)hz, (uint8_t)(hz >> 8),
+        0x00,
+    };
+
+    const uint8_t absent[2] = { 0x00, 0xFF };
+    for (int k = 0; k < 2; k++) {
+        i2cmock_reset();
+        i2cmock_set_reg(AK_ADDR, 0x00, 0x48);
+        i2cmock_set_reg(AK_ADDR, 0x10, absent[k]);
+        i2cmock_set_reg(AK_ADDR, 0x11, absent[k]);
+        i2cmock_set_reg(AK_ADDR, 0x12, absent[k]);
+
+        mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
+        EXPECT(ak->init(I2CBUS(AK_ADDR), &cfg) == 0,
+               "init still succeeds when the fuse ROM is absent");
+
+        i2cmock_set_reg(AK_ADDR, 0x02, 0x01);      /* ST1: DRDY */
+        i2cmock_set_regs(AK_ADDR, 0x03, d, 7);
+
+        mag_sample_t out;
+        memset(&out, 0, sizeof out);
+        EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == 0, "read returns 0");
+
+        /* Same axis mapping as test_ak_read_decode, adjustment forced to 1.0:
+         * an unguarded 0.5x would read 150/-75/225, a 1.496x 448.8/-224.4/673. */
+        EXPECT_NEAR(out.field[0],  300.00f, 0.01, "field X carries no adjustment");
+        EXPECT_NEAR(out.field[1], -150.00f, 0.01, "field Y carries no adjustment");
+        EXPECT_NEAR(out.field[2],  450.00f, 0.01, "field Z carries no adjustment");
+    }
 
     end(fb);
 }
@@ -3892,9 +3983,11 @@ int main(void)
     test_mpu_init_registers();
     test_mpu_read_decode();
     test_mpu_read_overflow_and_errors();
+    test_mpu_overflow_discards_and_restarts();
 
     test_ak_probe();
     test_ak_init_and_fuse_rom();
+    test_ak_absent_fuse_rom_applies_no_adjustment();
     test_ak_read_decode();
 
     test_st_freq_fine_tick();

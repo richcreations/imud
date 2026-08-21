@@ -157,8 +157,29 @@ static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
         return -1;
     }
 
-    for (int i = 0; i < 3; i++)
-        s.adj[i] = ((float)asa[i] - 128.0f) * 0.5f / 128.0f + 1.0f;
+    /*
+     * A programmed fuse ROM does not read as all-zero or all-ones: those are
+     * what a die with no fuse ROM to read returns.  Say so loudly, because
+     * the arithmetic below will not — ASA 0x00 yields a plausible-looking
+     * 0.5x adjustment and 0xFF a 1.5x one, so a counterfeit or dead die would
+     * otherwise go on to produce confidently-scaled nonsense.  Init still
+     * succeeds: the reading is degraded, not impossible, and refusing to
+     * start the daemon over a heuristic is the wrong trade.  The adjustment
+     * is dropped to unity so at least no invented scale factor is applied.
+     */
+    bool no_fuse = (asa[0] == 0x00 && asa[1] == 0x00 && asa[2] == 0x00)
+                || (asa[0] == 0xFF && asa[1] == 0xFF && asa[2] == 0xFF);
+    if (no_fuse) {
+        LOG_E("ak8963: fuse-ROM sensitivity reads %u/%u/%u, which no genuine "
+              "AK8963 returns — the magnetometer die is very likely "
+              "counterfeit or dead. Heading from it cannot be trusted. "
+              "Applying no sensitivity adjustment.\n",
+              asa[0], asa[1], asa[2]);
+        for (int i = 0; i < 3; i++) s.adj[i] = 1.0f;
+    } else {
+        for (int i = 0; i < 3; i++)
+            s.adj[i] = ((float)asa[i] - 128.0f) * 0.5f / 128.0f + 1.0f;
+    }
 
     LOG_D("ak8963: fuse-ROM ASA = %u/%u/%u -> adj %.4f/%.4f/%.4f\n",
           asa[0], asa[1], asa[2],
