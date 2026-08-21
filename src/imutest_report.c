@@ -21,6 +21,7 @@
 
 #include "fileio.h"
 #include "imutest.h"
+#include "imu_math.h"
 
 /* ── Markdown escaping ─────────────────────────────────────────────────────── */
 
@@ -183,8 +184,11 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "| field | value |\n|---|---|\n");
     fprintf(f, "| int_gpio | %d%s |\n", r->imu_int_gpio,
             r->imu_int_gpio > 0 ? "" : " (polling)");
-    fprintf(f, "| ODR requested -> effective | %d Hz -> %d Hz |\n",
-            r->req_odr_hz, r->eff_odr_hz);
+    {
+        char qb[16], eb2[16];
+        fprintf(f, "| ODR requested -> effective | %s Hz -> %s Hz |\n",
+                MHZ_STR(qb, r->req_odr_mhz), MHZ_STR(eb2, r->eff_odr_mhz));
+    }
     fprintf(f, "| accel FS / gyro FS / fifo_wm | %d g / %d dps / %d sample-sets |\n",
             r->accel_g, r->gyro_dps, r->fifo_wm);
     fprintf(f, "| has_fifo / has_hw_timestamp | %s / %s",
@@ -213,8 +217,11 @@ int imt_write_md(const imt_report_t *r, const char *path,
         fprintf(f, "| field | value |\n|---|---|\n");
         fprintf(f, "| int_gpio | %d%s |\n", r->mag_int_gpio,
                 r->mag_has_interrupt ? "" : " (driver has no external INT pin)");
-        fprintf(f, "| ODR requested -> effective | %d Hz -> %d Hz |\n",
-                r->mag_req_odr_hz, r->mag_eff_odr_hz);
+        {
+            char qb[16], eb2[16];
+            fprintf(f, "| ODR requested -> effective | %s Hz -> %s Hz |\n",
+                    MHZ_STR(qb, r->mag_req_odr_mhz), MHZ_STR(eb2, r->mag_eff_odr_mhz));
+        }
         fprintf(f, "| has_interrupt / has_set_reset | %s / %s |\n",
                 r->mag_has_interrupt ? "true" : "false",
                 r->mag_has_set_reset ? "true" : "false");
@@ -287,7 +294,11 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "reset()            %.2f ms\n", w->reset_ms);
     fprintf(f, "measured ODR       %.2f Hz over %.3f s (%llu samples)\n",
             w->odr_measured_hz, w->odr_window_s, (unsigned long long)w->odr_n);
-    fprintf(f, "nearest table entry %d Hz\n", w->odr_best_table_hz);
+    {
+        char nb[16];
+        fprintf(f, "nearest table entry %s Hz\n",
+                MHZ_STR(nb, w->odr_best_table_mhz));
+    }
     fprintf(f, "max read-loop gap  %.1f ms\n", w->odr_max_loop_gap_ms);
     fprintf(f, "seq                first %u, last %u, %llu gaps (max %llu), "
                "%llu reversals\n",

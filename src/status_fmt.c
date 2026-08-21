@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "status_fmt.h"
+#include "mhz.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -43,6 +44,7 @@ size_t status_format(char *buf, size_t sz, const status_input_t *in)
      * buffer end — safe even if a single line exceeds the remaining space.
      * Once wr reaches 1 only the NUL is left and every later line is dropped. */
     char  *wp = buf;
+    char   rbuf[16];         /* MHZ_STR scratch */
     size_t wr = sz;
 
 #define WS(fmt, ...) do { \
@@ -56,11 +58,11 @@ size_t status_format(char *buf, size_t sz, const status_input_t *in)
         cfg->imu_driver, cfg->imu_addr,
         cfg->mag_driver, cfg->mag_addr);
 
-    WS("IMU ODR:        %d Hz  (FIFO watermark: %d sample-sets)\n",
-        cfg->imu_odr_hz, cfg->imu_fifo_wm);
+    WS("IMU ODR:        %s Hz  (FIFO watermark: %d sample-sets)\n",
+        MHZ_STR(rbuf, cfg->imu_odr_mhz), cfg->imu_fifo_wm);
 
-    WS("Mag ODR:        %d Hz  (SET every %.0f s%s)\n",
-        cfg->mag_odr_hz, cfg->mag_set_period_s,
+    WS("Mag ODR:        %s Hz  (SET every %.0f s%s)\n",
+        MHZ_STR(rbuf, cfg->mag_odr_mhz), cfg->mag_set_period_s,
         cfg->mag_set_period_s > 0 ? "" : ", disabled");
 
     WS("Fusion:         MEKF %s  cov_trace=%.2e rad2\n",

@@ -104,6 +104,8 @@ static struct {
     uint64_t ts_reject_next;    /* next count worth a log line — see icm_read */
     uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
     uint64_t ts_fwd_next;       /* next count worth a log line */
+    uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
+    uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ic;
 
@@ -142,31 +144,49 @@ static struct {
  * two rates the accel table does not also offer in LP).  init() writes
  * PWR_MGMT0 = 0x0F, gyro and accel both LN, so all twelve rates are reachable.
  */
-static uint8_t odr_encode(int hz)
+/*
+ * The bottom rung is 12500 milli-Hz — 12.5 Hz, exactly, with no rounding left
+ * to argue about.
+ *
+ * It used to be declared 12 because the ladder was whole Hz, which put the
+ * advertised rate 4% below what the part produces and, worse, made
+ * ticks_per_sample 937500/12 = 78125 where the true spacing is 937500/12.5 =
+ * 75000.  That division was exact, which made it look like the right number
+ * while being 4.2% wrong — the exactness was a coincidence around a wrong
+ * rate.  In milli-Hz it is simply 937500000/12500 = 75000.
+ *
+ * Unlike the ST parts this was never a divider-chain artefact: TDK's ladder
+ * runs 32k/2^n down to 1 kHz and then a decimal 200/100/50/25/12.5, and 12.5
+ * is the datasheet's exact figure.
+ *
+ * Still not verified on silicon — there is no ICM-42688-P on the bench, which
+ * is also why this driver is experimental.  The values are the datasheet's.
+ */static uint8_t odr_encode(int mhz)
 {
-    if (hz <=    12) return 0x0B;  /* 12.5 Hz */
-    if (hz <=    25) return 0x0A;
-    if (hz <=    50) return 0x09;
-    if (hz <=   100) return 0x08;
-    if (hz <=   200) return 0x07;
-    if (hz <=   500) return 0x0F;  /* out of sequence — see above */
-    if (hz <=  1000) return 0x06;
-    if (hz <=  2000) return 0x05;
-    if (hz <=  4000) return 0x04;
-    if (hz <=  8000) return 0x03;
-    if (hz <= 16000) return 0x02;
+    if (mhz <=    12500) return 0x0B;  /* 12.5 Hz, exactly */
+    if (mhz <=    25000) return 0x0A;
+    if (mhz <=    50000) return 0x09;
+    if (mhz <=   100000) return 0x08;
+    if (mhz <=   200000) return 0x07;
+    if (mhz <=   500000) return 0x0F;  /* out of sequence — see above */
+    if (mhz <=  1000000) return 0x06;
+    if (mhz <=  2000000) return 0x05;
+    if (mhz <=  4000000) return 0x04;
+    if (mhz <=  8000000) return 0x03;
+    if (mhz <= 16000000) return 0x02;
     return 0x01;  /* 32000 Hz */
 }
 
 /* Must mirror odr_encode() exactly; both bound and clamp derive from the
  * table so appending a rung cannot leave the ceiling behind. */
-static int odr_actual(int hz)
+static int odr_actual(int mhz)
 {
-    static const int steps[] = { 12, 25, 50, 100, 200, 500, 1000, 2000,
-                                 4000, 8000, 16000, 32000 };
+    static const int steps[] = { 12500, 25000, 50000, 100000, 200000,
+                                 500000, 1000000, 2000000,
+                                 4000000, 8000000, 16000000, 32000000 };
     static const int n = (int)(sizeof steps / sizeof steps[0]);
     for (int i = 0; i < n; i++)
-        if (hz <= steps[i]) return steps[i];
+        if (mhz <= steps[i]) return steps[i];
     return steps[n - 1];
 }
 
@@ -237,7 +257,7 @@ reset_done:
 static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
-    uint8_t odr  = odr_encode(cfg->odr_hz);
+    uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t gfs  = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
     uint8_t afs  = accel_fs_encode(cfg->accel_g, &accel_scale);
 
@@ -294,7 +314,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * from a per-burst anchor (see the age calculation in icm_read), so the
      * error is bounded by the watermark depth rather than accumulating across
      * bursts.  Sub-tick resolution would buy nothing the counter can support. */
-    ic.ticks_per_sample = (uint32_t)(937500u / (unsigned)odr_actual(cfg->odr_hz));
+    ic.ticks_per_sample =
+        (uint32_t)(937500000u / (unsigned)odr_actual(cfg->odr_mhz));
     ic.ts_last_raw      = 0;    /* counter restarts with the chip */
     ic.ts_hi            = 0;
     /*
@@ -312,6 +333,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ic.ts_reject_next   = 1;
     ic.ts_fwd_rejects   = 0;
     ic.ts_fwd_next      = 1;
+    ic.ts_bwd_rejects   = 0;
+    ic.ts_bwd_next      = 1;
     chip_ts_guard_reset(&ic.ts_guard);
 
     return 0;
@@ -507,12 +530,29 @@ static int icm_read(const imud_bus_t *bus,
                      * the reference ISM330DHCX, same fallback shape: one burst
                      * stamped 54 s ahead, recovered only on the burst after.
                      */
-                    if (!chip_ts_guard_forward_ok(&ic.ts_guard, first,
-                                                  TS_MAX_FWD_TICKS)) {
+                    /*
+                     * Both directions, and refuse either.  A read far BEHIND the
+                     * previous burst used to be passed through as a counter
+                     * reset — see chip_ts.h for why that premise does not hold
+                     * inside a run, and for what it emitted on the bench.
+                     */
+                    bool fwd_bad = !chip_ts_guard_forward_ok(
+                            &ic.ts_guard, first, TS_MAX_FWD_TICKS);
+                    bool bwd_bad = !chip_ts_guard_backward_ok(
+                            &ic.ts_guard, first, TS_MAX_JITTER_TICKS);
+                    if (fwd_bad || bwd_bad) {
                         first    = chip_ts_guard_next(&ic.ts_guard,
                                                       ic.ticks_per_sample);
                         burst_ts = first + span;
-                        if (++ic.ts_fwd_rejects >= ic.ts_fwd_next) {
+                        if (bwd_bad) {
+                            if (++ic.ts_bwd_rejects >= ic.ts_bwd_next) {
+                                LOG_W("icm42688p: %llu post-drain timestamp "
+                                      "read(s) implausibly far behind; "
+                                      "extrapolating from the previous burst\n",
+                                      (unsigned long long)ic.ts_bwd_rejects);
+                                ic.ts_bwd_next *= 10;
+                            }
+                        } else if (++ic.ts_fwd_rejects >= ic.ts_fwd_next) {
                             LOG_W("icm42688p: %llu post-drain timestamp "
                                   "read(s) implausibly far ahead; "
                                   "extrapolating from the previous burst\n",
@@ -594,8 +634,9 @@ const imu_ops_t icm42688p_ops = {
      * than data.  Choosing them should be a decision, not a discovery —
      * manual §5 says the same thing where an operator will see it.
      */
-    .supported_odr_hz   = { 12, 25, 50, 100, 200, 500, 1000, 2000, 4000,
-                            8000, 16000, 32000, 0 },
+    .supported_odr_mhz  = { 12500, 25000, 50000, 100000, 200000, 500000,
+                            1000000, 2000000, 4000000,
+                            8000000, 16000000, 32000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 0 },
 };

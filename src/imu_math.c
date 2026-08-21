@@ -12,6 +12,7 @@
  * them directly.
  */
 
+#include <stdio.h>    /* snprintf */
 #include <stdlib.h>   /* abs */
 
 #include "imu_math.h"
@@ -301,25 +302,26 @@ int snap_odr_up(const int supported[], int requested)
     return last;   /* above the top of the table — clamp to the highest */
 }
 
-long imu_int_fallback_ms(int odr_hz)
+long imu_int_fallback_ms(int odr_mhz)
 {
-    if (odr_hz <= 0) return 20;              /* unknown rate: the old constant */
-    long ms = (long)(500.0 / (double)odr_hz + 0.5);    /* half a sample period */
+    if (odr_mhz <= 0) return 20;             /* unknown rate: the old constant */
+    /* Half a sample period.  500 ms/Hz becomes 500000 ms/milli-Hz. */
+    long ms = (long)(500000.0 / (double)odr_mhz + 0.5);
     if (ms < 2)   ms = 2;
     if (ms > 250) ms = 250;
     return ms;
 }
 
-int odr_actual_imu(const imu_ops_t *ops, int requested)
+int odr_actual_imu(const imu_ops_t *ops, int req_mhz)
 {
-    if (ops->actual_odr_hz) return ops->actual_odr_hz(requested);
-    return snap_odr_up(ops->supported_odr_hz, requested);
+    if (ops->actual_odr_mhz) return ops->actual_odr_mhz(req_mhz);
+    return snap_odr_up(ops->supported_odr_mhz, req_mhz);
 }
 
-int odr_actual_mag(const mag_ops_t *ops, int requested)
+int odr_actual_mag(const mag_ops_t *ops, int req_mhz)
 {
-    if (ops->actual_odr_hz) return ops->actual_odr_hz(requested);
-    return snap_odr_up(ops->supported_odr_hz, requested);
+    if (ops->actual_odr_mhz) return ops->actual_odr_mhz(req_mhz);
+    return snap_odr_up(ops->supported_odr_mhz, req_mhz);
 }
 
 /* Apply mount rotation (board -> body) if configured. In-place on v. */

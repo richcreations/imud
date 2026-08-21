@@ -103,34 +103,38 @@
  * for.  Interpolating to other counts is possible but would be a
  * manufacturer's formula this driver cannot cite.
  */
-static void odr_encode(int hz, uint16_t *cc, float *gain, uint8_t *tmrc)
+static void odr_encode(int mhz, uint16_t *cc, float *gain, uint8_t *tmrc)
 {
     /* Cycle count: resolution where the rate allows it. */
-    if (hz <= 150) {
+    if (mhz <= 150000) {
         *cc = 200; *gain = 75.0f;        /* 13 nT sensitivity, ~150 Hz 3-axis */
-    } else if (hz <= 300) {
+    } else if (mhz <= 300000) {
         *cc = 100; *gain = 38.0f;        /* 26 nT, ~283 Hz */
     } else {
         *cc =  50; *gain = 20.0f;        /* 50 nT, ~533 Hz */
     }
 
     /*
-     * TMRC (Table 5-4).  The upper nibble is fixed at 0x9.  The advertised
-     * rates below each round DOWN to the integer table in the ops struct
-     * (1.2 -> 1, 2.3 -> 2, 4.5 -> 4), so the driver never claims to be
-     * faster than it is; sub-1 Hz codes 0x9C-0x9F cannot be expressed in an
-     * int table at all and are not offered.
+     * TMRC (Table 5-4).  The upper nibble is fixed at 0x9.  In milli-Hz the
+     * three fractional rungs are exact — 1.2, 2.3 and 4.5 Hz — where the old
+     * whole-Hz table rounded them DOWN to 1, 2 and 4 so the driver would never
+     * claim to be faster than it is.  That compromise is gone.
+     *
+     * The sub-1 Hz codes 0x9C-0x9F are still not offered.  They ARE expressible
+     * now (0.6 Hz is 600), so this is a choice rather than a limitation: no
+     * fusion configuration here wants a magnetometer slower than 1 Hz, and
+     * adding rungs needs a bench check that the part behaves at them.
      */
-    *tmrc = (hz <=   1) ? 0x9Bu    /* ~1.2 Hz */
-          : (hz <=   2) ? 0x9Au    /* ~2.3 Hz */
-          : (hz <=   4) ? 0x99u    /* ~4.5 Hz */
-          : (hz <=   9) ? 0x98u
-          : (hz <=  18) ? 0x97u
-          : (hz <=  37) ? 0x96u
-          : (hz <=  75) ? 0x95u
-          : (hz <= 150) ? 0x94u
-          : (hz <= 300) ? 0x93u
-          :               0x92u;   /* ~600 Hz */
+    *tmrc = (mhz <=   1200) ? 0x9Bu
+          : (mhz <=   2300) ? 0x9Au
+          : (mhz <=   4500) ? 0x99u
+          : (mhz <=   9000) ? 0x98u
+          : (mhz <=  18000) ? 0x97u
+          : (mhz <=  37000) ? 0x96u
+          : (mhz <=  75000) ? 0x95u
+          : (mhz <= 150000) ? 0x94u
+          : (mhz <= 300000) ? 0x93u
+          :                   0x92u;   /* ~600 Hz */
 }
 
 /* ── Driver state ──────────────────────────────────────────────────────────── */
@@ -239,7 +243,7 @@ static int rm_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     uint16_t cc;
     uint8_t  tmrc;
     float    gain;
-    odr_encode(cfg->odr_hz, &cc, &gain, &tmrc);
+    odr_encode(cfg->odr_mhz, &cc, &gain, &tmrc);
 
     /* Cycle counts first: they bound what TMRC can actually deliver. */
     if (write_cc_all(bus, cc) < 0) return -1;
@@ -322,5 +326,6 @@ const mag_ops_t rm3100_ops = {
      * default CC = 200).  They are offered because the part can do them, not
      * because a heading reference needs them.
      */
-    .supported_odr_hz = { 1, 2, 4, 9, 18, 37, 75, 150, 300, 600, 0 },
+    .supported_odr_mhz = { 1200, 2300, 4500, 9000, 18000, 37000, 75000,
+                           150000, 300000, 600000, 0 },
 };

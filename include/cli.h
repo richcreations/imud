@@ -109,7 +109,8 @@ typedef struct {
 
     const char *ov_imu, *ov_mag, *ov_bus, *ov_chip;
     int    ov_imu_addr, ov_mag_addr, ov_int_gpio;
-    int    ov_odr, ov_accel, ov_gyro, ov_wm;
+    int    ov_odr;          /* MILLI-Hz; --odr is written in Hz */
+    int    ov_accel, ov_gyro, ov_wm;
     double ov_odr_win, ov_noise_win, ov_drdy_win;
     double ov_turn, ov_grav_tol, ov_odr_tol;
     bool   no_fs, no_ovf, no_regdiff;

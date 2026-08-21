@@ -43,7 +43,7 @@ CK_STR (c.imu_spi_dev,      "",           "[imu] spi_dev");
 CK_INT (c.imu_spi_speed_hz, 0,            "[imu] spi_speed_hz");
 CK_INT (c.imu_addr,         0x6B,         "[imu] i2c_addr");
 CK_INT (c.imu_int_gpio,     17,           "[imu] int_gpio");
-CK_INT (c.imu_odr_hz,       833,          "[imu] odr_hz");
+CK_INT (c.imu_odr_mhz,      833000,       "[imu] odr_hz");
 CK_INT (c.imu_accel_g,      8,            "[imu] accel_g");
 CK_INT (c.imu_gyro_dps,     2000,         "[imu] gyro_dps");
 CK_INT (c.imu_fifo_wm,      64,           "[imu] fifo_wm");
@@ -55,7 +55,7 @@ CK_STR (c.mag_spi_dev,      "",          "[mag] spi_dev");
 CK_INT (c.mag_spi_speed_hz, 0,           "[mag] spi_speed_hz");
 CK_INT (c.mag_addr,         0x30,        "[mag] i2c_addr");
 CK_INT (c.mag_int_gpio,     27,          "[mag] int_gpio");
-CK_INT (c.mag_odr_hz,       100,         "[mag] odr_hz");
+CK_INT (c.mag_odr_mhz,      100000,      "[mag] odr_hz");
 CK_FLT (c.mag_set_period_s, 5.0,         "[mag] set_period_s");
 
 /* [fusion] */

@@ -212,7 +212,7 @@ int main(int argc, char **argv)
     if (ov_imu_addr >= 0) cfg.imu_addr     = ov_imu_addr;
     if (ov_mag_addr >= 0) cfg.mag_addr     = ov_mag_addr;
     if (ov_int_gpio >= 0) cfg.imu_int_gpio = ov_int_gpio;
-    if (ov_odr   > 0) cfg.imu_odr_hz   = ov_odr;
+    if (ov_odr   > 0) cfg.imu_odr_mhz  = ov_odr;
     if (ov_accel > 0) cfg.imu_accel_g  = ov_accel;
     if (ov_gyro  > 0) cfg.imu_gyro_dps = ov_gyro;
     if (ov_wm    > 0) cfg.imu_fifo_wm  = ov_wm;

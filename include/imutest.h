@@ -125,7 +125,7 @@ typedef struct {
     /* IMU, passive */
     double        odr_measured_hz, odr_window_s, odr_max_loop_gap_ms;
     uint64_t      odr_n;
-    int           odr_best_table_hz;   /* supported_odr_hz entry actually matched */
+    int           odr_best_table_mhz;  /* supported_odr_mhz entry matched, milli-Hz */
     uint32_t      seq_first, seq_last;
     uint64_t      seq_gaps, seq_backwards, seq_max_gap;
     int           rc1_count, rcneg_count, last_errno;
@@ -250,8 +250,9 @@ typedef struct {
     char     imu_driver[32], mag_driver[32];
     int      imu_addr, mag_addr, imu_int_gpio, mag_int_gpio;
     bool     imu_experimental, mag_experimental, have_mag, is_sim;
-    int      req_odr_hz, eff_odr_hz, accel_g, gyro_dps, fifo_wm;
-    int      mag_req_odr_hz, mag_eff_odr_hz;
+    /* Rates are MILLI-HERTZ, as everywhere inward of config.c. */
+    int      req_odr_mhz, eff_odr_mhz, accel_g, gyro_dps, fifo_wm;
+    int      mag_req_odr_mhz, mag_eff_odr_mhz;
     float    mag_set_period_s;
     bool     imu_has_fifo, imu_has_hw_ts;
     uint32_t imu_ts_tick_ns;         /* the driver's declared typical */
@@ -513,6 +514,89 @@ typedef struct {
 void imt_ts_acc_seam(imt_ts_acc_t *a);
 
 uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts);
+
+/*
+ * Feed one burst of chip timestamps to the accumulator and append the deltas
+ * that may inform a PER-SAMPLE tick estimate.  Returns the new count.
+ *
+ * Only within-burst deltas qualify.  The delta on a burst's first sample spans
+ * the gap to the previous burst, where the driver re-derived its anchor from a
+ * post-drain timestamp read, so it measures the caller's drain cadence rather
+ * than the part's sample period.  Letting those in put imu.chipts.rate into
+ * WARN at 26, 52 and 104 Hz on a healthy part: below ~208 Hz a 10 ms drain
+ * returns fewer than two samples, so nearly every delta was a seam and the
+ * median settled on a multiple of the pacing -- 26 Hz read 1687 ticks (40.5 ms,
+ * four drains) against a true 1534.  imu.chipts.wall read 1.0002 across the
+ * same window, which is what showed the timebase was never at fault.
+ *
+ * The seam deltas still reach the accumulator, because a reversal AT a seam is
+ * exactly what imu.chipts.monotonic reports; they are excluded from the rate
+ * estimate, not from the record.
+ */
+int imt_ts_collect_burst(imt_ts_acc_t *a, const uint32_t *ts, int n,
+                         double *out, int cap, int have);
+
+/*
+ * Grade a full-scale sweep's noise floors against their own MEDIAN, marking
+ * every row that sits below `frac` of it IMT_WARN.  Returns how many.
+ *
+ * Not against the neighbouring row, which is what this replaced.  Sigma across
+ * a gyro's ranges is expected to be FLAT on a part whose analogue noise dwarfs
+ * its quantisation step, so a single step inflated by a knock on the bench made
+ * the NEXT step look like a halving and put the WARN on the innocent row.  It
+ * moved between runs -- 52/104/208 Hz in one sweep, 12/52 in another -- which
+ * is grading noise, not silicon.  The median tolerates one bad row, and a range
+ * whose sensitivity constant really is wrong reads low against ALL the others
+ * at once, which is what this asks.
+ *
+ * Needs at least 3 rows to have a median worth the name; below that it grades
+ * nothing and returns 0.
+ */
+/*
+ * Does this full-scale sweep's noise floor actually track full scale?
+ *
+ * imu.fs.gyro's proxy is that the ADC range, and so the noise standard
+ * deviation, scales with the full scale -- true only where QUANTISATION
+ * dominates the noise floor. Where analogue noise dominates, sigma wanders
+ * with the room and carries no information about the sensitivity constants.
+ * The check documented that precondition from the start and never enforced it.
+ *
+ * Decided by MONOTONICITY: quantisation-dominated sigma rises at every
+ * widening of the full scale; analogue-dominated sigma changes direction. One
+ * violation is tolerated, two is not.
+ *
+ * Deliberately not a spread statistic. Comparing CV(sigma) with CV(sigma/fs)
+ * was flipped by a single degenerate step -- a near-zero sigma inflates
+ * CV(sigma) so the gate opened, and the same row then sat below half the
+ * median so it WARNed: one bad measurement both unlocked the door and set off
+ * the alarm. Counting directions cannot be flipped that way.
+ *
+ * Measured on the reference ISM330DHCX at 104.125 Hz: 0.0061, 0.0028, 0.0060,
+ * 0.0053, 0.0039, 0.0040 rad/s over a 32x span of full scale -- 2 rises in 5
+ * steps. Analogue noise, and nothing about the scale factors is visible in it.
+ *
+ * The honest limit, which is the reason for not grading rather than an
+ * oversight: on such a part a genuinely wrong sensitivity constant and a quiet
+ * interval look identical here. Absolute gyro scale is verified by the guided
+ * rotation phase, which is what the check's note has always pointed at.
+ */
+bool imt_fs_scales_with_range(const imt_fs_row_t *rows, int n);
+
+int imt_fs_grade_median(imt_fs_row_t *rows, int n, double frac);
+
+/*
+ * The verdict for imu.fifo.overflow, from the drain's return code and whether
+ * the FIFO was still filling when the check gave up.
+ *
+ * `growing` is the half that was missing.  The check drains on every iteration,
+ * so what fills the FIFO is the LAST sleep rather than the elapsed total, and
+ * at a low ODR no sleep it is willing to take gets there -- an ISM330DHCX at
+ * 12 Hz needs about 20 s.  Reporting that as "the driver does not surface the
+ * overflow bit" blamed the part for the window being short.  A FIFO whose
+ * count has stopped rising IS at capacity, and rc 0 there is a real finding;
+ * one still rising means nothing was learned, which is a SKIP.
+ */
+imt_status_t imt_overflow_status(int rc, bool growing);
 
 /*
  * Split a SET/RESET pair into the field it measured and the bridge offset it

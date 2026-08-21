@@ -54,8 +54,8 @@ static void sim_cfg(imud_config_t *cfg)
     snprintf(cfg->i2c_bus,    sizeof cfg->i2c_bus,    "/dev/null");
     cfg->imu_int_gpio = 0;
     cfg->mag_int_gpio = 0;
-    cfg->imu_odr_hz   = 200;
-    cfg->mag_odr_hz   = 50;
+    cfg->imu_odr_mhz  = 200000;
+    cfg->mag_odr_mhz  = 50000;
     cfg->startup_settle_sec = 0.0;   /* settle fast so the test is quick */
     cfg->gyro_bias_sec      = 0.0;
     cfg->nmea_enabled     = false;

@@ -92,9 +92,9 @@ static struct {
 } s = { .adj = { 1.0f, 1.0f, 1.0f } };
 
 /* Select the continuous mode code for the requested ODR. */
-static uint8_t odr_to_mode(int odr_hz)
+static uint8_t odr_to_mode(int odr_mhz)
 {
-    return (odr_hz <= 8) ? MODE_CONT_1 : MODE_CONT_2;
+    return (odr_mhz <= 8000) ? MODE_CONT_1 : MODE_CONT_2;
 }
 
 /*
@@ -165,7 +165,7 @@ static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
           (double)s.adj[0], (double)s.adj[1], (double)s.adj[2]);
 
     /* ── Continuous measurement, 16-bit output ───────────────────────────── */
-    return set_mode(bus, (uint8_t)(CNTL1_16BIT | odr_to_mode(cfg->odr_hz)));
+    return set_mode(bus, (uint8_t)(CNTL1_16BIT | odr_to_mode(cfg->odr_mhz)));
 }
 
 /*
@@ -262,5 +262,5 @@ const mag_ops_t ak8963_ops = {
     .set_reset       = NULL,     /* no degauss coil */
     .has_interrupt   = false,    /* no external INT pin in bypass mode */
     .has_set_reset   = false,
-    .supported_odr_hz = { 8, 100, 0 },
+    .supported_odr_mhz = { 8000, 100000, 0 },
 };

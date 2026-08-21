@@ -140,7 +140,7 @@ static void test_defaults_values(void)
     EXPECT_STR(cfg.imu_spi_dev,      "",              "imu spi_dev default empty");
     EXPECT(cfg.imu_spi_speed_hz == 0,                 "imu spi_speed_hz default 0 (driver max)");
     EXPECT(cfg.imu_addr     == 0x6B,                  "imu_addr default");
-    EXPECT(cfg.imu_odr_hz   == 833,                   "imu_odr_hz default");
+    EXPECT(cfg.imu_odr_mhz   == 833000,                   "imu_odr_mhz default");
     EXPECT(cfg.imu_accel_g  == 8,                     "imu_accel_g default");
     EXPECT(cfg.imu_gyro_dps == 2000,                  "imu_gyro_dps default");
     EXPECT(cfg.imu_fifo_wm  == 64,                    "imu_fifo_wm default");
@@ -247,7 +247,7 @@ static void test_load_real_conf(void)
 
     EXPECT(cfg.imu_addr == 0x6B,                      "hex int 0x6B");
     EXPECT(cfg.imu_addr == 107,                        "0x6B == 107");
-    EXPECT(cfg.imu_odr_hz == 833,                      "decimal int odr_hz");
+    EXPECT(cfg.imu_odr_mhz == 833000,                      "decimal int odr_hz");
     EXPECT(cfg.imu_fifo_wm == 64,                      "decimal int fifo_wm");
     EXPECT(cfg.nmea_enabled == false,                  "bool false (stream-only conf)");
     EXPECT(cfg.highrate_enabled == false,              "highrate disabled in conf");
@@ -317,7 +317,7 @@ static void test_load_bad_int(void)
     config_defaults(&cfg);
     int rc = config_load(path, &cfg);
     EXPECT(rc == CONFIG_ERR_PARSE,          "bad int returns CONFIG_ERR_PARSE");
-    EXPECT(cfg.imu_odr_hz == def.imu_odr_hz, "bad key keeps its default");
+    EXPECT(cfg.imu_odr_mhz == def.imu_odr_mhz, "bad key keeps its default");
     EXPECT(cfg.imu_gyro_dps == 500,          "line after the bad one still applied");
     remove(path);
     end_test(fb);
@@ -422,7 +422,7 @@ static void test_load_rates_must_be_positive(void)
     imud_config_t cfg;
     config_defaults(&cfg);
     EXPECT(config_load(ok, &cfg) == 0, "positive rates accepted");
-    EXPECT(cfg.mag_odr_hz == 200,      "positive mag odr_hz applied");
+    EXPECT(cfg.mag_odr_mhz == 200000,      "positive mag odr_hz applied");
     EXPECT(cfg.nmea_rate_hz == 1,      "a rate of 1 Hz is legal");
     remove(ok);
     end_test(fb);
@@ -704,7 +704,7 @@ static void test_load_rejects_out_of_range_int(void)
     config_defaults(&cfg);
     EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE,
            "int that wraps to a POSITIVE value still rejected");
-    EXPECT(cfg.imu_odr_hz == def.imu_odr_hz,
+    EXPECT(cfg.imu_odr_mhz == def.imu_odr_mhz,
            "wrapped odr keeps its default (would have been 833)");
     remove(path);
 
@@ -818,7 +818,7 @@ static void test_load_unknown_key(void)
     config_defaults(&cfg);
     int rc = config_load(path, &cfg);
     EXPECT(rc == 0,               "unknown key doesn't abort load");
-    EXPECT(cfg.imu_odr_hz == 416, "subsequent known key still applied");
+    EXPECT(cfg.imu_odr_mhz == 416000, "subsequent known key still applied");
     remove(path);
     end_test(fb);
 }
@@ -837,7 +837,7 @@ static void test_load_inline_comment(void)
     config_defaults(&cfg);
     int rc = config_load(path, &cfg);
     EXPECT(rc == 0,                              "inline comment load ok");
-    EXPECT(cfg.imu_odr_hz == 208,                "int after inline comment");
+    EXPECT(cfg.imu_odr_mhz == 208000,                "int after inline comment");
     EXPECT_STR(cfg.nmea_dest_addr, "10.0.0.255","quoted string before comment");
     remove(path);
     end_test(fb);
@@ -874,7 +874,7 @@ static void test_load_partial_override(void)
     imud_config_t cfg;
     config_defaults(&cfg);
     config_load(path, &cfg);
-    EXPECT(cfg.imu_odr_hz  == 104,    "overridden key updated");
+    EXPECT(cfg.imu_odr_mhz  == 104000,    "overridden key updated");
     EXPECT(cfg.imu_accel_g == 8,      "untouched key stays at default");
     EXPECT(cfg.nmea_rate_hz == 10,    "different section stays at default");
     remove(path);
@@ -1478,7 +1478,7 @@ static void fill_distinct(imud_config_t *c)
     c->imu_spi_speed_hz = 1000001;
     c->imu_addr = 19;
     c->imu_int_gpio = 20;
-    c->imu_odr_hz = 21;
+    c->imu_odr_mhz = 21;
     c->imu_accel_g = 22;
     c->imu_gyro_dps = 23;
     c->imu_fifo_wm = 24;
@@ -1488,7 +1488,7 @@ static void fill_distinct(imud_config_t *c)
     c->mag_spi_speed_hz = 1000002;
     c->mag_addr = 26;
     c->mag_int_gpio = 27;
-    c->mag_odr_hz = 28;
+    c->mag_odr_mhz = 28;
     c->mag_set_period_s = 22.5;
     c->mag_yaw_only = !c->mag_yaw_only;
     c->heave_tau_s = 24.5;
@@ -1748,8 +1748,8 @@ static void test_apply_hot_partition(void)
      * something more useful than one memcmp.  These are the keys where a
      * silent hot-apply would be worst: the sensor is already open at the old
      * ODR, and the sockets are already bound to the old ports. */
-    EXPECT(dst.imu_odr_hz     != src.imu_odr_hz,     "imu_odr_hz stays [restart]");
-    EXPECT(dst.mag_odr_hz     != src.mag_odr_hz,     "mag_odr_hz stays [restart]");
+    EXPECT(dst.imu_odr_mhz     != src.imu_odr_mhz,     "imu_odr_mhz stays [restart]");
+    EXPECT(dst.mag_odr_mhz     != src.mag_odr_mhz,     "mag_odr_mhz stays [restart]");
     EXPECT(dst.nmea_dest_port != src.nmea_dest_port, "nmea_dest_port stays [restart]");
     EXPECT(dst.stream_enabled != src.stream_enabled, "stream_enabled stays [restart]");
     EXPECT(strcmp(dst.log_file, src.log_file) != 0,  "log_file stays [restart]");

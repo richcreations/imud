@@ -59,7 +59,15 @@ typedef struct __attribute__((packed)) {
     uint64_t t0_wall_ns;      /* CLOCK_REALTIME at capture start */
     uint64_t t0_mono_ns;      /* CLOCK_MONOTONIC at capture start; record
                                * mono_ns values are absolute on that clock */
-    uint8_t  reserved[24];    /* zeroed; room for future header fields */
+    /*
+     * Exact configured IMU rate in milli-Hz, taken from `reserved` rather than
+     * appended, so the header stays 104 bytes and hdr_len does not move.  Old
+     * readers ignored these bytes; new readers on an old file see 0 here and
+     * fall back to imu_odr_hz * 1000.  imu_odr_hz above is still written, and
+     * still whole Hz, for exactly that reason.
+     */
+    uint32_t imu_odr_mhz;
+    uint8_t  reserved[20];    /* zeroed; room for future header fields */
 } cap_header_t;
 
 _Static_assert(sizeof(cap_header_t) == 104, "cap_header_t must be 104 bytes");
@@ -116,7 +124,7 @@ typedef struct {
  * set).  Driver/version strings are truncated to fit their fields.
  */
 int cap_writer_open(cap_writer_t *w, const char *path,
-                    uint32_t imu_odr_hz,
+                    uint32_t imu_odr_hz, uint32_t imu_odr_mhz,
                     const char *imu_driver, const char *mag_driver,
                     const char *imud_version,
                     uint64_t t0_wall_ns, uint64_t t0_mono_ns);
@@ -211,6 +219,7 @@ typedef struct {
     uint32_t     max_mb;
     uint32_t     max_files;
     uint32_t     imu_odr_hz;
+    uint32_t     imu_odr_mhz;
     char         imu_driver[16];
     char         mag_driver[16];
     char         imud_version[16];
@@ -223,7 +232,7 @@ typedef struct {
 /* Opens the first file immediately.  0 ok, -1 on error (errno set). */
 int cap_rot_open(cap_rotator_t *rt, const char *dir,
                  uint32_t max_mb, uint32_t max_files,
-                 uint32_t imu_odr_hz,
+                 uint32_t imu_odr_hz, uint32_t imu_odr_mhz,
                  const char *imu_driver, const char *mag_driver,
                  const char *imud_version);
 

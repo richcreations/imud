@@ -60,18 +60,18 @@
  * DO[2:0] normal-rate table (Table 21):
  *   000=0.625 Hz (unused), 001=1.25, 010=2.5, 011=5, 100=10, 101=20, 110=40, 111=80 Hz
  */
-static uint8_t odr_to_ctrl1(int hz)
+static uint8_t odr_to_ctrl1(int mhz)
 {
-    if (hz > 80)
+    if (mhz > 80000)
         return (uint8_t)((0x3 << 5) | 0x02);   /* OM=11, DO=000, FAST_ODR=1 → 155 Hz */
 
-    uint8_t do_bits = (hz <=  1) ? 1   /* 1.25 Hz */
-                    : (hz <=  2) ? 2   /* 2.5 Hz */
-                    : (hz <=  5) ? 3   /* 5 Hz */
-                    : (hz <= 10) ? 4   /* 10 Hz */
-                    : (hz <= 20) ? 5   /* 20 Hz */
-                    : (hz <= 40) ? 6   /* 40 Hz */
-                    :              7;  /* 80 Hz */
+    uint8_t do_bits = (mhz <=  1250) ? 1
+                    : (mhz <=  2500) ? 2
+                    : (mhz <=  5000) ? 3
+                    : (mhz <= 10000) ? 4
+                    : (mhz <= 20000) ? 5
+                    : (mhz <= 40000) ? 6
+                    :                  7;  /* 80 Hz */
     return (uint8_t)((0x3 << 5) | (do_bits << 2));   /* OM=11, FAST_ODR=0 */
 }
 
@@ -107,7 +107,7 @@ static int lis_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Z-axis operative mode = ultra-high performance. */
     if (bus_reg_write(bus, REG_CTRL_REG4, 0x0C) < 0) return -1;  /* OMZ=11 */
     /* XY mode + ODR from CTRL_REG1. */
-    if (bus_reg_write(bus, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_hz)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL_REG1, odr_to_ctrl1(cfg->odr_mhz)) < 0) return -1;
     /* ±4 Gauss full scale; clear REBOOT and SOFT_RST. */
     if (bus_reg_write(bus, REG_CTRL_REG2, 0x00) < 0) return -1;
     /* Continuous measurement mode: MD[1:0] = 00. */
@@ -205,5 +205,7 @@ const mag_ops_t lis3mdl_ops = {
      * BOTTOM.  DO = 000 is 0.625 Hz, which this int table cannot express; it
      * would have to round onto 1.25's slot and lie about it.
      */
-    .supported_odr_hz = { 1, 2, 5, 10, 20, 40, 80, 155, 0 },
+    /* 1.25 and 2.5 Hz are exact here; the whole-Hz ladder rounded them. */
+    .supported_odr_mhz = { 1250, 2500, 5000, 10000, 20000, 40000, 80000,
+                           155000, 0 },
 };

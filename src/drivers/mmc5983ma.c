@@ -226,24 +226,24 @@ static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none 
  * board.  CM_Freq 111 is the exception at 1205 against a nominal 1000, 20%
  * out, reproduced across runs and clocks.  Unexplained.
  *
- * That gap is why actual_odr_hz exists here: supported_odr_hz is the datasheet
- * ladder an operator may REQUEST, and actual_odr_hz is what the silicon will
+ * That gap is why actual_odr_mhz exists here: supported_odr_mhz is the datasheet
+ * ladder an operator may REQUEST, and actual_odr_mhz is what the silicon will
  * DELIVER.  imu.c passes the resolved rate to both the driver and the filter,
  * so the noise variance is sized for the rate the part is really producing.
  *
  * Mode 0 measured identical at 1, 2 and 10 MHz.
  */
-static void odr_encode(int hz, uint8_t *bw_out, uint8_t *cmfreq_out)
+static void odr_encode(int mhz, uint8_t *bw_out, uint8_t *cmfreq_out)
 {
     /* Every code the datasheet lists.  BW is the lowest whose Max Output Data
      * Rate (Rev A p.4: 50/100/225/580) covers the rate, except the two the
      * CM_Freq table pairs explicitly: 110 with BW=01, 111 with BW=11. */
-    if (hz <=    1) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }   /*    1 */
-    if (hz <=   11) { *bw_out = 0x0; *cmfreq_out = 0x2; return; }   /*   10 */
-    if (hz <=   21) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }   /*   20 */
-    if (hz <=   53) { *bw_out = 0x0; *cmfreq_out = 0x4; return; }   /*   50 */
-    if (hz <=  106) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }   /*  100 */
-    if (hz <=  211) { *bw_out = 0x1; *cmfreq_out = 0x6; return; }   /*  200 */
+    if (mhz <=   1000) { *bw_out = 0x0; *cmfreq_out = 0x1; return; }   /*    1 */
+    if (mhz <=  11000) { *bw_out = 0x0; *cmfreq_out = 0x2; return; }   /*   10 */
+    if (mhz <=  21000) { *bw_out = 0x0; *cmfreq_out = 0x3; return; }   /*   20 */
+    if (mhz <=  53000) { *bw_out = 0x0; *cmfreq_out = 0x4; return; }   /*   50 */
+    if (mhz <= 106000) { *bw_out = 0x1; *cmfreq_out = 0x5; return; }   /*  100 */
+    if (mhz <= 211000) { *bw_out = 0x1; *cmfreq_out = 0x6; return; }   /*  200 */
     /* 1000 Hz */     *bw_out = 0x3; *cmfreq_out = 0x7;             /* 1000 */
 }
 
@@ -258,13 +258,21 @@ static void odr_encode(int hz, uint8_t *bw_out, uint8_t *cmfreq_out)
  * Kept beside odr_encode(): one entry here per honoured branch there, and the
  * two must move together.
  */
-static int mmc_actual_odr_hz(int requested)
+static int mmc_actual_odr_mhz(int req_mhz)
 {
-    static const int delivered[] = { 1, 11, 21, 53, 106, 211, 1205, 0 };
+    /*
+     * Milli-Hz, but NOT to three significant figures more than the
+     * measurement supports: 100 Hz read 105.3, 105.4, 105.6 and 105.7 across
+     * one day on the reference die, a 0.4% spread that is drift rather than a
+     * figure.  These stay the rounded whole-Hz measurements scaled by 1000,
+     * and the honest caveat is that they are one die at one temperature.
+     */
+    static const int delivered[] = { 1000, 11000, 21000, 53000, 106000,
+                                     211000, 1205000, 0 };
 
     for (int i = 0; delivered[i]; i++)
-        if (requested <= delivered[i]) return delivered[i];
-    return 1205;                         /* clamp to the fastest */
+        if (req_mhz <= delivered[i]) return delivered[i];
+    return 1205000;                      /* clamp to the fastest */
 }
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
@@ -355,7 +363,7 @@ static int mmc_reset(const imud_bus_t *bus)
 static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
     uint8_t bw, cmfreq;
-    odr_encode(cfg->odr_hz, &bw, &cmfreq);
+    odr_encode(cfg->odr_mhz, &bw, &cmfreq);
 
     /* How this caller waits decides what read() is able to check — and the
      * staleness guard must not carry a sample across a reconfigure. */
@@ -568,7 +576,8 @@ const mag_ops_t mmc5983ma_ops = {
     /* Four of the datasheet's seven; the other three are not honoured by the
      * part. Measured table and method are above odr_encode(). */
     /* The datasheet ladder: what may be REQUESTED. What each one actually
-     * delivers is mmc_actual_odr_hz() — see the table above odr_encode(). */
-    .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
-    .actual_odr_hz    = mmc_actual_odr_hz,
+     * delivers is mmc_actual_odr_mhz() — see the table above odr_encode(). */
+    .supported_odr_mhz = { 1000, 10000, 20000, 50000, 100000, 200000,
+                           1000000, 0 },
+    .actual_odr_mhz   = mmc_actual_odr_mhz,
 };

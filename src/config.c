@@ -226,7 +226,7 @@ void config_defaults(imud_config_t *cfg)
     cfg->imu_spi_speed_hz  = 0;
     cfg->imu_addr     = 0x6B;
     cfg->imu_int_gpio = 17;
-    cfg->imu_odr_hz   = 833;
+    cfg->imu_odr_mhz  = 833000;
     cfg->imu_accel_g  = 8;
     cfg->imu_gyro_dps = 2000;
     cfg->imu_fifo_wm  = 64;
@@ -238,7 +238,7 @@ void config_defaults(imud_config_t *cfg)
     cfg->mag_spi_speed_hz  = 0;
     cfg->mag_addr         = 0x30;
     cfg->mag_int_gpio     = 27;
-    cfg->mag_odr_hz       = 100;
+    cfg->mag_odr_mhz      = 100000;
     cfg->mag_set_period_s = 5.0f;
 
     /* [fusion] */
@@ -767,6 +767,35 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         (field) = iv; } while (0)
 
 /*
+ * A sample rate, written in Hz and stored in MILLI-Hz.
+ *
+ * The value may carry a fraction: `odr_hz = 12.5` is a real rung on the TDK
+ * parts, and the ST ladder's own bottom rung is 13.016 Hz because that ladder
+ * is the divider chain 6664/2^n.  Whole Hz could express neither, and rounding
+ * either way left the advertised rate several percent from what the silicon
+ * ran — which imud-imutest then reported as a driver fault.  See the unit note
+ * at the top of include/drivers.h.
+ *
+ * Parsed as a double and scaled once, here at the edge; everything inward of
+ * this is milli-Hz.  Rounded to the nearest milli-Hz rather than truncated, so
+ * a value a user typed exactly is stored exactly.
+ */
+#define NEED_POS_MHZ(field) \
+    do { if (!parse_double(val, &dv)) { \
+        LOG_E("%s:%d: '%s': expected a number of Hz\n", path, lineno, key); \
+        return -1; } \
+        if (!(dv > 0.0)) { \
+        LOG_E("%s:%d: '%s': must be greater than zero (got %g) — " \
+              "a rate of zero or less is not a valid sample rate\n", \
+              path, lineno, key, dv); \
+        return -1; } \
+        if (dv > 2000000.0) { \
+        LOG_E("%s:%d: '%s': %g Hz is far beyond any supported part\n", \
+              path, lineno, key, dv); \
+        return -1; } \
+        (field) = (int)(dv * 1000.0 + 0.5); } while (0)
+
+/*
  * Semantic bounds, for the keys where an in-range int is still nonsense.
  * parse_int's range check above stops a value wrapping into a plausible one;
  * it cannot stop "dest_port = 70000", which fits an int perfectly well and
@@ -978,7 +1007,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "spi_speed_hz") == 0) NEED_INT(cfg->imu_spi_speed_hz);
         else if (strcmp(key, "i2c_addr") == 0) NEED_I2C_ADDR(cfg->imu_addr);
         else if (strcmp(key, "int_gpio") == 0) NEED_GPIO(cfg->imu_int_gpio);
-        else if (strcmp(key, "odr_hz")   == 0) NEED_POS_INT(cfg->imu_odr_hz);
+        else if (strcmp(key, "odr_hz")   == 0) NEED_POS_MHZ(cfg->imu_odr_mhz);
         else if (strcmp(key, "accel_g")  == 0) NEED_INT(cfg->imu_accel_g);
         else if (strcmp(key, "gyro_dps") == 0) NEED_INT(cfg->imu_gyro_dps);
         else if (strcmp(key, "fifo_wm")  == 0) NEED_INT(cfg->imu_fifo_wm);
@@ -992,7 +1021,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "spi_speed_hz") == 0) NEED_INT(cfg->mag_spi_speed_hz);
         else if (strcmp(key, "i2c_addr")     == 0) NEED_I2C_ADDR(cfg->mag_addr);
         else if (strcmp(key, "int_gpio")     == 0) NEED_GPIO(cfg->mag_int_gpio);
-        else if (strcmp(key, "odr_hz")       == 0) NEED_POS_INT(cfg->mag_odr_hz);
+        else if (strcmp(key, "odr_hz")       == 0) NEED_POS_MHZ(cfg->mag_odr_mhz);
         else if (strcmp(key, "set_period_s") == 0) NEED_FLT(cfg->mag_set_period_s);
         else WARN_UNKNOWN();
         break;

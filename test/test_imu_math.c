@@ -60,13 +60,13 @@ static void test_int_fallback_ms(void)
 
     /* Half a period: the fallback read re-arms the line, so waiting
      * longer yields fewer edges rather than later ones. */
-    EXPECT(imu_int_fallback_ms(100) == 5, "100 Hz -> 5 ms (half a period)");
-    EXPECT(imu_int_fallback_ms(20)  == 25, "20 Hz -> 25 ms");
-    EXPECT(imu_int_fallback_ms(1000) == 2, "1000 Hz clamps to the floor");
+    EXPECT(imu_int_fallback_ms(100000) == 5, "100 Hz -> 5 ms (half a period)");
+    EXPECT(imu_int_fallback_ms(20000)  == 25, "20 Hz -> 25 ms");
+    EXPECT(imu_int_fallback_ms(1000000) == 2, "1000 Hz clamps to the floor");
 
     /* Bounded: the fast end must not spin, the slow end must still notice. */
-    EXPECT(imu_int_fallback_ms(6664) == 2, "6664 Hz clamps to the 2 ms floor");
-    EXPECT(imu_int_fallback_ms(1) == 250, "1 Hz clamps to the 250 ms ceiling");
+    EXPECT(imu_int_fallback_ms(6664000) == 2, "6664 Hz clamps to the 2 ms floor");
+    EXPECT(imu_int_fallback_ms(1000) == 250, "1 Hz clamps to the 250 ms ceiling");
 
     /* Monotonic: a faster rate never waits longer than a slower one. */
     long prev = 1000;
@@ -92,12 +92,12 @@ static void test_nearest_odr(void)
     int fb = g_fail;
 
     /* The ISM330DHCX table, as registered. */
-    static const int ism[] = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 };
+    static const int ism[] = { 13, 26, 52, 104, 208, 416, 833, 1666, 0 };
     EXPECT(nearest_odr(ism, 208) == 208, "exact match");
     EXPECT(nearest_odr(ism, 60)  == 52,  "round to nearer (52 vs 104)");
-    EXPECT(nearest_odr(ism, 900) == 833, "round to nearer (833 vs 1660)");
-    EXPECT(nearest_odr(ism, 1)   == 12,  "below min clamps to first");
-    EXPECT(nearest_odr(ism, 5000) == 1660, "above max clamps to last");
+    EXPECT(nearest_odr(ism, 900) == 833, "round to nearer (833 vs 1666)");
+    EXPECT(nearest_odr(ism, 1)   == 13,  "below min clamps to first");
+    EXPECT(nearest_odr(ism, 5000) == 1666, "above max clamps to last");
 
     /* Exact ties resolve to the first (lower) entry: the update is strict
      * `d < best_diff`, so an equal distance does not displace the incumbent. */
@@ -125,11 +125,11 @@ static void test_snap_odr_up(void)
     begin("test_snap_odr_up");
     int fb = g_fail;
 
-    static const int ism[] = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 };
+    static const int ism[] = { 13, 26, 52, 104, 208, 416, 833, 1666, 0 };
     EXPECT(snap_odr_up(ism, 208) == 208, "exact match");
     EXPECT(snap_odr_up(ism, 60)  == 104, "between entries rounds UP");
-    EXPECT(snap_odr_up(ism, 1)   == 12,  "below min gives the first entry");
-    EXPECT(snap_odr_up(ism, 5000) == 1660, "above max clamps to last");
+    EXPECT(snap_odr_up(ism, 1)   == 13,  "below min gives the first entry");
+    EXPECT(snap_odr_up(ism, 5000) == 1666, "above max clamps to last");
 
     /* The regression this whole change is about, on the MMC5983MA grid:
      * the driver programs 200 Hz while nearest_odr() said 100. */
@@ -138,8 +138,8 @@ static void test_snap_odr_up(void)
     EXPECT(nearest_odr(mmc, 137) == 100, "nearest_odr still answers 100");
 
     /* Same disagreement on the IMU side, which the daemon had too:
-     * imu_odr_hz = 900 tuned the filter for 833 and ran the chip at 1660. */
-    EXPECT(snap_odr_up(ism, 900) == 1660, "900 -> 1660 (driver), not 833");
+     * imu_odr_mhz = 900 tuned the filter for 833 and ran the chip at 1666. */
+    EXPECT(snap_odr_up(ism, 900) == 1666, "900 -> 1666 (driver), not 833");
     EXPECT(nearest_odr(ism, 900) == 833,  "nearest_odr still answers 833");
 
     static const int one[] = { 100, 0 };
@@ -165,28 +165,28 @@ static void test_odr_actual_resolver(void)
     int fb = g_fail;
 
     imu_ops_t imu_no_hook = {
-        .supported_odr_hz = { 12, 26, 52, 104, 0 },
-        .actual_odr_hz    = NULL,
+        .supported_odr_mhz = { 12, 26, 52, 104, 0 },
+        .actual_odr_mhz    = NULL,
     };
     EXPECT(odr_actual_imu(&imu_no_hook, 60) == 104,
            "NULL hook falls back to snap_odr_up");
 
     imu_ops_t imu_hook = imu_no_hook;
-    imu_hook.actual_odr_hz = stub_hook;
+    imu_hook.actual_odr_mhz = stub_hook;
     stub_hook_calls = 0;
     EXPECT(odr_actual_imu(&imu_hook, 60) == 120,
            "hook wins over the table");
     EXPECT(stub_hook_calls == 1, "hook called exactly once");
 
     mag_ops_t mag_no_hook = {
-        .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
-        .actual_odr_hz    = NULL,
+        .supported_odr_mhz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
+        .actual_odr_mhz    = NULL,
     };
     EXPECT(odr_actual_mag(&mag_no_hook, 137) == 200,
            "mag NULL hook falls back to snap_odr_up");
 
     mag_ops_t mag_hook = mag_no_hook;
-    mag_hook.actual_odr_hz = stub_hook;
+    mag_hook.actual_odr_mhz = stub_hook;
     stub_hook_calls = 0;
     EXPECT(odr_actual_mag(&mag_hook, 137) == 274, "mag hook wins");
     EXPECT(stub_hook_calls == 1, "mag hook called exactly once");

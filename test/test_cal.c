@@ -535,7 +535,8 @@ static void write_cap(const char *path, int n, double hz,
                       double (*gyro_of)(int), double temp_step)
 {
     cap_writer_t w;
-    if (cap_writer_open(&w, path, (int)hz, "sim", "sim", "1.9", 0, 0) != 0) {
+    if (cap_writer_open(&w, path, (int)hz, (uint32_t)(hz * 1000), "sim", "sim",
+                        "1.9", 0, 0) != 0) {
         fprintf(stderr, "  (could not create %s)\n", path);
         return;
     }
@@ -692,7 +693,7 @@ static void test_calcap_rejects(void)
     /* A valid capture holding only MAG records — the count-is-zero path. */
     const char *magonly = cappath(6);
     cap_writer_t w;
-    if (cap_writer_open(&w, magonly, 100, "sim", "sim", "1.9", 0, 0) == 0) {
+    if (cap_writer_open(&w, magonly, 100, 100000, "sim", "sim", "1.9", 0, 0) == 0) {
         for (int i = 0; i < 50; i++) {
             mag_sample_t m;
             memset(&m, 0, sizeof m);

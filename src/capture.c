@@ -28,7 +28,7 @@
 #define CAP_WRITE_BUF (64 * 1024)
 
 int cap_writer_open(cap_writer_t *w, const char *path,
-                    uint32_t imu_odr_hz,
+                    uint32_t imu_odr_hz, uint32_t imu_odr_mhz,
                     const char *imu_driver, const char *mag_driver,
                     const char *imud_version,
                     uint64_t t0_wall_ns, uint64_t t0_mono_ns)
@@ -44,7 +44,8 @@ int cap_writer_open(cap_writer_t *w, const char *path,
     memcpy(hdr.magic, CAP_MAGIC, sizeof(hdr.magic));   /* "IMUCAP1\0" */
     hdr.version    = CAP_FMT_VERSION;
     hdr.hdr_len    = (uint16_t)sizeof(cap_header_t);
-    hdr.imu_odr_hz = imu_odr_hz;
+    hdr.imu_odr_hz  = imu_odr_hz;
+    hdr.imu_odr_mhz = imu_odr_mhz;
     snprintf(hdr.imu_driver,   sizeof(hdr.imu_driver),   "%s", imu_driver   ? imu_driver   : "");
     snprintf(hdr.mag_driver,   sizeof(hdr.mag_driver),   "%s", mag_driver   ? mag_driver   : "");
     snprintf(hdr.imud_version, sizeof(hdr.imud_version), "%s", imud_version ? imud_version : "");
@@ -396,7 +397,7 @@ static int cap_rot_open_file(cap_rotator_t *rt)
     }
     rt->last_stamp = t;
 
-    if (cap_writer_open(&rt->w, rt->cur_path, rt->imu_odr_hz,
+    if (cap_writer_open(&rt->w, rt->cur_path, rt->imu_odr_hz, rt->imu_odr_mhz,
                         rt->imu_driver, rt->mag_driver, rt->imud_version,
                         now_ns(CLOCK_REALTIME), now_ns(CLOCK_MONOTONIC)) != 0)
         return -1;
@@ -407,7 +408,7 @@ static int cap_rot_open_file(cap_rotator_t *rt)
 
 int cap_rot_open(cap_rotator_t *rt, const char *dir,
                  uint32_t max_mb, uint32_t max_files,
-                 uint32_t imu_odr_hz,
+                 uint32_t imu_odr_hz, uint32_t imu_odr_mhz,
                  const char *imu_driver, const char *mag_driver,
                  const char *imud_version)
 {
@@ -415,7 +416,8 @@ int cap_rot_open(cap_rotator_t *rt, const char *dir,
     snprintf(rt->dir, sizeof(rt->dir), "%s", dir);
     rt->max_mb     = max_mb;
     rt->max_files  = max_files;
-    rt->imu_odr_hz = imu_odr_hz;
+    rt->imu_odr_hz  = imu_odr_hz;
+    rt->imu_odr_mhz = imu_odr_mhz;
     snprintf(rt->imu_driver,   sizeof(rt->imu_driver),   "%s", imu_driver   ? imu_driver   : "");
     snprintf(rt->mag_driver,   sizeof(rt->mag_driver),   "%s", mag_driver   ? mag_driver   : "");
     snprintf(rt->imud_version, sizeof(rt->imud_version), "%s", imud_version ? imud_version : "");

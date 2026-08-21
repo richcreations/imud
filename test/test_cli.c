@@ -498,8 +498,27 @@ static void test_imutest(void)
     {   char *v[] = { "imud-imutest", "--odr", "208", "--accel-g", "4",
                       "--gyro-dps", "500", "--fifo-wm", "32", NULL };
         cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
-        EXPECT(rc == 0 && a.ov_odr == 208 && a.ov_accel == 4 &&
+        EXPECT(rc == 0 && a.ov_odr == 208000 && a.ov_accel == 4 &&
                a.ov_gyro == 500 && a.ov_wm == 32, "int overrides");
+    }
+
+    /*
+     * --odr is written in Hz and kept in milli-Hz, and a fraction is a real
+     * rate rather than a typo: 12.5 Hz is a TDK rung, and the ST ladder's own
+     * bottom rung is 13.016 Hz.  The flag has to express what [imu] odr_hz
+     * expresses, or the file and the command line disagree about the part.
+     */
+    {   char *v[] = { "imud-imutest", "--odr", "12.5", NULL };
+        cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.ov_odr == 12500, "--odr 12.5 is 12500 milli-Hz");
+    }
+    {   char *v[] = { "imud-imutest", "--odr", "13.016", NULL };
+        cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.ov_odr == 13016, "--odr 13.016 survives to milli-Hz");
+    }
+    {   char *v[] = { "imud-imutest", "--odr", "0", NULL };
+        cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
+        EXPECT(rc != 0, "--odr 0 is refused, not stored as a rate");
     }
 
     /* --odr-tol is the only unit conversion in any of the five parsers:

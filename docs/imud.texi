@@ -666,9 +666,9 @@ interrupt.
 cannot produce is rounded @strong{up} to the next one it can, and the
 filter is tuned for that actual rate --- the daemon logs
 @code{requested, N Hz actual} at startup when the two differ. ISM330DHCX
-supports: @code{12}, @code{26}, @code{52}, @code{104}, @code{208},
-@code{416}, @code{833}, @code{1660}, @code{3332}, @code{6664}. Other
-drivers differ --- see the driver table in
+supports: @code{13.016}, @code{26.031}, @code{52.063}, @code{104.125},
+@code{208.25}, @code{416.5}, @code{833}, @code{1666}, @code{3332},
+@code{6664}. Other drivers differ --- see the driver table in
 @ref{5 Supported drivers,,Supported drivers}, and note that the top
 rates of some parts are beyond what a Raspberry Pi can sustain.
 @item 
@@ -760,7 +760,8 @@ Set @code{0} to poll on a timer.
  @tab Output data rate in Hz; must be greater than zero. Rounded
 @strong{up} to a supported rate as for @code{[imu] odr_hz}, and the mag
 noise variance is sized for that actual rate. MMC5983MA supports:
-@code{1}, @code{20}, @code{100}, @code{1000}.
+@code{1}, @code{10}, @code{20}, @code{50}, @code{100}, @code{200},
+@code{1000}.
 @item 
 @code{set_period_s}
  @tab float
@@ -1546,7 +1547,7 @@ datasheets are collected in
 @item
 @strong{GPIO interrupt}: BCM 17 · pin 11
 @item
-@strong{SPI}: @strong{yes} --- mode 3, 10 MHz
+@strong{SPI}: @strong{yes} --- mode 0, 10 MHz
 @item
 @strong{Notes}: Primary reference IMU. FIFO + hardware timestamp. ODR
 12--6664 Hz.
@@ -1601,7 +1602,7 @@ not run on a Pi}, see below.
 @item
 @strong{GPIO interrupt}: BCM 17 · pin 11
 @item
-@strong{SPI}: yes --- mode 3, 10 MHz
+@strong{SPI}: yes --- mode 0, 10 MHz
 @item
 @strong{Notes}: @emph{Experimental.} Near-clone of ISM330DHCX. ODR
 12--6664 Hz.
@@ -1619,7 +1620,7 @@ not run on a Pi}, see below.
 @item
 @strong{GPIO interrupt}: BCM 17 · pin 11
 @item
-@strong{SPI}: yes --- mode 3, 10 MHz
+@strong{SPI}: yes --- mode 0, 10 MHz
 @item
 @strong{Notes}: @emph{Experimental.} LSM6DSO with ML core; same driver.
 @end itemize
@@ -1672,7 +1673,7 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{GPIO interrupt}: BCM 27 · pin 13
 @item
-@strong{SPI}: @strong{yes} --- mode 3, 10 MHz
+@strong{SPI}: @strong{yes} --- mode 0, 2 MHz
 @item
 @strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil. On SPI a
 CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after

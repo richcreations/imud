@@ -5,10 +5,14 @@
  *
  * rate_ladder.h — every sample rate this project claims to support.
  *
- * The union of supported_odr_hz across all registered drivers: 29 IMU rates
- * spanning 12 Hz to 32 kHz, and 21 magnetometer rates from 1 Hz to 1 kHz.  Any
- * of the 609 pairings is a configuration a user can select and the daemon will
- * accept.
+ * The union of supported_odr_mhz across all registered drivers, in MILLI-HERTZ:
+ * 37 IMU rates spanning 12 Hz to 32 kHz, and 24 magnetometer rates from 1 Hz to
+ * 1 kHz.  Any of the 888 pairings is a configuration a user can select and the
+ * daemon will accept.
+ *
+ * MILLI-HERTZ because whole Hz cannot hold the rates the parts really run —
+ * the TDK 12.5 Hz rung, the ST chain's 13.016 Hz bottom, icm20948's 281.25 and
+ * 562.5, mpu925x's 1000/7.  See the unit note at the top of include/drivers.h.
  *
  * WHY THIS IS A HAND-MAINTAINED LIST, and why that is safe.  The natural way to
  * walk every rate is to iterate the registry itself, but the registries in
@@ -29,18 +33,21 @@
 #define IMUD_TEST_RATE_LADDER_H
 
 /*
- * IMU rates, Hz.
- *   12,26,52,104,208,416,833,1660          sim
- *   +3332,6664                             ism330dhcx, lsm6dso, lsm6dsox
- *   12,25,50,100,200,500,1000,2000,        icm42688p
- *     4000,8000,16000,32000
- *   225,281,375,562,1125                   icm20948
- *   100,125,200,250,333,500,1000           mpu9250, mpu9255
+ * IMU rates, milli-Hz.  The Hz each driver means, for reading:
+ *   12/26/52/104/208/416/833/1660               sim (synthetic, whole Hz)
+ *   13.016/26.031/52.063/104.125/208.25/        ism330dhcx, lsm6dso, lsm6dsox
+ *     416.5/833/1666/3332/6664                  (the 6664/2^n divider chain)
+ *   12.5/25/50/100/200/500/1000/2000/           icm42688p
+ *     4000/8000/16000/32000
+ *   225/281.25/375/562.5/1125                   icm20948 (1125/(1+div))
+ *   100/125/200/250/333.333/500/1000            mpu9250, mpu9255 (1000/(1+div))
  */
 static const int rate_ladder_imu[] = {
-    12, 25, 26, 50, 52, 100, 104, 125, 200, 208, 225, 250, 281, 333,
-    375, 416, 500, 562, 833, 1000, 1125, 1660, 2000, 3332, 4000, 6664, 8000,
-    16000, 32000
+    12000, 12500, 13016, 25000, 26000, 26031, 50000, 52000, 52063,
+    100000, 104000, 104125, 125000, 200000, 208000, 208250, 225000,
+    250000, 281250, 333333, 375000, 416000, 416500, 500000, 562500,
+    833000, 1000000, 1125000, 1660000, 1666000, 2000000, 3332000,
+    4000000, 6664000, 8000000, 16000000, 32000000
 };
 #define RATE_LADDER_IMU_N \
     ((int)(sizeof rate_ladder_imu / sizeof rate_ladder_imu[0]))
@@ -54,8 +61,9 @@ static const int rate_ladder_imu[] = {
  *   1,2,4,9,18,37,75,150,300,600  rm3100
  */
 static const int rate_ladder_mag[] = {
-    1, 2, 4, 5, 8, 9, 10, 18, 20, 37, 40, 50, 75, 80, 100, 150, 155, 200,
-    300, 600, 1000
+    1000, 1200, 1250, 2300, 2500, 4500, 5000, 8000, 9000, 10000, 18000,
+    20000, 37000, 40000, 50000, 75000, 80000, 100000, 150000, 155000,
+    200000, 300000, 600000, 1000000
 };
 #define RATE_LADDER_MAG_N \
     ((int)(sizeof rate_ladder_mag / sizeof rate_ladder_mag[0]))

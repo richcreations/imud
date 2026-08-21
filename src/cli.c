@@ -429,8 +429,17 @@ int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
                 return cli_bad_num(argv[0], s, argv[i], usage_imutest);
         }
         else if (strcmp(s, "--odr") == 0 && i + 1 < argc) {
-            if (!cli_int(argv[++i], &a->ov_odr))
+            /*
+             * Written in Hz, kept in milli-Hz, and a fraction is allowed:
+             * `--odr 12.5` is a real rung on the TDK parts and the ST ladder's
+             * own bottom rung is 13.016.  Matches `[imu] odr_hz`, which takes
+             * the same spelling — a flag that could not express what the file
+             * can would be its own kind of wrong.
+             */
+            double hz;
+            if (!cli_pos_dbl(argv[++i], &hz))
                 return cli_bad_num(argv[0], s, argv[i], usage_imutest);
+            a->ov_odr = (int)(hz * 1000.0 + 0.5);
         }
         else if (strcmp(s, "--accel-g") == 0 && i + 1 < argc) {
             if (!cli_int(argv[++i], &a->ov_accel))

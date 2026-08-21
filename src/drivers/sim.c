@@ -402,7 +402,11 @@ static int pb_fetch(pb_stream_t *st, uint8_t type)
          * derives from the WHOLE file's extent + one nominal IMU period,
          * so both sensor streams advance identically.
          */
-        uint32_t odr = st->rdr.hdr.imu_odr_hz ? st->rdr.hdr.imu_odr_hz : 100;
+        /* Prefer the exact rate; a file written before imu_odr_mhz existed has 0
+     * there and falls back to the whole-Hz field. */
+    uint32_t odr = st->rdr.hdr.imu_odr_mhz
+                 ? st->rdr.hdr.imu_odr_mhz / 1000u
+                 : (st->rdr.hdr.imu_odr_hz ? st->rdr.hdr.imu_odr_hz : 100u);
         uint64_t period = 1000000000ULL / odr;
         uint64_t base   = st->rdr.hdr.t0_mono_ns;
         uint64_t span   = st->last_any_mono >= base
@@ -477,7 +481,7 @@ static int pb_mag_read(mag_sample_t *out)
 static struct {
     uint64_t t_last_ns;   /* end of the most-recently-delivered sample batch */
     uint32_t seq;
-    int      odr_hz;
+    int      odr_mhz;
 } imu_s;
 
 static int sim_imu_probe(const imud_bus_t *bus) { (void)bus; return 0; }
@@ -488,7 +492,7 @@ static int sim_imu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     (void)bus;
     imu_s.t_last_ns = mono_ns();
     imu_s.seq       = 0;
-    imu_s.odr_hz    = cfg->odr_hz > 0 ? cfg->odr_hz : 100;
+    imu_s.odr_mhz   = cfg->odr_mhz > 0 ? cfg->odr_mhz : 100000;
     if (!sim_t0_set) { sim_t0_ns = imu_s.t_last_ns; sim_t0_set = true; }
     return 0;
 }
@@ -501,7 +505,7 @@ static int sim_imu_read(const imud_bus_t *bus,
     if (pb.enabled) return pb_imu_read(buf, max, n_out);
 
     uint64_t now_ns    = mono_ns();
-    uint64_t period_ns = 1000000000ULL / (uint64_t)imu_s.odr_hz;
+    uint64_t period_ns = 1000000000000ULL / (uint64_t)imu_s.odr_mhz;
     int      n         = (int)((now_ns - imu_s.t_last_ns) / period_ns);
 
     if (n <= 0) { *n_out = 0; return 0; }
@@ -512,7 +516,7 @@ static int sim_imu_read(const imud_bus_t *bus,
     imu_s.t_last_ns += (uint64_t)n * period_ns;
 
     /* ISM330DHCX chip timer: 40000 ticks/s (25 µs/tick) */
-    uint32_t ticks_per = 40000u / (uint32_t)imu_s.odr_hz;
+    uint32_t ticks_per = 40000000u / (uint32_t)imu_s.odr_mhz;
 
     for (int i = 0; i < n; i++) {
         double t = (double)(t_start_ns + (uint64_t)i * period_ns - sim_t0_ns) * 1e-9;
@@ -530,12 +534,12 @@ static int sim_imu_read(const imud_bus_t *bus,
 /* ── IMU driver descriptor ──────────────────────────────────────────────── */
 
 /*
- * imu_ops_t / mag_ops_t ::actual_odr_hz. The sim paces itself at exactly the
+ * imu_ops_t / mag_ops_t ::actual_odr_mhz. The sim paces itself at exactly the
  * rate it is handed (sim_imu_init above) rather than snapping to the table it
  * advertises, so identity is the honest answer — anything else would make the
  * filter tune for a rate the sim is not producing.
  */
-static int sim_actual_odr_hz(int requested) { return requested; }
+static int sim_actual_odr_mhz(int req_mhz) { return req_mhz; }
 
 const imu_ops_t sim_imu_ops = {
     .name               = "sim",
@@ -552,10 +556,11 @@ const imu_ops_t sim_imu_ops = {
     .has_fifo           = true,
     .has_hw_timestamp   = true,
     .ts_tick_ns         = 25000,  /* mimics the ISM330DHCX 25 µs timer */
-    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 0 },
+    .supported_odr_mhz  = { 12000, 26000, 52000, 104000, 208000, 416000,
+                            833000, 1660000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
-    .actual_odr_hz      = sim_actual_odr_hz,
+    .actual_odr_mhz      = sim_actual_odr_mhz,
 };
 
 /* ── Mag sim state ──────────────────────────────────────────────────────── */
@@ -599,6 +604,7 @@ const mag_ops_t sim_mag_ops = {
     .set_reset        = NULL,
     .has_interrupt    = false,
     .has_set_reset    = false,
-    .supported_odr_hz = { 1, 10, 20, 50, 100, 200, 1000, 0 },
-    .actual_odr_hz    = sim_actual_odr_hz,
+    .supported_odr_mhz = { 1000, 10000, 20000, 50000, 100000, 200000,
+                           1000000, 0 },
+    .actual_odr_mhz    = sim_actual_odr_mhz,
 };

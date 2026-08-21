@@ -48,7 +48,7 @@ typedef struct {
     int   imu_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
     int   imu_addr;             /* 0x6B default, 0x6A via jumper */
     int   imu_int_gpio;         /* BCM GPIO for FIFO watermark interrupt */
-    int   imu_odr_hz;           /* 833, must be > 0; the rate REQUESTED — the
+    int   imu_odr_mhz;          /* 833000 (milli-Hz), must be > 0; REQUESTED — the
                                  * driver reports what it will really program
                                  * (odr_actual_imu), normally the next
                                  * supported rate at or above this */
@@ -63,7 +63,7 @@ typedef struct {
     int   mag_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
     int   mag_addr;             /* 0x30 fixed */
     int   mag_int_gpio;         /* BCM GPIO for measurement-done interrupt */
-    int   mag_odr_hz;           /* 100, must be > 0; requested, as imu_odr_hz */
+    int   mag_odr_mhz;          /* 100000 (milli-Hz), > 0; as imu_odr_mhz */
     float mag_set_period_s;     /* degauss interval seconds; 0 = disable */
 
     /* [fusion]  [hot]: gains and thresholds */

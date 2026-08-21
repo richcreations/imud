@@ -136,7 +136,7 @@ static void msleep(int ms)
  * destination the test can then observe from outside the daemon. */
 typedef struct {
     int  nmea_rate_hz;
-    int  imu_odr_hz;
+    int  imu_odr_mhz;
     bool nmea_tcp;   /* [nmea] tcp_enabled  → a listener on T_NMEA_TCP_PORT */
     bool hirate;     /* [highrate] enabled  → UDP to 127.0.0.1:T_HIRATE_PORT */
     /* NULL → T_CONF.  The fallback case needs a second config on disk at
@@ -204,7 +204,7 @@ static void write_conf_opt(conf_opt_t o)
         "rate_hz = 50\n"
         "[logging]\n"
         "level = \"error\"\n",
-        o.imu_odr_hz, nmea_rate,
+        o.imu_odr_mhz, nmea_rate,
         o.nmea_tcp ? "true" : "false", T_NMEA_TCP_PORT,
         o.hirate   ? "true" : "false", T_HIRATE_PORT,
         T_STREAM_SOCK);
@@ -221,10 +221,10 @@ static void write_conf_opt(conf_opt_t o)
 /* The plain form: no optional outputs. nmea rate_hz is a [hot] key and imu
  * odr_hz is a [restart] key; both are printed by the status report, which is
  * what makes the reload contract observable from outside the process. */
-static void write_conf(int nmea_rate_hz, int imu_odr_hz)
+static void write_conf(int nmea_rate_hz, int imu_odr_mhz)
 {
     write_conf_opt((conf_opt_t){ .nmea_rate_hz = nmea_rate_hz,
-                                 .imu_odr_hz   = imu_odr_hz });
+                                 .imu_odr_mhz   = imu_odr_mhz });
 }
 
 /* Connect to an AF_UNIX path, retrying while the daemon starts up. */
@@ -721,7 +721,8 @@ static void test_daemon_worker_can_signal_shutdown(void)
 static const char *make_replay_capture(void)
 {
     cap_writer_t w;
-    if (cap_writer_open(&w, T_REPLAY_CAP, 100, "sim", "sim", "1.9.0", 0, 0) != 0) {
+    if (cap_writer_open(&w, T_REPLAY_CAP, 100, 100000, "sim", "sim",
+                        "1.9.0", 0, 0) != 0) {
         perror("cap_writer_open");
         exit(1);
     }
@@ -759,7 +760,7 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
     unlink(T_STATUS_SOCK);
     unlink(T_STREAM_SOCK);
     unlink(T_PID_FILE);
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 100,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 100,
                                  .replay = true });
     const char *cap = make_replay_capture();
 
@@ -808,7 +809,7 @@ static void test_daemon_replay_missing_capture_exits_1(void)
     unlink(T_STREAM_SOCK);
     unlink(T_PID_FILE);
     unlink(T_REPLAY_CAP);                        /* the point: it is absent */
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 100,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 100,
                                  .replay = true });
 
     char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
@@ -851,7 +852,7 @@ static void test_daemon_nmea_thread_failure_closes_listener(void)
 
     unlink(T_STATUS_SOCK);
     unlink(T_STREAM_SOCK);
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 833,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
                                  .nmea_tcp = true });
     atomic_store(&g_fail_fn, nmea_out_thread);
 
@@ -922,7 +923,7 @@ static void test_daemon_hirate_thread_failure_sends_nothing(void)
 
     unlink(T_STATUS_SOCK);
     unlink(T_STREAM_SOCK);
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_hz = 833,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
                                  .hirate = true });
     atomic_store(&g_fail_fn, hirate_out_thread);
 
@@ -981,7 +982,7 @@ static void test_daemon_reload_reverts_a_deleted_key(void)
     unlink(T_STREAM_SOCK);
     /* 7, chosen because the compiled-in default is 10: the assertion below
      * cannot pass by accident on a daemon that never re-read anything. */
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 7, .imu_odr_hz = 833 });
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 7, .imu_odr_mhz = 833 });
 
     sigset_t old;
     daemon_run_t d = {0};
@@ -994,7 +995,7 @@ static void test_daemon_reload_reverts_a_deleted_key(void)
            "starts on the configured 7 Hz");
 
     /* The key is deleted, not changed — the whole point of the case. */
-    write_conf_opt((conf_opt_t){ .omit_nmea_rate = true, .imu_odr_hz = 833 });
+    write_conf_opt((conf_opt_t){ .omit_nmea_rate = true, .imu_odr_mhz = 833 });
     EXPECT(pthread_kill(d.tid, SIGHUP) == 0, "SIGHUP delivered");
 
     EXPECT(wait_for_status("NMEA out:", "10 Hz", 15000),
@@ -1033,7 +1034,7 @@ static void test_daemon_reload_follows_the_home_fallback(void)
     unlink(T_STATUS_SOCK);
     unlink(T_STREAM_SOCK);
     make_home_dir();
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_hz = 833,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_mhz = 833,
                                  .path = T_HOME_CONF });
 
     /* Set before the daemon thread exists, so its getenv is ordered behind
@@ -1053,7 +1054,7 @@ static void test_daemon_reload_follows_the_home_fallback(void)
     EXPECT(wait_for_status("NMEA out:", "9 Hz", 15000),
            "startup used the $HOME fallback");
 
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 6, .imu_odr_hz = 833,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 6, .imu_odr_mhz = 833,
                                  .path = T_HOME_CONF });
     EXPECT(pthread_kill(d.tid, SIGHUP) == 0, "SIGHUP delivered");
 
@@ -1100,7 +1101,7 @@ static void test_daemon_explicit_config_does_not_fall_back(void)
     make_home_dir();
     /* A perfectly valid sim config sitting exactly where the fallback looks:
      * pre-fix, the daemon comes up on this and binds T_STREAM_SOCK. */
-    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_hz = 833,
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 9, .imu_odr_mhz = 833,
                                  .path = T_HOME_CONF });
 
     char *saved_home = getenv("HOME");

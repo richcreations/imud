@@ -124,10 +124,11 @@ static struct {
  * gives an 1 kHz internal rate).  Returns the divider for the nearest
  * reachable rate; the caller reports what it actually got.
  */
-static uint8_t smplrt_div_encode(int odr_hz)
+static uint8_t smplrt_div_encode(int odr_mhz)
 {
-    if (odr_hz <= 0) return 0;
-    int div = (1000 + odr_hz / 2) / odr_hz - 1;
+    if (odr_mhz <= 0) return 0;
+    /* 1000 Hz / (1 + div), in milli-Hz: 1000000 / (1 + div). */
+    int div = (1000000 + odr_mhz / 2) / odr_mhz - 1;
     if (div < 0)   div = 0;
     if (div > 255) div = 255;
     return (uint8_t)div;
@@ -135,17 +136,17 @@ static uint8_t smplrt_div_encode(int odr_hz)
 
 static int odr_actual(uint8_t div)
 {
-    return 1000 / (1 + (int)div);
+    return 1000000 / (1 + (int)div);
 }
 
 /*
- * imu_ops_t::actual_odr_hz. This part is divider-based, so it reaches rates
- * that are not in supported_odr_hz at all and the shared snap-up default in
+ * imu_ops_t::actual_odr_mhz. This part is divider-based, so it reaches rates
+ * that are not in supported_odr_mhz at all and the shared snap-up default in
  * odr_actual_imu() would be wrong for it.
  */
-static int mpu_actual_odr_hz(int requested)
+static int mpu_actual_odr_mhz(int req_mhz)
 {
-    return odr_actual(smplrt_div_encode(requested));
+    return odr_actual(smplrt_div_encode(req_mhz));
 }
 
 static uint8_t gyro_fs_encode(int dps, float *scale)
@@ -266,17 +267,19 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     float accel_scale, gyro_scale;
     uint8_t gfs = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
     uint8_t afs = accel_fs_encode(cfg->accel_g,  &accel_scale);
-    uint8_t div = smplrt_div_encode(cfg->odr_hz);
+    uint8_t div = smplrt_div_encode(cfg->odr_mhz);
 
     /*
      * Two config values this chip cannot honour, adjusted here and logged once
      * so an operator who reads the daemon's status is not left wondering why
      * it is not running at the rate they asked for.
      */
-    int actual_hz = odr_actual(div);
-    if (actual_hz != cfg->odr_hz)
-        LOG_I("mpu925x: ODR %d Hz is not on the 1000/(1+SMPLRT_DIV) grid; "
-              "using %d Hz (SMPLRT_DIV=%u)\n", cfg->odr_hz, actual_hz, div);
+    int actual_mhz = odr_actual(div);
+    if (actual_mhz != cfg->odr_mhz)
+        LOG_I("mpu925x: ODR %d.%03d Hz is not on the 1000/(1+SMPLRT_DIV) grid; "
+              "using %d.%03d Hz (SMPLRT_DIV=%u)\n",
+              cfg->odr_mhz / 1000, cfg->odr_mhz % 1000,
+              actual_mhz / 1000, actual_mhz % 1000, div);
 
     int wm = cfg->fifo_wm;
     if (wm > FIFO_MAX_SETS) {
@@ -423,8 +426,8 @@ static int mpu_read(const imud_bus_t *bus,
 /* ── Driver descriptors ────────────────────────────────────────────────────── */
 
 /*
- * supported_odr_hz lists representative 1000/(1+SMPLRT_DIV) values, but the
- * divider reaches many rates that are not in it, so actual_odr_hz is what
+ * supported_odr_mhz lists representative 1000/(1+SMPLRT_DIV) values, but the
+ * divider reaches many rates that are not in it, so actual_odr_mhz is what
  * reports the rate the chip will really produce — the table is advice for the
  * operator, not the grid.  imud's shipped default of 833 Hz is not on the
  * divider grid either and lands on 1000 Hz (SMPLRT_DIV = 0).
@@ -438,10 +441,11 @@ const imu_ops_t mpu9250_ops = {
     .read             = mpu_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,   /* no chip timer — wall-clock timestamps only */
-    .supported_odr_hz   = { 100, 125, 200, 250, 333, 500, 1000, 0 },
+    .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
+                            500000, 1000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
-    .actual_odr_hz      = mpu_actual_odr_hz,
+    .actual_odr_mhz      = mpu_actual_odr_mhz,
 };
 
 const imu_ops_t mpu9255_ops = {
@@ -453,8 +457,9 @@ const imu_ops_t mpu9255_ops = {
     .read             = mpu_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,
-    .supported_odr_hz   = { 100, 125, 200, 250, 333, 500, 1000, 0 },
+    .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
+                            500000, 1000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
-    .actual_odr_hz      = mpu_actual_odr_hz,
+    .actual_odr_mhz      = mpu_actual_odr_mhz,
 };

@@ -74,8 +74,8 @@ struct imu_ctx {
      * requests (odr_actual_imu / odr_actual_mag). These, not the raw config
      * values, are what the drivers are handed and what the filter is tuned
      * for — see the resolution comment in imu_ctx_open. */
-    int              actual_odr_hz;
-    int              actual_mag_odr_hz;
+    int              actual_odr_mhz;      /* milli-Hz */
+    int              actual_mag_odr_mhz;  /* milli-Hz */
     /*
      * Chip-timer period actually in force: the driver's declared ts_tick_ns,
      * or what ts_tick_ns_actual() said this individual part's timer runs at.
@@ -520,7 +520,8 @@ void *ism_reader_thread(void *arg)
          * wants. 1/(τ·odr) gives τ = VIB_TAU_S regardless of how the driver
          * happens to batch. */
         if (cfg.engine_vibration_g2 > 0.0 && n > 0) {
-            const float alpha = 1.0f / (VIB_TAU_S * (float)ctx->actual_odr_hz);
+            const float alpha =
+            1.0f / (VIB_TAU_S * (float)ctx->actual_odr_mhz * 1e-3f);
             const float g = 9.80665f;
             for (int i = 0; i < n; i++) {
                 float a = sqrtf(buf[i].accel[0]*buf[i].accel[0]
@@ -579,7 +580,7 @@ void *mag_reader_thread(void *arg)
      * twenty-four conversions of latency at 1204.  Two sample periods bounds a
      * missed edge to about one sample at any rate on the ladder.
      */
-    const long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_hz);
+    const long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz);
 
     while (!ctx->stop) {
         if (ctx->mag_line) {
@@ -688,7 +689,8 @@ void *capture_thread(void *arg)
     if (cap_rot_open(&rot, cfg.capture_dir,
                      (uint32_t)(cfg.capture_max_mb    > 0 ? cfg.capture_max_mb    : 0),
                      (uint32_t)(cfg.capture_max_files > 0 ? cfg.capture_max_files : 0),
-                     (uint32_t)ctx->actual_odr_hz,
+                     (uint32_t)((ctx->actual_odr_mhz + 500) / 1000),
+                     (uint32_t)ctx->actual_odr_mhz,
                      ctx->imu_ops->name, ctx->mag_ops->name,
                      IMUD_VERSION_STR) != 0) {
         LOG_E("[capture] cannot open capture file in %s: %s\n",
@@ -789,8 +791,8 @@ void *fusion_thread(void *arg)
 {
     imu_ctx_t *ctx = arg;
     /* Rates the drivers actually programmed, not the cfg requests. */
-    float odr_hz     = (float)ctx->actual_odr_hz;
-    float mag_odr_hz = (float)ctx->actual_mag_odr_hz;
+    float odr_hz     = (float)ctx->actual_odr_mhz     * 1e-3f;
+    float mag_odr_hz = (float)ctx->actual_mag_odr_mhz * 1e-3f;
     imud_config_t cfg;
     cfg_snapshot(ctx, &cfg);   /* startup phase reads this snapshot */
 
@@ -1264,13 +1266,13 @@ void *fusion_thread(void *arg)
              * Record and publish in one step, so the recording clamps and the
              * two independent window gates live together where they can be
              * tested — see lat_step in imu_math.h for both.  The window is
-             * `actual_odr_hz` samples, which self-paces to about a second at
+             * `actual_odr_mhz` samples, which self-paces to about a second at
              * any ODR.  main.c prints the clause when either p99 is nonzero,
              * so a split publish still reads as one line.
              */
             lat_pub_t pf, pp;
             lat_step(&ctx->lat_fifo, &ctx->lat_pipe,
-                     (uint64_t)ctx->actual_odr_hz,
+                     (uint64_t)((ctx->actual_odr_mhz + 500) / 1000),
                      wall, s.read_done_ns, now_ns, &pf, &pp);
 
             if (pf.valid) {
@@ -1371,8 +1373,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * driver rather than snapping here is what lets the divider-based parts
      * (mpu925x, icm20948) answer for their own grid.
      */
-    ctx->actual_odr_hz     = odr_actual_imu(ctx->imu_ops, cfg->imu_odr_hz);
-    ctx->actual_mag_odr_hz = odr_actual_mag(ctx->mag_ops, cfg->mag_odr_hz);
+    ctx->actual_odr_mhz     = odr_actual_imu(ctx->imu_ops, cfg->imu_odr_mhz);
+    ctx->actual_mag_odr_mhz = odr_actual_mag(ctx->mag_ops, cfg->mag_odr_mhz);
 
     /* ── Open the sensor buses ───────────────────────────────────────────── */
 
@@ -1418,14 +1420,14 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Build hw config structs ─────────────────────────────────────────── */
 
-    /* Resolved rates, not cfg->*_odr_hz: the driver's own rounding is then a
+    /* Resolved rates, not cfg->*_odr_mhz: the driver's own rounding is then a
      * no-op and it programs exactly what the filter was tuned for. */
-    ctx->imu_hw_cfg.odr_hz   = ctx->actual_odr_hz;
+    ctx->imu_hw_cfg.odr_mhz  = ctx->actual_odr_mhz;
     ctx->imu_hw_cfg.accel_g  = cfg->imu_accel_g;
     ctx->imu_hw_cfg.gyro_dps = cfg->imu_gyro_dps;
     ctx->imu_hw_cfg.fifo_wm  = cfg->imu_fifo_wm;
 
-    ctx->mag_hw_cfg.odr_hz       = ctx->actual_mag_odr_hz;
+    ctx->mag_hw_cfg.odr_mhz      = ctx->actual_mag_odr_mhz;
     ctx->mag_hw_cfg.set_period_s = cfg->mag_set_period_s;
     /*
      * Deliberately the SAME condition that requests the line further down, so
@@ -1436,6 +1438,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      */
     ctx->mag_hw_cfg.int_driven   = ctx->mag_ops->has_interrupt
                                 && cfg->mag_int_gpio > 0;
+
+    char hb1[16], hb2[16];   /* MHZ_STR scratch for the startup lines */
 
     /* ── Probe + reset + init IMU ────────────────────────────────────────── */
 
@@ -1474,13 +1478,15 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         }
     }
 
-    if (ctx->actual_odr_hz != cfg->imu_odr_hz)
-        LOG_I("[imu] %s 0x%02X OK — ODR %d Hz requested, %d Hz actual\n",
+    if (ctx->actual_odr_mhz != cfg->imu_odr_mhz)
+        LOG_I("[imu] %s 0x%02X OK — ODR %s Hz requested, %s Hz actual\n",
                 ctx->imu_ops->name, cfg->imu_addr,
-                cfg->imu_odr_hz, ctx->actual_odr_hz);
+                MHZ_STR(hb1, cfg->imu_odr_mhz),
+                MHZ_STR(hb2, ctx->actual_odr_mhz));
     else
-        LOG_I("[imu] %s 0x%02X OK — actual ODR %d Hz\n",
-                ctx->imu_ops->name, cfg->imu_addr, ctx->actual_odr_hz);
+        LOG_I("[imu] %s 0x%02X OK — actual ODR %s Hz\n",
+                ctx->imu_ops->name, cfg->imu_addr,
+                MHZ_STR(hb1, ctx->actual_odr_mhz));
 
     /* ── Probe + reset + init mag ────────────────────────────────────────── */
 
@@ -1497,13 +1503,15 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         LOG_E("[imu] %s init failed\n", ctx->mag_ops->name);
         goto fail;
     }
-    if (ctx->actual_mag_odr_hz != cfg->mag_odr_hz)
-        LOG_I("[imu] %s 0x%02X OK — ODR %d Hz requested, %d Hz actual\n",
+    if (ctx->actual_mag_odr_mhz != cfg->mag_odr_mhz)
+        LOG_I("[imu] %s 0x%02X OK — ODR %s Hz requested, %s Hz actual\n",
                 ctx->mag_ops->name, cfg->mag_addr,
-                cfg->mag_odr_hz, ctx->actual_mag_odr_hz);
+                MHZ_STR(hb1, cfg->mag_odr_mhz),
+                MHZ_STR(hb2, ctx->actual_mag_odr_mhz));
     else
-        LOG_I("[imu] %s 0x%02X OK — actual ODR %d Hz\n",
-                ctx->mag_ops->name, cfg->mag_addr, ctx->actual_mag_odr_hz);
+        LOG_I("[imu] %s 0x%02X OK — actual ODR %s Hz\n",
+                ctx->mag_ops->name, cfg->mag_addr,
+                MHZ_STR(hb1, ctx->actual_mag_odr_mhz));
 
     /* ── Configure GPIO lines ────────────────────────────────────────────── */
 

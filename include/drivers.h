@@ -22,13 +22,28 @@
 /* ── IMU driver configuration ──────────────────────────────────────────────── */
 
 /*
- * odr_hz here is already resolved: imu.c passes the rate the driver said it
- * would program (see actual_odr_hz below), not the operator's raw request, so
+ * RATES ARE MILLI-HERTZ THROUGHOUT THIS INTERFACE.
+ *
+ * Whole Hz could not express the rates real parts actually run.  The ST 6-axis
+ * ladder is one binary divider chain, 6664/2^n, so its bottom rung is 13.016 Hz
+ * — the datasheet prints "12.5 Hz" and the driver then rounded that to 12,
+ * leaving the advertised rate 7.8% below what the part produced and
+ * ticks_per_sample scaled for a rate nothing was running at.  The TDK parts
+ * have an exact 12.5 Hz rung that no integer represents at all.  Rounding
+ * either way was wrong in a way that showed up on the bench as a driver fault.
+ *
+ * So: milli-Hz, everywhere the interface carries a rate.  13016 is the ST
+ * bottom rung, 12500 the TDK one, and neither needs a round trip through a
+ * whole number.  `[imu] odr_hz` still reads in Hz and accepts a decimal —
+ * config.c converts once, at the edge.
+ *
+ * odr_mhz here is already resolved: imu.c passes the rate the driver said it
+ * would program (see actual_odr_mhz below), not the operator's raw request, so
  * the driver's own rounding is a no-op and the filter, the driver and imutest
  * cannot disagree about the sample rate.
  */
 typedef struct {
-    int odr_hz;     /* resolved sample rate in Hz */
+    int odr_mhz;    /* resolved sample rate in milli-Hz */
     int accel_g;    /* full-scale: 2 | 4 | 8 | 16 */
     int gyro_dps;   /* full-scale: 125 | 250 | 500 | 1000 | 2000 | 4000 */
     int fifo_wm;    /* watermark in sample-sets; ignored if !has_fifo */
@@ -57,21 +72,21 @@ typedef struct {
  * a poller has no edge to trust.
  */
 typedef struct {
-    int   odr_hz;        /* resolved ODR in Hz, as for imu_cfg_t */
+    int   odr_mhz;       /* resolved ODR in milli-Hz, as for imu_cfg_t */
     float set_period_s;  /* degauss pulse interval in seconds; 0 = disable */
     bool  int_driven;    /* caller blocks on the DRDY edge (see above) */
 } mag_cfg_t;
 
 /*
- * ── The actual_odr_hz hook, shared by both ops structs ─────────────────────
+ * ── The actual_odr_mhz hook, shared by both ops structs ────────────────────
  *
  * Both imu_ops_t and mag_ops_t carry:
  *
- *     int (*actual_odr_hz)(int requested);
+ *     int (*actual_odr_mhz)(int requested_mhz);
  *
- * the rate this driver will really program for `requested`, in Hz.
+ * the rate this driver will really program for `requested_mhz`, in milli-Hz.
  *
- * NULL means the default rule — the lowest entry in supported_odr_hz that is
+ * NULL means the default rule — the lowest entry in supported_odr_mhz that is
  * >= requested, clamped to the highest — which is what every register-table
  * driver's odr_encode() chain does. Divider-based parts (mpu925x, icm20948)
  * derive the rate from a base clock and reach values that are not in their
@@ -149,11 +164,11 @@ typedef struct {
      */
     uint32_t (*ts_tick_ns_actual)(const imud_bus_t *bus);
 
-    int  supported_odr_hz[16];   /* ascending, 0-terminated */
+    int  supported_odr_mhz[16];  /* milli-Hz, ascending, 0-terminated */
     int  supported_accel_g[8];   /* ascending, 0-terminated */
     int  supported_gyro_dps[8];  /* ascending, 0-terminated */
 
-    int (*actual_odr_hz)(int requested);  /* NULL → snap up the table; see above */
+    int (*actual_odr_mhz)(int req_mhz);  /* NULL → snap up the table; see above */
 } imu_ops_t;
 
 /* ── Magnetometer driver operations ───────────────────────────────────────── */
@@ -221,9 +236,9 @@ typedef struct {
 
     bool has_interrupt;
     bool has_set_reset;
-    int  supported_odr_hz[16];  /* ascending, 0-terminated */
+    int  supported_odr_mhz[16]; /* milli-Hz, ascending, 0-terminated */
 
-    int (*actual_odr_hz)(int requested);  /* NULL → snap up the table; see above */
+    int (*actual_odr_mhz)(int req_mhz);  /* NULL → snap up the table; see above */
 } mag_ops_t;
 
 /* ── Registry lookup — implemented in drivers.c ────────────────────────────── */

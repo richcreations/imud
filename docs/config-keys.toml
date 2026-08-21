@@ -426,9 +426,9 @@ to use a 10\~ms polling timer instead.'''
 
   [[section.key]]
   names = ["odr_hz"]
-  fields = ["imu_odr_hz"]
-  values_from = "ism330dhcx.supported_odr_hz"
-  macros = ["NEED_POS_INT"]
+  fields = ["imu_odr_mhz"]
+  values_from = "ism330dhcx.supported_odr_mhz"
+  macros = ["NEED_POS_MHZ"]
   type = 'int'
   default = 'default:\ 833'
   scope = ""
@@ -440,7 +440,7 @@ A rate the chip cannot produce is rounded
 to the next one it can, and the filter is tuned for that actual rate; the
 daemon logs both at startup when they differ.
 ISM330DHCX supports: {values}.
-Rates above 1660 need
+Rates above 1666 need
 .BR "bus = \(dqspi\(dq" .'''
   md_type = 'int'
   md_default = '`833`'
@@ -649,9 +649,9 @@ to use a polling timer.'''
 
   [[section.key]]
   names = ["odr_hz"]
-  fields = ["mag_odr_hz"]
-  values_from = "mmc5983ma.supported_odr_hz"
-  macros = ["NEED_POS_INT"]
+  fields = ["mag_odr_mhz"]
+  values_from = "mmc5983ma.supported_odr_mhz"
+  macros = ["NEED_POS_MHZ"]
   type = 'int'
   default = 'default:\ 100'
   scope = ""

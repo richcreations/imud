@@ -77,6 +77,8 @@ static struct {
     uint64_t ts_reject_next;    /* next count worth a log line */
     uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
     uint64_t ts_fwd_next;       /* next count worth a log line */
+    uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
+    uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
 } ls;
 
@@ -90,29 +92,52 @@ static struct {
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
-static uint8_t odr_encode(int hz)
+/*
+ * The lowest rung is 13, not the 12.5 the datasheet's table prints.
+ *
+ * DS13012 labels the ODR ladder 12.5 / 26 / 52 / 104 / 208 / 416 / 833 /
+ * 1.67k / 3.33k / 6.67k, but those labels are a rounded view of one binary
+ * divider chain: 6664 / 2^n gives 3332, 1666, 833, 416.5, 208.25, 104.125,
+ * 52.06, 26.03 and 13.016.  Every label matches its rung to better than 0.4%
+ * except the last, which the table calls 12.5 where the divider gives 13.016.
+ *
+ * Measured on the reference part 2026-08-20, over 1,624 samples in 119.8 s:
+ * every rung lands on 6664/2^n scaled by this die's INTERNAL_FREQ_FINE trim
+ * (+27 steps, x1.0405) to within 0.4%, the bottom rung included -- 13.55 Hz
+ * predicted, 13.55 measured, against 13.03 if the rung really were 12.5.
+ * chip_ts tracked the wall clock at 1.00063 across the same run, so the
+ * timebase is not what is moving.
+ *
+ * Declaring 12 was worse than the datasheet's own label: 12.5 rounds to 13 by
+ * ordinary convention, and 13 is independently what the divider produces.  At
+ * 12 the advertised rate sat 7.8% below what the part delivers, which is what
+ * imu.odr reported at that rung on every run.  This also sharpens
+ * ticks_per_sample: 40000/13 = 3076 against a true 3073, where 40000/12 gave
+ * 3333.
+ */
+static uint8_t odr_encode(int mhz)
 {
-    if (hz <=   12) return 0x1;
-    if (hz <=   26) return 0x2;
-    if (hz <=   52) return 0x3;
-    if (hz <=  104) return 0x4;
-    if (hz <=  208) return 0x5;
-    if (hz <=  416) return 0x6;
-    if (hz <=  833) return 0x7;
-    if (hz <= 1660) return 0x8;
-    if (hz <= 3332) return 0x9;
+    if (mhz <=   13016) return 0x1;
+    if (mhz <=   26031) return 0x2;
+    if (mhz <=   52063) return 0x3;
+    if (mhz <=  104125) return 0x4;
+    if (mhz <=  208250) return 0x5;
+    if (mhz <=  416500) return 0x6;
+    if (mhz <=  833000) return 0x7;
+    if (mhz <= 1666000) return 0x8;
+    if (mhz <= 3332000) return 0x9;
     return 0xA;  /* 6664 Hz */
 }
 
 /* Bound and clamp both derive from the table — see ism330dhcx.c, same shape
  * and the same reason. */
-static int odr_actual(int hz)
+static int odr_actual(int mhz)
 {
-    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
-                                 3332, 6664 };
+    static const int steps[] = { 13016, 26031, 52063, 104125, 208250,
+                                 416500, 833000, 1666000, 3332000, 6664000 };
     static const int n = (int)(sizeof steps / sizeof steps[0]);
     for (int i = 0; i < n; i++)
-        if (hz <= steps[i]) return steps[i];
+        if (mhz <= steps[i]) return steps[i];
     return steps[n - 1];
 }
 
@@ -179,7 +204,7 @@ reset_done:
 static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
-    uint8_t odr  = odr_encode(cfg->odr_hz);
+    uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
@@ -226,8 +251,11 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     ls.ts_reject_next   = 1;
     ls.ts_fwd_rejects   = 0;
     ls.ts_fwd_next      = 1;
+    ls.ts_bwd_rejects   = 0;
+    ls.ts_bwd_next      = 1;
     chip_ts_guard_reset(&ls.ts_guard);
-    ls.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
+    ls.ticks_per_sample =
+        (uint32_t)(40000000u / (unsigned)odr_actual(cfg->odr_mhz));
 
     return 0;
 }
@@ -354,12 +382,29 @@ static int lsm_read(const imud_bus_t *bus,
                  * same now_ts here unchecked is what let one bad read stamp
                  * nine samples 54 s ahead on the reference part.
                  */
-                if (!chip_ts_guard_forward_ok(&ls.ts_guard, first,
-                                              TS_MAX_FWD_TICKS)) {
+                /*
+                 * Both directions, and refuse either.  A read far BEHIND the
+                 * previous burst used to be passed through as a counter
+                 * reset — see chip_ts.h for why that premise does not hold
+                 * inside a run, and for what it emitted on the bench.
+                 */
+                bool fwd_bad = !chip_ts_guard_forward_ok(
+                        &ls.ts_guard, first, TS_MAX_FWD_TICKS);
+                bool bwd_bad = !chip_ts_guard_backward_ok(
+                        &ls.ts_guard, first, TS_MAX_JITTER_TICKS);
+                if (fwd_bad || bwd_bad) {
                     first    = chip_ts_guard_next(&ls.ts_guard,
                                                   ls.ticks_per_sample);
                     burst_ts = first + span;
-                    if (++ls.ts_fwd_rejects >= ls.ts_fwd_next) {
+                    if (bwd_bad) {
+                        if (++ls.ts_bwd_rejects >= ls.ts_bwd_next) {
+                            LOG_W("lsm6dso: %llu post-drain timestamp "
+                                  "read(s) implausibly far behind; "
+                                  "extrapolating from the previous burst\n",
+                                  (unsigned long long)ls.ts_bwd_rejects);
+                            ls.ts_bwd_next *= 10;
+                        }
+                    } else if (++ls.ts_fwd_rejects >= ls.ts_fwd_next) {
                         LOG_W("lsm6dso: %llu post-drain timestamp read(s) "
                               "implausibly far ahead; extrapolating from the "
                               "previous burst\n",
@@ -427,7 +472,8 @@ const imu_ops_t lsm6dso_ops = {
     .has_hw_timestamp = true,
     .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
     .ts_tick_ns_actual = lsm_ts_tick_ns_actual,
-    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
+    .supported_odr_mhz  = { 13016, 26031, 52063, 104125, 208250, 416500,
+                            833000, 1666000, 3332000, 6664000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
 };
@@ -457,7 +503,8 @@ const imu_ops_t lsm6dsox_ops = {
     .has_hw_timestamp = true,
     .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
     .ts_tick_ns_actual = lsm_ts_tick_ns_actual,
-    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
+    .supported_odr_mhz  = { 13016, 26031, 52063, 104125, 208250, 416500,
+                            833000, 1666000, 3332000, 6664000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
 };

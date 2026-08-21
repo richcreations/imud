@@ -316,11 +316,11 @@ static void base_config(imud_config_t *cfg)
     cfg->mag_addr     = MMC_ADDR;
     cfg->imu_int_gpio = 0;       /* the GPIO stub covers that path separately */
     cfg->mag_int_gpio = 0;
-    cfg->imu_odr_hz   = 208;
+    cfg->imu_odr_mhz   = 208000;
     cfg->imu_accel_g  = 4;
     cfg->imu_gyro_dps = 500;
     cfg->imu_fifo_wm  = 8;
-    cfg->mag_odr_hz   = 100;
+    cfg->mag_odr_mhz   = 100000;
 }
 
 /* Short windows: the core measures real elapsed time, so the whole suite has
@@ -478,20 +478,23 @@ static imt_status_t status_of(const imt_report_t *r, const char *id)
  * the loop halves.  The multipliers below are deliberately generous for the
  * same reason: the grid is coarse enough that a 3x ask costs nothing.
  */
+/* `hz` is Hz; the table and the result are MILLI-Hz. */
 static int grid_below(const imt_report_t *r, double hz)
 {
     int best = 0;
     for (int i = 0; i < 16 && r->imu_odr_tab[i]; i++)
-        if (r->imu_odr_tab[i] <= hz && r->imu_odr_tab[i] > best)
+        if ((double)r->imu_odr_tab[i] * 1e-3 <= hz && r->imu_odr_tab[i] > best)
             best = r->imu_odr_tab[i];
     return best;
 }
 
+/* `hz` is Hz; the table and the result are MILLI-Hz. */
 static int grid_above(const imt_report_t *r, double hz)
 {
     int best = 0;
     for (int i = 0; i < 16 && r->imu_odr_tab[i]; i++)
-        if (r->imu_odr_tab[i] >= hz && (best == 0 || r->imu_odr_tab[i] < best))
+        if ((double)r->imu_odr_tab[i] * 1e-3 >= hz &&
+            (best == 0 || r->imu_odr_tab[i] < best))
             best = r->imu_odr_tab[i];
     return best;
 }
@@ -941,16 +944,16 @@ static void test_rate_above_configured_odr_fails(void)
 
     mock_base();
     imud_config_t cfg; base_config(&cfg);
-    cfg.mag_odr_hz = 1;                  /* on the MMC grid; loop far outruns it */
+    cfg.mag_odr_mhz = 1000;                  /* on the MMC grid; loop far outruns it */
     imt_opts_t o;      fast_opts(&o);
     o.phases = IMT_PHASE_PASSIVE;
     script_reset(&o);
 
     imt_report_t *r = run(&cfg, &o);
 
-    EXPECT(r->mag_eff_odr_hz == 1, "1 Hz is on the MMC grid");
+    EXPECT(r->mag_eff_odr_mhz == 1000, "1 Hz is on the MMC grid");
     EXPECT(r->raw.mag_n >= 5, "enough samples to grade the rate at all");
-    EXPECT(r->raw.mag_rate_hz > r->mag_eff_odr_hz * (1.0 + o.odr_tol_warn),
+    EXPECT(r->raw.mag_rate_hz > r->mag_eff_odr_mhz * 1e-3 * (1.0 + o.odr_tol_warn),
            "the measurement really is above the configured rate");
     EXPECT(status_of(r, "mag.rate") == IMT_FAIL,
            "a mag rate above the configured ODR FAILs");
@@ -977,19 +980,20 @@ static void test_rate_above_configured_odr_fails(void)
     EXPECT(slow > 0, "the ISM330 grid has an entry well under the loop rate");
     if (slow <= 0) { end(fb); return; }
 
-    cfg.imu_odr_hz = slow;
+    cfg.imu_odr_mhz = slow;
     mock_base();
     script_reset(&o);
     r = run(&cfg, &o);
 
-    double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz;
+    double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_mhz * 1e-3)
+                   / (r->eff_odr_mhz * 1e-3);
     free(r);
 
     /* Far above the configured rate: past odr_tol_fail, so a FAIL. */
     mock_base();
     script_reset(&o);
     r = run(&cfg, &o);
-    EXPECT(r->raw.odr_measured_hz > r->eff_odr_hz * (1.0 + o.odr_tol_warn),
+    EXPECT(r->raw.odr_measured_hz > r->eff_odr_mhz * 1e-3 * (1.0 + o.odr_tol_warn),
            "the IMU loop overshoots the rate picked for it");
     EXPECT(imu_err > o.odr_tol_fail, "and by more than the fail tolerance");
     EXPECT(status_of(r, "imu.odr") == IMT_FAIL,
@@ -1010,7 +1014,7 @@ static void test_rate_above_configured_odr_fails(void)
     o.odr_tol_fail = imu_err * 4.0;
     r = run(&cfg, &o);
 
-    EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_hz) / r->eff_odr_hz
+    EXPECT(fabs(r->raw.odr_measured_hz - r->eff_odr_mhz * 1e-3) / (r->eff_odr_mhz * 1e-3)
            <= o.odr_tol_fail,
            "the over-rate error really is inside the widened warn band");
     EXPECT(status_of(r, "imu.odr") == IMT_WARN,
@@ -1050,14 +1054,14 @@ static void test_rate_below_configured_odr_warns(void)
     EXPECT(fast > 0, "the ISM330 grid has an entry well above the loop rate");
     if (fast <= 0) { end(fb); return; }
 
-    cfg.imu_odr_hz = fast;
+    cfg.imu_odr_mhz = fast;
     mock_base();
     script_reset(&o);
     probe = run(&cfg, &o);
-    EXPECT(probe->raw.odr_measured_hz < probe->eff_odr_hz * (1.0 - o.odr_tol_warn),
+    EXPECT(probe->raw.odr_measured_hz < probe->eff_odr_mhz * 1e-3 * (1.0 - o.odr_tol_warn),
            "the loop really does fall short of the rate picked for it");
-    double err = fabs(probe->raw.odr_measured_hz - probe->eff_odr_hz)
-                 / probe->eff_odr_hz;
+    double err = fabs(probe->raw.odr_measured_hz - probe->eff_odr_mhz * 1e-3)
+                 / (probe->eff_odr_mhz * 1e-3);
     free(probe);
 
     /* Widen the fail bound past the shortfall: a low reading in the warn band
@@ -1067,7 +1071,7 @@ static void test_rate_below_configured_odr_warns(void)
     o.odr_tol_fail = err * 2.0;
     imt_report_t *r = run(&cfg, &o);
 
-    EXPECT(r->raw.odr_measured_hz < r->eff_odr_hz,
+    EXPECT(r->raw.odr_measured_hz < r->eff_odr_mhz * 1e-3,
            "still measuring below the configured rate");
     EXPECT(status_of(r, "imu.odr") == IMT_WARN,
            "a rate below the configured ODR stays a WARN");
@@ -1264,7 +1268,9 @@ static void test_odr_and_seq(void)
     /* ISM330 has a hardware timestamp, so chip_ts must be present. */
     EXPECT(status_of(r, "imu.chipts.presence") == IMT_PASS, "chip_ts present");
     EXPECT(status_of(r, "imu.odr.rounding") == IMT_INFO, "ODR rounding is INFO");
-    EXPECT(r->eff_odr_hz == 208, "208 Hz is on the ISM330 grid");
+    /* 208 is NOT on the grid any more: the ST ladder is the divider chain, so
+     * the rung is 208.25 Hz and a request for 208 rounds up to it. */
+    EXPECT(r->eff_odr_mhz == 208250, "208 resolves to the 208.25 Hz rung");
 
     free(r);
     end(fb);
@@ -2249,7 +2255,7 @@ static void test_chipts_accounting(void)
  * Pinned as an invariant rather than by staging a fast part, because the rate
  * the mock achieves is set by how quickly the poll loop runs and is not ours
  * to dictate: whatever it turns out to be, the implied tick must be consistent
- * with THAT and with the measured median delta. Recomputing from eff_odr_hz
+ * with THAT and with the measured median delta. Recomputing from eff_odr_mhz
  * breaks it, since the two are never equal in a real run.
  */
 /*
@@ -2279,7 +2285,7 @@ static void test_drdy_window_must_allow_an_edge(void)
 
     /* 64 sample-sets at 12 Hz needs 5.3 s; the window is 0.3 s. */
     mock_base(); script_reset(&o);
-    cfg.imu_odr_hz = 12;
+    cfg.imu_odr_mhz = 12000;
     cfg.imu_fifo_wm = 64;
     g_gpio_rate = 0.0;
     imt_report_t *r = run(&cfg, &o);
@@ -2290,7 +2296,7 @@ static void test_drdy_window_must_allow_an_edge(void)
     /* At 833 Hz the same watermark fills in 77 ms, well inside the window, so
      * an absence of edges really is a defect. */
     mock_base(); script_reset(&o);
-    cfg.imu_odr_hz = 833;
+    cfg.imu_odr_mhz = 833000;
     g_gpio_rate = 0.0;
     r = run(&cfg, &o);
     EXPECT(status_of(r, "imu.drdy.edges") != IMT_SKIP,
@@ -2328,7 +2334,7 @@ static void test_mag_rate_names_the_direction(void)
 
     /* The mock answers every poll, so the measured rate lands above the
      * configured one -- that is the case the wording used to get backwards. */
-    if (r->raw.mag_rate_hz > (double)r->mag_eff_odr_hz) {
+    if (r->raw.mag_rate_hz > (double)r->mag_eff_odr_mhz * 1e-3) {
         EXPECT(!note_contains(r, "mag.rate", "low"),
                "a rate above nominal is never described as low");
         /* "ABOVE" out of band, "above" inside it: the emphasis carries the
@@ -2341,6 +2347,229 @@ static void test_mag_rate_names_the_direction(void)
                "a rate at or below nominal keeps the low wording");
     }
     free(r);
+    end(fb);
+}
+
+/*
+ * The tick estimate must see within-burst deltas only.
+ *
+ * A burst's first sample carries the gap to the PREVIOUS burst, across which
+ * the driver re-derived its anchor from a post-drain timestamp read. That
+ * delta is the drain cadence, not the sample period, and letting it in is what
+ * put imu.chipts.rate into WARN at 26, 52 and 104 Hz on a healthy part: below
+ * ~208 Hz a 10 ms drain returns fewer than two samples, so almost every delta
+ * was a seam and the median landed on a multiple of the pacing.
+ *
+ * Bursts here are deliberately lopsided — a 100-tick sample period against a
+ * 5000-tick gap — so an included seam could not hide inside the median.
+ */
+/*
+ * A full-scale sweep is graded against the median of its own rows.
+ *
+ * The pairwise form this replaced graded a transient: sigma across a gyro's
+ * ranges is expected to be flat, so one step inflated by a knock on the bench
+ * made the NEXT step read as a halving and the innocent row carried the WARN.
+ * It moved between runs on the reference part -- 52/104/208 Hz in one sweep,
+ * 12/52 in another -- which is the signature of grading noise.
+ */
+static void fs_set(imt_fs_row_t *r, int fs, double sigma)
+{
+    r->fs = fs;
+    for (int k = 0; k < 3; k++) r->sigma[k] = sigma;
+    r->status = IMT_INFO;
+}
+
+/*
+ * imu.fifo.overflow's decision table.
+ *
+ * The loop itself is not unit-tested: it sleeps its way up to ~9 s looking for
+ * the fill, which would dominate this suite's runtime. What changed is the
+ * DECISION, and that is here. Bench coverage for the loop is the ODR ladder on
+ * the reference part, where 12 and 26 Hz are the rates that cannot fill in the
+ * window and used to WARN for it.
+ */
+static void test_overflow_status(void)
+{
+    begin("test_overflow_status");
+    int fb = g_fail;
+
+    EXPECT(imt_overflow_status(1, false) == IMT_PASS,
+           "rc 1 is the overflow being reported, which is the contract");
+    EXPECT(imt_overflow_status(1, true) == IMT_PASS,
+           "and rc 1 stands however the fill was going");
+    EXPECT(imt_overflow_status(-1, false) == IMT_FAIL,
+           "a bus error is a failure, not a missing overflow");
+    EXPECT(imt_overflow_status(-1, true) == IMT_FAIL,
+           "likewise while still filling");
+
+    /* The pair that used to be one answer. */
+    EXPECT(imt_overflow_status(0, false) == IMT_WARN,
+           "at capacity and still rc 0: the driver is not surfacing the bit");
+    EXPECT(imt_overflow_status(0, true) == IMT_SKIP,
+           "still filling: the window was short, which is not the part's "
+           "fault and must not be graded as one");
+
+    end(fb);
+}
+
+/*
+ * imu.fs.gyro's precondition: does sigma actually track full scale?
+ *
+ * Decided by monotonicity, because the spread statistic this replaced was a
+ * coin flip. Comparing CV(sigma) with CV(sigma/fs) let ONE degenerate step
+ * open the gate -- a near-zero sigma inflates CV(sigma) -- and that same row
+ * then sat below half the median and WARNed. One bad measurement both unlocked
+ * the door and set off the alarm, which is why the check fired on some bench
+ * sweeps and not others with nothing about the part changing.
+ */
+static void test_fs_scales_with_range(void)
+{
+    begin("test_fs_scales_with_range");
+    int fb = g_fail;
+
+    imt_fs_row_t rows[6];
+
+    /* Quantisation-dominated: sigma rises at every step. */
+    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
+    EXPECT(imt_fs_scales_with_range(rows, 5),
+           "sigma rising with every range is the quantisation model");
+
+    /* Analogue-dominated: the real bench numbers, 104.125 Hz on the reference
+     * ISM330DHCX. Two rises in five steps -- noise, not a scale factor. */
+    fs_set(&rows[0],  125, 0.0061406);
+    fs_set(&rows[1],  250, 0.0028145);
+    fs_set(&rows[2],  500, 0.0060096);
+    fs_set(&rows[3], 1000, 0.0053275);
+    fs_set(&rows[4], 2000, 0.0039081);
+    fs_set(&rows[5], 4000, 0.0039607);
+    EXPECT(!imt_fs_scales_with_range(rows, 6),
+           "the measured bench sweep is not graded");
+
+    /*
+     * THE REGRESSION. One degenerate step among otherwise flat rows must not
+     * open the gate. Under the old CV test this returned true, and the median
+     * test then flagged the very row that had opened it.
+     */
+    for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.9e-3);
+    fs_set(&rows[2], 500, 1.0e-6);          /* a failed measurement */
+    EXPECT(!imt_fs_scales_with_range(rows, 6),
+           "one degenerate step does not unlock grading");
+
+    /* A single violation is tolerated where the model otherwise holds, so one
+     * bad row cannot veto a part the check should be grading. */
+    for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
+    /* 1e-4, 2e-4, 4e-4, 3e-4, 1.6e-3, 3.2e-3 — one genuine FALL at row 3,
+     * then the rise resumes. 4 rises in 5 steps. */
+    fs_set(&rows[3], 1000, 3.0e-4);
+    EXPECT(imt_fs_scales_with_range(rows, 6),
+           "one dip does not veto a genuinely quantisation-dominated part");
+
+    /* Two violations say the model does not hold. */
+    for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
+    fs_set(&rows[2], 500, 1.0e-4);
+    fs_set(&rows[4], 2000, 2.0e-4);
+    EXPECT(!imt_fs_scales_with_range(rows, 6), "two violations close the gate");
+
+    /* Too few comparable rows to tell the models apart. */
+    fs_set(&rows[0], 125, 1.9e-3);
+    fs_set(&rows[1], 250, 3.8e-3);
+    EXPECT(!imt_fs_scales_with_range(rows, 2), "two rows decide nothing");
+
+    /* Unmeasured rows are skipped rather than read as a fall. */
+    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
+    fs_set(&rows[4], 2000, 0.0);
+    EXPECT(imt_fs_scales_with_range(rows, 5),
+           "a row with no measurement is skipped, not counted against");
+
+    end(fb);
+}
+
+static void test_fs_grade_median(void)
+{
+    begin("test_fs_grade_median");
+    int fb = g_fail;
+
+    imt_fs_row_t rows[5];
+
+    /* Flat sweep with ONE step inflated by a bump: nothing is wrong with the
+     * part, and nothing may be graded. The pairwise form flagged row 3 here. */
+    fs_set(&rows[0], 125,  1.9e-3);
+    fs_set(&rows[1], 250,  1.9e-3);
+    fs_set(&rows[2], 500,  9.0e-3);      /* the knock */
+    fs_set(&rows[3], 1000, 1.9e-3);
+    fs_set(&rows[4], 2000, 1.9e-3);
+    EXPECT(imt_fs_grade_median(rows, 5, 0.5) == 0,
+           "one inflated step does not condemn its neighbour");
+    EXPECT(rows[3].status == IMT_INFO, "the innocent row stays ungraded");
+
+    /* A range whose sensitivity constant is wrong reads low against ALL the
+     * others, which is the defect the check exists for. */
+    fs_set(&rows[0], 125,  1.9e-3);
+    fs_set(&rows[1], 250,  1.9e-3);
+    fs_set(&rows[2], 500,  0.2e-3);      /* the broken branch */
+    fs_set(&rows[3], 1000, 1.9e-3);
+    fs_set(&rows[4], 2000, 1.9e-3);
+    EXPECT(imt_fs_grade_median(rows, 5, 0.5) == 1, "the low range is caught");
+    EXPECT(rows[2].status == IMT_WARN, "and it is the one marked");
+    EXPECT(rows[1].status == IMT_INFO && rows[3].status == IMT_INFO,
+           "its neighbours are not");
+
+    /* A flat sweep is clean. */
+    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.9e-3);
+    EXPECT(imt_fs_grade_median(rows, 5, 0.5) == 0, "a flat sweep grades nothing");
+
+    /* Too few rows for a median: grade nothing rather than guess. */
+    fs_set(&rows[0], 125, 1.9e-3);
+    fs_set(&rows[1], 250, 0.1e-3);
+    EXPECT(imt_fs_grade_median(rows, 2, 0.5) == 0,
+           "two rows are not enough to grade");
+    EXPECT(rows[1].status == IMT_INFO, "and nothing is marked");
+
+    /* Zero sigmas are skipped, not treated as infinitely low. */
+    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.9e-3);
+    fs_set(&rows[2], 500, 0.0);
+    EXPECT(imt_fs_grade_median(rows, 5, 0.5) == 0,
+           "a row with no measurement is not a finding");
+
+    end(fb);
+}
+
+static void test_ts_collect_excludes_seams(void)
+{
+    begin("test_ts_collect_excludes_seams");
+    int fb = g_fail;
+
+    imt_ts_acc_t a;
+    memset(&a, 0, sizeof a);
+    double out[16];
+    int n = 0;
+
+    const uint32_t b1[] = { 1000, 1100, 1200 };
+    const uint32_t b2[] = { 6200, 6300, 6400 };   /* 5000-tick gap at the seam */
+    n = imt_ts_collect_burst(&a, b1, 3, out, 16, n);
+    EXPECT(n == 2, "first burst yields one delta per sample after the first");
+    n = imt_ts_collect_burst(&a, b2, 3, out, 16, n);
+    EXPECT(n == 4, "second burst adds two, not three — the seam is dropped");
+
+    int all_inner = 1;
+    for (int i = 0; i < n; i++) if (out[i] != 100.0) all_inner = 0;
+    EXPECT(all_inner, "every collected delta is the 100-tick sample period");
+
+    /*
+     * The seam still reaches the accumulator: a reversal there is precisely
+     * what imu.chipts.monotonic reports, so excluding it from the RATE must
+     * not exclude it from the record.
+     */
+    const uint32_t b3[] = { 6350, 6450 };         /* starts before b2 ended */
+    n = imt_ts_collect_burst(&a, b3, 2, out, 16, n);
+    EXPECT(a.reversals == 1, "the backwards seam was counted");
+    EXPECT(a.seam_reversals == 1, "and attributed to a seam");
+    EXPECT(n == 5, "a reversed seam contributes no delta, its successor does");
+
+    /* The cap is honoured rather than overrun. */
+    int capped = imt_ts_collect_burst(&a, b1, 3, out, 5, 5);
+    EXPECT(capped == 5, "a full buffer collects nothing further");
+
     end(fb);
 }
 
@@ -2362,8 +2591,8 @@ static void test_chipts_rate_uses_measured(void)
         EXPECT(fabs(got - want) <= want * 0.001,
                "implied tick is derived from the measured rate");
         /* And demonstrably NOT from the configured one, unless they coincide. */
-        double nominal = 1e9 / ((double)r->eff_odr_hz * r->raw.ts_median_delta);
-        EXPECT(fabs(r->raw.odr_measured_hz - (double)r->eff_odr_hz) < 1e-9
+        double nominal = 1e9 / ((double)r->eff_odr_mhz * 1e-3 * r->raw.ts_median_delta);
+        EXPECT(fabs(r->raw.odr_measured_hz - (double)r->eff_odr_mhz * 1e-3) < 1e-9
                || fabs(got - nominal) > want * 0.001,
                "and not from the configured rate");
     } else {
@@ -2581,6 +2810,10 @@ int main(void)
     test_chipts_accounting();
     test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
+    test_overflow_status();
+    test_fs_grade_median();
+    test_fs_scales_with_range();
+    test_ts_collect_excludes_seams();
     test_chipts_rate_uses_measured();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();

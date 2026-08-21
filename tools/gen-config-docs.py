@@ -101,8 +101,21 @@ def values(key, rep, backticked):
         rep.fail("%s: values_from = %r names no registered driver with that "
                  "array" % (REGISTRY, src))
         return ""
-    fmt = "`%d`" if backticked else "%d"
-    return ", ".join(fmt % v for v in d[array])
+    def render(v):
+        """Milli-Hz arrays print as Hz; everything else prints as-is.
+
+        The ladders are stored in milli-Hz because that is the only unit that
+        can hold 12.5 Hz (TDK) or the ST chain's 13.016 Hz bottom rung. Docs
+        are for people, so they read Hz, with the fraction only where there is
+        one: 833000 -> 833, 12500 -> 12.5, 13016 -> 13.016.
+        """
+        if not array.endswith("_mhz"):
+            return "%d" % v
+        whole, frac = divmod(v, 1000)
+        return "%d" % whole if frac == 0 else ("%d.%03d" % (whole, frac)).rstrip("0")
+
+    fmt = "`%s`" if backticked else "%s"
+    return ", ".join(fmt % render(v) for v in d[array])
 
 
 def substitute(text, key, rep, backticked):
@@ -187,6 +200,7 @@ DEFAULTS_TEST = "test/test_config_defaults.gen.c"
 CK = {
     "NEED_INT":       "CK_INT",
     "NEED_POS_INT":   "CK_INT",
+    "NEED_POS_MHZ":   "CK_INT",
     "NEED_PORT":      "CK_INT",
     "NEED_GPIO":      "CK_INT",
     "NEED_I2C_ADDR":  "CK_INT",
@@ -218,6 +232,19 @@ def c_literal(macro, shown, where):
     m = re.search(r"`([^`]*)`", shown)          # first code span; `""` (auto)
     text = m.group(1).strip() if m else shown.strip()
     unset = not m and text == UNSET
+
+    if macro == "NEED_POS_MHZ":
+        # Documented in Hz, stored in milli-Hz. The published default is what an
+        # operator types; the assertion has to be what config_defaults() sets,
+        # so scale here rather than publishing a milli-Hz number nobody writes.
+        try:
+            hz = float(text)
+        except ValueError:
+            return None, "expected a number of Hz, got %r" % text
+        mhz = int(hz * 1000.0 + 0.5)
+        if mhz <= 0:
+            return None, "a rate default must be greater than zero (%r)" % text
+        return str(mhz), None
 
     if macro == "NEED_BOOL":
         if text not in ("true", "false"):

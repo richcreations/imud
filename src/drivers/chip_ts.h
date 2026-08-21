@@ -77,12 +77,14 @@ static inline void chip_ts_guard_reset(chip_ts_guard_t *g)
  * Comparison is on a SIGNED difference so a genuine 32-bit counter wrap reads
  * as a large forward jump rather than a huge backward one.
  *
- * A backward jump too large to be jitter is NOT shifted: the counter has been
- * reset or lost sync, and dragging every future timestamp up to meet a stale
- * anchor would corrupt the clock indefinitely to preserve one invariant.  The
- * guard re-seeds instead, and imu.c's anchor absorbs the discontinuity.
- * `max_jitter` bounds "plausibly jitter" — a second of ticks is generous next
- * to the millisecond-scale lag this corrects.
+ * A backward jump too large to be jitter is NOT shifted here, and returning 0
+ * says only "not my correction to make" — it does not mean the stamp is fit to
+ * use.  Callers must ask chip_ts_guard_backward_ok() BEFORE this and refuse the
+ * read outright when it says no; letting a large backward jump through on the
+ * theory that the counter had been reset is what emitted nine samples with
+ * timestamps near 2^32 on the bench.  `max_jitter` bounds "plausibly jitter" —
+ * a second of ticks is generous next to the millisecond-scale lag this
+ * corrects.
  */
 static inline uint32_t chip_ts_guard_shift(chip_ts_guard_t *g,
                                            uint32_t first, uint32_t step,
@@ -126,6 +128,41 @@ static inline bool chip_ts_guard_forward_ok(const chip_ts_guard_t *g,
     int32_t delta = (int32_t)(first - g->last);
     if (delta <= 0) return true;           /* backward: the other guard's job */
     return (uint32_t)delta <= max_forward;
+}
+
+/*
+ * Is `first` credible as the next burst's OLDEST stamp in the BACKWARD
+ * direction, or is the counter read behind it garbage?
+ *
+ * chip_ts_guard_shift() above deliberately does NOT correct a backward jump
+ * bigger than jitter, on the reading that the counter must have been reset and
+ * that dragging every later timestamp up to meet a stale anchor would corrupt
+ * the clock indefinitely.  The premise is what fails: within a run the counter
+ * cannot legitimately reset.  It resets on SW_RESET and on power-up, both of
+ * which reach init(), and init() calls chip_ts_guard_reset() — so a guard that
+ * still has history has not seen a reset, and a large backward jump is a bad
+ * read.  A genuine 32-bit wrap is not one either: the signed difference makes a
+ * wrap read as a small FORWARD step.
+ *
+ * Measured on the reference ISM330DHCX at 52 Hz, 2026-08-20: one burst of nine
+ * samples in 6,494 was stamped from a counter read of about zero, so the burst
+ * stepped back below zero and went out as chip_ts near 2^32 — 0.5 s behind,
+ * with `seq` continuous across it.  The guard then latched that value and
+ * extrapolated at exactly ticks_per_sample until the next read was far enough
+ * ahead to be believed, nine samples later.  Same nine-sample signature as the
+ * forward case above, and the same cost: wire timestamps that go backwards.
+ *
+ * `max_backward` is the same bound that separates jitter from nonsense, so a
+ * real overlap still gets shifted and only nonsense is refused.
+ */
+static inline bool chip_ts_guard_backward_ok(const chip_ts_guard_t *g,
+                                             uint32_t first,
+                                             uint32_t max_backward)
+{
+    if (!g->have) return true;             /* nothing to judge it against */
+    int32_t delta = (int32_t)(first - g->last);
+    if (delta >= 0) return true;           /* forward: the other guard's job */
+    return (uint32_t)(-delta) <= max_backward;
 }
 
 /*

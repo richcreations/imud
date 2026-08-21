@@ -101,15 +101,20 @@ static int replay(const char *path, const imud_config_t *cfg_in,
     imud_config_t cfg = *cfg_in;
     if (na > 0.0) cfg.mekf_accel_noise = na;
 
-    /* The capture header's rate is uint32_t and the config's is int; compare
-     * them as double so the ?: does not silently change signedness. */
-    float odr = (float)(r.hdr.imu_odr_hz ? (double)r.hdr.imu_odr_hz
-                                         : (double)cfg.imu_odr_hz);
+    /*
+     * Prefer the capture's exact milli-Hz rate, then its whole-Hz field (a
+     * file written before imu_odr_mhz existed), then the config.  Compared as
+     * double so the ?: does not silently change signedness.
+     */
+    float odr = (float)(r.hdr.imu_odr_mhz
+                            ? (double)r.hdr.imu_odr_mhz * 1e-3
+                            : r.hdr.imu_odr_hz ? (double)r.hdr.imu_odr_hz
+                                               : (double)cfg.imu_odr_mhz * 1e-3);
     if (odr <= 0.0f) odr = 833.0f;
 
     mekf_t f;
     float bias0[3] = {0, 0, 0};
-    mekf_init(&f, &cfg, odr, (float)cfg.mag_odr_hz, bias0);
+    mekf_init(&f, &cfg, odr, (float)cfg.mag_odr_mhz * 1e-3f, bias0);
 
     memset(a, 0, sizeof *a);
     *n_imu = *n_mag = *n_skip = 0;

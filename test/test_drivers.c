@@ -144,7 +144,7 @@ static void test_ism_init_registers(void)
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
 
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
 
     /* ODR code 0x5 (208 Hz); accel FS ±4g code 0x08; gyro FS ±500 dps code 0x04. */
@@ -241,7 +241,7 @@ static void test_ism_batched_timestamp(void)
         i2cmock_reset();
         i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
         i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
-        imu_cfg_t c = { .odr_hz = 833, .accel_g = 4, .gyro_dps = 500,
+        imu_cfg_t c = { .odr_mhz = 833000, .accel_g = 4, .gyro_dps = 500,
                         .fifo_wm = dec[i].wm };
         (void)ism->init(I2CBUS(ISM_ADDR), &c);
         EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0A) == dec[i].ctrl4, dec[i].why);
@@ -257,7 +257,7 @@ static void test_ism_batched_timestamp(void)
     i2cmock_reset();
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
-    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
 
     const uint32_t T = 0x00100000u;   /* the timestamp word's value */
@@ -401,7 +401,7 @@ static void test_ism_read_decode(void)
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
 
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)ism->init(I2CBUS(ISM_ADDR), &cfg);   /* sets accel/gyro scale */
 
     /* FIFO status: 3 words available, no overflow. */
@@ -451,7 +451,7 @@ static void test_ism_read_overflow_and_empty(void)
     i2cmock_reset();
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)ism->init(I2CBUS(ISM_ADDR), &cfg);
 
     /* Empty FIFO, overflow flag set (FIFO_OVR_IA = bit 6 of STATUS2). */
@@ -526,7 +526,7 @@ static void test_mmc_reset_and_init(void)
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x80, "reset writes SW_RST to CTRL1");
 
     /* 100 Hz → BW=01, CM_Freq=101. */
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 5.0f };
     i2cmock_reset();
     double t0 = now_ms();
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
@@ -596,7 +596,7 @@ static void test_mmc_read_decode(void)
     /* State the mode rather than inheriting it: int_driven lives in a driver
      * static, so without this the case would pass or fail depending on which
      * test ran before it. */
-    mag_cfg_t polled = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = false };
+    mag_cfg_t polled = { .odr_mhz = 100000, .set_period_s = 5.0f, .int_driven = false };
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &polled) == 0, "init in polled mode");
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x01);          /* STATUS: M_DONE set */
 
@@ -688,7 +688,7 @@ static void test_mmc_int_driven_read(void)
     int fb = g_fail;
 
     i2cmock_reset();
-    mag_cfg_t irq = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = true };
+    mag_cfg_t irq = { .odr_mhz = 100000, .set_period_s = 5.0f, .int_driven = true };
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &irq) == 0, "init in interrupt mode");
 
     /* M_DONE CLEAR — the state that stalls the shipped driver for 20 ms. */
@@ -729,7 +729,7 @@ static void test_mmc_int_driven_read(void)
            "init clears the staleness guard");
 
     /* And the contrast: same registers, same M_DONE, polled caller waits. */
-    mag_cfg_t polled = { .odr_hz = 100, .set_period_s = 5.0f, .int_driven = false };
+    mag_cfg_t polled = { .odr_mhz = 100000, .set_period_s = 5.0f, .int_driven = false };
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &polled) == 0, "re-init in polled mode");
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x00);
     EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 1,
@@ -772,7 +772,7 @@ static void test_mmc_set_reset(void)
      * enabled must survive a degauss, in both directions.
      */
     i2cmock_reset();
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 5.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 5.0f };
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
     EXPECT((i2cmock_get_reg(MMC_ADDR, 0x09) & 0x04) != 0, "init leaves INT_EN set");
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "set_reset after init");
@@ -806,7 +806,7 @@ static void test_mmc_set_reset(void)
 
     /* The bandwidth tracks the configured ODR and survives a pulse. */
     i2cmock_reset();
-    mag_cfg_t slow = { .odr_hz = 10, .set_period_s = 5.0f };   /* BW=00 */
+    mag_cfg_t slow = { .odr_mhz = 10000, .set_period_s = 5.0f };   /* BW=00 */
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &slow) == 0, "init at 10 Hz succeeds");
     EXPECT(i2cmock_get_reg(MMC_ADDR, 0x0A) == 0x00, "CTRL1 = BW for 10 Hz");
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == 0, "periodic SET at 10 Hz");
@@ -875,7 +875,7 @@ static void test_mpu_init_registers(void)
     mpu_stage_genuine(0x71);
 
     /* 1000 Hz is on the 1000/(1+SMPLRT_DIV) grid with divider 0. */
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
     EXPECT(mpu->init(I2CBUS(MPU_ADDR), &cfg) == 0, "init succeeds");
 
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6B) == 0x01, "PWR_MGMT_1 = CLKSEL auto");
@@ -894,7 +894,7 @@ static void test_mpu_init_registers(void)
 
     /* A rate off the grid must still land on a reachable divider. */
     mpu_stage_genuine(0x71);
-    imu_cfg_t c200 = { .odr_hz = 200, .accel_g = 2, .gyro_dps = 250, .fifo_wm = 32 };
+    imu_cfg_t c200 = { .odr_mhz = 200000, .accel_g = 2, .gyro_dps = 250, .fifo_wm = 32 };
     EXPECT(mpu->init(I2CBUS(MPU_ADDR), &c200) == 0, "init at 200 Hz succeeds");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x19) == 4, "SMPLRT_DIV = 4 for 200 Hz");
     EXPECT(i2cmock_get_reg(MPU_ADDR, 0x1B) == 0x00, "GYRO_CONFIG = 250 dps");
@@ -918,7 +918,7 @@ static void test_mpu_read_decode(void)
     int fb = g_fail;
 
     mpu_stage_genuine(0x71);
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
     (void)mpu->init(I2CBUS(MPU_ADDR), &cfg);
 
     /* One 12-byte sample-set pending, no overflow. */
@@ -970,7 +970,7 @@ static void test_mpu_read_overflow_and_errors(void)
     int fb = g_fail;
 
     mpu_stage_genuine(0x71);
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 32 };
     (void)mpu->init(I2CBUS(MPU_ADDR), &cfg);
     i2cmock_set_fifo_reg(MPU_ADDR, 0x74);
 
@@ -1028,12 +1028,12 @@ static void test_ak_init_and_fuse_rom(void)
     i2cmock_set_reg(AK_ADDR, 0x11, 160);
     i2cmock_set_reg(AK_ADDR, 0x12, 96);
 
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     EXPECT(ak->init(I2CBUS(AK_ADDR), &cfg) == 0, "init succeeds");
     EXPECT(i2cmock_get_reg(AK_ADDR, 0x0A) == 0x16,
            "CNTL1 = 16-bit | continuous mode 2");
 
-    mag_cfg_t slow = { .odr_hz = 8, .set_period_s = 0.0f };
+    mag_cfg_t slow = { .odr_mhz = 8000, .set_period_s = 0.0f };
     EXPECT(ak->init(I2CBUS(AK_ADDR), &slow) == 0, "init at 8 Hz succeeds");
     EXPECT(i2cmock_get_reg(AK_ADDR, 0x0A) == 0x12,
            "CNTL1 = 16-bit | continuous mode 1");
@@ -1051,7 +1051,7 @@ static void test_ak_read_decode(void)
     i2cmock_set_reg(AK_ADDR, 0x10, 128);
     i2cmock_set_reg(AK_ADDR, 0x11, 160);
     i2cmock_set_reg(AK_ADDR, 0x12, 96);
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     (void)ak->init(I2CBUS(AK_ADDR), &cfg);
 
     i2cmock_set_reg(AK_ADDR, 0x02, 0x01);      /* ST1: DRDY */
@@ -1237,7 +1237,7 @@ static void test_st_init_flushes_fifo(void)
         { &lsm6dso_ops,  LSM_ADDR },
         { &lsm6dsox_ops, LSM_ADDR },
     };
-    const imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4,
+    const imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4,
                             .gyro_dps = 500, .fifo_wm = 64 };
 
     for (unsigned p = 0; p < sizeof parts / sizeof parts[0]; p++) {
@@ -1344,7 +1344,7 @@ static void test_lsm_batched_timestamp(void)
     int n = -1;
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(LSM_ADDR), &cfg);
 
     /* 208 Hz → 40000/208 = 192 ticks per sample. */
@@ -1409,7 +1409,7 @@ static void test_lsm_init_registers(void)
     const imu_ops_t *d = &lsm6dso_ops;
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
     EXPECT(d->init(I2CBUS(LSM_ADDR), &cfg) == 0, "init succeeds");
 
     /* ODR 833 → 0x7; ±8 g → 0x0C; the 0x02 bit is LPF2_XL_EN. */
@@ -1431,7 +1431,7 @@ static void test_lsm_init_registers(void)
 
     /* A watermark past the 511-word cap must clamp, not wrap. */
     i2cmock_reset();
-    imu_cfg_t big = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 400 };
+    imu_cfg_t big = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 400 };
     EXPECT(d->init(I2CBUS(LSM_ADDR), &big) == 0, "init with an oversized watermark");
     EXPECT(i2cmock_get_reg(LSM_ADDR, 0x07) == (uint8_t)(511 & 0xFF) &&
            i2cmock_get_reg(LSM_ADDR, 0x08) == 0x01,
@@ -1450,7 +1450,7 @@ static void test_lsm_read_decode(void)
     const imu_ops_t *d = &lsm6dso_ops;
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(LSM_ADDR), &cfg);
 
     i2cmock_set_reg(LSM_ADDR, 0x3A, 3);      /* three words queued */
@@ -1485,7 +1485,7 @@ static void test_lsm_read_overflow_and_errors(void)
     const imu_ops_t *d = &lsm6dso_ops;
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(LSM_ADDR), &cfg);
 
     /* Empty FIFO with the overflow flag set: 1 (not an error), zero samples. */
@@ -1575,7 +1575,7 @@ static void test_icm42_probe_and_init(void)
     EXPECT(d->probe(I2CBUS(ICM42_ADDR)) != 0, "probe fails on I2C error");
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 8, .gyro_dps = 2000, .fifo_wm = 64 };
     EXPECT(d->init(I2CBUS(ICM42_ADDR), &cfg) == 0, "init succeeds");
 
     /* FS bits live in [7:5]: ±2000 dps → 0x0, ±8 g → 0x1. */
@@ -1597,7 +1597,7 @@ static void test_icm42_read_decode(void)
     const imu_ops_t *d = &icm42688p_ops;
 
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
 
     /* FIFO_COUNT is BIG endian here (COUNTH first): 32 bytes = 2 packets. */
@@ -1671,7 +1671,7 @@ static void test_icm42_batched_timestamps(void)
 
     /* ── The ordinary case: four stamped packets, no wrap ───────────────── */
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = 1000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
 
     /* TMSTVAL "now" = 0x05000, samples at 937-tick spacing ending 500 before. */
@@ -1775,18 +1775,20 @@ static void test_icm42_batched_timestamps(void)
      *     own rather than leaning on the lag check to catch it by accident.
      */
     i2cmock_reset();
-    imu_cfg_t slow = { .odr_hz = 12, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t slow = { .odr_mhz = 12500, .accel_g = 4, .gyro_dps = 500,
+                       .fifo_wm = 64 };
     (void)d->init(I2CBUS(ICM42_ADDR), &slow);
     icm42_stage_fifo(2, 0x30000);
-    icm42_push_stamped(0x30000u - 1000u - 78125u);
+    icm42_push_stamped(0x30000u - 1000u - 75000u);
     icm42_push_stamped(0x30000u - 1000u);
     n = -1;
     (void)d->read(I2CBUS(ICM42_ADDR), buf, 16, &n);
     EXPECT(n == 2 && buf[1].chip_ts == 0x30000u,
-           "12 Hz keeps the back-calculated path — its sample period exceeds "
-           "the FIFO stamp's repeat");
-    EXPECT(buf[1].chip_ts - buf[0].chip_ts == 937500u / 12u,
-           "and is spaced by ticks_per_sample, as before");
+           "the bottom rung keeps the back-calculated path — its sample "
+           "period exceeds the FIFO stamp's repeat");
+    EXPECT(buf[1].chip_ts - buf[0].chip_ts == 75000u,
+           "and is spaced by ticks_per_sample — 937500000/12500, exact now "
+           "that the rung is 12.5 Hz rather than a rounded 12 or 13");
 
     end(fb);
 }
@@ -1824,7 +1826,7 @@ static void test_icm209_read_decode(void)
 
     i2cmock_reset();
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
-    imu_cfg_t cfg = { .odr_hz = 225, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 225000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     (void)d->init(I2CBUS(ICM209_ADDR), &cfg);
 
     /* FIFO count is 13-bit big-endian at 0x70/0x71; 24 bytes = 2 samples of 12. */
@@ -1943,7 +1945,7 @@ static void test_lis3mdl(void)
     EXPECT(d->probe(I2CBUS(LIS3_ADDR)) != 0, "probe rejects the LIS2MDL ID");
     i2cmock_set_reg(LIS3_ADDR, 0x0F, 0x3D);
 
-    mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
+    mag_cfg_t mcfg = { .odr_mhz = 80000, .set_period_s = 0.0f };
     EXPECT(d->init(I2CBUS(LIS3_ADDR), &mcfg) == 0, "init succeeds");
     EXPECT((i2cmock_get_reg(LIS3_ADDR, 0x22) & 0x03) == 0x00,
            "CTRL_REG3 selects continuous-conversion mode");
@@ -1997,7 +1999,7 @@ static void test_lis2mdl(void)
     EXPECT(d->probe(I2CBUS(LIS2_ADDR)) != 0, "probe rejects the LIS3MDL ID");
     i2cmock_set_reg(LIS2_ADDR, 0x4F, 0x40);
 
-    mag_cfg_t mcfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t mcfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     EXPECT(d->init(I2CBUS(LIS2_ADDR), &mcfg) == 0, "init succeeds");
     EXPECT((i2cmock_get_reg(LIS2_ADDR, 0x60) & 0x03) == 0x00,
            "CFG_REG_A selects continuous mode");
@@ -2117,7 +2119,7 @@ static void test_rm3100_reset_and_init(void)
 
     /* 100 Hz: below the CC=200 ceiling, so full resolution, TMRC ~150 Hz. */
     i2cmock_reset();
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 100 Hz");
     EXPECT(rm_get_cc(0x04) == 200 && rm_get_cc(0x06) == 200 &&
            rm_get_cc(0x08) == 200, "100 Hz keeps CC 200 on all axes");
@@ -2131,7 +2133,7 @@ static void test_rm3100_reset_and_init(void)
      * sampling at its cycle-count limit while the filter was tuned for 600 Hz.
      */
     i2cmock_reset();
-    cfg.odr_hz = 600;
+    cfg.odr_mhz = 600000;
     EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 600 Hz");
     EXPECT(rm_get_cc(0x04) == 50 && rm_get_cc(0x06) == 50 &&
            rm_get_cc(0x08) == 50, "600 Hz drops CC to 50 on all axes");
@@ -2139,7 +2141,7 @@ static void test_rm3100_reset_and_init(void)
 
     /* And the middle rung, where CC halves but not to the floor. */
     i2cmock_reset();
-    cfg.odr_hz = 300;
+    cfg.odr_mhz = 300000;
     EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == 0, "init succeeds at 300 Hz");
     EXPECT(rm_get_cc(0x04) == 100, "300 Hz uses CC 100");
     EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x93, "300 Hz -> TMRC 0x93");
@@ -2158,7 +2160,7 @@ static void test_rm3100_read_decode(void)
     const mag_ops_t *d = &rm3100_ops;
 
     i2cmock_reset();
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     d->init(I2CBUS(RM_ADDR), &cfg);              /* CC 200 -> gain 75 LSB/µT */
     i2cmock_set_reg(RM_ADDR, 0x34, 0x80);        /* STATUS: DRDY set */
 
@@ -2191,7 +2193,7 @@ static void test_rm3100_read_decode(void)
     /* Gain follows the cycle count: the same counts at 600 Hz read 3.75x
      * larger, because CC 50 gives 20 LSB/µT instead of 75. */
     i2cmock_reset();
-    cfg.odr_hz = 600;
+    cfg.odr_mhz = 600000;
     d->init(I2CBUS(RM_ADDR), &cfg);
     i2cmock_set_reg(RM_ADDR, 0x34, 0x80);
     rm_set_output(1500, 0, 0);
@@ -2257,7 +2259,7 @@ static void test_chip_ts_monotonic_across_bursts(void)
     i2cmock_reset();
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
     i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
-    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000,
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000,
                       .fifo_wm = 4 };
     EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
 
@@ -2304,19 +2306,30 @@ static void test_chip_ts_monotonic_across_bursts(void)
     EXPECT(spacing, "within-burst spacing is untouched by the shift");
 
     /*
-     * A backward jump too large to be jitter is a counter reset, and must NOT
-     * be dragged forward — that would pin the clock to a stale anchor for
-     * every future burst. The guard re-seeds; imu.c's anchor absorbs it.
+     * A backward jump too large to be jitter is REFUSED, and the burst
+     * extrapolates instead.
+     *
+     * This assertion used to read the other way -- such a jump was passed
+     * through, on the premise that the counter must have been reset and that
+     * forcing it forward would pin the clock to a stale anchor. The premise is
+     * wrong inside a run: the counter resets only via SW_RESET or power-up,
+     * both of which reach init(), and init() calls chip_ts_guard_reset(). A
+     * guard that still holds history has therefore not seen a reset, so this
+     * is a bad read. Leaving it accepted let one garbage read on the reference
+     * part at 52 Hz emit nine samples with chip_ts near 2^32 -- 0.5 s BACKWARDS
+     * on the wire, seq continuous across it. See chip_ts.h.
      */
-    ism_stage_burst(4, 5);            /* counter restarted near zero: ~1e6
-                                       * ticks back, far past the 40000-tick
-                                       * jitter bound, so it reads as a reset */
+    ism_stage_burst(4, 5);            /* counter reads near zero: ~1e6 ticks
+                                       * back, far past the 40000-tick jitter
+                                       * bound, so it cannot be jitter */
     imu_sample_t c[16] = { 0 };
     int nc = 0;
     EXPECT(ism->read(I2CBUS(ISM_ADDR), c, 16, &nc) == 0, "third read ok");
     EXPECT(nc == 4, "third burst produced 4 samples");
-    EXPECT((int32_t)(c[0].chip_ts - b[nb - 1].chip_ts) < 0,
-           "a counter reset is accepted, not shifted forward");
+    EXPECT((int32_t)(c[0].chip_ts - b[nb - 1].chip_ts) > 0,
+           "an implausible backward read is refused, not accepted");
+    EXPECT(c[0].chip_ts - b[nb - 1].chip_ts == 48,
+           "the refused burst extrapolates one sample period on");
 
     end(fb);
 }
@@ -2344,7 +2357,7 @@ static void test_chip_ts_forward_garbage_read(void)
     i2cmock_reset();
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
     i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
-    imu_cfg_t cfg = { .odr_hz = 833, .accel_g = 8, .gyro_dps = 2000,
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000,
                       .fifo_wm = 4 };
     EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
 
@@ -2383,6 +2396,81 @@ static void test_chip_ts_forward_garbage_read(void)
     EXPECT(nc == 8, "third burst produced 8 samples");
     EXPECT(c[nc - 1].chip_ts == good_anchor,
            "a plausible counter read is still used as the newest sample's time");
+
+    end(fb);
+}
+
+/*
+ * The BACKWARD half, and the half that outlived the forward fix.
+ *
+ * A post-drain counter read that comes back far BEHIND the previous burst was
+ * passed straight through, because chip_ts_guard_shift() read it as a counter
+ * reset and declined to correct it. Inside a run the counter cannot reset --
+ * SW_RESET and power-up both reach init(), which calls chip_ts_guard_reset() --
+ * so what actually gets through is a garbage read.
+ *
+ * Measured on the reference ISM330DHCX at 52 Hz on 2026-08-20: one burst of
+ * nine samples in 6,494 was stamped from a counter read of about zero, stepped
+ * back below zero, and went out with chip_ts near 2^32 -- 0.5 s backwards, seq
+ * continuous across it. The guard then latched the bad value and extrapolated
+ * at exactly ticks_per_sample for nine samples until a read was far enough
+ * ahead to be believed again. Same nine-sample signature as the forward case.
+ */
+static void test_chip_ts_backward_garbage_read(void)
+{
+    begin("test_chip_ts_backward_garbage_read");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 4 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
+
+    imu_sample_t a[16] = { 0 }, b[16] = { 0 }, c[16] = { 0 };
+    int na = 0, nb = 0, nc = 0;
+
+    ism_stage_burst(9, 1000000);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), a, 16, &na) == 0, "first read ok");
+    EXPECT(na == 9, "first burst produced 9 samples");
+
+    /*
+     * The counter reads about zero, which is what the bench saw. Nine samples
+     * stepping back from it underflow below zero: without the guard every one
+     * of them lands in the top half of the range, which is the defect.
+     */
+    ism_stage_burst(9, 20);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), b, 16, &nb) == 0, "second read ok");
+    EXPECT(nb == 9, "second burst produced 9 samples");
+
+    EXPECT((int32_t)(b[0].chip_ts - a[na - 1].chip_ts) > 0,
+           "chip_ts still increases across the seam");
+    EXPECT(b[0].chip_ts - a[na - 1].chip_ts == 48,
+           "an implausible backward read is refused: the burst extrapolates "
+           "one sample period on");
+
+    bool none_wrapped = true;
+    for (int i = 0; i < nb; i++)
+        if (b[i].chip_ts > 0x80000000u) none_wrapped = false;
+    EXPECT(none_wrapped, "no sample underflows below zero into the top half");
+
+    bool spacing = true;
+    for (int i = 1; i < nb; i++)
+        if (b[i].chip_ts - b[i - 1].chip_ts != 48) spacing = false;
+    EXPECT(spacing, "the extrapolated burst keeps one period per sample");
+
+    /*
+     * And it must not swallow an ordinary reading afterwards: the bench case
+     * stayed on the extrapolator for nine samples, so recovering on the very
+     * next plausible read is the behaviour worth pinning.
+     */
+    uint32_t good_anchor = b[nb - 1].chip_ts + 400u;
+    ism_stage_burst(9, good_anchor);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), c, 16, &nc) == 0, "third read ok");
+    EXPECT(nc == 9, "third burst produced 9 samples");
+    EXPECT(c[nc - 1].chip_ts == good_anchor,
+           "a plausible counter read is used again on the very next burst");
 
     end(fb);
 }
@@ -2497,13 +2585,14 @@ static void test_ak099_init_modes(void)
 
     for (unsigned i = 0; i < sizeof tbl / sizeof tbl[0]; i++) {
         i2cmock_reset();
-        mag_cfg_t cfg = { .odr_hz = tbl[i].hz, .set_period_s = 0.0f };
+        mag_cfg_t cfg = { .odr_mhz = tbl[i].hz * 1000,
+                          .set_period_s = 0.0f };
         EXPECT(d->init(I2CBUS(AK099_ADDR), &cfg) == 0, "init succeeds");
         EXPECT(i2cmock_get_reg(AK099_ADDR, 0x31) == tbl[i].mode, tbl[i].msg);
     }
 
     i2cmock_reset();
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     i2cmock_fail_next_ioctl();
     EXPECT(d->init(I2CBUS(AK099_ADDR), &cfg) == -1, "init reports an I2C error");
     end(fb);
@@ -2517,28 +2606,29 @@ static void test_ak099_init_modes(void)
  * disagree, the filter is tuned for one rate while the chip samples at
  * another — which is exactly what happened before this was pinned:
  * nearest_odr() decided the tuning while every register-table driver rounded
- * UP, so [imu] odr_hz = 900 tuned for 833 Hz and ran the part at 1660.
+ * UP, so [imu] odr_hz = 900 tuned for 833 Hz and ran the part at 1666.
  *
  * The check: initialise once at an off-grid request and once at the resolved
  * rate, and require identical control registers. That holds only if the
  * driver's encode chain rounds the same way the shared default does.
  */
+/* Rates are MILLI-Hz here, as in the ops tables these tests compare against. */
 static uint8_t init_imu_reg(const imu_ops_t *d, uint8_t addr, uint8_t reg,
-                            int odr_hz, int accel_g, int gyro_dps)
+                            int odr_mhz, int accel_g, int gyro_dps)
 {
     i2cmock_reset();
     /* ISM/LSM read OUT_TEMP during init; a zeroed mock reads back fine. */
-    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = accel_g,
+    imu_cfg_t cfg = { .odr_mhz = odr_mhz, .accel_g = accel_g,
                       .gyro_dps = gyro_dps, .fifo_wm = 64 };
     d->init(I2CBUS(addr), &cfg);
     return i2cmock_get_reg(addr, reg);
 }
 
 static uint8_t init_mag_reg(const mag_ops_t *d, uint8_t addr, uint8_t reg,
-                            int odr_hz)
+                            int odr_mhz)
 {
     i2cmock_reset();
-    mag_cfg_t cfg = { .odr_hz = odr_hz, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = odr_mhz, .set_period_s = 0.0f };
     d->init(I2CBUS(addr), &cfg);
     return i2cmock_get_reg(addr, reg);
 }
@@ -2585,46 +2675,48 @@ static void test_odr_agreement(void)
 
     /* ── The register-table drivers: the NULL-hook snap-up default. ──── */
 
-    /* ISM330DHCX CTRL1_XL. 900 is between 833 and 1660: nearest_odr() would
-     * have said 833, the driver programs 1660. */
-    EXPECT(odr_actual_imu(ism, 900) == 1660, "ism 900 resolves to 1660");
-    EXPECT(init_imu_reg(ism, ISM_ADDR, 0x10, 900,  4, 500) ==
-           init_imu_reg(ism, ISM_ADDR, 0x10, 1660, 4, 500),
+    /* ISM330DHCX CTRL1_XL. 900 is between 833 and 1666: nearest_odr() would
+     * have said 833, the driver programs 1666. */
+    EXPECT(odr_actual_imu(ism, 900000) == 1666000, "ism 900 resolves to 1666");
+    EXPECT(init_imu_reg(ism, ISM_ADDR, 0x10, 900000,  4, 500) ==
+           init_imu_reg(ism, ISM_ADDR, 0x10, 1666000, 4, 500),
            "ism programs the resolved rate for an off-grid request");
 
     /* LSM6DSO CTRL1_XL, same ST encoding, off-grid 60 → 104. */
-    EXPECT(odr_actual_imu(&lsm6dso_ops, 60) == 104, "lsm 60 resolves to 104");
-    EXPECT(init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 60,  4, 500) ==
-           init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 104, 4, 500),
+    EXPECT(odr_actual_imu(&lsm6dso_ops, 60000) == 104125,
+           "lsm 60 resolves to 104.125");
+    EXPECT(init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 60000,  4, 500) ==
+           init_imu_reg(&lsm6dso_ops, LSM_ADDR, 0x10, 104125, 4, 500),
            "lsm programs the resolved rate for an off-grid request");
 
     /*
      * MMC5983MA CTRL2 (Cmm_en|CM_Freq). Two separate facts, and the driver
      * keeps them in two separate places — see the table above odr_encode().
      *
-     * supported_odr_hz carries the full datasheet ladder, because that is what
-     * an operator may ask for. actual_odr_hz reports what the silicon really
+     * supported_odr_mhz carries the full datasheet ladder, because that is what
+     * an operator may ask for. actual_odr_mhz reports what the silicon really
      * produces, because that is what the filter must size its noise for: in
      * SPI mode 0 all seven codes work and each lands ~6-10% above nominal on
      * the part's own oscillator, except CM_Freq 111 at 1205 against 1000.
      */
-    EXPECT(odr_actual_mag(mmc, 137) == 211, "mmc 137 resolves to 211");
-    EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137) ==
-           init_mag_reg(mmc, MMC_ADDR, 0x0B, 211),
+    EXPECT(odr_actual_mag(mmc, 137000) == 211000, "mmc 137 resolves to 211");
+    EXPECT(init_mag_reg(mmc, MMC_ADDR, 0x0B, 137000) ==
+           init_mag_reg(mmc, MMC_ADDR, 0x0B, 211000),
            "mmc programs the resolved rate for an off-grid request");
     /* Every datasheet rate is reachable, and reports what it delivers rather
      * than what it is nominally called. */
-    EXPECT(odr_actual_mag(mmc, 1)    ==    1, "1 delivers 1");
-    EXPECT(odr_actual_mag(mmc, 10)   ==   11, "10 delivers 11");
-    EXPECT(odr_actual_mag(mmc, 20)   ==   21, "20 delivers 21");
-    EXPECT(odr_actual_mag(mmc, 50)   ==   53, "50 delivers 53");
-    EXPECT(odr_actual_mag(mmc, 100)  ==  106, "100 delivers 106");
-    EXPECT(odr_actual_mag(mmc, 200)  ==  211, "200 delivers 211");
-    EXPECT(odr_actual_mag(mmc, 1000) == 1205, "1000 delivers 1205");
+    EXPECT(odr_actual_mag(mmc, 1000)    ==    1000, "1 delivers 1");
+    EXPECT(odr_actual_mag(mmc, 10000)   ==   11000, "10 delivers 11");
+    EXPECT(odr_actual_mag(mmc, 20000)   ==   21000, "20 delivers 21");
+    EXPECT(odr_actual_mag(mmc, 50000)   ==   53000, "50 delivers 53");
+    EXPECT(odr_actual_mag(mmc, 100000)  ==  106000, "100 delivers 106");
+    EXPECT(odr_actual_mag(mmc, 200000)  ==  211000, "200 delivers 211");
+    EXPECT(odr_actual_mag(mmc, 1000000) == 1205000, "1000 delivers 1205");
     /* Each datasheet rate programs its OWN CM_Freq code -- 001..111 -- which
      * is what mode 0 restored. Distinct codes, no two the same. */
     {
-        static const int ladder[] = { 1, 10, 20, 50, 100, 200, 1000 };
+        static const int ladder[] = { 1000, 10000, 20000, 50000, 100000,
+                                      200000, 1000000 };
         int seen = 0;
         for (size_t i = 0; i < sizeof ladder / sizeof ladder[0]; i++) {
             uint8_t c2 = init_mag_reg(mmc, MMC_ADDR, 0x0B,
@@ -2679,12 +2771,13 @@ static void test_odr_agreement(void)
      * shape that can agree with the resolver on the rate and still disagree
      * with itself on the register, so both are asserted.
      */
-    EXPECT(odr_actual_mag(&rm3100_ops, 200) == 300, "rm3100 200 resolves to 300");
-    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 200) ==
-           init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 300),
+    EXPECT(odr_actual_mag(&rm3100_ops, 200000) == 300000,
+           "rm3100 200 resolves to 300");
+    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 200000) ==
+           init_mag_reg(&rm3100_ops, RM_ADDR, 0x0B, 300000),
            "rm3100 programs the resolved rate for an off-grid request");
-    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 200) ==
-           init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 300),
+    EXPECT(init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 200000) ==
+           init_mag_reg(&rm3100_ops, RM_ADDR, 0x05, 300000),
            "rm3100 picks the resolved rate's cycle count too");
 
     /* ── The divider-based parts: the hook, not the table. ───────────── */
@@ -2693,21 +2786,26 @@ static void test_odr_agreement(void)
      * is what gets rounded to nearest, so it reaches rates that are in no
      * table at all. 137 Hz becomes 1000/7 = 142, which is neither the 100 the
      * snap-up default would give nor the 125 the table's own grid holds. */
-    EXPECT(mpu->actual_odr_hz != NULL, "mpu implements actual_odr_hz");
-    EXPECT(odr_actual_imu(mpu, 137) == 142, "mpu 137 -> 142 (divider 6)");
-    EXPECT(odr_actual_imu(mpu, 1000) == 1000, "mpu 1000 -> 1000 (divider 0)");
-    EXPECT(odr_actual_imu(mpu, 5000) == 1000, "mpu clamps above the base rate");
-    EXPECT(odr_actual_imu(mpu, 1) == 1000 / 256, "mpu clamps at divider 255");
+    EXPECT(mpu->actual_odr_mhz != NULL, "mpu implements actual_odr_mhz");
+    EXPECT(odr_actual_imu(mpu, 137000) == 1000000 / 7,
+           "mpu 137 -> 142.857 (divider 6)");
+    EXPECT(odr_actual_imu(mpu, 1000000) == 1000000, "mpu 1000 -> 1000 (divider 0)");
+    EXPECT(odr_actual_imu(mpu, 5000000) == 1000000,
+           "mpu clamps above the base rate");
+    EXPECT(odr_actual_imu(mpu, 1000) == 1000000 / 256,
+           "mpu clamps at divider 255");
     /* And the resolved rate is a fixed point — the register is the same. */
-    EXPECT(init_imu_reg(mpu, MPU_ADDR, 0x19, 137, 8, 2000) ==
-           init_imu_reg(mpu, MPU_ADDR, 0x19, 142, 8, 2000),
+    EXPECT(init_imu_reg(mpu, MPU_ADDR, 0x19, 137000, 8, 2000) ==
+           init_imu_reg(mpu, MPU_ADDR, 0x19, 1000000 / 7, 8, 2000),
            "mpu SMPLRT_DIV is the same for 137 and its resolved 142");
 
     /* ICM-20948: ODR = 1125/(1+divider). */
-    EXPECT(icm20948_ops.actual_odr_hz != NULL, "icm20948 implements actual_odr_hz");
-    EXPECT(odr_actual_imu(&icm20948_ops, 1125) == 1125, "icm 1125 -> 1125");
-    EXPECT(odr_actual_imu(&icm20948_ops, 500) == 562, "icm 500 -> 562 (divider 1)");
-    EXPECT(odr_actual_imu(&icm20948_ops, 5000) == 1125, "icm clamps to base rate");
+    EXPECT(icm20948_ops.actual_odr_mhz != NULL, "icm20948 implements actual_odr_mhz");
+    EXPECT(odr_actual_imu(&icm20948_ops, 1125000) == 1125000, "icm 1125 -> 1125");
+    EXPECT(odr_actual_imu(&icm20948_ops, 500000) == 562500,
+           "icm 500 -> 562.5 (divider 1)");
+    EXPECT(odr_actual_imu(&icm20948_ops, 5000000) == 1125000,
+           "icm clamps to base rate");
 
     /* ── The resolved rate is always a fixed point of resolution. ────── */
     static const int probe[] = { 1, 13, 60, 137, 500, 900, 5000 };
@@ -2727,7 +2825,7 @@ static void test_odr_agreement(void)
  * Every advertised rate encodes to the code its datasheet gives.
  *
  * test_odr_agreement above proves the driver is self-consistent; this proves
- * it is RIGHT.  The distinction matters because a driver's supported_odr_hz
+ * it is RIGHT.  The distinction matters because a driver's supported_odr_mhz
  * and its odr_encode() are edited together, so a table-derived expectation
  * would agree with a wrong encoding.  The codes below are transcribed from
  * the register tables and from nothing in src/ — that is the whole point, and
@@ -2747,9 +2845,9 @@ static void test_odr_codes_match_datasheet(void)
      * write one shared code to both registers.
      */
     static const struct { int hz; uint8_t code; } st[] = {
-        {   12, 0x1 }, {   26, 0x2 }, {   52, 0x3 }, {  104, 0x4 },
-        {  208, 0x5 }, {  416, 0x6 }, {  833, 0x7 }, { 1660, 0x8 },
-        { 3332, 0x9 }, { 6664, 0xA },
+        {   13016, 0x1 }, {   26031, 0x2 }, {   52063, 0x3 }, {  104125, 0x4 },
+        {  208250, 0x5 }, {  416500, 0x6 }, {  833000, 0x7 }, { 1666000, 0x8 },
+        { 3332000, 0x9 }, { 6664000, 0xA },
     };
     for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) {
         char msg[96];
@@ -2780,9 +2878,10 @@ static void test_odr_codes_match_datasheet(void)
      * row here that a plausible-looking encoder gets wrong.
      */
     static const struct { int hz; uint8_t code; } tdk[] = {
-        {    12, 0x0B }, {    25, 0x0A }, {    50, 0x09 }, {   100, 0x08 },
-        {   200, 0x07 }, {   500, 0x0F }, {  1000, 0x06 }, {  2000, 0x05 },
-        {  4000, 0x04 }, {  8000, 0x03 }, { 16000, 0x02 }, { 32000, 0x01 },
+        {   12500, 0x0B }, {   25000, 0x0A }, {    50000, 0x09 },
+        {  100000, 0x08 }, {  200000, 0x07 }, {   500000, 0x0F },
+        { 1000000, 0x06 }, { 2000000, 0x05 }, {  4000000, 0x04 },
+        { 8000000, 0x03 }, {16000000, 0x02 }, { 32000000, 0x01 },
     };
     for (size_t i = 0; i < sizeof tdk / sizeof tdk[0]; i++) {
         char msg[96];
@@ -2800,17 +2899,17 @@ static void test_odr_codes_match_datasheet(void)
      * request, or a table could advertise one the encoder rounds away.
      */
     for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) {
-        EXPECT(ism->supported_odr_hz[i] == st[i].hz,
+        EXPECT(ism->supported_odr_mhz[i] == st[i].hz,
                "ism advertises exactly the encodable rates");
-        EXPECT(lsm6dso_ops.supported_odr_hz[i] == st[i].hz,
+        EXPECT(lsm6dso_ops.supported_odr_mhz[i] == st[i].hz,
                "lsm advertises exactly the encodable rates");
     }
-    EXPECT(ism->supported_odr_hz[sizeof st / sizeof st[0]] == 0,
+    EXPECT(ism->supported_odr_mhz[sizeof st / sizeof st[0]] == 0,
            "ism table ends after 6664");
     for (size_t i = 0; i < sizeof tdk / sizeof tdk[0]; i++)
-        EXPECT(icm42688p_ops.supported_odr_hz[i] == tdk[i].hz,
+        EXPECT(icm42688p_ops.supported_odr_mhz[i] == tdk[i].hz,
                "icm42688p advertises exactly the encodable rates");
-    EXPECT(icm42688p_ops.supported_odr_hz[sizeof tdk / sizeof tdk[0]] == 0,
+    EXPECT(icm42688p_ops.supported_odr_mhz[sizeof tdk / sizeof tdk[0]] == 0,
            "icm42688p table ends after 32000");
 
     end(fb);
@@ -2822,11 +2921,11 @@ static void test_odr_codes_match_datasheet(void)
  *
  * This existed untested.  Each of these drivers keeps a private odr_actual()
  * whose only consumer is this arithmetic — the daemon-facing rounding goes
- * through odr_actual_imu() and supported_odr_hz instead — so a wrong private
+ * through odr_actual_imu() and supported_odr_mhz instead — so a wrong private
  * table was invisible to every other suite.  It was not hypothetical: the
  * hand-written loop bounds ("i < 7" over an 8-entry table) meant that adding
  * 3332 and 6664 Hz to ism330dhcx would have left odr_actual() clamping at
- * 1660, spacing samples 24 ticks apart when the part emits them 6 apart.  The
+ * 1666, spacing samples 24 ticks apart when the part emits them 6 apart.  The
  * FIFO would drain correctly and every register assertion would pass; only
  * the timestamps would be wrong, by 4x, and imu.c would have believed them.
  *
@@ -2840,10 +2939,11 @@ static void test_odr_codes_match_datasheet(void)
  * what is being pinned — these are the values the drivers must produce, not
  * the values ideal arithmetic would give.
  */
-static uint32_t st_burst_ts_delta(const imu_ops_t *d, uint8_t addr, int odr_hz)
+/* MILLI-Hz. */
+static uint32_t st_burst_ts_delta(const imu_ops_t *d, uint8_t addr, int odr_mhz)
 {
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = 4, .gyro_dps = 500,
+    imu_cfg_t cfg = { .odr_mhz = odr_mhz, .accel_g = 4, .gyro_dps = 500,
                       .fifo_wm = 64 };
     if (d->init(I2CBUS(addr), &cfg) != 0) return 0;
 
@@ -2869,10 +2969,11 @@ static uint32_t st_burst_ts_delta(const imu_ops_t *d, uint8_t addr, int odr_hz)
     return buf[1].chip_ts - buf[0].chip_ts;
 }
 
-static uint32_t icm42_burst_ts_delta(int odr_hz)
+/* MILLI-Hz, as everywhere else in these tables. */
+static uint32_t icm42_burst_ts_delta(int odr_mhz)
 {
     i2cmock_reset();
-    imu_cfg_t cfg = { .odr_hz = odr_hz, .accel_g = 4, .gyro_dps = 500,
+    imu_cfg_t cfg = { .odr_mhz = odr_mhz, .accel_g = 4, .gyro_dps = 500,
                       .fifo_wm = 64 };
     if (icm42688p_ops.init(I2CBUS(ICM42_ADDR), &cfg) != 0) return 0;
 
@@ -2904,14 +3005,15 @@ static void test_ticks_per_sample_across_rates(void)
     /*
      * ST: 25 µs/tick (CTRL10_C timestamp counter), so 40000/rate ticks.
      * Inexact almost everywhere, and the error shrinks as the rate climbs:
-     * 1660 Hz truncates 24.096 to 24 (0.4%), 3332 Hz 12.005 to 12 and
+     * 1666 Hz truncates 24.010 to 24 (0.04%), 3332 Hz 12.005 to 12 and
      * 6664 Hz 6.002 to 6 (both 0.04%).  The two rates added last are the
      * best-behaved on the ladder, not the worst.
      */
-    static const int st_rates[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
-                                    3332, 6664 };
+    static const int st_rates[] = { 13016, 26031, 52063, 104125, 208250,
+                                    416500, 833000, 1666000, 3332000,
+                                    6664000 };
     for (size_t i = 0; i < sizeof st_rates / sizeof st_rates[0]; i++) {
-        const uint32_t want = 40000u / (uint32_t)st_rates[i];
+        const uint32_t want = 40000000u / (uint32_t)st_rates[i];
         snprintf(msg, sizeof msg, "ism %d Hz spaces samples %u ticks",
                  st_rates[i], want);
         EXPECT(st_burst_ts_delta(ism, ISM_ADDR, st_rates[i]) == want, msg);
@@ -2929,23 +3031,32 @@ static void test_ticks_per_sample_across_rates(void)
      * 6.7% error on every per-sample dt until ts_anchor_t measures the real
      * period, which is why it is pinned rate by rate rather than spot-checked.
      *
-     * 937500 = 2^2 * 3 * 5^7, so it divides 12, 25, 50, 100 and 500 exactly and
+     * 937500 = 2^2 * 3 * 5^7, so it divides 25, 50, 100 and 500 exactly and
      * nothing else on the ladder: 200 Hz is 0.011% short, 1 kHz 0.053%, 2-8 kHz
      * 0.16%, and the top two rungs 1.0%.  Bounded per burst rather than
      * cumulative — the anchor is re-read every drain.
+     *
+     * The bottom rung is the one place the integer ladder itself costs
+     * accuracy.  The part runs 12.5 Hz, whose exact spacing is 937500/12.5 =
+     * 75000, and supported_odr_mhz cannot hold 12.5.  Declaring 12 divided
+     * 937500 exactly -- and landed on 78125, 4.2% wrong.  13 gives 72115, 3.9%
+     * wrong in the other direction.  Neither is right; the exactness at 12 was
+     * a coincidence around a wrong rate, which is worth saying because it
+     * looks like the better number and is not.
      */
-    static const int tdk_rates[] = { 12, 25, 50, 100, 200, 500, 1000, 2000,
-                                     4000, 8000, 16000, 32000 };
+    static const int tdk_rates[] = { 12500, 25000, 50000, 100000, 200000,
+                                     500000, 1000000, 2000000, 4000000,
+                                     8000000, 16000000, 32000000 };
     for (size_t i = 0; i < sizeof tdk_rates / sizeof tdk_rates[0]; i++) {
-        const uint32_t want = 937500u / (uint32_t)tdk_rates[i];
+        const uint32_t want = 937500000u / (uint32_t)tdk_rates[i];
         snprintf(msg, sizeof msg, "icm42688p %d Hz spaces samples %u ticks",
                  tdk_rates[i], want);
         EXPECT(icm42_burst_ts_delta(tdk_rates[i]) == want, msg);
     }
     /* The three rungs where the truncation is worth naming outright. */
-    EXPECT(icm42_burst_ts_delta(1000)  == 937, "1 kHz truncates 937.5 to 937");
-    EXPECT(icm42_burst_ts_delta(16000) == 58,  "16 kHz truncates 58.59 to 58");
-    EXPECT(icm42_burst_ts_delta(32000) == 29,  "32 kHz truncates 29.30 to 29");
+    EXPECT(icm42_burst_ts_delta(1000000)  == 937, "1 kHz truncates 937.5 to 937");
+    EXPECT(icm42_burst_ts_delta(16000000) == 58,  "16 kHz truncates 58.59 to 58");
+    EXPECT(icm42_burst_ts_delta(32000000) == 29,  "32 kHz truncates 29.30 to 29");
 
     /*
      * Off-grid requests round UP to the next advertised rate, and the spacing
@@ -2953,13 +3064,13 @@ static void test_ticks_per_sample_across_rates(void)
      * and the encoder have to agree at the top, which is precisely what a
      * stale loop bound breaks.
      */
-    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 5000) == 40000u / 6664u,
-           "ism 5000 Hz is spaced for its resolved 6664, not the old 1660 cap");
-    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 99000) == 40000u / 6664u,
+    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 5000000) == 40000000u / 6664000u,
+           "ism 5000 Hz is spaced for its resolved 6664, not the old 1666 cap");
+    EXPECT(st_burst_ts_delta(ism, ISM_ADDR, 99000000) == 40000000u / 6664000u,
            "ism clamps above the top rung and spaces for it");
-    EXPECT(icm42_burst_ts_delta(300) == 937500u / 500u,
+    EXPECT(icm42_burst_ts_delta(300000) == 937500000u / 500000u,
            "icm42688p 300 Hz is spaced for 500, the rate 0x0F selects");
-    EXPECT(icm42_burst_ts_delta(99000) == 937500u / 32000u,
+    EXPECT(icm42_burst_ts_delta(99000000) == 937500000u / 32000000u,
            "icm42688p clamps above the top rung and spaces for it");
 
     end(fb);
@@ -3031,7 +3142,7 @@ static void test_dual_transport_ism330dhcx(void)
     EXPECT(ism->reset(&ib) == 0, "i2c reset");
     EXPECT(ism->reset(&sb) == 0, "spi reset");
 
-    imu_cfg_t cfg = { .odr_hz = 208, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    imu_cfg_t cfg = { .odr_mhz = 208000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
     EXPECT(ism->init(&ib, &cfg) == 0, "i2c init");
     EXPECT(ism->init(&sb, &cfg) == 0, "spi init");
 
@@ -3159,7 +3270,7 @@ static void test_dual_transport_mmc5983ma(void)
     EXPECT(mmc->probe(&ib) == 0, "i2c probe");
     EXPECT(mmc->probe(&sb) == 0, "spi probe");
 
-    mag_cfg_t cfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
     EXPECT(mmc->init(&ib, &cfg) == 0, "i2c init");
     EXPECT(mmc->init(&sb, &cfg) == 0, "spi init");
 
@@ -3276,7 +3387,7 @@ static void test_dual_transport_others(void)
         { "icm42688p", &icm42688p_ops, 0x68, 0x18, 0, 0x75, 0x47, 0x11, 0x01 },
     };
 
-    imu_cfg_t icfg = { .odr_hz = 200, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 32 };
+    imu_cfg_t icfg = { .odr_mhz = 200000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 32 };
 
     for (unsigned i = 0; i < sizeof imus / sizeof imus[0]; i++) {
         const struct icase *c = &imus[i];
@@ -3336,7 +3447,7 @@ static void test_dual_transport_others(void)
                        .spi_inc_mask = lis3mdl_ops.bus_caps.spi_inc_mask,
                        .spi_hz       = 10000000 };
     const mag_ops_t *l3 = &lis3mdl_ops;
-    mag_cfg_t mcfg = { .odr_hz = 80, .set_period_s = 0.0f };
+    mag_cfg_t mcfg = { .odr_mhz = 80000, .set_period_s = 0.0f };
 
     EXPECT(l3->probe(&lib) == 0 && l3->probe(&lsb) == 0, "lis3mdl: probe on both");
     EXPECT(l3->init(&lib, &mcfg) == 0 && l3->init(&lsb, &mcfg) == 0,
@@ -3383,7 +3494,7 @@ static void test_dual_transport_others(void)
                        .spi_inc_mask = rm3100_ops.bus_caps.spi_inc_mask,
                        .spi_hz = 1000000 };
     const mag_ops_t *rm = &rm3100_ops;
-    mag_cfg_t rcfg = { .odr_hz = 100, .set_period_s = 0.0f };
+    mag_cfg_t rcfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
 
     EXPECT(rm->probe(&rib) == 0 && rm->probe(&rsb) == 0, "rm3100: probe on both");
     EXPECT(rm->init(&rib, &rcfg) == 0 && rm->init(&rsb, &rcfg) == 0,
@@ -3624,6 +3735,7 @@ int main(void)
 
     test_chip_ts_monotonic_across_bursts();
     test_chip_ts_forward_garbage_read();
+    test_chip_ts_backward_garbage_read();
     test_driver_resets();
     test_ak099_init_modes();
     test_spi_same_controller();

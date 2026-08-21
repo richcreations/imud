@@ -72,6 +72,8 @@ static struct {
     uint64_t ts_reject_next;    /* next count worth a log line */
     uint64_t ts_fwd_rejects;    /* counter reads refused as too far ahead */
     uint64_t ts_fwd_next;       /* next count worth a log line */
+    uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
+    uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* keeps chip_ts increasing across burst seams */
 } s;
 
@@ -88,20 +90,41 @@ static struct {
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
 /*
+ * The ladder is the divider chain in MILLI-HERTZ, not the datasheet's labels.
+ *
+ * DS13012 labels the ODR ladder 12.5 / 26 / 52 / 104 / 208 / 416 / 833 /
+ * 1.67k / 3.33k / 6.67k, but those labels are a rounded view of one binary
+ * divider chain: 6664 / 2^n gives 3332, 1666, 833, 416.5, 208.25, 104.125,
+ * 52.06, 26.03 and 13.016.  Every label matches its rung to better than 0.4%
+ * except the last, which the table calls 12.5 where the divider gives 13.016.
+ *
+ * Measured on the reference part 2026-08-20, over 1,624 samples in 119.8 s:
+ * every rung lands on 6664/2^n scaled by this die's INTERNAL_FREQ_FINE trim
+ * (+27 steps, x1.0405) to within 0.4%, the bottom rung included -- 13.55 Hz
+ * predicted, 13.55 measured, against 13.03 if the rung really were 12.5.
+ * chip_ts tracked the wall clock at 1.00063 across the same run, so the
+ * timebase is not what is moving.
+ *
+ * Carrying the chain in milli-Hz removes the rounding entirely: 13016 IS the
+ * rung, so nothing has to decide between 12 and 13.  ticks_per_sample follows
+ * exactly — 40000000/13016 = 3073, against 3333 when the rung was called 12.
+ * See the unit note at the top of drivers.h.
+ */
+/*
  * Returns the 4-bit ODR code for CTRL1_XL / CTRL2_G (Table 43 / Table 46).
  * Rounds up to the nearest supported rate.
  */
-static uint8_t odr_encode(int hz)
+static uint8_t odr_encode(int mhz)
 {
-    if (hz <=   12) return 0x1;
-    if (hz <=   26) return 0x2;
-    if (hz <=   52) return 0x3;
-    if (hz <=  104) return 0x4;
-    if (hz <=  208) return 0x5;
-    if (hz <=  416) return 0x6;
-    if (hz <=  833) return 0x7;
-    if (hz <= 1660) return 0x8;
-    if (hz <= 3332) return 0x9;
+    if (mhz <=   13016) return 0x1;
+    if (mhz <=   26031) return 0x2;
+    if (mhz <=   52063) return 0x3;
+    if (mhz <=  104125) return 0x4;
+    if (mhz <=  208250) return 0x5;
+    if (mhz <=  416500) return 0x6;
+    if (mhz <=  833000) return 0x7;
+    if (mhz <= 1666000) return 0x8;
+    if (mhz <= 3332000) return 0x9;
     return 0xA;  /* 6664 Hz */
 }
 
@@ -113,20 +136,20 @@ static uint8_t odr_encode(int hz)
  *
  * Kept local rather than calling snap_odr_up() from imu_math.h so the drivers
  * stay free of daemon-side dependencies; the steps[] table below must match
- * ism330dhcx_ops.supported_odr_hz, which test_drivers_registry pins.
+ * ism330dhcx_ops.supported_odr_mhz, which test_drivers_registry pins.
  *
  * The loop bound and the clamp both derive from the table, so growing it is a
  * one-line edit.  They did not, before 3332 and 6664 were added, and the
  * hand-written "< 7" plus a literal fallthrough is exactly the shape that
  * silently keeps returning the old ceiling when a rung is appended.
  */
-static int odr_actual(int hz)
+static int odr_actual(int mhz)
 {
-    static const int steps[] = { 12, 26, 52, 104, 208, 416, 833, 1660,
-                                 3332, 6664 };
+    static const int steps[] = { 13016, 26031, 52063, 104125, 208250,
+                                 416500, 833000, 1666000, 3332000, 6664000 };
     static const int n = (int)(sizeof steps / sizeof steps[0]);
     for (int i = 0; i < n; i++)
-        if (hz <= steps[i]) return steps[i];
+        if (mhz <= steps[i]) return steps[i];
     return steps[n - 1];
 }
 
@@ -204,7 +227,7 @@ reset_done:
 static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
     float accel_scale, gyro_scale;
-    uint8_t odr  = odr_encode(cfg->odr_hz);
+    uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
 
@@ -292,18 +315,21 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     s.ts_reject_next   = 1;
     s.ts_fwd_rejects   = 0;
     s.ts_fwd_next      = 1;
+    s.ts_bwd_rejects   = 0;
+    s.ts_bwd_next      = 1;
     chip_ts_guard_reset(&s.ts_guard);
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
      *
      * Integer division, and it is inexact at most rungs — the 25 µs tick is
      * not a multiple of the sample period.  The relative error shrinks as the
-     * rate climbs, so the two rates added last are the *best* behaved: 1660 Hz
-     * is 24.096 -> 24 (0.4 %), while 3332 Hz is 12.005 -> 12 and 6664 Hz is
+     * rate climbs, so the two rates added last are the *best* behaved: 1666 Hz
+     * is 24.010 -> 24 (0.04 %), while 3332 Hz is 12.005 -> 12 and 6664 Hz is
      * 6.002 -> 6, both 0.04 %.  Leave it alone.  The value only ages samples
      * backwards within one burst from an anchor that is re-read every drain
      * (see ism_read), so the error is bounded by the watermark depth rather
      * than accumulating. */
-    s.ticks_per_sample = (uint32_t)(40000u / (unsigned)odr_actual(cfg->odr_hz));
+    s.ticks_per_sample =
+        (uint32_t)(40000000u / (unsigned)odr_actual(cfg->odr_mhz));
 
     return 0;
 }
@@ -474,12 +500,30 @@ static int ism_read(const imud_bus_t *bus,
                  * same now_ts here unchecked is what let one bad read stamp
                  * nine samples 54 s ahead on the reference part.
                  */
-                if (!chip_ts_guard_forward_ok(&s.ts_guard, first,
-                                              TS_MAX_FWD_TICKS)) {
+                /*
+                 * Both directions, and refuse either.  A read far
+                 * BEHIND the previous burst used to be passed
+                 * through as a counter reset — see chip_ts.h for
+                 * why that premise does not hold inside a run, and
+                 * for the nine samples it sent out near 2^32.
+                 */
+                bool fwd_bad = !chip_ts_guard_forward_ok(
+                        &s.ts_guard, first, TS_MAX_FWD_TICKS);
+                bool bwd_bad = !chip_ts_guard_backward_ok(
+                        &s.ts_guard, first, TS_MAX_JITTER_TICKS);
+                if (fwd_bad || bwd_bad) {
                     first    = chip_ts_guard_next(&s.ts_guard,
                                                   s.ticks_per_sample);
                     burst_ts = first + span;
-                    if (++s.ts_fwd_rejects >= s.ts_fwd_next) {
+                    if (bwd_bad) {
+                        if (++s.ts_bwd_rejects >= s.ts_bwd_next) {
+                            LOG_W("ism330dhcx: %llu post-drain timestamp "
+                                  "read(s) implausibly far behind; "
+                                  "extrapolating from the previous burst\n",
+                                  (unsigned long long)s.ts_bwd_rejects);
+                            s.ts_bwd_next *= 10;
+                        }
+                    } else if (++s.ts_fwd_rejects >= s.ts_fwd_next) {
                         LOG_W("ism330dhcx: %llu post-drain timestamp read(s) "
                               "implausibly far ahead; extrapolating from the "
                               "previous burst\n",
@@ -568,7 +612,8 @@ const imu_ops_t ism330dhcx_ops = {
      * code to both registers valid.  Batching keeps up: Table 29 (§9.5) gives
      * BDR_XL/BDR_GY 1001 = 3333 Hz and 1010 = 6667 Hz, so the (odr << 4) | odr
      * written to FIFO_CTRL3 still selects the matching batch rate. */
-    .supported_odr_hz   = { 12, 26, 52, 104, 208, 416, 833, 1660, 3332, 6664, 0 },
+    .supported_odr_mhz  = { 13016, 26031, 52063, 104125, 208250, 416500,
+                            833000, 1666000, 3332000, 6664000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 125, 250, 500, 1000, 2000, 4000, 0 },
 };

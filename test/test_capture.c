@@ -107,7 +107,7 @@ static void test_roundtrip(void)
     const char *path = path_in_dir("rt.imucap");
 
     cap_writer_t w;
-    EXPECT(cap_writer_open(&w, path, 104, "ism330dhcx", "mmc5983ma",
+    EXPECT(cap_writer_open(&w, path, 104, 104000, "ism330dhcx", "mmc5983ma",
                            "1.5", 111ULL, 222ULL) == 0, "writer open");
 
     imu_sample_t s0 = mk_imu(1.0f, 7), s1 = mk_imu(2.0f, 8);
@@ -122,7 +122,8 @@ static void test_roundtrip(void)
 
     cap_reader_t r;
     EXPECT(cap_reader_open(&r, path) == 0, "reader open");
-    EXPECT(r.hdr.imu_odr_hz == 104, "header odr");
+    EXPECT(r.hdr.imu_odr_hz  == 104,    "header odr (whole Hz)");
+    EXPECT(r.hdr.imu_odr_mhz == 104000, "header odr (exact, milli-Hz)");
     EXPECT(strcmp(r.hdr.imu_driver, "ism330dhcx") == 0, "header imu driver");
     EXPECT(strcmp(r.hdr.mag_driver, "mmc5983ma") == 0, "header mag driver");
     EXPECT(strcmp(r.hdr.imud_version, "1.5") == 0, "header version string");
@@ -179,7 +180,7 @@ static void test_file_mode(void)
 
     mode_t prev = umask(0);
     cap_writer_t w;
-    EXPECT(cap_writer_open(&w, path, 100, "sim", "sim", "1.5", 0, 0) == 0,
+    EXPECT(cap_writer_open(&w, path, 100, 100000, "sim", "sim", "1.5", 0, 0) == 0,
            "writer open");
     cap_writer_close(&w);
     umask(prev);
@@ -236,7 +237,7 @@ static void test_truncated_tail(void)
     const char *path = path_in_dir("trunc.imucap");
 
     cap_writer_t w;
-    cap_writer_open(&w, path, 100, "sim", "sim", "1.5", 0, 0);
+    cap_writer_open(&w, path, 100, 100000, "sim", "sim", "1.5", 0, 0);
     imu_sample_t s = mk_imu(1.0f, 1);
     cap_writer_imu(&w, &s, 100);
     cap_writer_imu(&w, &s, 200);
@@ -264,7 +265,7 @@ static void test_forward_compat(void)
 
     /* Hand-build: [unknown type 99] [imu with 8 extra payload bytes] */
     cap_writer_t w;
-    cap_writer_open(&w, path, 100, "sim", "sim", "1.5", 0, 0);
+    cap_writer_open(&w, path, 100, 100000, "sim", "sim", "1.5", 0, 0);
     cap_writer_close(&w);   /* header only; append frames manually */
 
     FILE *f = fopen(path, "ab");
@@ -365,7 +366,8 @@ static void test_rotator(void)
 
     cap_rotator_t rt;
     EXPECT(cap_rot_open(&rt, dir, 1 /* MB */, 2 /* files */,
-                        100, "sim", "sim", "1.5") == 0, "rotator open");
+                        100, 100000, "sim", "sim", "1.5") == 0,
+           "rotator open");
     EXPECT(cap_rot_path(&rt)[0] != '\0', "current path set");
 
     /* one imu record = 12 + 36 = 48 bytes → ~22k records per MB;
@@ -410,7 +412,7 @@ static const char *make_small_capture(void)
     const int   odr = 100, dur_s = 5;
 
     cap_writer_t w;
-    cap_writer_open(&w, path, (uint32_t)odr, "sim", "sim", "1.5", 0, 0);
+    cap_writer_open(&w, path, (uint32_t)odr, (uint32_t)(odr * 1000), "sim", "sim", "1.5", 0, 0);
     for (int i = 0; i < odr * dur_s; i++) {
         double t = i / (double)odr;
         imu_sample_t s;
@@ -439,8 +441,8 @@ static void test_playback_driver(void)
     /* The sim driver ignores the bus entirely; a closed handle is enough. */
     imud_bus_t nobus; bus_init(&nobus);
 
-    imu_cfg_t icfg = { .odr_hz = 100, .accel_g = 8, .gyro_dps = 2000 };
-    mag_cfg_t mcfg = { .odr_hz = 100 };
+    imu_cfg_t icfg = { .odr_mhz = 100, .accel_g = 8, .gyro_dps = 2000 };
+    mag_cfg_t mcfg = { .odr_mhz = 100 };
 
     /* ── single pass, as-fast-as-possible ─────────────────────────────── */
     sim_set_playback(path, false, 0.0f);
@@ -553,7 +555,7 @@ static void test_end_to_end_replay(void)
     const double dt  = 1.0 / odr;
 
     cap_writer_t w;
-    EXPECT(cap_writer_open(&w, path, (uint32_t)odr, "sim", "sim",
+    EXPECT(cap_writer_open(&w, path, (uint32_t)odr, (uint32_t)(odr * 1000), "sim", "sim",
                            "1.5", 0, 0) == 0, "e2e writer open");
     for (int i = 0; i < odr * dur_s; i++) {
         double t = i * dt;
@@ -582,14 +584,14 @@ static void test_end_to_end_replay(void)
     cfg.mekf_mag_noise    = 0.0004;
     cfg.accel_skip_thresh = 0.05;
     cfg.mag_reject_gauss  = 0.05;
-    cfg.mag_odr_hz        = 10;
+    cfg.mag_odr_mhz        = 10;
 
     cap_reader_t r;
     EXPECT(cap_reader_open(&r, path) == 0, "e2e reader open");
 
     mekf_t f;
     float  bias0[3] = {0, 0, 0};
-    mekf_init(&f, &cfg, (float)odr, (float)cfg.mag_odr_hz, bias0);
+    mekf_init(&f, &cfg, (float)odr, (float)cfg.mag_odr_mhz, bias0);
 
     cap_record_t rec;
     bool         aligned  = false;

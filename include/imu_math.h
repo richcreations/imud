@@ -17,12 +17,14 @@
 #ifndef IMUD_IMU_MATH_H
 #define IMUD_IMU_MATH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 #include <pthread.h>
 
 #include "types.h"
 #include "cal.h"
+#include "mhz.h"
 #include "config.h"
 #include "drivers.h"
 
@@ -243,8 +245,10 @@ int nearest_odr(const int supported[], int requested);
 int snap_odr_up(const int supported[], int requested);
 
 /*
- * The rate the driver will really program for `requested`: its actual_odr_hz
- * hook when it has one, else snap_odr_up() over its supported_odr_hz table.
+ * The rate the driver will really program for `req_mhz`: its actual_odr_mhz
+ * hook when it has one, else snap_odr_up() over its supported_odr_mhz table.
+ * MILLI-HERTZ in and out, like the rest of the driver interface — see the
+ * unit note at the top of drivers.h for why whole Hz was not enough.
  *
  * The single source of truth for the sample rate. imu.c passes the result to
  * both the driver and the filter, and imutest measures against it, so the
@@ -252,7 +256,7 @@ int snap_odr_up(const int supported[], int requested);
  */
 /*
  * How long to wait on a data-ready edge before reading anyway, in ms, for a
- * sensor running at `odr_hz`.  This is the missed-interrupt recovery, and it
+ * sensor running at `odr_mhz`.  This is the missed-interrupt recovery, and it
  * has to exist: a LATCHED data-ready asserts on conversion-complete and is
  * re-armed only by the acknowledge the read performs, so exactly one rising
  * edge is produced per acknowledge and a single missed edge leaves the line
@@ -273,7 +277,7 @@ int snap_odr_up(const int supported[], int requested);
  * Bounded at 2 ms so the fastest rates cannot spin, and at 250 ms so a 1 Hz
  * part still notices a stalled line within a quarter second.
  */
-long imu_int_fallback_ms(int odr_hz);
+long imu_int_fallback_ms(int odr_mhz);
 
 /*
  * How long the IMU reader waits on the FIFO watermark before draining anyway.
@@ -291,8 +295,8 @@ long imu_int_fallback_ms(int odr_hz);
  */
 #define IMU_DRAIN_WAIT_MS 10
 
-int odr_actual_imu(const imu_ops_t *ops, int requested);
-int odr_actual_mag(const mag_ops_t *ops, int requested);
+int odr_actual_imu(const imu_ops_t *ops, int req_mhz);
+int odr_actual_mag(const mag_ops_t *ops, int req_mhz);
 
 /* Apply mount rotation (board -> body) if configured. In-place on v. */
 void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);

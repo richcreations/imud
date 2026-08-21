@@ -18,7 +18,7 @@ man/man5/imud.conf.5 once told operators
 
     ISM330DHCX supports: 12, 26, 52, 104, 208, 416, 833, 1660.
 
-while ism330dhcx.c had `.supported_odr_hz = { ..., 1660, 3332, 6664, 0 }`.
+while ism330dhcx.c had `.supported_odr_mhz = { ..., 3332000, 6664000, 0 }`.
 config/imud.conf and docs/manual.md both listed all ten.  That is the drift
 this exists to make impossible.
 
@@ -38,7 +38,7 @@ from checklib import ROOT, must_read                            # noqa: E402
 REGISTRY = "src/drivers.c"
 DRIVER_DIR = "src/drivers"
 
-ARRAYS = ("supported_odr_hz", "supported_accel_g", "supported_gyro_dps")
+ARRAYS = ("supported_odr_mhz", "supported_accel_g", "supported_gyro_dps")
 
 
 def _registries(rep):

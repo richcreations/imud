@@ -57,11 +57,11 @@
 #define AK09916_SCALE    0.15f
 
 /* Select the continuous mode code for the requested ODR. */
-static uint8_t odr_to_mode(int odr_hz)
+static uint8_t odr_to_mode(int odr_mhz)
 {
-    if (odr_hz <=  10) return MODE_CONT_1;
-    if (odr_hz <=  20) return MODE_CONT_2;
-    if (odr_hz <=  50) return MODE_CONT_3;
+    if (odr_mhz <=  10000) return MODE_CONT_1;
+    if (odr_mhz <=  20000) return MODE_CONT_2;
+    if (odr_mhz <=  50000) return MODE_CONT_3;
     return MODE_CONT_4;   /* 100 Hz max */
 }
 
@@ -106,7 +106,7 @@ static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
      * (required by AK09916 datasheet). */
     if (bus_reg_write(bus, REG_CNTL2, MODE_POWER_DOWN) < 0) return -1;
     usleep(1000);
-    if (bus_reg_write(bus, REG_CNTL2, odr_to_mode(cfg->odr_hz)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CNTL2, odr_to_mode(cfg->odr_mhz)) < 0) return -1;
     return 0;
 }
 
@@ -189,5 +189,5 @@ const mag_ops_t ak09916_ops = {
     .set_reset       = NULL,     /* no degauss coil */
     .has_interrupt   = false,    /* no external INT pin in bypass mode */
     .has_set_reset   = false,
-    .supported_odr_hz = { 10, 20, 50, 100, 0 },
+    .supported_odr_mhz = { 10000, 20000, 50000, 100000, 0 },
 };

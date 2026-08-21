@@ -265,13 +265,13 @@ CASES = [
     # The field a key writes was renamed in the registry but not in the code
     # (or, just as likely, the other way round).
     ("check-docs", "docs/config-keys.toml",
-     sub(r'fields = \["imu_odr_hz"\]', 'fields = ["imu_odr_zzz"]'),
+     sub(r'fields = \["imu_odr_mhz"\]', 'fields = ["imu_odr_zzz"]'),
      "imu_odr_zzz"),
 
-    # The macro drifted: NEED_POS_INT rejects zero, NEED_INT accepts it, and
-    # the generated defaults test picks its comparison from this.
+    # The macro drifted: NEED_POS_MHZ scales Hz into milli-Hz and NEED_INT does
+    # not, so the generated defaults test picks a different comparison.
     ("check-docs", "docs/config-keys.toml",
-     sub(r'macros = \["NEED_POS_INT"\]', 'macros = ["NEED_INT"]'),
+     sub(r'macros = \["NEED_POS_MHZ"\]', 'macros = ["NEED_INT"]'),
      "odr_hz"),
 
     # A key the parser gained and nobody documented.
@@ -303,7 +303,8 @@ CASES = [
     # The generated defaults test going stale against the registry.  It is
     # committed, so nothing rebuilds it on checkout — only this notices.
     ("gen-config-docs", "test/test_config_defaults.gen.c",
-     sub(r"^CK_INT \(c\.imu_odr_hz,       833,", "CK_INT (c.imu_odr_hz,       999,"),
+     sub(r"^CK_INT \(c\.imu_odr_mhz,      833000,",
+         "CK_INT (c.imu_odr_mhz,      999000,"),
      "test_config_defaults.gen.c is stale"),
 
     # ── The Info manual ──────────────────────────────────────────────────────

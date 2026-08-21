@@ -46,11 +46,11 @@
 
 /* ── ODR encoding (CFG_REG_A bits [3:2]) ──────────────────────────────────── */
 
-static uint8_t odr_encode(int hz)
+static uint8_t odr_encode(int mhz)
 {
-    if (hz <= 10) return (0x0 << 2);
-    if (hz <= 20) return (0x1 << 2);
-    if (hz <= 50) return (0x2 << 2);
+    if (mhz <= 10000) return (0x0 << 2);
+    if (mhz <= 20000) return (0x1 << 2);
+    if (mhz <= 50000) return (0x2 << 2);
     return         (0x3 << 2);   /* 100 Hz */
 }
 
@@ -86,7 +86,7 @@ static int li2_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Enable offset cancellation. */
     if (bus_reg_write(bus, REG_CFG_REG_B, 0x02) < 0) return -1;  /* OFF_CANC */
     /* Set ODR and enable continuous mode (MD[1:0] = 00). */
-    if (bus_reg_write(bus, REG_CFG_REG_A, odr_encode(cfg->odr_hz)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CFG_REG_A, odr_encode(cfg->odr_mhz)) < 0) return -1;
     return 0;
 }
 
@@ -160,5 +160,5 @@ const mag_ops_t lis2mdl_ops = {
     .set_reset        = NULL,
     .has_interrupt    = true,
     .has_set_reset    = false,
-    .supported_odr_hz = { 10, 20, 50, 100, 0 },
+    .supported_odr_mhz = { 10000, 20000, 50000, 100000, 0 },
 };

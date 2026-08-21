@@ -15,7 +15,7 @@
  *
  * Hardware timestamp: NOT available (chip_ts is always 0).
  * FIFO: 512 bytes, stream mode.  Each sample = 6 B accel + 6 B gyro = 12 B.
- * ODR: 1125 Hz / (1 + divider) — nearest supported values are in supported_odr_hz.
+ * ODR: 1125 Hz / (1 + divider); supported_odr_mhz carries it in milli-Hz.
  *
  * Register references: ICM-20948 Datasheet DS-000189 Rev 1.6.
  */
@@ -116,35 +116,36 @@ static uint8_t accel_fs_encode(int g, float *scale)
 }
 
 /* ODR = 1125 Hz / (1 + divider). Compute divider for nearest ODR. */
-static uint8_t gyro_smplrt_div(int odr_hz)
+static uint8_t gyro_smplrt_div(int odr_mhz)
 {
-    if (odr_hz <= 0) return 0;
-    int div = (1125 + odr_hz / 2) / odr_hz - 1;
+    if (odr_mhz <= 0) return 0;
+    /* 1125 Hz / (1 + div), in milli-Hz: 1125000 / (1 + div). */
+    int div = (1125000 + odr_mhz / 2) / odr_mhz - 1;
     if (div < 0) div = 0;
     if (div > 255) div = 255;
     return (uint8_t)div;
 }
 
 /* Accel ODR divider is 12-bit; use same formula. */
-static uint16_t accel_smplrt_div(int odr_hz)
+static uint16_t accel_smplrt_div(int odr_mhz)
 {
-    if (odr_hz <= 0) return 0;
-    int div = (1125 + odr_hz / 2) / odr_hz - 1;
+    if (odr_mhz <= 0) return 0;
+    int div = (1125000 + odr_mhz / 2) / odr_mhz - 1;
     if (div < 0) div = 0;
     if (div > 4095) div = 4095;
     return (uint16_t)div;
 }
 
 /*
- * imu_ops_t::actual_odr_hz. This part is divider-based, so it reaches rates
- * that are not in supported_odr_hz at all and the shared snap-up default in
+ * imu_ops_t::actual_odr_mhz. This part is divider-based, so it reaches rates
+ * that are not in supported_odr_mhz at all and the shared snap-up default in
  * odr_actual_imu() would be wrong for it. The gyro divider sets the pace —
  * accel_smplrt_div() uses the same formula over a wider range, so the two
  * agree for every rate the gyro can reach.
  */
-static int icm_actual_odr_hz(int requested)
+static int icm_actual_odr_mhz(int req_mhz)
 {
-    return 1125 / (1 + (int)gyro_smplrt_div(requested));
+    return 1125000 / (1 + (int)gyro_smplrt_div(req_mhz));
 }
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
@@ -191,8 +192,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     float accel_scale, gyro_scale;
     uint8_t  gfs  = gyro_fs_encode(cfg->gyro_dps, &gyro_scale);
     uint8_t  afs  = accel_fs_encode(cfg->accel_g,  &accel_scale);
-    uint8_t  gdiv = gyro_smplrt_div(cfg->odr_hz);
-    uint16_t adiv = accel_smplrt_div(cfg->odr_hz);
+    uint8_t  gdiv = gyro_smplrt_div(cfg->odr_mhz);
+    uint16_t adiv = accel_smplrt_div(cfg->odr_mhz);
 
     /* ── Bank 0: wake up, enable sensors ─────────────────────────────────── */
     if (bank_sel(bus, 0) < 0) return -1;
@@ -335,10 +336,11 @@ const imu_ops_t icm20948_ops = {
     .read             = icm_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,   /* no chip timer — timestamps are wall-clock only */
-    .supported_odr_hz   = { 225, 281, 375, 562, 1125, 0 },  /* 1125/(1+div) */
+    .supported_odr_mhz  = { 225000, 281250, 375000, 562500, 1125000, 0 },
+                                                          /* 1125000/(1+div) */
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
     .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
     /* Divider-based: reaches rates outside the table above, so it must report
      * its own actual rate rather than take the shared snap-up default. */
-    .actual_odr_hz      = icm_actual_odr_hz,
+    .actual_odr_mhz      = icm_actual_odr_mhz,
 };

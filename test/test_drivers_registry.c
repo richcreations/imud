@@ -120,7 +120,7 @@ static void check_imu_ops(const imu_ops_t *o, const char *key)
     EXPECT(o->reset != NULL, "imu reset non-NULL");
     EXPECT(o->init  != NULL, "imu init non-NULL");
     EXPECT(o->read  != NULL, "imu read non-NULL");
-    check_table(o->supported_odr_hz,   16, "imu supported_odr_hz");
+    check_table(o->supported_odr_mhz,   16, "imu supported_odr_mhz");
     check_table(o->supported_accel_g,   8, "imu supported_accel_g");
     check_table(o->supported_gyro_dps,  8, "imu supported_gyro_dps");
     /* A chip advertising a hardware timer must give its tick period, or the
@@ -132,7 +132,7 @@ static void check_imu_ops(const imu_ops_t *o, const char *key)
     if (o->ts_tick_ns_actual)
         EXPECT(o->has_hw_timestamp,
                "ts_tick_ns_actual implies has_hw_timestamp");
-    check_odr_resolution(o->supported_odr_hz, o->actual_odr_hz != NULL,
+    check_odr_resolution(o->supported_odr_mhz, o->actual_odr_mhz != NULL,
                          resolve_imu, o, "imu ODR resolves to a usable rate");
 }
 
@@ -145,11 +145,11 @@ static void check_mag_ops(const mag_ops_t *o, const char *key)
     EXPECT(o->reset != NULL, "mag reset non-NULL");
     EXPECT(o->init  != NULL, "mag init non-NULL");
     EXPECT(o->read  != NULL, "mag read non-NULL");
-    check_table(o->supported_odr_hz, 16, "mag supported_odr_hz");
+    check_table(o->supported_odr_mhz, 16, "mag supported_odr_mhz");
     /* A coil-bearing chip must expose the SET-pulse op it claims. */
     if (o->has_set_reset)
         EXPECT(o->set_reset != NULL, "has_set_reset implies set_reset != NULL");
-    check_odr_resolution(o->supported_odr_hz, o->actual_odr_hz != NULL,
+    check_odr_resolution(o->supported_odr_mhz, o->actual_odr_mhz != NULL,
                          resolve_mag, o, "mag ODR resolves to a usable rate");
 }
 
@@ -206,26 +206,26 @@ static void test_rate_ladder_covers_registry(void)
     for (const char **p = imu_names; *p; p++) {
         const imu_ops_t *o = imu_driver_find(*p);
         if (!o) continue;                      /* the lookup tests own this */
-        for (int i = 0; o->supported_odr_hz[i]; i++) {
+        for (int i = 0; o->supported_odr_mhz[i]; i++) {
             char msg[128];
             snprintf(msg, sizeof msg,
                      "rate_ladder_imu covers %s %d Hz", *p,
-                     o->supported_odr_hz[i]);
+                     o->supported_odr_mhz[i]);
             EXPECT(ladder_has(rate_ladder_imu, RATE_LADDER_IMU_N,
-                              o->supported_odr_hz[i]), msg);
+                              o->supported_odr_mhz[i]), msg);
         }
     }
 
     for (const char **p = mag_names; *p; p++) {
         const mag_ops_t *o = mag_driver_find(*p);
         if (!o) continue;
-        for (int i = 0; o->supported_odr_hz[i]; i++) {
+        for (int i = 0; o->supported_odr_mhz[i]; i++) {
             char msg[128];
             snprintf(msg, sizeof msg,
                      "rate_ladder_mag covers %s %d Hz", *p,
-                     o->supported_odr_hz[i]);
+                     o->supported_odr_mhz[i]);
             EXPECT(ladder_has(rate_ladder_mag, RATE_LADDER_MAG_N,
-                              o->supported_odr_hz[i]), msg);
+                              o->supported_odr_mhz[i]), msg);
         }
     }
 

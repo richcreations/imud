@@ -202,7 +202,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* Resolved, as the daemon does — imu_cfg_t/mag_cfg_t take the rate the
      * driver will really program, not the raw request. */
-    mag_cfg_t mcfg = { .odr_hz = odr_actual_mag(ops, cfg->mag_odr_hz),
+    mag_cfg_t mcfg = { .odr_mhz = odr_actual_mag(ops, cfg->mag_odr_mhz),
                        .set_period_s = 0.0f };
 
     if (ops->probe(&bus) < 0 ||
@@ -440,7 +440,7 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
         strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {
-        .odr_hz   = odr_actual_imu(ops, cfg->imu_odr_hz),
+        .odr_mhz  = odr_actual_imu(ops, cfg->imu_odr_mhz),
         .accel_g  = cfg->imu_accel_g,
         .gyro_dps = cfg->imu_gyro_dps,
         .fifo_wm  = cfg->imu_fifo_wm,
@@ -542,7 +542,7 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
         strcmp(cfg->imu_driver, "sim") != 0) return -1;
 
     imu_cfg_t icfg = {
-        .odr_hz   = odr_actual_imu(ops, cfg->imu_odr_hz),
+        .odr_mhz  = odr_actual_imu(ops, cfg->imu_odr_mhz),
         .accel_g  = cfg->imu_accel_g,
         .gyro_dps = cfg->imu_gyro_dps,
         .fifo_wm  = cfg->imu_fifo_wm,

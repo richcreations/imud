@@ -707,6 +707,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
                   "time from reset() entry to return.");
 
     /* ── init, with the register snapshot around it ──────────────────────── */
+    char ob[16];             /* MHZ_STR scratch */
     const imt_regmap_t *rm = o->regdiff ? regmap_for(imu->name) : NULL;
     static uint8_t before[256], after[256], again[256];
     static bool    volatile_imu[256];
@@ -719,13 +720,14 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
 
     if (imu->init(ibus, icfg) < 0) {
         add_check(r, "imu.init.rc", "IMU init()", IMT_FAIL, "failed", "0",
-                  "init() returned -1 for ODR %d Hz, %d g, %d dps, wm %d.",
-                  icfg->odr_hz, icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
+                  "init() returned -1 for ODR %s Hz, %d g, %d dps, wm %d.",
+                  MHZ_STR(ob, icfg->odr_mhz), icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
         return -1;
     }
     add_check(r, "imu.init.rc", "IMU init()", IMT_PASS, "0", "0",
-              "%d Hz, +/-%d g, +/-%d dps, watermark %d sample-sets",
-              icfg->odr_hz, icfg->accel_g, icfg->gyro_dps, icfg->fifo_wm);
+              "%s Hz, +/-%d g, +/-%d dps, watermark %d sample-sets",
+              MHZ_STR(ob, icfg->odr_mhz), icfg->accel_g, icfg->gyro_dps,
+              icfg->fifo_wm);
 
     if (!o->regdiff) {
         skip_check(r, "imu.init.regdiff", "IMU control-register diff",
@@ -911,11 +913,11 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
 
     if (mag->init(mbus, mcfg) < 0) {
         add_check(r, "mag.init.rc", "Mag init()", IMT_FAIL, "failed", "0",
-                  "init() returned -1 for ODR %d Hz.", mcfg->odr_hz);
+                  "init() returned -1 for ODR %s Hz.", MHZ_STR(ob, mcfg->odr_mhz));
         return 0;
     }
     add_check(r, "mag.init.rc", "Mag init()", IMT_PASS, "0", "0",
-              "%d Hz requested", mcfg->odr_hz);
+              "%s Hz requested", MHZ_STR(ob, mcfg->odr_mhz));
 
     if (mrm && mrm->ctrl_writeonly) {
         /*
@@ -965,7 +967,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
 
 static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                              drain_ctx_t *d, const imu_ops_t *imu,
-                             int eff_odr)
+                             double eff_odr)
 {
     char mb[56], eb[56];
     imu_sample_t buf[128];
@@ -1007,12 +1009,14 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
             last_t = t;
 
             /* Each drain_once() is one burst, so its first sample is the
-             * seam where the driver re-derives its anchor. */
-            imt_ts_acc_seam(&tsa);
-            for (int i = 0; i < n; i++) {
-                uint32_t d = imt_ts_acc_step(&tsa, buf[i].chip_ts);
-                if (d && n_deltas < 512) ts_deltas[n_deltas++] = d;
-            }
+             * seam where the driver re-derives its anchor.  The seam delta is
+             * excluded from the tick estimate -- it measures this loop's drain
+             * cadence, not the part.  See imt_ts_collect_burst(). */
+            uint32_t tsbuf[128];
+            int nts = n > 128 ? 128 : n;
+            for (int i = 0; i < nts; i++) tsbuf[i] = buf[i].chip_ts;
+            n_deltas = imt_ts_collect_burst(&tsa, tsbuf, nts,
+                                            ts_deltas, 512, n_deltas);
         }
         ui_progress(o, "imu.odr", (now_s() - t0) / o->odr_window_s, NULL);
         drain_pace(d);
@@ -1034,26 +1038,31 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     r->raw.rcneg_count         = d->rcneg;
     r->raw.last_errno          = d->last_errno;
 
-    /* Which supported_odr_hz entry does the measurement actually match? */
+    /*
+     * Which supported_odr_mhz entry does the measurement actually match?
+     * `hz` is Hz and the table is milli-Hz, so the comparison scales the table
+     * rather than the measurement — mixing the two silently picked the lowest
+     * rung every time, and no compiler warns about it because both are numbers.
+     */
     int best = 0;
     double bestdiff = 1e30;
-    int ntab = tab_len(imu->supported_odr_hz, 16);
+    int ntab = tab_len(imu->supported_odr_mhz, 16);
     for (int i = 0; i < ntab; i++) {
-        double diff = fabs(hz - imu->supported_odr_hz[i]);
-        if (diff < bestdiff) { bestdiff = diff; best = imu->supported_odr_hz[i]; }
+        double diff = fabs(hz - (double)imu->supported_odr_mhz[i] * 1e-3);
+        if (diff < bestdiff) { bestdiff = diff; best = imu->supported_odr_mhz[i]; }
     }
-    r->raw.odr_best_table_hz = best;
+    r->raw.odr_best_table_mhz = best;
 
     if (d->total < 10) {
         add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", IMT_FAIL,
                   fmtbuf(mb, sizeof mb, "%llu samples",
                          (unsigned long long)d->total),
-                  fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
+                  fmtbuf(eb, sizeof eb, "~%.6g Hz", eff_odr),
                   "almost no data in %.1f s. The chip is configured but not "
                   "producing samples — check the FIFO enable in init().",
                   o->odr_window_s);
     } else {
-        double err = fabs(hz - eff_odr) / (double)eff_odr;
+        double err = fabs(hz - eff_odr) / eff_odr;
         bool starved = max_gap_ms > 0.20 * o->odr_window_s * 1e3;
         bool over    = hz > eff_odr * (1.0 + o->odr_tol_warn);
         imt_status_t st = (err <= o->odr_tol_warn) ? IMT_PASS
@@ -1086,7 +1095,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
              */
             add_check(r, "imu.odr", "Measured ODR against the rate the driver reports",
                       IMT_PASS, fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
-                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                      fmtbuf(eb, sizeof eb, "%.6g Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
                       "%llu samples in %.3f s%s",
                       (unsigned long long)d->total, span,
@@ -1094,18 +1103,19 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
                       ? ", but off by more than 2% — see imu.chipts.wall, which "
                         "grades the same timebase against what ts_tick_ns claims"
                       : "");
-        else if (best && best != eff_odr && fabs(hz - best) < fabs(hz - eff_odr))
+        else if (best && (double)best * 1e-3 != eff_odr &&
+                 fabs(hz - (double)best * 1e-3) < fabs(hz - eff_odr))
             add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", st,
                       fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
-                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                      fmtbuf(eb, sizeof eb, "%.6g Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
-                      "off by %.1f%%, and it matches supported_odr_hz entry "
-                      "%d Hz instead — check the rate encoding in init().",
-                      err * 100, best);
+                      "off by %.1f%%, and it matches supported_odr_mhz entry "
+                      "%.6g Hz instead — check the rate encoding in init().",
+                      err * 100, (double)best * 1e-3);
         else
             add_check(r, "imu.odr", "Measured ODR against the rate the driver reports", st,
                       fmtbuf(mb, sizeof mb, "%.1f Hz", hz),
-                      fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%",
+                      fmtbuf(eb, sizeof eb, "%.6g Hz +/-%.0f%%",
                              eff_odr, o->odr_tol_warn * 100),
                       "off by %.1f%%%s", err * 100,
                       over ? " — ABOVE the configured rate; the read loop cannot "
@@ -1248,10 +1258,18 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
               tsa.zeros,  tsa.zeros  == 1 ? "" : "s");
 
     if (n_deltas < 4) {
+        /*
+         * Only within-burst deltas count, so this is reachable at a rate slow
+         * enough that a drain seldom returns two samples: there is then no
+         * per-sample tick period to measure, only the drain cadence, and
+         * saying so is better than grading the cadence as if it were the part.
+         */
         skip_check(r, "imu.chipts.rate", "chip_ts tick period",
-                   "too few timestamp deltas to estimate a rate");
+                   "fewer than 4 within-burst timestamp deltas at this rate — "
+                   "a drain returned two samples too rarely to measure a "
+                   "per-sample tick period");
     } else {
-        /* Median is robust to the burst boundaries. */
+        /* Median over within-burst deltas only; see the collection loop. */
         for (int i = 1; i < n_deltas; i++) {
             double v = ts_deltas[i];
             int j = i - 1;
@@ -1279,7 +1297,7 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
          * the same window these deltas came from.
          */
         double rate = r->raw.odr_measured_hz > 0 ? r->raw.odr_measured_hz
-                                                 : (double)eff_odr;
+                                                 : eff_odr;
         double expect = 1e9 / (rate * (double)d->tick_ns);
         double implied = med > 0 ? 1e9 / (rate * med) : 0.0;
         r->raw.ts_median_delta    = med;
@@ -1386,7 +1404,7 @@ static void check_error_contract(imt_report_t *r, drain_ctx_t *d)
 /* ── Phase A: FIFO behaviour ──────────────────────────────────────────────── */
 
 static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
-                       const imu_ops_t *imu, int eff_odr, int fifo_wm)
+                       const imu_ops_t *imu, double eff_odr, int fifo_wm)
 {
     char mb[56], eb[56];
     imu_sample_t buf[128];
@@ -1404,7 +1422,7 @@ static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         return;
     }
 
-    double period = 1.0 / (double)eff_odr;
+    double period = 1.0 / eff_odr;
     double wait   = period * (fifo_wm > 0 ? fifo_wm : 32);
     if (wait < 0.02) wait = 0.02;
     if (wait > 0.5)  wait = 0.5;
@@ -1478,34 +1496,59 @@ static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
      */
     drain_flush(d);
     double waited = 0, w = wait * 2;
-    int rc = 0;
+    int rc = 0, prev_n = -1;
+    bool growing = true;
     for (int i = 0; i < 12 && !g_abort; i++) {
         sleep_s(w);
         waited += w;
-        rc = drain_once(d, buf, 128, &n);
+        /*
+         * The deep buffer, not the 128-sample one: read() stops at `max`, so a
+         * short buffer reports the caller's array size and saturation could
+         * never be told from a full FIFO.
+         */
+        rc = drain_once(d, deep, (int)(sizeof deep / sizeof deep[0]), &n);
         if (rc != 0) break;
+        /*
+         * Each iteration drains, so what fills the FIFO is the LAST sleep, not
+         * the accumulated time.  While the count still rises with a longer
+         * sleep the FIFO has not reached capacity, and a missing overflow says
+         * nothing about the driver -- it says the window was too short.  That
+         * distinction is the whole verdict: at 12 Hz the part needs about 20 s
+         * to fill and this check will not wait that long, which was being
+         * reported as a driver fault.
+         */
+        growing = (prev_n < 0) || (n > prev_n);
+        prev_n  = n;
+        if (!growing) break;              /* at capacity, and still rc 0 */
         if (waited > 8.0) break;
         w *= 1.6;
         ui_progress(o, "imu.fifo.overflow", waited / 8.0, NULL);
     }
     r->raw.overflow_after_s = waited;
 
-    if (rc == 1)
+    imt_status_t ost = imt_overflow_status(rc, growing);
+    if (ost == IMT_PASS)
         add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
                   IMT_PASS, "1",
                   "1 after the FIFO fills",
                   "overflow signalled after %.2f s without draining", waited);
-    else if (rc < 0)
+    else if (ost == IMT_FAIL)
         add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
                   IMT_FAIL, "-1", "1",
                   "read() returned a bus error while the FIFO was full "
                   "instead of reporting the overflow.");
-    else
+    else if (ost == IMT_WARN)
         add_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
                   IMT_WARN, "0", "1",
-                  "no overflow signalled after %.1f s without draining — the "
-                  "FIFO may be deeper than this window, or the driver does not "
-                  "surface the overflow bit.", waited);
+                  "the FIFO stopped accepting samples at %d per drain, so it "
+                  "is at capacity, and read() still returned 0 — the driver is "
+                  "not surfacing the overflow bit.", prev_n);
+    else
+        skip_check(r, "imu.fifo.overflow", "FIFO overflow is reported as rc 1",
+                   "the FIFO was still filling when the check ran out of "
+                   "patience, so nothing was learned about the overflow bit; "
+                   "at this rate it needs a longer wait than this check "
+                   "allows");
 
     /* Whatever happened, reads must return to normal afterwards. */
     drain_flush(d);
@@ -1772,7 +1815,8 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
      * Bounded at both ends: the fast rates keep the timings they had, and the
      * slow ones cannot stretch a four-range sweep past a bench's patience.
      */
-    double fs_per    = base->odr_hz > 0 ? 1.0 / (double)base->odr_hz : 0.001;
+    double fs_per    = base->odr_mhz > 0
+                     ? 1000.0 / (double)base->odr_mhz : 0.001;
     double fs_settle = 20.0 * fs_per;
     double fs_window = 50.0 * fs_per;
     if (fs_settle < 0.3) fs_settle = 0.3;
@@ -1883,32 +1927,58 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
          * as the full scale rises has no benign reading, so that is what is
          * graded; the numbers go in the appendix either way.
          */
-        if (prev_fs > 0 && prev_sigma > 0 && s > 0) {
-            double sratio  = s / prev_sigma;
-            double fsratio = (double)c.gyro_dps / (double)prev_fs;
-            row->ratio  = sratio;
-            row->status = IMT_INFO;
-            if (fsratio > 1.0 && sratio < 0.5) {
-                row->status = IMT_WARN;
-                gbad++;
-            }
-        }
+        /* Ratio to the previous step is recorded for the appendix.  It is
+         * NOT what grades the step -- see the median test below. */
+        if (prev_fs > 0 && prev_sigma > 0 && s > 0)
+            row->ratio = s / prev_sigma;
         prev_sigma = s;
         prev_fs    = c.gyro_dps;
     }
+
+    /*
+     * Grade each step against the MEDIAN of all of them, not against its
+     * neighbour.
+     *
+     * The pairwise form graded a transient.  Sigma here is dominated by
+     * ambient movement rather than by the part -- the comment above works out
+     * that analogue noise is ~25x the quantisation step, so the expectation is
+     * a FLAT sigma across every range -- and one step inflated by a knock on
+     * the bench made the NEXT step read as a halving, with the innocent step
+     * carrying the WARN.  On the reference part it fired at 52, 104 and
+     * 208 Hz in one sweep and at 12 and 52 in another, moving between runs,
+     * which is the signature of grading noise rather than silicon.
+     *
+     * The median is robust to one bad step, and it matches the defect being
+     * hunted more directly: a range whose sensitivity constant does not track
+     * its register reads LOW against every other range at once, not merely
+     * against the one before it.
+     */
+    /*
+     * Grade only where the proxy holds.  See imt_fs_scales_with_range(): on a
+     * part whose analogue noise dwarfs its quantisation step, sigma is flat
+     * across every range and grading it grades the bench, not the silicon.
+     */
+    bool fs_graded = imt_fs_scales_with_range(r->raw.fs_gyro, r->raw.n_fs_gyro);
+    if (fs_graded)
+        gbad += imt_fs_grade_median(r->raw.fs_gyro, r->raw.n_fs_gyro, 0.5);
+
     add_check(r, "imu.fs.gyro", "Full-scale sweep, gyroscope",
               ng < 2 ? IMT_SKIP : gbad ? IMT_WARN : IMT_INFO,
               fmtbuf(mb, sizeof mb, "%d of %d steps dropped", gbad,
                      ng ? ng - 1 : 0),
               "sigma must not fall as full scale rises",
-              gbad ? "sigma fell by more than half when the range widened, "
-                     "which has no benign reading: one branch's sensitivity "
-                     "constant does not track its register. See +/-%d dps in "
-                     "the rotation phase."
-                   : "recorded, not graded: sigma tracks full scale only "
-                     "where quantisation dominates the noise floor, and here "
-                     "it does not. Absolute scale is graded by the rotation "
-                     "phase alone, at +/-%d dps.", base->gyro_dps);
+              gbad ? "a range's noise floor is below half the median of all "
+                     "ranges — one branch's sensitivity constant does not "
+                     "track its register. Rotation phase grades absolute "
+                     "scale, at +/-%d dps."
+                   : fs_graded
+                     ? "each range compared with the median of all; sigma "
+                       "tracks full scale here, so the proxy holds. Absolute "
+                       "scale: rotation phase, +/-%d dps."
+                     : "recorded, NOT graded: sigma is flat across the ranges, "
+                       "so analogue noise dominates quantisation and the proxy "
+                       "carries no information. Absolute scale: rotation "
+                       "phase, +/-%d dps.", base->gyro_dps);
 
     /* Everything after this depends on the configured setup being back. */
     bool ok = (imu->reset(bus) == 0) && (imu->init(bus, base) == 0);
@@ -1933,7 +2003,7 @@ static void drain_cb(void *user)
 }
 
 static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
-                       const imud_config_t *cfg, int eff_odr, int fifo_wm)
+                       const imud_config_t *cfg, double eff_odr, int fifo_wm)
 {
     char mb[56], eb[56];
 
@@ -1953,7 +2023,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
      * and the check was reporting "the line is not wired" about a line that is
      * wired and working. Grading an impossibility is worse than not grading.
      */
-    double first_edge_s = eff_odr > 0 ? (double)fifo_wm / (double)eff_odr : 0.0;
+    double first_edge_s = eff_odr > 0 ? (double)fifo_wm / eff_odr : 0.0;
     if (first_edge_s >= o->drdy_window_s) {
         skip_check(r, "imu.drdy.edges", "IMU interrupt line produces edges",
                    "the watermark cannot fill inside this window at this ODR — "
@@ -2029,7 +2099,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     r->raw.gpio_rate_idle_hz = idle > 0 ? idle / o->drdy_window_s : 0.0;
 
     double per_sample = eff_odr;
-    double watermark  = fifo_wm > 0 ? (double)eff_odr / fifo_wm : 0.0;
+    double watermark  = fifo_wm > 0 ? eff_odr / fifo_wm : 0.0;
     double rate = r->raw.gpio_rate_hz;
 
     if (edges == 0) {
@@ -2245,7 +2315,7 @@ static void check_burst_framing(imt_report_t *r, const char *id, const char *nam
  */
 static void check_mag_degauss(imt_report_t *r, const imt_opts_t *o,
                               const mag_ops_t *mag, const imud_bus_t *bus,
-                              int eff_odr)
+                              double eff_odr)
 {
     char mb[96], eb[56];
 
@@ -2343,7 +2413,7 @@ static void check_mag_degauss(imt_report_t *r, const imt_opts_t *o,
 
 static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                               const mag_ops_t *mag, const imud_bus_t *bus,
-                              int eff_odr)
+                              double eff_odr)
 {
     char mb[56], eb[56];
     welford3_t w;
@@ -2431,7 +2501,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
     if (got < 5) {
         add_check(r, "mag.rate", "Measured mag rate", IMT_FAIL,
                   fmtbuf(mb, sizeof mb, "%llu samples", (unsigned long long)got),
-                  fmtbuf(eb, sizeof eb, "~%d Hz", eff_odr),
+                  fmtbuf(eb, sizeof eb, "~%.6g Hz", eff_odr),
                   "almost no samples in %.1f s (%d not-ready, %d bus errors).",
                   span, rc1, rcneg);
     } else {
@@ -2481,7 +2551,7 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
                   err <= o->odr_tol_warn      ? IMT_PASS
                 : (over && err > o->odr_tol_fail) ? IMT_FAIL : IMT_WARN,
                   fmtbuf(mb, sizeof mb, "%.1f Hz", r->raw.mag_rate_hz),
-                  fmtbuf(eb, sizeof eb, "%d Hz +/-%.0f%%", eff_odr,
+                  fmtbuf(eb, sizeof eb, "%.6g Hz +/-%.0f%%", eff_odr,
                          o->odr_tol_warn * 100),
                   (over && err > o->odr_tol_fail)
                        ? "%llu samples in %.2f s, %.1f%% ABOVE the configured "
@@ -2621,9 +2691,9 @@ static void mag_drdy_cb(void *user)
  * of plausible numbers with nothing to say they are untrustworthy.
  */
 static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
-                               const imud_bus_t *bus, int eff_odr)
+                               const imud_bus_t *bus, double eff_odr)
 {
-    mag_cfg_t polled = { .odr_hz = eff_odr, .set_period_s = 0.0f,
+    mag_cfg_t polled = { .odr_mhz = (int)(eff_odr * 1000.0 + 0.5), .set_period_s = 0.0f,
                          .int_driven = false };
     if (mag->init(bus, &polled) < 0)
         add_check(r, "mag.drdy.restore", "Mag returned to polled mode",
@@ -2635,7 +2705,7 @@ static void mag_restore_polled(imt_report_t *r, const mag_ops_t *mag,
 
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg, int eff_odr);
+                             const imud_config_t *cfg, double eff_odr);
 
 /*
  * Acknowledge whatever the interrupt is currently asserting, from inside the
@@ -2695,7 +2765,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
      * silently changing what mag.rate, mag.noise and mag.field measure.
      * Structure it so there is no path to get this wrong on.
      */
-    mag_cfg_t irq = { .odr_hz = eff_odr, .set_period_s = 0.0f,
+    mag_cfg_t irq = { .odr_mhz = (int)(eff_odr * 1000.0 + 0.5), .set_period_s = 0.0f,
                       .int_driven = true };
     if (mag->init(bus, &irq) == 0)
         measure_mag_drdy(r, o, mag, bus, cfg, eff_odr);
@@ -2716,7 +2786,7 @@ static void check_mag_drdy(imt_report_t *r, const imt_opts_t *o,
  */
 static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
                              const mag_ops_t *mag, const imud_bus_t *bus,
-                             const imud_config_t *cfg, int eff_odr)
+                             const imud_config_t *cfg, double eff_odr)
 {
     char mb[56], eb[56];
 
@@ -2724,12 +2794,12 @@ static void measure_mag_drdy(imt_report_t *r, const imt_opts_t *o,
     imt_gpio_why_t why = IMT_GPIO_OK;
     /* Long enough to resolve the tolerance at THIS mag rate. */
     double win = o->drdy_window_s;
-    double need = imt_rate_window_s(eff_odr, o->odr_tol_warn);
+    double need = imt_rate_window_s((int)(eff_odr + 0.5), o->odr_tol_warn);
     if (need > win) win = need;
     long ms = (long)(win * 1e3);
     int edges = imt_gpio_count_edges(cfg->gpio_chip, cfg->mag_int_gpio, ms,
                                      mag_drdy_cb, &m, &why, mag_drdy_prime,
-                                     r->mag_eff_odr_hz);
+                                     r->mag_eff_odr_mhz);  /* milli-Hz: fallback timer */
 
     if (edges < 0) {
         const char *reason =
@@ -3513,6 +3583,99 @@ void imt_ts_acc_seam(imt_ts_acc_t *a)
     a->seam = true;
 }
 
+imt_status_t imt_overflow_status(int rc, bool growing)
+{
+    if (rc == 1)  return IMT_PASS;        /* overflow reported, as required */
+    if (rc < 0)   return IMT_FAIL;        /* a bus error instead of a verdict */
+    return growing ? IMT_SKIP             /* never filled it; nothing learned */
+                   : IMT_WARN;            /* at capacity and still rc 0 */
+}
+
+bool imt_fs_scales_with_range(const imt_fs_row_t *rows, int n)
+{
+    if (n < 3) return false;
+
+    /*
+     * MONOTONICITY, not spread.
+     *
+     * If quantisation dominates, sigma rises with every widening of the full
+     * scale, so the series is monotonically increasing.  If analogue noise
+     * dominates it wanders, and the direction of each step is a coin flip.
+     * Counting steps is robust to one bad row in a way a spread statistic is
+     * not -- which is the whole reason this is not the coefficient-of-variation
+     * test it replaced.
+     *
+     * That test compared CV(sigma) with CV(sigma/fs) and was flipped by a
+     * single degenerate step: a near-zero sigma inflates CV(sigma), so the gate
+     * OPENED, and the same row then sat below half the median, so it WARNed.
+     * One bad measurement both unlocked the door and set off the alarm, which
+     * is why imu.fs.gyro fired on some sweeps and not others with nothing about
+     * the part changing.  Measured on the reference ISM330DHCX at 104.125 Hz:
+     * 0.0061, 0.0028, 0.0060, 0.0053, 0.0039, 0.0040 rad/s across a 32x span of
+     * full scale -- 2 rises in 5 steps, which is noise, not a scale factor.
+     *
+     * One violation is tolerated so a single bad row cannot veto a part where
+     * the model genuinely holds; two says it does not hold.
+     */
+    int rises = 0, steps = 0;
+    double prev = -1.0;
+    int prev_fs = 0;
+    for (int i = 0; i < n; i++) {
+        double m = (rows[i].sigma[0] + rows[i].sigma[1] + rows[i].sigma[2]) / 3.0;
+        if (m <= 0 || rows[i].fs <= 0) continue;   /* unmeasured: no opinion */
+        if (prev > 0 && rows[i].fs > prev_fs) {
+            steps++;
+            if (m > prev) rises++;
+        }
+        prev    = m;
+        prev_fs = rows[i].fs;
+    }
+    if (steps < 2) return false;          /* too few to tell the models apart */
+    return rises >= steps - 1;
+}
+
+int imt_fs_grade_median(imt_fs_row_t *rows, int n, double frac)
+{
+    if (n < 3) return 0;                 /* no median worth the name */
+
+    double mid[IMT_MAX_FS_ROWS];
+    int nm = 0;
+    for (int i = 0; i < n && nm < IMT_MAX_FS_ROWS; i++) {
+        double m = (rows[i].sigma[0] + rows[i].sigma[1] + rows[i].sigma[2]) / 3.0;
+        if (m > 0) mid[nm++] = m;
+    }
+    if (nm < 3) return 0;
+
+    for (int i = 1; i < nm; i++) {       /* insertion sort; nm <= IMT_MAX_FS_ROWS */
+        double v = mid[i];
+        int j = i - 1;
+        while (j >= 0 && mid[j] > v) { mid[j + 1] = mid[j]; j--; }
+        mid[j + 1] = v;
+    }
+    double med = mid[nm / 2];
+    if (med <= 0) return 0;
+
+    int bad = 0;
+    for (int i = 0; i < n; i++) {
+        double m = (rows[i].sigma[0] + rows[i].sigma[1] + rows[i].sigma[2]) / 3.0;
+        if (m > 0 && m < frac * med) { rows[i].status = IMT_WARN; bad++; }
+    }
+    return bad;
+}
+
+int imt_ts_collect_burst(imt_ts_acc_t *a, const uint32_t *ts, int n,
+                         double *out, int cap, int have)
+{
+    imt_ts_acc_seam(a);
+    for (int i = 0; i < n; i++) {
+        uint32_t d = imt_ts_acc_step(a, ts[i]);
+        /* i == 0 is the seam: see the header for why it cannot inform a
+         * per-sample tick period. */
+        if (d && i > 0 && have < cap) out[have++] = d;
+    }
+    return have;
+}
+
 void imt_degauss_split(const double vS[3], const double vR[3],
                        double field[3], double offset[3])
 {
@@ -3656,7 +3819,7 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
     r->imu_has_fifo     = imu->has_fifo;
     r->imu_has_hw_ts    = imu->has_hw_timestamp;
     r->imu_ts_tick_ns   = imu->ts_tick_ns;
-    memcpy(r->imu_odr_tab,   imu->supported_odr_hz,   sizeof r->imu_odr_tab);
+    memcpy(r->imu_odr_tab,   imu->supported_odr_mhz,   sizeof r->imu_odr_tab);
     memcpy(r->imu_accel_tab, imu->supported_accel_g,  sizeof r->imu_accel_tab);
     memcpy(r->imu_gyro_tab,  imu->supported_gyro_dps, sizeof r->imu_gyro_tab);
     r->is_sim = (strcmp(imu->name, "sim") == 0);
@@ -3671,7 +3834,7 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         r->mag_has_set_reset     = mag->has_set_reset;
         r->mag_set_reset_nonnull = (mag->set_reset != NULL);
         r->mag_set_period_s      = cfg->mag_set_period_s;
-        memcpy(r->mag_odr_tab, mag->supported_odr_hz, sizeof r->mag_odr_tab);
+        memcpy(r->mag_odr_tab, mag->supported_odr_mhz, sizeof r->mag_odr_tab);
     }
 
     /*
@@ -3680,25 +3843,25 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
      * that rate. Using nearest_odr here would have it check the hardware
      * against a rate the daemon never selects.
      */
-    r->req_odr_hz = cfg->imu_odr_hz;
-    r->eff_odr_hz = odr_actual_imu(imu, cfg->imu_odr_hz);
+    r->req_odr_mhz = cfg->imu_odr_mhz;
+    r->eff_odr_mhz = odr_actual_imu(imu, cfg->imu_odr_mhz);
     r->accel_g    = cfg->imu_accel_g;
     r->gyro_dps   = cfg->imu_gyro_dps;
     r->fifo_wm    = cfg->imu_fifo_wm;
     if (mag) {
-        r->mag_req_odr_hz = cfg->mag_odr_hz;
-        r->mag_eff_odr_hz = odr_actual_mag(mag, cfg->mag_odr_hz);
+        r->mag_req_odr_mhz = cfg->mag_odr_mhz;
+        r->mag_eff_odr_mhz = odr_actual_mag(mag, cfg->mag_odr_mhz);
     }
     r->phases_requested = opts->phases;
 
     imu_cfg_t icfg = {
-        .odr_hz   = r->eff_odr_hz,
+        .odr_mhz  = r->eff_odr_mhz,
         .accel_g  = cfg->imu_accel_g,
         .gyro_dps = cfg->imu_gyro_dps,
         .fifo_wm  = cfg->imu_fifo_wm,
     };
     mag_cfg_t mcfg = {
-        .odr_hz       = mag ? r->mag_eff_odr_hz : 0,
+        .odr_mhz      = mag ? r->mag_eff_odr_mhz : 0,
         .set_period_s = 0.0f,   /* the SET pulse is exercised explicitly */
     };
 
@@ -3707,9 +3870,9 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         add_check(r, "imu.odr.rounding",
                   "Requested ODR resolves to a programmable rate", IMT_INFO,
                   fmtbuf(rb, sizeof rb, "%d -> %d Hz",
-                         r->req_odr_hz, r->eff_odr_hz),
+                         r->req_odr_mhz, r->eff_odr_mhz),
                   "-",
-                  r->req_odr_hz == r->eff_odr_hz
+                  r->req_odr_mhz == r->eff_odr_mhz
                   ? "the configured rate is on this chip's grid"
                   : "the configured rate is not reachable; the driver reports "
                     "it will program this rate instead, and imud tunes the "
@@ -3719,9 +3882,9 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
                       "Requested mag ODR resolves to a programmable rate",
                       IMT_INFO,
                       fmtbuf(rb, sizeof rb, "%d -> %d Hz",
-                             r->mag_req_odr_hz, r->mag_eff_odr_hz),
+                             r->mag_req_odr_mhz, r->mag_eff_odr_mhz),
                       "-",
-                      r->mag_req_odr_hz == r->mag_eff_odr_hz
+                      r->mag_req_odr_mhz == r->mag_eff_odr_mhz
                       ? "the configured rate is on this chip's grid"
                       : "the configured rate is not reachable; the driver "
                         "reports it will program this rate instead, and imud "
@@ -3742,18 +3905,21 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
     r->imu_ts_tick_actual_ns = d.tick_ns;
 
     if (opts->phases & IMT_PHASE_PASSIVE) {
-        check_odr_seq_ts(r, opts, &d, imu, r->eff_odr_hz);
+        /* The check functions take Hz as a double; the report field is
+         * milli-Hz.  Convert once, here, rather than at every use inside. */
+        const double eff_hz = (double)r->eff_odr_mhz * 1e-3;
+        check_odr_seq_ts(r, opts, &d, imu, eff_hz);
         check_error_contract(r, &d);
         /* seq before the deliberate overflow: an overflow is a legitimate gap */
-        check_fifo(r, opts, &d, imu, r->eff_odr_hz, cfg->imu_fifo_wm);
+        check_fifo(r, opts, &d, imu, eff_hz, cfg->imu_fifo_wm);
         check_rest(r, opts, &d);
-        check_drdy(r, opts, &d, cfg, r->eff_odr_hz, cfg->imu_fifo_wm);
+        check_drdy(r, opts, &d, cfg, eff_hz, cfg->imu_fifo_wm);
         if (mag_ok) {
-            check_mag_passive(r, opts, mag, mbus,
-                              r->mag_eff_odr_hz);
+            const double mag_eff_hz = (double)r->mag_eff_odr_mhz * 1e-3;
+            check_mag_passive(r, opts, mag, mbus, mag_eff_hz);
             /* After the passive sweep: it needs mag.rate as its reference, and
              * it re-inits the part twice. */
-            check_mag_drdy(r, opts, mag, mbus, cfg, r->mag_eff_odr_hz);
+            check_mag_drdy(r, opts, mag, mbus, cfg, mag_eff_hz);
         }
         /* last: every init() in the sweep resets the driver's seq counter */
         check_fs_sweep(r, opts, &d, imu, ibus, &icfg);
@@ -3781,13 +3947,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
             r->phases_run |= IMT_PHASE_FACES;
         }
         if ((opts->phases & IMT_PHASE_GYRO) && !g_abort && !r->aborted) {
-            phase_gyro(r, opts, &d, imu, r->eff_odr_hz);
+            phase_gyro(r, opts, &d, imu, r->eff_odr_mhz);
             r->phases_run |= IMT_PHASE_GYRO;
         }
         if ((opts->phases & IMT_PHASE_SPIN) && !g_abort && !r->aborted) {
             if (mag_ok) {
                 phase_spin(r, opts, &d, mag, mbus,
-                           cfg, imu, r->eff_odr_hz);
+                           cfg, imu, r->eff_odr_mhz);
                 r->phases_run |= IMT_PHASE_SPIN;
             } else {
                 skip_check(r, "spin.frame_agreement",

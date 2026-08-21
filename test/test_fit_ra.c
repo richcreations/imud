@@ -95,7 +95,7 @@ static void write_wave_capture(const char *path, int odr, int dur_s)
     const float bias_true[3] = { 0.0020f, -0.0010f, 0.0015f };
 
     cap_writer_t w;
-    if (cap_writer_open(&w, path, (uint32_t)odr, "sim", "sim", "1.7", 0, 0) != 0) {
+    if (cap_writer_open(&w, path, (uint32_t)odr, (uint32_t)(odr * 1000), "sim", "sim", "1.7", 0, 0) != 0) {
         fprintf(stderr, "cannot write %s\n", path);
         exit(1);
     }
@@ -175,8 +175,8 @@ static imud_config_t bench_cfg(void)
     c.mekf_mag_noise    = 0.0004;
     c.accel_skip_thresh = 0.05;
     c.mag_reject_gauss  = 0.05;
-    c.mag_odr_hz        = 104;
-    c.imu_odr_hz        = 833;
+    c.mag_odr_mhz        = 104;
+    c.imu_odr_mhz        = 833;
     c.mag_yaw_only      = true;
     c.startup_settle_sec = 30.0;
     /* Shipped Gauss–Markov wave-state defaults (config.c). fit-ra reports on
@@ -331,7 +331,7 @@ static void test_fitra_detects_time_correlation(void)
     /* Raw-residual Na is a white-noise reading of the UNMODELLED residual, so
      * it must still exceed the datasheet value — the seaway is really there. */
     double na_raw_unmodelled = 9.80665 * sqrt(rep.resid_var_unmodelled /
-                                              (double)cfg.imu_odr_hz);
+                                              (double)cfg.imu_odr_mhz);
     EXPECT(na_raw_unmodelled > rep.na_configured,
            "unmodelled residual still exceeds the datasheet-derived default");
     end(fb);
