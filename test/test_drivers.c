@@ -2475,6 +2475,173 @@ static void test_chip_ts_backward_garbage_read(void)
     end(fb);
 }
 
+/*
+ * The forward bound is one sample period times a small slack, not a flat 9.6 s.
+ *
+ * The old bound was chosen on the theory that "a real gap of seconds means the
+ * reader was starved for seconds". It does not: the FIFO queues whatever the
+ * reader missed, so starvation makes bursts BIGGER, not later, and this burst's
+ * oldest sample follows the last burst's newest by one period however long the
+ * caller was away. What the slack actually admitted was a bad read.
+ *
+ * Measured on the reference ISM330DHCX at 104 Hz: one post-drain read landed
+ * 65,706 ticks (1.58 s) ahead of the 384 expected, sailed under the flat bound,
+ * and poisoned the anchor for the eleven bursts that followed.
+ */
+static void test_chip_ts_forward_bound_is_a_sample_period(void)
+{
+    begin("test_chip_ts_forward_bound_is_a_sample_period");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    /* wm 4 keeps batched timestamps out of it: this is the fallback path. */
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 4 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
+
+    imu_sample_t a[16] = { 0 }, b[16] = { 0 };
+    int na = 0, nb = 0;
+
+    ism_stage_burst(4, 1000000);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), a, 16, &na) == 0, "first read ok");
+
+    /*
+     * 65,706 ticks ahead -- the bench figure exactly. Well under the 400,000
+     * the old bound allowed, and 1370x the 48-tick sample period at 833 Hz.
+     */
+    ism_stage_burst(4, 1000000 + 65706);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), b, 16, &nb) == 0, "second read ok");
+    EXPECT(nb == 4, "second burst produced 4 samples");
+    EXPECT(b[0].chip_ts - a[na - 1].chip_ts == 48,
+           "a read 1.58 s ahead is refused: the burst extrapolates one sample "
+           "period on, where the flat 9.6 s bound accepted it");
+    EXPECT(b[nb - 1].chip_ts - a[na - 1].chip_ts < 1000u,
+           "no sample lands anywhere near the bad anchor");
+
+    end(fb);
+}
+
+/*
+ * ...and refusing read after read means the ANCHOR is stale, so the guard
+ * re-seeds rather than extrapolating forever.
+ *
+ * This is the half that turned one bad read into a lasting fault on the bench.
+ * Once `last` was 65,706 ticks high, every CORRECT reading looked equally
+ * implausible against it, so each was refused in turn and the stamps walked
+ * further from real time at one sample period per burst -- eleven of them,
+ * until a batched FIFO timestamp bypassed the guard and time snapped back,
+ * which is what imu.chipts.monotonic had been reporting as a seam reversal.
+ *
+ * A genuine bad read is isolated; a stale anchor refuses in an unbroken run.
+ * Counting them apart is the whole mechanism.
+ */
+static void test_chip_ts_reseeds_after_repeated_refusals(void)
+{
+    begin("test_chip_ts_reseeds_after_repeated_refusals");
+    int fb = g_fail;
+
+    i2cmock_reset();
+    i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
+    i2cmock_set_fifo_range(ISM_ADDR, 0x78, 0x7E);
+    imu_cfg_t cfg = { .odr_mhz = 833000, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 4 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR), &cfg) == 0, "init succeeds");
+
+    imu_sample_t v[16] = { 0 };
+    int n = 0;
+
+    /* Anchor high. */
+    ism_stage_burst(1, 4000000);
+    EXPECT(ism->read(I2CBUS(ISM_ADDR), v, 16, &n) == 0, "anchor read ok");
+    uint32_t anchored_at = v[0].chip_ts;
+
+    /*
+     * Now the counter reads far BELOW the anchor, every time -- the shape a
+     * stale `last` produces. The first few are refused and extrapolated; by
+     * the time the run passes CHIP_TS_MAX_REFUSALS the guard must give up on
+     * its anchor and track the part again.
+     */
+    uint32_t got = 0;
+    bool tracked = false;
+    for (int i = 0; i < 8; i++) {
+        ism_stage_burst(1, 1000 + (uint32_t)i * 48u);
+        EXPECT(ism->read(I2CBUS(ISM_ADDR), v, 16, &n) == 0, "read ok");
+        got = v[0].chip_ts;
+        if (got < 100000u) { tracked = true; break; }
+    }
+    EXPECT(tracked, "the guard re-seeds instead of refusing the part forever");
+    EXPECT(got != 0 && got < 100000u,
+           "and the stamp tracks the counter rather than the stale anchor");
+    EXPECT(anchored_at > 1000000u, "the anchor really was high to begin with");
+
+    end(fb);
+}
+
+/*
+ * On SPI the I2C block must be disabled; on I2C it must not be.
+ *
+ * DS13012's device-initialisation procedure, step 3, has two branches:
+ *   a. SPI: I2C_disable = 1 in CTRL4_C (13h) and DEVICE_CONF = 1 in CTRL9_XL.
+ *   b. I2C: I2C_disable = 0 (default) in CTRL4_C and DEVICE_CONF = 1.
+ * The driver did the DEVICE_CONF half and never the other, so every SPI
+ * install ran with the I2C block live on a part driven over SPI. §5 says it
+ * again standalone: "In order to disable the I2C block, (I2C_disable) = 1 must
+ * be written in CTRL4_C (13h)."
+ *
+ * Both branches are asserted, because writing the bit unconditionally would
+ * break the I2C one just as surely as never writing it broke SPI.
+ */
+static void test_st_spi_disables_i2c_block(void)
+{
+    begin("test_st_spi_disables_i2c_block");
+    int fb = g_fail;
+
+    const imu_cfg_t cfg = { .odr_mhz = 208250, .accel_g = 4,
+                            .gyro_dps = 500, .fifo_wm = 64 };
+
+    struct { const imu_ops_t *ops; int addr; const char *who; } parts[] = {
+        { ism,           ISM_ADDR, "ism330dhcx" },
+        { &lsm6dso_ops,  LSM_ADDR, "lsm6dso"    },
+        { &lsm6dsox_ops, LSM_ADDR, "lsm6dsox"   },
+    };
+
+    for (unsigned p = 0; p < sizeof parts / sizeof parts[0]; p++) {
+        const imu_ops_t *o = parts[p].ops;
+        int a = parts[p].addr;
+
+        /* SPI: the bit must be set. */
+        i2cmock_reset();
+        const int sfd = 11;                  /* any fd the mock is not using */
+        spimock_bind(sfd, (uint8_t)a, 0);
+        const imud_bus_t sbus = { .kind = BUS_SPI, .fd = sfd, .spi_mode = 0,
+                                  .spi_inc_mask = 0, .spi_hz = 10000000 };
+        i2cmock_set_reg(a, 0x20, 0x00);
+        i2cmock_set_reg(a, 0x21, 0x00);
+        EXPECT(o->init(&sbus, &cfg) == 0, "init over SPI succeeds");
+        EXPECT((i2cmock_get_reg(a, 0x13) & 0x04) != 0,
+               "CTRL4_C I2C_disable is set on SPI");
+        EXPECT(i2cmock_get_reg(a, 0x01) == 0x00,
+               "FUNC_CFG_ACCESS is cleared, so a stray bank switch cannot\n                survive into the configured part");
+        /* DEVICE_CONF is the ISM330DHCX half of step 3; lsm6dso.c documents
+         * that the LSM6DSO has no such register, so only assert it there. */
+        if (o == ism)
+            EXPECT(i2cmock_get_reg(a, 0x18) == 0x02,
+                   "and DEVICE_CONF is still set, the other half of step 3");
+
+        /* I2C: the same bit must be left clear. */
+        i2cmock_reset();
+        i2cmock_set_reg(a, 0x20, 0x00);
+        i2cmock_set_reg(a, 0x21, 0x00);
+        EXPECT(o->init(I2CBUS(a), &cfg) == 0, "init over I2C succeeds");
+        EXPECT((i2cmock_get_reg(a, 0x13) & 0x04) == 0,
+               "CTRL4_C I2C_disable is NOT set on I2C");
+    }
+
+    end(fb);
+}
+
 /* ── reset(): the self-clearing bit polls ────────────────────────────────── */
 
 /*
@@ -3095,10 +3262,26 @@ static void test_ticks_per_sample_across_rates(void)
  */
 #define DUAL_SPI_FD 9
 
+/*
+ * CTRL4_C (0x13) is EXPECTED to differ between the transports and is excluded.
+ *
+ * DS13012's initialisation procedure requires opposite values for it: step 3a
+ * sets I2C_disable = 1 for SPI, step 3b leaves it 0 for I2C.  A driver that
+ * left this register identical on both would be wrong on one of them -- which
+ * is what this one did until 2026-08-20, never writing the register at all and
+ * so running the I2C block live on every SPI install.
+ *
+ * Nothing else may differ, which is the invariant this helper exists for.  The
+ * ST callers assert the CTRL4_C difference itself, so excluding it here
+ * tolerates nothing: it is checked, just not by this comparison.
+ */
+#define CTRL4_C_REG 0x13
+
 static int reg_files_differ(uint8_t a, uint8_t b, int *first)
 {
     int n = 0;
     for (int r = 0; r < 256; r++) {
+        if (r == CTRL4_C_REG) continue;
         if (i2cmock_get_reg(a, (uint8_t)r) != i2cmock_get_reg(b, (uint8_t)r)) {
             if (n == 0 && first) *first = r;
             n++;
@@ -3153,7 +3336,11 @@ static void test_dual_transport_ism330dhcx(void)
                first, i2cmock_get_reg(I2C_AT, (uint8_t)first),
                i2cmock_get_reg(SPI_AT, (uint8_t)first));
     }
-    EXPECT(diffs == 0, "init leaves identical registers on both transports");
+    EXPECT(diffs == 0,
+           "init leaves identical registers on both transports, CTRL4_C aside");
+    EXPECT((i2cmock_get_reg(SPI_AT, CTRL4_C_REG) & 0x04) != 0 &&
+           (i2cmock_get_reg(I2C_AT, CTRL4_C_REG) & 0x04) == 0,
+           "and CTRL4_C differs in the one way the datasheet requires");
 
     /*
      * And the read path: same FIFO bytes in, same samples out.
@@ -3712,6 +3899,7 @@ int main(void)
 
     test_st_freq_fine_tick();
     test_st_init_flushes_fifo();
+    test_st_spi_disables_i2c_block();
     test_lsm_batched_timestamp();
     test_lsm_probe();
     test_lsm_init_registers();
@@ -3736,6 +3924,8 @@ int main(void)
     test_chip_ts_monotonic_across_bursts();
     test_chip_ts_forward_garbage_read();
     test_chip_ts_backward_garbage_read();
+    test_chip_ts_forward_bound_is_a_sample_period();
+    test_chip_ts_reseeds_after_repeated_refusals();
     test_driver_resets();
     test_ak099_init_modes();
     test_spi_same_controller();

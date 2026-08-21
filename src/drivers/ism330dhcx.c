@@ -40,6 +40,9 @@
 #define REG_CTRL1_XL          0x10  /* accel: ODR[3:0] | FS[1:0] | LPF2 | 0 */
 #define REG_CTRL2_G           0x11  /* gyro:  ODR[3:0] | FS[1:0] | FS_125 | FS_4000 */
 #define REG_CTRL3_C           0x12  /* BOOT | BDU | H_LACTIVE | PP_OD | SIM | IF_INC | 0 | SW_RESET */
+#define REG_FUNC_CFG_ACCESS   0x01  /* FUNC_CFG_EN | SHUB_REG_ACCESS | … */
+#define REG_CTRL4_C           0x13  /* … | DRDY_MASK | I2C_disable | … */
+#define CTRL4_I2C_DISABLE     0x04  /* bit 2, DS13012 Table 49 */
 #define REG_CTRL9_XL          0x18  /* DEN_* | DEVICE_CONF | 0 */
 #define REG_CTRL10_C          0x19  /* 0[7:6] | TIMESTAMP_EN | 0[4:0] */
 #define REG_OUT_TEMP_L        0x20  /* temperature output L; H at 0x21 (256 LSB/°C, 0=25°C) */
@@ -82,10 +85,17 @@ static struct {
  * generous next to the millisecond-scale lag being corrected. */
 #define TS_MAX_JITTER_TICKS  40000u
 
-/* A burst that lands this far AHEAD of the previous one means the post-drain
- * counter read is garbage, not that time passed -- 25 us/tick, so 10 s. See
- * chip_ts_guard_forward_ok(). */
-#define TS_MAX_FWD_TICKS     400000u
+/*
+ * Slack on the forward bound, in sample periods.
+ *
+ * The next burst's oldest sample follows the previous burst's newest by ONE
+ * sample period -- the FIFO queues what the reader missed, so starvation makes
+ * bursts bigger, not later.  Eight periods is loose enough for scheduler jitter
+ * and tight enough to catch the class of bad read that used to get through: at
+ * 104 Hz that is 3072 ticks against the 65,706 one landed at.  Overflow is the
+ * only legitimate break in the chain, and the guard is reset on it instead.
+ */
+#define TS_FWD_SLACK_SETS    8u
 
 /* ── ODR and full-scale encoding helpers ───────────────────────────────────── */
 
@@ -230,6 +240,43 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
     uint8_t gyfs = gy_fs_encode(cfg->gyro_dps, &gyro_scale);
+
+    /*
+     * Put the register bank back to the main one, first thing.
+     *
+     * Belt and braces against a stray write to FUNC_CFG_ACCESS having switched
+     * it -- which is exactly what an 8-bit-word SPI write could do on a Pi 5
+     * before spi_reg_write() was made atomic (see bus_io.h). A switched bank
+     * makes every subsequent read come from the embedded-function registers
+     * and presents as total bus corruption that survives reset() and BOOT, so
+     * it is worth one write to rule out, including on a part some other tool
+     * or an older build left that way.
+     */
+    if (bus_reg_write(bus, REG_FUNC_CFG_ACCESS, 0x00) < 0) return -1;
+
+    /*
+     * SPI: disable the I2C block.  DS13012's device-initialisation procedure
+     * (§ "The procedure to correctly initialize the device", step 3) is
+     * explicit and has two branches:
+     *
+     *     a. SPI interface:  I2C_disable = 1 in CTRL4_C (13h)
+     *                        and DEVICE_CONF = 1 in CTRL9_XL (18h).
+     *     b. I2C interface:  I2C_disable = 0 (default) in CTRL4_C (13h)
+     *                        and DEVICE_CONF = 1 in CTRL9_XL (18h).
+     *
+     * This driver has always done the DEVICE_CONF half and never the other,
+     * so every SPI install has run with the I2C block live on a part being
+     * driven over SPI.  §5 says the same thing on its own: "In order to
+     * disable the I2C block, (I2C_disable) = 1 must be written in CTRL4_C".
+     *
+     * Conditional on the transport rather than unconditional, because branch
+     * (b) requires the opposite value: on I2C the bit must stay 0.
+     *
+     * Written FIRST, before any other configuration, so the interface is
+     * settled before the registers that matter are set.
+     */
+    if (bus->kind == BUS_SPI &&
+        bus_reg_write(bus, REG_CTRL4_C, CTRL4_I2C_DISABLE) < 0) return -1;
 
     /* Accel: ODR | FS | LPF2_XL_EN=1 | bit0=0 (must be 0) */
     if (bus_reg_write(bus, REG_CTRL1_XL, (uint8_t)((odr << 4) | xlfs | 0x02)) < 0) return -1;
@@ -488,6 +535,14 @@ static int ism_read(const imud_bus_t *bus,
                  * which is normal at small watermarks and expected at
                  * fifo_wm < 8, where nothing is batched at all.
                  */
+                /*
+                 * An overflow is the one legitimate break in the chain: samples
+                 * were dropped, so this burst's oldest does NOT follow the last
+                 * burst's newest by a sample period and the guard has nothing
+                 * useful to say.  Re-seed rather than widen the bound to cover it.
+                 */
+                if (overflow) chip_ts_guard_reset(&s.ts_guard);
+
                 uint32_t burst_ts = now_ts;
                 uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
                 uint32_t first = burst_ts - span;
@@ -508,10 +563,21 @@ static int ism_read(const imud_bus_t *bus,
                  * for the nine samples it sent out near 2^32.
                  */
                 bool fwd_bad = !chip_ts_guard_forward_ok(
-                        &s.ts_guard, first, TS_MAX_FWD_TICKS);
+                        &s.ts_guard, first,
+                        s.ticks_per_sample * TS_FWD_SLACK_SETS);
                 bool bwd_bad = !chip_ts_guard_backward_ok(
                         &s.ts_guard, first, TS_MAX_JITTER_TICKS);
                 if (fwd_bad || bwd_bad) {
+                    /*
+                     * Refusing read after read means the ANCHOR is stale, not that
+                     * the part keeps lying: every correct reading looks equally
+                     * implausible against a bad `last`.  Past the limit, take the
+                     * reading and re-seed -- extrapolating again only walks the
+                     * stamps further from real time.  See chip_ts.h.
+                     */
+                    if (chip_ts_guard_refused(&s.ts_guard)) {
+                        chip_ts_guard_accepted(&s.ts_guard);   /* burst_ts stands */
+                    } else {
                     first    = chip_ts_guard_next(&s.ts_guard,
                                                   s.ticks_per_sample);
                     burst_ts = first + span;
@@ -530,7 +596,9 @@ static int ism_read(const imud_bus_t *bus,
                               (unsigned long long)s.ts_fwd_rejects);
                         s.ts_fwd_next *= 10;
                     }
+                    }
                 } else {
+                    chip_ts_guard_accepted(&s.ts_guard);
                     burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
                                                     s.ticks_per_sample,
                                                     TS_MAX_JITTER_TICKS);

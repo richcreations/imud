@@ -112,10 +112,17 @@ static struct {
 /* One second of ticks at 32/30 us; see chip_ts.h. */
 #define TS_MAX_JITTER_TICKS  937500u
 
-/* A burst that lands this far AHEAD of the previous one means the post-drain
- * counter read is garbage, not that time passed -- 1067 ns/tick, so 10 s. See
- * chip_ts_guard_forward_ok(). */
-#define TS_MAX_FWD_TICKS     9375000u
+/*
+ * Slack on the forward bound, in sample periods.
+ *
+ * The next burst's oldest sample follows the previous burst's newest by ONE
+ * sample period -- the FIFO queues what the reader missed, so starvation makes
+ * bursts bigger, not later.  Eight periods is loose enough for scheduler jitter
+ * and tight enough to catch the class of bad read that used to get through: at
+ * 104 Hz that is 3072 ticks against the 65,706 one landed at.  Overflow is the
+ * only legitimate break in the chain, and the guard is reset on it instead.
+ */
+#define TS_FWD_SLACK_SETS    8u
 
 /*
  * The FIFO's own timestamp field is 16 bits, so it repeats every 65536 ticks
@@ -537,10 +544,21 @@ static int icm_read(const imud_bus_t *bus,
                      * inside a run, and for what it emitted on the bench.
                      */
                     bool fwd_bad = !chip_ts_guard_forward_ok(
-                            &ic.ts_guard, first, TS_MAX_FWD_TICKS);
+                            &ic.ts_guard, first,
+                        ic.ticks_per_sample * TS_FWD_SLACK_SETS);
                     bool bwd_bad = !chip_ts_guard_backward_ok(
                             &ic.ts_guard, first, TS_MAX_JITTER_TICKS);
                     if (fwd_bad || bwd_bad) {
+                        /*
+                         * Refusing read after read means the ANCHOR is stale, not that
+                         * the part keeps lying: every correct reading looks equally
+                         * implausible against a bad `last`.  Past the limit, take the
+                         * reading and re-seed -- extrapolating again only walks the
+                         * stamps further from real time.  See chip_ts.h.
+                         */
+                        if (chip_ts_guard_refused(&ic.ts_guard)) {
+                            chip_ts_guard_accepted(&ic.ts_guard);   /* burst_ts stands */
+                        } else {
                         first    = chip_ts_guard_next(&ic.ts_guard,
                                                       ic.ticks_per_sample);
                         burst_ts = first + span;
@@ -559,7 +577,9 @@ static int icm_read(const imud_bus_t *bus,
                                   (unsigned long long)ic.ts_fwd_rejects);
                             ic.ts_fwd_next *= 10;
                         }
+                        }
                     } else {
+                        chip_ts_guard_accepted(&ic.ts_guard);
                         burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
                                                         ic.ticks_per_sample,
                                                         TS_MAX_JITTER_TICKS);

@@ -314,6 +314,24 @@ typedef struct {
     uint8_t     lo, hi;
     uint8_t     skip[8];
     int         nskip;
+    /*
+     * Address ranges the datasheet marks RESERVED, or does not list at all.
+     *
+     * NEVER READ THESE.  The sweep used to walk lo..hi blind, skipping only
+     * the FIFO port, which meant ~60 reserved addresses per snapshot and about
+     * 420 reserved reads per run once the volatile scan and the idempotency
+     * compare are counted.  On the reference ISM330DHCX that is not harmless:
+     * the part is clean at power-up, and after ONE run roughly 1 register read
+     * in 100 comes back with the wrong byte, persistently, across processes.
+     * A power cycle clears it; nothing in software does.
+     *
+     * Reading an undefined address is not a read of nothing -- on this family
+     * 0x60-0x62 are marked RESERVED *RW*, and the embedded-function bank hides
+     * behind FUNC_CFG_ACCESS at 0x01.  Poking at either is how a diagnostic
+     * tool becomes the fault it is looking for.
+     */
+    struct { uint8_t lo, hi; } resv[10];
+    int         nresv;
     uint8_t     bank_reg;        /* 0x00 = not banked */
     uint8_t     nrd_lo, nrd_hi;  /* destructive window; lo > hi = none */
     /*
@@ -351,11 +369,20 @@ typedef struct {
 static const imt_regmap_t imt_regmaps[] = {
     /* ST: FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high). */
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
+                {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
+                {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
+                {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
+                {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
-      .nrd_lo = 0x78, .nrd_hi = 0x7E , .freq_fine_reg = 0x63 },
+      .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
+                {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
+                {0x76,0x77} }, .nresv = 9 },
     /* TDK: FIFO ports and banked register files. */
     { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
@@ -416,6 +443,8 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
 {
     for (int i = 0; i < m->nskip; i++)
         if (m->skip[i] == reg) return true;
+    for (int i = 0; i < m->nresv; i++)
+        if (reg >= m->resv[i].lo && reg <= m->resv[i].hi) return true;
     if (m->nrd_lo <= m->nrd_hi && reg >= m->nrd_lo && reg <= m->nrd_hi)
         return true;
     /* Never read the bank selector itself as part of the sweep. */
@@ -645,6 +674,94 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
     add_check(r, "imu.probe", "IMU probe() / chip identification", IMT_PASS,
               fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->imu_addr),
               "accepted", "driver '%s' recognised the part", imu->name);
+
+    /*
+     * BUS INTEGRITY.  probe() reads a register whose value cannot change --
+     * the part's identity -- and compares it, so a failure at the REAL address
+     * is a corrupted transfer rather than a wrong part.  Repeating it counts
+     * corruption directly instead of leaving it to be inferred.
+     *
+     * It has been inferred twice today, and expensively.  A post-drain
+     * TIMESTAMP0 read came back 65,706 ticks (1.58 s) high and poisoned the
+     * timestamp chain for eleven bursts; INTERNAL_FREQ_FINE (0x63), a
+     * factory-trim register nothing writes, read differently across two
+     * init()s and surfaced as imu.init.idempotent. Both were single corrupted
+     * reads, and neither was reported as one -- they arrived disguised as a
+     * clock defect and a state-dependent init.
+     *
+     * Cheap enough to hammer: one identity byte per call.
+     */
+    {
+        /*
+         * Two failure modes, counted apart, because they call for different
+         * things: a transfer that ERRORED never delivered a byte (a driver or
+         * kernel-level fault), while one that SUCCEEDED and delivered the
+         * wrong byte is corruption on the wire.  Reporting them as one number
+         * is how a bus problem gets mistaken for a driver problem -- which is
+         * exactly what happened to the TIMESTAMP0 read and to 0x63.
+         *
+         * Where the part has a stable factory register the check reads that
+         * directly, so the two are separable; probe() collapses them into one
+         * -1 and is the fallback for parts without one.
+         */
+        int bad = 0, bad2 = 0, ioerr = 0;
+        uint8_t ref = 0;
+        bool have_ref = false;
+        const imt_regmap_t *irm = regmap_for(imu->name);
+        const uint8_t idreg = (irm && irm->freq_fine_reg)
+                            ? irm->freq_fine_reg : 0;
+        for (int i = 0; i < IMT_BUS_INTEGRITY_READS && !g_abort; i++) {
+            if (idreg) {
+                uint8_t v;
+                if (bus_reg_read(ibus, idreg, &v) < 0) { ioerr++; continue; }
+                if (!have_ref) { ref = v; have_ref = true; }
+                else if (v != ref) {
+                    /* Record WHAT came back, not just that it differed: a
+                     * shifted copy of the right value says clocking, 0x00 or
+                     * 0xFF says the part never drove the line, and anything
+                     * else says the read landed somewhere it should not. */
+                    if (r->raw.n_bus_bad < IMT_MAX_BUS_BAD) {
+                        r->raw.bus_bad_val[r->raw.n_bus_bad] = v;
+                        r->raw.bus_bad_at[r->raw.n_bus_bad]  = i;
+                        r->raw.n_bus_bad++;
+                    }
+                    r->raw.bus_ref_imu = ref;
+                    bad++;
+                }
+            } else if (imu->probe(ibus) < 0) {
+                bad++;
+            }
+            /*
+             * Cross-check a SECOND fixed register through probe(), so the
+             * count cannot be blamed on the one register chosen.  One register
+             * misreading is a question about that register; two is the bus.
+             */
+            if (idreg && imu->probe(ibus) < 0) bad2++;
+        }
+        double pct = 100.0 * (double)bad / (double)IMT_BUS_INTEGRITY_READS;
+        r->raw.bus_bad_imu = bad;
+        r->raw.bus_ioerr_imu = ioerr;
+        const char *val = fmtbuf(mb, sizeof mb,
+                                 "%d+%d of %d bad, %d io-err",
+                                 bad, bad2, IMT_BUS_INTEGRITY_READS,
+                                 ioerr);
+        if (bad == 0)
+            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
+                      IMT_PASS, val, "0 bad",
+                      "%d reads of a register that cannot change all came back "
+                      "with the value it cannot change from",
+                      IMT_BUS_INTEGRITY_READS);
+        else
+            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
+                      imt_bus_integrity_status(bad,
+                                              IMT_BUS_INTEGRITY_READS),
+                      val, "0 bad",
+                      "a register whose value is fixed read back wrong %.2f%% "
+                      "of the time. That is the bus, not the driver: lower "
+                      "spi_speed_hz, shorten the wiring and check the ground "
+                      "return before believing any timing figure in this "
+                      "report", pct);
+    }
 
     /*
      * A probe that ignores WHO_AM_I, or swallows the ioctl error, passes the
@@ -1207,6 +1324,8 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
     r->raw.ts_last      = tsa.last;
     r->raw.ts_backwards = tsa.reversals;
     r->raw.ts_seam_backwards = tsa.seam_reversals;
+    r->raw.n_ts_rev     = tsa.n_rev;
+    for (int i = 0; i < tsa.n_rev; i++) r->raw.ts_rev[i] = tsa.rev[i];
     r->raw.ts_repeats   = tsa.repeats;
     r->raw.ts_zero_count = tsa.zeros;
     r->raw.ts_wraps     = tsa.wraps;
@@ -3558,8 +3677,10 @@ uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts)
     if (!a->have) {
         a->first = a->prev = a->last = ts;
         a->have  = true;
+        a->n_seen = 1;
         return 0;                       /* no predecessor to measure against */
     }
+    a->n_seen++;
 
     uint32_t delta = ts - a->prev;       /* modular, so a wrap reads forward */
     uint32_t out   = 0;
@@ -3568,6 +3689,14 @@ uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts)
         a->reversals++;
         /* At a seam the anchor was re-derived; inside a burst it was not. */
         if (a->seam) a->seam_reversals++;
+        /* Record the values, not just the count -- see the header. */
+        if (a->n_rev < IMT_MAX_TS_REV) {
+            a->rev[a->n_rev].idx  = a->n_seen - 1;
+            a->rev[a->n_rev].prev = a->prev;
+            a->rev[a->n_rev].cur  = ts;
+            a->rev[a->n_rev].seam = a->seam;
+            a->n_rev++;
+        }
     }
     else {
         out = delta;
@@ -3583,6 +3712,12 @@ void imt_ts_acc_seam(imt_ts_acc_t *a)
     a->seam = true;
 }
 
+imt_status_t imt_bus_integrity_status(int bad, int total)
+{
+    if (bad <= 0 || total <= 0) return IMT_PASS;
+    return (100.0 * (double)bad / (double)total) < 0.5 ? IMT_WARN : IMT_FAIL;
+}
+
 imt_status_t imt_overflow_status(int rc, bool growing)
 {
     if (rc == 1)  return IMT_PASS;        /* overflow reported, as required */
@@ -3591,47 +3726,66 @@ imt_status_t imt_overflow_status(int rc, bool growing)
                    : IMT_WARN;            /* at capacity and still rc 0 */
 }
 
+/* Median of a short series, sorted in place.  n >= 1. */
+static double med_of(double *v, int n)
+{
+    for (int i = 1; i < n; i++) {
+        double t = v[i]; int k = i - 1;
+        while (k >= 0 && v[k] > t) { v[k + 1] = v[k]; k--; }
+        v[k + 1] = t;
+    }
+    return v[n / 2];
+}
+
 bool imt_fs_scales_with_range(const imt_fs_row_t *rows, int n)
 {
-    if (n < 3) return false;
+    if (n < 4) return false;              /* need two halves worth splitting */
+
+    /* Rows with a measurement, in ascending full scale (the sweep builds them
+     * that way; sorting is not worth it for <= 8 entries). */
+    double sig[IMT_MAX_FS_ROWS], fs[IMT_MAX_FS_ROWS];
+    int m = 0;
+    for (int i = 0; i < n && m < IMT_MAX_FS_ROWS; i++) {
+        double v = (rows[i].sigma[0] + rows[i].sigma[1] + rows[i].sigma[2]) / 3.0;
+        if (v <= 0 || rows[i].fs <= 0) continue;
+        sig[m] = v; fs[m] = (double)rows[i].fs; m++;
+    }
+    if (m < 4) return false;
 
     /*
-     * MONOTONICITY, not spread.
+     * PROPORTIONALITY, judged between the medians of the bottom and top halves.
      *
-     * If quantisation dominates, sigma rises with every widening of the full
-     * scale, so the series is monotonically increasing.  If analogue noise
-     * dominates it wanders, and the direction of each step is a coin flip.
-     * Counting steps is robust to one bad row in a way a spread statistic is
-     * not -- which is the whole reason this is not the coefficient-of-variation
-     * test it replaced.
+     * If quantisation dominates, sigma tracks full scale, so a 32x span of
+     * range produces roughly a 32x span of sigma.  If analogue noise dominates
+     * sigma is flat and the ratio is about 1.  Those are separated by more than
+     * an order of magnitude, which is what makes this decidable on noisy data;
+     * the requirement is only that sigma covers half the span in log terms.
      *
-     * That test compared CV(sigma) with CV(sigma/fs) and was flipped by a
-     * single degenerate step: a near-zero sigma inflates CV(sigma), so the gate
-     * OPENED, and the same row then sat below half the median, so it WARNed.
-     * One bad measurement both unlocked the door and set off the alarm, which
-     * is why imu.fs.gyro fired on some sweeps and not others with nothing about
-     * the part changing.  Measured on the reference ISM330DHCX at 104.125 Hz:
-     * 0.0061, 0.0028, 0.0060, 0.0053, 0.0039, 0.0040 rad/s across a 32x span of
-     * full scale -- 2 rises in 5 steps, which is noise, not a scale factor.
+     * Medians of halves rather than max/min or a spread statistic, because both
+     * of those are decided by a single row.  Two earlier attempts failed on
+     * exactly that: comparing CV(sigma) with CV(sigma/fs) let one near-zero
+     * step OPEN the gate (and that same row then tripped the median test), and
+     * counting rises admitted noise 6 times in 32 -- with 6 ranges there are
+     * only 5 steps, so "4 of 5 rose" happens by chance about 19% of the time,
+     * which is why imu.fs.gyro still fired on 2 of 10 bench rungs after it.
      *
-     * One violation is tolerated so a single bad row cannot veto a part where
-     * the model genuinely holds; two says it does not hold.
+     * Measured on the reference ISM330DHCX at 104.125 Hz: 0.0061, 0.0028,
+     * 0.0060, 0.0053, 0.0039, 0.0040 rad/s over 125..4000 dps.  Half-medians
+     * 0.0060 against 0.0040 -- a ratio of 0.67 where the quantisation model
+     * needs 2.83.  Not close, and not a coin flip.
      */
-    int rises = 0, steps = 0;
-    double prev = -1.0;
-    int prev_fs = 0;
-    for (int i = 0; i < n; i++) {
-        double m = (rows[i].sigma[0] + rows[i].sigma[1] + rows[i].sigma[2]) / 3.0;
-        if (m <= 0 || rows[i].fs <= 0) continue;   /* unmeasured: no opinion */
-        if (prev > 0 && rows[i].fs > prev_fs) {
-            steps++;
-            if (m > prev) rises++;
-        }
-        prev    = m;
-        prev_fs = rows[i].fs;
-    }
-    if (steps < 2) return false;          /* too few to tell the models apart */
-    return rises >= steps - 1;
+    int half = m / 2;
+    double lo_s[IMT_MAX_FS_ROWS], hi_s[IMT_MAX_FS_ROWS];
+    double lo_f[IMT_MAX_FS_ROWS], hi_f[IMT_MAX_FS_ROWS];
+    for (int i = 0; i < half; i++)      { lo_s[i] = sig[i];        lo_f[i] = fs[i]; }
+    for (int i = half; i < m; i++)      { hi_s[i - half] = sig[i]; hi_f[i - half] = fs[i]; }
+
+    double lo_sig = med_of(lo_s, half), hi_sig = med_of(hi_s, m - half);
+    double lo_fs  = med_of(lo_f, half), hi_fs  = med_of(hi_f, m - half);
+    if (lo_sig <= 0 || lo_fs <= 0 || hi_fs <= lo_fs) return false;
+
+    /* Half the span in log terms: sqrt of the full-scale ratio. */
+    return (hi_sig / lo_sig) >= sqrt(hi_fs / lo_fs);
 }
 
 int imt_fs_grade_median(imt_fs_row_t *rows, int n, double frac)

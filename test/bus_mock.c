@@ -360,7 +360,24 @@ static int dispatch_spi(int fd, unsigned long request,
         return -1;
     }
 
-    const uint8_t *tx0 = (const uint8_t *)(uintptr_t)tr[0].tx_buf;
+    /*
+     * A 16-bit-word transfer carries [address, value] as ONE native-endian
+     * word, transmitted MSB first -- see spi_reg_write() for why the drivers
+     * send writes that way on a Pi 5.  Unpack it to the byte order the wire
+     * sees, or the mock reads the value as the address on a little-endian
+     * host and every write lands in the wrong register.
+     */
+    uint8_t w16buf[2];
+    const uint8_t *tx0;
+    if (tr[0].bits_per_word == 16 && tr[0].tx_buf) {
+        uint16_t w;
+        memcpy(&w, (const void *)(uintptr_t)tr[0].tx_buf, sizeof w);
+        w16buf[0] = (uint8_t)(w >> 8);
+        w16buf[1] = (uint8_t)(w & 0xFF);
+        tx0 = w16buf;
+    } else {
+        tx0 = (const uint8_t *)(uintptr_t)tr[0].tx_buf;
+    }
     if (!tx0 || tr[0].len < 1) { errno = EINVAL; return -1; }
 
     bool is_read = (tx0[0] & 0x80u) != 0;

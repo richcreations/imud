@@ -51,7 +51,28 @@
 typedef struct {
     uint32_t last;      /* chip_ts of the newest sample of the previous burst */
     bool     have;      /* false until the first burst has been stamped */
+    /*
+     * Consecutive refusals.  A guard that refuses read after read is not
+     * protecting the clock from the part; it is holding an anchor the part has
+     * moved away from, and every further refusal drags the error along.
+     * chip_ts_guard_refused() counts, chip_ts_guard_accepted() clears, and
+     * past CHIP_TS_MAX_REFUSALS the caller re-seeds instead.
+     */
+    unsigned refusals;
 } chip_ts_guard_t;
+
+/*
+ * How many consecutive refusals before the guard is the thing that is wrong.
+ *
+ * A genuine bad counter read is isolated: the next one is fine.  A stale anchor
+ * refuses forever, because every correct reading looks equally implausible
+ * against it.  Measured on the reference ISM330DHCX: one read landed 65,706
+ * ticks (1.58 s) ahead, was accepted because the forward bound was a flat
+ * 9.6 s, and the eleven correct reads after it were then refused one after
+ * another while the stamps walked further from real time.  Three is enough to
+ * tell one bad read from a guard that has lost the plot.
+ */
+#define CHIP_TS_MAX_REFUSALS 3u
 
 /*
  * Forget the previous burst.  Call from init(), so a reconfigure does not
@@ -59,8 +80,25 @@ typedef struct {
  */
 static inline void chip_ts_guard_reset(chip_ts_guard_t *g)
 {
-    g->last = 0;
-    g->have = false;
+    g->last     = 0;
+    g->have     = false;
+    g->refusals = 0;
+}
+
+/*
+ * The caller refused a reading.  Returns true when the guard has now refused
+ * too many in a row to be believed itself, in which case the caller must
+ * re-seed from the reading rather than extrapolate again.
+ */
+static inline bool chip_ts_guard_refused(chip_ts_guard_t *g)
+{
+    return ++g->refusals > CHIP_TS_MAX_REFUSALS;
+}
+
+/* The caller used a reading: the guard is tracking the part again. */
+static inline void chip_ts_guard_accepted(chip_ts_guard_t *g)
+{
+    g->refusals = 0;
 }
 
 /*
@@ -115,10 +153,21 @@ static inline uint32_t chip_ts_guard_shift(chip_ts_guard_t *g,
  * when `now_ts` fails its cross-check, and the fallback then uses that very
  * `now_ts` as ground truth. This is the check the fallback was missing.
  *
- * `max_forward` bounds a believable gap between consecutive bursts. Generous on
- * purpose: a real gap of seconds means the reader was starved for seconds, and
- * imu.c re-anchors after a stall like that anyway, so a false reject there costs
- * nothing while a false accept costs a burst of wrong sample times.
+ * `max_forward` bounds a believable gap between consecutive bursts, and the
+ * bound is TIGHT rather than generous, which is the opposite of what it used to
+ * be.  The physical fact is that this burst's OLDEST sample follows the previous
+ * burst's NEWEST by one sample period: the FIFO loses nothing in between, so
+ * however long the reader was away, the samples it missed are still queued and
+ * come back in order.  Starvation makes bursts BIGGER, not later.  The only
+ * thing that breaks the chain is an overflow, and an overflow is reported --
+ * callers reset the guard on it rather than stretching this bound to cover it.
+ *
+ * So callers pass a small multiple of ticks_per_sample.  The flat 9.6 s this
+ * replaced was chosen on the theory that "a real gap of seconds means the reader
+ * was starved for seconds", which is exactly the case the FIFO already handles.
+ * What the slack actually admitted was a bad read: on the reference ISM330DHCX
+ * at 104 Hz one landed 65,706 ticks (1.58 s) ahead of 384 expected, sailed under
+ * the bound, and poisoned the anchor for the eleven bursts that followed.
  */
 static inline bool chip_ts_guard_forward_ok(const chip_ts_guard_t *g,
                                             uint32_t first,

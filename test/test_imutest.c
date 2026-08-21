@@ -600,7 +600,11 @@ static void test_bringup_good(void)
     /* Nothing moves in a plain register file, so nothing is filtered and the
      * whole mapped range is compared. */
     EXPECT(r->raw.n_volatile_imu == 0, "static mock has no volatile registers");
-    EXPECT(r->raw.n_scanned_imu > 100, "the mapped range was compared");
+    /* 69 documented, readable registers, not the 128 of a blind 0x00-0x7F
+     * walk: DS13012 Table 19 marks about 60 of that span RESERVED, and the
+     * sweep no longer touches them. */
+    EXPECT(r->raw.n_scanned_imu > 60, "the documented range was compared");
+    EXPECT(r->raw.n_scanned_imu < 80, "and the reserved span was not");
     /*
      * The ST FIFO port is seven registers wide (0x78 tag, then X/Y/Z low/high
      * through 0x7E) and a single-byte read of any of them pops a word.  The
@@ -624,6 +628,61 @@ static void test_bringup_good(void)
  * look state-dependent: a shipped ISM330DHCX report showed 29 "changed"
  * registers of which only 9 were writes, and 23 "differing" on the repeat.
  */
+/*
+ * The sweep must never read a RESERVED or undefined address.
+ *
+ * It used to walk lo..hi blind, skipping only the FIFO port, which put about
+ * 60 reserved addresses in every snapshot and ~420 reserved reads in every run
+ * once the volatile scan and the idempotency compare are counted. That is not
+ * harmless on the reference ISM330DHCX: the part reads cleanly at power-up and
+ * after ONE run roughly 1 register read in 100 comes back with the wrong byte,
+ * persistently and across processes. A power cycle clears it; nothing in
+ * software does.
+ *
+ * DS13012 Table 19 marks 0x00, 03-06, 1F, 2E-34, 3C-3F, 44-55, 60-62, 64-6E
+ * and 76-77 reserved -- and 60-62 are reserved READ/WRITE, with the
+ * embedded-function bank behind FUNC_CFG_ACCESS at 0x01.
+ */
+static void test_sweep_avoids_reserved_registers(void)
+{
+    begin("test_sweep_avoids_reserved_registers");
+    int fb = g_fail;
+
+    mock_base();
+    /* Count every read the sweep makes, by address. */
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+    free(r);
+
+    static const struct { uint8_t lo, hi; const char *why; } resv[] = {
+        { 0x00, 0x00, "0x00 is not in the register map at all" },
+        { 0x03, 0x06, "0x03-0x06 RESERVED" },
+        { 0x1F, 0x1F, "0x1F RESERVED" },
+        { 0x2E, 0x34, "0x2E-0x34 RESERVED" },
+        { 0x3C, 0x3F, "0x3C-0x3F RESERVED" },
+        { 0x44, 0x55, "0x44-0x55 RESERVED" },
+        { 0x60, 0x62, "0x60-0x62 RESERVED (read/write)" },
+        { 0x64, 0x6E, "0x64-0x6E RESERVED" },
+        { 0x76, 0x77, "0x76-0x77 RESERVED" },
+    };
+    char msg[96];
+    for (unsigned i = 0; i < sizeof resv / sizeof resv[0]; i++)
+        for (int reg = resv[i].lo; reg <= (int)resv[i].hi; reg++) {
+            snprintf(msg, sizeof msg, "never read 0x%02X (%s)",
+                     reg, resv[i].why);
+            EXPECT(i2cmock_read_count(ISM_ADDR, (uint8_t)reg) == 0, msg);
+        }
+
+    /* And the documented ones ARE still read, or the sweep measures nothing. */
+    EXPECT(i2cmock_read_count(ISM_ADDR, 0x0F) > 0, "WHO_AM_I is still read");
+    EXPECT(i2cmock_read_count(ISM_ADDR, 0x63) > 0, "FREQ_FINE is still read");
+
+    end(fb);
+}
+
 static void test_volatile_registers_filtered(void)
 {
     begin("test_volatile_registers_filtered");
@@ -633,12 +692,17 @@ static void test_volatile_registers_filtered(void)
     /*
      * Registers the ISM driver never touches, so making them move exercises
      * the scan without perturbing the FIFO level or the timestamp the driver
-     * itself reads.  On silicon these would be STATUS_REG and the output
-     * words; here they only have to change with no write in between.
+     * itself reads: STATUS_REG and two gyro output words.
+     *
+     * These used to be 0x50 and 0x51, which DS13012 Table 19 marks RESERVED.
+     * Using undefined addresses as stand-ins is the same habit that put ~420
+     * reserved reads into every run of the tool -- and the sweep now skips
+     * them, so the test would have been asserting against addresses nothing
+     * looks at.
      */
-    i2cmock_set_live(ISM_ADDR, 0x1E, 3);
-    i2cmock_set_live(ISM_ADDR, 0x50, 7);
-    i2cmock_set_live(ISM_ADDR, 0x51, 1);
+    i2cmock_set_live(ISM_ADDR, 0x1E, 3);   /* STATUS_REG */
+    i2cmock_set_live(ISM_ADDR, 0x22, 7);   /* OUTX_L_G  */
+    i2cmock_set_live(ISM_ADDR, 0x23, 1);   /* OUTX_H_G  */
 
     imud_config_t cfg; base_config(&cfg);
     imt_opts_t o;      fast_opts(&o);
@@ -660,8 +724,8 @@ static void test_volatile_registers_filtered(void)
            "live registers do not break idempotency");
     EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
            "control-register writes still show through the filter");
-    EXPECT(r->raw.n_scanned_imu + r->raw.n_volatile_imu > 100,
-           "excluded plus compared covers the mapped range");
+    EXPECT(r->raw.n_scanned_imu + r->raw.n_volatile_imu > 60,
+           "excluded plus compared covers the documented range");
 
     free(r);
     end(fb);
@@ -2388,6 +2452,38 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
  * the reference part, where 12 and 26 Hz are the rates that cannot fill in the
  * window and used to WARN for it.
  */
+/*
+ * imu.bus.integrity's decision table.
+ *
+ * The loop itself is exercised on the PASS path by every mock run; what is
+ * worth pinning is the grading, because the split is a RATE and the whole
+ * point of the check is that a corrupted bus invalidates every timing figure
+ * downstream of it.
+ */
+static void test_bus_integrity_status(void)
+{
+    begin("test_bus_integrity_status");
+    int fb = g_fail;
+
+    EXPECT(imt_bus_integrity_status(0, 2000) == IMT_PASS,
+           "a bus that never misreads passes");
+    EXPECT(imt_bus_integrity_status(1, 2000) == IMT_WARN,
+           "one bad read in 2000 is a bus to look at");
+    EXPECT(imt_bus_integrity_status(9, 2000) == IMT_WARN,
+           "0.45% is still a WARN");
+    EXPECT(imt_bus_integrity_status(10, 2000) == IMT_FAIL,
+           "0.5% and up cannot carry a measurement");
+    EXPECT(imt_bus_integrity_status(2000, 2000) == IMT_FAIL,
+           "a bus that always misreads fails");
+    /* Degenerate inputs must not divide by zero or grade a run that never
+     * happened. */
+    EXPECT(imt_bus_integrity_status(0, 0) == IMT_PASS, "no reads is not a fault");
+    EXPECT(imt_bus_integrity_status(-1, 2000) == IMT_PASS,
+           "a negative count is not a fault");
+
+    end(fb);
+}
+
 static void test_overflow_status(void)
 {
     begin("test_overflow_status");
@@ -2429,13 +2525,13 @@ static void test_fs_scales_with_range(void)
 
     imt_fs_row_t rows[6];
 
-    /* Quantisation-dominated: sigma rises at every step. */
-    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
-    EXPECT(imt_fs_scales_with_range(rows, 5),
-           "sigma rising with every range is the quantisation model");
+    /* Quantisation-dominated: sigma tracks full scale across the span. */
+    for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
+    EXPECT(imt_fs_scales_with_range(rows, 6),
+           "sigma spanning the full-scale range is the quantisation model");
 
     /* Analogue-dominated: the real bench numbers, 104.125 Hz on the reference
-     * ISM330DHCX. Two rises in five steps -- noise, not a scale factor. */
+     * ISM330DHCX. Half-medians 0.0060 vs 0.0040 against a bar of 2.83. */
     fs_set(&rows[0],  125, 0.0061406);
     fs_set(&rows[1],  250, 0.0028145);
     fs_set(&rows[2],  500, 0.0060096);
@@ -2446,39 +2542,40 @@ static void test_fs_scales_with_range(void)
            "the measured bench sweep is not graded");
 
     /*
-     * THE REGRESSION. One degenerate step among otherwise flat rows must not
-     * open the gate. Under the old CV test this returned true, and the median
-     * test then flagged the very row that had opened it.
+     * THE FIRST REGRESSION. One degenerate step among otherwise flat rows must
+     * not open the gate. The CV test returned true here, and the median test
+     * then flagged the very row that had opened it.
      */
     for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.9e-3);
     fs_set(&rows[2], 500, 1.0e-6);          /* a failed measurement */
     EXPECT(!imt_fs_scales_with_range(rows, 6),
            "one degenerate step does not unlock grading");
 
-    /* A single violation is tolerated where the model otherwise holds, so one
-     * bad row cannot veto a part the check should be grading. */
+    /*
+     * THE SECOND REGRESSION. Flat sigma that happens to rise at 4 of 5 steps --
+     * which noise does about 19% of the time with six ranges. The rise-counting
+     * gate opened here; proportionality does not, because the span is nowhere
+     * near the full-scale span.
+     */
+    fs_set(&rows[0],  125, 1.90e-3);
+    fs_set(&rows[1],  250, 1.95e-3);
+    fs_set(&rows[2],  500, 2.00e-3);
+    fs_set(&rows[3], 1000, 1.98e-3);        /* the one dip */
+    fs_set(&rows[4], 2000, 2.05e-3);
+    fs_set(&rows[5], 4000, 2.10e-3);
+    EXPECT(!imt_fs_scales_with_range(rows, 6),
+           "monotonic but flat is still analogue noise, not quantisation");
+
+    /* Too few rows to split into halves. */
+    fs_set(&rows[0], 125, 1.0e-4);
+    fs_set(&rows[1], 250, 2.0e-4);
+    fs_set(&rows[2], 500, 4.0e-4);
+    EXPECT(!imt_fs_scales_with_range(rows, 3), "three rows decide nothing");
+
+    /* Unmeasured rows are skipped, not read as a floor of zero. */
     for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
-    /* 1e-4, 2e-4, 4e-4, 3e-4, 1.6e-3, 3.2e-3 — one genuine FALL at row 3,
-     * then the rise resumes. 4 rises in 5 steps. */
-    fs_set(&rows[3], 1000, 3.0e-4);
+    fs_set(&rows[5], 4000, 0.0);
     EXPECT(imt_fs_scales_with_range(rows, 6),
-           "one dip does not veto a genuinely quantisation-dominated part");
-
-    /* Two violations say the model does not hold. */
-    for (int i = 0; i < 6; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
-    fs_set(&rows[2], 500, 1.0e-4);
-    fs_set(&rows[4], 2000, 2.0e-4);
-    EXPECT(!imt_fs_scales_with_range(rows, 6), "two violations close the gate");
-
-    /* Too few comparable rows to tell the models apart. */
-    fs_set(&rows[0], 125, 1.9e-3);
-    fs_set(&rows[1], 250, 3.8e-3);
-    EXPECT(!imt_fs_scales_with_range(rows, 2), "two rows decide nothing");
-
-    /* Unmeasured rows are skipped rather than read as a fall. */
-    for (int i = 0; i < 5; i++) fs_set(&rows[i], 125 << i, 1.0e-4 * (1 << i));
-    fs_set(&rows[4], 2000, 0.0);
-    EXPECT(imt_fs_scales_with_range(rows, 5),
            "a row with no measurement is skipped, not counted against");
 
     end(fb);
@@ -2782,6 +2879,7 @@ int main(void)
     test_mock_models_the_whole_fifo_window();
     test_bringup_good();
     test_bringup_bad_whoami();
+    test_sweep_avoids_reserved_registers();
     test_volatile_registers_filtered();
     test_nonidempotent_init_names_registers();
     test_fifo_port_window_not_swept();
@@ -2810,6 +2908,7 @@ int main(void)
     test_chipts_accounting();
     test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
+    test_bus_integrity_status();
     test_overflow_status();
     test_fs_grade_median();
     test_fs_scales_with_range();

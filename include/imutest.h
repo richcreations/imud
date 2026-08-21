@@ -38,6 +38,25 @@
 #define IMT_MAX_CHECKS     160
 #define IMT_MAX_REGDIFF     96    /* per device */
 #define IMT_MAX_FS_ROWS      8    /* matches supported_accel_g/gyro_dps */
+#define IMT_MAX_TS_REV       6    /* recorded chip_ts reversals */
+/*
+ * How many identity reads imu.bus.integrity / mag.bus.integrity take.
+ *
+ * Enough to measure a rate rather than catch a coincidence: the corruption
+ * this exists to find showed up at roughly one read in a few hundred on the
+ * reference rig, so a couple of thousand puts a real figure on it while
+ * costing one byte each.
+ */
+#define IMT_BUS_INTEGRITY_READS 2000
+#define IMT_MAX_BUS_BAD        12    /* recorded corrupt values */
+
+/* One chip_ts reversal, with the values that make it diagnosable. */
+typedef struct {
+    int      idx;                  /* sample index within the window */
+    uint32_t prev, cur;            /* the stamps either side */
+    bool     seam;                 /* at a burst boundary */
+} imt_ts_rev_t;
+
 #define IMT_MAG_SECTORS     24    /* 15° each; matches cal_main.c N_SECTORS */
 #define IMT_MAX_FIFO_STEPS  12
 #define IMT_G_MS2            9.80665
@@ -141,6 +160,15 @@ typedef struct {
      * earlier tick. Zero-stamped samples are excluded from both. */
     int           ts_backwards, ts_repeats, ts_zero_count, ts_wraps;
     int           ts_seam_backwards;  /* of ts_backwards, at a burst seam */
+    /* The reversals themselves.  A count alone is not actionable. */
+    int           bus_bad_imu, bus_bad_mag;      /* wrong value delivered */
+    uint8_t       bus_ref_imu;                   /* the value it should be */
+    int           n_bus_bad;
+    uint8_t       bus_bad_val[IMT_MAX_BUS_BAD];  /* what came back */
+    int           bus_bad_at[IMT_MAX_BUS_BAD];   /* which read */
+    int           bus_ioerr_imu, bus_ioerr_mag;  /* transfer never happened */
+    int           n_ts_rev;
+    imt_ts_rev_t  ts_rev[IMT_MAX_TS_REV];
     int           fifo_steps;
     double        fifo_wait_s[IMT_MAX_FIFO_STEPS];
     int           fifo_depth[IMT_MAX_FIFO_STEPS];
@@ -492,8 +520,19 @@ typedef struct {
     bool     have;                 /* a nonzero stamp has been seen */
     bool     seam;                 /* next sample opens a new burst */
     uint32_t first, prev, last;
+    int      n_seen;               /* stamps fed in, for indexing */
     int      reversals, repeats, zeros, wraps;
     int      seam_reversals;       /* of `reversals`, how many at a seam */
+    /*
+     * The first few reversals, with their VALUES.  A bare count is not a
+     * finding anyone can act on -- imu.init.idempotent proved that by
+     * reporting "2 registers differ" across three bench sessions with nothing
+     * in it to chase, and imu.chipts.monotonic has been reporting "1 reversal
+     * at a burst seam" the same way.  How far time went backwards, and where,
+     * is what separates a drain-cadence artefact from a decode defect.
+     */
+    int         n_rev;             /* recorded, <= IMT_MAX_TS_REV */
+    imt_ts_rev_t rev[IMT_MAX_TS_REV];
 } imt_ts_acc_t;
 
 /*
@@ -557,28 +596,35 @@ int imt_ts_collect_burst(imt_ts_acc_t *a, const uint32_t *ts, int n,
  *
  * imu.fs.gyro's proxy is that the ADC range, and so the noise standard
  * deviation, scales with the full scale -- true only where QUANTISATION
- * dominates the noise floor. Where analogue noise dominates, sigma wanders
- * with the room and carries no information about the sensitivity constants.
- * The check documented that precondition from the start and never enforced it.
+ * dominates the noise floor. Where analogue noise dominates, sigma wanders with
+ * the room and says nothing about the sensitivity constants. The check
+ * documented that precondition from the start and never enforced it.
  *
- * Decided by MONOTONICITY: quantisation-dominated sigma rises at every
- * widening of the full scale; analogue-dominated sigma changes direction. One
- * violation is tolerated, two is not.
+ * Decided by PROPORTIONALITY between the medians of the bottom and top halves
+ * of the sweep: a 32x span of full scale produces roughly a 32x span of sigma
+ * under the quantisation model and about 1x under analogue noise. Those differ
+ * by more than an order of magnitude, which is what makes the question
+ * decidable on noisy data. The bar is half the span in log terms.
  *
- * Deliberately not a spread statistic. Comparing CV(sigma) with CV(sigma/fs)
- * was flipped by a single degenerate step -- a near-zero sigma inflates
- * CV(sigma) so the gate opened, and the same row then sat below half the
- * median so it WARNed: one bad measurement both unlocked the door and set off
- * the alarm. Counting directions cannot be flipped that way.
+ * Medians of halves, not extremes and not a spread statistic, because both are
+ * decided by one row. Two earlier attempts failed there and are worth naming so
+ * they are not tried again:
+ *
+ *   - CV(sigma) against CV(sigma/fs): a single near-zero step inflates
+ *     CV(sigma), so the gate OPENED, and that same row then sat below half the
+ *     median and WARNed. One bad measurement unlocked the door and set off the
+ *     alarm.
+ *   - counting rises: with 6 ranges there are 5 steps, so "4 of 5 rose" happens
+ *     by chance 6 times in 32. imu.fs.gyro still fired on 2 of 10 bench rungs.
  *
  * Measured on the reference ISM330DHCX at 104.125 Hz: 0.0061, 0.0028, 0.0060,
- * 0.0053, 0.0039, 0.0040 rad/s over a 32x span of full scale -- 2 rises in 5
- * steps. Analogue noise, and nothing about the scale factors is visible in it.
+ * 0.0053, 0.0039, 0.0040 rad/s over 125..4000 dps. Half-medians 0.0060 against
+ * 0.0040 -- a ratio of 0.67 where the model needs 2.83.
  *
  * The honest limit, which is the reason for not grading rather than an
- * oversight: on such a part a genuinely wrong sensitivity constant and a quiet
- * interval look identical here. Absolute gyro scale is verified by the guided
- * rotation phase, which is what the check's note has always pointed at.
+ * oversight: on such a part a wrong sensitivity constant and a quiet interval
+ * look identical here. Absolute gyro scale is verified by the guided rotation
+ * phase, which is what the check's note has always pointed at.
  */
 bool imt_fs_scales_with_range(const imt_fs_row_t *rows, int n);
 
@@ -597,6 +643,18 @@ int imt_fs_grade_median(imt_fs_row_t *rows, int n, double frac);
  * one still rising means nothing was learned, which is a SKIP.
  */
 imt_status_t imt_overflow_status(int rc, bool growing);
+
+/*
+ * The verdict for imu.bus.integrity / mag.bus.integrity: how many reads of a
+ * register that cannot change came back with something else.
+ *
+ * Zero is the only clean answer, so anything above it is graded. The split
+ * between WARN and FAIL is a rate rather than a count, because one bad read in
+ * a long run is a bus to look at and one in fifty is a bus that cannot carry a
+ * measurement at all -- and every timing figure in the report is downstream of
+ * it.
+ */
+imt_status_t imt_bus_integrity_status(int bad, int total);
 
 /*
  * Split a SET/RESET pair into the field it measured and the bridge offset it

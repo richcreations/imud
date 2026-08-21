@@ -390,6 +390,35 @@ int imt_write_md(const imt_report_t *r, const char *path,
         fprintf(f, "\n");
     }
 
+    /*
+     * The chip_ts reversals themselves.  imu.chipts.monotonic reported "1
+     * reversal at a burst seam" run after run and nobody could act on it; how
+     * far time went backwards is what separates a drain-cadence artefact from
+     * a decode defect.
+     */
+    if (w->n_bus_bad > 0) {
+        fprintf(f, "### 5.3a Corrupted register reads\n\n");
+        fprintf(f, "Expected `0x%02X` every time. What came back instead:\n\n",
+                w->bus_ref_imu);
+        fprintf(f, "| read # | got |\n|---|---|\n");
+        for (int i = 0; i < w->n_bus_bad; i++)
+            fprintf(f, "| %d | 0x%02X |\n", w->bus_bad_at[i], w->bus_bad_val[i]);
+        fprintf(f, "\n");
+    }
+
+    if (w->n_ts_rev > 0) {
+        fprintf(f, "### 5.4a chip_ts reversals\n\n");
+        fprintf(f, "| sample | previous | current | ticks back | at a seam |\n");
+        fprintf(f, "|---|---|---|---|---|\n");
+        for (int i = 0; i < w->n_ts_rev; i++) {
+            int64_t back = (int64_t)w->ts_rev[i].prev - (int64_t)w->ts_rev[i].cur;
+            fprintf(f, "| %d | %u | %u | %lld | %s |\n",
+                    w->ts_rev[i].idx, w->ts_rev[i].prev, w->ts_rev[i].cur,
+                    (long long)back, w->ts_rev[i].seam ? "yes" : "no");
+        }
+        fprintf(f, "\n");
+    }
+
     if (w->regdiff_imu_mapped) {
         fprintf(f, "### 5.5 Control-register diff, IMU 0x%02X\n\n", r->imu_addr);
         fprintf(f, "%d register%s excluded as volatile (they changed with no "

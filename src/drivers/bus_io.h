@@ -93,6 +93,23 @@ static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
  * drains in icm20948.c and mpu925x.c read a runtime-computed length that a
  * fixed-size staging array would have to cap or chunk.
  */
+/*
+ * Command byte, then data, as two transfers inside ONE SPI_IOC_MESSAGE so
+ * chip-select stays asserted across both (cs_change is 0). This mirrors the
+ * I2C pair above, and it is why nothing here needs a bounce buffer: the FIFO
+ * drains in icm20948.c and mpu925x.c read a runtime-computed length that a
+ * fixed-size staging array would have to cap or chunk.
+ *
+ * A single full-duplex transfer was tried instead, on the theory that a
+ * controller might not carry CS and clock cleanly across the boundary between
+ * two transfers. It is not that: a clean-room probe on the reference Pi 5 --
+ * open(), three setup ioctls, and 2000 reads of WHO_AM_I, with none of this
+ * code involved -- returned the wrong byte 38 times in 2000 with the two
+ * transfers and 61 times with one, at any clock from 1 to 10 MHz. The rig
+ * corrupts reads; the transfer shape does not change it, and full duplex costs
+ * a bounce buffer and a memcpy in the FIFO drain. See imu.bus.integrity, which
+ * exists to report this rather than let it arrive disguised as a driver bug.
+ */
 static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
@@ -107,12 +124,44 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
     return ioctl(b->fd, SPI_IOC_MESSAGE(2), tr) < 0 ? -1 : 0;
 }
 
+/*
+ * ONE 16-BIT WORD, not two 8-bit ones.  This is not a micro-optimisation; an
+ * 8-bit register write is actively destructive on a Raspberry Pi 5.
+ *
+ * RP1's SPI block deasserts chip-select BETWEEN WORDS -- raspberrypi/linux
+ * issue 6354, "RPi5 SPI transfers: CS isn't kept low during words", open
+ * against 6.6.31 and later, and the kernel's own snps,dw-apb-ssi binding says
+ * the same of that controller at CPHA = 0: "the hardware is designed to
+ * deactivate the chip select between words".
+ *
+ * A register write is [address, value].  Split between the two, the address
+ * byte becomes a truncated command that never commits, and THE VALUE BYTE
+ * BECOMES A COMMAND BYTE.  On the ST 6-axis parts that is not a lost write, it
+ * is a write to whatever register the value happens to name:
+ *
+ *     SW_RESET = [0x12, 0x01]  ->  the stray 0x01 writes FUNC_CFG_ACCESS,
+ *                                  switching the register bank.
+ *
+ * Every read afterwards comes from the embedded-function bank and looks like
+ * 90-100% bus corruption that no reset, no BOOT and no power-on delay clears.
+ * It cost this project a day: it arrived disguised as a bad TIMESTAMP0 read, a
+ * state-dependent init(), chip_ts reversals, and a wandering noise floor.
+ *
+ * Measured on the reference rig: forty 8-bit-word writes of
+ * FUNC_CFG_ACCESS = 0 left a wedged part at 300/300 bad reads; ONE 16-bit-word
+ * write of the same register and value restored it to 0/300.
+ *
+ * A 16-bit word has no between-words boundary to split.  Reads are left as
+ * they are: a split there merely re-reads, and 1500 reads per configuration
+ * across both SPI modes and 1-10 MHz measured zero errors.
+ */
 static inline int spi_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 {
-    uint8_t buf[2] = { (uint8_t)(reg & (uint8_t)~BUS_SPI_READ), val };
+    uint16_t word = (uint16_t)(((uint16_t)(reg & (uint8_t)~BUS_SPI_READ) << 8)
+                               | val);
     struct spi_ioc_transfer tr = {
-        .tx_buf = (uintptr_t)buf, .len = 2,
-        .speed_hz = b->spi_hz, .bits_per_word = 8,
+        .tx_buf = (uintptr_t)&word, .len = 2,
+        .speed_hz = b->spi_hz, .bits_per_word = 16,
     };
     return ioctl(b->fd, SPI_IOC_MESSAGE(1), &tr) < 0 ? -1 : 0;
 }
