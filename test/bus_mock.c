@@ -399,6 +399,18 @@ static int dispatch_spi(int fd, unsigned long request,
     }
 
     if (is_read) {
+        /*
+         * A one-byte read is a single 16-bit word (command in the high byte,
+         * data clocked back in the low byte) -- see spi_burst_read() for why
+         * the drivers send it that way on a Pi 5.  Modelling only the
+         * two-transfer form would let that change pass untested.
+         */
+        if (n == 1) {
+            if (!tr[0].rx_buf || tr[0].len < 2) { errno = EINVAL; return -1; }
+            uint16_t w = (uint16_t)(dev_read(a, &reg_ptr, advance) & 0xFF);
+            memcpy((void *)(uintptr_t)tr[0].rx_buf, &w, sizeof w);
+            return 0;
+        }
         if (n < 2) { errno = EINVAL; return -1; }
         uint8_t *rx = (uint8_t *)(uintptr_t)tr[1].rx_buf;
         if (!rx) { errno = EINVAL; return -1; }

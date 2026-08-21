@@ -23,6 +23,7 @@
 #define IMUD_DRIVERS_BUS_IO_H
 
 #include <stdint.h>
+#include <string.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 #include <linux/spi/spidev.h>
@@ -87,34 +88,72 @@ static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 }
 
 /*
- * Command byte, then data, as two transfers inside ONE SPI_IOC_MESSAGE so
- * chip-select stays asserted across both (cs_change is 0). This mirrors the
- * I2C pair above, and it is why nothing here needs a bounce buffer: the FIFO
- * drains in icm20948.c and mpu925x.c read a runtime-computed length that a
- * fixed-size staging array would have to cap or chunk.
- */
-/*
- * Command byte, then data, as two transfers inside ONE SPI_IOC_MESSAGE so
- * chip-select stays asserted across both (cs_change is 0). This mirrors the
- * I2C pair above, and it is why nothing here needs a bounce buffer: the FIFO
- * drains in icm20948.c and mpu925x.c read a runtime-computed length that a
- * fixed-size staging array would have to cap or chunk.
+ * READS, and the two things that make a split one harmless.
  *
- * A single full-duplex transfer was tried instead, on the theory that a
- * controller might not carry CS and clock cleanly across the boundary between
- * two transfers. It is not that: a clean-room probe on the reference Pi 5 --
- * open(), three setup ioctls, and 2000 reads of WHO_AM_I, with none of this
- * code involved -- returned the wrong byte 38 times in 2000 with the two
- * transfers and 61 times with one, at any clock from 1 to 10 MHz. The rig
- * corrupts reads; the transfer shape does not change it, and full duplex costs
- * a bounce buffer and a memcpy in the FIFO drain. See imu.bus.integrity, which
- * exists to report this rather than let it arrive disguised as a driver bug.
+ * RP1 deasserts chip-select between words (raspberrypi/linux#6354; see
+ * spi_reg_write below for the full account), so a multi-word transfer can be
+ * cut anywhere.  For a read that matters in a way that is easy to miss: the
+ * command byte is followed by a DATA PHASE, and whatever the master clocks out
+ * during that phase is what the part sees as the next command if the transfer
+ * is cut.
+ *
+ * 1. A ONE-BYTE read is command + one data byte = exactly 16 bits, so it goes
+ *    as a single word and cannot be split at all.  That covers every
+ *    bus_reg_read() in the tree.
+ *
+ * 2. A MULTI-byte read cannot be made atomic -- a 7-byte ST FIFO word is four
+ *    16-bit words, with three boundaries -- so instead it clocks out a byte
+ *    that is SAFE to be misread as a command.  spidev sends zeros when no
+ *    tx_buf is given, and 0x00 has bit 7 clear, which on these parts means
+ *    WRITE: a split read was issuing writes into register 0x00.  Clocking
+ *    SPI_IDLE_CMD instead makes a split read a READ of WHO_AM_I, which changes
+ *    nothing anywhere.
+ *
+ * The master's output is ignored by the part during a normal data phase, so
+ * this is free: it only matters in the case that used to corrupt state.
+ *
+ * Doing multi-byte reads as repeated single reads was considered and rejected:
+ * a 64-set watermark at 833 Hz is 128 FIFO words, which becomes 896 syscalls
+ * per drain instead of 128 -- about 18 ms against a 10 ms drain cadence.  The
+ * complete fix for the remaining boundaries is a GPIO chip select, which is a
+ * device-tree change on the host rather than anything this file can do.
  */
 static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
     uint8_t cmd = (uint8_t)(reg | BUS_SPI_READ |
                             (len > 1 ? b->spi_inc_mask : 0u));
+
+    if (len == 1) {
+        /* Command and data in one 16-bit word: no boundary to split. */
+        uint16_t tx = (uint16_t)((uint16_t)cmd << 8), rx = 0;
+        struct spi_ioc_transfer tr = {
+            .tx_buf = (uintptr_t)&tx, .rx_buf = (uintptr_t)&rx, .len = 2,
+            .speed_hz = b->spi_hz, .bits_per_word = 16,
+        };
+        if (ioctl(b->fd, SPI_IOC_MESSAGE(1), &tr) < 0) return -1;
+        buf[0] = (uint8_t)(rx & 0xFFu);
+        return 0;
+    }
+
+    /*
+     * Multi-byte: two transfers, data phase left as spidev's zero fill.
+     *
+     * Clocking a read opcode (0x8F) here instead was tried, on the reasoning
+     * that a split would then be misread as a harmless READ rather than a
+     * write into register 0x00.  It backfired and is recorded so it is not
+     * tried again: a split read that becomes a READ COMMAND makes the part
+     * start returning that register's contents, so the corruption moves out
+     * of the part's state and into the SAMPLE STREAM.  Measured on the
+     * reference rig at 13.016 Hz with a verified-clean bus (0 of 2000 bad
+     * register reads): gravity read 18.2 m/s^2, the measured rate 5.6 Hz
+     * against 13.016, and the FIFO depth probe saw nothing.  Zero fill
+     * corrupts state, which imu.bus.integrity can see and a bank clear can
+     * undo; an opcode fill corrupts data, which nothing downstream can.
+     *
+     * Neither is a fix.  The only complete one for the remaining boundaries is
+     * a GPIO chip select on the host -- raspberrypi/linux#6354.
+     */
     struct spi_ioc_transfer tr[2] = {
         { .tx_buf = (uintptr_t)&cmd, .len = 1,
           .speed_hz = b->spi_hz, .bits_per_word = 8 },
@@ -124,37 +163,6 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
     return ioctl(b->fd, SPI_IOC_MESSAGE(2), tr) < 0 ? -1 : 0;
 }
 
-/*
- * ONE 16-BIT WORD, not two 8-bit ones.  This is not a micro-optimisation; an
- * 8-bit register write is actively destructive on a Raspberry Pi 5.
- *
- * RP1's SPI block deasserts chip-select BETWEEN WORDS -- raspberrypi/linux
- * issue 6354, "RPi5 SPI transfers: CS isn't kept low during words", open
- * against 6.6.31 and later, and the kernel's own snps,dw-apb-ssi binding says
- * the same of that controller at CPHA = 0: "the hardware is designed to
- * deactivate the chip select between words".
- *
- * A register write is [address, value].  Split between the two, the address
- * byte becomes a truncated command that never commits, and THE VALUE BYTE
- * BECOMES A COMMAND BYTE.  On the ST 6-axis parts that is not a lost write, it
- * is a write to whatever register the value happens to name:
- *
- *     SW_RESET = [0x12, 0x01]  ->  the stray 0x01 writes FUNC_CFG_ACCESS,
- *                                  switching the register bank.
- *
- * Every read afterwards comes from the embedded-function bank and looks like
- * 90-100% bus corruption that no reset, no BOOT and no power-on delay clears.
- * It cost this project a day: it arrived disguised as a bad TIMESTAMP0 read, a
- * state-dependent init(), chip_ts reversals, and a wandering noise floor.
- *
- * Measured on the reference rig: forty 8-bit-word writes of
- * FUNC_CFG_ACCESS = 0 left a wedged part at 300/300 bad reads; ONE 16-bit-word
- * write of the same register and value restored it to 0/300.
- *
- * A 16-bit word has no between-words boundary to split.  Reads are left as
- * they are: a split there merely re-reads, and 1500 reads per configuration
- * across both SPI modes and 1-10 MHz measured zero errors.
- */
 static inline int spi_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 {
     uint16_t word = (uint16_t)(((uint16_t)(reg & (uint8_t)~BUS_SPI_READ) << 8)
