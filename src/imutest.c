@@ -415,11 +415,35 @@ static const imt_regmap_t imt_regmaps[] = {
       .skip = { 0x08 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0,
       .out_lo = 0x00, .out_hi = 0x06,   /* XOUT0..XYZOUT2, the driver's burst */
       .ctrl_writeonly = true },
-    /* AKM: ST1/data/ST2 — reading any of them completes a measurement. */
-    { .driver = "ak09916",    .lo = 0x00, .hi = 0x3F,
-      .skip = { 0x10, 0x11, 0x18 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
-    { .driver = "ak8963",     .lo = 0x00, .hi = 0x1F,
-      .skip = { 0x02, 0x03, 0x09 }, .nskip = 3, .nrd_lo = 1, .nrd_hi = 0 },
+    /*
+     * AKM parts, both of which need two things the old entries got wrong.
+     *
+     * First, DRDY: the datasheet says the bit "returns to 0 when any one of
+     * ST2 register or the measurement data registers (HXL to HZH) is read".
+     * Naming only the first data register left the rest of the burst in the
+     * sweep, so the snapshot completed the measurement the next check was
+     * waiting on.  nrd_lo..nrd_hi now covers the whole data block plus ST2.
+     *
+     * Second, and worse: both parts carry read/WRITE test registers that the
+     * vendor marks DO NOT ACCESS — TS1/TS2 at 0x0D-0x0E on the AK8963
+     * ("0DH and 0EH are reserved addresses. Do not access to those
+     * addresses."), at 0x33-0x34 on the AK09916 ("test registers for shipment
+     * test. Do not access these registers.").  hi was 0x1F and 0x3F, so the
+     * sweep read straight across them, and across 0x13 RSV on the AK8963,
+     * likewise DO NOT ACCESS.  hi now stops at the last register each part
+     * actually documents, and the interior holes are marked reserved.
+     *
+     * The AK8963's file is 0x00-0x0C plus 0x10-0x12; 0x10-0x12 (the fuse-ROM
+     * sensitivity values) read correctly only in fuse-ROM access mode, so they
+     * are swept but mean nothing outside it.  The AK09916's is 0x00-0x01,
+     * 0x10-0x18 and 0x30-0x32.
+     */
+    { .driver = "ak09916",    .lo = 0x00, .hi = 0x32,
+      .skip = { 0x10 }, .nskip = 1, .nrd_lo = 0x11, .nrd_hi = 0x18,
+      .resv = { {0x02,0x0F}, {0x19,0x2F} }, .nresv = 2 },
+    { .driver = "ak8963",     .lo = 0x00, .hi = 0x12,
+      .skip = { 0x02 }, .nskip = 1, .nrd_lo = 0x03, .nrd_hi = 0x09,
+      .resv = { {0x0D,0x0E} }, .nresv = 1 },
     /* lis3mdl is the one part with a real auto-increment bit, so it is the one
      * where the framing check has something to catch: OUT_X_L..OUT_Z_H. */
     { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
@@ -449,6 +473,22 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
         return true;
     /* Never read the bank selector itself as part of the sweep. */
     return m->bank_reg && reg == m->bank_reg;
+}
+
+/*
+ * Test seam: would the control-register sweep read `reg` on `driver`?
+ *
+ * Exposed because the reserved and DO-NOT-ACCESS exclusions are table data,
+ * and the bus mock can only stand in for one part pair — this lets the suites
+ * pin the exclusions for every registered driver, including the AKM
+ * magnetometers whose vendor test registers must never be touched.
+ */
+bool imt_regmap_reads(const char *driver, uint8_t reg)
+{
+    const imt_regmap_t *m = regmap_for(driver);
+    if (!m) return false;
+    if (reg < m->lo || reg > m->hi) return false;
+    return !regmap_skips(m, reg);
 }
 
 /*
@@ -1074,6 +1114,56 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
         skip_check(r, "mag.init.regdiff", "Mag control-register diff",
                    mrm ? "the post-reset snapshot could not be read"
                        : "no safe-register map for this driver");
+    }
+
+    /*
+     * AK8963 fuse ROM.  ASAX/Y/Z are factory-burned sensitivity constants,
+     * readable only in FUSE_ROM_ACCESS mode.  All-zero or all-ones means
+     * there is no fuse ROM to read — a counterfeit or dead magnetometer die.
+     *
+     * This earns its own check because nothing else here catches it.  A fake
+     * part answers WHO_AM_I, accepts CNTL1, and passes probe, reset, init and
+     * the register diff, while never asserting DRDY and never producing a
+     * measurement; and the driver's adjustment arithmetic turns ASA 0x00 into
+     * a plausible-looking 0.5x, so even the scaling looks sane.  One line of
+     * report then decides "bad silicon" against "our software", which is
+     * otherwise an unanswerable question from a bug report.
+     *
+     * AK8963-only: the AK09916 has fixed sensitivity and no fuse ROM.
+     *
+     * Every AKM mode change must pass through power-down, so the part is
+     * walked power-down -> fuse-ROM -> power-down and the saved CNTL1 written
+     * back, leaving the configured mode exactly as init() set it.
+     */
+    if (strcmp(mag->name, "ak8963") == 0) {
+        uint8_t saved = 0, asa[3] = { 0, 0, 0 };
+        bool ok = bus_reg_read(mbus, 0x0A, &saved) == 0;
+        if (ok) { ok = bus_reg_write(mbus, 0x0A, 0x00) == 0; usleep(1000); }
+        if (ok) { ok = bus_reg_write(mbus, 0x0A, 0x0F) == 0; usleep(1000); }
+        if (ok) { ok = bus_burst_read(mbus, 0x10, asa, 3) == 0; }
+        if (ok) {
+            (void)bus_reg_write(mbus, 0x0A, 0x00); usleep(1000);
+            (void)bus_reg_write(mbus, 0x0A, saved); usleep(1000);
+        }
+
+        if (!ok) {
+            skip_check(r, "mag.fuse_rom", "Magnetometer fuse-ROM identity",
+                       "the fuse-ROM read did not complete");
+        } else {
+            bool none = (asa[0] == 0x00 && asa[1] == 0x00 && asa[2] == 0x00)
+                     || (asa[0] == 0xFF && asa[1] == 0xFF && asa[2] == 0xFF);
+            add_check(r, "mag.fuse_rom", "Magnetometer fuse-ROM identity",
+                      none ? IMT_FAIL : IMT_PASS,
+                      fmtbuf(mb, sizeof mb, "ASA %u/%u/%u",
+                             asa[0], asa[1], asa[2]),
+                      "not 0/0/0 or 255/255/255",
+                      none ? "no genuine AK8963 returns that, so this die very "
+                             "likely has no fuse ROM to read: counterfeit or "
+                             "dead. Every other check here can still pass on "
+                             "such a part, including probe and init."
+                           : "factory sensitivity constants are present, so "
+                             "the die carries a programmed fuse ROM.");
+        }
     }
 
     *mag_ok = true;

@@ -701,4 +701,9 @@ int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
                          imt_gpio_why_t *why, void (*prime)(void *),
                          int odr_hz);
 
+
+/* Test seam — see src/imutest.c.  True if the control-register sweep reads
+ * `reg` on `driver`; false when it is out of range, reserved, or excluded. */
+bool imt_regmap_reads(const char *driver, uint8_t reg);
+
 #endif /* IMUD_IMUTEST_H */

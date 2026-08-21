@@ -683,6 +683,52 @@ static void test_sweep_avoids_reserved_registers(void)
     end(fb);
 }
 
+/*
+ * The AKM magnetometers carry read/WRITE test registers that the vendor marks
+ * DO NOT ACCESS, and both regmap entries used to sweep straight across them:
+ * hi was 0x1F on the AK8963 and 0x3F on the AK09916, while the parts document
+ * registers only to 0x12 and 0x32.  A validation tool that pokes a part's
+ * shipment-test registers is worse than no tool, so this pins the exclusions
+ * by address rather than by trusting the range bounds.
+ *
+ * The DRDY entries matter for a different reason: the datasheet says the bit
+ * "returns to 0 when any one of ST2 register or the measurement data
+ * registers (HXL to HZH) is read", so a sweep touching any of them consumes
+ * the sample the next check is waiting for.
+ */
+static void test_akm_sweep_avoids_forbidden_registers(void)
+{
+    begin("test_akm_sweep_avoids_forbidden_registers");
+    int fb = g_fail;
+
+    static const struct {
+        const char *drv; uint8_t lo, hi; const char *why;
+    } forbidden[] = {
+        { "ak8963",  0x0D, 0x0E, "TS1/TS2 — datasheet: DO NOT ACCESS" },
+        { "ak8963",  0x13, 0x1F, "0x13 RSV DO NOT ACCESS, 0x14+ not a register" },
+        { "ak8963",  0x03, 0x09, "HXL..HZH and ST2 — reading them clears DRDY" },
+        { "ak09916", 0x33, 0x34, "TS1/TS2 — datasheet: DO NOT ACCESS" },
+        { "ak09916", 0x35, 0x3F, "past the end of the register file" },
+        { "ak09916", 0x11, 0x18, "HXL..HZH and ST2 — reading them clears DRDY" },
+    };
+    char msg[128];
+    for (unsigned i = 0; i < sizeof forbidden / sizeof forbidden[0]; i++)
+        for (int reg = forbidden[i].lo; reg <= (int)forbidden[i].hi; reg++) {
+            snprintf(msg, sizeof msg, "%s never reads 0x%02X (%s)",
+                     forbidden[i].drv, reg, forbidden[i].why);
+            EXPECT(!imt_regmap_reads(forbidden[i].drv, (uint8_t)reg), msg);
+        }
+
+    /* ...and the registers that make the snapshot worth taking still are. */
+    EXPECT(imt_regmap_reads("ak8963",  0x00), "ak8963 WHO_AM_I is read");
+    EXPECT(imt_regmap_reads("ak8963",  0x0A), "ak8963 CNTL1 is read");
+    EXPECT(imt_regmap_reads("ak8963",  0x0B), "ak8963 CNTL2 is read");
+    EXPECT(imt_regmap_reads("ak09916", 0x00), "ak09916 WIA1 is read");
+    EXPECT(imt_regmap_reads("ak09916", 0x31), "ak09916 CNTL2 is read");
+
+    end(fb);
+}
+
 static void test_volatile_registers_filtered(void)
 {
     begin("test_volatile_registers_filtered");
@@ -2880,6 +2926,7 @@ int main(void)
     test_bringup_good();
     test_bringup_bad_whoami();
     test_sweep_avoids_reserved_registers();
+    test_akm_sweep_avoids_forbidden_registers();
     test_volatile_registers_filtered();
     test_nonidempotent_init_names_registers();
     test_fifo_port_window_not_swept();
