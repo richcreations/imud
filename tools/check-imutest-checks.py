@@ -66,6 +66,17 @@ def documented_ids(spec):
     return out
 
 
+def row_ids(spec):
+    """Ids that head a table row — `| `imu.odr` | ... |`.
+
+    The reverse check uses these rather than every backticked token, because
+    the prose names files and config keys in the same namespaces and those are
+    not checks.
+    """
+    return set(re.findall(r"^\|\s*`([A-Za-z][A-Za-z0-9_.*]*)`\s*\|",
+                          spec, re.M))
+
+
 def covered(cid, documented, imu_suffixes):
     if cid in documented:
         return True
@@ -101,7 +112,55 @@ def main():
                 f"A check id is what an operator reads off the report and acts "
                 f"on; add a row, or fold it into a sibling's row by name.")
 
-    return r.finish(f"{len(ids)} check ids, all described in {SPEC}")
+    # And the other direction.  A row naming a check the tool cannot emit
+    # promises the operator something that will never appear in a report --
+    # `mag.bus.integrity` was documented as "the mag equivalent" of the IMU
+    # check and simply did not exist, which is how a gap in coverage reads as
+    # covered.
+    #
+    # Only ROW ids count, not every backticked token: the prose legitimately
+    # names files (`imu.c`) and config keys (`mag.int_gpio`) that share the
+    # namespaces and are not checks.
+    #
+    # The emitted set is wider than ID_RE here, because an id can reach
+    # add_check through a helper -- check_burst_framing(r, "mag.burst_framing",
+    # ...) is one -- so any check-id-shaped literal in the source counts.
+    namespaces = {i.split(".", 1)[0] for i in ids if "." in i}
+    literal = re.findall(r'"([a-z][a-z0-9]*\.[a-z0-9_.]+)"', src)
+    emitted = set(ids) | {x for x in literal if x.split(".", 1)[0] in namespaces}
+
+    for d in sorted(row_ids(spec)):
+        # A check id always has a namespace and a dot; single-token rows
+        # come from the status legend and other tables.
+        if "." not in d or "*" in d or d in emitted:
+            continue
+        # A placeholder row (gyro.A.scale) stands for ids built at runtime from
+        # an axis or face index, which never appear as literals.  The forward
+        # direction already proves every id actually emitted has a row.
+        if PLACEHOLDER.match(d):
+            continue
+        r.check(False,
+                f"{SPEC} has a row for `{d}`, which {SRC} never reports. A "
+                f"documented check that does not exist is worse than an "
+                f"undocumented one: it reads as coverage. Implement it, or "
+                f"drop the row.")
+
+    # Rows are not the only way the spec promises a check.  A row's prose can
+    # name a sibling -- "The mag equivalent is `mag.bus.integrity`" -- and that
+    # sentence is a promise to the operator in exactly the way a row is.  It is
+    # also the case that actually happened: the sentence was written, the check
+    # was never implemented, and scoping this to rows alone would not have
+    # caught it.  Matching the phrasing keeps it precise; prose that merely
+    # mentions an id in passing is not making a claim about its existence.
+    for m in re.finditer(r"(?:mag|magnetometer) equivalent[^`.]*is\s+"
+                         r"`([a-z][a-z0-9]*\.[a-z0-9_.]+)`", spec):
+        eq = m.group(1)
+        r.check(eq in emitted,
+                f"{SPEC} says the mag equivalent is `{eq}`, but {SRC} never "
+                f"reports it. Implement it, or stop promising it.")
+
+    return r.finish(f"{len(ids)} check ids, all described in {SPEC}, "
+                    f"and every documented row reachable")
 
 
 if __name__ == "__main__":

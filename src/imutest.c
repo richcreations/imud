@@ -381,7 +381,15 @@ typedef struct {
      * WHO_AM_I has no such state: it is hard-wired, identical in every power
      * mode, and the one byte on these parts that genuinely cannot change.
      * 0 means the part has none the sweep can reach, and the check falls back
-     * to probe().
+     * to probe().  Two parts land on that by accident rather than by lacking
+     * an identity -- the AK8963's WIA and the ICM-20948's WHO_AM_I are both
+     * register 0x00 -- so they take the fallback too.  That costs the
+     * wrong-value/io-error split on those parts and nothing else; inventing a
+     * second "is it set" flag to recover it would be more machinery than the
+     * distinction is worth.
+     *
+     * The RM3100 genuinely has none: PNI documents no fixed value for REVID,
+     * so there is nothing to compare against.
      */
     uint8_t     whoami_reg, whoami_val;
 } imt_regmap_t;
@@ -440,6 +448,7 @@ static const imt_regmap_t imt_regmaps[] = {
      * is itself read-to-clear, so the swept set is 0x00-0x07.
      */
     { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x08,
+      .whoami_reg = 0x2F, .whoami_val = 0x30,
       .skip = { 0x08 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0,
       .out_lo = 0x00, .out_hi = 0x06,   /* XOUT0..XYZOUT2, the driver's burst */
       .ctrl_writeonly = true },
@@ -467,16 +476,20 @@ static const imt_regmap_t imt_regmaps[] = {
      * 0x10-0x18 and 0x30-0x32.
      */
     { .driver = "ak09916",    .lo = 0x00, .hi = 0x32,
+      .whoami_reg = 0x01, .whoami_val = 0x09,   /* WIA2; WIA1 is 0x00 */
       .skip = { 0x10 }, .nskip = 1, .nrd_lo = 0x11, .nrd_hi = 0x18,
       .resv = { {0x02,0x0F}, {0x19,0x2F} }, .nresv = 2 },
     { .driver = "ak8963",     .lo = 0x00, .hi = 0x12,
+      .whoami_reg = 0x00, .whoami_val = 0x48,
       .skip = { 0x02 }, .nskip = 1, .nrd_lo = 0x03, .nrd_hi = 0x09,
       .resv = { {0x0D,0x0E} }, .nresv = 1 },
     /* lis3mdl is the one part with a real auto-increment bit, so it is the one
      * where the framing check has something to catch: OUT_X_L..OUT_Z_H. */
     { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+      .whoami_reg = 0x0F, .whoami_val = 0x3D,
       .out_lo = 0x28, .out_hi = 0x2D },
-    { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0 },
+    { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+      .whoami_reg = 0x4F, .whoami_val = 0x40 },
     /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
      * so a sweep through them would consume the sample the next check is
      * waiting for. */
@@ -1225,6 +1238,65 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
                              "such a part, including probe and init."
                            : "factory sensitivity constants are present, so "
                              "the die carries a programmed fuse ROM.");
+        }
+    }
+
+    /*
+     * BUS INTEGRITY, magnetometer.  The same measurement as imu.bus.integrity
+     * and for the same reason, on the other part.
+     *
+     * It earns its place beyond symmetry: the two parts share SCK and MOSI and
+     * differ only in chip select, so running the check on both separates a
+     * fault on the shared clock net from one on a single part's branch -- its
+     * own pull-up pad, its own chip select, its own stub.  One part corrupting
+     * while the other stays clean is a materially different finding from both
+     * corrupting, and without this check the report cannot tell them apart.
+     *
+     * Note the two are NOT clocked alike: an MMC5983MA declares a 2 MHz
+     * maximum against the ISM330DHCX's 10 MHz, so a clean mag beside a dirty
+     * IMU narrows the search rather than settling it, while a dirty mag
+     * implicates the shared wiring outright.
+     *
+     * Runs after the mag's own init() for the reason imu.bus.integrity does:
+     * a part answers reads differently depending on the state it is in, and
+     * the state worth measuring is the one the daemon uses.
+     */
+    {
+        int bad = 0, ioerr = 0;
+        const imt_regmap_t *mrm2 = regmap_for(mag->name);
+        const uint8_t idreg = (mrm2 && mrm2->whoami_reg) ? mrm2->whoami_reg : 0;
+        const uint8_t idval = mrm2 ? mrm2->whoami_val : 0;
+
+        if (!idreg) {
+            skip_check(r, "mag.bus.integrity", "Mag bus reads are not corrupted",
+                       "this part has no identity register to compare against");
+        } else {
+            for (int i = 0; i < IMT_BUS_INTEGRITY_READS && !g_abort; i++) {
+                uint8_t v;
+                if (bus_reg_read(mbus, idreg, &v) < 0) { ioerr++; continue; }
+                if (v != idval) bad++;
+            }
+            double pct = 100.0 * (double)bad / (double)IMT_BUS_INTEGRITY_READS;
+            const char *val = fmtbuf(mb, sizeof mb, "%d of %d bad, %d io-err",
+                                     bad, IMT_BUS_INTEGRITY_READS, ioerr);
+            if (bad == 0)
+                add_check(r, "mag.bus.integrity",
+                          "Mag bus reads are not corrupted", IMT_PASS,
+                          val, "0 bad",
+                          "%d reads of register 0x%02X all returned 0x%02X, the "
+                          "value it is hard-wired to hold",
+                          IMT_BUS_INTEGRITY_READS, idreg, idval);
+            else
+                add_check(r, "mag.bus.integrity",
+                          "Mag bus reads are not corrupted",
+                          imt_bus_integrity_status(bad, IMT_BUS_INTEGRITY_READS),
+                          val, "0 bad",
+                          "the magnetometer's identity register read back wrong "
+                          "%.2f%% of the time. Compare against imu.bus.integrity "
+                          "before assuming a cause: both parts corrupting points "
+                          "at the shared clock and data lines, one part alone "
+                          "points at that part's own branch -- its pull-ups, its "
+                          "chip select, its wiring", pct);
         }
     }
 

@@ -69,6 +69,19 @@ CASES = [
      sub(r'"imu\.rest\.gravity"', '"imu.rest.gravity2"'),
      "imu.rest.gravity2"),
 
+    # A check the spec PROMISES and the tool does not implement. This is the
+    # reverse direction, and it is the one that actually shipped: the spec said
+    # "The mag equivalent is `mag.bus.integrity`" while no such check existed,
+    # so a gap in coverage read as coverage. Note the mutation renames the id to
+    # another that is itself documented and emitted -- renaming it to something
+    # novel would trip the forward direction instead and prove nothing here.
+    # count=0 because the id appears three times (one skip_check, two
+    # add_check): replacing only the first leaves the check still emitted and
+    # the mutation proves nothing.
+    ("check-imutest-checks", "src/imutest.c",
+     sub(r'"mag\.bus\.integrity"', '"mag.probe"', 0),   # count=0: ALL of them
+     "mag equivalent"),
+
     # ── check-package-descriptions ───────────────────────────────────────────
     # Each package's description lives in debian/control (what apt shows) and
     # in packaging/<pkg>/description (what the repo documents). This found a
