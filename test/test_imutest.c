@@ -597,9 +597,16 @@ static void test_bringup_good(void)
     EXPECT(status_of(r, "imu.init.idempotent") == IMT_PASS, "init is idempotent");
     EXPECT(r->imu_experimental == false, "ism330dhcx not flagged experimental");
     EXPECT(r->have_mag, "mag present");
-    /* Nothing moves in a plain register file, so nothing is filtered and the
-     * whole mapped range is compared. */
-    EXPECT(r->raw.n_volatile_imu == 0, "static mock has no volatile registers");
+    /* Nothing moves in a plain register file, so the observational scan finds
+     * nothing.  The two that ARE excluded are declared rather than observed --
+     * FIFO_STATUS1/2, whose DIFF_FIFO saturates on real silicon and therefore
+     * reads identical on every pass.  Asserting the exact count still catches
+     * a scan that starts flagging registers spuriously. */
+    EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x3A) &&
+           imt_regmap_known_volatile("ism330dhcx", 0x3B),
+           "the FIFO status pair is declared volatile");
+    EXPECT(r->raw.n_volatile_imu == 2,
+           "static mock adds nothing beyond the two declared registers");
     /* 69 documented, readable registers, not the 128 of a blind 0x00-0x7F
      * walk: DS13012 Table 19 marks about 60 of that span RESERVED, and the
      * sweep no longer touches them. */
@@ -880,7 +887,10 @@ static void test_fifo_port_window_not_swept(void)
         EXPECT(r->raw.regdiff_imu[i].reg < 0x78 ||
                r->raw.regdiff_imu[i].reg > 0x7E,
                "a FIFO-port register reached the diff");
-    EXPECT(r->raw.n_volatile_imu == 0,
+    /* Two, not zero: the declared FIFO status pair. Neither is in the port
+     * window this test is about (0x78-0x7E), so the claim it makes is
+     * unchanged -- nothing there was read or flagged. */
+    EXPECT(r->raw.n_volatile_imu == 2,
            "nothing in the port window looked volatile, so nothing read it");
     EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
            "the control-register diff still ran");
@@ -2525,6 +2535,46 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
  * in each driver's own header, because a wrong entry here is indistinguishable
  * from a corrupt bus in the field.
  */
+/*
+ * A saturated counter is volatile and unprovably so.
+ *
+ * reg_volatile_scan() marks a register volatile when it MOVES across several
+ * passes.  FIFO_STATUS1/2 on the ST parts carry DIFF_FIFO, and at a high ODR
+ * the FIFO refills to capacity between passes, so the counter reads its
+ * maximum every time and the scan calls it static.  init() then flushes the
+ * FIFO and imu.init.idempotent reports "2 registers differ" -- a question
+ * about whether the FIFO was emptied, dressed as a question about init().
+ * That false positive cost a bench investigation.
+ *
+ * Pinned as a declaration rather than as observed behaviour, because the
+ * defect is precisely that the behaviour cannot be observed: a mock returning
+ * a constant is indistinguishable from a saturated counter, so a test that
+ * watched the scan would pass either way.
+ */
+static void test_saturating_counters_are_declared_volatile(void)
+{
+    begin("test_saturating_counters_are_declared_volatile");
+    int fb = g_fail;
+
+    char msg[96];
+    /* Every ST part batching through a FIFO has the same pair. */
+    static const char *st[] = { "ism330dhcx", "lsm6dso", "lsm6dsox" };
+    for (unsigned i = 0; i < sizeof st / sizeof st[0]; i++) {
+        snprintf(msg, sizeof msg, "%s declares FIFO_STATUS1 volatile", st[i]);
+        EXPECT(imt_regmap_known_volatile(st[i], 0x3A), msg);
+        snprintf(msg, sizeof msg, "%s declares FIFO_STATUS2 volatile", st[i]);
+        EXPECT(imt_regmap_known_volatile(st[i], 0x3B), msg);
+        /* Not a blanket exclusion: control registers must still be compared,
+         * or the idempotency check stops checking anything. */
+        snprintf(msg, sizeof msg, "%s still compares CTRL1_XL", st[i]);
+        EXPECT(!imt_regmap_known_volatile(st[i], 0x10), msg);
+        snprintf(msg, sizeof msg, "%s still compares WHO_AM_I", st[i]);
+        EXPECT(!imt_regmap_known_volatile(st[i], 0x0F), msg);
+    }
+
+    end(fb);
+}
+
 static void test_bus_integrity_uses_an_invariant(void)
 {
     begin("test_bus_integrity_uses_an_invariant");
@@ -3016,6 +3066,7 @@ int main(void)
     test_chipts_accounting();
     test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
+    test_saturating_counters_are_declared_volatile();
     test_bus_integrity_uses_an_invariant();
     test_bus_integrity_status();
     test_overflow_status();

@@ -392,6 +392,26 @@ typedef struct {
      * so there is nothing to compare against.
      */
     uint8_t     whoami_reg, whoami_val;
+
+    /*
+     * Registers that ARE volatile but that the experiment cannot prove are.
+     *
+     * reg_volatile_scan() decides by reading the map several times and marking
+     * whatever moved.  That misses any register which is changing but happens
+     * to read the same value on every pass -- and a counter that has SATURATED
+     * is exactly that.  The ST FIFO status pair is the case in hand: at
+     * 6664 Hz the FIFO refills to capacity between passes, so DIFF_FIFO reads
+     * its maximum every time and is classified static.  init() then flushes
+     * the FIFO, the value drops, and imu.init.idempotent reports "2 registers
+     * differ" -- which asks whether the FIFO was emptied, not whether init()
+     * is idempotent.  That false positive is what sent a bench investigation
+     * after a driver bug that was never there.
+     *
+     * Declared per part rather than inferred, because the whole point is that
+     * inference cannot reach them.
+     */
+    uint8_t     vol_reg[4];
+    int         nvol_reg;
 } imt_regmap_t;
 
 static const imt_regmap_t imt_regmaps[] = {
@@ -399,18 +419,24 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6B,
+      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
+      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6C,
+      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
+      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6D,
+      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
+      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
@@ -531,6 +557,23 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
  * INTERNAL_FREQ_FINE, which changes with power state -- and a registry entry
  * is data that no mock run can validate.
  */
+/*
+ * Test seam: is `reg` declared known-volatile for `driver`?
+ *
+ * Exposed because the failure this guards against is invisible to a mock run:
+ * a saturated counter reads identical every pass, so a test that only checks
+ * "the scan found the volatile registers" passes whether or not the
+ * declaration exists.
+ */
+bool imt_regmap_known_volatile(const char *driver, uint8_t reg)
+{
+    const imt_regmap_t *m = regmap_for(driver);
+    if (!m) return false;
+    for (int i = 0; i < m->nvol_reg; i++)
+        if (m->vol_reg[i] == reg) return true;
+    return false;
+}
+
 bool imt_regmap_identity(const char *driver, uint8_t *reg, uint8_t *val)
 {
     const imt_regmap_t *m = regmap_for(driver);
@@ -595,6 +638,13 @@ static int reg_volatile_scan(const imud_bus_t *bus, const imt_regmap_t *m,
     static uint8_t probe[256];
 
     memset(vol, 0, 256 * sizeof *vol);
+
+    /* Known-volatile first: a saturated counter reads identical on every pass
+     * and the loop below would call it static. */
+    for (int i = 0; i < m->nvol_reg; i++)
+        if (m->vol_reg[i] >= m->lo && m->vol_reg[i] <= m->hi)
+            vol[m->vol_reg[i]] = true;
+
     for (int pass = 0; pass < IMT_VOLATILE_PASSES; pass++) {
         if (pass) sleep_s(0.03);
         memset(probe, 0, sizeof probe);

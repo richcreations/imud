@@ -142,6 +142,19 @@ accelerometer's high byte is the usual case — is not caught. Every report
 prints how many registers were excluded and how many were compared, so a
 narrower test never looks like a cleaner chip.
 
+One class of miss cannot be fixed by reading harder, and those registers *are*
+listed. A **saturated counter** reads its maximum on every pass, so the
+experiment concludes it never moves. `FIFO_STATUS1`/`FIFO_STATUS2` on the ST
+parts carry `DIFF_FIFO`, and above roughly 833 Hz the FIFO refills to capacity
+between passes: the counter reads identically every time, is classified static,
+and then `init()` flushes the FIFO and `imu.init.idempotent` reports "2
+registers differ". That is a question about whether the FIFO was emptied
+wearing the costume of a question about `init()`, and it cost a bench
+investigation chasing a driver defect that did not exist. Registers in that
+class are declared per part, because the defining property is that inference
+cannot reach them. The list is deliberately tiny and is not a general volatile
+table — everything the experiment *can* find, it still finds.
+
 **Write-only control registers** are a third case, and only a listed flag can
 express them: `ctrl_writeonly` on the MMC5983MA, whose CTRL0/1/2 the datasheet
 gives as W. There the check SKIPs, because no readback can say anything about
