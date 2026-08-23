@@ -2743,6 +2743,54 @@ static void test_bus_integrity_uses_an_invariant(void)
     end(fb);
 }
 
+/*
+ * imt_field_status grades whether a magnetometer is WORKING, not whether it is
+ * CALIBRATED.
+ *
+ * It used to demand Earth's 25-65 uT at rest and again during the spin. That
+ * grades the installation: hard iron and the AMR bridge's own offset move |B|
+ * by tens of uT, and the reference rig reads ~67 uT raw with the sensor as far
+ * from metal as it can get. Every cell of a 70-cell matrix WARNed on a
+ * correctly-working sensor, which is how a check becomes noise.
+ *
+ * What a DRIVER can get wrong moves |B| by a factor -- 16-bit data read as
+ * 18-bit is 4x, a saturated bridge pins at full scale, a decode fault is
+ * arbitrary. The band has to be wide enough to pass any real install and still
+ * catch those.
+ */
+static void test_field_status_grades_the_driver_not_the_install(void)
+{
+    begin("test_field_status_grades_the_driver_not_the_install");
+    int fb = g_fail;
+
+    /* Earth's field, anywhere. */
+    EXPECT(imt_field_status(25.0) == IMT_PASS, "25 uT (equatorial) passes");
+    EXPECT(imt_field_status(48.5) == IMT_PASS, "48.5 uT (mid-latitude) passes");
+    EXPECT(imt_field_status(65.0) == IMT_PASS, "65 uT (polar) passes");
+
+    /* A real uncalibrated install. 67 uT is what the reference rig reads. */
+    EXPECT(imt_field_status(67.3) == IMT_PASS,
+           "67.3 uT — the reference rig, uncalibrated — must not be a finding");
+    EXPECT(imt_field_status(90.0) == IMT_PASS, "heavy hard iron still passes");
+    EXPECT(imt_field_status(23.0) == IMT_PASS,
+           "an offset opposing the field still passes");
+
+    /* What the check exists for: errors by a FACTOR. */
+    EXPECT(imt_field_status(48.5 * 4.0) != IMT_PASS,
+           "4x — 16-bit data decoded as 18-bit — is caught");
+    EXPECT(imt_field_status(48.5 / 4.0) != IMT_PASS, "1/4x is caught");
+    EXPECT(imt_field_status(800000.0) == IMT_FAIL, "a saturated bridge fails");
+    EXPECT(imt_field_status(0.5) == IMT_FAIL, "a near-zero reading fails");
+
+    /* Degenerate inputs must not pass by accident. */
+    EXPECT(imt_field_status(0.0) == IMT_FAIL, "zero fails");
+    EXPECT(imt_field_status(-48.0) == IMT_FAIL, "a negative magnitude fails");
+    EXPECT(imt_field_status(NAN) == IMT_FAIL, "NaN fails");
+    EXPECT(imt_field_status(INFINITY) == IMT_FAIL, "infinity fails");
+
+    end(fb);
+}
+
 static void test_bus_integrity_status(void)
 {
     begin("test_bus_integrity_status");
@@ -3199,6 +3247,7 @@ int main(void)
     test_daemon_conflict_checks_both_sockets();
     test_saturating_counters_are_declared_volatile();
     test_bus_integrity_uses_an_invariant();
+    test_field_status_grades_the_driver_not_the_install();
     test_bus_integrity_status();
     test_overflow_status();
     test_fs_grade_median();

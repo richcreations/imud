@@ -656,6 +656,11 @@ imt_status_t imt_overflow_status(int rc, bool growing);
  */
 imt_status_t imt_bus_integrity_status(int bad, int total);
 
+/* Plausibility of a raw |B| in uT for a WORKING magnetometer on any
+ * install -- wide enough to pass hard iron, tight enough to catch a
+ * scale factor wrong by a factor. See src/imutest.c. */
+imt_status_t imt_field_status(double uT);
+
 /*
  * Split a SET/RESET pair into the field it measured and the bridge offset it
  * carried.  Pure, and exposed for the same reason as the two above: the

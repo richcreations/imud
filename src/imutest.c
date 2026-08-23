@@ -3073,12 +3073,12 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
         skip_check(r, "mag.wall_ns", "wall_ns is stamped and monotonic", "no samples");
     } else {
         double n = r->raw.mag_norm_mean;
-        imt_status_t st = (n >= 25.0 && n <= 65.0) ? IMT_PASS
-                        : (n >= 15.0 && n <= 100.0) ? IMT_WARN : IMT_FAIL;
-        add_check(r, "mag.field_magnitude", "Field magnitude", st,
-                  fmtbuf(mb, sizeof mb, "%.1f uT", n), "25 .. 65 uT",
-                  "range %.1f .. %.1f uT. Earth's field is 25-65 uT; well "
-                  "outside that is a scaling error or heavy local iron.",
+        add_check(r, "mag.field_magnitude", "Field magnitude",
+                  imt_field_status(n),
+                  fmtbuf(mb, sizeof mb, "%.1f uT", n), "15 .. 150 uT",
+                  "range %.1f .. %.1f uT, raw. Hard iron shifts |B| by tens "
+                  "of uT (imud-cal mag removes it), so this grades decode and "
+                  "scale, not calibration.",
                   r->raw.mag_norm_min, r->raw.mag_norm_max);
 
         bool stuck = false;
@@ -3866,11 +3866,17 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     }
 
     double nm_ = r->raw.spin_norm_mean;
+    /*
+     * Same band as at rest, and it matters MORE here. Averaging |R*B + offset|
+     * across headings is biased upward by hard iron -- the offset never
+     * averages out of a magnitude -- so a turning sensor reads higher than a
+     * stationary one on the same rig. Grading Earth's range here would fail an
+     * uncalibrated part for turning around.
+     */
     add_check(r, "spin.magnitude", "Spin field magnitude",
-              (nm_ >= 25.0 && nm_ <= 65.0) ? IMT_PASS
-            : (nm_ >= 15.0 && nm_ <= 100.0) ? IMT_WARN : IMT_FAIL,
-              fmtbuf(mb, sizeof mb, "%.1f uT", nm_), "25 .. 65 uT",
-              "mean |B| over %llu samples while turning",
+              imt_field_status(nm_),
+              fmtbuf(mb, sizeof mb, "%.1f uT", nm_), "15 .. 150 uT",
+              "mean |B| over %llu samples while turning, raw and uncalibrated",
               (unsigned long long)got);
 
     /*
@@ -4073,6 +4079,38 @@ uint32_t imt_ts_acc_step(imt_ts_acc_t *a, uint32_t ts)
 void imt_ts_acc_seam(imt_ts_acc_t *a)
 {
     a->seam = true;
+}
+
+/*
+ * Is this |B| plausible for a WORKING magnetometer, anywhere, on any install?
+ *
+ * Deliberately not "is this Earth's field". Earth's field is 25-65 uT, but that
+ * is a property of the INSTALLATION, and this tool exists to validate DRIVERS.
+ * The two have disjoint failure sets:
+ *
+ *   a driver gets scale, byte order or saturation wrong -- all of which move
+ *   |B| by a FACTOR (16-bit read as 18-bit is 4x)
+ *
+ *   an installation has hard iron -- which moves |B| by an OFFSET, tens of uT,
+ *   and is removed by `imud-cal mag`, not by fixing any code
+ *
+ * Grading a +-20 uT window cannot tell those apart, so it fired on healthy
+ * hardware: the reference rig reads ~67 uT raw with the sensor as far from
+ * metal as it goes, because the AMR bridge has a large intrinsic offset. That
+ * is the whole reason the part carries a SET/RESET coil. A check that WARNs on
+ * every correctly-working uncalibrated sensor is one operators learn to skip.
+ *
+ * So the band is wide enough to pass any real install and still catch every
+ * factor error: 4x on a 48 uT field is 192 or 12, both outside 15..150.
+ */
+imt_status_t imt_field_status(double uT)
+{
+    if (!isfinite(uT) || uT <= 0.0) return IMT_FAIL;
+    if (uT >= 15.0 && uT <= 150.0) return IMT_PASS;
+    /* Outside the plausible band but not by a factor: heavy local iron, or a
+     * sensor sitting on a magnet. Worth reading, not a driver defect. */
+    if (uT >= 8.0 && uT <= 400.0) return IMT_WARN;
+    return IMT_FAIL;
 }
 
 /*
