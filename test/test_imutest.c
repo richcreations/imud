@@ -2502,10 +2502,67 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
  * imu.bus.integrity's decision table.
  *
  * The loop itself is exercised on the PASS path by every mock run; what is
- * worth pinning is the grading, because the split is a RATE and the whole
- * point of the check is that a corrupted bus invalidates every timing figure
- * downstream of it.
+ * worth pinning is the grading, and specifically that it has NO tolerance
+ * band.  It used to WARN below 0.5%, which let a real defect read as an
+ * acceptable rate: on the reference rig the check sat at a few tenths of a
+ * percent and was waved past for a whole bench session.  There is no rate low
+ * enough to be fine, because the value compared against is hard-wired and the
+ * driver reads it once in probe() -- 0.2% is one probe in five hundred
+ * rejecting a part that is physically present.
  */
+/*
+ * The register imu.bus.integrity compares against must be an INVARIANT.
+ *
+ * It used to read INTERNAL_FREQ_FINE (0x63) on the ST parts, on the reasoning
+ * that a factory trim is something nothing writes.  Measured on the reference
+ * ISM330DHCX, that register reads 0x1B while the part runs and 0x1A with the
+ * sensors powered down -- it reports the trim of an oscillator that can be
+ * switched off.  The check scored the difference as bus corruption and failed
+ * a part whose every other check passed.
+ *
+ * WHO_AM_I is hard-wired and identical in every power mode, which is the
+ * property the check actually requires.  Pinned per driver against the values
+ * in each driver's own header, because a wrong entry here is indistinguishable
+ * from a corrupt bus in the field.
+ */
+static void test_bus_integrity_uses_an_invariant(void)
+{
+    begin("test_bus_integrity_uses_an_invariant");
+    int fb = g_fail;
+
+    static const struct { const char *drv; uint8_t reg, val; } id[] = {
+        { "ism330dhcx", 0x0F, 0x6B },
+        { "lsm6dso",    0x0F, 0x6C },
+        { "lsm6dsox",   0x0F, 0x6D },
+        { "icm42688p",  0x75, 0x47 },
+        { "mpu9250",    0x75, 0x71 },
+        { "mpu9255",    0x75, 0x73 },
+    };
+    char msg[96];
+    for (unsigned i = 0; i < sizeof id / sizeof id[0]; i++) {
+        uint8_t reg = 0, val = 0;
+        bool have = imt_regmap_identity(id[i].drv, &reg, &val);
+        snprintf(msg, sizeof msg, "%s has an identity register", id[i].drv);
+        EXPECT(have, msg);
+        snprintf(msg, sizeof msg, "%s identity is 0x%02X", id[i].drv, id[i].reg);
+        EXPECT(have && reg == id[i].reg, msg);
+        snprintf(msg, sizeof msg, "%s identity reads 0x%02X", id[i].drv, id[i].val);
+        EXPECT(have && val == id[i].val, msg);
+
+        /* The trap this replaced: never grade against a trim register. */
+        snprintf(msg, sizeof msg, "%s does not compare against 0x63", id[i].drv);
+        EXPECT(!have || reg != 0x63, msg);
+    }
+
+    /* icm20948's WHO_AM_I is bank-0 register 0x00, which collides with the
+     * "none" sentinel, so it must fall back to probe() rather than compare
+     * against register zero. */
+    EXPECT(!imt_regmap_identity("icm20948", NULL, NULL),
+           "icm20948 falls back to probe() rather than reading register 0");
+
+    end(fb);
+}
+
 static void test_bus_integrity_status(void)
 {
     begin("test_bus_integrity_status");
@@ -2513,14 +2570,18 @@ static void test_bus_integrity_status(void)
 
     EXPECT(imt_bus_integrity_status(0, 2000) == IMT_PASS,
            "a bus that never misreads passes");
-    EXPECT(imt_bus_integrity_status(1, 2000) == IMT_WARN,
-           "one bad read in 2000 is a bus to look at");
-    EXPECT(imt_bus_integrity_status(9, 2000) == IMT_WARN,
-           "0.45% is still a WARN");
+    EXPECT(imt_bus_integrity_status(1, 2000) == IMT_FAIL,
+           "one bad read in 2000 is a failure, not a warning");
+    EXPECT(imt_bus_integrity_status(9, 2000) == IMT_FAIL,
+           "0.45% fails — there is no tolerance band");
     EXPECT(imt_bus_integrity_status(10, 2000) == IMT_FAIL,
            "0.5% and up cannot carry a measurement");
     EXPECT(imt_bus_integrity_status(2000, 2000) == IMT_FAIL,
            "a bus that always misreads fails");
+    /* No input may grade WARN any more. */
+    for (int b = 0; b <= 2000; b += 137)
+        EXPECT(imt_bus_integrity_status(b, 2000) != IMT_WARN,
+               "the check never returns WARN at any rate");
     /* Degenerate inputs must not divide by zero or grade a run that never
      * happened. */
     EXPECT(imt_bus_integrity_status(0, 0) == IMT_PASS, "no reads is not a fault");
@@ -2955,6 +3016,7 @@ int main(void)
     test_chipts_accounting();
     test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
+    test_bus_integrity_uses_an_invariant();
     test_bus_integrity_status();
     test_overflow_status();
     test_fs_grade_median();

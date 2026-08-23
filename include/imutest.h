@@ -706,4 +706,9 @@ int imt_gpio_count_edges(const char *chip, int gpio, long window_ms,
  * `reg` on `driver`; false when it is out of range, reserved, or excluded. */
 bool imt_regmap_reads(const char *driver, uint8_t reg);
 
+
+/* Test seam — see src/imutest.c.  The identity register and its hard-wired
+ * value for `driver`; false when the part has none the sweep can reach. */
+bool imt_regmap_identity(const char *driver, uint8_t *reg, uint8_t *val);
+
 #endif /* IMUD_IMUTEST_H */

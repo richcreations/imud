@@ -364,35 +364,63 @@ typedef struct {
      * Read-only and side-effect-free, so it costs one byte on the wire.
      */
     uint8_t     freq_fine_reg;
+
+    /*
+     * The part's identity register and the value it must always hold.
+     *
+     * This is what imu.bus.integrity hammers, and picking it correctly is the
+     * whole check.  It used to read freq_fine_reg instead, on the reasoning
+     * that a factory trim is something nothing writes -- but "nothing writes
+     * it" is not the same as "it cannot change".  Measured on the reference
+     * ISM330DHCX: INTERNAL_FREQ_FINE reads 0x1B while the part is running and
+     * 0x1A with the sensors powered down, because it reports a trim of an
+     * oscillator that is switched off.  The check counted that transition as
+     * bus corruption, which is how it produced a FAIL on a part whose every
+     * other check passed.
+     *
+     * WHO_AM_I has no such state: it is hard-wired, identical in every power
+     * mode, and the one byte on these parts that genuinely cannot change.
+     * 0 means the part has none the sweep can reach, and the check falls back
+     * to probe().
+     */
+    uint8_t     whoami_reg, whoami_val;
 } imt_regmap_t;
 
 static const imt_regmap_t imt_regmaps[] = {
     /* ST: FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high). */
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .whoami_reg = 0x0F, .whoami_val = 0x6B,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .whoami_reg = 0x0F, .whoami_val = 0x6C,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
+      .whoami_reg = 0x0F, .whoami_val = 0x6D,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     /* TDK: FIFO ports and banked register files. */
     { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
+      .whoami_reg = 0x75, .whoami_val = 0x47,
       .nrd_lo = 1, .nrd_hi = 0 },
+        /* icm20948 WHO_AM_I is bank-0 register 0x00, and 0 is this field's
+     * "no identity register" sentinel, so it uses the probe() fallback. */
     { .driver = "icm20948",   .lo = 0x00, .hi = 0x7F,
       .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
       .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
+      .whoami_reg = 0x75, .whoami_val = 0x71,
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
+      .whoami_reg = 0x75, .whoami_val = 0x73,
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     /*
      * Mags.  The MMC5983MA's readable file ends at 0x08, which is read-to-clear
@@ -483,6 +511,22 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
  * pin the exclusions for every registered driver, including the AKM
  * magnetometers whose vendor test registers must never be touched.
  */
+/*
+ * Test seam: the identity register and value imu.bus.integrity compares
+ * against, for `driver`.  Exposed because choosing this wrongly is what made
+ * the check report bus corruption on a healthy part -- it read
+ * INTERNAL_FREQ_FINE, which changes with power state -- and a registry entry
+ * is data that no mock run can validate.
+ */
+bool imt_regmap_identity(const char *driver, uint8_t *reg, uint8_t *val)
+{
+    const imt_regmap_t *m = regmap_for(driver);
+    if (!m || !m->whoami_reg) return false;
+    if (reg) *reg = m->whoami_reg;
+    if (val) *val = m->whoami_val;
+    return true;
+}
+
 bool imt_regmap_reads(const char *driver, uint8_t reg)
 {
     const imt_regmap_t *m = regmap_for(driver);
@@ -715,93 +759,6 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
               fmtbuf(mb, sizeof mb, "accepted at 0x%02X", cfg->imu_addr),
               "accepted", "driver '%s' recognised the part", imu->name);
 
-    /*
-     * BUS INTEGRITY.  probe() reads a register whose value cannot change --
-     * the part's identity -- and compares it, so a failure at the REAL address
-     * is a corrupted transfer rather than a wrong part.  Repeating it counts
-     * corruption directly instead of leaving it to be inferred.
-     *
-     * It has been inferred twice today, and expensively.  A post-drain
-     * TIMESTAMP0 read came back 65,706 ticks (1.58 s) high and poisoned the
-     * timestamp chain for eleven bursts; INTERNAL_FREQ_FINE (0x63), a
-     * factory-trim register nothing writes, read differently across two
-     * init()s and surfaced as imu.init.idempotent. Both were single corrupted
-     * reads, and neither was reported as one -- they arrived disguised as a
-     * clock defect and a state-dependent init.
-     *
-     * Cheap enough to hammer: one identity byte per call.
-     */
-    {
-        /*
-         * Two failure modes, counted apart, because they call for different
-         * things: a transfer that ERRORED never delivered a byte (a driver or
-         * kernel-level fault), while one that SUCCEEDED and delivered the
-         * wrong byte is corruption on the wire.  Reporting them as one number
-         * is how a bus problem gets mistaken for a driver problem -- which is
-         * exactly what happened to the TIMESTAMP0 read and to 0x63.
-         *
-         * Where the part has a stable factory register the check reads that
-         * directly, so the two are separable; probe() collapses them into one
-         * -1 and is the fallback for parts without one.
-         */
-        int bad = 0, bad2 = 0, ioerr = 0;
-        uint8_t ref = 0;
-        bool have_ref = false;
-        const imt_regmap_t *irm = regmap_for(imu->name);
-        const uint8_t idreg = (irm && irm->freq_fine_reg)
-                            ? irm->freq_fine_reg : 0;
-        for (int i = 0; i < IMT_BUS_INTEGRITY_READS && !g_abort; i++) {
-            if (idreg) {
-                uint8_t v;
-                if (bus_reg_read(ibus, idreg, &v) < 0) { ioerr++; continue; }
-                if (!have_ref) { ref = v; have_ref = true; }
-                else if (v != ref) {
-                    /* Record WHAT came back, not just that it differed: a
-                     * shifted copy of the right value says clocking, 0x00 or
-                     * 0xFF says the part never drove the line, and anything
-                     * else says the read landed somewhere it should not. */
-                    if (r->raw.n_bus_bad < IMT_MAX_BUS_BAD) {
-                        r->raw.bus_bad_val[r->raw.n_bus_bad] = v;
-                        r->raw.bus_bad_at[r->raw.n_bus_bad]  = i;
-                        r->raw.n_bus_bad++;
-                    }
-                    r->raw.bus_ref_imu = ref;
-                    bad++;
-                }
-            } else if (imu->probe(ibus) < 0) {
-                bad++;
-            }
-            /*
-             * Cross-check a SECOND fixed register through probe(), so the
-             * count cannot be blamed on the one register chosen.  One register
-             * misreading is a question about that register; two is the bus.
-             */
-            if (idreg && imu->probe(ibus) < 0) bad2++;
-        }
-        double pct = 100.0 * (double)bad / (double)IMT_BUS_INTEGRITY_READS;
-        r->raw.bus_bad_imu = bad;
-        r->raw.bus_ioerr_imu = ioerr;
-        const char *val = fmtbuf(mb, sizeof mb,
-                                 "%d+%d of %d bad, %d io-err",
-                                 bad, bad2, IMT_BUS_INTEGRITY_READS,
-                                 ioerr);
-        if (bad == 0)
-            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
-                      IMT_PASS, val, "0 bad",
-                      "%d reads of a register that cannot change all came back "
-                      "with the value it cannot change from",
-                      IMT_BUS_INTEGRITY_READS);
-        else
-            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
-                      imt_bus_integrity_status(bad,
-                                              IMT_BUS_INTEGRITY_READS),
-                      val, "0 bad",
-                      "a register whose value is fixed read back wrong %.2f%% "
-                      "of the time. That is the bus, not the driver: lower "
-                      "spi_speed_hz, shorten the wiring and check the ground "
-                      "return before believing any timing figure in this "
-                      "report", pct);
-    }
 
     /*
      * A probe that ignores WHO_AM_I, or swallows the ioctl error, passes the
@@ -885,6 +842,111 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
               "%s Hz, +/-%d g, +/-%d dps, watermark %d sample-sets",
               MHZ_STR(ob, icfg->odr_mhz), icfg->accel_g, icfg->gyro_dps,
               icfg->fifo_wm);
+
+    /*
+     * BUS INTEGRITY.  probe() reads a register whose value cannot change --
+     * the part's identity -- and compares it, so a failure at the REAL address
+     * is a corrupted transfer rather than a wrong part.  Repeating it counts
+     * corruption directly instead of leaving it to be inferred.
+     *
+     * It has been inferred twice today, and expensively.  A post-drain
+     * TIMESTAMP0 read came back 65,706 ticks (1.58 s) high and poisoned the
+     * timestamp chain for eleven bursts; INTERNAL_FREQ_FINE (0x63), a
+     * factory-trim register nothing writes, read differently across two
+     * init()s and surfaced as imu.init.idempotent. Both were single corrupted
+     * reads, and neither was reported as one -- they arrived disguised as a
+     * clock defect and a state-dependent init.
+     *
+     * Cheap enough to hammer: one identity byte per call.
+     *
+     * Placed AFTER reset() and init() deliberately.  It used to run straight
+     * after probe(), which measured the part in whatever state the previous
+     * process happened to leave it in -- not a state the daemon ever operates
+     * in, and on these parts a materially different one: an ISM330DHCX left
+     * with its sensors powered down answers reads far less reliably than the
+     * same part configured and running.  The question this check exists to
+     * answer is whether the bus is sound while the daemon is using it, so it
+     * is measured on a part the driver has just brought up.
+     */
+    {
+        /*
+         * Two failure modes, counted apart, because they call for different
+         * things: a transfer that ERRORED never delivered a byte (a driver or
+         * kernel-level fault), while one that SUCCEEDED and delivered the
+         * wrong byte is corruption on the wire.  Reporting them as one number
+         * is how a bus problem gets mistaken for a driver problem -- which is
+         * exactly what happened to the TIMESTAMP0 read and to 0x63.
+         *
+         * Where the part has an identity register the check reads that
+         * directly, so the two are separable; probe() collapses them into one
+         * -1 and is the fallback for parts without one.
+         *
+         * The expected byte comes from the registry, NOT from the first read.
+         * Seeding a reference from read #1 means a single corrupt read at the
+         * start inverts the whole result -- every good read afterwards counts
+         * as bad -- and the check cannot tell which case it is in.  A
+         * hard-wired identity has a known answer, so it is simply compared.
+         */
+        int bad = 0, bad2 = 0, ioerr = 0;
+        const imt_regmap_t *irm = regmap_for(imu->name);
+        const uint8_t idreg = (irm && irm->whoami_reg) ? irm->whoami_reg : 0;
+        const uint8_t idval = irm ? irm->whoami_val : 0;
+        for (int i = 0; i < IMT_BUS_INTEGRITY_READS && !g_abort; i++) {
+            if (idreg) {
+                uint8_t v;
+                if (bus_reg_read(ibus, idreg, &v) < 0) { ioerr++; continue; }
+                if (v != idval) {
+                    /* Record WHAT came back, not just that it differed: a
+                     * shifted copy of the right value says clocking, 0x00 or
+                     * 0xFF says the part never drove the line, and anything
+                     * else says the read landed somewhere it should not. */
+                    if (r->raw.n_bus_bad < IMT_MAX_BUS_BAD) {
+                        r->raw.bus_bad_val[r->raw.n_bus_bad] = v;
+                        r->raw.bus_bad_at[r->raw.n_bus_bad]  = i;
+                        r->raw.n_bus_bad++;
+                    }
+                    r->raw.bus_ref_imu = idval;
+                    bad++;
+                }
+            } else if (imu->probe(ibus) < 0) {
+                bad++;
+            }
+            /*
+             * Cross-check a SECOND fixed register through probe(), so the
+             * count cannot be blamed on the one register chosen.  One register
+             * misreading is a question about that register; two is the bus.
+             */
+            if (idreg && imu->probe(ibus) < 0) bad2++;
+        }
+        double pct = 100.0 * (double)bad / (double)IMT_BUS_INTEGRITY_READS;
+        r->raw.bus_bad_imu = bad;
+        r->raw.bus_ioerr_imu = ioerr;
+        const char *val = fmtbuf(mb, sizeof mb,
+                                 "%d+%d of %d bad, %d io-err",
+                                 bad, bad2, IMT_BUS_INTEGRITY_READS,
+                                 ioerr);
+        if (bad == 0)
+            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
+                      IMT_PASS, val, "0 bad",
+                      "%d reads of a register that cannot change all came back "
+                      "with the value it cannot change from",
+                      IMT_BUS_INTEGRITY_READS);
+        else
+            add_check(r, "imu.bus.integrity", "Bus reads are not corrupted",
+                      imt_bus_integrity_status(bad,
+                                              IMT_BUS_INTEGRITY_READS),
+                      val, "0 bad",
+                      "the identity register read back wrong %.2f%% of the "
+                      "time, against a value that is hard-wired and cannot "
+                      "change. The bytes that came back are in the appendix; "
+                      "read them before assuming a cause. Candidates, roughly "
+                      "in order of how often they are the answer: the part is "
+                      "in a state the driver did not put it in (power-cycle it "
+                      "and re-run before anything else), spi_speed_hz landing "
+                      "on a clock the controller cannot generate cleanly, or "
+                      "the wiring and ground return. Do not trust any timing "
+                      "figure in this report while this is failing", pct);
+    }
 
     if (!o->regdiff) {
         skip_check(r, "imu.init.regdiff", "IMU control-register diff",
@@ -3802,10 +3864,22 @@ void imt_ts_acc_seam(imt_ts_acc_t *a)
     a->seam = true;
 }
 
+/*
+ * Any corrupted read is a failure.  There is no rate low enough to be
+ * acceptable: the value compared against is hard-wired and cannot change, so a
+ * single wrong byte means a byte on this bus can come back wrong -- and the
+ * driver reads WHO_AM_I exactly once in probe(), a chip timestamp once per
+ * burst, and a full-scale setting once per init().  A rate of "only" 0.2% is
+ * one probe() in five hundred rejecting a part that is present, which is
+ * precisely how this was first seen.
+ *
+ * This used to WARN below 0.5%, which let a real defect read as a tolerance
+ * band and get waved past.
+ */
 imt_status_t imt_bus_integrity_status(int bad, int total)
 {
-    if (bad <= 0 || total <= 0) return IMT_PASS;
-    return (100.0 * (double)bad / (double)total) < 0.5 ? IMT_WARN : IMT_FAIL;
+    if (total <= 0) return IMT_PASS;
+    return bad > 0 ? IMT_FAIL : IMT_PASS;
 }
 
 imt_status_t imt_overflow_status(int rc, bool growing)
