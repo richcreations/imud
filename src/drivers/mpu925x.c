@@ -411,6 +411,17 @@ static int mpu_read(const imud_bus_t *bus,
     /* ── 2. Burst read from the FIFO port ────────────────────────────────── */
     uint8_t raw[128 * FIFO_SAMPLE_BYTES];   /* caller's max is 128 samples */
     int to_read = n_samples * FIFO_SAMPLE_BYTES;
+    /*
+     * n_samples is at least 1 here, so to_read is at least one whole
+     * sample-set.  Stated rather than left implied: the static analyser
+     * otherwise explores a to_read == 1 path into spi_burst_read's
+     * single-word branch, which writes only buf[0], and then reports the
+     * parse below reading p[1] as a garbage value.  Unreachable in fact --
+     * to_read is always a multiple of the set size -- but the analyser cannot
+     * see that, and a suppression would hide the same finding if it ever
+     * became real.
+     */
+    if (to_read < FIFO_SAMPLE_BYTES) return -1;
     if (bus_burst_read(bus, REG_FIFO_R_W, raw, (uint16_t)to_read) < 0)
         return -1;
 

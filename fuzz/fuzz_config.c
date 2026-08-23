@@ -62,10 +62,12 @@ static void check_ranges(const imud_config_t *c)
     assert(c->imu_addr >= 0x00 && c->imu_addr <= 0x7F);
     assert(c->mag_addr >= 0x00 && c->mag_addr <= 0x7F);
 
-    /* The rates NEED_POS_INT guards. A wrapped value used to land positive
-     * here and satisfy it, which is how odr_hz = 4294968129 became 833. */
-    assert(c->imu_odr_hz > 0);
-    assert(c->mag_odr_hz > 0);
+    /* The rates NEED_POS_MHZ guards. A wrapped value used to land positive
+     * here and satisfy it, which is how odr_hz = 4294968129 became 833.
+     * Carried in milli-Hz since the rate rework, so odr_hz = 12.5 is a real
+     * configuration rather than something that has to round. */
+    assert(c->imu_odr_mhz > 0);
+    assert(c->mag_odr_mhz > 0);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
