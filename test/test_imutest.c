@@ -32,6 +32,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include "imutest.h"
 #include "imu_gpio.h"
 #include "bus_mock.h"
@@ -2551,6 +2554,76 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
  * a constant is indistinguishable from a saturated counter, so a test that
  * watched the scan would pass either way.
  */
+/*
+ * The daemon-conflict guard must check BOTH sockets.
+ *
+ * It used to probe only the configured one. A bench config naming a private
+ * path -- socket = "/tmp/imud-bench.sock" -- therefore connected to nothing,
+ * concluded no daemon was running, and allowed the run, while the installed
+ * daemon sat on the default path draining the same FIFO. Every measurement
+ * taken that day was contended and had to be thrown away, and the guard's own
+ * comment described precisely the failure it had just permitted.
+ *
+ * Sockets live under /tmp deliberately: virtiofs refuses operations on a socket
+ * in the mounted repo.
+ */
+static int listen_at(const char *path)
+{
+    unlink(path);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, 4) < 0) {
+        close(fd); unlink(path); return -1;
+    }
+    return fd;
+}
+
+static void test_daemon_conflict_checks_both_sockets(void)
+{
+    begin("test_daemon_conflict_checks_both_sockets");
+    int fb = g_fail;
+
+    const char *cfgpath = "/tmp/imt_conflict_cfg.sock";
+    const char *dfltpath = "/tmp/imt_conflict_dflt.sock";
+    unlink(cfgpath); unlink(dfltpath);
+
+    /* Nothing listening anywhere: no conflict. */
+    EXPECT(!imt_daemon_conflict(cfgpath, dfltpath),
+           "no listener on either path is not a conflict");
+
+    /* A daemon on the CONFIGURED socket -- the case that always worked. */
+    int a = listen_at(cfgpath);
+    EXPECT(a >= 0, "bound the configured socket");
+    if (a >= 0) {
+        EXPECT(imt_daemon_conflict(cfgpath, dfltpath),
+               "a daemon on the configured socket is a conflict");
+        close(a); unlink(cfgpath);
+    }
+
+    /* THE REGRESSION: a daemon on the DEFAULT socket while the config names a
+     * private path. This is what silently voided a day of measurements. */
+    int b = listen_at(dfltpath);
+    EXPECT(b >= 0, "bound the default socket");
+    if (b >= 0) {
+        EXPECT(imt_daemon_conflict(cfgpath, dfltpath),
+               "a daemon on the DEFAULT socket is a conflict even when the "
+               "config names a private path");
+        close(b); unlink(dfltpath);
+    }
+
+    /* Degenerate inputs must not crash or report a phantom daemon. */
+    EXPECT(!imt_daemon_conflict(NULL, NULL), "NULL paths are not a conflict");
+    EXPECT(!imt_daemon_conflict("", ""), "empty paths are not a conflict");
+    EXPECT(!imt_daemon_conflict(cfgpath, cfgpath),
+           "identical paths with nothing listening are not a conflict");
+
+    end(fb);
+}
+
 static void test_saturating_counters_are_declared_volatile(void)
 {
     begin("test_saturating_counters_are_declared_volatile");
@@ -3066,6 +3139,7 @@ int main(void)
     test_chipts_accounting();
     test_drdy_window_must_allow_an_edge();
     test_mag_rate_names_the_direction();
+    test_daemon_conflict_checks_both_sockets();
     test_saturating_counters_are_declared_volatile();
     test_bus_integrity_uses_an_invariant();
     test_bus_integrity_status();

@@ -137,34 +137,6 @@ static void term_coverage(void *user, const int *sectors, int nsec, int cur,
     t->last_len = 60;
 }
 
-/* ── Daemon-conflict probe ────────────────────────────────────────────────── */
-
-/*
- * Opening /dev/i2c-N succeeds even when another process holds it, so the
- * reliable signal is the daemon's own status socket — the same probe
- * imud-status performs.  This matters more than it looks: both processes would
- * drain the same FIFO, so each sees about half the samples, ODR reads low and
- * seq.gapless fails. That is a false negative that would poison a review.
- */
-static bool daemon_running(const imud_config_t *cfg)
-{
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return false;
-    APPLY_CLOEXEC(fd);
-
-    struct sockaddr_un addr;
-    size_t plen = strlen(cfg->stream_socket);
-    if (plen == 0 || plen >= sizeof addr.sun_path) { close(fd); return false; }
-
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    memcpy(addr.sun_path, cfg->stream_socket, plen);
-
-    bool up = connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0;
-    close(fd);
-    return up;
-}
-
 /* ── main ─────────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv)
@@ -218,7 +190,7 @@ int main(int argc, char **argv)
     if (ov_wm    > 0) cfg.imu_fifo_wm  = ov_wm;
 
     /* ── Daemon conflict ─────────────────────────────────────────────────── */
-    bool daemon_up = daemon_running(&cfg);
+    bool daemon_up = imt_daemon_running(&cfg);
     if (daemon_up && !force) {
         fprintf(stderr,
 "imud-imutest: imud appears to be running (its socket at %s accepted a\n"

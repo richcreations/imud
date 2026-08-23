@@ -716,4 +716,14 @@ bool imt_regmap_identity(const char *driver, uint8_t *reg, uint8_t *val);
  * `driver` regardless of what the volatility scan observes. */
 bool imt_regmap_known_volatile(const char *driver, uint8_t reg);
 
+
+/*
+ * Daemon-conflict probe.  imt_daemon_running() checks the configured stream
+ * socket AND the compiled-in default: a bench config with a private `socket`
+ * path would otherwise disable the guard entirely.  imt_daemon_conflict() is
+ * the testable core, taking both paths explicitly.
+ */
+bool imt_daemon_running(const imud_config_t *cfg);
+bool imt_daemon_conflict(const char *configured, const char *fallback);
+
 #endif /* IMUD_IMUTEST_H */

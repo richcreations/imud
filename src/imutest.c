@@ -32,9 +32,12 @@
 #include <unistd.h>
 
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/utsname.h>
 
 #include "imutest.h"
+#include "cloexec.h"
 #include "imu_gpio.h"
 #include "imu_math.h"
 #include "cal_math.h"
@@ -540,6 +543,64 @@ static bool regmap_skips(const imt_regmap_t *m, uint8_t reg)
         return true;
     /* Never read the bank selector itself as part of the sweep. */
     return m->bank_reg && reg == m->bank_reg;
+}
+
+/* ── Daemon-conflict probe ────────────────────────────────────────────────── */
+
+/* True if something is listening on this AF_UNIX path. */
+static bool socket_answers(const char *path)
+{
+    struct sockaddr_un addr;
+    size_t plen = path ? strlen(path) : 0;
+    if (plen == 0 || plen >= sizeof addr.sun_path) return false;
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return false;
+    APPLY_CLOEXEC(fd);
+
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, plen);
+
+    bool up = connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0;
+    close(fd);
+    return up;
+}
+
+/*
+ * Is a daemon holding the sensors?
+ *
+ * Opening the bus succeeds even when another process has it, so the reliable
+ * signal is the daemon's own stream socket. Both processes would drain the same
+ * FIFO, so each sees about half the samples: the measured ODR reads low, the
+ * mag rate reads low, and seq.gapless fails -- all at once, on both sensors, at
+ * every rate. Recognising that signature costs a bench session if the guard
+ * does not fire first.
+ *
+ * TWO paths, which is the whole point. Probing only the CONFIGURED socket
+ * means a bench config naming a private path -- `socket = "/tmp/bench.sock"` --
+ * connects to nothing, concludes no daemon is running, and waves the run
+ * through, while the installed daemon sits on the default path draining the
+ * FIFO. That is not hypothetical: it voided a full day of measurements, and the
+ * guard's own comment described the exact failure it had just permitted.
+ *
+ * `fallback` is a parameter rather than a constant so a test can drive both
+ * paths without binding a socket under /run.
+ */
+bool imt_daemon_conflict(const char *configured, const char *fallback)
+{
+    if (socket_answers(configured)) return true;
+    if (fallback && configured && strcmp(fallback, configured) == 0) return false;
+    return socket_answers(fallback);
+}
+
+bool imt_daemon_running(const imud_config_t *cfg)
+{
+    /* The default comes from config_defaults() rather than a second copy of the
+     * path literal, so this cannot drift away from what the daemon listens on. */
+    static imud_config_t dflt;
+    config_defaults(&dflt);
+    return imt_daemon_conflict(cfg->stream_socket, dflt.stream_socket);
 }
 
 /*
