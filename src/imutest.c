@@ -410,10 +410,23 @@ typedef struct {
      * is idempotent.  That false positive is what sent a bench investigation
      * after a driver bug that was never there.
      *
+     * The sensor OUTPUT registers are the same trap and were missed at first.
+     * On a quiet platform a gyro axis sits near zero, so its HIGH byte reads
+     * 0x00 through every probing pass and is classified static -- then the
+     * board rocks between the two init()s, the byte flips, and the idempotency
+     * check reports "1 register differ".  A 70-cell bench matrix produced four
+     * of these, at 0x23, 0x25 and 0x27: OUTX/Y/Z_H_G, every one a gyro output
+     * high byte and not a single control register among them.
+     *
+     * Ranges rather than single addresses, because an output window is
+     * contiguous.  Note this cannot reuse out_lo/out_hi: that field means "the
+     * window the driver bursts" for check_burst_framing(), and the ST driver
+     * bursts the FIFO at 0x78-0x7E, not the output registers.
+     *
      * Declared per part rather than inferred, because the whole point is that
      * inference cannot reach them.
      */
-    uint8_t     vol_reg[4];
+    struct { uint8_t lo, hi; } vol_reg[4];
     int         nvol_reg;
 } imt_regmap_t;
 
@@ -422,41 +435,54 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6B,
-      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
-      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
+      /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
+       * status saturates.  Neither can be caught by observation. */
+      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6C,
-      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
-      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
+      /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
+       * status saturates.  Neither can be caught by observation. */
+      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6D,
-      /* FIFO_STATUS1/2: DIFF_FIFO saturates, so it can read static. */
-      .vol_reg = { 0x3A, 0x3B }, .nvol_reg = 2,
+      /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
+       * status saturates.  Neither can be caught by observation. */
+      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
     /* TDK: FIFO ports and banked register files. */
     { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
+      /* TEMP_DATA1 (0x1D) .. TMST_FSYNCL (0x2C): temp, accel, gyro and the
+       * FSYNC timestamp, all sample-varying. DS rev 1.7 register map. */
+      .vol_reg = { {0x1D,0x2C} }, .nvol_reg = 1,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
       .whoami_reg = 0x75, .whoami_val = 0x47,
       .nrd_lo = 1, .nrd_hi = 0 },
         /* icm20948 WHO_AM_I is bank-0 register 0x00, and 0 is this field's
      * "no identity register" sentinel, so it uses the probe() fallback. */
     { .driver = "icm20948",   .lo = 0x00, .hi = 0x7F,
+      /* Bank 0 ACCEL_XOUT_H (0x2D) .. TEMP_OUT_L (0x3A); EXT_SLV_SENS_DATA
+       * starts at 0x3B. */
+      .vol_reg = { {0x2D,0x3A} }, .nvol_reg = 1,
       .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
       .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
+      /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
+      .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
       .whoami_reg = 0x75, .whoami_val = 0x71,
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
+      /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
+      .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
       .whoami_reg = 0x75, .whoami_val = 0x73,
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     /*
@@ -515,9 +541,11 @@ static const imt_regmap_t imt_regmaps[] = {
     /* lis3mdl is the one part with a real auto-increment bit, so it is the one
      * where the framing check has something to catch: OUT_X_L..OUT_Z_H. */
     { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+      .vol_reg = { {0x28,0x2D} }, .nvol_reg = 1,   /* OUT_X_L..OUT_Z_H */
       .whoami_reg = 0x0F, .whoami_val = 0x3D,
       .out_lo = 0x28, .out_hi = 0x2D },
     { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+      .vol_reg = { {0x68,0x6D} }, .nvol_reg = 1,   /* OUTX_L..OUTZ_H */
       .whoami_reg = 0x4F, .whoami_val = 0x40 },
     /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
      * so a sweep through them would consume the sample the next check is
@@ -631,7 +659,7 @@ bool imt_regmap_known_volatile(const char *driver, uint8_t reg)
     const imt_regmap_t *m = regmap_for(driver);
     if (!m) return false;
     for (int i = 0; i < m->nvol_reg; i++)
-        if (m->vol_reg[i] == reg) return true;
+        if (reg >= m->vol_reg[i].lo && reg <= m->vol_reg[i].hi) return true;
     return false;
 }
 
@@ -703,8 +731,8 @@ static int reg_volatile_scan(const imud_bus_t *bus, const imt_regmap_t *m,
     /* Known-volatile first: a saturated counter reads identical on every pass
      * and the loop below would call it static. */
     for (int i = 0; i < m->nvol_reg; i++)
-        if (m->vol_reg[i] >= m->lo && m->vol_reg[i] <= m->hi)
-            vol[m->vol_reg[i]] = true;
+        for (int r = m->vol_reg[i].lo; r <= (int)m->vol_reg[i].hi; r++)
+            if (r >= m->lo && r <= (int)m->hi) vol[r] = true;
 
     for (int pass = 0; pass < IMT_VOLATILE_PASSES; pass++) {
         if (pass) sleep_s(0.03);

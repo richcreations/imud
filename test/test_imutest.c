@@ -601,20 +601,21 @@ static void test_bringup_good(void)
     EXPECT(r->imu_experimental == false, "ism330dhcx not flagged experimental");
     EXPECT(r->have_mag, "mag present");
     /* Nothing moves in a plain register file, so the observational scan finds
-     * nothing.  The two that ARE excluded are declared rather than observed --
-     * FIFO_STATUS1/2, whose DIFF_FIFO saturates on real silicon and therefore
-     * reads identical on every pass.  Asserting the exact count still catches
-     * a scan that starts flagging registers spuriously. */
+     * nothing.  The 16 that ARE excluded are declared rather than observed:
+     * the output window 0x20-0x2D (14) and FIFO_STATUS1/2 (2).  Neither can be
+     * caught by observation -- outputs read static on a quiet platform, and
+     * DIFF_FIFO saturates.  Asserting the exact count still catches a scan
+     * that starts flagging registers spuriously. */
     EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x3A) &&
            imt_regmap_known_volatile("ism330dhcx", 0x3B),
            "the FIFO status pair is declared volatile");
-    EXPECT(r->raw.n_volatile_imu == 2,
-           "static mock adds nothing beyond the two declared registers");
-    /* 69 documented, readable registers, not the 128 of a blind 0x00-0x7F
-     * walk: DS13012 Table 19 marks about 60 of that span RESERVED, and the
-     * sweep no longer touches them. */
-    EXPECT(r->raw.n_scanned_imu > 60, "the documented range was compared");
-    EXPECT(r->raw.n_scanned_imu < 80, "and the reserved span was not");
+    EXPECT(r->raw.n_volatile_imu == 16,
+           "static mock adds nothing beyond the 16 declared registers");
+    /* 69 documented, readable registers (DS13012 Table 19 marks about 60 of
+     * the 0x00-0x7F span RESERVED and the sweep does not touch them), less the
+     * 16 declared volatile, leaves 53 actually compared. */
+    EXPECT(r->raw.n_scanned_imu > 45, "the documented range was compared");
+    EXPECT(r->raw.n_scanned_imu < 70, "and the reserved span was not");
     /*
      * The ST FIFO port is seven registers wide (0x78 tag, then X/Y/Z low/high
      * through 0x7E) and a single-byte read of any of them pops a word.  The
@@ -767,8 +768,21 @@ static void test_volatile_registers_filtered(void)
 
     imt_report_t *r = run(&cfg, &o);
 
-    EXPECT(r->raw.n_volatile_imu >= 3, "the live registers were detected");
-    EXPECT(r->raw.n_volatile_imu < 16, "the scan did not over-match");
+    /*
+     * 16 are declared up front (output window 0x20-0x2D plus FIFO_STATUS1/2).
+     * Of the three made live here, 0x22 and 0x23 fall INSIDE that window and
+     * were already excluded; 0x1E STATUS_REG is outside it and has to be
+     * caught by observation. So exactly 17 -- which asserts both that the
+     * scan still detects a live register the declaration does not cover, and
+     * that it does not over-match everything else.
+     */
+    EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x22) &&
+           imt_regmap_known_volatile("ism330dhcx", 0x23),
+           "the live output bytes are covered by the declaration");
+    EXPECT(!imt_regmap_known_volatile("ism330dhcx", 0x1E),
+           "STATUS_REG is not declared, so observation must find it");
+    EXPECT(r->raw.n_volatile_imu == 17,
+           "16 declared + STATUS_REG found by observation, and nothing else");
     for (int i = 0; i < r->raw.n_regdiff_imu; i++) {
         uint8_t g = r->raw.regdiff_imu[i].reg;
         EXPECT(g != 0x1E && g != 0x50 && g != 0x51,
@@ -890,10 +904,10 @@ static void test_fifo_port_window_not_swept(void)
         EXPECT(r->raw.regdiff_imu[i].reg < 0x78 ||
                r->raw.regdiff_imu[i].reg > 0x7E,
                "a FIFO-port register reached the diff");
-    /* Two, not zero: the declared FIFO status pair. Neither is in the port
-     * window this test is about (0x78-0x7E), so the claim it makes is
-     * unchanged -- nothing there was read or flagged. */
-    EXPECT(r->raw.n_volatile_imu == 2,
+    /* 16, not zero: the declared output window plus the FIFO status pair. None
+     * of them is in the port window this test is about (0x78-0x7E), so the
+     * claim it makes is unchanged -- nothing there was read or flagged. */
+    EXPECT(r->raw.n_volatile_imu == 16,
            "nothing in the port window looked volatile, so nothing read it");
     EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
            "the control-register diff still ran");
@@ -2629,16 +2643,59 @@ static void test_saturating_counters_are_declared_volatile(void)
     begin("test_saturating_counters_are_declared_volatile");
     int fb = g_fail;
 
-    char msg[96];
-    /* Every ST part batching through a FIFO has the same pair. */
+    char msg[112];
+
+    /* ST: FIFO status (saturating counter) AND the output window. A 70-cell
+     * bench matrix produced four idempotency WARNs, at 0x23, 0x25 and 0x27 --
+     * OUTX/Y/Z_H_G, every one a gyro output high byte, none a control
+     * register. On a quiet platform those sit at 0x00 through every probing
+     * pass, then a dock rock between the two init()s flips one. */
     static const char *st[] = { "ism330dhcx", "lsm6dso", "lsm6dsox" };
     for (unsigned i = 0; i < sizeof st / sizeof st[0]; i++) {
-        snprintf(msg, sizeof msg, "%s declares FIFO_STATUS1 volatile", st[i]);
-        EXPECT(imt_regmap_known_volatile(st[i], 0x3A), msg);
-        snprintf(msg, sizeof msg, "%s declares FIFO_STATUS2 volatile", st[i]);
-        EXPECT(imt_regmap_known_volatile(st[i], 0x3B), msg);
-        /* Not a blanket exclusion: control registers must still be compared,
-         * or the idempotency check stops checking anything. */
+        snprintf(msg, sizeof msg, "%s declares FIFO_STATUS1/2 volatile", st[i]);
+        EXPECT(imt_regmap_known_volatile(st[i], 0x3A) &&
+               imt_regmap_known_volatile(st[i], 0x3B), msg);
+        snprintf(msg, sizeof msg, "%s declares the gyro output bytes volatile", st[i]);
+        EXPECT(imt_regmap_known_volatile(st[i], 0x23) &&
+               imt_regmap_known_volatile(st[i], 0x25) &&
+               imt_regmap_known_volatile(st[i], 0x27), msg);
+        snprintf(msg, sizeof msg, "%s covers the whole output window 0x20-0x2D", st[i]);
+        EXPECT(imt_regmap_known_volatile(st[i], 0x20) &&
+               imt_regmap_known_volatile(st[i], 0x2D), msg);
+    }
+
+    /*
+     * The same class on every other part, each window taken from that part's
+     * datasheet rather than assumed. A window that is too WIDE silently
+     * suppresses real idempotency findings, which is worse than a false WARN,
+     * so the upper and lower bounds are both pinned.
+     */
+    static const struct { const char *drv; uint8_t lo, hi, below, above; } win[] = {
+        { "icm42688p", 0x1D, 0x2C, 0x1C, 0x2D },  /* TEMP_DATA1..TMST_FSYNCL   */
+        { "icm20948",  0x2D, 0x3A, 0x2C, 0x3B },  /* ACCEL_XOUT_H..TEMP_OUT_L  */
+        { "mpu9250",   0x3B, 0x48, 0x3A, 0x49 },  /* ACCEL_XOUT_H..GYRO_ZOUT_L */
+        { "mpu9255",   0x3B, 0x48, 0x3A, 0x49 },
+        { "lis3mdl",   0x28, 0x2D, 0x27, 0x2E },  /* OUT_X_L..OUT_Z_H          */
+        { "lis2mdl",   0x68, 0x6D, 0x67, 0x6E },  /* OUTX_L..OUTZ_H            */
+    };
+    for (unsigned i = 0; i < sizeof win / sizeof win[0]; i++) {
+        snprintf(msg, sizeof msg, "%s declares 0x%02X volatile",
+                 win[i].drv, win[i].lo);
+        EXPECT(imt_regmap_known_volatile(win[i].drv, win[i].lo), msg);
+        snprintf(msg, sizeof msg, "%s declares 0x%02X volatile",
+                 win[i].drv, win[i].hi);
+        EXPECT(imt_regmap_known_volatile(win[i].drv, win[i].hi), msg);
+        snprintf(msg, sizeof msg, "%s does not over-reach below 0x%02X",
+                 win[i].drv, win[i].lo);
+        EXPECT(!imt_regmap_known_volatile(win[i].drv, win[i].below), msg);
+        snprintf(msg, sizeof msg, "%s does not over-reach above 0x%02X",
+                 win[i].drv, win[i].hi);
+        EXPECT(!imt_regmap_known_volatile(win[i].drv, win[i].above), msg);
+    }
+
+    /* Not a blanket exclusion: control registers must still be compared, or
+     * the idempotency check stops checking anything at all. */
+    for (unsigned i = 0; i < sizeof st / sizeof st[0]; i++) {
         snprintf(msg, sizeof msg, "%s still compares CTRL1_XL", st[i]);
         EXPECT(!imt_regmap_known_volatile(st[i], 0x10), msg);
         snprintf(msg, sizeof msg, "%s still compares WHO_AM_I", st[i]);
