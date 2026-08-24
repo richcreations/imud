@@ -576,10 +576,25 @@ const mag_ops_t mmc5983ma_ops = {
      *     production") is real and is why this is the ceiling rather than a
      *     target.  spi_speed_hz can still pin it lower per install.
      *
-     * Note what this does NOT fix: forcing a non-default spi_speed_hz on the
-     * IMU starves this part regardless of ITS clock.  Measured with the IMU
-     * at 2 MHz: 0.3 samples/s with the mag at 2 MHz and 0.1 with it at 10.
-     * That is a shared-controller problem, not a magnetometer one.
+     * SEPARATE, UNEXPLAINED, and not fixed by any of the above: on this RP1
+     * controller a non-default spi_speed_hz below about 2.5 MHz on EITHER
+     * device stops this part delivering.  Two independent thresholds, measured
+     * with the IMU at 208 Hz and this part asking for 100 Hz:
+     *
+     *     imu 10  MHz  mag 10 MHz -> 102     imu 10  MHz  mag 1  MHz -> 0.0
+     *     imu 10  MHz  mag  2 MHz -> 102.8   imu 2.5 MHz  mag 1  MHz -> 0.0
+     *     imu 2.5 MHz  mag 10 MHz ->  99.2   imu 2   MHz  mag 2  MHz -> 0.3
+     *     imu 1   MHz  mag 10 MHz ->   0.0   imu 2   MHz  mag 10 MHz -> 0.1
+     *
+     * So this part needs >= 2 MHz for itself, AND the IMU needs >= 2.5 MHz for
+     * this part to work at all.  The second half has no mechanism yet.  It is
+     * NOT bus contention -- it reproduces with the IMU at 13 Hz, three bus
+     * transactions per second -- and it is not transfer length: bounding the
+     * IMU's FIFO burst by time changed nothing.  Three theories (contention,
+     * burst monopoly, clock mismatch) were each tested and each refuted.
+     *
+     * The default, spi_speed_hz = 0 (each part's declared maximum), is
+     * unaffected.  Recorded as measured behaviour, not explained.
      */
     .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },

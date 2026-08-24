@@ -62,12 +62,39 @@
 #define WHO_AM_I_VALUE  0x6B
 
 /*
- * FIFO words per transaction.  32 words is 224 bytes: at 10 MHz that clocks in
- * ~180 us against a ~42 us per-transaction overhead, so a longer burst buys
- * little, and it bounds the RP1 chip-select exposure bus_io.h documents for
- * multi-byte reads.
+ * FIFO words per transaction, bounded by TIME rather than by count.
+ *
+ * A single SPI transfer holds the shared controller for its whole duration, so
+ * a burst sized against one clock becomes a monopoly at a slower one.  32
+ * words is 224 bytes: ~180 us at 10 MHz, but 1.8 ms at 1 MHz -- and the
+ * magnetometer shares this controller.
+ *
+ * This is a BOUND, not a fix for anything observed.  It was written believing
+ * it would cure a magnetometer starvation seen below 2.5 MHz; it did not --
+ * the mag still delivered 0.0 samples/s at 1.0 and 1.5 MHz with the burst
+ * time-bounded.  That fault is unrelated (it reproduces with the IMU at
+ * 13 Hz, three bus transactions a second) and is recorded where it belongs, in
+ * mmc5983ma.c.  What this does buy is that a burst sized against one clock
+ * cannot silently become a controller monopoly at a slower one.
+ *
+ * So the cap is whatever fits in ST_FIFO_BURST_US, floored at one word.  The
+ * 32-word ceiling still applies: past ~180 us a longer burst buys little
+ * against the ~42 us per-transaction overhead, and it bounds the RP1
+ * chip-select exposure bus_io.h documents for multi-byte reads.
  */
 #define ST_FIFO_BURST_WORDS 32
+#define ST_FIFO_BURST_US    400
+
+static int st_fifo_burst_words(uint32_t spi_hz)
+{
+    if (spi_hz == 0) return ST_FIFO_BURST_WORDS;      /* unknown: assume fast */
+    /* bytes that fit in the budget = hz * us / 1e6 / 8 */
+    uint64_t bytes = (uint64_t)spi_hz * ST_FIFO_BURST_US / 8000000u;
+    int words = (int)(bytes / 7u);
+    if (words < 1)                   words = 1;
+    if (words > ST_FIFO_BURST_WORDS) words = ST_FIFO_BURST_WORDS;
+    return words;
+}
 
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
@@ -437,6 +464,7 @@ static int ism_read(const imud_bus_t *bus,
     uint8_t  set_tag    = 0;   /* tag byte of the word that completes a set */
     st_fifo_ts_t fts;
     st_fifo_ts_begin(&fts);
+    const int burst_words = st_fifo_burst_words(bus->spi_hz);
 
     /*
      * Read many FIFO words per transaction, not one.
@@ -462,7 +490,7 @@ static int ism_read(const imud_bus_t *bus,
     for (int i = 0; i < n_words && produced < max; ) {
       uint8_t block[ST_FIFO_BURST_WORDS * 7];
       int want = n_words - i;
-      if (want > ST_FIFO_BURST_WORDS) want = ST_FIFO_BURST_WORDS;
+      if (want > burst_words) want = burst_words;
       /* i < n_words holds here, so want >= 1 and the read is >= 7 bytes.
        * Stated rather than left to the arithmetic: the static analyser
        * otherwise explores a one-byte read and reports the parse below taking
