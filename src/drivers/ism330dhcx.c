@@ -61,6 +61,14 @@
 
 #define WHO_AM_I_VALUE  0x6B
 
+/*
+ * FIFO words per transaction.  32 words is 224 bytes: at 10 MHz that clocks in
+ * ~180 us against a ~42 us per-transaction overhead, so a longer burst buys
+ * little, and it bounds the RP1 chip-select exposure bus_io.h documents for
+ * multi-byte reads.
+ */
+#define ST_FIFO_BURST_WORDS 32
+
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
 static struct {
@@ -430,9 +438,46 @@ static int ism_read(const imud_bus_t *bus,
     st_fifo_ts_t fts;
     st_fifo_ts_begin(&fts);
 
-    for (int i = 0; i < n_words && produced < max; i++) {
-        uint8_t word[7];
-        if (bus_burst_read(bus, REG_FIFO_DATA_OUT_TAG, word, 7) < 0) return -1;
+    /*
+     * Read many FIFO words per transaction, not one.
+     *
+     * This was one bus_burst_read() of 7 bytes per word, so a 37-set drain was
+     * 74 ioctls.  Measured on a Pi 5 at 6664 Hz: ~42 us per transaction, 73
+     * words per drain, 3.1 ms of transfer per drain at 216 drains/s -- the
+     * reader spent about 0.67 s of every second BLOCKED in ioctl while using
+     * 17 % of one core.  Not compute-bound, latency-bound: which is why extra
+     * cores did not help, and why raising the SPI clock past 4 MHz stopped
+     * helping.  What remains once clocking is free is per-transaction cost.
+     *
+     * The consequence was not merely slow.  The FIFO never fell below the
+     * watermark, so a LEVEL interrupt never de-asserted, so no rising edge
+     * arrived and the reader ran on its timer at every rate above 3332 Hz --
+     * drains=0/N on a line that was working perfectly.
+     *
+     * DS13012 6.5.7 documents the 7-byte word (tag + 6 data) but does NOT say
+     * that a read past 7Eh advances to the next word.  Every tag is checked
+     * below, and imu.seq.gapless is the guard: a part that did not advance
+     * would repeat one word, and accel/gyro must alternate.
+     */
+    for (int i = 0; i < n_words && produced < max; ) {
+      uint8_t block[ST_FIFO_BURST_WORDS * 7];
+      int want = n_words - i;
+      if (want > ST_FIFO_BURST_WORDS) want = ST_FIFO_BURST_WORDS;
+      /* i < n_words holds here, so want >= 1 and the read is >= 7 bytes.
+       * Stated rather than left to the arithmetic: the static analyser
+       * otherwise explores a one-byte read and reports the parse below taking
+       * block[1] as a garbage value.  Same shape as the guards in mpu925x.c
+       * and icm20948.c, and for the same reason -- a suppression would hide
+       * the finding if the path ever became reachable.  The guard is on the
+       * BYTE count, not the word count: bounding `want` alone left the
+       * analyser unable to propagate through the multiplication. */
+      int nbytes = want * 7;
+      if (nbytes < 7) break;
+      if (bus_burst_read(bus, REG_FIFO_DATA_OUT_TAG,
+                         block, (uint16_t)nbytes) < 0) return -1;
+
+      for (int w = 0; w < want && produced < max; w++, i++) {
+        const uint8_t *word = block + w * 7;
 
         uint8_t tag   = (word[0] >> 3) & 0x1F;
         int16_t raw_x = reg_s16le(&word[1]);
@@ -497,6 +542,7 @@ static int ism_read(const imud_bus_t *bus,
             have_accel = have_gyro = 0;
             st_fifo_ts_note_set(&fts, set_tag);
         }
+      }
     }
 
     /* ── 3. Timestamp the burst ─────────────────────────────────────────── */
