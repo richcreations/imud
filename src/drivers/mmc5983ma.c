@@ -557,14 +557,32 @@ const mag_ops_t mmc5983ma_ops = {
      * WRITES while leaving most reads intact, which is why it presented as
      * working silicon with odd habits rather than as a broken bus.
      *
-     * 2 MHz rather than the 10 MHz datasheet maximum: that figure carries the
-     * footnote "based on characterization results, not tested in production"
-     * (Rev A p.4), and SparkFun's library for this exact breakout uses
-     * SPISettings(2000000, MSBFIRST, SPI_MODE0).  Mode 0 measured identical at
-     * 1, 2 and 10 MHz here, so this is headroom, not part of the fix.
+     * 10 MHz, the datasheet maximum (Rev A p.4, fc(SCK)).
+     *
+     * This was 2 MHz, for three stated reasons.  Two no longer hold and the
+     * third never applied here:
+     *
+     *   - "measured identical at 1, 2 and 10 MHz" was measured BEFORE the
+     *     bench wiring fault was found, on a bus corrupting 2-12 % of reads.
+     *     Re-measured on repaired wiring: 102.5 Hz delivered at 10 MHz against
+     *     102.8 at 2 MHz -- identical, and now on evidence worth having.
+     *   - SparkFun's library for this breakout uses 2 MHz, but it is an
+     *     Arduino library driving this part ALONE, at low rates, with no FIFO
+     *     and no watermark.  It is not evidence about a daemon sharing a
+     *     controller with an IMU batching 64 sample-sets at up to 6664 Hz.
+     *     Here the mag's share of bus time is the thing worth minimising, and
+     *     10 MHz costs a fifth of what 2 MHz did.
+     *   - The datasheet footnote ("characterization results, not tested in
+     *     production") is real and is why this is the ceiling rather than a
+     *     target.  spi_speed_hz can still pin it lower per install.
+     *
+     * Note what this does NOT fix: forcing a non-default spi_speed_hz on the
+     * IMU starves this part regardless of ITS clock.  Measured with the IMU
+     * at 2 MHz: 0.3 samples/s with the mag at 2 MHz and 0.1 with it at 10.
+     * That is a shared-controller problem, not a magnetometer one.
      */
     .bus_caps         = { .spi_capable = true, .spi_mode = 0,
-                          .spi_max_hz = 2000000, .spi_inc_mask = 0 },
+                          .spi_max_hz = 10000000, .spi_inc_mask = 0 },
     .probe            = mmc_probe,
     .reset            = mmc_reset,
     .init             = mmc_init,

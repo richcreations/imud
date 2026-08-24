@@ -409,7 +409,16 @@ static int mpu_read(const imud_bus_t *bus,
     if (n_samples > max) n_samples = max;
 
     /* ── 2. Burst read from the FIFO port ────────────────────────────────── */
-    uint8_t raw[128 * FIFO_SAMPLE_BYTES];   /* caller's max is 128 samples */
+    enum { MPU_MAX_SETS = 128 };
+    uint8_t raw[MPU_MAX_SETS * FIFO_SAMPLE_BYTES];
+    /*
+     * Clamp to what THIS buffer holds, not to what the caller offered.  The
+     * caller's limit rose from 128 to IMU_DRAIN_MAX so one read could empty
+     * the ST FIFO; sizing a driver's private buffer to the caller's old cap
+     * and trusting it would have written 3072 bytes into 1536 here.  A driver
+     * bounds its own storage.
+     */
+    if (n_samples > MPU_MAX_SETS) n_samples = MPU_MAX_SETS;
     int to_read = n_samples * FIFO_SAMPLE_BYTES;
     /*
      * n_samples is at least 1 here, so to_read is at least one whole

@@ -298,6 +298,23 @@ long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples);
  * configured, so no expected arrival to be late against.  Where a watermark
  * IS configured the wait comes from imu_wm_fallback_ms() instead.
  */
+/*
+ * Samples one drain may take.
+ *
+ * This must be able to empty the part's FIFO in ONE read, and 128 could not:
+ * the ST FIFO holds 256 sample-sets, so a full FIFO needed two reads and the
+ * level watermark stayed asserted between them.  A level line that is already
+ * high produces no RISING edge, so wait_gpio_edge() saw nothing and every wake
+ * became a timeout -- which is a runaway, because the timer then drains less
+ * often than the watermark would have.
+ *
+ * Measured at 6664 Hz with wm = 64: drains=0/1341 (not one edge), ovf=1341
+ * (every drain overflowed), n pinned at 128.0, and 6050.9 of 6664 samples
+ * delivered -- 9.2 % lost.  At 3332 Hz the same configuration reported
+ * 1611/7, almost all edges, because there a drain did empty the FIFO.
+ */
+#define IMU_DRAIN_MAX 256
+
 #define IMU_DRAIN_WAIT_MS 10
 
 

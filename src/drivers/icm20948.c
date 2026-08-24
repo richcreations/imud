@@ -279,7 +279,16 @@ static int icm_read(const imud_bus_t *bus,
     if (n_samples > max) n_samples = max;
 
     /* ── 2. Burst read from FIFO_R_W ─────────────────────────────────────── */
-    uint8_t raw[128 * 12];   /* max caller buf is 128 samples = 1536 bytes */
+    enum { ICM_MAX_SETS = 128 };
+    uint8_t raw[ICM_MAX_SETS * 12];
+    /*
+     * Clamp to what THIS buffer holds, not to what the caller offered.  The
+     * caller's limit rose from 128 to IMU_DRAIN_MAX so one read could empty
+     * the ST FIFO; sizing a driver's private buffer to the caller's old cap
+     * and trusting it would have written 3072 bytes into 1536 here.  A driver
+     * bounds its own storage.
+     */
+    if (n_samples > ICM_MAX_SETS) n_samples = ICM_MAX_SETS;
     int to_read = n_samples * 12;
     /*
      * n_samples is at least 1 here, so to_read is at least one whole

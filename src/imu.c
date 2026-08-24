@@ -322,7 +322,7 @@ static void cfg_snapshot(imu_ctx_t *ctx, imud_config_t *out)
 void *ism_reader_thread(void *arg)
 {
     imu_ctx_t *ctx = arg;
-    imu_sample_t buf[128];
+    imu_sample_t buf[IMU_DRAIN_MAX];
     int n;
     int consec_errors = 0;
     int reset_failures = 0;
@@ -385,7 +385,7 @@ void *ism_reader_thread(void *arg)
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
 
-        int rc = ctx->imu_ops->read(&ctx->imu_bus, buf, 128, &n);
+        int rc = ctx->imu_ops->read(&ctx->imu_bus, buf, IMU_DRAIN_MAX, &n);
 
         clock_gettime(CLOCK_REALTIME, &t_after);
         clock_gettime(CLOCK_TAI,      &t_tai);
