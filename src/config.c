@@ -230,6 +230,8 @@ void config_defaults(imud_config_t *cfg)
     cfg->imu_accel_g  = 8;
     cfg->imu_gyro_dps = 2000;
     cfg->imu_fifo_wm  = 64;
+    cfg->imu_int_grace = 2;
+    cfg->imu_poll_ms   = 0;   /* 0 = derive from odr and fifo_wm */
 
     /* [mag] */
     snprintf(cfg->mag_driver, sizeof(cfg->mag_driver), "mmc5983ma");
@@ -239,6 +241,8 @@ void config_defaults(imud_config_t *cfg)
     cfg->mag_addr         = 0x30;
     cfg->mag_int_gpio     = 27;
     cfg->mag_odr_mhz      = 100000;
+    cfg->mag_int_grace    = 2;
+    cfg->mag_poll_ms      = 0;   /* 0 = derive from odr */
     cfg->mag_set_period_s = 5.0f;
 
     /* [fusion] */
@@ -1011,6 +1015,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "accel_g")  == 0) NEED_INT(cfg->imu_accel_g);
         else if (strcmp(key, "gyro_dps") == 0) NEED_INT(cfg->imu_gyro_dps);
         else if (strcmp(key, "fifo_wm")  == 0) NEED_INT(cfg->imu_fifo_wm);
+        else if (strcmp(key, "int_grace") == 0) NEED_POS_INT(cfg->imu_int_grace);
+        else if (strcmp(key, "poll_ms")  == 0) NEED_INT(cfg->imu_poll_ms);
         else WARN_UNKNOWN();
         break;
 
@@ -1021,6 +1027,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "spi_speed_hz") == 0) NEED_INT(cfg->mag_spi_speed_hz);
         else if (strcmp(key, "i2c_addr")     == 0) NEED_I2C_ADDR(cfg->mag_addr);
         else if (strcmp(key, "int_gpio")     == 0) NEED_GPIO(cfg->mag_int_gpio);
+        else if (strcmp(key, "int_grace")    == 0) NEED_POS_INT(cfg->mag_int_grace);
+        else if (strcmp(key, "poll_ms")      == 0) NEED_INT(cfg->mag_poll_ms);
         else if (strcmp(key, "odr_hz")       == 0) NEED_POS_MHZ(cfg->mag_odr_mhz);
         else if (strcmp(key, "set_period_s") == 0) NEED_FLT(cfg->mag_set_period_s);
         else WARN_UNKNOWN();

@@ -302,14 +302,51 @@ int snap_odr_up(const int supported[], int requested)
     return last;   /* above the top of the table — clamp to the highest */
 }
 
-long imu_int_fallback_ms(int odr_mhz)
+/*
+ * When should an interrupt-driven reader give up waiting and read anyway?
+ *
+ * Only when the interrupt is LATE -- never merely because it has not happened
+ * yet. So the wait is the expected arrival plus a grace, and BOTH are measured
+ * in samples, because a grace in milliseconds means something different at
+ * every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one
+ * at 13 Hz.
+ *
+ *     wait = (depth + grace) sample periods
+ *
+ * `depth` is what the line is waiting FOR: the IMU's fifo_wm sample-sets for a
+ * FIFO watermark, or 1 for a per-sample data-ready. These parts' magnetometers
+ * have no FIFO, so depth is 1 there.
+ *
+ * This matters more than a tidier constant. A LEVEL watermark asserts once the
+ * FIFO holds fifo_wm sets and deasserts as soon as a drain empties it, so a
+ * fallback shorter than the watermark period drains first, holds the FIFO
+ * permanently below the threshold, and the line never asserts AT ALL. The
+ * interrupt is not merely unused -- it is suppressed by the thing meant to
+ * back it up.
+ *
+ * Measured: with the old flat 10 ms and the default wm = 64, the ISM330DHCX's
+ * watermark was reachable at exactly ONE of its ten rates (6664 Hz, where it
+ * lands at 9.6 ms). At the other nine the timer always won, and the daemon
+ * reported drains=0/1261 e/t on a line that was working perfectly. The
+ * magnetometer had the mirror-image bug: a half-sample-period fallback that
+ * expired BEFORE its own data-ready could arrive.
+ *
+ * The cost is that a genuinely dead line now stalls for depth + grace samples,
+ * and `depth` is whatever batching the operator asked for. That is inherent --
+ * configuring a 5-second batch asks for 5-second latency -- and noticing a
+ * dead line is the health path's job, not the drain timer's.
+ */
+long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples)
 {
-    if (odr_mhz <= 0) return 20;             /* unknown rate: the old constant */
-    /* Half a sample period.  500 ms/Hz becomes 500000 ms/milli-Hz. */
-    long ms = (long)(500000.0 / (double)odr_mhz + 0.5);
-    if (ms < 2)   ms = 2;
-    if (ms > 250) ms = 250;
-    return ms;
+    if (depth < 1)         depth = 1;
+    if (grace_samples < 1) grace_samples = 1;
+    if (odr_mhz <= 0)      return 20;        /* unknown rate: the old constant */
+
+    /* odr is milli-Hz, so one sample period in ms is 1e6 / odr_mhz. */
+    double ms = 1000000.0 * (double)(depth + grace_samples) / (double)odr_mhz;
+    if (ms > 600000.0) ms = 600000.0;        /* guard the arithmetic, 10 min */
+    long out = (long)(ms + 0.5);
+    return out < 1 ? 1 : out;
 }
 
 int odr_actual_imu(const imu_ops_t *ops, int req_mhz)

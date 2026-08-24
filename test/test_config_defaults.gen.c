@@ -47,6 +47,8 @@ CK_INT (c.imu_odr_mhz,      833000,       "[imu] odr_hz");
 CK_INT (c.imu_accel_g,      8,            "[imu] accel_g");
 CK_INT (c.imu_gyro_dps,     2000,         "[imu] gyro_dps");
 CK_INT (c.imu_fifo_wm,      64,           "[imu] fifo_wm");
+CK_INT (c.imu_int_grace,    2,            "[imu] int_grace");
+CK_INT (c.imu_poll_ms,      0,            "[imu] poll_ms");
 
 /* [mag] */
 CK_STR (c.mag_driver,       "mmc5983ma", "[mag] driver");
@@ -55,6 +57,8 @@ CK_STR (c.mag_spi_dev,      "",          "[mag] spi_dev");
 CK_INT (c.mag_spi_speed_hz, 0,           "[mag] spi_speed_hz");
 CK_INT (c.mag_addr,         0x30,        "[mag] i2c_addr");
 CK_INT (c.mag_int_gpio,     27,          "[mag] int_gpio");
+CK_INT (c.mag_int_grace,    2,           "[mag] int_grace");
+CK_INT (c.mag_poll_ms,      0,           "[mag] poll_ms");
 CK_INT (c.mag_odr_mhz,      100000,      "[mag] odr_hz");
 CK_FLT (c.mag_set_period_s, 5.0,         "[mag] set_period_s");
 

@@ -55,6 +55,19 @@ typedef struct {
     int   imu_accel_g;          /* 2 | 4 | 8 | 16 */
     int   imu_gyro_dps;         /* 125 | 250 | 500 | 1000 | 2000 | 4000 */
     int   imu_fifo_wm;          /* watermark in sample-sets */
+    /*
+     * Interrupt lateness, in SAMPLES, not milliseconds: a grace in ms means a
+     * different thing at every rate (2 ms is 13 samples at 6664 Hz and 0.03 at
+     * 13 Hz).  The reader waits fifo_wm + int_grace sample periods, so the
+     * fallback fires only when the line is genuinely late.  Used ONLY when
+     * int_gpio > 0.
+     */
+    int   imu_int_grace;        /* extra sample periods before falling back */
+    /*
+     * Polling cadence for an install with NO interrupt line, where there is no
+     * expected arrival to be late against.  Used ONLY when int_gpio == 0.
+     */
+    int   imu_poll_ms;
 
     /* [mag]  [restart] */
     char  mag_driver[32];       /* "mmc5983ma" */
@@ -63,6 +76,8 @@ typedef struct {
     int   mag_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
     int   mag_addr;             /* 0x30 fixed */
     int   mag_int_gpio;         /* BCM GPIO for measurement-done interrupt */
+    int   mag_int_grace;        /* extra sample periods before falling back */
+    int   mag_poll_ms;          /* poll cadence when int_gpio == 0 */
     int   mag_odr_mhz;          /* 100000 (milli-Hz), > 0; as imu_odr_mhz */
     float mag_set_period_s;     /* degauss interval seconds; 0 = disable */
 

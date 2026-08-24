@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 
@@ -60,28 +61,53 @@ static void test_int_fallback_ms(void)
 
     /* Half a period: the fallback read re-arms the line, so waiting
      * longer yields fewer edges rather than later ones. */
-    EXPECT(imu_int_fallback_ms(100000) == 5, "100 Hz -> 5 ms (half a period)");
-    EXPECT(imu_int_fallback_ms(20000)  == 25, "20 Hz -> 25 ms");
-    EXPECT(imu_int_fallback_ms(1000000) == 2, "1000 Hz clamps to the floor");
+    /*
+     * The wait is (depth + grace) SAMPLE PERIODS, not a time. A grace in
+     * milliseconds means a different thing at every rate -- 2 ms is thirteen
+     * samples at 6664 Hz and three hundredths of one at 13 Hz -- so the
+     * fallback fires when the line is late by a fixed number of SAMPLES.
+     *
+     * depth is what the line waits for: fifo_wm sample-sets for a FIFO
+     * watermark, 1 for a per-sample data-ready.
+     */
+    /* 100 Hz, per-sample DRDY, 2 samples of grace: 3 periods = 30 ms. */
+    EXPECT(imu_int_fallback_ms(100000, 1, 2) == 30, "100 Hz, depth 1, grace 2");
+    /* The old code returned HALF a period here, expiring before the very edge
+     * it was waiting for could arrive. */
+    EXPECT(imu_int_fallback_ms(100000, 1, 2) > 10, "longer than one period");
+    /* 833 Hz with the default wm=64: 66 periods = 79 ms, against the flat
+     * 10 ms that suppressed the watermark entirely. */
+    EXPECT(imu_int_fallback_ms(833000, 64, 2) == 79, "833 Hz, wm 64, grace 2");
+    EXPECT(imu_int_fallback_ms(6664000, 64, 2) == 10, "6664 Hz, wm 64, grace 2");
+    EXPECT(imu_int_fallback_ms(20000, 1, 2) == 150, "20 Hz, depth 1, grace 2");
+    /* Degenerate inputs must not produce a zero or negative wait. */
+    EXPECT(imu_int_fallback_ms(0, 64, 2) == 20, "unknown rate falls back");
+    EXPECT(imu_int_fallback_ms(833000, 0, 2) > 0, "depth 0 is treated as 1");
+    EXPECT(imu_int_fallback_ms(833000, 64, 0) > 0, "grace 0 is treated as 1");
+    EXPECT(imu_int_fallback_ms(-1, 1, 1) == 20, "negative rate falls back");
 
-    /* Bounded: the fast end must not spin, the slow end must still notice. */
-    EXPECT(imu_int_fallback_ms(6664000) == 2, "6664 Hz clamps to the 2 ms floor");
-    EXPECT(imu_int_fallback_ms(1000) == 250, "1 Hz clamps to the 250 ms ceiling");
+    /* The fast end must not spin down to a zero wait. */
+    EXPECT(imu_int_fallback_ms(6664000, 1, 1) >= 1, "6664 Hz still waits >= 1 ms");
 
-    /* Monotonic: a faster rate never waits longer than a slower one. */
-    long prev = 1000;
+    /*
+     * Monotonic: a faster rate never waits longer than a slower one.  Seeded
+     * at LONG_MAX so the first entry is always accepted -- the old helper
+     * clamped at 250 ms, so a literal seed worked; unclamped, 1 Hz with one
+     * sample of depth and two of grace is 3000 ms.
+     */
+    long prev = LONG_MAX;
     static const int ladder[] = { 1, 10, 20, 50, 100, 200, 833, 1000, 6664 };
     int mono = 1;
     for (size_t i = 0; i < sizeof ladder / sizeof ladder[0]; i++) {
-        long v = imu_int_fallback_ms(ladder[i]);
+        long v = imu_int_fallback_ms(ladder[i] * 1000, 1, 2);
         if (v > prev) mono = 0;
         prev = v;
     }
     EXPECT(mono, "the interval never grows as the rate rises");
 
     /* An unknown rate falls back to the constant this replaced. */
-    EXPECT(imu_int_fallback_ms(0) == 20, "an unknown rate keeps the old 20 ms");
-    EXPECT(imu_int_fallback_ms(-5) == 20, "and so does a nonsense one");
+    EXPECT(imu_int_fallback_ms(0, 1, 2) == 20, "an unknown rate keeps the old 20 ms");
+    EXPECT(imu_int_fallback_ms(-5, 1, 2) == 20, "and so does a nonsense one");
 
     end(fb);
 }

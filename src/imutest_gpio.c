@@ -92,7 +92,11 @@ int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
      * point of this file linking src/imu.c: a number the tool picks for itself
      * is a number that can drift from what the daemon does.
      */
-    const long fallback_ms = imu_int_fallback_ms(odr_hz);
+    /* depth 1 and one sample of grace: this counter is measuring EDGES, not
+     * draining a batch, so it waits for a single conversion plus slack.  A
+     * caller with a level watermark (the IMU FIFO) passes no prime and is
+     * handled by `latched` below. */
+    const long fallback_ms = imu_int_fallback_ms(odr_hz, 1, 1);
     const int  latched     = (prime != NULL);
 
     while (now_ms() < t_end) {

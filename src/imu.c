@@ -332,21 +332,44 @@ void *ism_reader_thread(void *arg)
      * interval below and gates the one-shot log of what was measured. */
     bool tick_measured = false;
     imud_config_t cfg;
+    /*
+     * Wait sized to what the line is waiting FOR: fifo_wm sample-sets plus a
+     * grace, both in samples.  A flat 10 ms drained before the watermark could
+     * assert at nine of the ISM330DHCX's ten rates, which does not merely
+     * ignore the interrupt -- a LEVEL watermark deasserts when a drain empties
+     * the FIFO, so an early fallback holds it below the threshold and the line
+     * never asserts at all.  Measured as drains=0/1261 e/t on a working line.
+     *
+     * Recomputed after every cfg_snapshot() so a SIGHUP that changes fifo_wm,
+     * int_grace or poll_ms takes effect without a restart.
+     */
+    cfg_snapshot(ctx, &cfg);
+    long imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
+                                           cfg.imu_fifo_wm, cfg.imu_int_grace);
+    /*
+     * Interrupt-less installs poll.  That cadence must be adaptive too: a flat
+     * interval under-polls at high ODR -- the FIFO overflows and the effective
+     * rate drops below the configured one -- and burns reads at low ODR.  So
+     * it defaults to the same batch period the interrupt path waits for.
+     * poll_ms > 0 forces a fixed cadence for anyone who wants one; it is
+     * IGNORED entirely when an interrupt line exists.
+     */
+    long imu_poll_ms = cfg.imu_poll_ms > 0 ? cfg.imu_poll_ms : imu_wait_ms;
+
     while (!ctx->stop) {
         if (ctx->imu_line) {
-            int gr = wait_gpio_edge(ctx->imu_line, IMU_DRAIN_WAIT_MS);
+            int gr = wait_gpio_edge(ctx->imu_line, imu_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 LOG_E("[ism_reader] GPIO error: %s\n", strerror(errno));
                 usleep(10000);
                 continue;
             }
-            /* gr == 0: 10 ms timeout — fall through to read anyway */
+            /* gr == 0: the line was late — fall through to read anyway */
             atomic_fetch_add(gr > 0 ? &ctx->drains_edge : &ctx->drains_timeout, 1);
         } else {
-            /* No interrupt line: pace by the same cadence between drains. */
-            struct timespec t = { .tv_sec = 0,
-                                  .tv_nsec = IMU_DRAIN_WAIT_MS * 1000000L };
+            struct timespec t = { .tv_sec = imu_poll_ms / 1000,
+                                  .tv_nsec = (imu_poll_ms % 1000) * 1000000L };
             nanosleep(&t, NULL);
             if (ctx->stop) break;
             /* Every drain is a timer drain here, by construction. */
@@ -355,6 +378,9 @@ void *ism_reader_thread(void *arg)
 
 
         cfg_snapshot(ctx, &cfg);
+        imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
+                                          cfg.imu_fifo_wm, cfg.imu_int_grace);
+        imu_poll_ms = cfg.imu_poll_ms > 0 ? cfg.imu_poll_ms : imu_wait_ms;
 
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
@@ -580,7 +606,12 @@ void *mag_reader_thread(void *arg)
      * twenty-four conversions of latency at 1204.  Two sample periods bounds a
      * missed edge to about one sample at any rate on the ladder.
      */
-    const long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz);
+    cfg_snapshot(ctx, &cfg);
+    /* depth 1: these magnetometers have no FIFO, so the line signals one
+     * finished conversion.  Recomputed below on SIGHUP. */
+    long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
+                                           cfg.mag_int_grace);
+    long mag_poll_ms = cfg.mag_poll_ms > 0 ? cfg.mag_poll_ms : mag_wait_ms;
 
     while (!ctx->stop) {
         if (ctx->mag_line) {
@@ -593,14 +624,19 @@ void *mag_reader_thread(void *arg)
             }
             /* gr == 0: the fallback expired — read anyway */
         } else {
-            /* No interrupt pin: pace at ~100 Hz.  The driver read() polls
-             * DRDY internally so we won't process stale data. */
-            struct timespec t = { .tv_sec = 0, .tv_nsec = 10 * 1000000L };
+            /* No interrupt pin, so no expected arrival to be late against:
+             * the fixed poll cadence applies here and nowhere else.  The
+             * driver read() polls DRDY internally, so no stale data. */
+            struct timespec t = { .tv_sec = mag_poll_ms / 1000,
+                                  .tv_nsec = (mag_poll_ms % 1000) * 1000000L };
             nanosleep(&t, NULL);
             if (ctx->stop) break;
         }
 
         cfg_snapshot(ctx, &cfg);
+        mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
+                                          cfg.mag_int_grace);
+        mag_poll_ms = cfg.mag_poll_ms > 0 ? cfg.mag_poll_ms : mag_wait_ms;
 
     /* Periodic SET/RESET (degauss) — skip this read cycle; wait for next edge. */
         if (cfg.mag_set_period_s > 0.0f && ctx->mag_ops->set_reset) {

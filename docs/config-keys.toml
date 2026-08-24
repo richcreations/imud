@@ -297,7 +297,7 @@ Record raw samples from both sensors, exactly as the drivers delivered them
 name = "imu"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "accel_g", "gyro_dps", "fifo_wm"]]
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "accel_g", "gyro_dps", "fifo_wm", "int_grace", "poll_ms"]]
 
   [[section.key]]
   names = ["driver"]
@@ -489,31 +489,82 @@ ISM330DHCX: {values}.'''
   man = '''
 FIFO watermark in sample-sets: how deep the chip buffers before
 raising its interrupt.
-This bounds buffer depth and overflow headroom.
-It does
-.I not
-set sample latency, despite what
-.RB \(dq 64\ ~=\ 77\ ms \(dq
-arithmetic suggests: the reader also wakes on a 10\~ms timeout and
-drains whatever is there, so residence is bounded by that cadence
-rather than by the watermark.
-Measured on a Raspberry Pi 5 at 833\~Hz over 120\~s: the median
-residence was 33\~ms at every setting of this key, and the worst case
-ranged 35\(en56\~ms with no consistent ordering between them.
-See ROADMAP 3.1.
+This sets both buffer depth and, with
+.BR int_grace ,
+sample latency: the reader waits
+.RB \(dq fifo_wm\ +\ int_grace \(dq
+sample periods, so a watermark of 64 at 833\~Hz batches about 77\~ms.
+Earlier releases documented this key as having
+.I no
+effect on latency, from a bench run that measured the same 33\~ms
+residence at every setting.
+That measurement was real and its conclusion was wrong: the reader then
+used a flat 10\~ms fallback, which drained before the watermark could
+assert and, because a level watermark deasserts once a drain empties
+the FIFO, suppressed the interrupt entirely at nine of the ten rates.
+The key was inert because its own safety net pre-empted it.
 On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at
 32 and above \(en so the same watermark holds about 63 sample-sets
 rather than 64.'''
+
   md_type = 'int'
   md_default = '`64`'
-  desc = '''FIFO watermark in sample-sets: how deep the chip buffers before raising its interrupt. This bounds **buffer depth and overflow headroom** — it does *not* set sample latency, despite what `64 / 833 Hz ≈ 77 ms` arithmetic suggests. The reader also wakes on a 10 ms timeout and drains whatever is there, so residence is bounded by that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz over 120 s, the median residence was 33 ms at every setting of this key and the worst case ranged 35–56 ms with no consistent ordering between them (`docs/ROADMAP.md` §3.1). Raise it if a busy host is overflowing; lowering it to chase latency does not work. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (§1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64.'''
+  desc = '''FIFO watermark in sample-sets: how deep the chip buffers before raising its interrupt. This sets **both buffer depth and sample latency** — with `int_grace`, the reader waits `fifo_wm + int_grace` sample periods, so 64 at 833 Hz batches about 77 ms. Earlier releases documented this key as having *no* effect on latency, citing a bench run that measured the same 33 ms residence at every setting. That measurement was real and the conclusion drawn from it was wrong: the reader then used a flat 10 ms fallback, which drained before the watermark could assert — and because a level watermark deasserts as soon as a drain empties the FIFO, the interrupt was suppressed entirely at nine of the ten ISM330DHCX rates. The key was inert because its own safety net pre-empted it. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO (§1.1); at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64.'''
+  [[section.key]]
+  names = ["int_grace"]
+  fields = ["imu_int_grace"]
+  macros = ["NEED_POS_INT"]
+  type = 'int'
+  default = 'default:\ 2'
+  scope = ""
+  man_style = "tight"
+  man = '''
+How late the interrupt may be, in SAMPLES, before the reader gives up
+and reads anyway.
+The wait is
+.RB \(dq fifo_wm\ +\ int_grace \(dq
+sample periods, so the fallback fires only when the line is genuinely
+late \(en never merely because the batch is not ready yet.
+Counted in samples rather than milliseconds because a fixed time means
+a different thing at every rate: 2\~ms is thirteen samples at
+6664\~Hz and three hundredths of one at 13\~Hz.
+Ignored when
+.B int_gpio
+is 0, where there is no expected arrival to be late against.'''
+  md_type = 'int'
+  md_default = '`2`'
+  desc = '''How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. The wait is `fifo_wm + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against.'''
+
+  [[section.key]]
+  names = ["poll_ms"]
+  fields = ["imu_poll_ms"]
+  macros = ["NEED_INT"]
+  type = 'int'
+  default = 'default:\ 0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Polling cadence in milliseconds for an install with
+.B no
+interrupt line.
+0 derives it from the rate and watermark, which is what you want: a
+fixed interval under-polls at high ODR \(en the FIFO overflows and the
+delivered rate falls below the configured one \(en and burns reads at
+low ODR.
+Set a value only to force a specific cadence.
+Ignored entirely when
+.B int_gpio
+is non-zero.'''
+  md_type = 'int'
+  md_default = '`0`'
+  desc = '''Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate and watermark, which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.**'''
 
 [[section]]
 name = "mag"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "set_period_s"]]
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "set_period_s", "int_grace", "poll_ms"]]
 
   [[section.key]]
   names = ["driver"]
@@ -647,6 +698,56 @@ to use a polling timer.'''
   md_default = '`27`'
   desc = 'BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer.'
 
+
+  [[section.key]]
+  names = ["int_grace"]
+  fields = ["mag_int_grace"]
+  macros = ["NEED_POS_INT"]
+  type = 'int'
+  default = 'default:\ 2'
+  scope = ""
+  man_style = "tight"
+  man = '''
+How late the interrupt may be, in SAMPLES, before the reader gives up
+and reads anyway.
+These magnetometers have no FIFO, so the line signals one finished
+conversion and the wait is
+.RB \(dq 1\ +\ int_grace \(dq
+sample periods, so the fallback fires only when the line is genuinely
+late \(en never merely because the batch is not ready yet.
+Counted in samples rather than milliseconds because a fixed time means
+a different thing at every rate: 2\~ms is thirteen samples at
+6664\~Hz and three hundredths of one at 13\~Hz.
+Ignored when
+.B int_gpio
+is 0, where there is no expected arrival to be late against.'''
+  md_type = 'int'
+  md_default = '`2`'
+  desc = '''How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. These magnetometers have no FIFO, so the line signals one finished conversion and the wait is `1 + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against.'''
+
+  [[section.key]]
+  names = ["poll_ms"]
+  fields = ["mag_poll_ms"]
+  macros = ["NEED_INT"]
+  type = 'int'
+  default = 'default:\ 0'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Polling cadence in milliseconds for an install with
+.B no
+interrupt line.
+0 derives it from the rate, which is what you want: a
+fixed interval under-polls at high ODR \(en the FIFO overflows and the
+delivered rate falls below the configured one \(en and burns reads at
+low ODR.
+Set a value only to force a specific cadence.
+Ignored entirely when
+.B int_gpio
+is non-zero.'''
+  md_type = 'int'
+  md_default = '`0`'
+  desc = '''Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate, which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.**'''
   [[section.key]]
   names = ["odr_hz"]
   fields = ["mag_odr_mhz"]

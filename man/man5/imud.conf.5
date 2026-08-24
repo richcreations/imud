@@ -260,22 +260,53 @@ ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.
 .RI (int,\ default:\ 64)
 FIFO watermark in sample-sets: how deep the chip buffers before
 raising its interrupt.
-This bounds buffer depth and overflow headroom.
-It does
-.I not
-set sample latency, despite what
-.RB \(dq 64\ ~=\ 77\ ms \(dq
-arithmetic suggests: the reader also wakes on a 10\~ms timeout and
-drains whatever is there, so residence is bounded by that cadence
-rather than by the watermark.
-Measured on a Raspberry Pi 5 at 833\~Hz over 120\~s: the median
-residence was 33\~ms at every setting of this key, and the worst case
-ranged 35\(en56\~ms with no consistent ordering between them.
-See ROADMAP 3.1.
+This sets both buffer depth and, with
+.BR int_grace ,
+sample latency: the reader waits
+.RB \(dq fifo_wm\ +\ int_grace \(dq
+sample periods, so a watermark of 64 at 833\~Hz batches about 77\~ms.
+Earlier releases documented this key as having
+.I no
+effect on latency, from a bench run that measured the same 33\~ms
+residence at every setting.
+That measurement was real and its conclusion was wrong: the reader then
+used a flat 10\~ms fallback, which drained before the watermark could
+assert and, because a level watermark deasserts once a drain empties
+the FIFO, suppressed the interrupt entirely at nine of the ten rates.
+The key was inert because its own safety net pre-empted it.
 On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at
 32 and above \(en so the same watermark holds about 63 sample-sets
 rather than 64.
+.TP
+.B int_grace
+.RI (int,\ default:\ 2)
+How late the interrupt may be, in SAMPLES, before the reader gives up
+and reads anyway.
+The wait is
+.RB \(dq fifo_wm\ +\ int_grace \(dq
+sample periods, so the fallback fires only when the line is genuinely
+late \(en never merely because the batch is not ready yet.
+Counted in samples rather than milliseconds because a fixed time means
+a different thing at every rate: 2\~ms is thirteen samples at
+6664\~Hz and three hundredths of one at 13\~Hz.
+Ignored when
+.B int_gpio
+is 0, where there is no expected arrival to be late against.
+.TP
+.B poll_ms
+.RI (int,\ default:\ 0)
+Polling cadence in milliseconds for an install with
+.B no
+interrupt line.
+0 derives it from the rate and watermark, which is what you want: a
+fixed interval under-polls at high ODR \(en the FIFO overflows and the
+delivered rate falls below the configured one \(en and burns reads at
+low ODR.
+Set a value only to force a specific cadence.
+Ignored entirely when
+.B int_gpio
+is non-zero.
 .\" END GENERATED: config-keys imu
 .SS [mag]
 Magnetometer driver settings.
@@ -350,6 +381,36 @@ BCM GPIO for the measurement-done interrupt.
 Set
 .B 0
 to use a polling timer.
+.TP
+.B int_grace
+.RI (int,\ default:\ 2)
+How late the interrupt may be, in SAMPLES, before the reader gives up
+and reads anyway.
+These magnetometers have no FIFO, so the line signals one finished
+conversion and the wait is
+.RB \(dq 1\ +\ int_grace \(dq
+sample periods, so the fallback fires only when the line is genuinely
+late \(en never merely because the batch is not ready yet.
+Counted in samples rather than milliseconds because a fixed time means
+a different thing at every rate: 2\~ms is thirteen samples at
+6664\~Hz and three hundredths of one at 13\~Hz.
+Ignored when
+.B int_gpio
+is 0, where there is no expected arrival to be late against.
+.TP
+.B poll_ms
+.RI (int,\ default:\ 0)
+Polling cadence in milliseconds for an install with
+.B no
+interrupt line.
+0 derives it from the rate, which is what you want: a
+fixed interval under-polls at high ODR \(en the FIFO overflows and the
+delivered rate falls below the configured one \(en and burns reads at
+low ODR.
+Set a value only to force a specific cadence.
+Ignored entirely when
+.B int_gpio
+is non-zero.
 .TP
 .B odr_hz
 .RI (int,\ default:\ 100)

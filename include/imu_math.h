@@ -277,7 +277,7 @@ int snap_odr_up(const int supported[], int requested);
  * Bounded at 2 ms so the fastest rates cannot spin, and at 250 ms so a 1 Hz
  * part still notices a stalled line within a quarter second.
  */
-long imu_int_fallback_ms(int odr_mhz);
+long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples);
 
 /*
  * How long the IMU reader waits on the FIFO watermark before draining anyway.
@@ -293,7 +293,14 @@ long imu_int_fallback_ms(int odr_mhz);
  * Shared so imud-imutest paces its drains the way the daemon does rather than
  * on a timer of its own choosing.
  */
+/*
+ * Fallback used only where there is nothing to predict -- no interrupt line
+ * configured, so no expected arrival to be late against.  Where a watermark
+ * IS configured the wait comes from imu_wm_fallback_ms() instead.
+ */
 #define IMU_DRAIN_WAIT_MS 10
+
+
 
 int odr_actual_imu(const imu_ops_t *ops, int req_mhz);
 int odr_actual_mag(const mag_ops_t *ops, int req_mhz);
