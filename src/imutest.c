@@ -802,6 +802,11 @@ typedef struct {
      * then paces itself, and so does this.
      */
     imu_gpio_line_t *line;
+    /* Kept so the line can be PARKED and resumed: imt_gpio_count_edges() opens
+     * the same offset itself, and this context holding it made that request
+     * fail with EBUSY -- against imutest's own earlier open. */
+    const char      *gpio_chip;
+    int              int_gpio;
 } drain_ctx_t;
 
 /*
@@ -839,14 +844,49 @@ static void drain_init(drain_ctx_t *d, const imu_ops_t *ops,
 {
     memset(d, 0, sizeof *d);
     d->ops = ops; d->bus = bus;
-    if (cfg && cfg->imu_int_gpio > 0)
+    if (cfg && cfg->imu_int_gpio > 0) {
+        d->gpio_chip = cfg->gpio_chip;
+        d->int_gpio  = cfg->imu_int_gpio;
         d->line = imu_gpio_open(cfg->gpio_chip, (unsigned)cfg->imu_int_gpio,
                                 "imud-imutest");
+    }
     d->tick_ns = ops->ts_tick_ns;
     if (ops->ts_tick_ns_actual) {
         uint32_t part = ops->ts_tick_ns_actual(bus);
         if (part != 0) d->tick_ns = part;
     }
+}
+
+/*
+ * Release the interrupt line so something else in this process can open it.
+ *
+ * A line request is exclusive, and the kernel does not care that the second
+ * opener is the same process: imt_gpio_count_edges() opens the offset itself,
+ * so with this context holding it the request returned EBUSY and the check
+ * reported "GPIO is held by another process -- is imud running?" with no
+ * daemon anywhere. imu.drdy.edges and imu.fifo.watermark both SKIPped for the
+ * whole life of the check, so the IMU interrupt was never tested at all.
+ *
+ * Parked rather than closed for good, because drain_pace() needs it back: it
+ * waits on this line to pace at the daemon's cadence rather than a timer of
+ * imutest's own.
+ */
+static void drain_gpio_park(drain_ctx_t *d)
+{
+    if (d->line) { imu_gpio_close(d->line); d->line = NULL; }
+}
+
+static void drain_gpio_resume(drain_ctx_t *d)
+{
+    if (!d->line && d->int_gpio > 0)
+        d->line = imu_gpio_open(d->gpio_chip, (unsigned)d->int_gpio,
+                                "imud-imutest");
+}
+
+/* End of run: the line was leaked outright before this existed. */
+static void drain_fini(drain_ctx_t *d)
+{
+    drain_gpio_park(d);
 }
 
 /*
@@ -4483,7 +4523,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         /* seq before the deliberate overflow: an overflow is a legitimate gap */
         check_fifo(r, opts, &d, imu, eff_hz, cfg->imu_fifo_wm);
         check_rest(r, opts, &d);
+        /* check_drdy opens the same line itself, and a line request is
+         * exclusive even within one process -- so hand it over and take it
+         * back. Bracketing the CALL rather than the body keeps it correct
+         * across the several early returns inside. */
+        drain_gpio_park(&d);
         check_drdy(r, opts, &d, cfg, eff_hz, cfg->imu_fifo_wm);
+        drain_gpio_resume(&d);
         if (mag_ok) {
             const double mag_eff_hz = (double)r->mag_eff_odr_mhz * 1e-3;
             check_mag_passive(r, opts, mag, mbus, mag_eff_hz);
@@ -4532,6 +4578,8 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
             }
         }
     }
+
+    drain_fini(&d);
 
     if (g_abort) r->aborted = true;
     r->wall_duration_s = now_s() - t_start;
