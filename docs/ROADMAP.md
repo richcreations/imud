@@ -821,51 +821,6 @@ warm it gently mid-capture).
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
 
-### 3.2 Transport support matrix — which rates a bus can actually carry  *(measured 2026-08-24, SPI)*
-
-Measured on the reference rig (Pi 5, ism330dhcx on `/dev/spidev0.0`,
-mmc5983ma on `0.1`, `fifo_wm = 8`, mag 100 Hz), **after** the drain and burst
-fixes. Delivered IMU rate from the daemon's own `[stats]` counters, differenced
-over a window; "edges" is whether the watermark interrupt drove the reader or
-the fallback timer did.
-
-| IMU `odr_hz` | 1 MHz | 2 MHz | 4 MHz | 8 MHz | 10 MHz |
-|---|---|---|---|---|---|
-| 13.016 | 13.6 | 13.6 | 13.6 | 13.6 | 13.6 |
-| 52.063 | 54.4 | 54.1 | 54.1 | 54.1 | 54.1 |
-| 208.25 | 214.4 | 214.4 | 214.4 | 214.4 | 214.4 |
-| 833 | 855.2 | 855.2 | 855.2 | 855.2 | 855.2 |
-| 3332 | 3415 | 3419 | 3405 | 3418 | 3405 |
-| **6664** | **0.0** | 6822 | 6812 | 6814 | 6821 |
-
-Delivered rates run ~2.7 % above nominal throughout: that is the part's own
-`FREQ_FINE` trim (+27 steps, a 24027 ns tick against the 25000 ns typical), not
-an error.
-
-**Two hard results:**
-
-- **6664 Hz delivers nothing at all below 2 MHz.** Not degraded — zero. The
-  payload alone is 6664 sets/s x 14 B = 93 kB/s = 746 kbit/s, roughly 75 % of a
-  1 MHz bus before per-transaction overhead.
-- **Edge recovery has its own, higher floor.** At 3332 Hz the reader was
-  timer-driven at 1 and 2 MHz (`drains=0/1335`, `0/3763`) and interrupt-driven
-  at 4 MHz and above (`10544/16`, `10241/29`, `10186/26`). A faster clock drains
-  faster, the FIFO falls below the watermark, and the level line de-asserts.
-
-**Caveat that bounds this table's usefulness**: cells where `fifo_wm / odr`
-approaches the measurement window cannot be measured this way at all. At
-`wm = 128` and 13 Hz a batch is 9.8 s, so a 20 s window holds two or three of
-them and the counter differencing is meaningless — an early run reported 9.4
-against 13.3 and that number is an artifact, not a loss.
-
-**I2C is NOT measured.** This rig is SPI-only, so an I2C column would have to be
-computed rather than observed, and the two must not be mixed in one table. The
-arithmetic is straightforward — 400 kHz Fast-mode carries ~40 kB/s after
-addressing overhead, so ~2800 sample-sets/s before any headroom — but it is a
-calculation, and everything calculated on this project this month that went
-unmeasured turned out to be wrong. Owed: rewire for I2C and measure, or publish
-the column explicitly labelled as calculated.
-
 ### 3.1 spec §14's latency budgets, three of them now measured  *(pipeline, FIFO residence and SPI are in; the watermark model and the rewrite are owed)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
@@ -1096,6 +1051,51 @@ not yet predictable from configuration.
 
 `manual.md`'s `fifo_wm` entry and the 77 ms arithmetic no longer contradict the
 budget across two files — that entry now says what the key actually bounds.
+
+### 3.2 Transport support matrix — which rates a bus can actually carry  *(measured 2026-08-24, SPI)*
+
+Measured on the reference rig (Pi 5, ism330dhcx on `/dev/spidev0.0`,
+mmc5983ma on `0.1`, `fifo_wm = 8`, mag 100 Hz), **after** the drain and burst
+fixes. Delivered IMU rate from the daemon's own `[stats]` counters, differenced
+over a window; "edges" is whether the watermark interrupt drove the reader or
+the fallback timer did.
+
+| IMU `odr_hz` | 1 MHz | 2 MHz | 4 MHz | 8 MHz | 10 MHz |
+|---|---|---|---|---|---|
+| 13.016 | 13.6 | 13.6 | 13.6 | 13.6 | 13.6 |
+| 52.063 | 54.4 | 54.1 | 54.1 | 54.1 | 54.1 |
+| 208.25 | 214.4 | 214.4 | 214.4 | 214.4 | 214.4 |
+| 833 | 855.2 | 855.2 | 855.2 | 855.2 | 855.2 |
+| 3332 | 3415 | 3419 | 3405 | 3418 | 3405 |
+| **6664** | **0.0** | 6822 | 6812 | 6814 | 6821 |
+
+Delivered rates run ~2.7 % above nominal throughout: that is the part's own
+`FREQ_FINE` trim (+27 steps, a 24027 ns tick against the 25000 ns typical), not
+an error.
+
+**Two hard results:**
+
+- **6664 Hz delivers nothing at all below 2 MHz.** Not degraded — zero. The
+  payload alone is 6664 sets/s x 14 B = 93 kB/s = 746 kbit/s, roughly 75 % of a
+  1 MHz bus before per-transaction overhead.
+- **Edge recovery has its own, higher floor.** At 3332 Hz the reader was
+  timer-driven at 1 and 2 MHz (`drains=0/1335`, `0/3763`) and interrupt-driven
+  at 4 MHz and above (`10544/16`, `10241/29`, `10186/26`). A faster clock drains
+  faster, the FIFO falls below the watermark, and the level line de-asserts.
+
+**Caveat that bounds this table's usefulness**: cells where `fifo_wm / odr`
+approaches the measurement window cannot be measured this way at all. At
+`wm = 128` and 13 Hz a batch is 9.8 s, so a 20 s window holds two or three of
+them and the counter differencing is meaningless — an early run reported 9.4
+against 13.3 and that number is an artifact, not a loss.
+
+**I2C is NOT measured.** This rig is SPI-only, so an I2C column would have to be
+computed rather than observed, and the two must not be mixed in one table. The
+arithmetic is straightforward — 400 kHz Fast-mode carries ~40 kB/s after
+addressing overhead, so ~2800 sample-sets/s before any headroom — but it is a
+calculation, and everything calculated on this project this month that went
+unmeasured turned out to be wrong. Owed: rewire for I2C and measure, or publish
+the column explicitly labelled as calculated.
 
 ## 4. ISM330DHCX MLC engine detection  *(pre-existing spec §16 item, optional)*
 
