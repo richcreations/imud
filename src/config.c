@@ -797,7 +797,16 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         LOG_E("%s:%d: '%s': %g Hz is far beyond any supported part\n", \
               path, lineno, key, dv); \
         return -1; } \
-        (field) = (int)(dv * 1000.0 + 0.5); } while (0)
+        (field) = (int)(dv * 1000.0 + 0.5); \
+        /* The guard above validates the INPUT; this validates what was \
+         * STORED.  Rates are carried in milli-Hz, so any dv below 0.0005 Hz \
+         * passes "> 0.0" and then rounds to 0 -- the macro producing exactly \
+         * the rate its own message calls invalid.  Found by the nightly \
+         * fuzzer on fuzz_config's odr_mhz > 0 assertion. */ \
+        if ((field) <= 0) { \
+        LOG_E("%s:%d: '%s': %g Hz is below the milli-Hz resolution rates are " \
+              "carried in and rounds to zero\n", path, lineno, key, dv); \
+        return -1; } } while (0)
 
 /*
  * Semantic bounds, for the keys where an in-range int is still nonsense.

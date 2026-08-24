@@ -234,6 +234,51 @@ static void test_defaults_cal_file(void)
  *   - double (mekf_gyro_noise = 0.007)
  *   - quoted string (nmea_dest_addr = "255.255.255.255")
  */
+/*
+ * A rate that is positive in Hz but rounds to zero in milli-Hz.
+ *
+ * NEED_POS_MHZ validated the INPUT double and not the STORED integer, so
+ * odr_hz = 0.0001 passed "> 0.0" and then became 0 milli-Hz -- the macro
+ * producing exactly the rate its own error message calls invalid. The nightly
+ * fuzzer found it through fuzz_config's `odr_mhz > 0` assertion, which is the
+ * only thing that was checking the post-condition.
+ */
+static void test_odr_below_milli_hz_resolution(void)
+{
+    begin_test("test_odr_below_milli_hz_resolution");
+    int fb = g_fail;
+
+    static const struct { const char *hz; int want_rc; } cases[] = {
+        { "0.0001", -1 },   /* 0.1 milli-Hz  -> rounds to 0, must be refused */
+        { "0.0004", -1 },   /* 0.4 milli-Hz  -> rounds to 0, must be refused */
+        { "0.0005",  0 },   /* 0.5 milli-Hz  -> rounds to 1, is representable */
+        { "12.5",    0 },   /* the case the milli-Hz rework existed for */
+    };
+    char path[64], msg[96];
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        snprintf(path, sizeof path, "/tmp/imud_mhz_%u.conf", i);
+        FILE *f = fopen(path, "w");
+        if (!f) { EXPECT(0, "could not write the fixture"); break; }
+        fprintf(f, "[imu]\nodr_hz = %s\n", cases[i].hz);
+        fclose(f);
+
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        int rc = config_load(path, &cfg);
+        snprintf(msg, sizeof msg, "odr_hz = %s -> rc %d",
+                 cases[i].hz, cases[i].want_rc);
+        EXPECT((rc == 0) == (cases[i].want_rc == 0), msg);
+        if (rc == 0) {
+            snprintf(msg, sizeof msg, "odr_hz = %s stored a usable rate",
+                     cases[i].hz);
+            EXPECT(cfg.imu_odr_mhz > 0, msg);
+        }
+        unlink(path);
+    }
+
+    end_test(fb);
+}
+
 static void test_load_real_conf(void)
 {
     begin_test("test_load_real_conf");
@@ -1799,6 +1844,7 @@ int main(void)
     test_declination_valid_flag();
     test_fix_max_age_h_load();
     test_fix_max_age_h_zero();
+    test_odr_below_milli_hz_resolution();
     test_load_real_conf();
     test_load_missing_file();
     test_load_bad_int();
