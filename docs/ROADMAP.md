@@ -821,6 +821,51 @@ warm it gently mid-capture).
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
 
+### 3.2 Transport support matrix — which rates a bus can actually carry  *(measured 2026-08-24, SPI)*
+
+Measured on the reference rig (Pi 5, ism330dhcx on `/dev/spidev0.0`,
+mmc5983ma on `0.1`, `fifo_wm = 8`, mag 100 Hz), **after** the drain and burst
+fixes. Delivered IMU rate from the daemon's own `[stats]` counters, differenced
+over a window; "edges" is whether the watermark interrupt drove the reader or
+the fallback timer did.
+
+| IMU `odr_hz` | 1 MHz | 2 MHz | 4 MHz | 8 MHz | 10 MHz |
+|---|---|---|---|---|---|
+| 13.016 | 13.6 | 13.6 | 13.6 | 13.6 | 13.6 |
+| 52.063 | 54.4 | 54.1 | 54.1 | 54.1 | 54.1 |
+| 208.25 | 214.4 | 214.4 | 214.4 | 214.4 | 214.4 |
+| 833 | 855.2 | 855.2 | 855.2 | 855.2 | 855.2 |
+| 3332 | 3415 | 3419 | 3405 | 3418 | 3405 |
+| **6664** | **0.0** | 6822 | 6812 | 6814 | 6821 |
+
+Delivered rates run ~2.7 % above nominal throughout: that is the part's own
+`FREQ_FINE` trim (+27 steps, a 24027 ns tick against the 25000 ns typical), not
+an error.
+
+**Two hard results:**
+
+- **6664 Hz delivers nothing at all below 2 MHz.** Not degraded — zero. The
+  payload alone is 6664 sets/s x 14 B = 93 kB/s = 746 kbit/s, roughly 75 % of a
+  1 MHz bus before per-transaction overhead.
+- **Edge recovery has its own, higher floor.** At 3332 Hz the reader was
+  timer-driven at 1 and 2 MHz (`drains=0/1335`, `0/3763`) and interrupt-driven
+  at 4 MHz and above (`10544/16`, `10241/29`, `10186/26`). A faster clock drains
+  faster, the FIFO falls below the watermark, and the level line de-asserts.
+
+**Caveat that bounds this table's usefulness**: cells where `fifo_wm / odr`
+approaches the measurement window cannot be measured this way at all. At
+`wm = 128` and 13 Hz a batch is 9.8 s, so a 20 s window holds two or three of
+them and the counter differencing is meaningless — an early run reported 9.4
+against 13.3 and that number is an artifact, not a loss.
+
+**I2C is NOT measured.** This rig is SPI-only, so an I2C column would have to be
+computed rather than observed, and the two must not be mixed in one table. The
+arithmetic is straightforward — 400 kHz Fast-mode carries ~40 kB/s after
+addressing overhead, so ~2800 sample-sets/s before any headroom — but it is a
+calculation, and everything calculated on this project this month that went
+unmeasured turned out to be wrong. Owed: rewire for I2C and measure, or publish
+the column explicitly labelled as calculated.
+
 ### 3.1 spec §14's latency budgets, three of them now measured  *(pipeline, FIFO residence and SPI are in; the watermark model and the rewrite are owed)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
@@ -932,7 +977,47 @@ than the cycle getting shorter. It is consistent with the finding above that
 
 Still owed: the pair at the rates only SPI can carry (above 833 Hz).
 
-### The watermark question is answered  *(2026-08-19, SPI, 42 s per cell)*
+### The watermark question is answered  *(2026-08-19)* — **SUPERSEDED 2026-08-24**
+
+> **RETRACTED, and read the retraction before the table below.**
+>
+> The measurements here are sound and the rule derived from them was correct
+> *for the code of the time*. What was wrong is the conclusion drawn: the 10 ms
+> fallback was treated as a property of the design, and it was a defect.
+>
+> A LEVEL watermark asserts once the FIFO holds `fifo_wm` sets and de-asserts as
+> soon as a drain empties it. A fallback shorter than the watermark period
+> therefore drains first, holds the FIFO permanently below the threshold, and
+> the line never asserts **at all** — so `fifo_wm` was not "ineffective above a
+> threshold", it was *suppressed by its own safety net*. Two further defects
+> compounded it: the drain buffer could not empty the FIFO (128 samples against
+> a 256-set FIFO), and the driver issued one ioctl per 7-byte FIFO word, so a
+> drain took 3.1 ms of blocked syscall time and could never get ahead.
+>
+> Fixed in `6ac3c66` (wait = `depth + grace` **samples**, not a flat 10 ms),
+> `c1e81a0` (`IMU_DRAIN_MAX` 256) and `95a3c77` (burst FIFO reads).
+> Re-measured on the same rig afterwards:
+>
+> | `odr_hz` | `fifo_wm` | drains edge/timeout | mean n | note |
+> |---|---|---|---|---|
+> | 104 | 8   | 377 / 1      | 8.0   | was `0 / 4068` |
+> | 104 | 64  | 50 / 0       | 59.9  | was `0 / 4069` |
+> | 833 | 64  | 314 / 1      | 63.3  | was `0 / 3764` |
+> | 3332 | 128 | 766 / 1     | 126.2 | was `0 / 554`, 24.6 % of samples lost |
+> | 6664 | 8   | 24179 / 2   | 8.0   | was `0 / 4493`; CPU 18.2 % → 5.1 % |
+>
+> **`n` now tracks `fifo_wm` exactly at every rate**, which is what the key was
+> always documented to mean. The rule below — "`fifo_wm` has an effect only
+> while `wm / odr_hz < 10 ms`" — no longer holds and must not be cited.
+> `config/imud.conf` and `docs/config-keys.toml` carried the same claim and
+> were corrected in `6ac3c66`.
+>
+> What is still owed here is the spec §14 rewrite itself, and one caveat found
+> while re-measuring: the `lat_hist_t` buckets are **log₂ and saturate at
+> ~1.05 s**, so `fifo=` p50/p95 are bucket boundaries. §14 cannot be written to
+> better than a factor of two from that instrument without changing it.
+
+*Original 2026-08-19 measurement follows, for the record.*
 
 `16451c2` made the daemon report what wakes the reader and how much it finds.
 The answer is a threshold, and it is sharp:
