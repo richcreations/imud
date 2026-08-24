@@ -732,11 +732,23 @@ const imu_ops_t ism330dhcx_ops = {
      * SCLK idles at.
      *
      * Mode 0 is chosen because the IMU and the magnetometer commonly share one
-     * SPI controller (spidev0.0 and 0.1 on the reference rig), the MMC5983MA
-     * requires mode 0, and a controller cannot idle its clock at two levels at
-     * once. Mixing them measurably breaks the bus: with this part left on
-     * mode 3 beside a mode-0 magnetometer the daemon started, settled, and
-     * then never produced a sample.
+     * SPI controller (spidev0.0 and 0.1 on the reference rig) and a controller
+     * cannot idle its clock at two levels at once, so they must agree.
+     *
+     * This comment previously said "the MMC5983MA requires mode 0". Its
+     * datasheet says the opposite -- "SCK ... is stopped high when CS is high",
+     * which is CPOL=1, mode 3 -- and the mode-0 claim appears to trace to
+     * SparkFun's Arduino library rather than to the part. The original choice
+     * was also made while the bench wiring fault was corrupting 2-12 % of
+     * reads, so the read/write failures that prompted it are not evidence
+     * about SPI mode at all.
+     *
+     * Re-tested on repaired wiring, BOTH parts in mode 3: the magnetometer
+     * delivered 91.7 samples/s at 6664 Hz against 103 in mode 0, and the
+     * low-clock magnetometer fault (see mmc5983ma.c) was unchanged -- 0.0
+     * samples/s with the IMU at 1 and 2 MHz either way. So mode 0 stands, now
+     * on measurement rather than on a misattributed requirement, and mode 3 is
+     * ruled out as an explanation for that fault.
      */
     .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },

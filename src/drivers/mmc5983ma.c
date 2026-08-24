@@ -593,6 +593,14 @@ const mag_ops_t mmc5983ma_ops = {
      * IMU's FIFO burst by time changed nothing.  Three theories (contention,
      * burst monopoly, clock mismatch) were each tested and each refuted.
      *
+     * SPI mode is not the answer either, though this part's datasheet points at
+     * mode 3 ("SCK ... is stopped high when CS is high", i.e. CPOL=1) while we
+     * and SparkFun's library run it in mode 0.  Both parts were re-tested in
+     * mode 3 on repaired wiring: the fault was unchanged (0.0 samples/s with
+     * the IMU at 1 and 2 MHz) and throughput at 6664 Hz was worse, 91.7
+     * against 103.  Four theories tested and refuted now: bus contention,
+     * burst monopoly, clock mismatch, SPI mode.
+     *
      * The default, spi_speed_hz = 0 (each part's declared maximum), is
      * unaffected.  Recorded as measured behaviour, not explained.
      */
