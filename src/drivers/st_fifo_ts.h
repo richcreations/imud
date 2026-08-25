@@ -46,10 +46,19 @@
  *   - Ordering does not have to be answered.  The tag byte carries TAG_CNT, "a
  *     2-bit counter which identifies sensor time slot" (Table 158), so a
  *     timestamp word can be matched to its own slot rather than to a position.
- *     If TAG_CNT turns out not to participate for tag 0x04, the match degrades
- *     to off-by-one-sample — 1.2 ms at 833 Hz, constant across the burst, so
- *     it shifts sample age slightly and leaves every dt untouched.  The bench
- *     settles which, through imud-imutest's imu.chipts.* checks.
+ *
+ *     MEASURED, 2026-08-25, ism330dhcx over SPI at 833 Hz: TAG_CNT does NOT
+ *     participate for tag 0x04.  Across 2000 timestamp words it read 0 every
+ *     single time — cnt0=2000, cnt1=cnt2=cnt3=0 — and never once equalled the
+ *     TAG_CNT of the set just completed.  So the comparison below always takes
+ *     its else branch and the word dates the set still being assembled.
+ *
+ *     That is the degradation this was written to tolerate, and the bound
+ *     stands: off by one sample, 1.2 ms at 833 Hz, constant across the burst,
+ *     so it shifts sample age slightly and leaves every dt untouched.  The
+ *     comparison is kept rather than deleted because it costs nothing and is
+ *     correct for any part whose timestamp words do carry a slot counter; it is
+ *     simply inert on this one.
  *
  * Header-only and driver-private, like bus_io.h and chip_ts.h.
  */
