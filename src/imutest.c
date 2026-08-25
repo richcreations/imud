@@ -202,6 +202,18 @@ static void skip_check(imt_report_t *r, const char *id, const char *name,
     add_check(r, id, name, IMT_SKIP, "-", "-", "%s", why);
 }
 
+/*
+ * A skip the operator cannot act on -- see imt_check_t::structural.  Kept
+ * separate from skip_check() so the required-check accounting can tell "not
+ * measured yet" from "not measurable here".
+ */
+static void skip_check_structural(imt_report_t *r, const char *id,
+                                  const char *name, const char *why)
+{
+    skip_check(r, id, name, why);
+    if (r->n_checks > 0) r->check[r->n_checks - 1].structural = true;
+}
+
 /* Format helper for the measured/expected columns. */
 static const char *fmtbuf(char *buf, size_t sz, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
@@ -964,7 +976,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
      * put two phantom rows and a nonzero exit on every SPI report forever.
      */
     if (ibus->kind == BUS_SPI) {
-        skip_check(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
+        skip_check_structural(r, "imu.probe.reject", "IMU probe() rejects a bogus address",
                    "chip select addresses the part on SPI, so i2c_addr never "
                    "reaches the wire and a bogus one reads the same chip; "
                    "probing a neighbouring chip select could disturb it");
@@ -1284,7 +1296,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
     /* Same reasoning as imu.probe.reject above: i2c_addr is not on the SPI
      * wire, so there is no bogus address to probe. */
     if (mbus->kind == BUS_SPI) {
-        skip_check(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
+        skip_check_structural(r, "mag.probe.reject", "Mag probe() rejects a bogus address",
                    "chip select addresses the part on SPI, so i2c_addr never "
                    "reaches the wire and a bogus one reads the same chip; "
                    "probing a neighbouring chip select could disturb it");
@@ -4384,6 +4396,9 @@ void imt_degauss_split(const double vS[3], const double vR[3],
 void imt_decide_verdict(imt_report_t *r)
 {
     const char *blocker = NULL;
+    const char *unobtainable = NULL;   /* required, but not on this transport */
+    const bool exp_flag_set = r->imu_experimental
+                           || (r->have_mag && r->mag_experimental);
 
     bool complete = !r->aborted
                  && r->n_fail == 0
@@ -4395,12 +4410,16 @@ void imt_decide_verdict(imt_report_t *r)
     if (complete) {
         for (const char **p = imt_required_imu; *p && !blocker; p++) {
             const imt_check_t *c = imt_find(r, *p);
-            if (!c || c->status == IMT_SKIP || c->status == IMT_FAIL) blocker = *p;
+            if (c && c->status == IMT_SKIP && c->structural) unobtainable = *p;
+            if (!c || (c->status == IMT_SKIP && !c->structural)
+                   || c->status == IMT_FAIL) blocker = *p;
         }
         if (r->have_mag)
             for (const char **p = imt_required_mag; *p && !blocker; p++) {
                 const imt_check_t *c = imt_find(r, *p);
-                if (!c || c->status == IMT_SKIP || c->status == IMT_FAIL) blocker = *p;
+                if (c && c->status == IMT_SKIP && c->structural) unobtainable = *p;
+                if (!c || (c->status == IMT_SKIP && !c->structural)
+                       || c->status == IMT_FAIL) blocker = *p;
             }
     }
 
@@ -4415,9 +4434,20 @@ void imt_decide_verdict(imt_report_t *r)
         snprintf(r->verdict, sizeof r->verdict,
                  "Run ABORTED before completing — the results below are partial.");
     else if (r->n_fail > 0)
+        /*
+         * Only frame this around the flag where the flag is actually set.  On a
+         * driver already cleared, "not ready to have its `experimental` flag
+         * cleared" describes a state that does not exist and reads as stale
+         * advice -- and this report is written to be pasted into an issue,
+         * where that costs a round trip.  The same reasoning the clean branch
+         * below has always applied.
+         */
         snprintf(r->verdict, sizeof r->verdict,
-                 "%d check%s FAILED: `%s` is not ready to have its "
-                 "`experimental` flag cleared.",
+                 exp_flag_set
+                 ? "%d check%s FAILED: `%s` is not ready to have its "
+                   "`experimental` flag cleared."
+                 : "%d check%s FAILED for `%s` — this run does not validate "
+                   "the driver on this hardware.",
                  r->n_fail, r->n_fail == 1 ? "" : "s", r->imu_driver);
     else if (r->daemon_was_running)
         snprintf(r->verdict, sizeof r->verdict,
@@ -4426,9 +4456,12 @@ void imt_decide_verdict(imt_report_t *r)
                  "trustworthy. Re-run with the daemon stopped.");
     else if (blocker)
         snprintf(r->verdict, sizeof r->verdict,
-                 "No failures, but `%s` did not run — see its row for why — so "
-                 "this report does not yet support clearing `experimental` "
-                 "for `%s`.",
+                 exp_flag_set
+                 ? "No failures, but `%s` did not run — see its row for why — "
+                   "so this report does not yet support clearing "
+                   "`experimental` for `%s`."
+                 : "No failures, but `%s` did not run — see its row for why — "
+                   "so this report is not a complete validation of `%s`.",
                  blocker, r->imu_driver);
     else if (r->phases_requested != IMT_PHASE_ALL)
         snprintf(r->verdict, sizeof r->verdict,
@@ -4454,11 +4487,16 @@ void imt_decide_verdict(imt_report_t *r)
             snprintf(r->verdict, sizeof r->verdict,
                      "All required checks passed. `%s`%s%s already "
                      "%s `experimental` clear; this run re-confirms it on "
-                     "this hardware.",
+                     "this hardware.%s%s%s",
                      r->imu_driver,
                      r->have_mag ? " and " : "",
                      r->have_mag ? r->mag_driver : "",
-                     r->have_mag ? "have" : "has");
+                     r->have_mag ? "have" : "has",
+                     unobtainable ? " `" : "",
+                     unobtainable ? unobtainable : "",
+                     unobtainable
+                     ? "` cannot run on this transport; that path is covered "
+                       "off-hardware instead." : "");
     }
 }
 

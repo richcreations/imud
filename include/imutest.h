@@ -90,6 +90,15 @@ typedef struct {
     char         measured[56]; /* "831.4 Hz", "-9.803 m/s^2", "0x6B" */
     char         expected[56]; /* "833 Hz +/-5%", "0x6B" */
     char         note[192];    /* one-line diagnosis, already interpreted */
+    /*
+     * A SKIP that no operator action can turn into a result: the transport or
+     * the silicon makes the check meaningless, not the run.  `imu.probe.reject`
+     * over SPI is the case -- chip select addresses the part, so there is no
+     * bogus address to reject and no report on this transport can ever produce
+     * one.  Required-check accounting must not treat that as work still owed,
+     * or it asks for something unachievable.
+     */
+    bool         structural;
 } imt_check_t;
 
 /* ── Raw measurements (report appendix) ────────────────────────────────────── */

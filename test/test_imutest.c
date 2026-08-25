@@ -3261,6 +3261,88 @@ static void test_chipts_wall_bands(void)
     end(fb);
 }
 
+/*
+ * Some required checks cannot run on some transports, and no operator action
+ * changes that.  `imu.probe.reject` over SPI is the case: chip select addresses
+ * the part, so there is no bogus address to reject.  Counting that SKIP as work
+ * still owed makes every SPI report say it "does not yet support clearing
+ * experimental" while asking for something no SPI report can ever produce --
+ * and it did, on a run that was otherwise 76 PASS / 0 FAIL.
+ *
+ * A skip that IS the operator's to fix must still block, or the distinction is
+ * just a way of ignoring gaps.
+ */
+static void test_structural_skip_is_not_a_blocker(void)
+{
+    begin("test_structural_skip_is_not_a_blocker");
+    int fb = g_fail;
+
+    static imt_report_t r;
+    imt_check_t *c;
+
+    /* Structural: unrunnable on this transport, so the run is still complete. */
+    stage_clean_report(&r, false, false);
+    c = (imt_check_t *)imt_find(&r, "imu.probe.reject");
+    EXPECT(c != NULL, "the required check is staged");
+    if (c) { c->status = IMT_SKIP; c->structural = true; r.n_pass--; r.n_skip++; }
+    imt_decide_verdict(&r);
+    EXPECT(r.recommend_clear_experimental,
+           "a structurally unrunnable check does not withhold the verdict");
+    EXPECT(strstr(r.verdict, "did not run") == NULL,
+           "and is not reported as an outstanding blocker");
+    /*
+     * But it must still be SAID.  The spec's original reasoning for blocking
+     * was that unobtained evidence is not a pass, and that is right; what was
+     * wrong was making it an unachievable gate.  Naming it keeps the honesty
+     * without the deadlock.
+     */
+    EXPECT(strstr(r.verdict, "imu.probe.reject") != NULL,
+           "the unobtainable check is named in the verdict, not hidden");
+    EXPECT(strlen(r.verdict) < sizeof r.verdict - 1,
+           "the verdict is not truncated by the added clause");
+
+    /* Not structural: the same id, skipped for a reason the operator owns. */
+    stage_clean_report(&r, false, false);
+    c = (imt_check_t *)imt_find(&r, "imu.probe.reject");
+    if (c) { c->status = IMT_SKIP; c->structural = false; r.n_pass--; r.n_skip++; }
+    imt_decide_verdict(&r);
+    EXPECT(!r.recommend_clear_experimental,
+           "an ordinary skip of a required check still blocks");
+    EXPECT(strstr(r.verdict, "did not run") != NULL,
+           "and is named in the verdict");
+
+    end(fb);
+}
+
+/*
+ * The FAIL verdict framed itself around clearing `experimental` whether or not
+ * the flag was set, so a driver already cleared was told it "is not ready to
+ * have its experimental flag cleared" -- a state that does not exist.  Same
+ * reasoning the clean-run branch has always applied.
+ */
+static void test_fail_verdict_respects_experimental_flag(void)
+{
+    begin("test_fail_verdict_respects_experimental_flag");
+    int fb = g_fail;
+
+    static imt_report_t r;
+
+    stage_clean_report(&r, false, false);
+    r.n_fail = 1;
+    imt_decide_verdict(&r);
+    EXPECT(strstr(r.verdict, "experimental") == NULL,
+           "a FAIL on an already-cleared driver does not mention the flag");
+    EXPECT(strstr(r.verdict, "FAILED") != NULL, "but still reports the failure");
+
+    stage_clean_report(&r, true, false);
+    r.n_fail = 1;
+    imt_decide_verdict(&r);
+    EXPECT(strstr(r.verdict, "experimental") != NULL,
+           "an experimental driver is still told what the failure costs it");
+
+    end(fb);
+}
+
 static void test_verdict_respects_experimental_flag(void)
 {
     begin("test_verdict_respects_experimental_flag");
@@ -3452,6 +3534,8 @@ int main(void)
     test_chipts_rate_uses_measured();
     test_chipts_wall_bands();
     test_verdict_respects_experimental_flag();
+    test_structural_skip_is_not_a_blocker();
+    test_fail_verdict_respects_experimental_flag();
 
     test_terminal_digest();
     test_abort_stops_the_run();   /* LAST: g_abort never resets (see below) */
