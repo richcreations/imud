@@ -77,6 +77,21 @@ size_t status_format(char *buf, size_t sz, const status_input_t *in)
     WS("Attitude:       pitch=%.1f  roll=%.1f  heading=%.1f M\n",
         pitch_deg, roll_deg, state->heading_deg);
 
+    /*
+     * FLAG_MAG_VALID is set only once mekf_update_mag() has actually run, so
+     * its absence means the yaw update is not executing and heading is being
+     * dead-reckoned from the gyro.  Say so next to the number, because the
+     * number itself looks entirely reasonable: measured on a static bench with
+     * no mag calibration, heading walked 220 degrees in 24 minutes while pitch
+     * and roll stayed correct to a tenth of a degree.  The "Calibration: mag
+     * no" line above is a statement about a file; this is a statement about
+     * whether the reading can be believed.
+     */
+    if (!(state->flags & FLAG_MAG_VALID))
+        WS("                heading is DEAD RECKONED — the magnetometer is not\n"
+           "                being fused, so it drifts at the gyro bias rate\n"
+           "                without bound.  Run `imud-cal mag`.\n");
+
     if (state->flags & FLAG_DECLINATION_VALID) {
         float true_hdg = fmodf(state->heading_deg + state->declination_deg
                                + 360.0f, 360.0f);

@@ -64,6 +64,56 @@ static void baseline(imud_config_t *cfg, status_input_t *in)
 
 /* ── The always-present lines ────────────────────────────────────────────── */
 
+/*
+ * Heading is dead-reckoned whenever the yaw update is not running, and the
+ * number on its own gives no hint of it: measured on a static bench with no mag
+ * calibration, heading walked 220 degrees in 24 minutes while pitch and roll
+ * stayed correct to a tenth of a degree.  FLAG_MAG_VALID is set only once
+ * mekf_update_mag() has actually run, so it is the precise signal.
+ *
+ * "Calibration: mag no" already appears above, but that reports whether a FILE
+ * exists.  This reports whether the heading can be believed, which is the
+ * question an operator is actually asking.
+ */
+static void test_heading_dead_reckoned_is_called_out(void)
+{
+    begin("test_heading_dead_reckoned_is_called_out");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    char buf[4096];
+
+    /* Yaw update running: the heading stands on its own. */
+    baseline(&cfg, &in);
+    in.state.flags = FLAG_MAG_VALID;
+    status_format(buf, sizeof buf, &in);
+    EXPECT(has(buf, "heading=123.4 M"), "heading still reported when fused");
+    EXPECT(!has(buf, "DEAD RECKONED"),
+           "no warning when the magnetometer is being fused");
+
+    /* Yaw update not running: the number needs the caveat beside it. */
+    baseline(&cfg, &in);
+    in.state.flags = 0;
+    status_format(buf, sizeof buf, &in);
+    EXPECT(has(buf, "heading=123.4 M"), "heading is still reported");
+    EXPECT(has(buf, "DEAD RECKONED"), "dead-reckoning is called out");
+    EXPECT(has(buf, "imud-cal mag"), "and says what to do about it");
+
+    /*
+     * The distinction that matters: a calibration FILE is not the same as a
+     * running update.  A mag cal loaded but no update yet performed must still
+     * warn, or the caveat disappears exactly when a stalled magnetometer makes
+     * it most necessary.
+     */
+    baseline(&cfg, &in);
+    in.state.flags = FLAG_MAG_CAL;          /* cal loaded, update never ran */
+    status_format(buf, sizeof buf, &in);
+    EXPECT(has(buf, "DEAD RECKONED"),
+           "a loaded calibration alone does not clear the warning");
+
+    end(fb);
+}
+
 static void test_core_lines(void)
 {
     begin("test_core_lines");
@@ -405,6 +455,7 @@ int main(void)
     printf("test_status — imud-status report text\n");
 
     test_core_lines();
+    test_heading_dead_reckoned_is_called_out();
     test_fusion_lines();
     test_declination();
     test_heave_and_wave();

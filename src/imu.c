@@ -886,6 +886,21 @@ void *fusion_thread(void *arg)
     if (ctx->cal.has_accel) cal_flags |= FLAG_ACCEL_CAL;
     if (ctx->cal.has_mag)   cal_flags |= FLAG_MAG_CAL;
 
+    /*
+     * Without a mag calibration every mag sample is marked invalid (see where
+     * s.valid is set from cal.has_mag) and mekf_update_mag() returns on
+     * !m->valid -- so the yaw update never runs and heading is dead-reckoned.
+     * That is a considerable degradation to leave implicit: measured on a
+     * static bench, heading walked 220 degrees in 24 minutes while pitch and
+     * roll held to a tenth of a degree, so nothing else in the output looks
+     * wrong while it happens.
+     */
+    else if (ctx->mag_ops)
+        LOG_W("[fusion] no magnetometer calibration — the yaw update is "
+              "disabled, so heading is dead-reckoned from the gyro and drifts "
+              "without bound. Pitch and roll are unaffected. Run "
+              "`imud-cal mag`.\n");
+
     if (ctx->cal.has_gyro) {
         memcpy(init_bias, ctx->cal.gyro_bias, sizeof(init_bias));
         cal_flags |= FLAG_GYRO_CAL;
