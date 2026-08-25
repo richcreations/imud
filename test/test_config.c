@@ -1759,6 +1759,63 @@ static void test_mount_preset(void)
     X(pos_wmm_file) X(pos_declination_deg) X(pos_declination_valid) \
     X(pos_mref_h_gauss) X(pos_mref_z_gauss) X(pos_mref_valid)
 
+/*
+ * A magnetometer that shares an SPI controller with the IMU stops measuring
+ * when the IMU's clock is slow — measured on the reference pair, and silent:
+ * the mag simply stops, with nothing in the log.  The predicate behind that
+ * warning is what is pinned here, since the warning itself is a log line.
+ *
+ * The two halves both matter.  Too eager and it fires on the default (0 means
+ * the part's maximum, and is fine) or on a bus with no magnetometer on it,
+ * where a slow clock is the operator's business.  Too lax and it misses the
+ * case that costs a silent magnetometer.
+ */
+static void test_spi_mag_clock_risk(void)
+{
+    begin_test("test_spi_mag_clock_risk");
+    int fb = g_fail;
+
+    imud_config_t c;
+    config_defaults(&c);
+    c.imu_bus_kind = BUS_SPI;
+    c.mag_bus_kind = BUS_SPI;
+    snprintf(c.imu_spi_dev, sizeof c.imu_spi_dev, "/dev/spidev0.0");
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "/dev/spidev0.1");
+
+    c.imu_spi_speed_hz = 1000000;
+    EXPECT(config_spi_mag_clock_risk(&c), "1 MHz on a shared controller is a risk");
+
+    c.imu_spi_speed_hz = IMUD_SPI_MAG_SAFE_HZ - 1;
+    EXPECT(config_spi_mag_clock_risk(&c), "just under the threshold is a risk");
+
+    c.imu_spi_speed_hz = IMUD_SPI_MAG_SAFE_HZ;
+    EXPECT(!config_spi_mag_clock_risk(&c), "the threshold itself is allowed");
+
+    c.imu_spi_speed_hz = 10000000;
+    EXPECT(!config_spi_mag_clock_risk(&c), "a fast clock is no risk");
+
+    /* 0 is the documented default and means the part's declared maximum. */
+    c.imu_spi_speed_hz = 0;
+    EXPECT(!config_spi_mag_clock_risk(&c), "the default never warns");
+
+    /* Separate controllers do not share SCK or MOSI. */
+    c.imu_spi_speed_hz = 1000000;
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "/dev/spidev1.0");
+    EXPECT(!config_spi_mag_clock_risk(&c), "a different controller is not shared");
+
+    /* A magnetometer on I2C is not on the IMU's clock line at all. */
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "/dev/spidev0.1");
+    c.mag_bus_kind = BUS_I2C;
+    EXPECT(!config_spi_mag_clock_risk(&c), "an I2C magnetometer is unaffected");
+
+    /* And an IMU on I2C has no SPI clock to be slow. */
+    c.mag_bus_kind = BUS_SPI;
+    c.imu_bus_kind = BUS_I2C;
+    EXPECT(!config_spi_mag_clock_risk(&c), "an I2C IMU cannot starve it");
+
+    end_test(fb);
+}
+
 static void test_apply_hot_partition(void)
 {
     begin_test("test_apply_hot_partition");
@@ -1863,6 +1920,7 @@ int main(void)
     test_sim_conf_loads();
     test_mount_preset();
     test_apply_hot_partition();
+    test_spi_mag_clock_risk();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -306,6 +306,18 @@ typedef struct {
  * exists but cannot be read means the operator wrote a config we are silently
  * ignoring, which for a bridge would look exactly like "disabled in config".
  */
+/*
+ * The slowest [imu] spi_speed_hz that leaves a magnetometer sharing the same
+ * SPI controller working.  Measured knee is 2.2-2.1 MHz on an RP1 controller;
+ * this keeps margin.  See config_spi_mag_clock_risk() and the long comment in
+ * drivers/mmc5983ma.c.
+ */
+#define IMUD_SPI_MAG_SAFE_HZ 2500000
+
+/* True when [imu] spi_speed_hz is slow enough to stop a magnetometer sharing
+ * the same SPI controller.  Warned about at load; never fatal. */
+bool config_spi_mag_clock_risk(const imud_config_t *cfg);
+
 int  config_load(const char *path, imud_config_t *cfg);
 
 /*

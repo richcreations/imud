@@ -438,6 +438,53 @@ void config_mag_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
  * later. Reported the same way as a bad value — every problem in one pass,
  * and the daemon refuses to start.
  */
+/*
+ * The controller index in a spidev node name: 0 for "/dev/spidev0.1".  Two
+ * parts on the same index share one controller, and therefore share SCK and
+ * MOSI.  -1 when the name is not a spidev node.
+ */
+static int spidev_controller(const char *dev)
+{
+    const char *p = strstr(dev, "spidev");
+    if (!p) return -1;
+    p += 6;
+    if (!isdigit((unsigned char)*p)) return -1;
+    int n = 0;
+    while (isdigit((unsigned char)*p)) n = n * 10 + (*p++ - '0');
+    return *p == '.' ? n : -1;
+}
+
+/*
+ * True when this configuration will silently stop a shared-bus magnetometer.
+ *
+ * Measured on an ism330dhcx + mmc5983ma pair on one RP1 controller: driving the
+ * IMU below about 2.2 MHz stops the MMC5983MA completing measurements.  The
+ * part answers SPI perfectly throughout and a single-shot trigger still
+ * converts, but continuous mode is off and re-running init() cannot hold it --
+ * the next burst clears it again.  The vector is the run of zero bytes spidev
+ * sends as the data phase of a burst read: that part chooses its interface from
+ * the CS level and has no I2C_disable, so while its CS is high it is on those
+ * same lines as an I2C slave.  A slow clock is what lets the run through its
+ * input filter.  See the long comment in drivers/mmc5983ma.c.
+ *
+ * This is a warning, not an error.  The configuration is legal, the default
+ * (0, meaning each part's declared maximum) is unaffected, and an operator with
+ * only an IMU on the bus is entitled to a slow clock.  What is not acceptable
+ * is the silence: the magnetometer simply stops, with nothing in the log.
+ */
+bool config_spi_mag_clock_risk(const imud_config_t *cfg)
+{
+    if (cfg->imu_bus_kind != BUS_SPI || cfg->mag_bus_kind != BUS_SPI)
+        return false;
+    if (cfg->imu_spi_speed_hz <= 0)                 /* 0 = the part's maximum */
+        return false;
+    if (cfg->imu_spi_speed_hz >= IMUD_SPI_MAG_SAFE_HZ)
+        return false;
+    int imu_c = spidev_controller(cfg->imu_spi_dev);
+    int mag_c = spidev_controller(cfg->mag_spi_dev);
+    return imu_c >= 0 && imu_c == mag_c;
+}
+
 static int validate_bus(const imud_config_t *cfg, const char *path)
 {
     int rc = 0;
@@ -460,6 +507,13 @@ static int validate_bus(const imud_config_t *cfg, const char *path)
               "(0 means the driver's maximum)\n", path);
         rc = CONFIG_ERR_PARSE;
     }
+
+    if (config_spi_mag_clock_risk(cfg))
+        LOG_W("%s: [imu] spi_speed_hz = %d is below %d Hz and [mag] shares the "
+              "same SPI controller — the magnetometer will stop measuring. "
+              "Use 0 (the part maximum) or at least %d Hz.\n",
+              path, cfg->imu_spi_speed_hz, IMUD_SPI_MAG_SAFE_HZ,
+              IMUD_SPI_MAG_SAFE_HZ);
 
     return rc;
 }

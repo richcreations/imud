@@ -385,11 +385,14 @@ SPI clock in Hz.
 .B 0
 means the driver's datasheet maximum, which is the useful default.
 A request above that maximum is clamped rather than refused, and the daemon
-logs the rate it really programmed.'''
+logs the rate it really programmed.
+Setting this below 2.5\~MHz while a magnetometer shares the same SPI
+controller stops that magnetometer measuring; the daemon warns at startup
+when it sees that combination.'''
   md_type = 'int'
   md_default = '`0`'
   desc = '''
-SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed.'''
+SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. **Do not set this below 2.5 MHz when a magnetometer shares the same SPI controller.** Measured on an ism330dhcx + mmc5983ma pair: driving the IMU below about 2.2 MHz stops the magnetometer completing measurements entirely, and re-running `init()` cannot hold it. The default is unaffected, and the daemon warns at startup when it sees a slow clock alongside a shared-bus magnetometer.'''
 
   [[section.key]]
   names = ["i2c_addr"]
@@ -650,11 +653,14 @@ SPI clock in Hz.
 .B 0
 means the driver's datasheet maximum, which is the useful default.
 A request above that maximum is clamped rather than refused, and the daemon
-logs the rate it really programmed.'''
+logs the rate it really programmed.
+This part's own clock is not the hazard: it is the
+.B [imu]
+clock that stops a shared-bus magnetometer.'''
   md_type = 'int'
   md_default = '`0`'
   desc = '''
-SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`.'''
+SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`. Note that a magnetometer's *own* clock is not what starves it on a shared controller — a slow `[imu] spi_speed_hz` is. This key can be lowered safely.'''
 
   [[section.key]]
   names = ["i2c_addr"]

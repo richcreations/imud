@@ -221,6 +221,9 @@ SPI clock in Hz.
 means the driver's datasheet maximum, which is the useful default.
 A request above that maximum is clamped rather than refused, and the daemon
 logs the rate it really programmed.
+Setting this below 2.5\~MHz while a magnetometer shares the same SPI
+controller stops that magnetometer measuring; the daemon warns at startup
+when it sees that combination.
 .TP
 .B i2c_addr
 .RI (int,\ default:\ 0x6B)
@@ -360,6 +363,9 @@ SPI clock in Hz.
 means the driver's datasheet maximum, which is the useful default.
 A request above that maximum is clamped rather than refused, and the daemon
 logs the rate it really programmed.
+This part's own clock is not the hazard: it is the
+.B [imu]
+clock that stops a shared-bus magnetometer.
 .TP
 .B i2c_addr
 .RI (int,\ default:\ 0x30)
