@@ -269,6 +269,15 @@ static struct {
 static _Atomic int pb_imu_status = SIM_PB_OFF;
 static _Atomic int pb_mag_status = SIM_PB_OFF;
 
+/*
+ * Capture-clock timestamps of the newest IMU sample handed out, published for
+ * sim_playback_timebase().  Outside `pb` for the same reason as the status
+ * words above: sim_set_playback() memsets pb.imu/pb.mag, and a memset over an
+ * _Atomic is not an atomic store.
+ */
+static _Atomic uint64_t pb_imu_cap_wall_ns;
+static _Atomic uint64_t pb_imu_cap_mono_ns;
+
 void sim_set_playback(const char *file, bool loop, float speed)
 {
     if (pb.imu.open) cap_reader_close(&pb.imu.rdr);
@@ -289,6 +298,9 @@ void sim_set_playback(const char *file, bool loop, float speed)
      * stale EOF left from the previous run would make the next one decide its
      * playback had already finished before reading a byte.
      */
+    atomic_store_explicit(&pb_imu_cap_wall_ns, 0, memory_order_release);
+    atomic_store_explicit(&pb_imu_cap_mono_ns, 0, memory_order_release);
+
     int fresh = pb.enabled ? SIM_PB_RUNNING : SIM_PB_OFF;
     atomic_store_explicit(&pb_imu_status, fresh, memory_order_release);
     atomic_store_explicit(&pb_mag_status, fresh, memory_order_release);
@@ -323,6 +335,16 @@ sim_pb_state_t sim_playback_state(void)
      */
     if (i == SIM_PB_EOF && m == SIM_PB_EOF)     return SIM_PB_EOF;
     return SIM_PB_RUNNING;
+}
+
+bool sim_playback_timebase(uint64_t *wall_ns, uint64_t *mono_ns)
+{
+    uint64_t w = atomic_load_explicit(&pb_imu_cap_wall_ns, memory_order_acquire);
+    uint64_t m = atomic_load_explicit(&pb_imu_cap_mono_ns, memory_order_acquire);
+    if (!pb.enabled || m == 0) return false;
+    *wall_ns = w;
+    *mono_ns = m;
+    return true;
 }
 
 static void pb_start_once(void)
@@ -436,8 +458,24 @@ static int pb_imu_read(imu_sample_t *buf, int max, int *n_out)
     pb_start_once();
 
     int n = 0;
+    uint64_t last_mono = 0, burst_mono = 0;
     while (n < max) {
         if (pb_fetch(&pb.imu, CAP_REC_IMU) <= 0) break;
+        /*
+         * One recorded burst per call.  The writer stamps every sample of a
+         * FIFO burst with the same delivery instant, so equal mono_ns is
+         * exactly the grouping the live daemon read off the part -- and
+         * replaying that grouping is the difference between a deterministic
+         * run and a nearly-deterministic one.  Handing back "whatever is due
+         * right now" instead made the split a function of when the reader
+         * thread happened to be scheduled, and the daemon pairs its
+         * chip->wall anchor with the LAST sample of a burst: a boundary one
+         * sample either way moved the anchor, moved the slope, and moved dt
+         * for every step after it.  Three realtime replays of one capture
+         * agreed for 4381 frames and then split three ways.
+         */
+        if (n == 0) burst_mono = pb.imu.pend.mono_ns;
+        else if (pb.imu.pend.mono_ns != burst_mono) break;
         uint64_t rel = pb_rel(&pb.imu, pb.imu.pend.mono_ns);
         if (!pb_due(rel)) break;
         buf[n] = pb.imu.pend.imu;
@@ -445,8 +483,22 @@ static int pb_imu_read(imu_sample_t *buf, int max, int *n_out)
         /* chip ticks are 25 µs — keep them consistent with the loop offset
          * so the daemon's chip→wall anchor never sees time run backwards */
         buf[n].chip_ts += (uint32_t)(pb.imu.mono_off / 25000u);
+        last_mono = pb.imu.pend.mono_ns + pb.imu.mono_off;
         n++;
         pb.imu.have_pend = false;
+    }
+    if (n > 0) {
+        /* Record mono_ns values are absolute on the RECORDING host's
+         * CLOCK_MONOTONIC, and the header carries that clock's origin
+         * alongside the matching CLOCK_REALTIME -- so the pair reconstructs
+         * the wall instant the live daemon stamped this sample with. */
+        const cap_header_t *h = &pb.imu.rdr.hdr;
+        uint64_t wall = (last_mono >= h->t0_mono_ns)
+                        ? h->t0_wall_ns + (last_mono - h->t0_mono_ns)
+                        : h->t0_wall_ns;
+        atomic_store_explicit(&pb_imu_cap_mono_ns, last_mono,
+                              memory_order_release);
+        atomic_store_explicit(&pb_imu_cap_wall_ns, wall, memory_order_release);
     }
     *n_out = n;
     /* Nothing handed out this call, so anything already delivered is in the

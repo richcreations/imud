@@ -64,6 +64,32 @@ Playback preserves the recorded chip timestamps and IMU/mag relative timing
 the capture's rate — the per-sample timing always comes from the recorded
 timestamps.
 
+**Replay is deterministic, and it runs on the capture's clock.** Replaying one
+file repeatedly produces bit-identical filter output — same quaternion, same
+bias, same `dt`, frame for frame. Three things are needed for that, and each
+one was a defect until 1.9.0:
+
+- Each read hands back the **burst that was recorded**, not whatever is due at
+  the instant the reader thread is scheduled. The writer stamps every sample of
+  a FIFO burst with one delivery instant, so the grouping is recoverable — and
+  it has to be, because the daemon pins its chip→wall anchor to the last sample
+  of a burst.
+- The chip→wall anchor is built from the **recording** host's clocks, which the
+  header carries, so `dt` is the one the live daemon computed rather than a
+  function of when the replay happened to run.
+- The reader threads' poll cadences are sized for a part filling a FIFO in real
+  time. Replay bypasses them, so `sim_speed` alone decides pacing.
+
+Because the timebase is the capture's, the `[stats]` latency figures during a
+replay are the ones the **live** daemon measured (`fifo=`), paired with this
+machine's own pipeline cost (`pipe=`); the two are on different clocks and
+imud keeps them apart deliberately.
+
+`sim_speed = 0` is a fidelity trade, not just a speed one: with pacing off, the
+two sensor streams are no longer held in their recorded relationship, and the
+IMU can outrun the ring and the aligner. Use it to get through a long file
+quickly; use `sim_speed = 1` when the fused output is what you care about.
+
 **The two forms end differently, on purpose.**
 
 `--replay` is a one-shot run over a finite file, so it **exits when the file

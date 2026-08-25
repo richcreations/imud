@@ -432,6 +432,66 @@ static const char *make_small_capture(void)
     return path;
 }
 
+/*
+ * Playback hands back the bursts that were RECORDED, not whatever happens to
+ * be due when the reader is scheduled.  The writer stamps every sample of one
+ * FIFO burst with the same delivery instant, so equal mono_ns is the grouping
+ * the live daemon read off the part -- and the daemon pins its chip->wall
+ * anchor to the LAST sample of a burst, so a boundary that moves by one
+ * sample moves the anchor, the slope, and dt for every step after it.  That
+ * was the last source of run-to-run drift in replay: three realtime replays
+ * of one capture agreed for 4381 frames and then split three ways.
+ */
+static void test_playback_replays_recorded_bursts(void)
+{
+    begin("test_playback_replays_recorded_bursts");
+    int fb = g_fail;
+
+    const char *path = path_in_dir("bursts.imucap");
+    cap_writer_t w;
+    cap_writer_open(&w, path, 100, 100000, "sim", "sim", "1.5", 0, 0);
+    /* 7 bursts of 3, then 1 of 2: distinct sizes, so a reader that regrouped
+     * them would have to get every count right by accident. */
+    const int sizes[] = { 3, 3, 3, 3, 3, 3, 3, 2 };
+    uint32_t seq = 0;
+    for (int b = 0; b < (int)(sizeof sizes / sizeof *sizes); b++) {
+        uint64_t mono = (uint64_t)(b + 1) * 10000000ull;   /* 10 ms apart */
+        for (int k = 0; k < sizes[b]; k++) {
+            imu_sample_t s;
+            memset(&s, 0, sizeof s);
+            sim_synth_imu((double)seq / 100.0, &s);
+            s.seq     = seq;
+            s.chip_ts = seq * 400u;
+            cap_writer_imu(&w, &s, mono);
+            seq++;
+        }
+    }
+    cap_writer_close(&w);
+
+    imud_bus_t nobus; bus_init(&nobus);
+    imu_cfg_t icfg = { .odr_mhz = 100, .accel_g = 8, .gyro_dps = 2000 };
+    sim_set_playback(path, false, 0.0f);
+    EXPECT(sim_imu_ops.init(&nobus, &icfg) == 0, "imu init (bursts)");
+
+    imu_sample_t buf[128];
+    int n = 0, got[16], nb = 0, total = 0;
+    for (int guard = 0; guard < 64 && nb < 16; guard++) {
+        EXPECT(sim_imu_ops.read(&nobus, buf, 128, &n) == 0, "imu read rc");
+        if (n == 0) break;
+        got[nb++] = n;
+        total += n;
+    }
+    EXPECT(total == 23, "every recorded sample replayed");
+    EXPECT(nb == 8, "one read per recorded burst, not one per sample "
+                    "and not one sweep of the lot");
+    bool shape = (nb == 8);
+    for (int b = 0; b < nb && b < 8; b++)
+        if (got[b] != sizes[b]) shape = false;
+    EXPECT(shape, "each read returned exactly the burst that was recorded");
+
+    end(fb);
+}
+
 static void test_playback_driver(void)
 {
     begin("test_playback_driver");
@@ -454,13 +514,20 @@ static void test_playback_driver(void)
     int total = 0, n = 0;
     uint32_t next_seq = 0;
     bool seq_ok = true;
-    for (int guard = 0; guard < 100; guard++) {
+    /* One RECORDED burst per read, so the guard is per burst, not per call
+     * that happens to sweep up everything due.  make_small_capture() stamps
+     * every sample with its own delivery instant, so here a burst is one
+     * sample and 500 reads are needed. */
+    bool one_per_read = true;
+    for (int guard = 0; guard < 600; guard++) {
         EXPECT(sim_imu_ops.read(&nobus, buf, 128, &n) == 0, "imu read rc");
         if (n == 0) break;
+        if (n != 1) one_per_read = false;
         for (int i = 0; i < n; i++)
             if (buf[i].seq != next_seq++) seq_ok = false;
         total += n;
     }
+    EXPECT(one_per_read, "a capture of one-sample bursts replays one per read");
     EXPECT(total == 500, "all 500 imu samples replayed");
     EXPECT(seq_ok, "imu seq contiguous");
     /* The IMU side is spent, the mag side is not — and a caller acting on
@@ -665,6 +732,7 @@ int main(void)
     test_ring();
     test_rotator();
     test_playback_driver();
+    test_playback_replays_recorded_bursts();
     test_end_to_end_replay();
 
     printf("%d passed, %d failed\n", g_pass, g_fail);

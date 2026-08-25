@@ -920,7 +920,7 @@ static void test_lat_step_windows_are_independent(void)
         uint64_t read_done = 1000000000ull + i * 1000000ull;
         lat_step(&fifo, &pipe, need,
                  /*wall*/ read_done + 40000000ull,   /* 40 ms ahead */
-                 read_done,
+                 read_done, read_done,
                  /*now*/  read_done + 300000ull,     /* 0.3 ms pipeline */
                  &pf, &pp);
         if (pf.valid) fifo_pubs++;
@@ -939,7 +939,7 @@ static void test_lat_step_windows_are_independent(void)
         uint64_t read_done = 1000000000ull + i * 1000000ull;
         /* now == read_done, so the pipe term is not recordable this pass. */
         lat_step(&fifo, &pipe, need, read_done - 30000000ull, read_done,
-                 read_done, &pf, &pp);
+                 read_done, read_done, &pf, &pp);
     }
     EXPECT(pf.valid,  "fifo publishes on its own count");
     EXPECT(!pp.valid, "pipe stays silent on an empty window rather than "
@@ -955,6 +955,45 @@ static void test_lat_step_windows_are_independent(void)
  * stamp; an unsigned underflow there lands in the top bucket and poisons p99
  * for the whole window.
  */
+/*
+ * Replay puts the two ends on two different clocks: the FIFO term is rebuilt
+ * on the RECORDING host's clock so it reproduces what the live daemon
+ * measured, while the pipeline term stays on the machine actually running.
+ * Feeding one stamp to both is what reported a 416010576.8 ms FIFO latency --
+ * the age of the recording, not a latency.
+ */
+static void test_lat_step_ends_are_on_independent_clocks(void)
+{
+    begin("test_lat_step_ends_are_on_independent_clocks");
+    int fb = g_fail;
+
+    lat_hist_t fifo, pipe;
+    lat_pub_t  pf, pp;
+    memset(&fifo, 0, sizeof fifo);
+    memset(&pipe, 0, sizeof pipe);
+
+    /* Capture clock: sample at t=1e9, delivered 5 ms later. */
+    const uint64_t cap_wall  = 1000000000ull;
+    const uint64_t cap_done  = cap_wall + 5000000ull;
+    /* This host, replaying it a long time afterwards. */
+    const uint64_t host_done = 9000000000000ull;
+    const uint64_t host_now  = host_done + 2000000ull;   /* 2 ms pipeline */
+
+    lat_step(&fifo, &pipe, 1, cap_wall, cap_done, host_done, host_now,
+             &pf, &pp);
+
+    /* need=1, so each window publishes and resets on this one call; the
+     * all-time max is what survives (see imu_math.h). */
+    EXPECT(pf.valid && pp.valid, "both terms recorded and published");
+    EXPECT(pf.max_ever <= 8000000ull && pf.max_ever >= 4000000ull,
+           "FIFO term is the 5 ms the recording saw, not the gap between "
+           "the recording and this replay");
+    EXPECT(pp.max_ever <= 3000000ull,
+           "pipeline term is this machine's 2 ms, not the capture's");
+
+    end(fb);
+}
+
 static void test_lat_step_clamps_rather_than_wraps(void)
 {
     begin("test_lat_step_clamps_rather_than_wraps");
@@ -967,7 +1006,7 @@ static void test_lat_step_clamps_rather_than_wraps(void)
 
     /* wall one ns past the read stamp, and now one ns before it. */
     lat_step(&fifo, &pipe, 1, /*wall*/ 1000001, /*read_done*/ 1000000,
-             /*now*/ 999999, &pf, &pp);
+             /*pipe_start*/ 1000000, /*now*/ 999999, &pf, &pp);
 
     EXPECT(fifo.count == 0, "wall past the read stamp records nothing");
     EXPECT(pipe.count == 0, "now before the read stamp records nothing");
@@ -1192,6 +1231,7 @@ int main(void)
     test_lat_reset_keeps_all_time_max();
     test_lat_step_windows_are_independent();
     test_lat_step_clamps_rather_than_wraps();
+    test_lat_step_ends_are_on_independent_clocks();
     test_anchor_interval_bounds();
     test_ts_ns();
     test_mount_rotation();

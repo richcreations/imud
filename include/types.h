@@ -86,6 +86,17 @@ typedef struct {
      * sum was ever discussed, and only the second is under imud's control.
      */
     uint64_t read_done_ns;
+    /*
+     * The same instant on THIS host's CLOCK_REALTIME, which is a different
+     * clock from read_done_ns only during replay: there read_done_ns is
+     * rebuilt on the recording host's clock so the FIFO term reproduces what
+     * the live daemon measured, and subtracting it from this machine's clock
+     * would measure the age of the recording instead (a capture replayed days
+     * later reported 416010576.8 ms).  The pipeline term is imud's own cost
+     * on the machine actually running, so it needs this one.  Live, the two
+     * are set from the same value.
+     */
+    uint64_t host_done_ns;
 } imu_sample_t;
 
 /* ── Magnetometer sample — one MMC5983MA reading ──────────────────────────── */

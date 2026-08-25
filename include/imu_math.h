@@ -222,8 +222,8 @@ typedef struct {
  * Caller keeps the histograms; this does no locking and no allocation.
  */
 void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
-              uint64_t wall_ns, uint64_t read_done_ns, uint64_t now_ns,
-              lat_pub_t *out_fifo, lat_pub_t *out_pipe);
+              uint64_t wall_ns, uint64_t fifo_end_ns, uint64_t pipe_start_ns,
+              uint64_t now_ns, lat_pub_t *out_fifo, lat_pub_t *out_pipe);
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
@@ -357,6 +357,28 @@ void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);
  * comment saying "reproduce imu.c exactly", which is the kind of duplication
  * that drifts.  Both callers now run this.
  */
+/*
+ * How many samples of one sensor the alignment window should collect.
+ *
+ * Both sensors are accumulated in the same loop, so they already cover the
+ * same span of time; what the mag side lacked was any target count.  Its
+ * drain simply emptied the ring on each pass and raced the reader thread, so
+ * the number of samples averaged over that span was set by scheduling rather
+ * than by the window.  Replaying one capture measured 2521, 2539 and 47 mag
+ * samples against a fixed 4165 accel -- out of roughly 8000 the reader
+ * produced -- so the alignment mean was reproducible only by luck, and at 47
+ * it was far noisier than the available data warranted.
+ *
+ * Giving the mag side the same window target bounds it: the count stops at
+ * the window rather than wherever the race happened to end.  rate_hz is the
+ * MEASURED rate, so the cap lands at the window's end rather than short of
+ * it.  It is a ceiling, not a floor -- where the reader cannot keep up the
+ * loop still ends with fewer, which is correct, just noisier.
+ *
+ * floor_n is the caller's minimum: 8 for accel, 1 for mag.
+ */
+int imu_align_window_samples(double window_s, float rate_hz, int floor_n);
+
 void imu_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
                          imu_sample_t *s);
 void mag_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,

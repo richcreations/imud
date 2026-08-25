@@ -1546,31 +1546,65 @@ delete a duplicate, not a refactor undertaken for tidiness.
   short capture whole. `startup_settle_sec` has to be shortened for a replay to
   report anything.
 
-  **What it is NOT is bit-deterministic**, which §6.3 assumed it would be. The
-  same file replayed twice gave an identical gyro bias
-  (`[0.00569, -0.00051, -0.00020]`) and identical attitude at every shared
-  sample count, but alignment consumed **2,521 mag samples one run and 2,539
-  the next**. The two reader threads poll on wall-clock cadences while playback
-  is paced in real time, so their interleaving varies; the accel count at
-  alignment was identical both runs (4,165) because that is what triggers it.
-  Making replay reproducible sample-for-sample would mean driving both readers
-  off the capture's own `mono_ns` instead of the wall clock. Worth knowing
-  before anyone writes a regression test that diffs two replays.
+  **It was NOT bit-deterministic; it is now.** *(fixed 2026-08-25.)* The
+  original finding stands as recorded: the same file replayed twice gave an
+  identical gyro bias and identical attitude at every shared sample count, but
+  alignment consumed **2,521 mag samples one run and 2,539 the next**. Three
+  separate causes were found by tracing the filter state per frame — quaternion,
+  bias and `dt` as raw bits — and diffing whole runs rather than the 20 Hz
+  `[stats]` cadence, which is too coarse to see any of this:
 
-  **One limitation found, and it is a real trap.** Playback is paced by the
-  reader threads, not by the capture's own timestamps, so a file recorded at a
-  magnetometer rate above what the reader cadences replays in *slower* than
-  real time and looks like a hang. A capture holding 49,401 mag records over
-  41.8 s (mag ODR left at 1000 Hz) was still playing after 180 s and had to be
-  killed, having delivered ~100 mag samples a second. `[sim] playback finished`
-  appears for the stream that ran out while the other keeps going, which is
-  what makes it read as a hang rather than as slow progress. Nothing is lost or
-  wrong — it just takes `captured_rate / replay_rate` times as long, and a
-  reader who does not know that will file a bug.
+  1. **The aligner's mag average had no target count.** Its drain is nested
+     inside the accel loop, so both averages always covered the same span —
+     the earlier reading of this as a span mismatch was wrong. What varied was
+     the sampling *density* of that span: 2,521, 2,539 or **47** samples out of
+     roughly 8,000 available, decided by scheduling. Now bounded by the window,
+     from the measured mag rate.
+  2. **`dt` came off an anchor built on the replay machine's clock.**
+     `chip_to_wall()` derives its slope from the (chip_ts, host time) pairs the
+     reader collects, so the filter was a function of when the run happened.
+     Three realtime replays diverged from frame 1081 and differed in **82.6%**
+     of frames, in `dt` alone, by 1.2e-10 growing to 8.9e-08. The capture header
+     carries the recording host's monotonic origin and matching realtime
+     instant; anchoring on those reproduces the `dt` the live daemon computed.
+  3. **Burst boundaries were a function of the clock.** Playback handed back
+     whatever was due when the reader was scheduled, and the anchor pins to the
+     LAST sample of a burst — so a boundary one sample either way moved the
+     anchor, the slope, and every `dt` after it. This was the residue: with (2)
+     fixed, three runs still split three ways at frame 4382 (**29.3%** of
+     frames). The writer stamps one delivery instant per burst, so the recorded
+     grouping is recoverable, and playback now replays it.
 
-  Also note `fifo=0.0/0.0ms` throughout a replay: the sim driver synthesises
-  `chip_ts`, so FIFO residence is not measurable there. §3.1 says the same
-  thing from the other direction.
+  With all three fixed, **three realtime replays of the same capture are
+  bit-identical across all 6,201 frames**. `test_playback_replays_recorded_bursts`
+  pins (3) against a fixture of known burst sizes.
+
+  Two cautions for anyone diffing replays. `sim_speed = 0` is deterministic but
+  **not faithful**: with pacing off the two streams lose their recorded
+  relationship, the IMU outruns the 256-deep ring (723 of 6,201 frames dropped,
+  `drains n=240.8 max=256`), and the aligner got **0** mag samples where the
+  paced run got 500 — a heading of 3.8° against 315.4°. Diff at `sim_speed = 1`.
+  And sample *counters* are not part of the guarantee; the fused output is.
+
+  **The "replays slower than real time" trap is fixed too.** It was not
+  inherent: both reader threads sleep a cadence sized for a part filling a FIFO
+  in real time — `(depth + int_grace)` sample periods — at the top of every
+  poll iteration, and `sim_speed` could not reach it because the sleep is on
+  the daemon's side of the driver. A capture recorded with a ~105 Hz
+  magnetometer was metered out at **33 Hz**, so a 125 s file took 372 s and
+  fused a third of the field samples the live daemon had, arriving further
+  behind the IMU stream as it went. Replay now bypasses both cadences: the same
+  file replays in **120 s**, with `mag=12635` intact and the aligner seeing its
+  full 500.
+
+  The earlier note that `fifo=0.0/0.0ms` throughout a replay applied to the sim
+  driver's *synthesis* mode. In playback `chip_ts` is the recorded one, so FIFO
+  residence is measurable — and on the capture's timebase it is the residence
+  the **live** daemon saw (16.4/32.8 ms on the bench file, against the
+  1048.6/1048.6 ms the old batching reported, which was the backlog being swept
+  into one read and called latency). `pipe=` stays on the replay machine's own
+  clock, which is why `imu_sample_t` carries both instants.
+
 ## 10. Filter mathematics  *(opened 2026-07-25, with measurements taken while acting on it)*
 
 Filter-mathematics items that were **not** actioned in 1.7, plus two findings

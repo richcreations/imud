@@ -269,11 +269,13 @@ static void lat_pub_if_ready(lat_hist_t *h, uint64_t need, lat_pub_t *out)
 }
 
 void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
-              uint64_t wall_ns, uint64_t read_done_ns, uint64_t now_ns,
-              lat_pub_t *out_fifo, lat_pub_t *out_pipe)
+              uint64_t wall_ns, uint64_t fifo_end_ns, uint64_t pipe_start_ns,
+              uint64_t now_ns, lat_pub_t *out_fifo, lat_pub_t *out_pipe)
 {
-    if (read_done_ns > wall_ns)      lat_record(fifo, read_done_ns - wall_ns);
-    if (now_ns       > read_done_ns) lat_record(pipe, now_ns - read_done_ns);
+    /* Two ends, not one: they are the same instant on two different clocks
+     * during replay.  See imu_sample_t.host_done_ns. */
+    if (fifo_end_ns > wall_ns)       lat_record(fifo, fifo_end_ns - wall_ns);
+    if (now_ns      > pipe_start_ns) lat_record(pipe, now_ns - pipe_start_ns);
 
     /* Two calls, never one condition covering both — see imu_math.h. */
     lat_pub_if_ready(fifo, need, out_fifo);
@@ -401,6 +403,17 @@ void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3])
                 + cfg->mount_rot[2][1] * v[1]
                 + cfg->mount_rot[2][2] * v[2];
     v[0] = (float)out0; v[1] = (float)out1; v[2] = (float)out2;
+}
+
+int imu_align_window_samples(double window_s, float rate_hz, int floor_n)
+{
+    if (!(window_s > 0.0)) window_s = 1.0;
+    if (!(rate_hz  > 0.0f)) return floor_n > 0 ? floor_n : 1;
+    double n = window_s * (double)rate_hz;
+    if (n > 1e9) n = 1e9;
+    int out = (int)n;
+    if (out < floor_n) out = floor_n;
+    return out < 1 ? 1 : out;
 }
 
 void imu_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,

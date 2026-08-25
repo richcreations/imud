@@ -357,6 +357,10 @@ void *ism_reader_thread(void *arg)
      */
     long imu_poll_ms = cfg.imu_poll_ms > 0 ? cfg.imu_poll_ms : imu_wait_ms;
 
+    /* Replaying a capture rather than reading a part: see the poll branch. */
+    const bool replaying = (cfg.sim_file[0] != '\0');
+    bool       got_burst = true;
+
     while (!ctx->stop) {
         if (ctx->imu_line) {
             int gr = wait_gpio_edge(ctx->imu_line, imu_wait_ms);
@@ -368,13 +372,26 @@ void *ism_reader_thread(void *arg)
             }
             /* gr == 0: the line was late — fall through to read anyway */
             atomic_fetch_add(gr > 0 ? &ctx->drains_edge : &ctx->drains_timeout, 1);
-        } else {
+        } else if (!replaying) {
             struct timespec t = { .tv_sec = imu_poll_ms / 1000,
                                   .tv_nsec = (imu_poll_ms % 1000) * 1000000L };
             nanosleep(&t, NULL);
             if (ctx->stop) break;
             /* Every drain is a timer drain here, by construction. */
             atomic_fetch_add(&ctx->drains_timeout, 1);
+        } else {
+            /*
+             * Replay, same reasoning as the mag reader's poll branch: this
+             * cadence is sized for a part's FIFO filling in real time, and
+             * there is no part.  It is worse here than there, because
+             * playback hands back one RECORDED burst per call -- so a
+             * capture of 1-2 sample bursts was being metered out at one
+             * burst per (fifo_wm + int_grace) sample periods, 192 ms at the
+             * default depth, and a two-minute capture took the best part of
+             * an hour.  Poll finely and let playback's own pacing decide.
+             */
+            if (!got_burst) usleep(200);
+            if (ctx->stop) break;
         }
 
 
@@ -438,7 +455,12 @@ void *ism_reader_thread(void *arg)
         if ((uint64_t)n > atomic_load(&ctx->drain_max))
             atomic_store(&ctx->drain_max, (uint64_t)n);
 
+        got_burst = (n > 0);
         if (n == 0) continue;
+        /* Counted per delivered burst rather than per poll: the replay branch
+         * above polls far faster than it reads, and counting polls would make
+         * the drain statistics a measure of the poll loop. */
+        if (replaying) atomic_fetch_add(&ctx->drains_timeout, 1);
 
         /* Black-box tap: raw samples exactly as the driver delivered them
          * (pre-mount, pre-cal) so replay traverses the identical pipeline.
@@ -451,12 +473,42 @@ void *ism_reader_thread(void *arg)
                 cap_ring_push_imu(&ctx->cap_ring, &buf[i], mono);
         }
 
+        /*
+         * Replay runs on the CAPTURE's clock, not on this host's.
+         *
+         * chip_to_wall() derives its slope from the (chip_ts, host time) pairs
+         * fed to anchor_update() below, and dt for every fusion step comes off
+         * that slope -- so anchoring a replay against the replay machine made
+         * the filter a function of when the run happened rather than of the
+         * file.  Three realtime replays of one capture diverged from frame
+         * 1081 and differed in 82.6% of frames, in dt alone.  The capture
+         * carries the recording host's monotonic origin and the matching
+         * realtime instant, so replaying against those reproduces the dt the
+         * live daemon computed, identically on every run.
+         *
+         * read_done_ns has to move with it.  It is the far end of the FIFO
+         * latency measurement whose near end is the chip timestamp, and
+         * mixing a capture-clock wall with a live read_done measures the age
+         * of the recording: a capture replayed days later reported a FIFO
+         * latency of 416010576.8 ms.  On the capture clock the same
+         * subtraction reproduces the latency the live daemon saw.
+         *
+         * TAI comes from the same reconstructed wall time: a capture records
+         * no TAI offset, and replay already warns ts_tai_ns is unreliable.
+         */
+        uint64_t cap_wall = 0, cap_mono = 0;
+        const bool cap_tb = sim_playback_timebase(&cap_wall, &cap_mono);
+
         /* When this burst's I2C read finished — the boundary between FIFO
          * residence (the operator's fifo_wm/odr) and the daemon's own
          * pipeline.  t_after is already CLOCK_REALTIME immediately after the
          * read, so this costs a store per sample and no extra syscall. */
-        const uint64_t read_done = ts_ns(&t_after);
-        for (int i = 0; i < n; i++) buf[i].read_done_ns = read_done;
+        const uint64_t read_done = cap_tb ? cap_wall : ts_ns(&t_after);
+        const uint64_t host_done = ts_ns(&t_after);
+        for (int i = 0; i < n; i++) {
+            buf[i].read_done_ns = read_done;
+            buf[i].host_done_ns = host_done;
+        }
 
         /* Calibrate in sensor axes, then rotate board->body — the order is
          * load-bearing, see imu_finalise_sample(). */
@@ -469,6 +521,10 @@ void *ism_reader_thread(void *arg)
          * reason it is not simply the middle of the read. */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
+        if (cap_tb) {
+            now.tv_sec  = (time_t)(cap_mono / 1000000000ULL);
+            now.tv_nsec = (long)  (cap_mono % 1000000000ULL);
+        }
         double elapsed = anchor_valid
             ? (double)(now.tv_sec  - anchor_last.tv_sec)
               + (double)(now.tv_nsec - anchor_last.tv_nsec) * 1e-9
@@ -500,13 +556,15 @@ void *ism_reader_thread(void *arg)
                          || !ctx->imu_ops->has_hw_timestamp
                          || elapsed >= want;
         if (do_anchor) {
-            uint64_t wall_at = anchor_wall_ns(ts_ns(&t_before), ts_ns(&t_after),
-                                              ctx->imu_ops->has_hw_timestamp);
+            uint64_t wall_at = cap_tb
+                ? cap_wall
+                : anchor_wall_ns(ts_ns(&t_before), ts_ns(&t_after),
+                                 ctx->imu_ops->has_hw_timestamp);
             /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
              * runs on; the REALTIME pair is only the absolute reference, and
              * an NTP step in it must not be read as the oscillator drifting. */
             anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_at,
-                          ts_ns(&t_tai), ts_ns(&now),
+                          cap_tb ? cap_wall : ts_ns(&t_tai), ts_ns(&now),
                           ctx->imu_ops->has_hw_timestamp
                               ? ctx->ts_tick_ns : 0);
             anchor_last  = now;
@@ -614,6 +672,10 @@ void *mag_reader_thread(void *arg)
     clock_gettime(CLOCK_MONOTONIC, &last_good);
     bool stall_warned = false;
 
+    /* Replaying a capture rather than reading a part: see the poll branch. */
+    const bool replaying  = (cfg.sim_file[0] != '\0');
+    bool       got_sample = true;
+
     while (!ctx->stop) {
         if (ctx->mag_line) {
             /* Interrupt-driven, with a rate-sized fallback: see above. */
@@ -627,10 +689,27 @@ void *mag_reader_thread(void *arg)
         } else {
             /* No interrupt pin, so no expected arrival to be late against:
              * the fixed poll cadence applies here and nowhere else.  The
-             * driver read() polls DRDY internally, so no stale data. */
-            struct timespec t = { .tv_sec = mag_poll_ms / 1000,
-                                  .tv_nsec = (mag_poll_ms % 1000) * 1000000L };
-            nanosleep(&t, NULL);
+             * driver read() polls DRDY internally, so no stale data.
+             *
+             * Replay is the exception, and the cadence was actively wrong
+             * there: there is no bus to spare and no part to outrun, and the
+             * capture's own record timestamps already pace the stream via
+             * sim_speed.  Sleeping the hardware fallback throttled a replayed
+             * mag stream to one sample per (1 + int_grace) periods -- 30 ms,
+             * 33 Hz, against the ~105 Hz the capture actually held -- so the
+             * filter was re-fused against a third of the field samples the
+             * live daemon had, arriving further and further behind the IMU
+             * stream as the run went on.  sim_speed could not fix it: the
+             * sleep is on this side of the driver.  Poll finely instead and
+             * let the driver's own pacing decide when the next record is due.
+             */
+            if (!replaying) {
+                struct timespec t = { .tv_sec = mag_poll_ms / 1000,
+                                      .tv_nsec = (mag_poll_ms % 1000) * 1000000L };
+                nanosleep(&t, NULL);
+            } else if (!got_sample) {
+                usleep(200);   /* not due yet -- yield without pacing it */
+            }
             if (ctx->stop) break;
         }
 
@@ -655,6 +734,7 @@ void *mag_reader_thread(void *arg)
         }
 
         int mrc = ctx->mag_ops->read(&ctx->mag_bus, &s);
+        got_sample = (mrc == 0);
         if (mrc > 0) {
             /*
              * No new measurement, so nothing is pushed -- re-fusing a stale
@@ -1019,11 +1099,30 @@ void *fusion_thread(void *arg)
          */
         double aw_s = ctx->cfg.align_window_sec;
         if (!(aw_s > 0.0)) aw_s = 1.0;
-        int    n_avg = (int)(aw_s * odr_hz);
-        if (n_avg < 8) n_avg = 8;
+        int    n_avg = imu_align_window_samples(aw_s, odr_hz, 8);
 
         /* The mag-starvation fallback must outlast the averaging window. */
         double mag_wait_s = (aw_s > 5.0) ? aw_s : 5.0;
+
+        /*
+         * The magnetometer average has to cover the SAME window as the
+         * accelerometer one, and it did not.  The accel loop below stops at a
+         * count -- aw_s * odr_hz -- while the mag drain took whatever happened
+         * to be sitting in the ring, with the starvation guard further down
+         * only catching mag_n == 0.  So the two means were taken over
+         * different spans: measured on a replay, alignment averaged 4165 accel
+         * samples (5 s at the configured rate) against 2521 mag samples, which
+         * at ~105 Hz is about 24 seconds of field.  On a platform that turns
+         * during those extra 19 seconds the mag mean is smeared over a heading
+         * range the accel mean never saw, and the alignment tilts by the
+         * difference.
+         *
+         * It also made alignment irreproducible, which is how it was found: the
+         * count depends on a race between the mag reader filling the ring and
+         * this thread draining it, so the same capture replayed twice aligned
+         * from 2521 mag samples once and 2539 the next.
+         */
+        int n_mag_avg = imu_align_window_samples(aw_s, mag_odr_hz, 1);
 
         struct timespec align_start;
         clock_gettime(CLOCK_MONOTONIC, &align_start);
@@ -1045,7 +1144,8 @@ void *fusion_thread(void *arg)
                 acc_sum[2] += isample.accel[2];
                 acc_n++;
             }
-            while (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+            while (mag_n < n_mag_avg
+                   && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
                 if (msample.valid || mag_uncal) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
@@ -1339,6 +1439,7 @@ void *fusion_thread(void *arg)
             clock_gettime(CLOCK_REALTIME, &t_now);
             uint64_t now_ns = ts_ns(&t_now);
 
+
             /*
              * Record and publish in one step, so the recording clamps and the
              * two independent window gates live together where they can be
@@ -1350,7 +1451,7 @@ void *fusion_thread(void *arg)
             lat_pub_t pf, pp;
             lat_step(&ctx->lat_fifo, &ctx->lat_pipe,
                      (uint64_t)((ctx->actual_odr_mhz + 500) / 1000),
-                     wall, s.read_done_ns, now_ns, &pf, &pp);
+                     wall, s.read_done_ns, s.host_done_ns, now_ns, &pf, &pp);
 
             if (pf.valid) {
                 atomic_store(&ctx->lat_fifo_p50, pf.p50);

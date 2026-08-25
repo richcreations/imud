@@ -287,4 +287,15 @@ typedef enum {
  */
 sim_pb_state_t sim_playback_state(void);
 
+/*
+ * Capture-clock instant of the newest IMU sample playback has handed out:
+ * `wall_ns` on the RECORDING host's CLOCK_REALTIME, `mono_ns` on its
+ * CLOCK_MONOTONIC.  False when not replaying, or before the first sample.
+ *
+ * The daemon anchors chip timestamps against these during replay instead of
+ * against its own clocks -- see the anchor block in imu.c for what anchoring
+ * a replay to the replay machine cost.
+ */
+bool sim_playback_timebase(uint64_t *wall_ns, uint64_t *mono_ns);
+
 #endif /* IMUD_DRIVERS_H */
