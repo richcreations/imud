@@ -902,7 +902,15 @@ update executes — changes the behaviour completely:
 | warnings | 0 | 0 |
 
 About 1100× less drift and 770× lower covariance, and the collapse regime never
-arises because the covariance never approaches 1 rad². That is the diagnosis
+arises because the covariance never approaches 1 rad².
+
+Read the 0.20° as an **upper bound on drift, not a measurement of filter
+noise**. It is at the level where real movement cannot be separated from filter
+noise without an independent heading reference: the same berth showed a pitch
+span of 0.212° and a roll span of 0.344° over 24 minutes, so a couple of tenths
+of a degree of genuine yaw in the slip is entirely plausible and some or all of
+the 0.20° may simply be the boat. The comparison against 220° is unaffected
+either way. That is the diagnosis
 closed from both ends: the drift and the collapse are both consequences of the
 yaw update not running, not of anything the filter does wrong when it does.
 
