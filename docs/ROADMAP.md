@@ -889,6 +889,38 @@ linearisation stays valid — so `imud-cal mag` is the prerequisite for judging
 any of it, and the false-confidence behaviour is what to fix if the regime can
 be entered at all.
 
+**Confirmed by the other half of the experiment** *(2026-08-25, same rig, same
+static berth)*. Pointing `[calibration] file` at a bench calibration — any
+calibration, since what matters is that `has_mag` becomes true and the yaw
+update executes — changes the behaviour completely:
+
+| over ~22 min | no calibration | bench calibration |
+|---|---|---|
+| heading | **220° of drift** | **0.20° range** (251.9–252.1) |
+| `cov` trace | 0.03 → 1.0 rad², then collapse | **1.3e-03, flat** |
+| filter state | "converging" indefinitely | "converged" within ~4 s |
+| warnings | 0 | 0 |
+
+About 1100× less drift and 770× lower covariance, and the collapse regime never
+arises because the covariance never approaches 1 rad². That is the diagnosis
+closed from both ends: the drift and the collapse are both consequences of the
+yaw update not running, not of anything the filter does wrong when it does.
+
+Two things this does NOT show. The heading is not *accurate* — the bench cal was
+taken in a different magnetic environment and applying it drives |B| from 46.0
+to 78.2 µT against an Earth field of ~48–50, so the value is wrong, merely
+constant. And a fixed wrong calibration always looks stable on a static
+platform: stability here is evidence the update runs, never that the calibration
+is right. Only a swing separates those.
+
+Worth recording from the same measurement: the hard iron largely **transfers**
+between the bench and the boat. `|h|` is 37.0 µT and subtracting it lands |B| at
+54.1 against ~49 expected, so the offset is right to within roughly 5 µT — which
+only makes sense if the dominant source moves with the sensor. On this rig that
+is the Pi, mounted in the same relative position both times. The soft iron does
+not transfer: it takes |B| from 54.1 to 78.2, and most of that is the Z scale of
+2.074 that the coverage guard now refuses to write.
+
 **Two earlier readings of this run were wrong and are retracted.** The first
 recorded the platform as moving, citing `fit-temp`'s peak-to-peak of
 0.144 rad/s — a misuse of an extremum over 2.26 M samples, the exact error §3.1
