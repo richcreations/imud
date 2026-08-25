@@ -846,6 +846,21 @@ sessions. The ISM330 self-heats only ~1 °C, so a usable fit needs a real
 ambient swing of several °C (leave it across a garage day/night cycle, or
 warm it gently mid-capture).
 
+**Attempted 2026-08-25 and the self-heating estimate is confirmed, low.** A
+44-minute capture from a cold boot — 2.26 M IMU samples at 833 Hz — moved the
+die across **17.59 to 18.17 °C, a span of 0.58 °C**, and it *tracked ambient*
+rather than climbing: it peaked near t+18 min and fell back by the end. On this
+rig the part is ambient-dominated, so a passive soak of any length will not
+produce a fit, and running one longer is not the answer.
+
+`imud-cal fit-temp` refuses it correctly rather than fitting noise —
+`temperature span too small (0.7 degC) — capture a cold-boot warm-up (span >= a
+few degC)` — so the guard in `src/cal_main.c` is doing its job on real data.
+
+What this needs is a deliberate thermal excursion, not a longer run: the
+day/night cycle already suggested above, or gentle external warming partway
+through a capture. It is an environmental prerequisite, not a software one.
+
 ## 3. Pi 5 interrupt latency re-profiling  *(pre-existing spec §16 item, bench)*
 
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
