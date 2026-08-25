@@ -29,9 +29,9 @@ second copy of them with nothing keeping it honest.
   time rather than design work. The reference pair is validated; the rest clear
   opportunistically as boards become available.
 - **Confirm the 1.7/1.8 changes on hardware (§1).** The alignment window and
-  the measured sample clock are confirmed; the `m33_inv` accel-update duty is
-  not, and is blocked behind a magnetometer swing rather than merely undone.
-  This gates confidence in most of §10. Figures in §1.
+  the measured sample clock are confirmed, and the `m33_inv` accel-update duty
+  is now confirmed too — 4 refusals in 2,381,189 accel updates, 0.0%
+  (2026-08-25). Figures in §1.
 - **Fit real gyro temperature coefficients (§2).** The mechanism shipped in
   1.5; what is missing is a cold-boot-to-warm capture from real hardware.
 - **Finish measuring sample latency on silicon and fix spec §14 (§3.1).**
@@ -178,13 +178,39 @@ precondition for any heading number from this rig being worth reading. And the
 `m33_inv` duty check being blocked behind it is the same fact from the other
 side, not a separate obstacle.
 
-**Still owed here: the `m33_inv` accel-update duty.** Blocked rather than
-skipped — `imud-cal fit-ra` is the instrument, since its probe runs the same
-`m33_inv` and its skip fraction reads the duty directly (~0% fixed, ~87%
-broken), but it refuses to run without magnetometer calibration. Correctly so:
-with no heading updates the covariance diverges and the innovation statistics
-would measure that divergence instead. So this needs a swing first, which needs
-someone at the boat.
+**The `m33_inv` accel-update duty is confirmed on hardware** *(2026-08-25)*:
+
+```
+accel updates   2381185 used, 4 skipped (0.0%)
+```
+
+**4 refusals in 2,381,189 updates.** The instrument is `imud-cal fit-ra`, whose
+probe runs the same `m33_inv`, and the prediction was ~0% fixed against ~87%
+broken. Measured 0.00017%.
+
+It did not need the swing after all, and the reason is worth keeping. The
+refusal to run without a magnetometer calibration is not about heading
+*accuracy* — it is about the covariance diverging when yaw is unobservable, so
+that every innovation statistic measures the divergence instead. Any calibration
+that makes `has_mag` true satisfies that, because the yaw update then executes
+and the covariance stays bounded; the bench calibration of 2026-08-24 does, even
+though its absolute heading is wrong (see §1.4). `fit_ra` gates on
+`n_mag_used == 0`, which is exactly the right condition, and it passed.
+
+A dead-calm berth turned out to be the correct instrument rather than a
+compromise. `n_skip` counts three refusal paths, and in a seaway the `|a|`
+amplitude band alone discards 66–95% of samples, which would swamp the
+`m33_inv` contribution completely. On flat calm the band contributed 4 samples
+in 2.4 M, leaving the singularity test as the only thing that could have
+refused. It refused nothing.
+
+Two figures worth carrying from the same run: the gravity-direction residual is
+0.044° of tilt with a correlation time of 0.001 s — white, so the wave state has
+absorbed the correlation — and mean NIS is 0.01 against a target of 1. The
+latter is the shipped tuning being conservative for a flat berth rather than a
+defect: `mekf_accel_noise` is sized for a seaway, and `fit-ra` says as much
+itself ("well below 1 means calmer"). It is not evidence about §10.1, which
+concerns the opposite failure.
 
 **1.8's measured sample clock is confirmed in production, twice over.**
 
