@@ -1362,6 +1362,27 @@ delete a duplicate, not a refactor undertaken for tidiness.
   lost at the tail. That is the first time this path has run on anything but
   synthetic data.
 
+  **Confirmed again 2026-08-25 on a second, longer capture**, and this one
+  exercised the fusion rather than stopping short: 6,502 IMU + 12,635 mag
+  records over 119.9 s (`odr_hz = 52`, mag 105/s), replayed in the container
+  with no hardware at all. The daemon consumed exactly those counts, reached
+  alignment, and produced plausible attitude throughout. Note the first run
+  above could not have shown this — a replay only emits `[stats]` once fusion
+  is aligned, and the default 5 s settle plus the gyro-bias window swallows a
+  short capture whole. `startup_settle_sec` has to be shortened for a replay to
+  report anything.
+
+  **What it is NOT is bit-deterministic**, which §6.3 assumed it would be. The
+  same file replayed twice gave an identical gyro bias
+  (`[0.00569, -0.00051, -0.00020]`) and identical attitude at every shared
+  sample count, but alignment consumed **2,521 mag samples one run and 2,539
+  the next**. The two reader threads poll on wall-clock cadences while playback
+  is paced in real time, so their interleaving varies; the accel count at
+  alignment was identical both runs (4,165) because that is what triggers it.
+  Making replay reproducible sample-for-sample would mean driving both readers
+  off the capture's own `mono_ns` instead of the wall clock. Worth knowing
+  before anyone writes a regression test that diffs two replays.
+
   **One limitation found, and it is a real trap.** Playback is paced by the
   reader threads, not by the capture's own timestamps, so a file recorded at a
   magnetometer rate above what the reader cadences replays in *slower* than
