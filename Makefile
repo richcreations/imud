@@ -227,110 +227,110 @@ src/%.entry.o: src/%.c
 # and report a pass for rates they never ran.  $(filter %.c,$^) keeps the
 # header off the compiler command line.
 test_fusion: src/fusion.c test/test_fusion.c test/rate_ladder.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fit_ra.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # The .gen.c is a prerequisite but not a translation unit: test_config.c
 # #includes it inside a function.  Listed so regenerating it rebuilds the
 # suite, filtered out so the compiler is not handed it twice.
 test_config: src/config.c src/log.c test/test_config.c \
              test/test_config_defaults.gen.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter-out %.gen.c,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter-out %.gen.c,$(filter %.c %.o,$^)) -lm
 
 # imud-mon's stream decoding (src/mon_parse.c): packet CRC, NMEA field
 # extraction, flag summary.  Pure — no sockets, no config.
 test_mon: src/mon_parse.c test/test_mon.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # imud-status report text (src/status_fmt.c): the gated lines, and the WS()
 # truncation bound at every buffer size.  Pure formatter — config.c is here
 # only for config_defaults() in the fixtures.
 test_status: src/status_fmt.c src/config.c src/log.c test/test_status.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # argv parsing for the five non-bridge entry points (src/cli.c).  This is what
 # SECURITY.md means by "the CLI parsers are covered by unit tests instead" —
 # the bridges' shared parser is covered by test_bridge.  cli.c deliberately
 # depends on nothing but libc, so this link line is one source file.
 test_cli: src/cli.c test/test_cli.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^)
 
 test_nmea: src/nmea.c test/test_nmea.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c test/test_capture.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_packet: src/packet.c test/test_packet.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lgpiod -lm
 
 test_ring: src/ring.c test/test_ring.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_mount: src/config.c src/log.c test/test_mount.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_cal: src/cal.c src/cal_capture.c src/capture.c src/log.c test/test_cal.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # include/cal_math.h is a prerequisite, not just an include: CAL_SI_MIN_SPAN
 # lives there, and a header-only edit to it left this suite stale AND green --
 # a mutation of the coverage guard fired nothing until the binary was deleted
 # by hand.  Same reasoning, and same $(filter %.c,$^), as test_fusion above.
 test_cal_math: src/cal_math.c test/test_cal_math.c include/cal_math.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_wmm: src/wmm.c src/log.c test/test_wmm.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_position: src/position.c src/wmm.c src/config.c src/log.c test/test_position.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # Wire-format compatibility: daemon packet_build vs lib/imud_client.h.
 # test_client_impl.c compiles the client header in its own translation unit,
 # exactly as a third-party consumer would.
 test_client: src/packet.c test/test_client.c test/test_client_impl.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # End-to-end AF_UNIX + TCP subscription stream: real output.c, stubbed imu accessors
 test_stream: src/output.c src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # netserv TCP broadcast server (pure sockets; macOS-buildable)
 test_netserv: src/netserv.c src/log.c test/test_netserv.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_log: src/log.c test/test_log.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # Signal K delta encoder (pure function; reuses lib/imud_client.h for the struct)
 test_signalk: src/sk_delta.c test/test_signalk.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # MQTT message builders (pure functions; no libmosquitto needed)
 test_mqtt: src/mqtt_publish.c test/test_mqtt.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # Prometheus metrics encoder (pure function)
 test_prometheus: src/prom_metrics.c src/prom_http.c test/test_prometheus.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 test_influxdb: src/influx_line.c test/test_influxdb.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # MAVLink encoder (pure function; golden frames from a pymavlink cross-check)
 test_mavlink: src/mavlink_encode.c test/test_mavlink.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # libimud public API: end-to-end over a local AF_UNIX server + UDP loopback,
 # packets built by the daemon's real encoder (src/packet.c).
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # The bridge daemons end to end, main() included.  Links each real
 # entry point renamed to <base>_entry by the src/%.entry.o rule, and drives it
@@ -349,7 +349,7 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
                  src/config.c src/log.c src/netserv.c \
                  src/bridge.c src/sdnotify.c src/packet.c lib/libimud.c \
                  test/test_bridge_e2e.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lmosquitto -lm
 
 # The daemon end to end, main() included: startup with no
 # sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
@@ -384,7 +384,7 @@ src/main.entry.o: Makefile
 # like test_drivers — this suite is already Linux-only.
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=pthread_create -o $@ $^ -lgpiod -lm
+	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) -lgpiod -lm
 
 # imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
@@ -393,14 +393,14 @@ test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 test_tools_e2e: src/status_main.entry.o src/mon_main.entry.o \
                 src/cli.c src/config.c src/log.c src/mon_parse.c src/packet.c \
                 test/test_tools_e2e.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # Bridge scaffolding (src/bridge.c + src/sdnotify.c): CLI matrix, emit-tick
 # timespec math (period/wait/due/advance/earlier), config load / reload /
 # disabled flows, and sd_notify delivery over a test-bound NOTIFY_SOCKET.
 # Links libimud directly, like test_libimud.
 test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c test/test_bridge.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # cal_capture.c is here for the .imucap loading behind `imud-cal characterize`
 # and `fit-temp`; capture.c is its reader.
@@ -418,13 +418,13 @@ test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
                        test/rate_ladder.h \
                        src/drivers/bus_io.h src/drivers/chip_ts.h \
                        src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
 # calibration application — the helpers factored into src/imu_math.c.  Pure
 # (no <linux/*> or CLOCK_MONOTONIC), so it also builds on the macOS dev box.
 test_imu_math: src/imu_math.c test/test_imu_math.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
 
 # Per-driver register decode/encode over a mock I2C bus (test/bus_mock.c wraps
 # ioctl with --wrap — GNU ld only).  Covers the two hardware-validated drivers
@@ -452,7 +452,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm
 
 # The imud-imutest checker logic over the mock I2C bus, with a scripted
 # imt_ui_t standing in for the operator so the guided phases are covered too.
@@ -473,14 +473,36 @@ test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c,$^) -lm
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm
 
-test: test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
+TEST_BINS = test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
       test_drivers_registry test_imu_math test_drivers test_imutest
+
+# Every test binary depends on every project header.
+#
+# Blunt on purpose.  The suites are built by compiling their sources in ONE
+# command rather than through .o files, so the -MMD fragments that keep the
+# daemon honest cannot be used here: each cc1 writes the same <output>.d and the
+# last source wins, leaving the other sources' headers untracked.  Checked, and
+# it really does -- test_mount.d listed test/test_mount.c's includes and nothing
+# from src/config.c or src/log.c.
+#
+# Listing headers per rule was the alternative and it rots: 29 of 34 rules had
+# none at all, and the two that did were added only after a header edit left a
+# suite stale.  That failure is silent and it inverts the meaning of a run --
+# a mutation of CAL_SI_MIN_SPAN fired NOTHING until the binary was deleted by
+# hand, i.e. the suite reported a pass for code it had not compiled.
+#
+# So: rebuild every suite whenever any header changes.  Over-rebuilding costs
+# seconds; a stale test binary costs a wrong answer about whether the tree works.
+TEST_BINS_HEADERS = $(wildcard include/*.h src/drivers/*.h test/*.h lib/*.h)
+$(TEST_BINS): $(TEST_BINS_HEADERS)
+
+test: $(TEST_BINS)
 	./test_fusion
 	./test_fit_ra
 	./test_config
