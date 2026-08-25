@@ -576,30 +576,139 @@ const mag_ops_t mmc5983ma_ops = {
      *     production") is real and is why this is the ceiling rather than a
      *     target.  spi_speed_hz can still pin it lower per install.
      *
-     * SEPARATE, UNEXPLAINED, and not fixed by any of the above: on this RP1
-     * controller a non-default spi_speed_hz below about 2.5 MHz on EITHER
-     * device stops this part delivering.  Two independent thresholds, measured
-     * with the IMU at 208 Hz and this part asking for 100 Hz:
+     * SEPARATE, and not fixed by any of the above: on this RP1 controller,
+     * driving the *IMU* at a non-default spi_speed_hz below about 2.5 MHz
+     * stops this part measuring.  Only the IMU's clock matters.  Measured with
+     * the IMU at 833 Hz and this part asking for 100 Hz, 25 s per cell:
      *
-     *     imu 10  MHz  mag 10 MHz -> 102     imu 10  MHz  mag 1  MHz -> 0.0
-     *     imu 10  MHz  mag  2 MHz -> 102.8   imu 2.5 MHz  mag 1  MHz -> 0.0
-     *     imu 2.5 MHz  mag 10 MHz ->  99.2   imu 2   MHz  mag 2  MHz -> 0.3
-     *     imu 1   MHz  mag 10 MHz ->   0.0   imu 2   MHz  mag 10 MHz -> 0.1
+     *     imu 10 MHz  mag 10 MHz -> 102     imu 1 MHz  mag 10 MHz ->   0
+     *     imu 10 MHz  mag  1 MHz -> 102     imu 1 MHz  mag  1 MHz ->   0
      *
-     * So this part needs >= 2 MHz for itself, AND the IMU needs >= 2.5 MHz for
-     * this part to work at all.  The second half has no mechanism yet.  It is
-     * NOT bus contention -- it reproduces with the IMU at 13 Hz, three bus
-     * transactions per second -- and it is not transfer length: bounding the
-     * IMU's FIFO burst by time changed nothing.  Three theories (contention,
-     * burst monopoly, clock mismatch) were each tested and each refuted.
+     * This part runs perfectly at 1 MHz for itself; an earlier note here
+     * claiming a second threshold on the mag's own clock was wrong, and is
+     * withdrawn.  Sweeping the IMU alone puts the knee at 2.2-2.1 MHz:
+     * 10/8/6/4/3/2.5/2.4/2.3 MHz all deliver 102/s and 2/1.5/1 MHz all
+     * deliver 0, and the edge is a graded band, not a cliff.  RP1's SPI is a
+     * Synopsys DW_apb_ssi v4.02a off a 200 MHz clk_sys and spi-dw forces an
+     * even divider, so the requested rate is not the one on the wire; against
+     * the ACTUAL clock the band is monotonic in SCK high time:
      *
-     * SPI mode is not the answer either, though this part's datasheet points at
-     * mode 3 ("SCK ... is stopped high when CS is high", i.e. CPOL=1) while we
-     * and SparkFun's library run it in mode 0.  Both parts were re-tested in
-     * mode 3 on repaired wiring: the fault was unchanged (0.0 samples/s with
-     * the IMU at 1 and 2 MHz) and throughput at 6664 Hz was worse, 91.7
-     * against 103.  Four theories tested and refuted now: bus contention,
-     * burst monopoly, clock mismatch, SPI mode.
+     *     req 2.3 -> 2.273 MHz, high 220 ns -> 102/s, clean
+     *     req 2.2 -> 2.174 MHz, high 230 ns -> 102/s on one 20 s run, 0 on the next
+     *     req 2.1 -> 2.083 MHz, high 240 ns -> 3/s, twice
+     *     req 2.0 -> 2.000 MHz, high 250 ns -> 0/s
+     *
+     * Thirty nanoseconds of SCK high time carries it from healthy to dead, in
+     * order, with a stochastic middle.  That is the shape of a pulse-width
+     * threshold -- an input filter passing what it used to reject -- which is
+     * evidence for a digital input stage in this part rather than anything
+     * analog or magnetic.
+     *
+     * What actually happens, from a read-only trace of the raw output bytes:
+     * the SPI side stays healthy throughout -- every read succeeds and returns
+     * plausible field values -- but the output registers stop advancing, so
+     * read() returns 1 on the staleness guard forever and the INT line stops
+     * pulsing.  The part is not wedged and not corrupted; it stops converting
+     * at the configured rate.  Over tens of seconds the frozen value still
+     * drifts slightly, so conversion continues at some far lower rate.
+     *
+     * It begins at the IMU's first FIFO drain, and the delay scales with the
+     * drain interval: at odr 13 Hz the mag delivers 314 samples with fifo_wm
+     * 64 (first drain ~3.8 s) and 13 with fifo_wm 4 (first drain ~0.3 s).
+     * Neither volume nor duration is what matters, though.  Six 7-byte
+     * transfers spread over 20 s at 1 MHz (odr 13, fifo_wm 64) kill it just as
+     * dead as 833 Hz does, about 336 us of bus activity in total; meanwhile
+     * 273 drains of 448 bytes at 2.5 MHz -- some 391 ms of activity, three
+     * orders of magnitude more -- leave it at 102/s.  What it tracks is the
+     * SCK pulse width alone, with the boundary at about 225 ns of high time.
+     *
+     * That also rules out the controller's transfer path: a 7-byte transfer
+     * fits the FIFO and goes out by PIO while a 224-byte burst goes by DMA,
+     * and both trigger it, so DMA-vs-PIO is not the discriminator either.
+     *
+     * reset() + init() cannot recover it while the traffic continues: forcing
+     * a re-init every 1.7 s for 40 s yielded one good sample.  Nor can a
+     * degauss -- set_period_s defaults to 5.0, so the mag reader was pulsing
+     * SET/RESET every five seconds throughout every one of these runs, and it
+     * changed nothing.  That matters because Rev A p.2 note 6 says a field
+     * beyond the 10 G Disturbing Field spec "requires a SET/RESET operation to
+     * restore proper sensor operation": the one documented way to un-stick the
+     * bridge was running the whole time and did not.  Bridge disturbance is
+     * out on magnitude anyway -- SPI signal currents cannot make 10 G at the
+     * die -- but it is out on evidence too.  So the traffic
+     * does not clear a config bit once, it prevents continuous mode running at
+     * all.  Nor is it the ioctl: holding /dev/spidev0.0 open with
+     * SPI_IOC_WR_MAX_SPEED_HZ at 1 MHz and issuing ZERO transfers left the mag
+     * at 103.8/s for 800 s.  It takes real low-clock traffic.
+     *
+     * Six theories were tested and refuted along the way: bus contention (it
+     * reproduces with the IMU at 13 Hz), burst monopoly (bounding the burst by
+     * time changed nothing), clock mismatch, SPI mode (both parts re-tested in
+     * mode 3 -- fault unchanged, and 6664 Hz throughput worse, 91.7 against
+     * 103), the mag's own clock, and the speed ioctl in isolation.
+     *
+     * MECHANISM, established on hardware 2026-08-24.  It needs two things at
+     * once: a slow clock AND a sustained run of zero bytes on MOSI.
+     *
+     * A probe injecting controlled traffic on the IMU's node, while the daemon
+     * held both parts at 10 MHz, separates them.  Every transfer was an ST
+     * register READ, so the payload could be anything without writing a
+     * register.  Mag delivery after the probe stopped:
+     *
+     *     1 MHz, payload 0x00 -> 0/s, dead      1 MHz, payload 0x60 -> 100/s
+     *     1 MHz, payload 0xFF -> 101/s          1 MHz, payload 0xAA -> 101/s
+     *                          10 MHz, payload 0x00 -> 102/s
+     *
+     * Only the all-zeros payload does it, and only when slow.  0xAA has far
+     * more data transitions and is harmless, so it is not edge count; what
+     * matters is MOSI held low across many bit times while SCK crawls.
+     *
+     * This part cannot stop being an I2C slave, which is why it is the one
+     * that suffers.  Rev A p.5 pin 4: "Chip Select line for SPI (active low).
+     * Tie to VDDIO for I2C Interface" -- the interface is chosen by the CS
+     * *level*, SCL/SPI_SCK and SDA/SPI_SDI are one pair of pins, and the only
+     * interface bit is Spi_3w.  There is no I2C_disable, unlike the
+     * ISM330DHCX, where ism330dhcx.c sets exactly that bit on ST's
+     * instruction.  So while the IMU transacts, this part is on those lines as
+     * a 400 kHz I2C slave, and a long zero run at a clock slow enough to clear
+     * its input filter reaches its receiver.
+     *
+     * What it loses is exactly one bit.  During the fault a single-shot
+     * trigger converts on demand every time -- STATUS goes 0x10 to 0x11 on
+     * TM_M -- while continuous mode never completes a measurement (Meas_M_Done
+     * set 8 times at startup, then frozen at 8 across 800 reads) and the
+     * product id reads 0x30 on every transfer.  Engine, SPI and OTP are all
+     * healthy; CTRL2's Cmm_en is not.  That is why init() cannot win: it
+     * re-enables continuous mode and the next burst clears it again, which is
+     * also why a re-init every 1.7 s bought exactly one sample.
+     *
+     * The zero run is ours.  spi_burst_read's multi-byte path leaves the data
+     * phase to spidev's zero fill, so an ST FIFO burst is a command byte
+     * followed by hundreds of zeros -- the fatal pattern, generated by this
+     * daemon.  Filling 0xFF instead removes the fault completely: 103/s with
+     * the IMU at 1 MHz, where zero fill gives 0.
+     *
+     * That fix is NOT adopted, and the reason is in bus_io.h.  Any fill with
+     * bit 7 set makes a CS-split byte a READ COMMAND, which moves corruption
+     * out of the part's state and into the sample stream -- measured, at
+     * 13.016 Hz, as gravity reading 18.2 m/s^2.  Zero fill was chosen because
+     * a split becomes a write of 0x00 to FUNC_CFG_ACCESS, which is benign.  So
+     * the two hazards pull opposite ways, and one clean 25 s run at 833 Hz is
+     * not enough to retire the one that is already documented.
+     *
+     * It does not need fixing in the fill, because it does not arise by
+     * default: spi_speed_hz = 0 gives each part its declared maximum and is
+     * unaffected.  Only an explicit imu spi_speed_hz below about 2.3 MHz
+     * reaches it, and that configuration should be refused or warned about
+     * whenever a magnetometer shares the controller.
+     *
+     * Refuted along the way, each on hardware: bus contention, burst monopoly,
+     * clock mismatch, SPI mode, the mag's own clock, the speed ioctl alone,
+     * DMA-vs-PIO, bridge disturbance (a degauss ran every 5 s throughout and
+     * changed nothing), and plain symmetry -- clearing I2C_disable on the
+     * ISM330DHCX did not make the IMU vulnerable to the same traffic, at mag
+     * clocks down to 250 kHz and ten times the traffic.  The ISM is simply not
+     * susceptible to the pattern this part is.
      *
      * The default, spi_speed_hz = 0 (each part's declared maximum), is
      * unaffected.  Recorded as measured behaviour, not explained.

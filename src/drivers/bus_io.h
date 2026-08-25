@@ -153,6 +153,15 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
      *
      * Neither is a fix.  The only complete one for the remaining boundaries is
      * a GPIO chip select on the host -- raspberrypi/linux#6354.
+     *
+     * The zero fill has a second cost, on the other side of the bus.  A long
+     * run of zeros on MOSI is what stops a shared-bus MMC5983MA measuring once
+     * SCK is slow enough, because that part has no way to switch its I2C
+     * receiver off while its CS is high; filling 0xFF removes that fault
+     * entirely but re-opens the read-opcode hazard above.  Measured both ways
+     * on the reference rig -- see the long comment in drivers/mmc5983ma.c.
+     * It does not arise at the default speed, only at an explicitly low
+     * imu spi_speed_hz.
      */
     struct spi_ioc_transfer tr[2] = {
         { .tx_buf = (uintptr_t)&cmd, .len = 1,
