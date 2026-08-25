@@ -402,3 +402,26 @@ void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3])
                 + cfg->mount_rot[2][2] * v[2];
     v[0] = (float)out0; v[1] = (float)out1; v[2] = (float)out2;
 }
+
+void imu_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
+                         imu_sample_t *s)
+{
+    s->accel_raw[0] = s->accel[0];
+    s->accel_raw[1] = s->accel[1];
+    s->accel_raw[2] = s->accel[2];
+    apply_imu_cal(cal, s);
+    apply_mount_rot_if_set(cfg, s->accel);
+    apply_mount_rot_if_set(cfg, s->gyro);
+    apply_mount_rot_if_set(cfg, s->accel_raw);
+}
+
+void mag_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
+                         mag_sample_t *s)
+{
+    s->field_raw[0] = s->field[0];
+    s->field_raw[1] = s->field[1];
+    s->field_raw[2] = s->field[2];
+    apply_mag_cal(cal, s);
+    apply_mount_rot_if_set(cfg, s->field);
+    apply_mount_rot_if_set(cfg, s->field_raw);
+}

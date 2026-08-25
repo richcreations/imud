@@ -458,15 +458,10 @@ void *ism_reader_thread(void *arg)
         const uint64_t read_done = ts_ns(&t_after);
         for (int i = 0; i < n; i++) buf[i].read_done_ns = read_done;
 
-        /* Apply mount rotation (board->body), then accel calibration */
-        for (int i = 0; i < n; i++) {
-            apply_mount_rot_if_set(&cfg, buf[i].accel);
-            apply_mount_rot_if_set(&cfg, buf[i].gyro);
-            buf[i].accel_raw[0] = buf[i].accel[0];
-            buf[i].accel_raw[1] = buf[i].accel[1];
-            buf[i].accel_raw[2] = buf[i].accel[2];
-            apply_imu_cal(&ctx->cal, &buf[i]);
-        }
+        /* Calibrate in sensor axes, then rotate board->body — the order is
+         * load-bearing, see imu_finalise_sample(). */
+        for (int i = 0; i < n; i++)
+            imu_finalise_sample(&cfg, &ctx->cal, &buf[i]);
 
         /* Update timestamp anchor at startup and every 60 s thereafter.  The
          * newest sample's chip_ts is paired with the host instant that sample
@@ -725,12 +720,8 @@ void *mag_reader_thread(void *arg)
             cap_ring_push_mag(&ctx->cap_ring, &s, ts_ns(&tm));
         }
 
-        /* Rotate mag into body frame, then apply mag calibration */
-        apply_mount_rot_if_set(&cfg, s.field);
-        s.field_raw[0] = s.field[0];
-        s.field_raw[1] = s.field[1];
-        s.field_raw[2] = s.field[2];
-        apply_mag_cal(&ctx->cal, &s);
+        /* Calibrate in sensor axes, then rotate — the ism_reader twin above. */
+        mag_finalise_sample(&cfg, &ctx->cal, &s);
         s.valid = ctx->cal.has_mag;
 
         mag_ring_push(&ctx->mag_ring, &s);

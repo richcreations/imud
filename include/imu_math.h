@@ -334,4 +334,32 @@ int odr_actual_mag(const mag_ops_t *ops, int req_mhz);
 /* Apply mount rotation (board -> body) if configured. In-place on v. */
 void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);
 
+/*
+ * Finish a sample: calibrate, then rotate board->body.
+ *
+ * The ORDER is the point, and it used to be the other way round.  imud-cal
+ * reads the driver directly and never applies the mount rotation, so every
+ * calibration it writes is expressed in SENSOR axes.  Rotating first and
+ * calibrating second subtracts a sensor-frame offset from body-frame data,
+ * which is silently correct only while [mount] is identity — and wrong on
+ * every axis the moment it is not.
+ *
+ * Rotating the calibration instead is not an option: accel_scale[] is a
+ * diagonal, and R*diag*R^T is a full matrix with nowhere to live in
+ * imud_cal_t.  Calibrating in the frame the calibration was measured in is
+ * both correct and representable.
+ *
+ * accel_raw / field_raw keep the meaning the wire gives them — pre-calibration,
+ * AFTER the mount rotation (types.h, spec.md §7) — so they are snapshotted
+ * before the calibration and rotated alongside it.
+ *
+ * Shared rather than duplicated because the offline path in fit_ra.c carried a
+ * comment saying "reproduce imu.c exactly", which is the kind of duplication
+ * that drifts.  Both callers now run this.
+ */
+void imu_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
+                         imu_sample_t *s);
+void mag_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
+                         mag_sample_t *s);
+
 #endif /* IMUD_IMU_MATH_H */

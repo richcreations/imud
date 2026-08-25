@@ -134,11 +134,9 @@ static int replay(const char *path, const imud_config_t *cfg_in,
 
         if (rec.type == CAP_REC_IMU) {
             imu_sample_t s = rec.imu;
-            /* Captures are pre-mount and pre-cal: reproduce imu.c exactly. */
-            apply_mount_rot_if_set(&cfg, s.accel);
-            apply_mount_rot_if_set(&cfg, s.gyro);
-            memcpy(s.accel_raw, s.accel, sizeof s.accel_raw);
-            apply_imu_cal(cal, &s);
+            /* Captures are pre-mount and pre-cal; imu_finalise_sample() is
+             * the same code the daemon runs, so the two cannot drift. */
+            imu_finalise_sample(&cfg, cal, &s);
 
             (*n_imu)++;
             last_imu = s;
@@ -185,9 +183,7 @@ static int replay(const char *path, const imud_config_t *cfg_in,
 
         } else if (rec.type == CAP_REC_MAG) {
             mag_sample_t m = rec.mag;
-            apply_mount_rot_if_set(&cfg, m.field);
-            memcpy(m.field_raw, m.field, sizeof m.field_raw);
-            apply_mag_cal(cal, &m);
+            mag_finalise_sample(&cfg, cal, &m);
             m.valid = cal->has_mag;
             (*n_mag)++;
 

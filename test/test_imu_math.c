@@ -62,6 +62,93 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * that now fires; the warning itself is a log line, so the threshold is what
  * gets pinned.
  */
+/*
+ * Calibration must be applied in the frame it was measured in.
+ *
+ * imud-cal reads the driver directly and never applies the mount rotation, so
+ * every calibration it writes is in SENSOR axes.  The daemon used to rotate
+ * board->body FIRST and calibrate second, which subtracts a sensor-frame offset
+ * from body-frame data.  With [mount] identity the two frames coincide and
+ * nothing is visibly wrong, which is why it survived: the defect only appears
+ * on a non-identity mount, and mounting a sensor on edge is exactly when you
+ * need one.
+ *
+ * Rotating the calibration instead is not representable — accel_scale[] is a
+ * diagonal and R*diag*R^T is a full matrix — so the fix is the order.
+ *
+ * Uses a 90 degree rotation about X, R = [[1,0,0],[0,0,-1],[0,1,0]], and unit
+ * scales so the arithmetic is checkable by hand:
+ *
+ *   correct   R * (m - h)   =  [9, -27, 18]
+ *   inverted  (R * m) - h   =  [9, -32, 17]
+ */
+static void test_cal_is_applied_before_mount_rotation(void)
+{
+    begin("test_cal_is_applied_before_mount_rotation");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.mount_set = true;
+    cfg.mount_rot[0][0] = 1; cfg.mount_rot[0][1] =  0; cfg.mount_rot[0][2] = 0;
+    cfg.mount_rot[1][0] = 0; cfg.mount_rot[1][1] =  0; cfg.mount_rot[1][2] = -1;
+    cfg.mount_rot[2][0] = 0; cfg.mount_rot[2][1] =  1; cfg.mount_rot[2][2] = 0;
+
+    imud_cal_t cal;
+    memset(&cal, 0, sizeof cal);
+    cal.has_accel = true;
+    for (int k = 0; k < 3; k++) {
+        cal.accel_offset[k] = (float)(k + 1);   /* 1, 2, 3 */
+        cal.accel_scale[k]  = 1.0f;
+    }
+    cal.has_mag = true;
+    for (int k = 0; k < 3; k++) {
+        cal.mag_hard_iron[k] = (float)(k + 1);
+        for (int j = 0; j < 3; j++) cal.mag_soft_iron[k][j] = (k == j) ? 1.0f : 0.0f;
+    }
+
+    imu_sample_t s;
+    memset(&s, 0, sizeof s);
+    s.accel[0] = 10; s.accel[1] = 20; s.accel[2] = 30;
+    imu_finalise_sample(&cfg, &cal, &s);
+    EXPECT_NEAR(s.accel[0],   9.0f, 1e-4, "accel X: calibrated then rotated");
+    EXPECT_NEAR(s.accel[1], -27.0f, 1e-4, "accel Y: calibrated then rotated");
+    EXPECT_NEAR(s.accel[2],  18.0f, 1e-4, "accel Z: calibrated then rotated");
+    EXPECT(fabsf(s.accel[1] - (-32.0f)) > 1e-3,
+           "not the inverted order, which would give -32 on Y");
+
+    /* accel_raw keeps the meaning the wire gives it: pre-calibration, AFTER
+     * the mount rotation.  R * [10,20,30] = [10,-30,20]. */
+    EXPECT_NEAR(s.accel_raw[0],  10.0f, 1e-4, "raw X is uncalibrated, rotated");
+    EXPECT_NEAR(s.accel_raw[1], -30.0f, 1e-4, "raw Y is uncalibrated, rotated");
+    EXPECT_NEAR(s.accel_raw[2],  20.0f, 1e-4, "raw Z is uncalibrated, rotated");
+
+    mag_sample_t m;
+    memset(&m, 0, sizeof m);
+    m.field[0] = 10; m.field[1] = 20; m.field[2] = 30;
+    mag_finalise_sample(&cfg, &cal, &m);
+    EXPECT_NEAR(m.field[0],   9.0f, 1e-4, "mag X: calibrated then rotated");
+    EXPECT_NEAR(m.field[1], -27.0f, 1e-4, "mag Y: calibrated then rotated");
+    EXPECT_NEAR(m.field[2],  18.0f, 1e-4, "mag Z: calibrated then rotated");
+    EXPECT_NEAR(m.field_raw[1], -30.0f, 1e-4, "mag raw is uncalibrated, rotated");
+
+    /* Identity mount: the frames coincide, so order cannot matter — this is
+     * the configuration under which the defect was invisible. */
+    imud_config_t idc;
+    memset(&idc, 0, sizeof idc);
+    idc.mount_set = false;
+    imu_sample_t t;
+    memset(&t, 0, sizeof t);
+    t.accel[0] = 10; t.accel[1] = 20; t.accel[2] = 30;
+    imu_finalise_sample(&idc, &cal, &t);
+    EXPECT_NEAR(t.accel[0],  9.0f, 1e-4, "identity mount: plain offset removal");
+    EXPECT_NEAR(t.accel[1], 18.0f, 1e-4, "identity mount: plain offset removal");
+    EXPECT_NEAR(t.accel[2], 27.0f, 1e-4, "identity mount: plain offset removal");
+    EXPECT_NEAR(t.accel_raw[0], 10.0f, 1e-4, "identity mount: raw untouched");
+
+    end(fb);
+}
+
 static void test_mag_stall_ms(void)
 {
     begin("test_mag_stall_ms");
@@ -1086,6 +1173,7 @@ int main(void)
 
     test_int_fallback_ms();
     test_mag_stall_ms();
+    test_cal_is_applied_before_mount_rotation();
     test_nearest_odr();
     test_snap_odr_up();
     test_odr_actual_resolver();

@@ -559,14 +559,29 @@ The `gyro_temp` section (written by `imud-cal fit-temp`) is a linear
 gyro-bias/temperature fit that **is** applied at runtime: the daemon
 subtracts `coeff × (temp − ref_c)` from each gyro sample.
 
-Applied corrections:
+Applied corrections. `m` is the sample as the driver delivered it, in **sensor
+axes**; `R` is the `[mount]` rotation:
 
 ```text
-accel_cal  = (accel_raw  − accel_offset) × accel_scale   (per-axis)
-gyro_cal   = gyro_raw − gyro_bias                         (subtracted in MEKF predict)
-mag_cal    = soft_iron × (mag_raw − hard_iron)            (matrix × vector)
-mag_z      = −raw_mag_z                                   (Z sign flip, always)
+accel_cal  = R × ((m_accel − accel_offset) × accel_scale)  (per-axis, then mount)
+gyro_cal   = R × (m_gyro − gyro_bias)                      (bias subtracted in MEKF predict)
+mag_cal    = R × (soft_iron × (m_mag − hard_iron))         (matrix × vector, then mount)
+mag_z      = −raw_mag_z                                    (Z sign flip, always)
 ```
+
+**Calibration is applied in sensor axes, before the mount rotation**, because
+that is the frame it was measured in: `imud-cal` reads the driver directly and
+never applies `[mount]`. Rotating first and calibrating second subtracts a
+sensor-frame offset from body-frame data — invisible while `[mount]` is
+identity, wrong on every axis as soon as it is not. Rotating the calibration
+instead is not representable: `accel_scale` is a diagonal, and `R·diag·Rᵀ` is a
+full matrix.
+
+Note this means the `accel_raw_*` and `mag_raw_*` fields on the wire — which are
+pre-calibration but **after** the mount rotation, i.e. `R × m` — cannot be
+substituted into the expressions above unless `R` is the identity. They are
+there to show what the sensor delivered in body axes, not as an intermediate of
+the calibration chain.
 
 The soft-iron matrix from `imud-cal mag` carries a full 2×2 horizontal block
 (including the cross term) from a least-squares ellipse fit of the swing
