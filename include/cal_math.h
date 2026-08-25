@@ -149,11 +149,27 @@ void extent_add(extent_accum_t *a, double x, double y, double z);
 int extent_half(const extent_accum_t *a, double half[3]);
 
 /*
+ * The least coverage an axis may have before its diagonal soft-iron scale is
+ * believed, as a fraction of the fitted sphere radius.  A fully swept axis has
+ * half[k] ~= radius, so this bound also caps the largest correction that can be
+ * emitted at 1/0.8 = 1.25x — the top of the range real soft iron reaches on
+ * these parts.  Anything beyond that is missing coverage, not distortion.
+ */
+#define CAL_SI_MIN_SPAN 0.8
+
+/*
  * Diagonal soft-iron scale: the factor per axis that stretches the measured
- * half-range onto the fitted sphere radius.  An axis with less than 30% of
- * the radius in coverage is left at 1.0 — a boat swinging on the flat sees
- * almost no Z extent, and "correcting" it would amplify noise rather than
- * remove distortion.
+ * half-range onto the fitted sphere radius.  An axis covering less than
+ * CAL_SI_MIN_SPAN of the radius is left at 1.0.
+ *
+ * The threshold used to be 0.3, which admitted corrections up to 3.3x.  No real
+ * soft iron is 3.3x; that is the fit stretching an axis to cover data that was
+ * never taken.  A level swing — the procedure imud-cal mag actually asks for,
+ * and the only one a vessel or a ground robot can perform — sweeps no Z extent
+ * at all, so Z must come out of it uncorrected rather than confidently wrong.
+ * Measured on the bench: a swing with incidental hand-tilt reached 0.48 of the
+ * radius in Z and produced a 2.07x scale, which would have doubled the vertical
+ * field the moment the sensor left level.
  */
 void cal_softiron_diag(const double half[3], double radius, double si[3]);
 

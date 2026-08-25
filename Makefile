@@ -278,8 +278,12 @@ test_mount: src/config.c src/log.c test/test_mount.c
 test_cal: src/cal.c src/cal_capture.c src/capture.c src/log.c test/test_cal.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
 
-test_cal_math: src/cal_math.c test/test_cal_math.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+# include/cal_math.h is a prerequisite, not just an include: CAL_SI_MIN_SPAN
+# lives there, and a header-only edit to it left this suite stale AND green --
+# a mutation of the coverage guard fired nothing until the binary was deleted
+# by hand.  Same reasoning, and same $(filter %.c,$^), as test_fusion above.
+test_cal_math: src/cal_math.c test/test_cal_math.c include/cal_math.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) -lm
 
 test_wmm: src/wmm.c src/log.c test/test_wmm.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm

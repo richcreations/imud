@@ -369,6 +369,61 @@ static void test_extent_full_sphere(void)
 }
 
 /*
+ * A diagonal soft-iron scale is only meaningful on an axis the swing actually
+ * swept.  The guard used to admit any axis covering 30% of the radius, which
+ * permits a 3.3x "correction" -- and no real soft iron is 3.3x.  What that
+ * number actually measures is missing coverage.
+ *
+ * This is not hypothetical: a bench swing with incidental hand-tilt reached
+ * 0.48 of the radius in Z and wrote a 2.07x Z scale, which would have doubled
+ * the vertical field the moment the sensor left level.  A level swing -- the
+ * procedure `imud-cal mag` asks for, and the only one a vessel or a ground
+ * robot can perform -- sweeps no Z extent at all, so Z has to come out of it
+ * uncorrected rather than confidently wrong.
+ */
+static void test_softiron_needs_real_coverage(void)
+{
+    begin("test_softiron_needs_real_coverage");
+    int fb = g_fail;
+
+    const double r = 50.0;
+    double si[3];
+
+    /* A fully swept axis is believed, and lands near unity on a true sphere. */
+    double full[3] = { r, r, r };
+    cal_softiron_diag(full, r, si);
+    for (int k = 0; k < 3; k++)
+        EXPECT_NEAR_D(si[k], 1.0, 1e-9, "a fully swept axis is unity");
+
+    /* Mild real distortion, well covered: believed. */
+    double mild[3] = { 0.90 * r, 0.95 * r, r };
+    cal_softiron_diag(mild, r, si);
+    EXPECT_NEAR_D(si[0], 1.0 / 0.90, 1e-9, "0.90R is covered and corrected");
+    EXPECT_NEAR_D(si[1], 1.0 / 0.95, 1e-9, "0.95R is covered and corrected");
+
+    /* The bench case that produced 2.07: refused. */
+    double bench[3] = { r, r, 0.482 * r };
+    cal_softiron_diag(bench, r, si);
+    EXPECT_NEAR_D(si[2], 1.0, 1e-9,
+                  "0.48R of Z coverage is refused, not scaled 2.07x");
+
+    /* A level swing sees no Z extent whatever: refused. */
+    double level[3] = { r, r, 0.0 };
+    cal_softiron_diag(level, r, si);
+    EXPECT_NEAR_D(si[2], 1.0, 1e-9, "a level swing leaves Z uncorrected");
+
+    /* Nothing the guard lets through may exceed the plausible range. */
+    for (int pct = 0; pct <= 100; pct++) {
+        double h[3] = { pct / 100.0 * r, r, r };
+        cal_softiron_diag(h, r, si);
+        EXPECT(si[0] >= 1.0 && si[0] <= 1.0 / CAL_SI_MIN_SPAN + 1e-9,
+               "no emitted scale exceeds 1/CAL_SI_MIN_SPAN");
+    }
+
+    end(fb);
+}
+
+/*
  * Regression: the half-range must not depend on the hard-iron offset.
  *
  * cal_main.c used to seed mn[]/mx[] from the RAW first sample and then update
@@ -901,6 +956,7 @@ int main(void)
     test_extent_full_sphere();
     test_extent_ignores_hard_iron();
     test_softiron_diag_scales_distorted_axis();
+    test_softiron_needs_real_coverage();
     test_extent_no_samples();
     test_cov_full_circle();
     test_cov_half_circle();

@@ -349,9 +349,10 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     double r_h = 0.5 * (half[0] + half[1]);
     bool ellipse_ok = (ellipse_fit(&eacc, r_h, S2) == 0);
 
-    /* Only apply Z soft-iron correction if we have meaningful Z coverage.
-     * For horizontal boat data, half[2] << radius; forcing a correction
-     * there would amplify noise rather than remove distortion. */
+    /* Only apply a diagonal soft-iron correction on an axis the swing actually
+     * swept -- see CAL_SI_MIN_SPAN.  A level swing is the procedure this mode
+     * asks for, and it sweeps no Z extent, so Z comes out uncorrected rather
+     * than scaled to cover data that was never taken. */
     double si[3];
     cal_softiron_diag(half, radius, si);
 
@@ -365,7 +366,8 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     if (ellipse_ok) {
         printf("  Soft iron (2D):   [%.4f %+.4f; %+.4f %.4f]  Z=%.4f%s\n",
                S2[0][0], S2[0][1], S2[1][0], S2[1][1], si[2],
-               half[2] < 0.3 * radius ? "  (Z: no 3D coverage, left as 1.0)" : "");
+               half[2] < CAL_SI_MIN_SPAN * radius
+                 ? "  (Z: level swing gives no Z extent — left as 1.0)" : "");
         if (fabs(S2[0][1]) > 0.005)
             printf("                    (cross term %+.4f: distortion axes are "
                    "rotated — a diagonal fit would miss this)\n", S2[0][1]);
@@ -373,7 +375,8 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         printf("  Soft iron diag:   [%.4f, %.4f, %.4f]%s  (ellipse fit degenerate "
                "— using per-axis fallback)\n",
                si[0], si[1], si[2],
-               half[2] < 0.3 * radius ? "  (Z: no 3D coverage, left as 1.0)" : "");
+               half[2] < CAL_SI_MIN_SPAN * radius
+                 ? "  (Z: level swing gives no Z extent — left as 1.0)" : "");
     }
     printf("  RMS residual:     %.2f µT  (< 1.0 µT is good)\n", rms);
     printf("  Coverage:         %d/%d sectors (%.0f%%)%s\n",

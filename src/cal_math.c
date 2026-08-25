@@ -100,7 +100,7 @@ int extent_half(const extent_accum_t *a, double half[3])
 void cal_softiron_diag(const double half[3], double radius, double si[3])
 {
     for (int k = 0; k < 3; k++)
-        si[k] = (half[k] > 0.3 * radius) ? (radius / half[k]) : 1.0;
+        si[k] = (half[k] > CAL_SI_MIN_SPAN * radius) ? (radius / half[k]) : 1.0;
 }
 
 int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2])
