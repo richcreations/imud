@@ -613,6 +613,11 @@ void *mag_reader_thread(void *arg)
                                            cfg.mag_int_grace);
     long mag_poll_ms = cfg.mag_poll_ms > 0 ? cfg.mag_poll_ms : mag_wait_ms;
 
+    /* Stall watch: read() returning 1 is normal, but only for a while. */
+    struct timespec last_good;
+    clock_gettime(CLOCK_MONOTONIC, &last_good);
+    bool stall_warned = false;
+
     while (!ctx->stop) {
         if (ctx->mag_line) {
             /* Interrupt-driven, with a rate-sized fallback: see above. */
@@ -654,8 +659,37 @@ void *mag_reader_thread(void *arg)
         }
 
         int mrc = ctx->mag_ops->read(&ctx->mag_bus, &s);
-        if (mrc > 0) continue;   /* no data yet (DRDY not set / playback idle) —
-                                  * pushing here would re-fuse a stale sample */
+        if (mrc > 0) {
+            /*
+             * No new measurement, so nothing is pushed -- re-fusing a stale
+             * sample would be worse.  That is normal in isolation, because the
+             * poll can outrun the part at any rate.  A magnetometer that has
+             * STOPPED returns the same 1 for ever, though, and used to do so in
+             * total silence: 800 s with no mag samples produced one line in the
+             * log, from the fusion aligner at t+5 s, and nothing afterwards.
+             * Say it once per outage, and say when it comes back.
+             */
+            if (!stall_warned) {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long ms = (long)((now.tv_sec  - last_good.tv_sec)  * 1000L
+                               + (now.tv_nsec - last_good.tv_nsec) / 1000000L);
+                if (ms >= imu_mag_stall_ms(ctx->actual_mag_odr_mhz)) {
+                    LOG_W("[mag_reader] no magnetometer sample for %.1f s "
+                          "(%.3f Hz configured) -- the part has stopped "
+                          "delivering; heading will not update\n",
+                          (double)ms / 1000.0,
+                          (double)ctx->actual_mag_odr_mhz / 1000.0);
+                    stall_warned = true;
+                }
+            }
+            continue;
+        }
+        if (stall_warned) {
+            LOG_I("[mag_reader] magnetometer delivering again\n");
+            stall_warned = false;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &last_good);
         if (mrc < 0) {
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {

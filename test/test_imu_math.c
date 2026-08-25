@@ -54,6 +54,38 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * rather than a safety net, and a flat constant wrong at both ends of a ladder
  * spanning 1 Hz to 6664.
  */
+/*
+ * A magnetometer that stops delivering used to produce no log line at all --
+ * read() returning "no new measurement" is normal, so the reader looped on it
+ * for ever.  Measured: 800 s with zero mag samples and one line in the log,
+ * from the fusion aligner at t+5 s.  This is the policy behind the warning
+ * that now fires; the warning itself is a log line, so the threshold is what
+ * gets pinned.
+ */
+static void test_mag_stall_ms(void)
+{
+    begin("test_mag_stall_ms");
+    int fb = g_fail;
+
+    /* Ten sample periods once that exceeds the floor. 1 Hz -> 10 s. */
+    EXPECT(imu_mag_stall_ms(1000) == 10000, "1 Hz waits ten periods");
+    EXPECT(imu_mag_stall_ms(2000) == 5000,  "2 Hz waits ten periods");
+
+    /* Below the floor the fast rates would warn on a hiccup: 100 Hz is 94 ms. */
+    EXPECT(imu_mag_stall_ms(100000)  == 2000, "100 Hz floors at 2 s");
+    EXPECT(imu_mag_stall_ms(1000000) == 2000, "1000 Hz floors at 2 s");
+    EXPECT(imu_mag_stall_ms(5000)    == 2000, "5 Hz floors at 2 s");
+
+    /* The floor boundary: 10 periods == 2 s exactly at 5 Hz. */
+    EXPECT(imu_mag_stall_ms(4000) == 2500, "4 Hz is above the floor");
+
+    /* An unknown rate must still bound the wait rather than never warning. */
+    EXPECT(imu_mag_stall_ms(0)  == 2000, "an unknown rate uses the floor");
+    EXPECT(imu_mag_stall_ms(-1) == 2000, "a negative rate uses the floor");
+
+    end(fb);
+}
+
 static void test_int_fallback_ms(void)
 {
     begin("test_int_fallback_ms");
@@ -1053,6 +1085,7 @@ int main(void)
     puts("=== imud imu_math tests ===");
 
     test_int_fallback_ms();
+    test_mag_stall_ms();
     test_nearest_odr();
     test_snap_odr_up();
     test_odr_actual_resolver();

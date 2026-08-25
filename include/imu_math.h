@@ -280,6 +280,15 @@ int snap_odr_up(const int supported[], int requested);
 long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples);
 
 /*
+ * How long a magnetometer may deliver nothing before the reader warns.
+ *
+ * Ten sample periods, floored at 2 s.  See the comment on the definition: a
+ * magnetometer that stops entirely currently produces no log line at all, which
+ * is what this exists to fix.
+ */
+long imu_mag_stall_ms(int odr_mhz);
+
+/*
  * How long the IMU reader waits on the FIFO watermark before draining anyway.
  *
  * A LEVEL watermark needs no recovery -- it stays asserted until the FIFO

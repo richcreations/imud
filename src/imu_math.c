@@ -349,6 +349,32 @@ long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples)
     return out < 1 ? 1 : out;
 }
 
+/*
+ * How long a magnetometer may deliver nothing before the reader says so.
+ *
+ * The staleness guard in mmc_read() returns 1 for "no new measurement", and the
+ * reader treats that as normal and loops -- correctly, because at any rate the
+ * poll can outrun the part.  But nothing counted how long it had been going on,
+ * so a magnetometer that stopped entirely was indistinguishable from one that
+ * was merely early.  Measured: 800 seconds with zero mag samples produced one
+ * line in the log, from the fusion aligner at t+5 s, and nothing after.  The
+ * daemon otherwise looked healthy.
+ *
+ * Ten sample periods is long enough that ordinary jitter and a skipped SET/RESET
+ * cycle never trip it, and short enough that a stopped part is called out while
+ * the operator is still watching.  The 2 s floor keeps the fast rates from
+ * warning on a brief hiccup -- at 100 Hz ten periods is only 94 ms -- and no cap
+ * is needed because the slowest supported rate, 1 Hz, lands at 10 s.
+ */
+long imu_mag_stall_ms(int odr_mhz)
+{
+    if (odr_mhz <= 0) return 2000;
+    double ms = 1000000.0 * 10.0 / (double)odr_mhz;
+    if (ms < 2000.0) ms = 2000.0;
+    if (ms > 600000.0) ms = 600000.0;
+    return (long)(ms + 0.5);
+}
+
 int odr_actual_imu(const imu_ops_t *ops, int req_mhz)
 {
     if (ops->actual_odr_mhz) return ops->actual_odr_mhz(req_mhz);
