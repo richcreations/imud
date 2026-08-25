@@ -2788,6 +2788,19 @@ Fusion never converges
  @tab Magnetometer uncalibrated, or a strong local magnetic disturbance.
 Run @code{imud-cal mag}; check the fit residual.
 @item 
+Heading drifts steadily while pitch and roll stay put
+ @tab The magnetometer is uncalibrated, so every mag sample is marked
+invalid, the filter's mag update never runs and heading is dead-reckoned
+from the gyro --- measured on a static bench, 220° in 24 minutes while
+pitch and roll held to a tenth of a degree. @code{imud-status} says so
+explicitly under Attitude; the fix is @code{imud-cal mag}.
+@item 
+Heading stopped updating altogether
+ @tab The magnetometer has stopped delivering. The daemon warns once per
+outage (@code{[mag_reader] no magnetometer sample for @dots{}}) and logs
+the recovery. On a shared SPI controller, check
+@code{[imu] spi_speed_hz} is not below 2.5@ MHz.
+@item 
 Heading is off by a constant
  @tab Mount rotation. Set @code{mount.rotation_euler_deg} yaw to the
 chip-X-to-bow angle.

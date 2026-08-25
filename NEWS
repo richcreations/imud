@@ -14,6 +14,77 @@ unchanged — still v17 / 276 bytes — and so is the libimud ABI, so nothing he
 forces you to redeploy consumers. Existing configurations keep working: every
 new key defaults to the behaviour 1.8.2 had.
 
+* **Fix: calibration was applied in the wrong frame on a non-identity
+  `[mount]`.** The daemon rotated board→body first and applied the calibration
+  second, which subtracts a sensor-frame offset from body-frame data.
+  `imud-cal` reads the driver directly and never applies `[mount]`, so every
+  calibration it writes is in SENSOR axes. With `[mount]` identity the two
+  frames coincide and nothing looks wrong, which is how this survived — the
+  defect appears only on a rotated mount, which is precisely when you want one.
+  If you calibrated a rotated sensor under 1.8.2, re-run `imud-cal`.
+
+* **Fix: `imud-cal mag` could write a soft-iron scale the swing never
+  measured.** A bench swing produced a Z scale of 2.07 — not distortion, but
+  the fit stretching an axis to cover data that was never taken, which doubles
+  the vertical field the moment the sensor leaves level. The guard existed but
+  its bound was too loose, admitting up to 3.3×. An axis must now be swept
+  through at least 0.8 of the fitted radius, capping any emitted scale at
+  1.25×; a poorly covered axis is left at 1.0 rather than corrected with a
+  guess.
+
+* **`imud-status` now says when heading is dead-reckoned.** With no
+  magnetometer calibration every mag sample is marked invalid, the filter's
+  mag update never runs, and heading comes from the gyro alone — measured on a
+  static bench, it walked 220° in 24 minutes while pitch and roll held to a
+  tenth of a degree. Nothing else in the output looks wrong while that happens.
+  The `Calibration: mag no` line was a statement about whether a file exists;
+  the heading is now qualified directly.
+
+* **A magnetometer that stops delivering now says so.** `read()` returning
+  "no new measurement" is normal — the poll can outrun the part at any rate —
+  so a part that had stopped entirely produced no log line at all: 800 seconds
+  with zero mag samples and nothing after the aligner's line at t+5 s, with
+  the daemon otherwise looking healthy, stats included. imud now warns once per
+  outage, naming the gap and the configured rate, and logs the recovery.
+
+* **Fix: an MPU FIFO overflow desynchronised every later read.** `mpu925x`
+  detected the overflow, reported it, and carried on draining. The FIFO is 512
+  bytes and a sample-set is 12, so the bytes the part drops to make room are
+  never a whole number of sample-sets and everything after is parsed one field
+  late — the direct registers read gravity on Z while the FIFO path read it on
+  X in the same run. Unlike the ST parts this FIFO carries no per-word tag to
+  resync from, so recovery is now explicit.
+
+* **Sample rates are carried in milli-Hz, and the advertised rates are now the
+  silicon's.** No part on the shelf runs a whole-Hz ladder: the ST 6-axis chain
+  is 6664/2ⁿ, so its bottom rung is 13.016 Hz where the datasheet prints
+  "12.5". `ism330dhcx` advertised 12 for a rung that delivers 13.016 — 7.8%
+  below the silicon — which made `imud-imutest` report a correct chip as
+  defective at that rung on every run. `odr_hz` accepts fractional rates.
+
+* **Replay is deterministic, and it runs at the speed you asked for.** Both
+  reader threads slept a cadence sized for a real part filling a real FIFO, and
+  `sim_speed` could not reach it, so a capture recorded with a ~105 Hz
+  magnetometer replayed at 33 Hz: a 125 s file took 372 s and fused a third of
+  the field samples the live daemon had. `dt` was also anchored to the replay
+  machine's clock, and burst boundaries were set by thread scheduling, so the
+  same file replayed twice did not agree with itself. Replay now runs on the
+  capture's own clock and replays its recorded bursts: the same file is
+  bit-identical across runs, in 120 s. Diff replays at `sim_speed = 1` — `0`
+  is still deterministic but drops frames and starves the aligner.
+
+* **`[imu] spi_speed_hz` below 2.5 MHz now warns** when the magnetometer
+  shares the same SPI controller, naming the rate to use. The magnetometer
+  answers SPI perfectly throughout — the product id reads back on every
+  transfer, a single-shot trigger still converts — but continuous mode stops,
+  and re-running `init()` cannot hold it. The part picks its interface from the
+  CS level and has no `I2C_disable`, so while its CS is high it sits on the
+  IMU's clock and data lines as an I²C slave, and a slow clock lets the run of
+  zero bytes spidev sends as a burst read's data phase through its input
+  filter. Measured with a probe: at 1 MHz a payload of `0x00` kills it while
+  `0xFF`, `0x60` and `0xAA` do not, and `0x00` at 10 MHz does not. The knee
+  measured at 2.2 MHz; the warning sits at 2.5 MHz to keep margin.
+
 * **`imud --replay` now ends when the capture does.** It used to log
   `[sim] playback finished` and then sit there until killed, which made it
   unusable in a script and easy to mistake for a hang. It now exits 0 once the

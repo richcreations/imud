@@ -443,7 +443,31 @@ recorded as unexplained; see the retraction there.
   a part down for it — 0 edges still FAILs, and a rate above the part's own
   sample rate still WARNs.
 
-### 1.2 The MMC5983MA over SPI — one root cause, not five  *(resolved 2026-08-19)*
+### 1.2 The MMC5983MA over SPI — one root cause, not five  *(resolved 2026-08-19)* — **ROOT CAUSE SUPERSEDED 2026-08-24**
+
+> **The mode-3 root cause below is retracted.** Every measurement it rests on
+> was taken while the bench rig had loose dupont connections and probable
+> solder contamination on the SparkFun 9DoF header — found and repaired
+> 2026-08-23, after corrupting 2–12% of reads for the whole period this section
+> covers. The read and write failures that prompted the mode switch are
+> therefore not evidence about SPI mode at all.
+>
+> Re-tested on repaired wiring with both parts in mode 3 (a shared controller
+> cannot idle its clock at two levels, so they must agree): at 6664 Hz the
+> magnetometer ran **91.7/s in mode 3 against 103/s in mode 0**, and with the
+> IMU clock at 1 MHz and 2 MHz it read **0.0/s in either mode**. So mode 0
+> stands — but on measurement, not because mode 3 was breaking anything — and
+> mode 3 is ruled out as the explanation for the low-clock fault.
+>
+> The datasheet in fact points the other way: "SCK … is stopped high when CS is
+> high" is CPOL=1, i.e. mode 3. The "requires mode 0" claim traces to
+> SparkFun's Arduino library rather than to the part.
+>
+> The low-clock fault's actual mechanism — the run of zero bytes spidev sends
+> as a burst read's data phase, reaching the part through its I²C input filter
+> while its CS is high — is recorded in the long comment in
+> `src/drivers/mmc5983ma.c`, along with the nine theories tested and refuted.
+> The quirks catalogued below are best read as symptoms of the wiring fault.
 
 **The SPI mode was wrong.** This is a MEMSIC part and wants mode 0; it was
 driven in mode 3, the ST convention `src/drivers/bus_io.h` is built around —
@@ -707,7 +731,7 @@ that yields 1200 is the same class of defect that entry was written to fix.
 **Everything else was clean at every rate**, including 3332 and 6664 Hz, which
 were the two cleanest runs of the ladder.
 
-### 1.2.1 ~~The status gate and the DRDY edge cannot both be used~~ — **refuted 2026-08-19**, it was SPI mode 3 (see §1.2)
+### 1.2.1 ~~The status gate and the DRDY edge cannot both be used~~ — **refuted 2026-08-19**; attributed to SPI mode 3, which §1.2's superseding note has since ruled out — the bench wiring fault is the better explanation
 
 The daemon was reading the magnetometer at **35 Hz from a 105.5 Hz part** — two
 of every three samples discarded, so heading got a third of the information it

@@ -1518,6 +1518,16 @@ the sum of the first two, which is the signature of an anchor that is not late.
 8.2–32.8 ms against SPI's 4.1. Transport choice moves this term more than any
 tuning does.
 
+**During a replay the two terms are on two different clocks**, and imud keeps
+them apart deliberately. The FIFO term is rebuilt on the *recording* host's
+clock, so it reproduces the residence the live daemon measured rather than
+anything about the machine replaying it — that is the point of capturing
+`chip_ts`. The pipeline term is imud's own cost on the machine actually
+running, so it stays on that machine's clock. Measuring both against one clock
+measures the age of the recording instead: a capture replayed days later
+reported a FIFO latency of 416010576.8 ms. `imu_sample_t` therefore carries
+both instants (`read_done_ns` and `host_done_ns`), identical outside replay.
+
 ### Everything else
 
 |Metric|Target|Measured|
