@@ -824,16 +824,39 @@ No leak, no descriptor growth, no overflow, and the interrupt line carried every
 drain but one. The two `[E]` lines are a non-root bench run failing to write
 `/run/imud/imud.pid` and bind the health socket, not a fault.
 
-**Heading drift could not be assessed from this run, and that is worth stating
-rather than quietly omitting.** Fused pitch and roll held 0.5° and 92.3° to the
-tenth for 44 minutes, which reads like a static platform — but the raw gyro says
-otherwise: `imud-cal fit-temp` on the same capture reports **peak-to-peak
-0.144 rad/s (8.2 °/s)** and warns the recording is not stationary. The boat was
-moving. Pitch and roll stay still because the accelerometer anchors them; yaw
-has no absolute reference beyond an uncalibrated magnetometer, so the 280–336°
-wander is platform motion plus a mag carrying ~37 µT of hard iron, not filter
-drift. A drift figure needs either a genuinely static rig or a calibrated mag —
-see §1.2 and the `imud-cal mag` item.
+**Heading drifted 56° with both of its inputs held still**, and that is the
+result of this run.
+
+The platform did not move. The vessel was tied at all four corners; measured
+over the capture, gyro RMS is **0.32 / 0.17 / 0.10 °/s** per axis with p99 at
+**0.63 / 0.42 / 0.28** and a per-axis maximum of 1.5–2.7 °/s. That is wind roll,
+nothing more.
+
+The magnetic input did not move either. The raw field vector stayed within
+**0.31° of its starting direction across 46 minutes**, with |B| between 52.3 and
+52.9 µT — essentially a constant vector in sensor axes.
+
+Yet fused heading wandered 280–336°. With both inputs static the excursion is
+internal to the filter, and its size and sign are consistent with the startup
+gyro Z bias estimate (−0.0003 rad/s, ≈ −1 °/min) integrating uncorrected: the
+run drifts about −46° over its first 30 minutes. It is not a steady ramp,
+though. Covariance climbs to a 1.0 ceiling and then drops — at t≈18 min it fell
+to 1.8e-01 as heading jumped +23°, and the following samples moved it −48°. That
+is the signature of yaw random-walking on bias between infrequently accepted
+magnetometer updates, which is what an uncalibrated mag carrying ~37 µT of hard
+iron against a 52 µT field would produce.
+
+So the item is answered, and what it points at is §1.2's `imud-cal mag`: repeat
+this with a calibrated magnetometer before drawing any conclusion about the
+filter itself.
+
+**Earlier reading, retracted.** This section first recorded the platform as
+moving, citing `fit-temp`'s "not stationary" warning and its peak-to-peak of
+0.144 rad/s. That was a misuse of an extremum: peak-to-peak over 2.26 M samples
+is set by a single transient and says nothing about typical motion — the same
+mistake §3.1 warns about when it tells you to prefer p50/p99 over a lone `max`.
+The distribution says the opposite of the extremum, and the distribution is what
+matters here.
 
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
