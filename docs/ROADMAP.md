@@ -847,13 +847,47 @@ understatement for a heading with no measurement behind it at all.
 The baseline drift matches: roughly 1 °/min, the size of the startup gyro Z bias
 estimate (−0.0003 rad/s ≈ −1 °/min).
 
-**One thing here is still unexplained, and is not the above.** Between t = 16
-and t = 19 min the covariance trace, saturated at 1.0e+00 for the preceding four
-minutes, collapsed to 1.2e-01 while heading moved +18° and then −41° in
-successive one-minute samples. Nothing was logged: the run recorded zero
-warnings and exactly one alignment event, at t = 11 s. Open-loop drift does not
-produce a covariance collapse, so something else acted. Worth its own
-investigation before the filter is judged on this run.
+**The covariance collapse is explained, and it is a false-confidence bug.**
+Reproduced 2026-08-25 and caught at 1 Hz:
+
+```
+11:34:26  hdg=359.4  pitch= 0.6  roll=92.2  cov=1.0e+00
+11:34:27  hdg=338.9  pitch= 0.2  roll=92.3  cov=8.2e-01
+11:34:28  hdg=  0.9  pitch=-1.1  roll=92.3  cov=4.2e-01
+11:34:29  hdg= 35.6  pitch=-1.7  roll=91.3  cov=1.4e-01
+```
+
+Pitch and roll move through the transition — pitch 0.6° to −1.7°, roll 92.3° to
+91.2° in three seconds. A physical tilt disturbance is the trigger, and the
+mechanism is the regime it lands in:
+
+1. No `cal.json`, so the yaw update never runs and yaw error grows unbounded.
+2. Attitude covariance reaches ~1 rad² — σ ≈ 57°, far outside the small-angle
+   linearisation an error-state filter assumes.
+3. A tilt disturbance makes the gravity update do real work.
+4. Because the estimated and true frames now differ by order 1 rad, that
+   correction is **no longer orthogonal to the heading direction**. It couples
+   into yaw.
+5. Out comes a ~50° heading correction and an eightfold covariance drop.
+
+**The covariance drop is false confidence.** Yaw is not known to 0.14 rad² after
+that event; it is still wrong by tens of degrees. A consumer reading `cov` to
+decide whether to trust heading would be misled precisely when heading is at its
+worst. That is the part worth fixing, independently of the calibration.
+
+It needs the disturbance: a companion run with no calibration and no capture
+held the covariance ceiling for **ten minutes with no collapse**, and its
+platform never moved — pitch span 0.212°, roll span 0.344° across 24 minutes,
+maximum single-sample step 0.18°. The run that collapsed moved 2.3° of pitch in
+three seconds. A first A/B appeared to implicate the capture path, since the
+collapsing runs had capture enabled and the quiet one did not; that was
+coincidence at n = 1 per side, and the 1 Hz trace shows the real trigger.
+
+This whole regime exists only because the yaw update is disabled. With a
+magnetometer calibration present, yaw variance never approaches 1 rad² and the
+linearisation stays valid — so `imud-cal mag` is the prerequisite for judging
+any of it, and the false-confidence behaviour is what to fix if the regime can
+be entered at all.
 
 **Two earlier readings of this run were wrong and are retracted.** The first
 recorded the platform as moving, citing `fit-temp`'s peak-to-peak of
