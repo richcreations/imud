@@ -805,6 +805,36 @@ that races the daemon produces plausible-looking nonsense.
   for the same FIFO; at 1 event per 94,539 samples, 12 inside a 5 s window was
   contention, not this defect.
 
+### 1.4 Long stability run  *(2026-08-25, 44 min, SPI, `ism330dhcx` + `mmc5983ma`)*
+
+833 Hz / `fifo_wm = 64`, mag 100 Hz, capture on, sampled once a minute from
+`/proc` and the `[stats]` line.
+
+| | |
+|---|---|
+| RSS | **2,544 kB for the whole run** — not one sample differed |
+| open fds | **10**, constant |
+| threads | **7**, constant |
+| `ovf` | **0** |
+| warnings | **0** |
+| drains | 37,332 edge / **1** timeout |
+| batched-timestamp rejects | **0** |
+
+No leak, no descriptor growth, no overflow, and the interrupt line carried every
+drain but one. The two `[E]` lines are a non-root bench run failing to write
+`/run/imud/imud.pid` and bind the health socket, not a fault.
+
+**Heading drift could not be assessed from this run, and that is worth stating
+rather than quietly omitting.** Fused pitch and roll held 0.5° and 92.3° to the
+tenth for 44 minutes, which reads like a static platform — but the raw gyro says
+otherwise: `imud-cal fit-temp` on the same capture reports **peak-to-peak
+0.144 rad/s (8.2 °/s)** and warns the recording is not stationary. The boat was
+moving. Pitch and roll stay still because the accelerometer anchors them; yaw
+has no absolute reference beyond an uncalibrated magnetometer, so the 280–336°
+wander is platform motion plus a mag carrying ~37 µT of hard iron, not filter
+drift. A drift figure needs either a genuinely static rig or a calibrated mag —
+see §1.2 and the `imud-cal mag` item.
+
 ## 2. Gyro bias temperature compensation  *(code shipped 1.5 — needs Pi thermal data)*
 
 The mechanism shipped in 1.5: cal.json `gyro_temp` per-axis linear
