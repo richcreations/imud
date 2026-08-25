@@ -8,7 +8,8 @@
  * imu.c — reader threads, ring buffers, and fusion thread (§3)
  *
  * Thread model:
- *   ism_reader  wakes on GPIO FIFO-watermark edge (10 ms fallback), drains
+ *   ism_reader  wakes on GPIO FIFO-watermark edge (fallback: fifo_wm +
+ *               int_grace sample periods), drains
  *               IMU FIFO into imu_ring, updates wall-clock anchor.
  *   mag_reader  wakes on GPIO measurement-done edge (20 ms fallback), reads
  *               magnetometer, applies hard/soft-iron cal, issues periodic SET.

@@ -339,8 +339,8 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     if (fifo_restart(bus) < 0) return -1;
 
     /* Data-ready on INT so a GPIO line can wake the reader.  With no GPIO
-     * wired the reader falls back to its 10 ms timer, same as every other
-     * driver here. */
+     * wired the reader polls at the batch period, same as every other driver
+     * here. */
     if (bus_reg_write(bus, REG_INT_ENABLE, INT_ENABLE_RAW_RDY) < 0) return -1;
 
     /* Last: open the bypass so the AK8963 is visible to the host bus. */

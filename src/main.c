@@ -345,11 +345,12 @@ static void *health_thread(void *arg)
              * on a run that has not started it would be a row of zeros reading
              * like a stalled reader.
              *
-             * The edge/timeout split is the point.  fifo_wm does not set FIFO
-             * residence -- the reader takes whichever of the watermark
-             * interrupt and the 10 ms timeout comes first -- and a mean burst
-             * depth cannot tell those apart, because at 833 Hz a watermark of
-             * 8 comes due at almost exactly the timeout.  See ROADMAP §3.1.
+             * The edge/timeout split is the point, as a health check on the
+             * interrupt line.  The fallback is fifo_wm + int_grace sample
+             * periods, so it is always later than the watermark it backs up:
+             * on a healthy line E dominates and T is one or none per run.  A
+             * climbing T means edges are not arriving and residence has
+             * stretched to the fallback.  See ROADMAP §3.1.
              */
             char drn[96] = "";
             {

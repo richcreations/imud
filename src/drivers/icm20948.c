@@ -237,7 +237,7 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     if (bus_reg_write(bus, B0_FIFO_EN_2, FIFO_EN2_ACCEL_GYRO) < 0) return -1;
 
     /* Assert INT1 on raw data ready so a GPIO line can wake the reader.
-     * If no GPIO is wired, the reader uses a 10 ms timer fallback instead. */
+     * If no GPIO is wired, the reader polls at the batch period instead. */
     if (bus_reg_write(bus, B0_INT_ENABLE_1, 0x01) < 0) return -1;
 
     /* Enable I2C bypass so the AK09916 magnetometer is visible to the host. */

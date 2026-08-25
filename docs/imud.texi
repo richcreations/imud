@@ -645,6 +645,12 @@ name does the addressing, so @code{i2c_addr} is unused.
  @tab SPI clock in Hz. @code{0} means the driver's datasheet maximum,
 which is the useful default. A request above that maximum is clamped
 rather than refused, and the daemon logs what it really programmed.
+@strong{Do not set this below 2.5 MHz when a magnetometer shares the
+same SPI controller.} Measured on an ism330dhcx + mmc5983ma pair:
+driving the IMU below about 2.2 MHz stops the magnetometer completing
+measurements entirely, and re-running @code{init()} cannot hold it. The
+default is unaffected, and the daemon warns at startup when it sees a
+slow clock alongside a shared-bus magnetometer.
 @item 
 @code{i2c_addr}
  @tab int
@@ -656,8 +662,12 @@ high) or @code{0x6A} (SA0 low via jumper).
  @tab int
  @tab @code{17}
  @tab BCM GPIO number for the FIFO watermark interrupt (board pin 11).
-Set @code{0} to use a 10 ms polling timer instead of a hardware
-interrupt.
+Set @code{0} to poll instead of using a hardware interrupt. The polling
+cadence is then the same @code{fifo_wm + int_grace} sample periods the
+interrupt path waits for, unless @code{poll_ms} overrides it: a flat
+cadence under-polls at high ODR, where the FIFO overflows and the
+effective rate drops below the configured one, and burns reads at low
+ODR.
 @item 
 @code{odr_hz}
  @tab int
@@ -689,18 +699,43 @@ rates of some parts are beyond what a Raspberry Pi can sustain.
  @tab int
  @tab @code{64}
  @tab FIFO watermark in sample-sets: how deep the chip buffers before
-raising its interrupt. This bounds @strong{buffer depth and overflow
-headroom} --- it does @emph{not} set sample latency, despite what
-@code{64 / 833 Hz ≈ 77 ms} arithmetic suggests. The reader also wakes on
-a 10 ms timeout and drains whatever is there, so residence is bounded by
-that cadence rather than by the watermark: measured on a Pi 5 at 833 Hz
-over 120 s, the median residence was 33 ms at every setting of this key
-and the worst case ranged 35--56 ms with no consistent ordering between
-them (@code{docs/ROADMAP.md} §3.1). Raise it if a busy host is
-overflowing; lowering it to chase latency does not work. On the ST parts
-a watermark of 8 or more also batches the chip timestamp into the FIFO
+raising its interrupt. This sets @strong{both buffer depth and sample
+latency} --- with @code{int_grace}, the reader waits
+@code{fifo_wm + int_grace} sample periods, so 64 at 833 Hz batches about
+77 ms. Earlier releases documented this key as having @emph{no} effect
+on latency, citing a bench run that measured the same 33 ms residence at
+every setting. That measurement was real and the conclusion drawn from
+it was wrong: the reader then used a flat 10 ms fallback, which drained
+before the watermark could assert --- and because a level watermark
+deasserts as soon as a drain empties the FIFO, the interrupt was
+suppressed entirely at nine of the ten ISM330DHCX rates. The key was
+inert because its own safety net pre-empted it. On the ST parts a
+watermark of 8 or more also batches the chip timestamp into the FIFO
 (§1.1); at 32 and above that costs 1.6% of the word budget, so the same
 watermark holds about 63 sample-sets rather than 64.
+@item 
+@code{int_grace}
+ @tab int
+ @tab @code{2}
+ @tab How late the interrupt may be, in @strong{samples}, before the
+reader gives up and reads anyway. The wait is @code{fifo_wm + int_grace}
+sample periods, so the fallback fires only when the line is genuinely
+@emph{late} --- never merely because the batch is not ready yet. Counted
+in samples rather than milliseconds because a fixed time means a
+different thing at every rate: 2 ms is thirteen samples at 6664 Hz and
+three hundredths of one at 13 Hz. Ignored when @code{int_gpio = 0},
+where there is no expected arrival to be late against.
+@item 
+@code{poll_ms}
+ @tab int
+ @tab @code{0}
+ @tab Polling cadence in milliseconds for an install with @strong{no}
+interrupt line. @code{0} derives it from the rate and watermark, which
+is normally what you want: a fixed interval under-polls at high ODR ---
+the FIFO overflows and the delivered rate falls below the configured one
+--- and burns reads at low ODR. Set a non-zero value only to force a
+specific cadence. @strong{Ignored entirely when @code{int_gpio} is
+non-zero.}
 @end multitable
 
 @node [mag]
@@ -737,7 +772,9 @@ takes CE0). @strong{Required} when @code{bus = "spi"}.
  @tab int
  @tab @code{0}
  @tab SPI clock in Hz; @code{0} means the driver's datasheet maximum. As
-for @code{[imu]}.
+for @code{[imu]}. Note that a magnetometer's @emph{own} clock is not
+what starves it on a shared controller --- a slow
+@code{[imu] spi_speed_hz} is. This key can be lowered safely.
 @item 
 @code{i2c_addr}
  @tab int
@@ -768,6 +805,30 @@ noise variance is sized for that actual rate. MMC5983MA supports:
  @tab @code{5.0}
  @tab Interval in seconds between SET/RESET degauss pulses. Prevents
 gradual magnetisation of the sensor. Set @code{0} to disable.
+@item 
+@code{int_grace}
+ @tab int
+ @tab @code{2}
+ @tab How late the interrupt may be, in @strong{samples}, before the
+reader gives up and reads anyway. These magnetometers have no FIFO, so
+the line signals one finished conversion and the wait is
+@code{1 + int_grace} sample periods, so the fallback fires only when the
+line is genuinely @emph{late} --- never merely because the batch is not
+ready yet. Counted in samples rather than milliseconds because a fixed
+time means a different thing at every rate: 2 ms is thirteen samples at
+6664 Hz and three hundredths of one at 13 Hz. Ignored when
+@code{int_gpio = 0}, where there is no expected arrival to be late
+against.
+@item 
+@code{poll_ms}
+ @tab int
+ @tab @code{0}
+ @tab Polling cadence in milliseconds for an install with @strong{no}
+interrupt line. @code{0} derives it from the rate, which is normally
+what you want: a fixed interval under-polls at high ODR --- the FIFO
+overflows and the delivered rate falls below the configured one --- and
+burns reads at low ODR. Set a non-zero value only to force a specific
+cadence. @strong{Ignored entirely when @code{int_gpio} is non-zero.}
 @end multitable
 
 @node [fusion]
@@ -1296,11 +1357,14 @@ exact.} The histogram is log₂-spaced, so a reported @code{p99} of
 It never flatters, but it can overstate by up to 2×. When you want a
 number rather than a bound, use @code{max=}.
 @item
-@strong{@code{fifo} is bounded by how often the reader drains, not by
-@code{fifo_wm}.} The reader wakes on the watermark interrupt @emph{or} a
-10 ms timeout, whichever comes first, so @code{fifo_wm / odr_hz} is not
-the residence in any shipped configuration. See the @code{fifo_wm} entry
-above.
+@strong{@code{fifo} is set by @code{fifo_wm}.} The reader wakes on the
+watermark interrupt, with a fallback of @code{fifo_wm + int_grace}
+sample periods if the line is late. The fallback is by construction
+later than the watermark it backs up, so on a healthy line the watermark
+decides and residence is about @code{fifo_wm / odr_hz} --- measured at
+75.8 ms against a predicted 76.8 ms at 833 Hz with @code{wm = 64}. See
+the @code{fifo_wm} entry above. Earlier releases said the opposite,
+describing a flat 10 ms timer that has since been replaced.
 @item
 @strong{It takes a few seconds to appear}, because the chip's real tick
 period has to be measured against the host clock first. On
@@ -1310,19 +1374,20 @@ absent entirely --- both are normal rather than faults.
 
 A drain clause follows it --- @code{drains=E/T e/t n=MEAN max=DEEPEST}
 --- saying how the FIFO is actually being emptied. @code{E} is drains
-woken by the watermark interrupt, @code{T} drains woken by the 10 ms
-timeout, @code{n} the mean samples per drain and @code{max} the deepest
+woken by the watermark interrupt, @code{T} drains woken by the fallback
+timer, @code{n} the mean samples per drain and @code{max} the deepest
 single burst since start.
 
-Read the @strong{split}, not the mean. Because the reader takes
-whichever of the two wakeups comes first, the ratio is what says which
-one is in charge --- and a mean burst depth cannot tell them apart,
-since at 833 Hz a @code{fifo_wm} of 8 comes due at almost exactly the 10
-ms timeout, so both models predict the same ~8 samples per drain. A
-@code{T} that dominates means the watermark is never being reached
-before the timer fires, and lowering @code{fifo_wm} will not change
-residence. On an install with no IMU interrupt line, @code{E} is 0 by
-construction.
+Read the @strong{split}, not the mean: it is a health check on the
+interrupt line. @code{E} should dominate overwhelmingly --- a healthy
+line gives one timeout per run or none at all, because the fallback only
+expires when an edge is genuinely late. A @code{T} that is climbing
+means the watermark interrupt is not arriving, and the reader is running
+on its fallback instead; residence then stretches to
+@code{fifo_wm + int_grace} sample periods rather than @code{fifo_wm},
+and the first thing to check is the wiring and @code{int_gpio}. On an
+install with no IMU interrupt line, @code{E} is 0 by construction and
+the cadence is the poll instead.
 
 @multitable @columnfractions 0.14 0.09 0.12 0.65 
 @headitem 
@@ -1673,7 +1738,7 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{GPIO interrupt}: BCM 27 · pin 13
 @item
-@strong{SPI}: @strong{yes} --- mode 0, 2 MHz
+@strong{SPI}: @strong{yes} --- mode 0, 10 MHz
 @item
 @strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil. On SPI a
 CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after
@@ -3382,7 +3447,9 @@ Set @code{has_interrupt = true} if the chip asserts an external
 interrupt pin on measurement complete --- the mag reader thread requests
 a GPIO edge on @code{[mag] int_gpio} and calls @code{read()} on each
 rising edge. Set @code{false} if there is no interrupt pin (e.g. AK09916
-in bypass mode); the reader falls back to a 10 ms poll loop.
+in bypass mode); the reader falls back to a rate-sized poll --- one
+sample period plus @code{int_grace}, so it tracks the configured ODR
+rather than a fixed interval.
 
 @node The supported_* tables
 @section The supported_* tables
@@ -3494,7 +3561,7 @@ the full pipeline before hardware arrives:
 [imu]
 driver   = "sim"
 i2c_addr = 0x00
-int_gpio = 0          # 0 disables GPIO — reader uses a 10 ms timer
+int_gpio = 0          # 0 disables GPIO — reader polls at the batch period
 
 [mag]
 driver   = "sim"

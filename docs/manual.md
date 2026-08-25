@@ -341,7 +341,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused. |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. **Do not set this below 2.5 MHz when a magnetometer shares the same SPI controller.** Measured on an ism330dhcx + mmc5983ma pair: driving the IMU below about 2.2 MHz stops the magnetometer completing measurements entirely, and re-running `init()` cannot hold it. The default is unaffected, and the daemon warns at startup when it sees a slow clock alongside a shared-bus magnetometer. |
 | `i2c_addr` | int | `0x6B` | I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
-| `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to use a 10 ms polling timer instead of a hardware interrupt. |
+| `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR. |
 | `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `13.016`, `26.031`, `52.063`, `104.125`, `208.25`, `416.5`, `833`, `1666`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
@@ -554,10 +554,13 @@ Three things about reading it:
   histogram is log₂-spaced, so a reported `p99` of `16.4 ms` means the true
   value is somewhere in `[8.2, 16.4)`. It never flatters, but it can overstate
   by up to 2×. When you want a number rather than a bound, use `max=`.
-- **`fifo` is bounded by how often the reader drains, not by `fifo_wm`.** The
-  reader wakes on the watermark interrupt *or* a 10 ms timeout, whichever comes
-  first, so `fifo_wm / odr_hz` is not the residence in any shipped
-  configuration. See the `fifo_wm` entry above.
+- **`fifo` is set by `fifo_wm`.** The reader wakes on the watermark interrupt,
+  with a fallback of `fifo_wm + int_grace` sample periods if the line is late.
+  The fallback is by construction later than the watermark it backs up, so on a
+  healthy line the watermark decides and residence is about `fifo_wm / odr_hz`
+  — measured at 75.8 ms against a predicted 76.8 ms at 833 Hz with `wm = 64`.
+  See the `fifo_wm` entry above. Earlier releases said the opposite, describing
+  a flat 10 ms timer that has since been replaced.
 - **It takes a few seconds to appear**, because the chip's real tick period
   has to be measured against the host clock first. On `icm20948` and
   `mpu925x`, which have no chip timer, it is absent entirely — both are normal
@@ -565,16 +568,17 @@ Three things about reading it:
 
 A drain clause follows it — `drains=E/T e/t n=MEAN max=DEEPEST` — saying how
 the FIFO is actually being emptied. `E` is drains woken by the watermark
-interrupt, `T` drains woken by the 10 ms timeout, `n` the mean samples per
+interrupt, `T` drains woken by the fallback timer, `n` the mean samples per
 drain and `max` the deepest single burst since start.
 
-Read the **split**, not the mean. Because the reader takes whichever of the two
-wakeups comes first, the ratio is what says which one is in charge — and a mean
-burst depth cannot tell them apart, since at 833 Hz a `fifo_wm` of 8 comes due
-at almost exactly the 10 ms timeout, so both models predict the same ~8 samples
-per drain. A `T` that dominates means the watermark is never being reached
-before the timer fires, and lowering `fifo_wm` will not change residence. On an
-install with no IMU interrupt line, `E` is 0 by construction.
+Read the **split**, not the mean: it is a health check on the interrupt line.
+`E` should dominate overwhelmingly — a healthy line gives one timeout per run or
+none at all, because the fallback only expires when an edge is genuinely late.
+A `T` that is climbing means the watermark interrupt is not arriving, and the
+reader is running on its fallback instead; residence then stretches to
+`fifo_wm + int_grace` sample periods rather than `fifo_wm`, and the first thing
+to check is the wiring and `int_gpio`. On an install with no IMU interrupt line,
+`E` is 0 by construction and the cadence is the poll instead.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -1722,7 +1726,8 @@ Set `has_interrupt = true` if the chip asserts an external interrupt pin on
 measurement complete — the mag reader thread requests a GPIO edge on
 `[mag] int_gpio` and calls `read()` on each rising edge. Set `false` if there
 is no interrupt pin (e.g. AK09916 in bypass mode); the reader falls back to a
-10 ms poll loop.
+rate-sized poll — one sample period plus `int_grace`, so it tracks the
+configured ODR rather than a fixed interval.
 
 ### The `supported_*` tables
 
@@ -1827,7 +1832,7 @@ arrives:
 [imu]
 driver   = "sim"
 i2c_addr = 0x00
-int_gpio = 0          # 0 disables GPIO — reader uses a 10 ms timer
+int_gpio = 0          # 0 disables GPIO — reader polls at the batch period
 
 [mag]
 driver   = "sim"

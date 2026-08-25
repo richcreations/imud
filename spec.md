@@ -354,8 +354,8 @@ append-only format — NOT the wire packet.
 Expected fusion output: heading increases ~6°/s, roll tracks ±4°, pitch tracks ±2°,
 rate_of_turn ~360 deg/min with small wave-induced oscillation.
 
-Set `int_gpio = 0` for both sensors when using `sim` — the reader threads use
-their 10 ms timer fallback instead of GPIO edges.
+Set `int_gpio = 0` for both sensors when using `sim` — the reader threads poll
+at the batch period instead of waiting on GPIO edges.
 
 ### Adding a New Chip
 
@@ -1162,7 +1162,7 @@ capture. Both transports receive the final
     → skip if gyro_bias_sec = 0 or cal.json has gyro.bias
 8.  Open UDP output sockets
 9.  Configure GPIO edges via gpiod (rising-edge detection; libgpiod v1 or v2 auto-detected)
-    → int_gpio = 0 → skip GPIO; reader threads use 10 ms timer fallback
+    → int_gpio = 0 → skip GPIO; reader threads poll at the batch period
 10. Open AF_UNIX status socket at /run/imud/imud.sock (mode 0660)
 11. Start threads: ism_reader, mag_reader, fusion, health (always);
     nmea_out if nmea.enabled or nmea.tcp_enabled;
@@ -1409,7 +1409,7 @@ plus `imud-<name>(8)`), and its own config file `/etc/imud/imud-<name>.conf`.
 |> 10 consecutive I2C errors|Attempt chip soft-reset; re-init registers                 |
 |ISM330 FIFO overflow       |Set `FLAG_FIFO_OVERFLOW`; log at 1 Hz rate-limit           |
 |MMC5983MA anomaly          |Reject if field magnitude ±50% from expected; use last good|
-|GPIO edge missed           |Fallback 10 ms timer poll; FIFO absorbs gap for ISM330     |
+|GPIO edge missed           |Fallback after fifo_wm+int_grace periods; FIFO absorbs gap |
 |UDP send failure           |Log first occurrence; continue (fire-and-forget)           |
 |SIGHUP                     |Hot-reload fusion params and output rates; see §11         |
 
@@ -1429,34 +1429,69 @@ term made the total look ten times smaller than it is.
 
 ### FIFO residence — the dominant term, and it is yours to set
 
-The reader drains when the FIFO watermark interrupt fires **or** a 10 ms
-timeout expires, whichever comes first. So:
+The reader blocks on the FIFO watermark interrupt, with a fallback of
+`fifo_wm + int_grace` sample periods if the line is late. The fallback is by
+construction *later* than the watermark it backs up, so on a healthy line the
+**watermark always decides**, at every rate.
 
-> **`fifo_wm` has an effect only while `fifo_wm / odr_hz` is under 10 ms.**
-> Above that the timer decides, and the watermark does nothing at all.
+> **`fifo_wm` sets sample latency at every ODR.** The oldest sample in a burst
+> is about `fifo_wm` sample periods old when the read completes, so residence is
+> `fifo_wm / odr_hz`. Lowering `fifo_wm` is the only way to lower it.
 
-Mean samples per drain is therefore `min(fifo_wm, odr_hz × 0.010)`, and the
-oldest sample in a burst is that many sample-periods old when the read
-completes. Measured on a Pi 5, `ism330dhcx` over SPI, 42 s per row:
+Mean samples per drain is `fifo_wm` itself. On the ST parts a watermark of 8 or
+more also batches the chip timestamp into the FIFO, and those words share the
+budget: at `wm = 64` a drain carries about 63 sample-sets above 833 Hz, falling
+to 43 at 13 Hz where the timestamp rate is a much larger fraction of the sample
+rate. At `wm = 8` and `wm = 32` the count is exactly the watermark.
 
-|`odr_hz`|`fifo_wm`|woken by watermark / timeout|mean per drain|`fifo` p50|
+Measured on a Pi 5, `ism330dhcx` over SPI, 2026-08-25, one run per row, `ovf`
+noted where non-zero. `fifo` percentiles are log₂-bucket upper edges — a p50 of
+`65.5 ms` means the true value is in `[32.8, 65.5)` — so the `max` column is the
+one to quote against a model.
+
+|`odr_hz`|mean/drain|`fifo` p50/p99|`fifo` max|`fifo_wm / odr_hz`|`pipe` p50/p99|woken edge/timeout|
+|---|---|---|---|---|---|---|
+|13.016|42.7|1048.6 / 1048.6 ms|3102.9 ms|4917 ms|0.26 / 0.51 ms|24 / 0|
+|26.031|51.0|1048.6 / 1048.6 ms|1846.2 ms|2459 ms|0.26 / 0.26 ms|31 / 0|
+|52.063|56.3|1048.6 / 1048.6 ms|1034.5 ms|1229 ms|0.26 / 0.51 ms|57 / 0|
+|104.125|60.0|262.1 / 1048.6 ms|552.5 ms|615 ms|0.26 / 0.51 ms|108 / 0|
+|208.25|61.3|262.1 / 524.3 ms|282.5 ms|307 ms|0.26 / 0.51 ms|212 / 0|
+|416.5|62.1|131.1 / 262.1 ms|144.2 ms|154 ms|0.26 / 0.51 ms|419 / 0|
+|833|63.1|65.5 / 131.1 ms|**75.8 ms**|**76.8 ms**|0.26 / 0.51 ms|823 / 1|
+|1666|63.1|32.8 / 65.5 ms|41.8 ms|38.4 ms|0.26 / 0.51 ms|1647 / 1|
+|3332|63.1|16.4 / 32.8 ms|23.3 ms|19.2 ms|0.26 / 0.51 ms|3295 / 1|
+|6664|63.8|16.4 / 16.4 ms|14.6 ms|9.6 ms|0.26 / 0.51 ms|6510 / 1|
+
+All ten rows are woken by the watermark, not the fallback — one timeout per run
+above 833 Hz and none below. `max` tracks `fifo_wm / odr_hz` closely from 13 Hz
+to 833 Hz (75.8 against a predicted 76.8 at 833). Above 1666 Hz it runs *over*
+the prediction, because the read itself is no longer negligible against a
+shrinking budget: 14.6 ms against 9.6 at 6664 Hz.
+
+And the watermark is the lever, at both ends of the ladder:
+
+|`odr_hz`|`fifo_wm`|mean/drain|`fifo` max|`pipe` p50/p99|
 |---|---|---|---|---|
-|104|8|0 / 4068|1.1|2.0 ms|
-|104|64|0 / 4069|1.1|4.1 ms|
-|833|8|**4533 / 2**|8.0|16.4 ms|
-|833|64|0 / 3764|9.7|16.4 ms|
+|833|8|8.0|11.8 ms|0.06 / 0.13 ms|
+|833|32|32.1|39.6 ms|0.26 / 0.26 ms|
+|833|64|63.1|75.8 ms|0.26 / 0.51 ms|
+|6664|8|8.0|6.6 ms|0.06 / 0.06 ms|
+|6664|32|32.0|10.7 ms|0.26 / 0.26 ms|
+|6664|64|63.8|14.6 ms|0.26 / 0.51 ms|
 
-The daemon reports its own split on the `[stats]` line (`drains=E/T e/t n=… max=…`),
-so this is checkable on any rig rather than taken on trust.
-
-**Set `fifo_wm` below `odr_hz / 100` to have it matter at all**; leave it above
-and residence is pinned at ~10 ms of samples regardless of what you write.
+**Earlier releases of this document said the opposite** — that a 10 ms drain
+timer pre-empted the watermark, that `fifo_wm` mattered only while
+`fifo_wm / odr_hz` stayed under 10 ms, and that it should be set below
+`odr_hz / 100` to have any effect at all. That described the code of the time
+and is no longer true: the flat timeout was replaced by the rate-sized fallback
+above, which is what let the watermark start deciding. The measurements behind
+the old claim were sound; the code they described is gone.
 
 ### The three terms
 
 |Term|Target|Measured (Pi 5, 833 Hz, SPI)|
 |---|---|---|
-|FIFO residence|`min(fifo_wm, odr_hz × 0.010)` sample periods|16.4 ms p50 at `wm = 64`; 4.1 ms p50 on SPI at `wm = 8`|
+|FIFO residence|`fifo_wm / odr_hz`|75.8 ms max at `wm = 64`; 11.8 ms at `wm = 8` — SPI, 833 Hz|
 |Pipeline (read → fused)|< 1.5 ms|**0.06 ms p50 / 0.26 ms p99** — met with room|
 |Transport (fused → socket)|—|0.86 ms, from 99,961 packets on the TCP stream|
 |**Total sample age**|**`fifo + pipe + transport`**|**33.79 ms p50** measured end to end on I²C at `wm = 64`|

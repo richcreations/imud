@@ -236,7 +236,14 @@ ISM330DHCX: 0x6B (SA0 high) or 0x6A (SA0 low).
 BCM GPIO number for the FIFO watermark interrupt.
 Set
 .B 0
-to use a 10\~ms polling timer instead.
+to poll instead.  The polling cadence is then the same
+.B fifo_wm
++
+.B int_grace
+sample periods the interrupt path waits for,
+unless
+.B poll_ms
+overrides it.
 .TP
 .B odr_hz
 .RI (int,\ default:\ 833)

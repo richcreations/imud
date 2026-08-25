@@ -821,7 +821,7 @@ warm it gently mid-capture).
 Pi 5 routes GPIO through the RP1; gpiod is the right abstraction but edge-interrupt
 latency should be measured against the Pi 4 baseline once hardware testing starts.
 
-### 3.1 spec §14's latency budgets, three of them now measured  *(pipeline, FIFO residence and SPI are in; the watermark model and the rewrite are owed)*
+### 3.1 spec §14's latency budgets — measured across the whole ladder  *(2026-08-25: the model is settled and spec §14 is rewritten; the material below 2026-08-25 is kept for provenance and is partly superseded)*
 
 `spec.md` §14 budgets FIFO read jitter at 5 ms p99, fusion latency at 1.5 ms and
 end-to-end at 3 ms. Nothing measured any of them for a long time, and the
@@ -863,7 +863,12 @@ and the one §14's fusion-latency row was always about.
 
 `fifo` says something other than what this section assumed:
 
-- **It does not scale with `fifo_wm`.** The watermark is not what triggers a
+- **It does not scale with `fifo_wm`.** *(SUPERSEDED 2026-08-25 — true of the
+  code of the time, and no longer. `6ac3c66` replaced the flat timeout with a
+  fallback of `fifo_wm + int_grace` sample periods, which is always later than
+  the watermark it backs up, so the watermark now triggers every drain and
+  residence tracks `fifo_wm / odr_hz`. See the ladder at the end of this
+  section.)* The watermark is not what triggers a
   drain: the reader waits with a **10 ms timeout** (`src/imu.c`) and drains
   whatever is there when it expires, so residence is bounded by that cadence
   plus the read itself. `imud-imutest` measured the same thing independently
@@ -924,13 +929,75 @@ line at 833 Hz / `fifo_wm = 64`, `ism330dhcx` over SPI on a Pi 5)*:
 | I²C, same config (08-15) | 32.8 / 32.8 ms | — / 0.26 ms |
 | **SPI** | **4.1 / 8.2 ms** | **0.06 / 0.13 ms** |
 
-An eightfold drop in FIFO residence and a halved pipeline term. Note what that
-does *not* say: the drain cadence still bounds residence, and the reader's
-10 ms timeout is unchanged, so this is the read itself getting cheaper rather
-than the cycle getting shorter. It is consistent with the finding above that
-`fifo_wm` is not what triggers a drain.
+An eightfold drop in FIFO residence and a halved pipeline term. *(SUPERSEDED
+2026-08-25: this row was taken before `6ac3c66` and does not describe the
+current reader. The same 833 Hz / `wm = 64` configuration now measures 75.8 ms,
+not 4.1 — not a regression but the watermark finally deciding the drain instead
+of being pre-empted. The ladder below replaces it.)*
 
-Still owed: the pair at the rates only SPI can carry (above 833 Hz).
+**The whole ladder, and the model that finally fits** *(2026-08-25, SPI,
+`ism330dhcx` + `mmc5983ma` on a Pi 5, one run per row, measured rate within 10%
+of configured on every row)*.
+
+`6ac3c66` changed what this section was measuring. The reader no longer holds a
+flat 10 ms timeout; it waits on the watermark with a fallback of
+`fifo_wm + int_grace` sample periods, which is by construction *later* than the
+watermark it backs up. So the watermark now decides every drain, at every rate —
+`E/T` is 24/0 at 13 Hz and 6510/1 at 6664 Hz — and `fifo_wm / odr_hz`, the model
+this section spent two revisions rejecting, is now the right one.
+
+|`odr_hz`|mean/drain|`fifo` p50/p99|`fifo` max|`fifo_wm / odr_hz`|`pipe` p50/p99|E/T|
+|---|---|---|---|---|---|---|
+|13.016|42.7|1048.6 / 1048.6|3102.9 ms|4917 ms|0.26 / 0.51|24 / 0|
+|26.031|51.0|1048.6 / 1048.6|1846.2 ms|2459 ms|0.26 / 0.26|31 / 0|
+|52.063|56.3|1048.6 / 1048.6|1034.5 ms|1229 ms|0.26 / 0.51|57 / 0|
+|104.125|60.0|262.1 / 1048.6|552.5 ms|615 ms|0.26 / 0.51|108 / 0|
+|208.25|61.3|262.1 / 524.3|282.5 ms|307 ms|0.26 / 0.51|212 / 0|
+|416.5|62.1|131.1 / 262.1|144.2 ms|154 ms|0.26 / 0.51|419 / 0|
+|833|63.1|65.5 / 131.1|**75.8 ms**|**76.8 ms**|0.26 / 0.51|823 / 1|
+|1666|63.1|32.8 / 65.5|41.8 ms|38.4 ms|0.26 / 0.51|1647 / 1|
+|3332|63.1|16.4 / 32.8|23.3 ms|19.2 ms|0.26 / 0.51|3295 / 1|
+|6664|63.8|16.4 / 16.4|14.6 ms|9.6 ms|0.26 / 0.51|6510 / 1|
+
+All at `fifo_wm = 64`. `ovf` was 0 up to 833 Hz and exactly 1 per run above it.
+
+- **`max` tracks `fifo_wm / odr_hz` from 13 Hz to 833 Hz** — 75.8 against a
+  predicted 76.8 at 833. Above 1666 Hz it runs *over* the prediction (14.6
+  against 9.6 at 6664), because the read itself stops being negligible against
+  a shrinking budget. That is the honest upper end of the model.
+- **Mean samples per drain is the watermark**, exactly, at `wm = 8` and
+  `wm = 32`. At `wm = 64` it is 63.1 above 833 Hz and falls to 42.7 at 13 Hz:
+  the ST parts batch the chip timestamp into the same word budget, and at low
+  ODR those words are a far larger share of it. The registry's "about 63 rather
+  than 64" note holds at high rate and understates the effect at low rate.
+- **`pipe` is 0.26 / 0.51 ms at every rate on the ladder** and drops to
+  0.06 / 0.13 at `wm = 8`. It scales with burst depth, not with ODR — which is
+  what it should do, since it is the cost of fusing a burst. Well inside
+  §14's 1.5 ms budget everywhere.
+
+The watermark is the lever, and it works at both ends:
+
+|`odr_hz`|`fifo_wm`|mean/drain|`fifo` max|`pipe` p50/p99|
+|---|---|---|---|---|
+|833|8|8.0|11.8 ms|0.06 / 0.13|
+|833|32|32.1|39.6 ms|0.26 / 0.26|
+|833|64|63.1|75.8 ms|0.26 / 0.51|
+|6664|8|8.0|6.6 ms|0.06 / 0.06|
+|6664|32|32.0|10.7 ms|0.26 / 0.26|
+|6664|64|63.8|14.6 ms|0.26 / 0.51|
+
+**This closes the section's last two owed items** — the pair above 833 Hz, and
+the watermark question the 2026-08-19 subsection got wrong. spec §14 has been
+rewritten against these numbers, and the stale "10 ms timer" wording it and
+`docs/manual.md` carried is gone.
+
+*Method note.* The first attempt at this ladder was contaminated and thrown
+away: the previous sweep's script was still running when the new one started, so
+two daemons drained one FIFO and the 13 Hz cell reported 371,433 samples in 65 s
+against a configured 13 Hz, with the filter diverged to `cov = 6.9e+19`. The
+runner now refuses to start if `imud` is already up, holds a lockfile, and
+prints measured-versus-configured rate per cell so contention shows in the table
+rather than only in the logs.
 
 ### The watermark question is answered  *(2026-08-19)* — **SUPERSEDED 2026-08-24**
 
