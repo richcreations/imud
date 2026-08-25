@@ -3824,7 +3824,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                        const imud_config_t *cfg, const imu_ops_t *imu,
                        int eff_odr)
 {
-    char mb[64], eb[64];
+    char mb[64], eb[64], body[320];
     imu_sample_t ibuf[128];
     int in = 0;
 
@@ -3847,6 +3847,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     double bz_min = 1e30, bz_max = -1e30, bz_sum = 0, norm_sum = 0;
     uint64_t got = 0;
     double gyro_z_deg = 0, heading_unwrapped = 0, prev_heading = 0;
+    double gyro_z_at_start = 0;
     bool have_heading = false;
     bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
     double dt_nominal = 1.0 / (double)eff_odr;
@@ -3890,22 +3891,45 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
             got++;
 
             /*
-             * Heading from the horizontal field.  Bow north puts the field
-             * along +X (0 deg); bow east puts magnetic north to port, so
+             * Heading from the horizontal field, taken about the CENTRE of the
+             * swept locus rather than about the origin.  Bow north puts the
+             * field along +X (0 deg); bow east puts magnetic north to port, so
              * By < 0, giving +90 deg.  Unwrapped so the total swing over the
              * spin can be compared against the gyro.
+             *
+             * The centring is load-bearing, not tidiness.  Hard iron offsets
+             * the locus, and once the offset exceeds the field radius the locus
+             * no longer encloses the origin: atan2(-by, bx) then oscillates
+             * through a limited arc instead of winding, and the total comes out
+             * near zero however far the board actually turned.  Measured on the
+             * reference rig, twice: an offset of 49 and 50 uT against field
+             * radii of 22 and 18, two full turns each, and uncentred headings
+             * that moved -33 and -49 deg against gyro totals of +718 and +657.
+             * cal_cov_mark below has always centred, which is why coverage
+             * reported a full circle from the very same samples.
+             *
+             * The centre is the running min/max midpoint, so it means nothing
+             * until the turn has swept enough to bound it.  Accumulation starts
+             * when both horizontal spans clear MIN_SPAN_UT, and the gyro is
+             * measured from that same moment so the two cover one interval.
              */
-            double heading = atan2(-by, bx) * 180.0 / M_PI;
-            if (have_heading) {
-                double dh = heading - prev_heading;
-                while (dh >  180.0) dh -= 360.0;
-                while (dh < -180.0) dh += 360.0;
-                heading_unwrapped += dh;
-            }
-            prev_heading = heading;
-            have_heading = true;
-
             double cx = (bx_min + bx_max) / 2.0, cy = (by_min + by_max) / 2.0;
+            const double MIN_SPAN_UT = 5.0;
+            if ((bx_max - bx_min) >= MIN_SPAN_UT &&
+                (by_max - by_min) >= MIN_SPAN_UT) {
+                double heading = atan2(-(by - cy), bx - cx) * 180.0 / M_PI;
+                if (have_heading) {
+                    double dh = heading - prev_heading;
+                    while (dh >  180.0) dh -= 360.0;
+                    while (dh < -180.0) dh += 360.0;
+                    heading_unwrapped += dh;
+                } else {
+                    gyro_z_at_start = gyro_z_deg;
+                }
+                prev_heading = heading;
+                have_heading = true;
+            }
+
             int cur = cal_cov_mark(sectors, IMT_MAG_SECTORS, bx, by, cx, cy);
             ui_coverage(o, sectors, IMT_MAG_SECTORS, cur, (int)got,
                         got ? norm_sum / (double)got : 0.0);
@@ -3925,6 +3949,9 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     r->raw.spin_range[0]  = got ? bx_max - bx_min : 0.0;
     r->raw.spin_range[1]  = got ? by_max - by_min : 0.0;
     r->raw.spin_range[2]  = got ? bz_max - bz_min : 0.0;
+    /* Compare the two over the same interval: the gyro from where the heading
+     * began accumulating, not from before the locus was bounded. */
+    if (have_heading) gyro_z_deg -= gyro_z_at_start;
     r->raw.spin_heading_delta_deg = heading_unwrapped;
     r->raw.spin_gyro_z_deg        = gyro_z_deg;
 
@@ -3995,6 +4022,34 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         double ratio = heading_unwrapped / gyro_z_deg;
         bool same_sign = ratio > 0;
         bool magnitude_ok = fabs(ratio - 1.0) < 0.25;
+        /*
+         * An inverted X or Y makes the heading run backwards at very nearly the
+         * gyro's own rate, so the signature is a ratio near -1.  A ratio near
+         * ZERO is a different animal: the heading did not follow the turn at
+         * all, and its sign is then whichever way the residual wobble happened
+         * to fall.  Reporting that as an inverted axis is a confident claim
+         * from evidence that cannot support one -- the same mistake faces.frame
+         * used to make.  Measured -0.046 and -0.075 on the reference rig while
+         * the remap was in fact correct.  Below half rate, say the heading did
+         * not track and stop there.
+         */
+        bool tracked = fabs(ratio) >= 0.5;
+        double rad = ((bx_max - bx_min) + (by_max - by_min)) / 4.0;
+        double off = hypot((bx_min + bx_max) / 2.0, (by_min + by_max) / 2.0);
+
+        if (!tracked) {
+            skip_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
+                       fmtbuf(body, sizeof body,
+                              "the mag heading moved %+.0f deg while the gyro "
+                              "turned %+.0f, only %.0f%% of it, so the frames "
+                              "cannot be compared. The swept circle has radius "
+                              "%.0f uT about a centre %.0f uT from the origin; "
+                              "turn further, keep the board level and clear of "
+                              "steel, and run `imud-cal mag` if the offset is "
+                              "the larger of those two",
+                              heading_unwrapped, gyro_z_deg, ratio * 100.0,
+                              rad, off));
+        } else {
         add_check(r, "spin.frame_agreement", "Mag frame agrees with the gyro",
                   (same_sign && magnitude_ok) ? IMT_PASS
                 : same_sign ? IMT_WARN : IMT_FAIL,
@@ -4009,6 +4064,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     : "same direction but %.0f%% of the gyro's angle — likely "
                       "hard iron distorting the circle, or an incomplete turn.",
                   ratio * 100.0);
+        }
     }
 
     /* Dip sign needs to know which hemisphere the bench is in. */

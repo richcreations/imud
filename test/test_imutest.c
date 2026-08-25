@@ -370,6 +370,7 @@ typedef struct {
     double spin_deg;
     double spin_dir;         /* +1 normal, -1 to invert the mag sweep */
     double spin_step_deg;    /* heading advance per tick */
+    double spin_off[2];      /* hard-iron offset added to the swept locus */
     /* Re-arm the mock's one-shot I2C failure on every iteration, so a whole
      * check sees errors rather than just the first read. */
     bool   inject_errors;
@@ -439,7 +440,8 @@ static void s_progress(void *user, const char *id, double frac,
          * the gyro is being fed — a correct driver must show them agreeing. */
         s->spin_deg += s->spin_step_deg;
         double th = s->spin_deg * M_PI / 180.0 * s->spin_dir;
-        mmc_set_field(45.0 * cos(th), -45.0 * sin(th), 40.0);
+        mmc_set_field(45.0 * cos(th) + s->spin_off[0],
+                     -45.0 * sin(th) + s->spin_off[1], 40.0);
     }
 }
 
@@ -2142,6 +2144,97 @@ static void test_spin_frame_agreement(void)
     end(fb);
 }
 
+/*
+ * Hard iron moves the swept locus off the origin.  Once the offset exceeds the
+ * field radius the locus no longer encloses the origin, and a heading taken
+ * about the ORIGIN stops winding: it oscillates through a limited arc and the
+ * total comes out near zero however far the board turned.  The check used to
+ * read that near-zero total as a negative ratio and report "an X or Y sign is
+ * inverted in the magnetometer's remap" -- a confident diagnosis of a defect
+ * that was not there.  It happened twice on the reference rig, at offsets of
+ * 49 and 50 uT against field radii of 22 and 18, with a correct driver.
+ *
+ * Taking the heading about the CENTRE of the locus, as the coverage map has
+ * always done, makes it wind again.  Offset 80 against radius 45 here, so the
+ * origin is well outside the circle and the old code cannot pass.
+ */
+static void test_spin_hard_iron_still_tracks(void)
+{
+    begin("test_spin_hard_iron_still_tracks");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_SPIN;
+
+    const double rate_dps     = 400.0;
+    const double deg_per_tick = rate_dps / 208.0;
+    const double gyro_z       = rate_dps * M_PI / 180.0;
+
+    mock_base();
+    mmc_set_field(45.0 + 80.0, 0.0, 40.0);
+    script_reset(&o);
+    g_s.feed_mag      = true;
+    g_s.spin_dir      = +1.0;
+    g_s.done_after    = 220;
+    g_s.gyro[2]       = gyro_z;
+    g_s.spin_step_deg = deg_per_tick;
+    g_s.spin_off[0]   = 80.0;      /* offset > radius: origin is outside */
+
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(status_of(r, "spin.frame_agreement") == IMT_PASS,
+           "a correct driver still agrees when the locus is offset");
+    EXPECT(!note_contains(r, "spin.frame_agreement", "OPPOSITE"),
+           "hard iron is never reported as an inverted axis");
+    free(r);
+
+    /*
+     * And the gate must not blind the check: the same offset with the sweep
+     * inverted is still the defect this phase exists to catch.
+     */
+    mock_base();
+    mmc_set_field(45.0 + 80.0, 0.0, 40.0);
+    script_reset(&o);
+    g_s.feed_mag      = true;
+    g_s.spin_dir      = -1.0;
+    g_s.done_after    = 220;
+    g_s.gyro[2]       = gyro_z;
+    g_s.spin_step_deg = deg_per_tick;
+    g_s.spin_off[0]   = 80.0;
+
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "spin.frame_agreement") == IMT_FAIL,
+           "an inverted sweep still fails even with hard iron present");
+    EXPECT(note_contains(r, "spin.frame_agreement", "OPPOSITE"),
+           "and is still diagnosed as the opposite-direction signature");
+    free(r);
+
+    /*
+     * A heading that barely moves while the gyro turns a long way is not
+     * evidence of anything -- its sign is whichever way the residual wobble
+     * fell.  That must SKIP and say so, never FAIL as an inverted axis, which
+     * is what produced the false diagnosis on the bench.
+     */
+    mock_base();
+    mmc_set_field(45.0, 0.0, 40.0);
+    script_reset(&o);
+    g_s.feed_mag      = true;
+    g_s.spin_dir      = +1.0;
+    g_s.done_after    = 220;
+    g_s.gyro[2]       = gyro_z;
+    g_s.spin_step_deg = 0.05;      /* mag creeps; the gyro turns a long way */
+    g_s.spin_off[0]   = 0.0;
+
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "spin.frame_agreement") == IMT_SKIP,
+           "a heading that did not track the turn skips rather than failing");
+    EXPECT(!note_contains(r, "spin.frame_agreement", "OPPOSITE"),
+           "and no inversion is claimed from evidence that cannot show one");
+    free(r);
+
+    end(fb);
+}
+
 static void test_report_and_exit_codes(void)
 {
     begin("test_report_and_exit_codes");
@@ -3340,6 +3433,7 @@ int main(void)
     test_faces_skipped_not_absent();
     test_gyro_sign();
     test_spin_frame_agreement();
+    test_spin_hard_iron_still_tracks();
     test_report_and_exit_codes();
     test_sim_like_no_recommendation();
     test_degauss_split();
