@@ -1911,6 +1911,107 @@ static void test_faces_good_and_swapped(void)
     end(fb);
 }
 
+/*
+ * A remap permutes and negates axes, so it cannot change |a|.  When the faces
+ * come back at a magnitude that is not gravity -- a board that was moving, or
+ * never actually held against anything -- the dominant axis is not a rotation
+ * of g and carries no information about the remap.  imud-imutest used to
+ * report that case as "the chip-to-board axis remap is wrong", on four faces
+ * reading about 0.1 m/s^2, which is a confident instruction to go rewrite code
+ * that is correct.  It must skip instead, and it must not fit a calibration
+ * model through those readings either.
+ *
+ * The magnitudes here are far enough out to trip grav_tol_fail while keeping a
+ * clean dominant axis, so the ONLY thing suppressing the verdict is the
+ * magnitude gate -- not an ambiguous axis.
+ */
+static void test_faces_bad_magnitude_does_not_blame_the_remap(void)
+{
+    begin("test_faces_bad_magnitude_does_not_blame_the_remap");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_FACES;
+
+    /* Correct NED directions, but a tenth of gravity: nothing was held. */
+    const double faint[6][3] = {
+        {  0,  0, -0.10 }, {  0,  0,  0.10 },
+        { -0.10, 0, 0   }, {  0.10, 0, 0   },
+        {  0, -0.10, 0  }, {  0,  0.10, 0  },
+    };
+    mock_base(); script_reset(&o);
+    memcpy(g_s.face_vec, faint, sizeof faint);
+    g_s.use_face_vecs = true;
+
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(status_of(r, "face.1.mag") == IMT_FAIL,
+           "the magnitude check itself still fails — the problem is reported");
+    EXPECT(status_of(r, "face.1.sign") == IMT_SKIP,
+           "the axis verdict is skipped, not failed");
+    EXPECT(status_of(r, "faces.frame") == IMT_SKIP,
+           "the frame rollup is skipped, not failed");
+    EXPECT(!note_contains(r, "faces.frame", "remap is wrong"),
+           "no remap is blamed when |a| rules a remap out");
+    EXPECT(status_of(r, "faces.symmetry") == IMT_SKIP,
+           "no offset/scale is fitted through faces that never saw gravity");
+    expect_faces_sampled(r);
+    dump_faces_on_failure(r, fb);
+    free(r);
+
+    /*
+     * The case that actually happened, and the one the gate exists for: faint
+     * AND with the axes landing wherever the noise put them.  Without the gate
+     * this is the report that says "the chip-to-board axis remap is wrong" --
+     * about a board that simply was not held against anything.
+     */
+    const double faint_scrambled[6][3] = {
+        {  0.10, 0,  0    }, {  0, -0.10, 0    },
+        {  0,  0,   0.10  }, {  0,  0.10, 0    },
+        { -0.10, 0,  0    }, {  0,  0,  -0.10  },
+    };
+    mock_base(); script_reset(&o);
+    memcpy(g_s.face_vec, faint_scrambled, sizeof faint_scrambled);
+    g_s.use_face_vecs = true;
+
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "faces.frame") == IMT_SKIP,
+           "scrambled faint axes skip rather than blaming the remap");
+    EXPECT(!note_contains(r, "faces.frame", "remap is wrong"),
+           "the impossible diagnosis is not printed");
+    EXPECT(!note_contains(r, "face.1.sign", "swapped"),
+           "no per-face swap is diagnosed from a vector that is not gravity");
+    expect_faces_sampled(r);
+    dump_faces_on_failure(r, fb);
+    free(r);
+
+    /*
+     * The gate must not swallow a real defect: same wrong axes as
+     * test_faces_good_and_swapped, at full gravity, still FAIL.
+     */
+    const double good[6][3] = {
+        {  0,  0, -9.80665 }, {  0,  0,  9.80665 },
+        { -9.80665, 0, 0 },   {  9.80665, 0, 0 },
+        {  0, -9.80665, 0 },  {  0,  9.80665, 0 },
+    };
+    double swapped[6][3];
+    for (int i = 0; i < 6; i++) {
+        swapped[i][0] = good[i][0];
+        swapped[i][1] = good[i][2];
+        swapped[i][2] = good[i][1];
+    }
+    mock_base(); script_reset(&o);
+    memcpy(g_s.face_vec, swapped, sizeof swapped);
+    g_s.use_face_vecs = true;
+
+    r = run(&cfg, &o);
+    EXPECT(status_of(r, "faces.frame") == IMT_FAIL,
+           "a genuine swap at full gravity still fails");
+    free(r);
+
+    end(fb);
+}
+
 static void test_faces_skipped_not_absent(void)
 {
     begin("test_faces_skipped_not_absent");
@@ -3235,6 +3336,7 @@ int main(void)
     test_mag_drdy_rate();
     test_drdy_two_pass();
     test_faces_good_and_swapped();
+    test_faces_bad_magnitude_does_not_blame_the_remap();
     test_faces_skipped_not_absent();
     test_gyro_sign();
     test_spin_frame_agreement();

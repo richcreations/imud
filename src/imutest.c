@@ -3459,7 +3459,7 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
 {
     char mb[64], eb[64], id[32], nm[64], body[512];
     static const char axis_name[3] = { 'X', 'Y', 'Z' };
-    int frame_bad = 0;
+    int frame_bad = 0, frame_unusable = 0;
 
     for (int f = 0; f < 6 && !g_abort; f++) {
         double want[3] = { 0, 0, 0 };
@@ -3524,6 +3524,29 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
                   fmtbuf(eb, sizeof eb, "9.807 +/-%.2f", o->grav_tol_warn),
                   "|a| at face %d", f + 1);
 
+        /*
+         * A remap permutes and negates axes; it cannot change |a|.  So a face
+         * whose magnitude is not gravity did not measure a rotation of g, and
+         * its dominant axis says nothing about the remap — diagnosing one from
+         * it sends a reader off to rewrite code that is correct.  This is not
+         * hypothetical: four faces reading ~0.1 m/s^2 once produced a confident
+         * "the chip-to-board axis remap is wrong".  Skip the verdict, and the
+         * hold-quality check below it, which would read a flattering "square"
+         * off a vector that is mostly noise.
+         */
+        if (err > o->grav_tol_fail) {
+            row->status = IMT_SKIP;
+            frame_unusable++;
+            snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
+            snprintf(nm, sizeof nm, "Face %d axis and sign", f + 1);
+            skip_check(r, id, nm,
+                       fmtbuf(body, sizeof body,
+                              "|a| was %.2f m/s^2, not gravity — a remap "
+                              "cannot change |a|, so this face cannot judge "
+                              "one", grav));
+            continue;
+        }
+
         /* Sign — the substantive check.  Diagnose, do not just report. */
         snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
         snprintf(nm, sizeof nm, "Face %d axis and sign", f + 1);
@@ -3553,7 +3576,7 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
                       "axes appear swapped in the chip-to-board remap.",
                       axis_name[row->got_axis], axis_name[row->exp_axis]);
 
-        if (row->status != IMT_PASS) frame_bad++;
+        if (row->status == IMT_FAIL) frame_bad++;
 
         /* Cross-axis leakage grades the bench, not the driver: hand placement
          * on a bench edge is good to a few degrees at best. */
@@ -3575,6 +3598,12 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     if (r->raw.n_faces < 6) {
         skip_check(r, "faces.frame", "Board frame matches NED",
                    "not all six faces were measured");
+    } else if (frame_unusable > 0) {
+        skip_check(r, "faces.frame", "Board frame matches NED",
+                   fmtbuf(body, sizeof body,
+                          "%d of 6 faces did not measure gravity, so the "
+                          "frame cannot be judged from them — hold each face "
+                          "still and square, then re-run", frame_unusable));
     } else {
         add_check(r, "faces.frame", "Board frame matches NED",
                   frame_bad ? IMT_FAIL : IMT_PASS,
@@ -3591,7 +3620,11 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
      * readings.  Recorded for information: a sane offset/scale pair here means
      * a calibration run on this board would produce something usable.
      */
-    if (r->raw.n_faces == 6) {
+    if (r->raw.n_faces == 6 && frame_unusable > 0) {
+        skip_check(r, "faces.symmetry", "Derived accel offset and scale",
+                   "some faces did not measure gravity; a scale fitted through "
+                   "them would be meaningless");
+    } else if (r->raw.n_faces == 6) {
         bool have[3] = { false, false, false };
         double plus[3] = { 0, 0, 0 }, minus[3] = { 0, 0, 0 };
         for (int i = 0; i < 6; i++) {

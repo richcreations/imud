@@ -96,9 +96,9 @@ run. Anything not listed is recorded as `INFO` for the record.
 
 | id | Asserts |
 | --- | --- |
-| `face.N.sign` | The dominant axis and its sign match the expected value for that orientation. A wrong sign is diagnosed as a missing flip; a wrong axis as a swap. |
-| `faces.frame` | Rollup: the board frame is NED (X forward, Y starboard, Z down). |
-| `faces.symmetry` | **INFO, not graded.** Derives per-axis offset and scale from the six faces — the same model `imud-cal accel` fits. Reported rather than graded because it is a calibration reading, not a pass/fail property of the driver; a scale far from 1.000 points at a sensitivity constant, an offset at a mounting. |
+| `face.N.sign` | The dominant axis and its sign match the expected value for that orientation. A wrong sign is diagnosed as a missing flip; a wrong axis as a swap. SKIPs when that face's `.mag` failed — the axis of a vector that is not gravity is not evidence about the frame. |
+| `faces.frame` | Rollup: the board frame is NED (X forward, Y starboard, Z down). SKIPs when any face came back at a magnitude that is not gravity: a remap permutes and negates axes and cannot change \|a\|, so such a face is not a rotation of gravity and can say nothing about the remap. Blaming one there would send a reader to rewrite correct code. |
+| `faces.symmetry` | **INFO, not graded.** SKIPs when any face failed its magnitude check, since a scale fitted through readings that never saw gravity is meaningless. Derives per-axis offset and scale from the six faces — the same model `imud-cal accel` fits. Reported rather than graded because it is a calibration reading, not a pass/fail property of the driver; a scale far from 1.000 points at a sensitivity constant, an offset at a mounting. |
 | `gyro.A.sign` | A commanded positive turn integrates positive, per the right-hand rule. |
 | `gyro.A.scale` | The integrated angle is within 20% of commanded. Deliberately loose — it catches factor errors (57.3× for deg/s, 1/57.3 for a double conversion), not sensitivity. |
 | `spin.frame_agreement` | The magnetometer heading and the gyro Z integral agree in direction and magnitude. Disagreement in direction means a mag axis is inverted relative to the IMU — the most common magnetometer-driver defect. |
