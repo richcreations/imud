@@ -370,7 +370,7 @@ static void test_extent_full_sphere(void)
 
 /*
  * A diagonal soft-iron scale is only meaningful on an axis the swing actually
- * swept.  The guard used to admit any axis covering 30% of the radius, which
+ * swept.  A guard admitting any axis covering 30% of the radius would
  * permits a 3.3x "correction" -- and no real soft iron is 3.3x.  What that
  * number actually measures is missing coverage.
  *
@@ -426,15 +426,15 @@ static void test_softiron_needs_real_coverage(void)
 /*
  * Regression: the half-range must not depend on the hard-iron offset.
  *
- * cal_main.c used to seed mn[]/mx[] from the RAW first sample and then update
+ * Seeding mn[]/mx[] from the RAW first sample and then updating
  * them with CENTERED ones.  Wherever the raw seed fell outside the centered
  * range it was never displaced, so half[] came out inflated by the hard iron —
  * which under-scaled si[] and over-stated the radius handed to ellipse_fit.
- * This reproduces the old seeding alongside the fixed path and pins both.
+ * This reproduces the broken seeding alongside the correct path and pins both.
  *
  * Center Y is chosen positive so the lattice's first point (the pole, at
  * y = cy + r = 65) lands outside the centered range: that is the swing that
- * used to be mis-scaled by 24% on one axis.
+ * is mis-scaled by 24% on one axis.
  */
 static void test_extent_ignores_hard_iron(void)
 {
@@ -460,7 +460,7 @@ static void test_extent_ignores_hard_iron(void)
     cal_softiron_diag(half, r, si);
     EXPECT_NEAR_D(si[1], 1.0, 0.02, "Y soft iron stays unity");
 
-    /* The old seeding, verbatim — it has to be visibly wrong, or this test
+    /* The broken seeding, verbatim — it has to be visibly wrong, or this test
      * would pass just as happily against the bug it exists to catch. */
     double mn[3] = { samps[0][0], samps[0][1], samps[0][2] };
     double mx[3] = { samps[0][0], samps[0][1], samps[0][2] };
@@ -819,7 +819,7 @@ static void test_accel_fit_tolerates_sloppy_placement(void)
  * Before the fix, the prompts' parenthetical instructions described the wrong
  * physical position: Z inverted, and X/Y swapped with each other and
  * inverted.  Every axis then produced either a negative or a near-zero
- * half-range, which the old code silently turned into scale = 1.0 with no
+ * half-range, which a naive fit silently turns into scale = 1.0 with no
  * warning — a calibration that looked clean and did nothing.
  */
 static void test_accel_fit_rejects_old_wrong_positions(void)
@@ -832,7 +832,7 @@ static void test_accel_fit_rejects_old_wrong_positions(void)
     memset(meas, 0, sizeof meas);
 
     /* What a board actually reads when the operator follows the old
-     * instructions, filed into the slots the old code used. */
+     * instructions, filed into the slots the broken order used. */
     /* "+Z up (flat, normal side up)"  -> +Z points DOWN -> Z reads -g */
     meas[2][0][2] = -G;
     /* "+Z down (flat, upside down)"   -> +Z points UP   -> Z reads +g */
@@ -922,7 +922,7 @@ static void test_accel_positions_table(void)
         for (int u = 0; u < 2; u++)
             EXPECT(seen[a][u] == 1, "each axis/direction appears exactly once");
 
-    /* The one that was wrong: flat and component-side up must be the
+    /* The pair most easily transposed: flat and component-side up must be the
      * Z-points-DOWN position, i.e. the one that reads -g. */
     const cal_accel_pos_t *flat = NULL;
     for (int p = 0; p < 6; p++)

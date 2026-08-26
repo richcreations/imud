@@ -7,7 +7,7 @@
 /*
  * imutest_gpio.c — edge counting for imud-imutest, on the DAEMON's edge wait.
  *
- * This file used to carry its own libgpiod v1/v2 split, a near-copy of the one
+ * This file defers to include/imu_gpio.h rather than carrying its own libgpiod v1/v2 split, a near-copy of the one
  * in src/imu.c. The copy is gone: imu_gpio_open/wait_edge/close come from
  * src/imu.c, which is linked into imud-imutest for exactly this reason.
  *

@@ -7,58 +7,37 @@
 /*
  * st_fifo_ts.h — anchor an ST 6-axis FIFO burst on the chip's own timestamp.
  *
- * THE PROBLEM.  ism330dhcx.c and lsm6dso.c time a burst by reading TIMESTAMP0
- * AFTER draining the FIFO, calling that the newest sample's time, and stepping
- * back one sample period per older sample.  But that register reads *now*, and
- * the gap between "now" and when the newest sample was actually taken moves
- * with bus timing and scheduler jitter.  So a low-lag drain following a
- * high-lag one computes a first sample at or before the previous burst's last
- * sample, and chip_ts goes backwards across the seam — measured on a Pi 5 at
- * 2-4 reversals per 5 s.  chip_ts.h enforces the contract afterwards; this
- * fixes the estimate at source.
+ * The part writes its timestamp counter into the FIFO as tag 0x04 words
+ * interleaved with the samples (FIFO_CTRL4's DEC_TS_BATCH, DS13012 Table 31).
+ * A word that arrived in the stream was written when the samples around it
+ * were, so it dates the burst with no post-drain TIMESTAMP0 read — that
+ * register reads *now*, and its lag varies with bus timing and scheduler
+ * jitter enough to send chip_ts backwards across a burst seam.  Every sample
+ * is then placed relative to that one known point.
  *
- * THE FIX.  The part can put its timestamp counter INTO the FIFO, as tag 0x04
- * words interleaved with the samples (FIFO_CTRL4's DEC_TS_BATCH, DS13012
- * Table 31).  A word that arrived in the stream was written when the samples
- * around it were written, so it dates the burst with no post-drain read and no
- * lag to vary.  Every sample is then placed relative to that one known point.
+ * Decimated at one word per 32 sample-sets rather than per sample: per-sample
+ * (01) adds a third word alongside each accel/gyro pair, +50% FIFO traffic, so
+ * a 128-word watermark would hold 42 sample-sets instead of 64 — fifo_wm would
+ * stop meaning what docs/manual.md says it means and spec.md §14's latency
+ * figures would move.  At 32 it costs +1.6%, and one anchor inside a burst is
+ * all the arithmetic needs.
  *
- * WHY DECIMATED, NOT PER-SAMPLE.  DEC_TS_BATCH can write a timestamp for every
- * sample-set (01), but that is a third word alongside the accel and gyro pair:
- * +50% FIFO word traffic, so a 128-word watermark holds 42 sample-sets instead
- * of 64.  fifo_wm would quietly stop meaning what docs/manual.md says it means,
- * and the sample-latency figures in spec.md §14 would move under the
- * measurement.  At 32 (11) it is one extra word per 32 sets —
- * +1.6%, so the same watermark holds 63 sets rather than 64 — and one anchor
- * inside a burst is all the arithmetic needs.  Anchoring is the goal; a stamp
- * per sample is not.
- *
- * WHAT IS NOT IN THE DATASHEET, AND HOW THAT IS HANDLED.  DS13012 documents
- * the FIFO output registers only as generic X/Y/Z 16-bit words (section 9.61),
- * and never says how a tag-0x04 payload is laid out inside them, nor whether
+ * DS13012 documents the FIFO output registers only as generic X/Y/Z 16-bit
+ * words (§9.61), and states neither the tag-0x04 payload layout nor whether
  * the word precedes or follows the samples it describes.  So:
  *
  *   - The 32-bit little-endian-in-X/Y layout below is the convention ST's own
- *     drivers and the Linux st_lsm6dsx driver use.  It is an assumption, and
- *     st_fifo_ts_apply() checks it against the post-drain register read rather
- *     than trusting it: a burst that disagrees is refused whole and falls back
- *     to the old path, so a wrong guess degrades instead of corrupting time.
- *   - Ordering does not have to be answered.  The tag byte carries TAG_CNT, "a
- *     2-bit counter which identifies sensor time slot" (Table 158), so a
- *     timestamp word can be matched to its own slot rather than to a position.
- *
- *     MEASURED, 2026-08-25, ism330dhcx over SPI at 833 Hz: TAG_CNT does NOT
- *     participate for tag 0x04.  Across 2000 timestamp words it read 0 every
- *     single time — cnt0=2000, cnt1=cnt2=cnt3=0 — and never once equalled the
- *     TAG_CNT of the set just completed.  So the comparison below always takes
- *     its else branch and the word dates the set still being assembled.
- *
- *     That is the degradation this was written to tolerate, and the bound
- *     stands: off by one sample, 1.2 ms at 833 Hz, constant across the burst,
- *     so it shifts sample age slightly and leaves every dt untouched.  The
- *     comparison is kept rather than deleted because it costs nothing and is
- *     correct for any part whose timestamp words do carry a slot counter; it is
- *     simply inert on this one.
+ *     drivers and Linux's st_lsm6dsx use.  st_fifo_ts_apply() checks it
+ *     against the post-drain register read rather than trusting it: a burst
+ *     that disagrees is refused whole and falls back to the old path, so a
+ *     wrong layout degrades instead of corrupting time.
+ *   - TAG_CNT (Table 158) identifies a word's own time slot, but does not
+ *     participate for tag 0x04 on this part — it reads 0 always — so the
+ *     comparison below always takes its else branch and the word dates the
+ *     set still being assembled.  That is off by one sample, 1.2 ms at 833 Hz
+ *     and constant across the burst, so it shifts sample age slightly and
+ *     leaves every dt untouched.  The comparison is kept because it is
+ *     correct for any part whose timestamp words do carry a slot counter.
  *
  * Header-only and driver-private, like bus_io.h and chip_ts.h.
  */

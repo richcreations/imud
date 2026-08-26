@@ -10,7 +10,7 @@
  * The implementation lives in src/imu.c, beside the reader threads that use it.
  * It is declared here rather than kept static because imud-imutest must wait on
  * an interrupt exactly the way the daemon does, and the alternative -- a second
- * copy of the libgpiod v1/v2 split -- is what src/imutest_gpio.c used to be.
+ * copy of the libgpiod v1/v2 split -- src/imutest_gpio.c defers to it.
  *
  * That duplication was not free. imutest paced its own reads on a 5 ms timer
  * where the daemon waits on the watermark, and every difference between the two

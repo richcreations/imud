@@ -110,7 +110,7 @@ static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
  *    nothing anywhere.
  *
  * The master's output is ignored by the part during a normal data phase, so
- * this is free: it only matters in the case that used to corrupt state.
+ * this is free: it only matters in the case that would corrupt state.
  *
  * Doing multi-byte reads as repeated single reads was considered and rejected:
  * a 64-set watermark at 833 Hz is 128 FIFO words, which becomes 896 syscalls

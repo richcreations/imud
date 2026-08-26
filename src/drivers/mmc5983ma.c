@@ -57,116 +57,20 @@
 #define STATUS_M_DONE     0x01u
 
 /*
- * ── A write to CTRL0 also lands in CTRL1 ───────────────────────────────────
+ * Edge-driven reads skip the Meas_M_Done status gate.
  *
- * Measured on an MMC5983MA (SparkFun 9DoF SEN-19895) over SPI on a Pi 5,
- * 2026-08-16. Writing CTRL0 applies the same byte to CTRL1 as well:
+ * INT is latched and is re-armed only by writing 1 to Meas_M_Done, which also
+ * clears the status bit read() would gate on (Rev A p.13).  In continuous mode
+ * the output registers always hold the last complete conversion, so the edge
+ * alone signals data-ready; gating on the status bit as well costs one wasted
+ * edge and one full timeout per sample.
  *
- *   CTRL0 = 0x04 (INT_en)   → CTRL1 = 0x04 → X-inhibit; X stops measuring
- *   CTRL0 = 0x18 (Set|Reset)→ CTRL1 = 0x18 → YZ-inhibit; Y and Z stop
- *   CTRL0 = 0x80            → CTRL1 = 0x80 → SW_RST; continuous mode stops
- *
- * CTRL0 still receives the write — the SET and RESET pulses do fire, and the
- * field term inverts between them. It is both registers, not the wrong one.
- *
- * The effect is specific to CTRL0: a CTRL1 write does not disturb CTRL2 (which
- * would stop continuous mode) and a CTRL2 write does not disturb CTRL3 (whose
- * self-test coil moves the mean by hundreds of µT and is unmistakable). It is
- * also not a bus-timing artefact — identical at 10 MHz, 1 MHz and 100 kHz.
- *
- * The consequence for this driver: X-inhibit is set by init()'s own last
- * write, so the X axis silently stops measuring while Y and Z look fine. That
- * is a dead magnetometer axis presented as a working one — heading comes from
- * atan2(-my, mx), so it takes the heading with it.
- *
- * The fix is ordering: CTRL1 is written LAST, after every CTRL0 write, which
- * puts the intended value back. mmc_degauss() has to do the same, so the
- * programmed CTRL1 is remembered here. Written by init() (from main at startup,
- * or from the mag_reader thread on error recovery) and read by degauss() on the
- * mag_reader thread, so it is _Atomic — see CLAUDE.md's concurrency rule.
- *
- * ── Why not one 3-byte write instead of the ordering rule ──────────────────
- *
- * Sending CTRL0 and CTRL1 as a single 3-byte transfer looks strictly better: the
- * address does walk on this part, so byte 2 genuinely reaches CTRL1 and lands
- * after the aliased copy, making the pair correct by construction with no rule
- * to preserve. Verified 2026-08-17 — a 3-byte write's second byte reproduces
- * CTRL1's documented semantics exactly (0x04|bw inhibits X, 0x18|bw inhibits Y
- * and Z), and init() built that way runs at a healthy 105 changes/s.
- *
- * It cannot be used for the degauss, which is where it would matter most. When
- * byte 1 carries a Set or Reset pulse, the part stops measuring:
- *
- *   SET   as two writes  106 changes/s     SET   as one 3-byte write  1/s
- *   RESET as two writes  105 changes/s     RESET as one 3-byte write  1/s
- *
- * The pulse drives a large coil current for ~500 ns, and a second byte arriving
- * inside the same chip-select assertion does not survive it. Pairing in init()
- * but not in degauss() would mean two idioms in one driver plus an unstated
- * landmine — never pair a write whose first byte pulses — to replace a rule that
- * already works and that test_drivers already pins. So the ordering rule stays,
- * uniformly. Do not "simplify" this into a paired write without re-reading the
- * table above.
- */
-
-/*
- * ── Meas_M_Done and the INT pin cannot both be used ────────────────────────
- *
- * Measured on the same part over SPI on a Pi 5, 2026-08-18.
- *
- * This part's INT is a LATCHED interrupt. The only way to re-arm it is to write
- * 1 to Meas_M_Done (Rev A p.13: "Writing 1 into this bit will clear the
- * corresponding interrupt"), and that same write also takes away the status bit
- * read() would gate on. The bit then comes back only while the bus is being
- * actively polled — after a clear, with the bus quiet, a single status read
- * found it clear in 10 of 10 trials at every delay from 2 ms to 25 ms, which is
- * nearly three conversion periods.
- *
- * Blocking on the edge is exactly the case where the bus IS quiet, so a reader
- * that waits on DRDY and then checks the gate never passes it:
- *
- *   read succeeds → clears Meas_M_Done, INT drops
- *     │ 9.4 ms
- *   INT rises → reader wakes → STATUS reads 0x10 (OTP_Read_Done only, no
- *               measurement flag) → read() reports "no data", edge is spent
- *     │ the interrupt is latched: there is no second rising edge
- *   20 ms timeout → read() finally succeeds
- *
- * Over 20 iterations: 20 edges, 20 timeouts, 20 successful reads, 20 not-ready
- * — one wasted edge and one full timeout for every sample. 9.4 + 20 ≈ 29 ms,
- * so a 105.5 Hz part delivered 35 Hz.
- *
- * The gate is the ONE-SHOT idiom in a part running CONTINUOUS. Rev A says of
- * Meas_M_Done: "When the new measurement command is occurred, this bit turns to
- * 0" — and in continuous mode there is no measurement command. The part is
- * always converting and the output registers always hold the last complete
- * conversion, so the edge is the data-ready signal and the status bit is
- * answering a question nobody asked.
- *
- * So when the caller waits on the edge, read() trusts it. Measured side by side
- * on healthy silicon, 3 s each:
- *
- *   gated tight poll (2 ms)   105.3 Hz   |B| 62.334 µT   σ 0.053
- *   ungated, edge-driven      106.0 Hz   |B| 62.329 µT   σ 0.051
- *
- * Same field, same noise, full rate — and 0 repeats with 0 timeouts over 1200
- * consecutive edges. Ruled out first, so nobody re-runs them: the read/clear
- * ORDERING (burst-then-clear, clear-then-burst and clear-alone all return the
- * bit in an identical 9.4 ms), the INT wiring, bus contention, the periodic
- * degauss, and a bounded re-poll after the edge — that last one cannot work,
- * because after the edge the bit still needs a further full conversion period
- * of polling to appear.
- *
- * There is no published erratum for any of this, so the evidence lives here.
- *
- * g_prev_raw is the staleness guard for the edge path, holding the last 7 output
- * bytes packed into one word. Without it a dead INT line would mean the 20 ms
- * timeout re-reading one unchanged conversion for ever and feeding the filter
- * duplicates it cannot distinguish from real data; with it, that failure
- * degrades to roughly 50 Hz of genuine samples. An exact 18-bit match on all
- * three axes of real noise is vanishingly unlikely — 0 in 1200 measured — so a
- * repeat means the conversion has not advanced. Both are written by init() from
- * either thread, so both are _Atomic.
+ * g_prev_raw is the staleness guard for that path, holding the last 7 output
+ * bytes packed into one word.  An exact match on all three axes means the
+ * conversion has not advanced, so a dead INT line degrades to the reader's
+ * polling fallback instead of re-feeding the filter duplicates it cannot
+ * distinguish from real data.  Both are written by init() from either thread,
+ * hence _Atomic.
  */
 static _Atomic bool     g_int_driven = false;
 static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none */
@@ -182,56 +86,11 @@ static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none 
  *   BW=10  2 ms  0.8 mG RMS  max ODR 225 Hz
  *   BW=11  0.5ms 1.2 mG RMS  max ODR 580/1000 Hz
  *
- * We pick the minimum BW that supports the requested ODR (lowest noise).
+ * Picks the minimum BW that supports the requested ODR, for the lowest noise.
  *
- * ── The SPI mode was wrong, and it invented several "silicon quirks" ──────
- *
- * This part was driven in SPI mode 3 until 2026-08-19, because that is what
- * the ST and InvenSense parts in this tree use and bus_io.h's helpers were
- * written to their convention.  It is a MEMSIC part and wants **mode 0**.
- *
- * Mode 3 corrupts WRITES while leaving most reads intact -- the part still
- * identified, still streamed, still decoded to a healthy field -- so it never
- * looked like a bus fault.  It looked like a chip with a list of odd habits,
- * and that list was written down here as fact.  Measured with a standalone
- * probe, same rig, same wiring, only the mode changed:
- *
- *   CM_Freq              001   010   011   100   101   110    111    nominal
- *   mode 0  delivered      1    11    21    53   106   211   1205
- *   mode 3  delivered      1   130   130   130   130   256   1690
- *                                                             1, 10, 20, 50,
- *                                                             100, 200, 1000
- *
- * **All seven codes work.**  The claim that only four were honoured, and that
- * the other three free-ran at the bandwidth ceiling, was mode 3.  So was the
- * "a CTRL0 write also lands in CTRL1" aliasing: with CTRL0 = INT_EN in mode 0
- * the X axis keeps its full noise sigma instead of freezing.  In mode 3 even
- * the product-ID read comes back 0xFF often enough to see.
- *
- * Every earlier finding about this part was taken in mode 3 and had to be
- * re-measured.  Two pieces of machinery existed only to survive it, and both
- * are now gone because mode 0 refutes what they were for:
- *
- *   - The g_ctrl1 shadow and its "write CTRL1 last" rule, for the aliasing.
- *     All four init orderings measure 105-106 changes/s in mode 0, and X keeps
- *     its full noise sigma with CTRL0 = INT_EN.
- *   - The warning never to pair a write whose first byte pulses.  In mode 3 a
- *     SET issued as one 3-byte write dropped the part to 1 change/s; in mode 0
- *     it measures 106/s, the same as the two-write form.
- *
- * ── The rates are close to nominal, with one exception ─────────────────────
- *
- * In mode 0 every code lands within about 6-10% of its nominal rate, which is
- * the part's own oscillator -- the same skew the ISM330DHCX shows on this
- * board.  CM_Freq 111 is the exception at 1205 against a nominal 1000, 20%
- * out, reproduced across runs and clocks.  Unexplained.
- *
- * That gap is why actual_odr_mhz exists here: supported_odr_mhz is the datasheet
- * ladder an operator may REQUEST, and actual_odr_mhz is what the silicon will
- * DELIVER.  imu.c passes the resolved rate to both the driver and the filter,
- * so the noise variance is sized for the rate the part is really producing.
- *
- * Mode 0 measured identical at 1, 2 and 10 MHz.
+ * The delivered rates sit a few percent off nominal — the part's own
+ * oscillator — so supported_odr_mhz is the ladder an operator may REQUEST and
+ * mmc_actual_odr_mhz() below is what the silicon DELIVERS.
  */
 static void odr_encode(int mhz, uint8_t *bw_out, uint8_t *cmfreq_out)
 {
@@ -248,15 +107,15 @@ static void odr_encode(int mhz, uint8_t *bw_out, uint8_t *cmfreq_out)
 }
 
 /*
- * What the codes above really produce, measured (see the table).  Snapping up
- * over the DELIVERED rates rather than mapping thresholds to them, because
- * this has to be idempotent: imu.c passes the resolved rate back into the
- * driver, so actual(actual(x)) must equal actual(x).  A threshold form gets
- * that wrong in a way nothing else would catch -- 105 is "<= 100 ? no" and
- * would resolve a second time to 1206.
+ * What the codes above really deliver.
  *
- * Kept beside odr_encode(): one entry here per honoured branch there, and the
- * two must move together.
+ * Snaps up over the delivered rates rather than mapping thresholds to them,
+ * because imu.c passes the resolved rate back into the driver, so
+ * actual(actual(x)) must equal actual(x).  A threshold form gets that wrong in
+ * a way nothing else would catch — 105 is "<= 100 ? no" and would resolve a
+ * second time to 1206.
+ *
+ * One entry here per honoured branch in odr_encode(); the two move together.
  */
 static int mmc_actual_odr_mhz(int req_mhz)
 {
@@ -303,62 +162,25 @@ static int mmc_reset(const imud_bus_t *bus)
 /*
  * mmc_init — configure the part, then start it.
  *
- * Two properties of this sequence are load-bearing, and both were established
- * on hardware (SparkFun 9DoF SEN-19895, Pi 5, 2026-08-16).
+ * CTRL2 is written LAST and is followed by a 100 ms quiet period.  Both are
+ * load-bearing.
  *
- * 1. CTRL1 is written after every CTRL0 write, or the alias documented above
- *    leaves X-inhibit set and the X axis silently stops measuring.
+ * Order: BW is an input to what CM_Freq means.  Rev A p.15 introduces the
+ * CM_Freq table with "the frequency is based on the assumption that
+ * BW[1:0] = 00", and codes 110 and 111 name a required BW in the row itself.
+ * Enabling continuous mode before CTRL1 runs the part at the reset default
+ * BW=00, rated for 50 Hz (p.4), against whatever CM_Freq was just programmed;
+ * at odr_hz = 1000 that intermittently fails to enter continuous mode at all,
+ * which surfaces as every write ACKing and no sample ever arriving.
  *
- * 2. CTRL2 is written LAST, and is followed by a quiet period.
- *
- *    Order: BW is an input to what CM_Freq means. Rev A p.15 introduces the
- *    CM_Freq table with "the frequency is based on the assumption that
- *    BW[1:0] = 00", and two rows carry a prerequisite in the row itself — 110
- *    needs BW=01, 111 needs BW=11. Enabling continuous mode before CTRL1 runs
- *    the part at the reset default BW=00, rated for 50 Hz (p.4), against
- *    whatever CM_Freq was just programmed.
- *
- *    That is not theoretical. At odr_hz = 1000 (CM_Freq=111, which needs
- *    BW=11) the stock order intermittently fails to start continuous mode at
- *    all — the first read waits 500 ms for Meas_M_Done and gives up:
- *
- *      CTRL2 before CTRL1   failed to start 7 of 20 runs
- *      CTRL2 after  CTRL1   failed to start 0 of 20 runs
- *
- *    (12 of 33 vs 0 of 33 across every run of the session.) In the daemon that
- *    surfaces as init() succeeding — every write is ACKed — followed by a mag
- *    that never produces a sample.
- *
- *    Quiet: writing anything within ~40 ms of enabling continuous mode leaves
- *    the bridge saturated — every axis reads a few hundred µT and stays there
- *    for the rest of the run, and CM_Freq does not take, so the measured rate
- *    runs to ~256 Hz against a configured 100. Five runs per point:
- *
- *      post-CTRL2 quiet    0    10   20   30   40   50   60   80  100 ms
- *      healthy runs       0/5  0/5  0/5  4/5  5/5  5/5  5/5  5/5  5/5
- *
- *    Both this order and the stock one give that same table, so writing CTRL2
- *    last does NOT shorten the wait — it was tried for exactly that and did
- *    not deliver. 100 ms is ~2.5x the boundary.
- *
- *    It is this window specifically, not write spacing in general: a quiet
- *    period after CTRL0 or CTRL1 alone does not help, and writes issued once
- *    the window has passed are harmless. It is not the bus — the same
- *    threshold appears at 10 MHz, 1 MHz and 100 kHz — and it is not warm-up,
- *    because delaying the first measurement by up to 2 s while writing
- *    back-to-back does not help at all.
- *
- *    The over-rate in the order argument is NOT this mechanism: more time at
- *    BW=00 is measurably healthier, which runs backwards. It is a spec
- *    violation worth not committing, not an explanation.
- *
- * Nothing may follow the CTRL2 write inside that window, here or in the
- * caller — mmc_read's per-sample STATUS write lands in it if the mag reader
- * starts promptly, which is why the wait is inside init rather than left to
- * the caller.
- *
- * No datasheet number backs the ~40 ms. Rev A gives a 10 ms power-on time for
- * SW_RST and says nothing about entering continuous mode.
+ * Quiet: writing anything within ~40 ms of enabling continuous mode leaves the
+ * bridge saturated — every axis stuck at a few hundred µT for the rest of the
+ * run — and CM_Freq does not take.  Nothing may follow the CTRL2 write inside
+ * that window, here or in the caller: mmc_read's per-sample STATUS write lands
+ * in it if the mag reader starts promptly, which is why the wait is here
+ * rather than left to the caller.  No datasheet number backs the 40 ms; Rev A
+ * gives a 10 ms power-on time for SW_RST and says nothing about entering
+ * continuous mode, so 100 ms is ~2.5x the measured boundary.
  */
 static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
@@ -395,11 +217,8 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  *
  * Called by the mag_reader thread after a rising edge on the mag's INT line
  * (active-high; the line is `[mag] int_gpio`, 27 by default), or by a polling
- * caller such as imud-imutest and imud-cal.
- *
- * Which of those it is decides how "is there new data?" is answered — see the
- * g_int_driven comment near the top of this file, which is the whole reason the
- * two paths below differ.
+ * caller such as imud-imutest and imud-cal.  g_int_driven selects which of the
+ * two data-ready tests below applies.
  *
  * Returns:
  *   0  — sample written to *out, out->valid = true
@@ -497,30 +316,20 @@ static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
 /*
  * mmc_degauss — issue one degauss pulse in the requested direction.
  *
- * A strong external field (motors, alternator, steel structure) can residually
- * magnetise the AMR elements. The pulse applies a large current for ~500 ns,
- * forcing the internal magnetisation to a known direction.
- *
- * SET and RESET drive it opposite ways, which flips the sign of the field term
- * in a subsequent reading while leaving the bridge's own offset alone — see
+ * The pulse drives a large current for ~500 ns, forcing the AMR elements'
+ * magnetisation to a known direction after a strong external field (motors,
+ * alternator, steel structure) has residually magnetised them.  SET and RESET
+ * drive it opposite ways, which flips the sign of the field term in a
+ * subsequent reading while leaving the bridge's own offset alone — see
  * mag_ops_t::degauss in include/drivers.h for what a caller does with that.
  *
- * INT_EN is re-asserted with the pulse bit, not left out of the write. CTRL0's
- * Set and Reset bits self-clear, but INT_en does NOT — it is a persistent mode
- * bit (datasheet Rev A §Register Map, and the CTRL0 comment above). Writing the
- * pulse bit alone therefore also switches off the measurement-done interrupt
- * that mmc_init() enabled, which is what this driver used to do: after the
- * first periodic SET the INT line went quiet for the rest of the run and
- * mag_reader silently fell back to its 20 ms poll.
+ * INT_EN is re-asserted with the pulse bit rather than left out of the write:
+ * CTRL0's Set and Reset bits self-clear but INT_en does not, so writing the
+ * pulse alone would also switch off the measurement-done interrupt
+ * mmc_init() enabled, dropping mag_reader to its polling fallback for the
+ * rest of the run.
  *
- * The CTRL1 write that follows is not redundant: this CTRL0 write also lands in
- * CTRL1, where INT_en's bit 2 reads as X-inhibit and stops the X axis dead.
- * Restoring the programmed value is what keeps a degauss from costing an axis —
- * and the periodic SET runs every 5 s, so without it X measures for exactly one
- * degauss interval after startup and never again.
- *
- * The driver sleeps 1 ms after the pulse for bridge settling before the next
- * measurement is accepted.
+ * Sleeps 1 ms after the pulse for bridge settling before the next read.
  */
 static int mmc_degauss(const imud_bus_t *bus, mag_degauss_t dir)
 {
@@ -552,166 +361,21 @@ const mag_ops_t mmc5983ma_ops = {
      * wide (bit 6 is don't-care); every register here is <= 0x2F, so reg|0x80
      * addresses them all correctly. */
     /*
-     * SPI MODE 0, and the mode is the whole story -- see the block above
-     * odr_encode().  This is a MEMSIC part, not an ST one; mode 3 corrupts its
-     * WRITES while leaving most reads intact, which is why it presented as
-     * working silicon with odd habits rather than as a broken bus.
+     * SPI mode 0 at 10 MHz, the datasheet maximum (Rev A p.4, fc(SCK)).
      *
-     * 10 MHz, the datasheet maximum (Rev A p.4, fc(SCK)).
+     * A low explicit [imu] spi_speed_hz stops this part measuring when the IMU
+     * shares the SPI controller.  This part selects its interface from the CS
+     * level and has no I2C_disable bit, so while its CS is high it sits on the
+     * IMU's clock and data lines as an I2C slave; below about 2.3 MHz the run
+     * of zero bytes spidev sends as a burst read's data phase passes its input
+     * filter and clears CTRL2's Cmm_en.  The part still answers SPI, still
+     * reads its product id and still converts on a single-shot trigger, so
+     * only the sample rate shows it, and re-running init() does not hold
+     * because the next burst clears it again.
      *
-     * This was 2 MHz, for three stated reasons.  Two no longer hold and the
-     * third never applied here:
-     *
-     *   - "measured identical at 1, 2 and 10 MHz" was measured BEFORE the
-     *     bench wiring fault was found, on a bus corrupting 2-12 % of reads.
-     *     Re-measured on repaired wiring: 102.5 Hz delivered at 10 MHz against
-     *     102.8 at 2 MHz -- identical, and now on evidence worth having.
-     *   - SparkFun's library for this breakout uses 2 MHz, but it is an
-     *     Arduino library driving this part ALONE, at low rates, with no FIFO
-     *     and no watermark.  It is not evidence about a daemon sharing a
-     *     controller with an IMU batching 64 sample-sets at up to 6664 Hz.
-     *     Here the mag's share of bus time is the thing worth minimising, and
-     *     10 MHz costs a fifth of what 2 MHz did.
-     *   - The datasheet footnote ("characterization results, not tested in
-     *     production") is real and is why this is the ceiling rather than a
-     *     target.  spi_speed_hz can still pin it lower per install.
-     *
-     * SEPARATE, and not fixed by any of the above: on this RP1 controller,
-     * driving the *IMU* at a non-default spi_speed_hz below about 2.5 MHz
-     * stops this part measuring.  Only the IMU's clock matters.  Measured with
-     * the IMU at 833 Hz and this part asking for 100 Hz, 25 s per cell:
-     *
-     *     imu 10 MHz  mag 10 MHz -> 102     imu 1 MHz  mag 10 MHz ->   0
-     *     imu 10 MHz  mag  1 MHz -> 102     imu 1 MHz  mag  1 MHz ->   0
-     *
-     * This part runs perfectly at 1 MHz for itself; an earlier note here
-     * claiming a second threshold on the mag's own clock was wrong, and is
-     * withdrawn.  Sweeping the IMU alone puts the knee at 2.2-2.1 MHz:
-     * 10/8/6/4/3/2.5/2.4/2.3 MHz all deliver 102/s and 2/1.5/1 MHz all
-     * deliver 0, and the edge is a graded band, not a cliff.  RP1's SPI is a
-     * Synopsys DW_apb_ssi v4.02a off a 200 MHz clk_sys and spi-dw forces an
-     * even divider, so the requested rate is not the one on the wire; against
-     * the ACTUAL clock the band is monotonic in SCK high time:
-     *
-     *     req 2.3 -> 2.273 MHz, high 220 ns -> 102/s, clean
-     *     req 2.2 -> 2.174 MHz, high 230 ns -> 102/s on one 20 s run, 0 on the next
-     *     req 2.1 -> 2.083 MHz, high 240 ns -> 3/s, twice
-     *     req 2.0 -> 2.000 MHz, high 250 ns -> 0/s
-     *
-     * Thirty nanoseconds of SCK high time carries it from healthy to dead, in
-     * order, with a stochastic middle.  That is the shape of a pulse-width
-     * threshold -- an input filter passing what it used to reject -- which is
-     * evidence for a digital input stage in this part rather than anything
-     * analog or magnetic.
-     *
-     * What actually happens, from a read-only trace of the raw output bytes:
-     * the SPI side stays healthy throughout -- every read succeeds and returns
-     * plausible field values -- but the output registers stop advancing, so
-     * read() returns 1 on the staleness guard forever and the INT line stops
-     * pulsing.  The part is not wedged and not corrupted; it stops converting
-     * at the configured rate.  Over tens of seconds the frozen value still
-     * drifts slightly, so conversion continues at some far lower rate.
-     *
-     * It begins at the IMU's first FIFO drain, and the delay scales with the
-     * drain interval: at odr 13 Hz the mag delivers 314 samples with fifo_wm
-     * 64 (first drain ~3.8 s) and 13 with fifo_wm 4 (first drain ~0.3 s).
-     * Neither volume nor duration is what matters, though.  Six 7-byte
-     * transfers spread over 20 s at 1 MHz (odr 13, fifo_wm 64) kill it just as
-     * dead as 833 Hz does, about 336 us of bus activity in total; meanwhile
-     * 273 drains of 448 bytes at 2.5 MHz -- some 391 ms of activity, three
-     * orders of magnitude more -- leave it at 102/s.  What it tracks is the
-     * SCK pulse width alone, with the boundary at about 225 ns of high time.
-     *
-     * That also rules out the controller's transfer path: a 7-byte transfer
-     * fits the FIFO and goes out by PIO while a 224-byte burst goes by DMA,
-     * and both trigger it, so DMA-vs-PIO is not the discriminator either.
-     *
-     * reset() + init() cannot recover it while the traffic continues: forcing
-     * a re-init every 1.7 s for 40 s yielded one good sample.  Nor can a
-     * degauss -- set_period_s defaults to 5.0, so the mag reader was pulsing
-     * SET/RESET every five seconds throughout every one of these runs, and it
-     * changed nothing.  That matters because Rev A p.2 note 6 says a field
-     * beyond the 10 G Disturbing Field spec "requires a SET/RESET operation to
-     * restore proper sensor operation": the one documented way to un-stick the
-     * bridge was running the whole time and did not.  Bridge disturbance is
-     * out on magnitude anyway -- SPI signal currents cannot make 10 G at the
-     * die -- but it is out on evidence too.  So the traffic
-     * does not clear a config bit once, it prevents continuous mode running at
-     * all.  Nor is it the ioctl: holding /dev/spidev0.0 open with
-     * SPI_IOC_WR_MAX_SPEED_HZ at 1 MHz and issuing ZERO transfers left the mag
-     * at 103.8/s for 800 s.  It takes real low-clock traffic.
-     *
-     * Six theories were tested and refuted along the way: bus contention (it
-     * reproduces with the IMU at 13 Hz), burst monopoly (bounding the burst by
-     * time changed nothing), clock mismatch, SPI mode (both parts re-tested in
-     * mode 3 -- fault unchanged, and 6664 Hz throughput worse, 91.7 against
-     * 103), the mag's own clock, and the speed ioctl in isolation.
-     *
-     * MECHANISM, established on hardware 2026-08-24.  It needs two things at
-     * once: a slow clock AND a sustained run of zero bytes on MOSI.
-     *
-     * A probe injecting controlled traffic on the IMU's node, while the daemon
-     * held both parts at 10 MHz, separates them.  Every transfer was an ST
-     * register READ, so the payload could be anything without writing a
-     * register.  Mag delivery after the probe stopped:
-     *
-     *     1 MHz, payload 0x00 -> 0/s, dead      1 MHz, payload 0x60 -> 100/s
-     *     1 MHz, payload 0xFF -> 101/s          1 MHz, payload 0xAA -> 101/s
-     *                          10 MHz, payload 0x00 -> 102/s
-     *
-     * Only the all-zeros payload does it, and only when slow.  0xAA has far
-     * more data transitions and is harmless, so it is not edge count; what
-     * matters is MOSI held low across many bit times while SCK crawls.
-     *
-     * This part cannot stop being an I2C slave, which is why it is the one
-     * that suffers.  Rev A p.5 pin 4: "Chip Select line for SPI (active low).
-     * Tie to VDDIO for I2C Interface" -- the interface is chosen by the CS
-     * *level*, SCL/SPI_SCK and SDA/SPI_SDI are one pair of pins, and the only
-     * interface bit is Spi_3w.  There is no I2C_disable, unlike the
-     * ISM330DHCX, where ism330dhcx.c sets exactly that bit on ST's
-     * instruction.  So while the IMU transacts, this part is on those lines as
-     * a 400 kHz I2C slave, and a long zero run at a clock slow enough to clear
-     * its input filter reaches its receiver.
-     *
-     * What it loses is exactly one bit.  During the fault a single-shot
-     * trigger converts on demand every time -- STATUS goes 0x10 to 0x11 on
-     * TM_M -- while continuous mode never completes a measurement (Meas_M_Done
-     * set 8 times at startup, then frozen at 8 across 800 reads) and the
-     * product id reads 0x30 on every transfer.  Engine, SPI and OTP are all
-     * healthy; CTRL2's Cmm_en is not.  That is why init() cannot win: it
-     * re-enables continuous mode and the next burst clears it again, which is
-     * also why a re-init every 1.7 s bought exactly one sample.
-     *
-     * The zero run is ours.  spi_burst_read's multi-byte path leaves the data
-     * phase to spidev's zero fill, so an ST FIFO burst is a command byte
-     * followed by hundreds of zeros -- the fatal pattern, generated by this
-     * daemon.  Filling 0xFF instead removes the fault completely: 103/s with
-     * the IMU at 1 MHz, where zero fill gives 0.
-     *
-     * That fix is NOT adopted, and the reason is in bus_io.h.  Any fill with
-     * bit 7 set makes a CS-split byte a READ COMMAND, which moves corruption
-     * out of the part's state and into the sample stream -- measured, at
-     * 13.016 Hz, as gravity reading 18.2 m/s^2.  Zero fill was chosen because
-     * a split becomes a write of 0x00 to FUNC_CFG_ACCESS, which is benign.  So
-     * the two hazards pull opposite ways, and one clean 25 s run at 833 Hz is
-     * not enough to retire the one that is already documented.
-     *
-     * It does not need fixing in the fill, because it does not arise by
-     * default: spi_speed_hz = 0 gives each part its declared maximum and is
-     * unaffected.  Only an explicit imu spi_speed_hz below about 2.3 MHz
-     * reaches it, and that configuration should be refused or warned about
-     * whenever a magnetometer shares the controller.
-     *
-     * Refuted along the way, each on hardware: bus contention, burst monopoly,
-     * clock mismatch, SPI mode, the mag's own clock, the speed ioctl alone,
-     * DMA-vs-PIO, bridge disturbance (a degauss ran every 5 s throughout and
-     * changed nothing), and plain symmetry -- clearing I2C_disable on the
-     * ISM330DHCX did not make the IMU vulnerable to the same traffic, at mag
-     * clocks down to 250 kHz and ten times the traffic.  The ISM is simply not
-     * susceptible to the pattern this part is.
-     *
-     * The default, spi_speed_hz = 0 (each part's declared maximum), is
-     * unaffected.  Recorded as measured behaviour, not explained.
+     * spi_speed_hz = 0 gives each part its declared maximum and is unaffected;
+     * config.c warns when a slower IMU clock is configured alongside a
+     * shared-bus magnetometer.
      */
     .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },

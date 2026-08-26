@@ -596,7 +596,7 @@ TEST(test_convergence_flag)
     imu_sample_t sg = make_gyro(0, 0, 0);
 
     /*
-     * ~12 s. The 2.4 s this used to run was enough when P collapsed to an
+     * ~12 s. A 2.4 s run is enough only when P collapses to an
      * unbelievable 0.14°/axis; with the wave state the descent is honest and
      * slower — the attitude uncertainty has to average a modelled 0.8 m/s²
      * disturbance down over many correlation times. See mekf_derive_tuning
@@ -912,7 +912,7 @@ TEST(test_mekf_reconfigure)
 }
 
 /*
- * Rm and mref_alpha are derived in one shared helper. Reconfigure used to
+ * Rm and mref_alpha are derived in one shared helper, so reconfigure cannot
  * rebuild Rm while leaving mref_alpha at its init value, so a retune left the
  * m_ref EMA running at the wrong gain indefinitely; deriving both in one place
  * is what stops them drifting apart again. Driven here through mekf_mag_noise,
@@ -947,7 +947,7 @@ TEST(test_reconfigure_rederives_mag_tuning)
  * rate the driver said it would actually program — and NOT from
  * cfg->mag_odr_mhz, which is only the operator's request.
  *
- * Rm used to be Nm² × cfg->mag_odr_mhz, so an off-grid request (137 Hz on a
+ * Rm must not be Nm² × cfg->mag_odr_mhz: an off-grid request (137 Hz on a
  * part whose grid is 1/10/20/50/100/200/1000) sized the magnetometer's noise
  * variance for a rate the chip was not sampling at. mref_alpha and
  * nis_mag_alpha had the same source. The second half pins the [restart]
@@ -2656,7 +2656,7 @@ TEST(test_leaks_survive_a_tiny_dt_over_tau)
  * Settling must still latch when the window is long and the rate is high.
  *
  * This is a regression test for a float32 stall, and the only way to see it is
- * to actually run past it.  Both estimators used to count settling by summing
+ * to actually run past it.  Counting settling by summing
  * dt into a float; `x += dt` with a CONSTANT dt stops advancing the moment dt
  * drops below half an ULP of x, and at 32 kHz (dt = 3.125e-5) that happens at
  * x = 1024 s — permanently, not gradually.  Any window whose settling ramp
@@ -2914,7 +2914,7 @@ static double scen_gm_tau   = 0.7;
  * does this whenever a position source has given it a reference field
  * (src/imu.c), and it is the only thing that removes the alignment dip error
  * at the source rather than admitting it into P — so it is a distinct, and
- * previously unmeasured, shipping configuration.
+ * shipping configuration.
  */
 static bool bench_wmm_ref = false;
 
@@ -3136,7 +3136,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
          * accelerometer and magnetometer over a window, then WMM invariants if
          * a position is known.
          *
-         * This used to align from ONE instantaneous sample and claim in a
+         * Aligning from ONE instantaneous sample would claim in a
          * comment that that was "like the daemon". It is not, and the
          * difference dominated everything the 3-D mode reported. A single
          * sample taken mid-roll bakes the instantaneous tilt error into m_ref
@@ -3900,134 +3900,22 @@ static void test_wave_benchmark(void)
      * Regression bounds, on the MEAN over N_BENCH_SEEDS draws (see the
      * scenario comment for why a single seed is not a usable signal).
      *
-     * ── Recorded change: gross-reject gate 9γ → 25γ (docs/math.md §4.7) ───────
-     * Investigating §10.1's claim that Ra was far too optimistic for a seaway
-     * showed the opposite: the 9γ gate was rejecting 7–11% of ordinary wave
-     * motion, starving the filter, and the resulting drift produced the large
-     * innovations that looked like an over-confident noise model. Widening
-     * the gate to 25γ (see GROSS_REJECT_MULT in fusion.c) improves every
-     * measured quantity in both modes, with Ra unchanged:
+     * Bounds are ~1.3x the measured means, enough to absorb float and platform
+     * variance without letting a real regression through.  Update them only
+     * with a recorded before/after; never loosen one to make a run pass.
      *
-     *              3-D att   3-D hdg   3-D bias   yaw att   yaw hdg   yaw bias
-     *    before      6.848°    4.271°   3.52e-4    3.574°    3.099°   9.68e-4
-     *    after       5.653°    3.065°   2.38e-4    2.309°    1.961°   6.63e-4
+     * The NIS bounds are TWO-SIDED.  With a state that can absorb disturbance,
+     * under-confidence is a reachable failure mode — too large a wave sigma
+     * eats real tilt error — and a one-sided bound would not see it.
      *
-     *              NEES(tr)  NEES(st)   NIS_a    reject
-     *    3-D before   28.96     62.66   30.66    0.2618
-     *    3-D after    18.32     57.38   19.30    0.0066
-     *    yaw before   21.14    129.02   27.26    0.0429
-     *    yaw after     7.80     37.73   25.18    0.0000
+     * Worst-case draws are printed but deliberately NOT asserted: the tail is
+     * a scenario-luck statistic rather than a filter-quality one.
      *
-     * The worst-case draws collapsed too (3-D 13.68° → 7.02°, yaw 9.59° →
-     * 2.34°): the wide per-seed spread §10.8 records was this rejection
-     * feedback, not scenario luck.
-     *
-     * The previous baseline was measured with the error-state reset Jacobian
-     * in place; without it the same seed set gave 6.71/4.09 (3D) and
-     * 4.10/3.54 (yaw), i.e. the reset bought ~13% on yaw attitude for ~2% on
-     * 3D and cut NEES 32.4 → 28.4.
-     *
-     * Bounds are set ~15% above measured to absorb float/platform variance
-     * without letting a real regression through. Worst-case draws are printed
-     * but still NOT asserted: even though the tail is now tight, it remains a
-     * scenario-luck statistic rather than a filter-quality one.
-     *
-     * ── Recorded change: m33_inv singularity test, and the Gauss–Markov
-     *    wave-acceleration state (docs/math.md §4.1.1) ─────────────────────
-     *
-     * The numbers above were, it turned out, measured through a bug. m33_inv
-     * declared S singular on an ABSOLUTE |det| < 1e-12, but S = HPHᵀ + R·I for
-     * the gravity update carries physical units and its determinant sits near
-     * 1e-13 at ordinary conditioning. 87% of accel updates in this benchmark
-     * were being silently discarded by that test, and the health EMAs were
-     * being fed only by the 13% that survived. The accidental decimation was
-     * doing real work — it crudely decorrelated the wave-contaminated samples
-     * — which is why the filter looked as good as it did.
-     *
-     * With the test made scale-relative (fusion.c m33_inv) and nothing else
-     * changed, the filter feeds on all 833 samples/s, believes each one is an
-     * independent measurement of gravity, and diverges into its own
-     * over-confidence: 9.49°/11.42° attitude, NEES(trace) 259/252, NIS 56/57,
-     * 15% gross rejects. That is §10.1's diagnosis in its undisguised form —
-     * a seaway's gravity residual is correlated, so 833 correlated samples do
-     * not carry 833 samples' worth of information, and no scalar R can say so.
-     *
-     * The Gauss–Markov wave state says so. Modelling the disturbance as a
-     * first-order GM process (σ = 0.8 m/s², τ = 0.5 s) makes repeated samples
-     * correctly stop adding information, and every column lands:
-     *
-     *                  3-D att   3-D hdg   yaw att   yaw hdg   NEES(tr)   NIS_a
-     *   old baseline     5.653°    3.065°    2.309°    1.961°  18.3/ 7.8  19.3/25.2
-     *   inv fixed only   9.488°    7.255°   11.424°    8.801°   259 / 252  56.5/56.9
-     *   + wave state     4.452°    0.828°    2.308°    1.016°  3.47/0.99  1.01/0.69
-     *
-     * The old baseline is the honest bar (docs/math.md §4.7.1 states the criterion
-     * against it), and the wave state clears it everywhere: 3-D attitude −21%,
-     * 3-D heading −73%, yaw heading −48%, yaw attitude a dead heat, NIS from
-     * 19–25 to ≈1, NEES(trace) from 18.3/7.8 to 3.47/0.99, and the Huber cap
-     * and gross-reject gate both go completely idle (weight 1.000, reject 0).
-     *
-     * σ and τ were chosen on a BROADBAND scenario (SCEN_GM) whose disturbance
-     * is a real Gauss–Markov process of known σ and τ, not on the single tone
-     * asserted here — the tone's autocorrelation never decays, so fitting τ to
-     * it would be fitting the benchmark. The tone is the held-out validation.
-     * σ = 0.8 m/s² is also exactly the tone's true per-axis RMS and τ = 0.5 s
-     * sits inside fit-ra's measured 0.3–0.9 s, so neither knob is a free
-     * parameter. The grid is in docs/math.md §4.7 (-DBENCH_SWEEP_WAVE).
-     *
-     * ── Recorded change: the alignment fidelity bug ───────────────────────
-     * This scenario used to align from ONE instantaneous sample and claim it
-     * was doing what the daemon does. It was not — the daemon averages a 5 s
-     * window (src/imu.c) — and the difference dominated every 3-D number here.
-     * See the alignment block above for the mechanism and the measured table.
-     * Re-basing on a daemon-faithful alignment:
-     *
-     *                     3-D att   3-D hdg   yaw att   yaw hdg   NEES(st) 3D/yaw
-     *   1-sample (old)     4.452°    0.828°    2.308°    1.016°     335 / 10.1
-     *   5 s mean (this)    1.204°    0.745°    2.185°    1.011°    12.8 / 8.37
-     *
-     * Nothing in the filter changed to produce that: it is the instrument
-     * being made honest. The yaw-only default barely moves (2.308° → 2.185°),
-     * which is the expected signature — heading-only fusion never uses the dip
-     * channel that the alignment error corrupts.
-     *
-     * ── On the 3-D+WMM row ────────────────────────────────────────────────
-     * The residual 3-D inconsistency is m_ref DIP error left over from
-     * alignment (+0.86°), which the dip channel converts into a constant
-     * roll/pitch bias that P has no term for. It cannot be healed from seaway
-     * data — see the acc_quiet_ema gate in fusion.c and the refutation
-     * recorded there. It CAN be removed at the source, which is what
-     * mekf_set_mref_invariants does when a position source supplies the field.
-     * That configuration is the best the filter offers and was previously
-     * unmeasured, so it is now a printed row: attitude 0.841°, NEES(strict)
-     * 0.22 — an order of magnitude better than yaw-only, and consistent.
-     *
-     * ── On the anisotropic dip term (mekf_mag_dip_sigma_deg) ─────────────
-     * For installs without a position source, the dip error cannot be removed,
-     * so it is admitted into P instead: R gains a rank-1 term σ_dip²·uuᵀ along
-     * the one direction a dip error perturbs (see mekf_update_mag). At the
-     * shipped 1.0° — the measured +0.86° residual, rounded up, NOT a value
-     * fitted to this metric — 3-D NEES(strict) goes 12.83 → 5.74 while
-     * attitude and heading both improve slightly (1.204° → 1.178°,
-     * 0.745° → 0.714°) and yaw-only is bit-identical.
-     *
-     * It does not reach 1, and cannot: the dip error is a BIAS, and a
-     * covariance term can only partly stand in for one. The accelerometer
-     * legitimately keeps P tight in roll and pitch, so P cannot grow to cover
-     * a systematic offset without making the filter worse at everything else.
-     * Driving this number to ~1 needs σ_dip ≈ 4°, which would be inventing
-     * uncertainty to satisfy a statistic. The sweep is in docs/math.md §4.8.1;
-     * the real fix for an install that cares is a position source.
-     *
-     * The cost is `nis_mag` in 3-D mode: 0.52 → 0.31. Isotropic inflation
-     * reaching the same NEES puts it at 0.01 — i.e. destroys the wire's
-     * magnetometer-health instrument — which is the whole argument for the
-     * rank-1 form. Yaw-only, the default, is untouched at 0.55.
-     *
-     * Bounds are ~1.3× the measured means. The NIS bounds are TWO-SIDED: with
-     * a state that can absorb disturbance, under-confidence is now a reachable
-     * failure mode (too large a σ eats real tilt error) and a one-sided bound
-     * would not see it. Worst-case draws are printed but not asserted.
+     * The wave state's sigma and tau were fitted on the broadband SCEN_GM
+     * scenario, whose disturbance is a real Gauss-Markov process of known
+     * parameters — not on the single tone asserted here, whose autocorrelation
+     * never decays.  The tone is held-out validation, so do not re-fit either
+     * knob against these numbers.
      */
     EXPECT(b3.att_mean  < 1.55f,    "wave-bench 3D attitude RMS under bound");
     EXPECT(b3.hdg_mean  < 1.00f,    "wave-bench 3D heading RMS under bound");

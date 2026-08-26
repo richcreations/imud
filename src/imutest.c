@@ -128,12 +128,7 @@ void imt_opts_defaults(imt_opts_t *o)
      * part that is entirely within specification can read |a| anywhere in
      * roughly 9.0 to 10.6 m/s^2.
      *
-     * The old +/-0.25 was tighter than that, and duly failed one: |a| at rest
-     * measured 10.1, and the full-scale sweep FAILed or WARNed a different
-     * range on nearly every run, the range moving with the ODR and between
-     * runs -- scatter inside the part's own tolerance, read as a defect.
-     *
-     * Widening does not blunt the check.  What it exists to catch is a wrong
+     * Widening to that does not blunt the check.  What it exists to catch is a wrong
      * sensitivity CONSTANT, which is a factor of two or four -- the note
      * prints the ratio for exactly that -- and 0.85 still separates 9.8 from
      * 4.9 or 19.6 by a wide margin. Calibration is what closes the gap between
@@ -158,8 +153,7 @@ void imt_opts_defaults(imt_opts_t *o)
  * The printf attribute is not decoration: nearly every note here is built from
  * a ternary that picks one of two format strings, and it is easy to give the
  * two branches different conversion counts while passing the argument list of
- * only one.  That reads off the end of the va_list and printed a garbage
- * "ratio to true g is 0.000" in a shipped report before this was added.  Keep
+ * only one, which reads off the end of the va_list and prints garbage.  Keep
  * both branches of every ternary taking the same arguments.
  */
 static void add_check(imt_report_t *r, const char *id, const char *name,
@@ -332,13 +326,10 @@ typedef struct {
     /*
      * Address ranges the datasheet marks RESERVED, or does not list at all.
      *
-     * NEVER READ THESE.  The sweep used to walk lo..hi blind, skipping only
-     * the FIFO port, which meant ~60 reserved addresses per snapshot and about
-     * 420 reserved reads per run once the volatile scan and the idempotency
-     * compare are counted.  On the reference ISM330DHCX that is not harmless:
-     * the part is clean at power-up, and after ONE run roughly 1 register read
-     * in 100 comes back with the wrong byte, persistently, across processes.
-     * A power cycle clears it; nothing in software does.
+     * NEVER READ THESE.  On the reference ISM330DHCX they are not harmless:
+     * the part is clean at power-up, and a run that sweeps them leaves roughly
+     * 1 register read in 100 coming back with the wrong byte, persistently and
+     * across processes.  A power cycle clears it; nothing in software does.
      *
      * Reading an undefined address is not a read of nothing -- on this family
      * 0x60-0x62 are marked RESERVED *RW*, and the embedded-function bank hides
@@ -384,14 +375,11 @@ typedef struct {
      * The part's identity register and the value it must always hold.
      *
      * This is what imu.bus.integrity hammers, and picking it correctly is the
-     * whole check.  It used to read freq_fine_reg instead, on the reasoning
-     * that a factory trim is something nothing writes -- but "nothing writes
-     * it" is not the same as "it cannot change".  Measured on the reference
-     * ISM330DHCX: INTERNAL_FREQ_FINE reads 0x1B while the part is running and
-     * 0x1A with the sensors powered down, because it reports a trim of an
-     * oscillator that is switched off.  The check counted that transition as
-     * bus corruption, which is how it produced a FAIL on a part whose every
-     * other check passed.
+     * whole check.  It must be a byte that cannot change, which a factory trim
+     * is not: INTERNAL_FREQ_FINE reads 0x1B while the reference ISM330DHCX is
+     * running and 0x1A with the sensors powered down, because it reports the
+     * trim of an oscillator that is switched off.  Hammering that reads a
+     * power-mode transition as bus corruption.
      *
      * WHO_AM_I has no such state: it is hard-wired, identical in every power
      * mode, and the one byte on these parts that genuinely cannot change.
@@ -506,13 +494,12 @@ static const imt_regmap_t imt_regmaps[] = {
      * silicon and not a finding about the driver; ctrl_writeonly makes the
      * check SKIP and say that.
      *
-     * hi used to be 0x1F, which named a range this part does not have: it
-     * covered all four write-only registers and 0x0D-0x1F of reserved space.
-     * Nothing read them, because ctrl_writeonly skips the snapshot outright —
-     * but a map that describes a register file the silicon does not have is a
-     * loaded gun for whoever clears that flag or copies the entry for a part
-     * with a mixed control file.  0x08 is the last readable register, and it
-     * is itself read-to-clear, so the swept set is 0x00-0x07.
+     * hi is 0x08, the last readable register, and it is itself read-to-clear,
+     * so the swept set is 0x00-0x07.  Do not widen it to cover the write-only
+     * control registers or the reserved space above them: ctrl_writeonly
+     * skips the snapshot today, but a map describing a register file the
+     * silicon does not have is a loaded gun for whoever clears that flag or
+     * copies this entry for a part with a mixed control file.
      */
     { .driver = "mmc5983ma",  .lo = 0x00, .hi = 0x08,
       .whoami_reg = 0x2F, .whoami_val = 0x30,
@@ -520,7 +507,7 @@ static const imt_regmap_t imt_regmaps[] = {
       .out_lo = 0x00, .out_hi = 0x06,   /* XOUT0..XYZOUT2, the driver's burst */
       .ctrl_writeonly = true },
     /*
-     * AKM parts, both of which need two things the old entries got wrong.
+     * AKM parts, both of which need two things.
      *
      * First, DRDY: the datasheet says the bit "returns to 0 when any one of
      * ST2 register or the measurement data registers (HXL to HZH) is read".
@@ -803,20 +790,18 @@ typedef struct {
      * The interrupt line the DAEMON would wait on, held for the whole run.
      *
      * Every check here drains through drain_pace(), which waits on this line
-     * with the daemon's cadence instead of a timer of imutest's own. That
-     * difference used to be invisible and expensive: paced on a 5 ms sleep,
-     * chip_ts reversals appeared at burst seams that the daemon -- woken by
-     * the watermark -- never produces, and the report blamed the driver. The
-     * daemon scored 0 reversals in 53,708 samples while this tool scored
-     * several per window on the same part minutes apart.
+     * with the daemon's cadence instead of a timer of imutest's own.  Pacing
+     * on a timer instead makes chip_ts reversals appear at burst seams that
+     * the daemon -- woken by the watermark -- never produces, and the report
+     * then blames the driver for the tool's own cadence.
      *
      * NULL when no line is configured, which is a real deployment: the reader
      * then paces itself, and so does this.
      */
     imu_gpio_line_t *line;
     /* Kept so the line can be PARKED and resumed: imt_gpio_count_edges() opens
-     * the same offset itself, and this context holding it made that request
-     * fail with EBUSY -- against imutest's own earlier open. */
+     * the same offset itself, and this context holding it fails that open with
+     * EBUSY. */
     const char      *gpio_chip;
     int              int_gpio;
 } drain_ctx_t;
@@ -895,7 +880,7 @@ static void drain_gpio_resume(drain_ctx_t *d)
                                 "imud-imutest");
 }
 
-/* End of run: the line was leaked outright before this existed. */
+/* End of run: releases the held line. */
 static void drain_fini(drain_ctx_t *d)
 {
     drain_gpio_park(d);
@@ -1063,14 +1048,13 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
      *
      * Cheap enough to hammer: one identity byte per call.
      *
-     * Placed AFTER reset() and init() deliberately.  It used to run straight
-     * after probe(), which measured the part in whatever state the previous
-     * process happened to leave it in -- not a state the daemon ever operates
-     * in, and on these parts a materially different one: an ISM330DHCX left
-     * with its sensors powered down answers reads far less reliably than the
-     * same part configured and running.  The question this check exists to
-     * answer is whether the bus is sound while the daemon is using it, so it
-     * is measured on a part the driver has just brought up.
+     * Placed AFTER reset() and init() deliberately.  Run after probe() alone
+     * it would measure the part in whatever state the previous process left
+     * it in, which is not a state the daemon operates in and on these parts a
+     * materially different one: an ISM330DHCX with its sensors powered down
+     * answers reads far less reliably than the same part configured and
+     * running.  The question is whether the bus is sound while the daemon is
+     * using it, so it is measured on a part the driver has just brought up.
      */
     {
         /*
@@ -1262,7 +1246,7 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
                               /* The register list goes near the front: note[]
                                * is 192 bytes and truncates, so the one part a
                                * reader cannot reconstruct must not be the part
-                               * that gets cut.  The causes this used to
+                               * that gets cut.  The causes it can
                                * enumerate live in the spec and the appendix. */
                               : "%d non-volatile register%s compared; %s differ "
                                 "after a second init — init() depends on the "
@@ -1754,12 +1738,9 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
      * the FIFO watermark -- a poll cannot know how old the sample it just read
      * is, so the new burst can land before the old one ended.
      *
-     * Measured on the reference part: the daemon, woken by the watermark
-     * interrupt, scored 0 reversals in 53,708 samples while this check scored
-     * 2 to 7 per window on the same part minutes apart.  Grading those as a
-     * driver fault reported a healthy timestamp chain as broken on every run.
-     * They still WARN, because an interrupt-less install really does drain on
-     * a timer and really does see them.
+     * Grading those as a driver fault reports a healthy timestamp chain as
+     * broken.  They still WARN, because an interrupt-less install really does
+     * drain on a timer and really does see them.
      */
     int inner_rev = tsa.reversals - tsa.seam_reversals;
     imt_status_t mono_st = (tsa.reversals == 0 && tsa.repeats == 0) ? IMT_PASS
@@ -1819,12 +1800,10 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
          * ticks per sample against nominal, and dividing by the nominal rate
          * reports that as a tick error when imu.odr above already owns it.
          *
-         * Measured on the reference ISM330DHCX 2026-08-19, which runs 4.1%
-         * fast at every rate on its ladder: at a configured 833 Hz it delivers
-         * 867.1 Hz and 48.00 ticks/sample.  Against nominal that "expects"
-         * 49.96 and reads as a 4% tick error; against the measured rate it
-         * expects 48.00 and matches exactly.  The nominal form put this check
-         * into WARN at 104, 208 and 416 Hz on a part that was fine.
+         * A part running 4% fast at a configured 833 Hz delivers 867 Hz and
+         * 48.00 ticks/sample: against nominal that expects 49.96 and reads as
+         * a 4% tick error, while against the measured rate it expects 48.00
+         * and matches exactly.
          *
          * Falls back to nominal only if the rate measurement did not produce
          * one, which cannot normally happen — check_odr_seq_ts fills it from
@@ -1854,12 +1833,11 @@ static void check_odr_seq_ts(imt_report_t *r, const imt_opts_t *o,
         imt_status_t wst = imt_chipts_wall_status(ratio);
 
         /*
-         * Report the part's own declared timebase error where it has one.  The
-         * driver now APPLIES this (ts_tick_ns_actual), so it is no longer a
-         * cross-check against a constant the daemon was about to get wrong —
-         * it says which trim produced the tick the ratio above was graded
-         * with, and a ratio still off 1.0 with a plausible FREQ_FINE means
-         * something other than the oscillator is moving the timebase.
+         * Report the part's own declared timebase error where it has one.
+         * The driver applies this trim (ts_tick_ns_actual), so this says which
+         * trim produced the tick the ratio above was graded with: a ratio
+         * still off 1.0 with a plausible FREQ_FINE means something other than
+         * the oscillator is moving the timebase.
          */
         char fine[80];
         fine[0] = '\0';
@@ -2461,8 +2439,8 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
          * as the full scale rises has no benign reading, so that is what is
          * graded; the numbers go in the appendix either way.
          */
-        /* Ratio to the previous step is recorded for the appendix.  It is
-         * NOT what grades the step -- see the median test below. */
+        /* Ratio to the preceding step, for the appendix only -- the median
+         * test below is what grades the step. */
         if (prev_fs > 0 && prev_sigma > 0 && s > 0)
             row->ratio = s / prev_sigma;
         prev_sigma = s;
@@ -2604,14 +2582,13 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     /*
      * Pass 2: the same window with the FIFO left alone.
      *
-     * This is the experiment that characterises the edge rate.  The 2026-08-10
-     * bench measured ~18.3 Hz on the reference part at 833 Hz with fifo_wm 64,
-     * which fits neither the per-sample model (833) nor the watermark model
-     * (13), and an edge count alone cannot say why.  The surviving hypothesis
-     * was that INT1_FIFO_TH is a LEVEL condition oscillating across the
-     * threshold during the drain — words consumed while new ones arrive, each
-     * crossing producing another rising edge — in which case the number is an
-     * artifact of draining and not a rate at all.
+     * This is the experiment that characterises the edge rate.  A part can
+     * produce an edge rate fitting neither the per-sample model nor the
+     * watermark model, and an edge count alone cannot say why: INT1_FIFO_TH is
+     * a LEVEL condition, so it can oscillate across the threshold during a
+     * drain — words consumed while new ones arrive, each crossing producing
+     * another rising edge — which makes the number an artifact of draining
+     * rather than a rate.  Leaving the FIFO alone separates the two.
      *
      * Stop draining and the two candidates separate cleanly.  A level
      * condition latches: it asserts once, stays asserted because nothing
@@ -2677,10 +2654,9 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     /*
      * More edges than the part has samples cannot be an interrupt it raised,
      * so that is still worth flagging.  Everything below it passes.  The tool
-     * deliberately no longer grades a part down for fitting neither model:
-     * the reference part does exactly that and is healthy, which is what made
-     * the old WARN noise rather than a finding, and an edge count on its own
-     * was never able to identify a model in the first place.
+     * Fitting neither model is not a defect — the reference part does exactly
+     * that and is healthy — and an edge count on its own cannot identify a
+     * model.
      */
     bool too_fast = per_sample > 0 && rate > per_sample * 1.2;
     char lead[56];
@@ -2956,12 +2932,10 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
     /*
      * Degauss BEFORE measuring, not after.
      *
-     * This check used to run at the end of the phase, which meant every
-     * number above it — field magnitude, noise, the whole of §5.7 — graded the
-     * bridge in whatever magnetisation state the part happened to be left in
-     * by whatever last touched it.  That is not a property of the driver, and
-     * on 2026-08-15 it produced a 1124.7 uT field reading that nothing in the
-     * report could attribute.  Pulsing first makes the state a known one.
+     * Run at the end of the phase instead, every number above it — field
+     * magnitude, noise, the whole of §5.7 — would grade the bridge in whatever
+     * magnetisation state the part was left in by whatever last touched it,
+     * which is not a property of the driver.  Pulsing first makes it known.
      */
     if (mag->has_set_reset) {
         if (!mag->set_reset) {
@@ -3186,11 +3160,9 @@ static void check_mag_passive(imt_report_t *r, const imt_opts_t *o,
 
 /*
  * Everything above polls the magnetometer.  The daemon does not: it blocks on
- * the mag interrupt.  On 2026-08-18 that difference was worth a factor of three
- * — a polled 105.4 Hz against 35 Hz in the daemon — and nothing in this tool
- * could see it, because every check here measured the path the daemon does not
- * use.  A validation tool that cannot measure the production path will keep
- * certifying drivers that do not work in it.
+ * the mag interrupt, and the two paths can differ by a factor of three in
+ * delivered rate.  A validation tool that measures only the polled path will
+ * certify a driver that does not work in the production one.
  *
  * The mechanism is in mmc5983ma.c: when DRDY is a latched interrupt whose
  * acknowledge write also clears the status bit read() gates on, the gate and
@@ -3913,7 +3885,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
              * the locus, and once the offset exceeds the field radius the locus
              * no longer encloses the origin: atan2(-by, bx) then oscillates
              * through a limited arc instead of winding, and the total comes out
-             * near zero however far the board actually turned.  Measured on the
+             * near zero however far the board actually turned.  Seen on the
              * reference rig, twice: an offset of 49 and 50 uT against field
              * radii of 22 and 18, two full turns each, and uncentred headings
              * that moved -33 and -49 deg against gyro totals of +718 and +657.
@@ -4041,9 +4013,8 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
          * all, and its sign is then whichever way the residual wobble happened
          * to fall.  Reporting that as an inverted axis is a confident claim
          * from evidence that cannot support one -- the same mistake faces.frame
-         * used to make.  Measured -0.046 and -0.075 on the reference rig while
-         * the remap was in fact correct.  Below half rate, say the heading did
-         * not track and stop there.
+         * from evidence that cannot support one.  Below half rate, say the
+         * heading did not track and stop there.
          */
         bool tracked = fabs(ratio) >= 0.5;
         double rad = ((bx_max - bx_min) + (by_max - by_min)) / 4.0;
@@ -4126,15 +4097,11 @@ static const char *imt_required_mag[] = {
  * chip-time / wall-time ratio → a grade.  Declared in imutest.h; see there for
  * why it is exposed rather than static.
  *
- * This used to warn on any deviation past 2%, reasoning that imu.c multiplies
- * ts_tick_ns into every per-sample dt.  1.8 made that false: ts_anchor_t
- * measures the counter's real period across consecutive anchors and
- * chip_to_wall applies THAT (see "Timestamps + per-sample dt" in src/imu.c),
- * so an oscillator a few percent off is absorbed instead of scaling integrated
- * rotation.  A Pi 5 bench run on the reference ISM330DHCX reported 1.041 — a
- * ~4% fast part, well inside its tolerance — and the row read as a defect.  A
- * check that fires on expected silicon behaviour is one people learn to skip,
- * which costs more than the row is worth.
+ * ts_anchor_t measures the counter's real period across consecutive anchors
+ * and chip_to_wall applies THAT (see "Timestamps + per-sample dt" in
+ * src/imu.c), so an oscillator a few percent off is absorbed rather than
+ * scaling integrated rotation.  A few percent fast is expected silicon
+ * behaviour and must not read as a defect.
  *
  * Direction carries the meaning, so the bands are asymmetric:
  *
@@ -4260,11 +4227,10 @@ imt_status_t imt_field_status(double uT)
  * single wrong byte means a byte on this bus can come back wrong -- and the
  * driver reads WHO_AM_I exactly once in probe(), a chip timestamp once per
  * burst, and a full-scale setting once per init().  A rate of "only" 0.2% is
- * one probe() in five hundred rejecting a part that is present, which is
- * precisely how this was first seen.
+ * one probe() in five hundred rejecting a part that is present.
  *
- * This used to WARN below 0.5%, which let a real defect read as a tolerance
- * band and get waved past.
+ * Do not reintroduce a tolerance band: below one, a real defect reads as
+ * noise and gets waved past.
  */
 imt_status_t imt_bus_integrity_status(int bad, int total)
 {

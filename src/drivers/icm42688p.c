@@ -118,7 +118,7 @@ static struct {
  * The next burst's oldest sample follows the previous burst's newest by ONE
  * sample period -- the FIFO queues what the reader missed, so starvation makes
  * bursts bigger, not later.  Eight periods is loose enough for scheduler jitter
- * and tight enough to catch the class of bad read that used to get through: at
+ * and tight enough to catch the class of bad read it exists for: at
  * 104 Hz that is 3072 ticks against the 65,706 one landed at.  Overflow is the
  * only legitimate break in the chain, and the guard is reset on it instead.
  */
@@ -155,7 +155,7 @@ static struct {
  * The bottom rung is 12500 milli-Hz — 12.5 Hz, exactly, with no rounding left
  * to argue about.
  *
- * It used to be declared 12 because the ladder was whole Hz, which put the
+ * Declaring it 12, as a whole-Hz ladder would, puts the
  * advertised rate 4% below what the part produces and, worse, made
  * ticks_per_sample 937500/12 = 78125 where the true spacing is 937500/12.5 =
  * 75000.  That division was exact, which made it look like the right number
@@ -539,7 +539,7 @@ static int icm_read(const imud_bus_t *bus,
                      */
                     /*
                      * Both directions, and refuse either.  A read far BEHIND the
-                     * previous burst used to be passed through as a counter
+                     * previous burst was once passed through as a counter
                      * reset — see chip_ts.h for why that premise does not hold
                      * inside a run, and for what it emitted on the bench.
                      */

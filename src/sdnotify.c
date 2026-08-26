@@ -7,7 +7,7 @@
 /*
  * sdnotify.c — sd_notify(3)-style systemd notifications
  *
- * Shared by the daemon (src/main.c) and the bridge daemons; previously each
+ * Shared by the daemon (src/main.c) and the bridge daemons, rather than each
  * carried its own copy of this function.
  */
 

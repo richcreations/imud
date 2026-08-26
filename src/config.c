@@ -97,7 +97,7 @@ typedef enum {
  * point it at a socket nobody is listening on.
  *
  * Hence the fit is decided before anything is written — including the tilde
- * case, which the old snprintf-then-measure form could not see at all: it
+ * case, which an snprintf-then-measure form cannot see at all: it
  * measured the unexpanded value, and expand_tilde then declined silently.
  */
 static copy_rc_t copy_str(const char *val, char *out, size_t outsz)
@@ -139,7 +139,7 @@ static bool parse_bool(const char *val, bool *out)
 }
 
 /*
- * Range matters as much as syntax, and it used to be unchecked: errno was
+ * Range matters as much as syntax: errno is
  * never cleared or read, and the long → int conversion of an out-of-range
  * value is implementation-defined (C17 6.3.1.3p3) — on every target imud ships
  * to, it wraps.  So "dest_port = 4294977414" became 10118, *a different and
@@ -272,9 +272,9 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->cal_file, sizeof(cfg->cal_file), "/etc/imud/cal.json");
     cfg->startup_settle_sec = 5.0;
     cfg->gyro_bias_sec = 2.0;
-    /* 5 s, not the ~1 s this used to average. One second is a fifth of a
+    /* 5 s. One second is a fifth of a
      * typical roll period, so in a seaway it aligns to an arbitrary point in
-     * the cycle: measured over the wave benchmark, a 1 s window gives 47.7°
+     * the cycle: over the wave benchmark a 1 s window gives 47.7°
      * of attitude RMS in the marine default against 2.2° at 5 s. Everything
      * is flat from ~3 s. See docs/math.md §4.3. */
     cfg->align_window_sec = 5.0;
@@ -457,7 +457,7 @@ static int spidev_controller(const char *dev)
 /*
  * True when this configuration will silently stop a shared-bus magnetometer.
  *
- * Measured on an ism330dhcx + mmc5983ma pair on one RP1 controller: driving the
+ * On an ism330dhcx + mmc5983ma pair sharing one RP1 controller, driving the
  * IMU below about 2.2 MHz stops the MMC5983MA completing measurements.  The
  * part answers SPI perfectly throughout and a single-shot trigger still
  * converts, but continuous mode is off and re-running init() cannot hold it --
@@ -588,7 +588,7 @@ void config_apply_hot(imud_config_t *dst, const imud_config_t *src)
 /*
  * Parse "[a, b, c, ...]" into exactly n doubles.
  *
- * The count is checked exactly. The earlier version accepted a short array
+ * The count is checked exactly; accepting a short array
  * (only a completely empty one was an error), so `[0, 0]` silently left yaw at
  * whatever the default was — a wrong mount rotation that biases every sample
  * with nothing to catch it. Returns 0 on success, -1 having already logged.
@@ -921,7 +921,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         (field) = iv; } while (0)
 
 /*
- * A value that does not fit is fatal, not a warning.  This used to log LOG_W
+ * A value that does not fit is fatal, not a warning.  Logging LOG_W
  * and carry on, which is the worst of both: a [stream] socket of 130 characters
  * became a *different, perfectly valid* 107-character path, the daemon bound
  * that, and every bridge and libimud client then connected to the path written
@@ -994,7 +994,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
             return 0;
         } else if (strcmp(key, "preset") == 0) {
             /* Named preset — string value. Validate BEFORE committing: this
-             * used to set mount_set = true up front and only warn on an
+             * Setting mount_set = true up front and only warning on an
              * unrecognised name, so a typo left the daemon running with
              * whatever angles happened to be in the struct. A silently wrong
              * mount rotation biases every sample, so it is fatal. */

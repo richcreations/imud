@@ -45,7 +45,7 @@ void i2cmock_reset(void);
  * the mask untestable: a driver declaring spi_inc_mask = 0 and a mock reading
  * "mask 0 means it always increments" agree because the test copied the
  * driver's literal, not because the part behaves that way.  SPIMOCK_INC_NEVER
- * is the state the mock could not previously express, and it is the one that
+ * is the state a simpler mock cannot express, and it is the one that
  * shows what a wrong mask costs — the burst returns one register over and over
  * and the decode is silently wrong.
  */
@@ -127,7 +127,7 @@ void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step);
 /*
  * Declare that a write to `reg` on `addr` also writes `also` with the same
  * byte.  The MMC5983MA does exactly this from CTRL0 into CTRL1 (measured on
- * hardware 2026-08-16, at 10 MHz, 1 MHz and 100 kHz alike), which turns
+ * hardware at 10 MHz, 1 MHz and 100 kHz alike), which turns
  * INT_en's bit 2 into CTRL1's X-inhibit and stops the X axis measuring.
  *
  * It exists because the ordering fix is otherwise untestable: a driver that
@@ -155,7 +155,7 @@ uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg);
  * MMC5983MA must have CTRL1's bandwidth in place before CTRL2 enables
  * continuous mode (Rev A p.15 makes BW an input to what CM_Freq means), and
  * must have nothing written at all in the ~45 ms after it (measured on
- * hardware 2026-08-16 — a write inside that window leaves the bridge
+ * hardware — a write inside that window leaves the bridge
  * saturated).
  *
  * i2cmock_write_at returns the register written at 0-based position `n`, or -1

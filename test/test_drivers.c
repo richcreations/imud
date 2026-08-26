@@ -23,7 +23,7 @@
  * everything transcribed from a datasheet: register addresses, full-scale
  * encoding, byte order, and the return-code contract.
  *
- * These paths were previously only ever exercised on a wired-up Raspberry Pi.
+ * These paths are otherwise exercised only on a wired-up Raspberry Pi.
  * The tests verify, off-hardware:
  *   - probe()  accepts the correct WHO_AM_I / product ID and rejects others;
  *   - init()   encodes the requested ODR and full-scale into the right control
@@ -211,7 +211,7 @@ static void ism_stage_fifo(int n_words, uint32_t timestamp0)
  *
  * Why: the fallback reads TIMESTAMP0 after the drain and calls that the newest
  * sample's time.  The register reads *now*, the lag to the newest sample moves
- * with bus and scheduler jitter, and the 2026-08-10 bench measured 2-4 chip_ts
+ * with bus and scheduler jitter, producing 2-4 chip_ts
  * reversals per 5 s because of it.  A timestamp word written into the stream
  * has no such lag.
  *
@@ -571,7 +571,7 @@ static void test_mmc_reset_and_init(void)
      * Now with the part's real quirk modelled: a CTRL0 write lands in CTRL1
      * too.  init() must therefore write CTRL1 LAST, or its own INT_en write
      * leaves CTRL1 = 0x04 — X-inhibit — and the X axis stops measuring while
-     * Y and Z carry on looking healthy.  Measured on hardware 2026-08-16;
+     * Y and Z carry on looking healthy;
      * without the alias above, both orderings pass.
      */
     i2cmock_reset();
@@ -631,7 +631,7 @@ static void test_mmc_read_decode(void)
  * On this part the INT is latched: the write that re-arms it also clears
  * Meas_M_Done, and the bit then only re-asserts while the bus is being polled.
  * A reader blocked on the edge is by definition not polling, so the gate can
- * never pass — measured at 35 Hz from a 105.5 Hz part. The pair of assertions
+ * never pass — 35 Hz from a 105.5 Hz part. The pair of assertions
  * below is the whole fix: identical registers, M_DONE CLEAR, and the answer
  * depends only on how the caller said it waits.
  */
@@ -783,15 +783,9 @@ static void test_mmc_set_reset(void)
            "INT_EN survives a RESET pulse");
 
     /*
-     * The degauss no longer restores CTRL1, because there is nothing to
-     * restore: the "a CTRL0 write also lands in CTRL1" aliasing this used to
-     * repair was an artifact of driving a MEMSIC part in SPI mode 3. In mode 0
-     * a CTRL0 = INT_EN write leaves X measuring with its full noise sigma, and
-     * all four init orderings produce the same 105-106 changes/s.
-     *
-     * What must still hold is that the pulse does not disturb the bandwidth or
-     * the interrupt enable on a part that does NOT alias -- which is every
-     * part, now that the mode is right.
+     * The degauss does not restore CTRL1: in mode 0 a CTRL0 write does not
+     * alias into it.  What must hold is that the pulse disturbs neither the
+     * bandwidth nor the interrupt enable.
      */
     i2cmock_reset();
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &cfg) == 0, "init succeeds");
@@ -1198,7 +1192,7 @@ static void test_ak_read_decode(void)
 /* ════════════════════════════════════════════════════════════════════════════
  * The six drivers that had NO functional coverage
  *
- * Before this, only ism330dhcx/mmc5983ma/mpu925x/ak8963 were exercised; the
+ * Covers every registered driver rather than the four originally wired up; the
  * CI coverage job put src/drivers/ at 48% with these six at literally 0.0%.
  * They are also the six still flagged `experimental` and awaiting bench
  * validation, so until now nothing had ever executed a line of them — a
@@ -1744,7 +1738,7 @@ static void test_icm42_read_decode(void)
  * Why this path exists: the fallback reads TMSTVAL after the drain and calls
  * that the newest sample's time, but the register reads *now* and the lag to
  * the newest sample moves with bus and scheduler jitter — which is how the
- * 2026-08-10 bench measured 2-4 chip_ts reversals per 5 s on the ST twin of
+ * The bench sees 2-4 chip_ts reversals per 5 s on the ST twin of
  * this design.  The chip stamps each packet at the sample instant instead, and
  * the driver was already reading and discarding those two bytes.
  *
@@ -2400,7 +2394,7 @@ static void test_chip_ts_monotonic_across_bursts(void)
      * A backward jump too large to be jitter is REFUSED, and the burst
      * extrapolates instead.
      *
-     * This assertion used to read the other way -- such a jump was passed
+     * Such a jump was once passed
      * through, on the premise that the counter must have been reset and that
      * forcing it forward would pin the clock to a stale anchor. The premise is
      * wrong inside a run: the counter resets only via SW_RESET or power-up,
@@ -2432,7 +2426,7 @@ static void test_chip_ts_monotonic_across_bursts(void)
  * that read comes back garbage in the forward direction, nothing noticed: the
  * backward guard only corrects overlaps, so the whole burst was stamped in the
  * future, and only the NEXT burst's jump back to real time re-seeded it.
- * Measured on the reference ISM330DHCX from a 94,539-sample capture: one burst
+ * From a 94,539-sample capture: one burst
  * of 9 samples landed 2,163,509 ticks -- 54 s at 25 us/tick -- ahead, with seq
  * continuous across it. Nothing reached the filter, but ts_wall_ns reached the
  * wire.
@@ -2500,7 +2494,7 @@ static void test_chip_ts_forward_garbage_read(void)
  * SW_RESET and power-up both reach init(), which calls chip_ts_guard_reset() --
  * so what actually gets through is a garbage read.
  *
- * Measured on the reference ISM330DHCX at 52 Hz on 2026-08-20: one burst of
+ * At 52 Hz: one burst of
  * nine samples in 6,494 was stamped from a counter read of about zero, stepped
  * back below zero, and went out with chip_ts near 2^32 -- 0.5 s backwards, seq
  * continuous across it. The guard then latched the bad value and extrapolated
@@ -2569,13 +2563,13 @@ static void test_chip_ts_backward_garbage_read(void)
 /*
  * The forward bound is one sample period times a small slack, not a flat 9.6 s.
  *
- * The old bound was chosen on the theory that "a real gap of seconds means the
+ * A looser bound assumes "a real gap of seconds means the
  * reader was starved for seconds". It does not: the FIFO queues whatever the
  * reader missed, so starvation makes bursts BIGGER, not later, and this burst's
  * oldest sample follows the last burst's newest by one period however long the
  * caller was away. What the slack actually admitted was a bad read.
  *
- * Measured on the reference ISM330DHCX at 104 Hz: one post-drain read landed
+ * At 104 Hz one post-drain read landed
  * 65,706 ticks (1.58 s) ahead of the 384 expected, sailed under the flat bound,
  * and poisoned the anchor for the eleven bursts that followed.
  */
@@ -2600,7 +2594,7 @@ static void test_chip_ts_forward_bound_is_a_sample_period(void)
 
     /*
      * 65,706 ticks ahead -- the bench figure exactly. Well under the 400,000
-     * the old bound allowed, and 1370x the 48-tick sample period at 833 Hz.
+     * a seconds-scale bound would allow, and 1370x the 48-tick sample period at 833 Hz.
      */
     ism_stage_burst(4, 1000000 + 65706);
     EXPECT(ism->read(I2CBUS(ISM_ADDR), b, 16, &nb) == 0, "second read ok");
@@ -2623,7 +2617,7 @@ static void test_chip_ts_forward_bound_is_a_sample_period(void)
  * implausible against it, so each was refused in turn and the stamps walked
  * further from real time at one sample period per burst -- eleven of them,
  * until a batched FIFO timestamp bypassed the guard and time snapped back,
- * which is what imu.chipts.monotonic had been reporting as a seam reversal.
+ * which imu.chipts.monotonic would otherwise report as a seam reversal.
  *
  * A genuine bad read is isolated; a stale anchor refuses in an unbroken run.
  * Counting them apart is the whole mechanism.
@@ -2738,7 +2732,7 @@ static void test_st_spi_disables_i2c_block(void)
 /*
  * Every driver's reset() writes a soft-reset bit and then polls for the
  * hardware to clear it.  i2cmock_set_selfclear models exactly that, so these
- * are testable off-hardware — the earlier claim in this file's header that
+ * are testable off-hardware, despite the header's claim that
  * they were not was simply out of date.
  *
  * Both outcomes matter.  The success path proves the driver writes the right
@@ -2862,7 +2856,7 @@ static void test_ak099_init_modes(void)
  * imud resolves the configured rate with odr_actual_* and hands the RESULT to
  * the driver, so the driver's own rounding must be a no-op on it. If the two
  * disagree, the filter is tuned for one rate while the chip samples at
- * another — which is exactly what happened before this was pinned:
+ * another:
  * nearest_odr() decided the tuning while every register-table driver rounded
  * UP, so [imu] odr_hz = 900 tuned for 833 Hz and ran the part at 1666.
  *
@@ -3001,7 +2995,7 @@ static void test_odr_agreement(void)
      * datasheet is explicit that continuous mode cannot be entered with it,
      * so programming it stops the magnetometer dead.
      *
-     * This guard used to name 010, 100 and 110 as forbidden too, on a measured
+     * The guard omits 010, 100 and 110, on a measured
      * table showing they free-ran at the bandwidth ceiling. That table was
      * taken in SPI mode 3. In mode 0 all three deliver their datasheet rate,
      * so the driver programs them and the assertion that it must not is gone.
@@ -3359,7 +3353,7 @@ static void test_ticks_per_sample_across_rates(void)
  * DS13012's initialisation procedure requires opposite values for it: step 3a
  * sets I2C_disable = 1 for SPI, step 3b leaves it 0 for I2C.  A driver that
  * left this register identical on both would be wrong on one of them -- which
- * is what this one did until 2026-08-20, never writing the register at all and
+ * is what a broken implementation does, never writing the register at all and
  * so running the I2C block live on every SPI install.
  *
  * Nothing else may differ, which is the invariant this helper exists for.  The
@@ -3476,7 +3470,7 @@ static void test_dual_transport_ism330dhcx(void)
      * it is a counter that keeps climbing across both calls.
      *
      * chip_ts is excluded on exactly that ground too, and it is worth saying
-     * why since it used to be compared. The mock returns one fixed value from
+     * why. The mock returns one fixed value from
      * the timestamp register, so both reads compute the same burst time — an
      * overlap — and the monotonic guard (chip_ts.h) correctly pushes the second
      * burst past the first. Requiring the two to be EQUAL would be requiring
@@ -3611,7 +3605,7 @@ static void test_dual_transport_mmc5983ma(void)
            "the spi burst walked the output registers");
 
     /*
-     * Now the part the mock could not previously express.  mmc5983ma declares
+     * The part the mock cannot otherwise express.  mmc5983ma declares
      * spi_inc_mask = 0, meaning "this part walks the address by itself".  Bind
      * the same address INC_NEVER — a part that needs an explicit bit, which is
      * what a wrong declaration would amount to — and the identical driver code

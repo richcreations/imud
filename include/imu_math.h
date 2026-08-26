@@ -116,7 +116,7 @@ void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
  * inside the read any individual sample was taken, so the midpoint is the
  * best estimate for the burst as a whole.
  *
- * WHY NOT THE MIDPOINT FOR BOTH.  It used to be, and it was right when a
+ * WHY NOT THE MIDPOINT FOR BOTH.  The midpoint is right when a
  * driver's chip_ts for the newest sample came from reading the counter AFTER
  * the drain — that value is "now at t_after", and pairing it with the midpoint
  * split the difference.  Batching the FIFO's own timestamp (1.9.0) changed the
@@ -213,7 +213,7 @@ typedef struct {
  * outrun the read stamp, and `fifo` simply stops filling until the next anchor.
  * Sharing one gate meant `pipe` — the term the daemon controls and can be held
  * to a budget — was withheld for as long as a DIFFERENT histogram stayed short.
- * On the 2026-08-11 bench that was every 40 s run in the matrix.
+ * On the bench that was every 40 s run in the matrix.
  *
  * Both differences are clamped rather than allowed to wrap: an anchor refresh
  * can momentarily put `wall_ns` past the read stamp, and an unsigned underflow
@@ -305,7 +305,7 @@ long imu_mag_stall_ms(int odr_mhz);
 /*
  * Fallback used only where there is nothing to predict -- no interrupt line
  * configured, so no expected arrival to be late against.  Where a watermark
- * IS configured the wait comes from imu_wm_fallback_ms() instead.
+ * IS configured the wait comes from imu_int_fallback_ms() instead.
  */
 /*
  * Samples one drain may take.
@@ -337,7 +337,7 @@ void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);
 /*
  * Finish a sample: calibrate, then rotate board->body.
  *
- * The ORDER is the point, and it used to be the other way round.  imud-cal
+ * The ORDER is the point.  imud-cal
  * reads the driver directly and never applies the mount rotation, so every
  * calibration it writes is expressed in SENSOR axes.  Rotating first and
  * calibrating second subtracts a sensor-frame offset from body-frame data,

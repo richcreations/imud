@@ -326,7 +326,7 @@ int snap_odr_up(const int supported[], int requested)
  * interrupt is not merely unused -- it is suppressed by the thing meant to
  * back it up.
  *
- * Measured: with the old flat 10 ms and the default wm = 64, the ISM330DHCX's
+ * With a flat 10 ms and the default wm = 64, the ISM330DHCX's
  * watermark was reachable at exactly ONE of its ten rates (6664 Hz, where it
  * lands at 9.6 ms). At the other nine the timer always won, and the daemon
  * reported drains=0/1261 e/t on a line that was working perfectly. The
@@ -356,7 +356,7 @@ long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples)
  *
  * The staleness guard in mmc_read() returns 1 for "no new measurement", and the
  * reader treats that as normal and loops -- correctly, because at any rate the
- * poll can outrun the part.  But nothing counted how long it had been going on,
+ * poll can outrun the part.  Without a count of how long it has been going on,
  * so a magnetometer that stopped entirely was indistinguishable from one that
  * was merely early.  Measured: 800 seconds with zero mag samples produced one
  * line in the log, from the fusion aligner at t+5 s, and nothing after.  The

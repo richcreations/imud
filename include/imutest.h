@@ -474,7 +474,7 @@ int imt_rate_dir(double measured, double nominal, double tol);
  * samples this
  * exceeds a 5% tolerance, so a miss smaller than it cannot be told from a
  * rounding boundary -- at 1 Hz over 5 s the only readings are 1.0 and 1.2 Hz.
- * Used to SKIP such a reading rather than grade it, WITHOUT excusing a gross
+ * SKIPs such a reading rather than grading it, WITHOUT excusing a gross
  * one: a poll loop cannot invent conversions, so a rate hundreds of percent
  * high is still a defect however few samples were expected.
  */
@@ -588,52 +588,33 @@ int imt_ts_collect_burst(imt_ts_acc_t *a, const uint32_t *ts, int n,
  * Grade a full-scale sweep's noise floors against their own MEDIAN, marking
  * every row that sits below `frac` of it IMT_WARN.  Returns how many.
  *
- * Not against the neighbouring row, which is what this replaced.  Sigma across
- * a gyro's ranges is expected to be FLAT on a part whose analogue noise dwarfs
- * its quantisation step, so a single step inflated by a knock on the bench made
- * the NEXT step look like a halving and put the WARN on the innocent row.  It
- * moved between runs -- 52/104/208 Hz in one sweep, 12/52 in another -- which
- * is grading noise, not silicon.  The median tolerates one bad row, and a range
- * whose sensitivity constant really is wrong reads low against ALL the others
- * at once, which is what this asks.
+ * Against the median rather than the neighbouring row: sigma across a gyro's
+ * ranges is flat on a part whose analogue noise dwarfs its quantisation step,
+ * so one row inflated by a knock on the bench makes the NEXT row look like a
+ * halving and puts the WARN on the innocent one.  A range whose sensitivity
+ * constant really is wrong reads low against all the others at once.
  *
  * Needs at least 3 rows to have a median worth the name; below that it grades
  * nothing and returns 0.
  */
 /*
- * Does this full-scale sweep's noise floor actually track full scale?
+ * Does this full-scale sweep's noise floor track full scale?
  *
- * imu.fs.gyro's proxy is that the ADC range, and so the noise standard
- * deviation, scales with the full scale -- true only where QUANTISATION
- * dominates the noise floor. Where analogue noise dominates, sigma wanders with
- * the room and says nothing about the sensitivity constants. The check
- * documented that precondition from the start and never enforced it.
+ * imu.fs.gyro's proxy is that the ADC range, and so sigma, scales with full
+ * scale — true only where QUANTISATION dominates the noise floor.  Where
+ * analogue noise dominates, sigma wanders with the room and says nothing about
+ * the sensitivity constants, so this gates that check.
  *
- * Decided by PROPORTIONALITY between the medians of the bottom and top halves
- * of the sweep: a 32x span of full scale produces roughly a 32x span of sigma
- * under the quantisation model and about 1x under analogue noise. Those differ
- * by more than an order of magnitude, which is what makes the question
- * decidable on noisy data. The bar is half the span in log terms.
+ * Decided by proportionality between the medians of the sweep's bottom and top
+ * halves: a 32x span of full scale gives roughly 32x of sigma under the
+ * quantisation model and about 1x under analogue noise, so the two differ by
+ * more than an order of magnitude and the question stays decidable on noisy
+ * data.  The bar is half the span in log terms.  Medians of halves rather than
+ * extremes or a spread statistic, because both are decided by a single row.
  *
- * Medians of halves, not extremes and not a spread statistic, because both are
- * decided by one row. Two earlier attempts failed there and are worth naming so
- * they are not tried again:
- *
- *   - CV(sigma) against CV(sigma/fs): a single near-zero step inflates
- *     CV(sigma), so the gate OPENED, and that same row then sat below half the
- *     median and WARNed. One bad measurement unlocked the door and set off the
- *     alarm.
- *   - counting rises: with 6 ranges there are 5 steps, so "4 of 5 rose" happens
- *     by chance 6 times in 32. imu.fs.gyro still fired on 2 of 10 bench rungs.
- *
- * Measured on the reference ISM330DHCX at 104.125 Hz: 0.0061, 0.0028, 0.0060,
- * 0.0053, 0.0039, 0.0040 rad/s over 125..4000 dps. Half-medians 0.0060 against
- * 0.0040 -- a ratio of 0.67 where the model needs 2.83.
- *
- * The honest limit, which is the reason for not grading rather than an
- * oversight: on such a part a wrong sensitivity constant and a quiet interval
- * look identical here. Absolute gyro scale is verified by the guided rotation
- * phase, which is what the check's note has always pointed at.
+ * The limit is deliberate rather than an oversight: on such a part a wrong
+ * sensitivity constant and a quiet interval look identical here, so absolute
+ * gyro scale is verified by the guided rotation phase instead.
  */
 bool imt_fs_scales_with_range(const imt_fs_row_t *rows, int n);
 

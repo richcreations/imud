@@ -20,8 +20,8 @@
  * the first is applied here; see the note at the bottom for why.
  *
  * WHY IT IS WORTH A BUS READ.  The reference ISM330DHCX measured 4.05% fast on
- * a Pi 5 (2026-08-10), which is well inside ST's tolerance and entirely normal
- * silicon — but 25000 ns/tick was wrong for it by 1000 ns, and imu.c had no way
+ * a Pi 5, which is well inside ST's tolerance and entirely normal
+ * silicon — but 25000 ns/tick is wrong for it by 1000 ns, and imu.c has no way
  * to know until ts_anchor_t had two anchors 20 s apart.  The part could have
  * been asked at init and answered +27 in one byte.
  *
@@ -31,7 +31,7 @@
  * WHAT CAN GO WRONG, AND WHAT CANNOT.  A wrong tick period is worse than a
  * typical one, because every per-sample dt is scaled by it — so the failure
  * modes are worth being explicit about.  A failed read returns 0, meaning
- * "keep the declared value", which is exactly what shipped before this existed.
+ * "keep the declared value".
  * An out-of-range result is NOT separately guarded, because the field cannot
  * produce one: int8 x 0.15% bounds the correction to [-19.2%, +19.05%] by
  * construction, and a range check outside that would be a branch no input can
@@ -75,7 +75,7 @@ static inline uint32_t st_freq_fine_tick_ns(const imud_bus_t *bus,
 
 /*
  * NOT DONE HERE: correcting the effective ODR by the same factor.  It is the
- * same physical fact and §9.38 gives the formula, but actual_odr_hz() is also
+ * same physical fact and §9.38 gives the formula, but the resolved ODR is also
  * the number config validation, the MEKF tuning, the sample-latency publish
  * gates and the generated documentation tables all key off, and it is resolved
  * before the bus is open.  Making it per-part is a separate decision with a

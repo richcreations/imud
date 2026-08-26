@@ -22,7 +22,7 @@
  * Stopping: pthread_kill(SIGTERM) at the daemon's own thread, which is what
  * production does. An earlier version set bridge_stop from the test thread
  * instead, reasoning that it was the same exit path with no signal delivery to
- * race with. That was wrong twice over: `volatile sig_atomic_t` is the correct
+ * race with. Two things matter: `volatile sig_atomic_t` is the correct
  * idiom for a signal HANDLER (same thread, async-signal-safe) and not for a
  * cross-thread write, so TSan reported it as a data race — correctly — and
  * setting the flag directly skipped bridge_install_signals()'s handler, which

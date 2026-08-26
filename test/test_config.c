@@ -649,7 +649,7 @@ static void test_load_rejects_too_long_string(void)
     remove(path);
 
     /*
-     * A value that fits but whose ~/ expansion does not.  expand_tilde used to
+     * A value that fits but whose ~/ expansion does not.  expand_tilde must not
      * decline silently and copy_str could not see it, because it measured the
      * unexpanded value: the field kept a literal "~/..." that is then opened
      * relative to the cwd.  Same class as the truncation above.
@@ -1490,7 +1490,7 @@ static void test_bridge_output_enables(void)
 /*
  * A value that does not fit is a SILENT collision, not a truncation warning:
  * four char[8] fields (highrate_coord_frame, mqtt_units, influx_transport,
- * influx_units) all used to receive "distinct-NN" and all ended up holding
+ * influx_units) would all receive "distinct-NN" and all end up holding
  * "distinc". The whole point of this helper is one distinct value per field —
  * the two-sided memcmp partition test can pass while the code under test has
  * swapped two fields that hold the same bytes. So assert the fit at the write.

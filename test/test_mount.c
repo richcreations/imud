@@ -175,7 +175,7 @@ static void test_preset_pitch_90(void)
 }
 
 /*
- * An unrecognised preset name used to be a warning that still left
+ * An unrecognised preset name must not be a warning that leaves
  * mount_set = true with whatever Euler angles were already in the struct —
  * i.e. the daemon ran with a silently wrong mount rotation biasing every
  * sample. It must now be a hard parse error.
@@ -194,7 +194,7 @@ static void test_preset_unknown_is_fatal(void)
 }
 
 /*
- * A short array used to be accepted silently (only a completely empty one
+ * A short array must not be accepted silently (only a completely empty one
  * errored), leaving the missing angles at their defaults — e.g. "[0, 0]"
  * would quietly mean yaw = 0 rather than being flagged as incomplete.
  */

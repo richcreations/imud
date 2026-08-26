@@ -313,38 +313,22 @@ static void q_from_rotvec(const float v[3], float dq[4])
 /*
  * Gross-outlier reject threshold, as a multiple of the χ² cap γ.
  *
- * The Huber cap already bounds the influence of any single update smoothly;
- * this gate exists only to discard measurements that cannot be sensor noise
- * at all — a fault, a slam, a corrupted read. It must therefore sit far
- * enough out that ordinary seaway motion never reaches it.
+ * The Huber cap already bounds any single update's influence smoothly; this
+ * gate exists only to discard measurements that cannot be sensor noise at all
+ * — a fault, a slam, a corrupted read — so it must sit far enough out that
+ * ordinary seaway motion never reaches it.  Too close and it rejects routine
+ * wave-orbital motion, starving the filter of the corrections it needs; the
+ * resulting drift then produces larger innovations, which trips the gate more
+ * often still.
  *
- * It did not. At the original 9γ the gate threw away a quarter of the 3-D
- * benchmark's accel updates — that is routine wave-orbital motion, not
- * outliers — starving the filter of exactly the corrections it needed. The
- * resulting drift produced larger innovations, which tripped the gate more
- * often: a positive feedback that made the filter both less accurate and
- * less self-consistent. Measured over the 12-seed benchmark, as
- * 3-D / yaw-only pairs (attitude RMS, NEES(trace), accel NIS, reject rate):
+ * 25γ is where the benefit saturates: far enough out that a steady seaway
+ * never trips it, close enough in to catch a genuine fault.  In
+ * innovation-distance terms it rejects beyond 5x the cap radius.
  *
- *    9γ   6.85° / 3.57°   NEES 28.9 / 21.1   NIS 30.7 / 27.3   rej .262/.043
- *   16γ   5.45° / 2.32°   NEES 16.7 /  7.9   NIS 22.3 / 25.2   rej .012/.000
- *   25γ   5.65° / 2.31°   NEES 18.3 /  7.8   NIS 19.3 / 25.2   rej .007/.000
- *   64γ   5.62° / 2.31°   NEES 18.3 /  7.8   NIS 16.7 / 25.2   rej .000/.000
- *
- * Widening it improves attitude RMS by 17% (3-D) and 35% (yaw-only) and
- * roughly halves NEES, at no cost anywhere — and it collapses the benchmark's
- * worst-draw spread (3-D 13.7° → 7.0°, yaw 9.6° → 2.3°), which §10.8 had
- * attributed to scenario luck.
- *
- * The benefit saturates by 25γ, which is where this sits: far enough out that
- * a steady seaway never trips it, close enough in to still catch a genuine
- * fault. In innovation-distance terms it rejects beyond 5× the cap radius,
- * where the old value rejected beyond 3×.
- *
- * Note what this does NOT fix: NIS stays around 20–25, so the measurement
- * model really is over-confident, as docs/math.md §4.7 sets out. Widening the gate
- * removes the damage the gate itself was doing; it does not make Ra right.
- * See the Ra discussion in docs/math.md §4.7 for why no scalar value can be.
+ * What this does NOT do is make Ra right.  NIS stays around 20-25 with the
+ * gate wide, so the measurement model really is over-confident, as
+ * docs/math.md §4.7 sets out — widening the gate removes the damage the gate
+ * itself was doing, and no scalar Ra can fix the rest.
  *
  * Overridable for the sweep in test_fusion.c; see docs/math.md §4.7.
  */
@@ -562,39 +546,17 @@ static int eskf_update(mekf_t *f,
      * innovation so its effective distance equals the gate) and only gross
      * outliers (GROSS_REJECT_MULT × the gate) are rejected outright.
      *
-     * KNOWN INCONSISTENCY (measured, deliberately left in place): shrinking ν
-     * alone leaves K — and hence the Joseph update below — at full confidence,
-     * so P contracts as if the measurement had been fully trusted. Making the
-     * covariance consistent with the applied attenuation was tried three ways
-     * (HUBER_VARIANT 1/2/3 above) and measured across the 12-seed wave
-     * benchmark. Re-measured after the GROSS_REJECT_MULT fix, since the
-     * earlier numbers were taken while the reject gate was corrupting every
-     * run (3-D / yaw-only attitude RMS, NEES(trace), accel NIS):
-     *
-     *                            3-D att   yaw att   NEES 3D/yaw   NIS 3D/yaw
-     *   current (this code)        5.65°     2.31°     18.3 /  7.8   19.3 / 25.2
-     *   K ← w·K (exact Joseph)     8.85°     3.09°     39.9 / 12.4   17.0 / 28.5
-     *   R → R/w  (IRLS)            7.79°     5.57°     31.5 / 40.5   15.1 / 43.3
-     *   R → R/w²                   8.48°     4.74°     35.0 / 27.9   18.2 / 36.3
-     *
-     * Every variant is still BOTH less accurate and less self-consistent —
-     * the opposite of the intent — and by a wider margin than before.
-     *
-     * The earlier root-cause note here blamed an over-optimistic Ra and said
-     * the consistent form could not help "until the measurement model is
-     * retuned against real rough-water captures". Ra IS over-optimistic (NIS
-     * ≈ 20 above), but that is not why these fail, because retuning Ra does
-     * not rescue them either — the whole family is worse across the sweep.
-     * The actual reason is that the cap is a robustness device, not a
-     * statistical one. Contracting P by the attenuated gain is "correct" in
-     * the sense that it records having learned less from that sample — but
-     * the consequence is a larger P, hence a larger gain on the FOLLOWING
-     * samples, which in a seaway are contaminated by the same wave. The
-     * inconsistency is doing useful work: it holds the gain down exactly when
-     * the measurements are least trustworthy. Making the bookkeeping honest
-     * removes that, and the extra wave energy admitted costs far more than
-     * the covariance error it fixes. It stays.
-     * See docs/math.md §4.5.
+     * The cap is deliberately inconsistent with the covariance: shrinking ν
+     * alone leaves K — and hence the Joseph update below — at full
+     * confidence, so P contracts as if the measurement had been fully
+     * trusted. Do not "fix" that. Contracting P by the attenuated gain
+     * instead leaves a larger P, hence a larger gain on the FOLLOWING
+     * samples, which in a seaway are contaminated by the same wave; the
+     * inconsistency holds the gain down exactly when the measurements are
+     * least trustworthy. All three consistent forms (HUBER_VARIANT 1/2/3
+     * above) measure both less accurate and less self-consistent across the
+     * wave benchmark, and retuning Ra does not rescue them. The cap is a
+     * robustness device, not a statistical one. See docs/math.md §4.5.
      *
      * innov_weight_ema / innov_reject_ema below expose how hard the cap is
      * being leaned on; nis_accel_ema / nis_mag_ema expose whether the noise
@@ -872,7 +834,7 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
      * Both rates come from the filter, not from cfg: f->dt and f->mag_odr_hz
      * hold the rates the drivers actually programmed, which is not necessarily
      * what cfg->{imu,mag}_odr_hz asked for. Reading cfg->mag_odr_hz here is
-     * what used to size Rm for a rate the magnetometer was not running at.
+     * which otherwise sizes Rm for a rate the magnetometer is not running at.
      * Both odr_hz keys are [restart], so neither can go stale on SIGHUP.
      */
     float dt         = f->dt;
@@ -1600,11 +1562,8 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
          * the platform is quiescent (acc_quiet_ema), because the samples that
          * clear the |a| band in a seaway are wave-phase correlated and
          * learning from them walks the reference away rather than toward the
-         * truth — measured, and recorded at that gate. So a dip error simply
-         * persists, and in this mode it shows up as a CONSTANT roll/pitch
-         * bias that P has no term for (12-seed benchmark: +0.86° of dip error
-         * → 1.20° attitude RMS at NEES(strict) 12.8, against 0.84°/0.22 when
-         * the dip reference is exact).
+         * truth. So a dip error simply persists, and in this mode it shows up
+         * as a CONSTANT roll/pitch bias that P has no term for.
          *
          * The honest response is to tell P how much that channel is worth. A
          * dip error dδ rotates m_ref about â_NED = ĥ_hor × ê_D, so in body
@@ -1859,7 +1818,7 @@ void mekf_reconfigure(mekf_t *f, const imud_config_t *cfg)
      * forgotten in the other. Note this resets accel_skip_lo/hi to the
      * non-engine threshold; the fusion thread re-asserts the engine-mode
      * window on the next sample (imu.c), so the two cannot be left in the
-     * half-engine state this used to produce on SIGHUP.
+     * half-engine state a SIGHUP would otherwise leave behind.
      */
     bool was_enabled = f->wave_enabled;
     mekf_derive_tuning(f, cfg);

@@ -98,7 +98,7 @@ void mon_parse_nmea(mon_state_t *st, const char *buf, size_t len)
  * unreachable in the shipped program — mon_main's only call site passes a
  * 32-byte buffer against a 17-byte maximum — but calling this directly from a
  * test is exactly what would reach it, so the length is tracked forward
- * against sz instead.  Output is unchanged wherever the old code was in
+ * against sz instead.  Output is unchanged wherever a length-driven form was in
  * bounds.
  */
 void mon_flag_str(uint16_t flags, char *buf, size_t sz)

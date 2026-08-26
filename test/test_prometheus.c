@@ -270,7 +270,7 @@ static void test_http_request_shapes(void)
 
 /*
  * The finding itself: a client that connects and sends nothing must not be
- * able to hold the loop. Before this, serve_scrape() did a blocking recv()
+ * able to hold the loop: a blocking recv() in serve_scrape()
  * under a 2 s SO_RCVTIMEO, so the stream reader stopped for 2 s per
  * iteration; the header comment claimed the opposite.
  */
@@ -355,7 +355,8 @@ static void test_http_drop_paths(void)
     end(fb);
 }
 
-/* The adopted fd must be non-blocking (else service() would stall, which is
+/* The adopted fd must be non-blocking (else serving a scrape would stall,
+ * which is
  * the whole finding) and close-on-exec, and the page write must be
  * able to put it back to blocking for bridge_write_all. */
 static void test_http_fd_flags(void)

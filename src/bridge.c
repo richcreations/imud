@@ -7,7 +7,7 @@
 /*
  * bridge.c — shared scaffolding for the bridge daemons (see bridge.h)
  *
- * Every function body here is the verbatim block the five bridges used to
+ * Every function body here is the block the five bridges would otherwise
  * carry individually, with the bridge-specific strings routed through
  * bridge_info_t / tag parameters. Behavior and output must stay
  * byte-identical to the pre-extraction bridges.

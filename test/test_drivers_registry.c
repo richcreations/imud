@@ -19,7 +19,7 @@
  * Needs no --wrap and no gpiod, but it is NOT cross-platform: it links every
  * driver, and each of those reaches <linux/i2c.h> through i2c_io.h, so it
  * builds only on Linux (the container, or CI).  The claim that it "builds and
- * runs on the dev box too" was here and was wrong.
+ * runs on the dev box too" does not hold.
  */
 
 #include <stdio.h>

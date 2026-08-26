@@ -748,7 +748,7 @@ static void test_missing_value(void)
  * diagnostic and goes to stderr with rc -1 (exit 1).  Neither may leak onto
  * the other stream.
  *
- * This is the assertion the old single-fd capture structurally could not
+ * This is the assertion a single-fd capture structurally cannot
  * make.  It matters twice over: help2man builds the man pages from stdout, so
  * usage on stderr yields an empty OPTIONS section; and a script doing
  * `imud-status > report.txt` must not find a usage dump in the file when the

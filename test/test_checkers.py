@@ -392,6 +392,19 @@ CASES = [
      sub(r'^  kind     = "behaviour"', '  kind     = "improvement"'),
      "improvement"),
 
+
+    # ── check-comment-refs ───────────────────────────────────────────────────
+    # A comment naming a function that does not exist -- what a rename leaves
+    # behind once the code has been updated and the prose has not.
+    ("check-comment-refs", "src/imu.c",
+     sub(r'\bimu_finalise_sample\(\)', 'imu_finalise_sample_gone()'),
+     "imu_finalise_sample_gone()"),
+
+    # A file:line citation pointing past the end of the file it names.
+    ("check-comment-refs", "test/test_config.c",
+     sub(r'imu_math\.c:265', 'imu_math.c:999999'),
+     "imu_math.c:999999"),
+
 ]
 
 

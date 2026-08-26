@@ -7,7 +7,7 @@
 /*
  * cli.h — command-line parsing for the five non-bridge entry points
  *
- * imud, imud-cal, imud-mon, imud-status and imud-imutest each used to parse
+ * imud, imud-cal, imud-mon, imud-status and imud-imutest would otherwise each parse
  * argv inside their own main(), where no test binary could reach it — while
  * SECURITY.md claimed the CLI parsers were unit-tested.  They live here now,
  * as pure functions over (argc, argv) with no I/O beyond the usage/error text

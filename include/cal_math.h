@@ -134,7 +134,7 @@ int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2]);
  * Feed the same centered values as ellipse_add.  Zero-initialising the
  * accumulator is enough: the first point seeds both bounds, so the running
  * min/max can never be contaminated by a value on a different scale.  (It
- * was: the caller used to seed from a RAW sample and then compare centered
+ * was: seeding from a RAW sample and then comparing centered
  * ones against it, which inflated the half-range by the hard-iron offset.)
  */
 typedef struct {
@@ -162,7 +162,7 @@ int extent_half(const extent_accum_t *a, double half[3]);
  * half-range onto the fitted sphere radius.  An axis covering less than
  * CAL_SI_MIN_SPAN of the radius is left at 1.0.
  *
- * The threshold used to be 0.3, which admitted corrections up to 3.3x.  No real
+ * At 0.3 the threshold would admit corrections up to 3.3x.  No real
  * soft iron is 3.3x; that is the fit stretching an axis to cover data that was
  * never taken.  A level swing — the procedure imud-cal mag actually asks for,
  * and the only one a vessel or a ground robot can perform — sweeps no Z extent

@@ -126,7 +126,7 @@ static struct {
  * The next burst's oldest sample follows the previous burst's newest by ONE
  * sample period -- the FIFO queues what the reader missed, so starvation makes
  * bursts bigger, not later.  Eight periods is loose enough for scheduler jitter
- * and tight enough to catch the class of bad read that used to get through: at
+ * and tight enough to catch the class of bad read it exists for: at
  * 104 Hz that is 3072 ticks against the 65,706 one landed at.  Overflow is the
  * only legitimate break in the chain, and the guard is reset on it instead.
  */
@@ -143,7 +143,7 @@ static struct {
  * 52.06, 26.03 and 13.016.  Every label matches its rung to better than 0.4%
  * except the last, which the table calls 12.5 where the divider gives 13.016.
  *
- * Measured on the reference part 2026-08-20, over 1,624 samples in 119.8 s:
+ * Measured on the reference part over 1,624 samples in 119.8 s:
  * every rung lands on 6664/2^n scaled by this die's INTERNAL_FREQ_FINE trim
  * (+27 steps, x1.0405) to within 0.4%, the bottom rung included -- 13.55 Hz
  * predicted, 13.55 measured, against 13.03 if the rung really were 12.5.
@@ -186,7 +186,7 @@ static uint8_t odr_encode(int mhz)
  * The loop bound and the clamp both derive from the table, so growing it is a
  * one-line edit.  They did not, before 3332 and 6664 were added, and the
  * hand-written "< 7" plus a literal fallthrough is exactly the shape that
- * silently keeps returning the old ceiling when a rung is appended.
+ * silently keeps returning a stale ceiling when a rung is appended.
  */
 static int odr_actual(int mhz)
 {
@@ -346,7 +346,7 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      *
      * Production behaviour is unchanged: both callers pair reset() with
      * init(), and SW_RESET leaves FIFO_MODE at its 000 default, so this write
-     * is a no-op on that path.  What it buys is that the guarantee no longer
+     * is a no-op on that path.  What it buys is that the guarantee does not
      * depends on the caller remembering to reset first.
      *
      * No settle wait — the mode bits do not self-clear, and §6.5 has the part
@@ -470,7 +470,7 @@ static int ism_read(const imud_bus_t *bus,
      * Read many FIFO words per transaction, not one.
      *
      * This was one bus_burst_read() of 7 bytes per word, so a 37-set drain was
-     * 74 ioctls.  Measured on a Pi 5 at 6664 Hz: ~42 us per transaction, 73
+     * 74 ioctls.  At 6664 Hz that is ~42 us per transaction, 73
      * words per drain, 3.1 ms of transfer per drain at 216 drains/s -- the
      * reader spent about 0.67 s of every second BLOCKED in ioctl while using
      * 17 % of one core.  Not compute-bound, latency-bound: which is why extra
@@ -602,7 +602,7 @@ static int ism_read(const imud_bus_t *bus,
                  * newest sample was taken some time before this read
                  * completed.  That lag varies with bus timing and scheduler
                  * jitter, so two bursts can overlap and chip_ts can go
-                 * backwards across the seam — measured on a Pi 5 at 2-4
+                 * backwards across the seam at 2-4
                  * reversals per 5 s.  chip_ts.h holds that correction.
                  *
                  * Reached whenever no timestamp word landed in this drain,
@@ -631,7 +631,7 @@ static int ism_read(const imud_bus_t *bus,
                  */
                 /*
                  * Both directions, and refuse either.  A read far
-                 * BEHIND the previous burst used to be passed
+                 * BEHIND the previous burst was once passed
                  * through as a counter reset — see chip_ts.h for
                  * why that premise does not hold inside a run, and
                  * for the nine samples it sent out near 2^32.
@@ -735,20 +735,10 @@ const imu_ops_t ism330dhcx_ops = {
      * SPI controller (spidev0.0 and 0.1 on the reference rig) and a controller
      * cannot idle its clock at two levels at once, so they must agree.
      *
-     * This comment previously said "the MMC5983MA requires mode 0". Its
-     * datasheet says the opposite -- "SCK ... is stopped high when CS is high",
-     * which is CPOL=1, mode 3 -- and the mode-0 claim appears to trace to
-     * SparkFun's Arduino library rather than to the part. The original choice
-     * was also made while the bench wiring fault was corrupting 2-12 % of
-     * reads, so the read/write failures that prompted it are not evidence
-     * about SPI mode at all.
-     *
-     * Re-tested on repaired wiring, BOTH parts in mode 3: the magnetometer
-     * delivered 91.7 samples/s at 6664 Hz against 103 in mode 0, and the
-     * low-clock magnetometer fault (see mmc5983ma.c) was unchanged -- 0.0
-     * samples/s with the IMU at 1 and 2 MHz either way. So mode 0 stands, now
-     * on measurement rather than on a misattributed requirement, and mode 3 is
-     * ruled out as an explanation for that fault.
+     * DS13012 permits either, and the MMC5983MA's datasheet points at mode 3
+     * ("SCK ... is stopped high when CS is high", CPOL=1), so the choice rests
+     * on measurement: with both parts in mode 3 the magnetometer delivers 92
+     * samples/s at 6664 Hz against 103 in mode 0.
      */
     .bus_caps         = { .spi_capable = true, .spi_mode = 0,
                           .spi_max_hz = 10000000, .spi_inc_mask = 0 },

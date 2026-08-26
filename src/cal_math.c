@@ -240,7 +240,7 @@ int cal_accel_fit(const float meas[3][2][3], float offset[3], float scale[3],
         /*
          * Gravity has to have landed on the axis we asked for.  If it did
          * not, the board was in the wrong orientation and the pair says
-         * nothing about axis k — which is exactly the failure that used to
+         * nothing about axis k — which is the failure that would
          * pass silently as scale = 1.0.
          */
         int dom_up   = dominant_axis(up);

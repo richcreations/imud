@@ -72,7 +72,7 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * Edge RATES, in Hz, not counts.
  *
  * A real interrupt line produces edges at a rate, so a longer window yields
- * more of them. The stub used to return a fixed count whatever window it was
+ * more of them. A stub returning a fixed count whatever window it was
  * given, which meant any change to how a window is chosen silently changed
  * what the tests measured -- and briefly talked me out of a correct design
  * because widening a window "broke" a test that a faithful stub would not have
@@ -644,7 +644,7 @@ static void test_bringup_good(void)
 /*
  * The sweep must never read a RESERVED or undefined address.
  *
- * It used to walk lo..hi blind, skipping only the FIFO port, which put about
+ * Walking lo..hi blind, skipping only the FIFO port, would put about
  * 60 reserved addresses in every snapshot and ~420 reserved reads in every run
  * once the volatile scan and the idempotency compare are counted. That is not
  * harmless on the reference ISM330DHCX: the part reads cleanly at power-up and
@@ -698,7 +698,7 @@ static void test_sweep_avoids_reserved_registers(void)
 
 /*
  * The AKM magnetometers carry read/WRITE test registers that the vendor marks
- * DO NOT ACCESS, and both regmap entries used to sweep straight across them:
+ * DO NOT ACCESS, and a regmap that sweeps straight across them:
  * hi was 0x1F on the AK8963 and 0x3F on the AK09916, while the parts document
  * registers only to 0x12 and 0x32.  A validation tool that pokes a part's
  * shipment-test registers is worse than no tool, so this pins the exclusions
@@ -753,7 +753,7 @@ static void test_volatile_registers_filtered(void)
      * the scan without perturbing the FIFO level or the timestamp the driver
      * itself reads: STATUS_REG and two gyro output words.
      *
-     * These used to be 0x50 and 0x51, which DS13012 Table 19 marks RESERVED.
+     * Not 0x50 and 0x51, which DS13012 Table 19 marks RESERVED.
      * Using undefined addresses as stand-ins is the same habit that put ~420
      * reserved reads into every run of the tool -- and the sweep now skips
      * them, so the test would have been asserting against addresses nothing
@@ -1479,7 +1479,7 @@ static void test_gravity_and_stuck_axis(void)
     EXPECT(status_of(r, "imu.rest.gravity") == IMT_PASS, "gravity reads 9.807");
     EXPECT(fabs(r->raw.grav_mean - 9.80665) < 0.05, "grav_mean recorded");
     /*
-     * The note's two conversions used to be fed one argument, so the second
+     * Fed one argument for two conversions, the second
      * read off the end of the va_list and a shipped report printed "averaged
      * over 1 s; ratio to true g is 0.000" for a 10 s window at ratio 0.995.
      * Both numbers have to be the real ones.
@@ -1585,7 +1585,7 @@ static void test_gpio_both_branches(void)
  * mag.drdy.rate — the mag rate measured the way the DAEMON gets it.
  *
  * Every other mag check in the tool polls.  The daemon does not; it blocks on
- * the mag interrupt.  On 2026-08-18 that difference was a factor of three on
+ * the mag interrupt.  That difference can be a factor of three on
  * real silicon (105.4 Hz polled, 35 Hz in the daemon) and no check here could
  * see it, because none of them measured the production path.
  *
@@ -1821,7 +1821,7 @@ static void expect_faces_sampled(const imt_report_t *r)
         if (r->raw.face[i].n < 10) thin++;
     EXPECT(thin == 0, "every face collected the 10 samples the sign check needs");
     /*
-     * The mechanism that starved the later faces: the mock's queue used to let
+     * The mechanism that starves the later faces if the mock's queue lets
      * head and tail only advance, so FIFOSZ was a lifetime budget and the six
      * faces shared 292 staged samples between them. Faster machines spent it
      * sooner, which is why it read as a timing flake. Pin it directly.
@@ -1917,7 +1917,7 @@ static void test_faces_good_and_swapped(void)
  * A remap permutes and negates axes, so it cannot change |a|.  When the faces
  * come back at a magnitude that is not gravity -- a board that was moving, or
  * never actually held against anything -- the dominant axis is not a rotation
- * of g and carries no information about the remap.  imud-imutest used to
+ * of g and carries no information about the remap.  imud-imutest must not
  * report that case as "the chip-to-board axis remap is wrong", on four faces
  * reading about 0.1 m/s^2, which is a confident instruction to go rewrite code
  * that is correct.  It must skip instead, and it must not fit a calibration
@@ -2148,7 +2148,7 @@ static void test_spin_frame_agreement(void)
  * Hard iron moves the swept locus off the origin.  Once the offset exceeds the
  * field radius the locus no longer encloses the origin, and a heading taken
  * about the ORIGIN stops winding: it oscillates through a limited arc and the
- * total comes out near zero however far the board turned.  The check used to
+ * total comes out near zero however far the board turned.  The check must not
  * read that near-zero total as a negative ratio and report "an X or Y sign is
  * inverted in the magnetometer's remap" -- a confident diagnosis of a defect
  * that was not there.  It happened twice on the reference rig, at offsets of
@@ -2156,7 +2156,7 @@ static void test_spin_frame_agreement(void)
  *
  * Taking the heading about the CENTRE of the locus, as the coverage map has
  * always done, makes it wind again.  Offset 80 against radius 45 here, so the
- * origin is well outside the circle and the old code cannot pass.
+ * origin is well outside the circle, which an uncentred heading cannot pass.
  */
 static void test_spin_hard_iron_still_tracks(void)
 {
@@ -2280,7 +2280,7 @@ static void test_report_and_exit_codes(void)
         EXPECT(strstr(buf, "PASS") != NULL, "reports statuses");
 
         /*
-         * Appendix numbering must not skip.  5.6 used to be emitted only when
+         * Appendix numbering must not skip.  Emitting 5.6 only when
          * the mag diff had rows, so a part whose control registers do not read
          * back left a hole between 5.5 and 5.7 that read as a missing section.
          */
@@ -2411,9 +2411,9 @@ static void stage_clean_report(imt_report_t *r, bool imu_exp, bool mag_exp)
  * A fast oscillator and a dropped counter wrap produce deviations of the same
  * magnitude in opposite directions, and only one of them is a defect: since
  * 1.8 the daemon measures the counter's real period per anchor, so a part
- * running fast is absorbed, while time that has gone missing cannot be. The
- * 1.041 the Pi 5 bench reported on the reference ISM330DHCX is the case that
- * used to warn and now must not.
+ * running fast is absorbed, while time that has gone missing cannot be.  A
+ * ratio of 1.041 — a few percent fast — is expected silicon behaviour and
+ * must not warn.
  */
 /*
  * The SET/RESET split. Pure arithmetic, so it is asserted directly rather than
@@ -2430,7 +2430,7 @@ static void test_degauss_split(void)
 
     double field[3], offset[3];
 
-    /* The case the check exists for, and the 2026-08-15 bench numbers it was
+    /* The case the check exists for, and the bench numbers it was
      * written against: a ~50 uT field buried under a ~1100 uT bridge offset.
      * Both halves read far out of range; only the split says which is which. */
     const double vS[3] = { 1130.0,  -30.0,  1150.0 };
@@ -2504,7 +2504,7 @@ static void test_chipts_accounting(void)
 
     /*
      * A zero stamp is what ism330dhcx.c and lsm6dso.c leave across a whole
-     * burst when the post-drain timestamp read fails. Comparing it used to
+     * burst when the post-drain timestamp read fails. Comparing it would
      * score a reversal going in and then hand the next real sample a delta of
      * most of the counter coming out — which imu.chipts.rate takes the median
      * of, so one failed register read moved two checks.
@@ -2664,7 +2664,7 @@ static void test_mag_rate_names_the_direction(void)
     imt_report_t *r = run(&cfg, &o);
 
     /* The mock answers every poll, so the measured rate lands above the
-     * configured one -- that is the case the wording used to get backwards. */
+     * configured one -- the case the wording most easily gets backwards. */
     if (r->raw.mag_rate_hz > (double)r->mag_eff_odr_mhz * 1e-3) {
         EXPECT(!note_contains(r, "mag.rate", "low"),
                "a rate above nominal is never described as low");
@@ -2697,11 +2697,10 @@ static void test_mag_rate_names_the_direction(void)
 /*
  * A full-scale sweep is graded against the median of its own rows.
  *
- * The pairwise form this replaced graded a transient: sigma across a gyro's
+ * Against the median rather than the preceding row: sigma across a gyro's
  * ranges is expected to be flat, so one step inflated by a knock on the bench
- * made the NEXT step read as a halving and the innocent row carried the WARN.
- * It moved between runs on the reference part -- 52/104/208 Hz in one sweep,
- * 12/52 in another -- which is the signature of grading noise.
+ * makes the NEXT step read as a halving and puts the WARN on the innocent
+ * row.
  */
 static void fs_set(imt_fs_row_t *r, int fs, double sigma)
 {
@@ -2717,14 +2716,14 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
  * the fill, which would dominate this suite's runtime. What changed is the
  * DECISION, and that is here. Bench coverage for the loop is the ODR ladder on
  * the reference part, where 12 and 26 Hz are the rates that cannot fill in the
- * window and used to WARN for it.
+ * window.
  */
 /*
  * imu.bus.integrity's decision table.
  *
  * The loop itself is exercised on the PASS path by every mock run; what is
  * worth pinning is the grading, and specifically that it has NO tolerance
- * band.  It used to WARN below 0.5%, which let a real defect read as an
+ * band.  A tolerance band would let a real defect read as an
  * acceptable rate: on the reference rig the check sat at a few tenths of a
  * percent and was waved past for a whole bench session.  There is no rate low
  * enough to be fine, because the value compared against is hard-wired and the
@@ -2734,8 +2733,8 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
 /*
  * The register imu.bus.integrity compares against must be an INVARIANT.
  *
- * It used to read INTERNAL_FREQ_FINE (0x63) on the ST parts, on the reasoning
- * that a factory trim is something nothing writes.  Measured on the reference
+ * A factory trim is not invariant, so INTERNAL_FREQ_FINE (0x63) cannot be
+ * the hammered byte.  Measured on the reference
  * ISM330DHCX, that register reads 0x1B while the part runs and 0x1A with the
  * sensors powered down -- it reports the trim of an oscillator that can be
  * switched off.  The check scored the difference as bus corruption and failed
@@ -2765,7 +2764,7 @@ static void fs_set(imt_fs_row_t *r, int fs, double sigma)
 /*
  * The daemon-conflict guard must check BOTH sockets.
  *
- * It used to probe only the configured one. A bench config naming a private
+ * Probing only the configured one is not enough: a bench config naming a private
  * path -- socket = "/tmp/imud-bench.sock" -- therefore connected to nothing,
  * concluded no daemon was running, and allowed the run, while the installed
  * daemon sat on the default path draining the same FIFO. Every measurement
@@ -2923,7 +2922,7 @@ static void test_bus_integrity_uses_an_invariant(void)
         snprintf(msg, sizeof msg, "%s identity reads 0x%02X", id[i].drv, id[i].val);
         EXPECT(have && val == id[i].val, msg);
 
-        /* The trap this replaced: never grade against a trim register. */
+        /* Never grade against a trim register. */
         snprintf(msg, sizeof msg, "%s does not compare against 0x63", id[i].drv);
         EXPECT(!have || reg != 0x63, msg);
     }
@@ -2941,11 +2940,9 @@ static void test_bus_integrity_uses_an_invariant(void)
  * imt_field_status grades whether a magnetometer is WORKING, not whether it is
  * CALIBRATED.
  *
- * It used to demand Earth's 25-65 uT at rest and again during the spin. That
- * grades the installation: hard iron and the AMR bridge's own offset move |B|
- * by tens of uT, and the reference rig reads ~67 uT raw with the sensor as far
- * from metal as it can get. Every cell of a 70-cell matrix WARNed on a
- * correctly-working sensor, which is how a check becomes noise.
+ * Demanding Earth's 25-65 uT would grade the installation instead: hard iron
+ * and the AMR bridge's own offset move |B| by tens of uT, and a clean bench
+ * rig reads ~67 uT raw with the sensor as far from metal as it can get.
  *
  * What a DRIVER can get wrong moves |B| by a factor -- 16-bit data read as
  * 18-bit is 4x, a saturated bridge pins at full scale, a decode fault is
@@ -3027,7 +3024,7 @@ static void test_overflow_status(void)
     EXPECT(imt_overflow_status(-1, true) == IMT_FAIL,
            "likewise while still filling");
 
-    /* The pair that used to be one answer. */
+    /* Graded apart, not as one answer. */
     EXPECT(imt_overflow_status(0, false) == IMT_WARN,
            "at capacity and still rc 0: the driver is not surfacing the bit");
     EXPECT(imt_overflow_status(0, true) == IMT_SKIP,
@@ -3040,7 +3037,7 @@ static void test_overflow_status(void)
 /*
  * imu.fs.gyro's precondition: does sigma actually track full scale?
  *
- * Decided by monotonicity, because the spread statistic this replaced was a
+ * Decided by monotonicity rather than a spread statistic, which is a
  * coin flip. Comparing CV(sigma) with CV(sigma/fs) let ONE degenerate step
  * open the gate -- a near-zero sigma inflates CV(sigma) -- and that same row
  * then sat below half the median and WARNed. One bad measurement both unlocked

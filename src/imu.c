@@ -252,7 +252,7 @@ static void release_gpio_line(gpio_line_h *line)
 
 /*
  * imud-imutest waits on an interrupt by calling these, rather than carrying a
- * second copy of the libgpiod v1/v2 split.  It used to carry one, and every
+ * second copy of the libgpiod v1/v2 split.  Carrying one means every
  * way the copy differed from the daemon showed up as a defect reported against
  * the driver.
  *
@@ -543,7 +543,7 @@ void *ism_reader_thread(void *arg)
          * apart (ANCHOR_MIN_INTERVAL_NS) — and until then it extrapolates from
          * the declared tick.  A part a percent or two off nominal drifts far
          * enough during that window to stop the sample-latency histogram
-         * recording, which is how the 2026-08-11 bench got no latency data out
+         * recording, which yields no latency data at all
          * of six 40 s runs.  25 s clears the 20 s guard with margin, so the
          * measurement is exactly as trustworthy as it was, and costs one extra
          * anchor per daemon lifetime.
@@ -652,7 +652,7 @@ void *mag_reader_thread(void *arg)
      * A latched data-ready is re-armed only by the acknowledge that read()
      * performs, so it yields exactly one rising edge per acknowledge -- and a
      * single missed edge leaves the line asserted for ever with nothing to
-     * clear it.  Measured on an MMC5983MA: after one acknowledge and then a
+     * clear it.  On an MMC5983MA, after one acknowledge and then a
      * silent bus, 0 further edges in 3 s at 20 Hz and 1 at 100 Hz.  So this
      * timeout is not a safety net, it is the only way back.
      *
@@ -740,7 +740,7 @@ void *mag_reader_thread(void *arg)
              * No new measurement, so nothing is pushed -- re-fusing a stale
              * sample would be worse.  That is normal in isolation, because the
              * poll can outrun the part at any rate.  A magnetometer that has
-             * STOPPED returns the same 1 for ever, though, and used to do so in
+             * STOPPED returns the same 1 for ever, though, and would do so in
              * total silence: 800 s with no mag samples produced one line in the
              * log, from the fusion aligner at t+5 s, and nothing afterwards.
              * Say it once per outage, and say when it comes back.
@@ -970,7 +970,7 @@ void *fusion_thread(void *arg)
      * Without a mag calibration every mag sample is marked invalid (see where
      * s.valid is set from cal.has_mag) and mekf_update_mag() returns on
      * !m->valid -- so the yaw update never runs and heading is dead-reckoned.
-     * That is a considerable degradation to leave implicit: measured on a
+     * That is a considerable degradation to leave implicit: on a
      * static bench, heading walked 220 degrees in 24 minutes while pitch and
      * roll held to a tenth of a degree, so nothing else in the output looks
      * wrong while it happens.
@@ -1089,11 +1089,11 @@ void *fusion_thread(void *arg)
         /*
          * Averaging window for the one-shot alignment (align_window_sec).
          *
-         * This used to be a hardcoded ~1 s. That is fine at a dock and poor at
+         * A hardcoded ~1 s is fine at a dock and poor at
          * sea: one second is a fifth of a typical roll period, so the mean is
          * taken over an arbitrary fraction of the cycle and the tilt estimate
          * — hence m_ref's dip and heading anchor — is left wherever the wave
-         * happened to be. Measured over the 12-seed wave benchmark, attitude
+         * happened to be. Over the 12-seed wave benchmark, attitude
          * RMS in the marine (yaw-only) default: 47.7° at 1 s, 2.28° at 2 s,
          * 2.19° at 5 s, flat thereafter. The default is now 5 s.
          */
@@ -1110,7 +1110,7 @@ void *fusion_thread(void *arg)
          * count -- aw_s * odr_hz -- while the mag drain took whatever happened
          * to be sitting in the ring, with the starvation guard further down
          * only catching mag_n == 0.  So the two means were taken over
-         * different spans: measured on a replay, alignment averaged 4165 accel
+         * different spans: on a replay, alignment averaged 4165 accel
          * samples (5 s at the configured rate) against 2521 mag samples, which
          * at ~105 Hz is about 24 seconds of field.  On a platform that turns
          * during those extra 19 seconds the mag mean is smeared over a heading
@@ -1314,7 +1314,7 @@ void *fusion_thread(void *arg)
          *
          * Applied on EVERY sample, not just on a transition: mekf_reconfigure
          * resets accel_skip_lo/hi from the non-engine threshold, so a SIGHUP
-         * while the engine was running used to leave the skip window narrow
+         * while the engine was running would otherwise leave the skip window narrow
          * with Ra_scale still at 4.0 — a half-engine state that persisted
          * until the engine next stopped. Re-asserting is four float stores.
          * Only the log stays edge-triggered. */
@@ -1567,7 +1567,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * spidev sets the mode per chip select, but the controller has a single
      * SCLK and can only idle it at one level -- mode 0 idles low, mode 3 high.
      * Put a mode-3 part on spidev0.0 beside a mode-0 part on spidev0.1 and the
-     * bus corrupts: measured on the reference rig, the daemon opened both
+     * bus corrupts: on the reference rig the daemon opened both
      * parts, settled, and then never produced a sample. Nothing in the log
      * said why, because each device was individually configured exactly as its
      * driver asked.

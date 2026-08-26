@@ -279,11 +279,11 @@ static bool status_line_has(const char *rep, const char *label, const char *want
  *
  * Every "wait for the daemon to have done X" in this suite goes through here,
  * because the two obvious alternatives are both wrong: a fixed sleep couples
- * the test to how fast the machine is (a 1.5 s one here used to be the only
+ * the test to how fast the machine is (a 1.5 s one here is the only
  * thing standing between SIGHUP and the assertion), and connecting to a socket
  * proves nothing, since out_ctx_open binds every listener in step 7 and a bound
  * listener accepts into its backlog with no thread behind it — the whole of
- * the thread-failure finding, which two cases below had been using as a
+ * the thread-failure finding, which two cases below use as a
  * start signal.
  */
 static bool wait_for_status(const char *label, const char *want, int timeout_ms)
@@ -428,7 +428,7 @@ static void test_daemon_refuses_bad_config(void)
  * The end-to-end half of the same contract, for an over-long string value.
  *
  * This is the finding stated as a behaviour rather than a return code: a
- * [stream] socket one character too long used to be truncated to a
+ * [stream] socket one character too long would be truncated to a
  * *different, perfectly valid* path, which the daemon then bound and served,
  * while every bridge and libimud client connected to the path written in the
  * config file and found nothing there.  So the assertion that matters is not
@@ -636,7 +636,7 @@ static void *raise_from_worker(void *arg)
  * How a worker asks the daemon to shut down.
  *
  * imu.c's reader threads escalate to shutdown after three failed chip resets.
- * They used to do it with raise(), which is thread-directed — POSIX defines it
+ * raise() will not do: it is thread-directed — POSIX defines it
  * as pthread_kill(pthread_self(), sig) — and main.c blocks SIGTERM before
  * creating any thread, so the signal went pending on the reader, where main's
  * sigwait could not see it, and was thrown away by the break on the next line.
@@ -745,7 +745,7 @@ static const char *make_replay_capture(void)
 
 /*
  * A replay is a one-shot run over a finite file, so it has to end by itself.
- * It used to log "[sim] playback finished" and then sit in sigwait forever:
+ * Without it the daemon logs "[sim] playback finished" and sits in sigwait forever:
  * the sim driver knew, and nothing carried that up to main.
  *
  * Polling rather than joining outright, for the same reason as the
@@ -798,7 +798,7 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
  * A capture that cannot be opened is not a completed one.  Both playback
  * streams mark themselves done on a failed open, so anything keying off that
  * alone would report success; `imud --replay /typo` would exit 0 having
- * replayed nothing — or, before this, idle forever having said so once.
+ * replayed nothing, rather than idling forever having said so once.
  */
 static void test_daemon_replay_missing_capture_exits_1(void)
 {
@@ -901,7 +901,7 @@ static void test_daemon_nmea_thread_failure_closes_listener(void)
  * The high-rate output is connectionless, so there is no listener to refuse on
  * and the finding's "silent accept" shape does not apply. What closing its fd
  * does fix is the exit: out_ctx_send_shutdown returns early on hirate_fd < 0,
- * so a stream whose thread never ran no longer announces the end of data that
+ * so a stream whose thread never ran does not announce the end of data that
  * never came. Before the fix exactly one FLAG_SHUTDOWN datagram arrived here.
  */
 static void test_daemon_hirate_thread_failure_sends_nothing(void)
@@ -969,7 +969,7 @@ static void make_home_dir(void)
 /*
  * Reload seeded from the RUNNING config, so a key deleted from the file kept
  * its old value while the daemon logged "config reloaded" — the operator
- * removes rate_hz to get the default back and gets the previous rate instead,
+ * removes rate_hz to get the default back and would otherwise get the running rate,
  * and the next restart then disagrees with the reload that preceded it.
  * Seeding from config_defaults() is what makes reload mean what restart means.
  */
@@ -1018,7 +1018,7 @@ static void test_daemon_reload_reverts_a_deleted_key(void)
 
 /*
  * Startup falls back to $HOME when the system config
- * is missing, and reload used to re-read args.config_path regardless. A daemon
+ * is missing, so reload must not re-read args.config_path regardless. A daemon
  * that came up on the fallback therefore answered EVERY SIGHUP with "config
  * reload failed" — hot reload dead, and the message blaming the file it had in
  * fact never opened. It must reload the file it actually read.
@@ -1079,7 +1079,7 @@ static void test_daemon_reload_follows_the_home_fallback(void)
 }
 
 /*
- * --config names one file and gets no fallback. The old code ran the $HOME
+ * --config names one file and gets no fallback; falling back to the $HOME
  * fallback whether or not --config was given, so a mistyped path silently
  * started the daemon on someone else's config — while imud.8 had documented
  * --config as replacing the search path since the beginning.

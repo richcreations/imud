@@ -204,7 +204,7 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s);
  * and WITHOUT modifying it.
  *
  * Exported rather than reimplemented so the offline tool and the daemon can
- * never drift apart — the two copies did, silently, before this existed.
+ * never drift apart, which two separate copies do silently.
  *
  * Returns false when the sample would be skipped (|a| outside the band, or a
  * singular S); innov and d2_out are then untouched.

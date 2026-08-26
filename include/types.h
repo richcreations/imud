@@ -141,7 +141,7 @@ typedef struct {
     /*
      * WHEN THE SAMPLE WAS TAKEN — not when this state was computed or sent.
      *
-     * The old wording here, "CLOCK_REALTIME of last prediction step", read as
+     * Do not word this "CLOCK_REALTIME of last prediction step": that reads as
      * emit-side time and hid what these are for.  src/imu.c sets them from
      * chip_to_wall() on the sample's own chip counter, so they carry the
      * instant the SENSOR sampled, reconstructed against an anchor that also

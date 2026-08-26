@@ -30,7 +30,7 @@
  * leaving the advertised rate 7.8% below what the part produced and
  * ticks_per_sample scaled for a rate nothing was running at.  The TDK parts
  * have an exact 12.5 Hz rung that no integer represents at all.  Rounding
- * either way was wrong in a way that showed up on the bench as a driver fault.
+ * either way shows up on the bench as a driver fault.
  *
  * So: milli-Hz, everywhere the interface carries a rate.  13016 is the ST
  * bottom rung, 12500 the TDK one, and neither needs a round trip through a

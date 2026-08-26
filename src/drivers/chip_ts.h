@@ -16,7 +16,7 @@
  * sample that lands at or before the previous burst's last sample, and chip_ts
  * goes backwards across the seam.
  *
- * Measured on a Raspberry Pi 5 against the reference ISM330DHCX: 2-4 reversals
+ * On a Raspberry Pi 5 against the reference ISM330DHCX: 2-4 reversals
  * per 5 s window at 833 Hz, reproducible, with no counter wraps involved.
  * `imud-imutest` grades it FAIL under imu.chipts.monotonic, and rightly —
  * drivers.h makes chip_ts a monotonic sample clock.
@@ -66,7 +66,7 @@ typedef struct {
  *
  * A genuine bad counter read is isolated: the next one is fine.  A stale anchor
  * refuses forever, because every correct reading looks equally implausible
- * against it.  Measured on the reference ISM330DHCX: one read landed 65,706
+ * against it: one read landed 65,706
  * ticks (1.58 s) ahead, was accepted because the forward bound was a flat
  * 9.6 s, and the eleven correct reads after it were then refused one after
  * another while the stamps walked further from real time.  Three is enough to
@@ -119,7 +119,7 @@ static inline void chip_ts_guard_accepted(chip_ts_guard_t *g)
  * says only "not my correction to make" — it does not mean the stamp is fit to
  * use.  Callers must ask chip_ts_guard_backward_ok() BEFORE this and refuse the
  * read outright when it says no; letting a large backward jump through on the
- * theory that the counter had been reset is what emitted nine samples with
+ * theory that the counter was reset emits nine samples with
  * timestamps near 2^32 on the bench.  `max_jitter` bounds "plausibly jitter" —
  * a second of ticks is generous next to the millisecond-scale lag this
  * corrects.
@@ -142,7 +142,7 @@ static inline uint32_t chip_ts_guard_shift(chip_ts_guard_t *g,
  * The backward guard above only corrects overlaps. A post-drain counter read
  * that comes back wrong in the FORWARD direction is not an overlap, so nothing
  * caught it — and the fallback path treats that read as the newest sample's
- * time, so one bad read stamps an entire burst far in the future. Measured on
+ * time, so one bad read stamps an entire burst far in the future. Seen on
  * the reference ISM330DHCX: one burst of 9 samples in 94,539 landed 2,163,509
  * ticks (54 s) ahead, with `seq` continuous across it. The burst after was
  * correct, because the backward jump back to real time exceeded max_jitter and
@@ -154,7 +154,8 @@ static inline uint32_t chip_ts_guard_shift(chip_ts_guard_t *g,
  * `now_ts` as ground truth. This is the check the fallback was missing.
  *
  * `max_forward` bounds a believable gap between consecutive bursts, and the
- * bound is TIGHT rather than generous, which is the opposite of what it used to
+ * bound is TIGHT rather than generous, which is the opposite of what a
+ * plausibility check tends to
  * be.  The physical fact is that this burst's OLDEST sample follows the previous
  * burst's NEWEST by one sample period: the FIFO loses nothing in between, so
  * however long the reader was away, the samples it missed are still queued and
@@ -193,7 +194,7 @@ static inline bool chip_ts_guard_forward_ok(const chip_ts_guard_t *g,
  * read.  A genuine 32-bit wrap is not one either: the signed difference makes a
  * wrap read as a small FORWARD step.
  *
- * Measured on the reference ISM330DHCX at 52 Hz, 2026-08-20: one burst of nine
+ * On the reference ISM330DHCX at 52 Hz: one burst of nine
  * samples in 6,494 was stamped from a counter read of about zero, so the burst
  * stepped back below zero and went out as chip_ts near 2^32 — 0.5 s behind,
  * with `seq` continuous across it.  The guard then latched that value and

@@ -62,7 +62,7 @@ static void check_ranges(const imud_config_t *c)
     assert(c->imu_addr >= 0x00 && c->imu_addr <= 0x7F);
     assert(c->mag_addr >= 0x00 && c->mag_addr <= 0x7F);
 
-    /* The rates NEED_POS_MHZ guards. A wrapped value used to land positive
+    /* The rates NEED_POS_MHZ guards. A wrapped value can land positive
      * here and satisfy it, which is how odr_hz = 4294968129 became 833.
      * Carried in milli-Hz since the rate rework, so odr_hz = 12.5 is a real
      * configuration rather than something that has to round. */

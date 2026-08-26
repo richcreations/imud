@@ -178,7 +178,7 @@ static void test_client_true_heading_helper(void)
                 "helper returns -1.0 without FLAG_DECLINATION_VALID");
 
     /* Hostile wire values must not hang or leak garbage (a CRC-valid
-     * packet can carry any float — the fuzzer hung the old while-loop
+     * packet can carry any float — the fuzzer hangs a naive while-loop
      * normalization with Inf/1e38 for 20 minutes). */
     make_inputs(&st, &mag, &imu, &raw);
     st.heading_deg = 3.4e38f;                     /* huge finite */

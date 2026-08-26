@@ -203,7 +203,7 @@ static char g_cap[256];
  * than the data. fit-ra's uniform mean over the window disagreed, and the
  * disagreement was the bug.
  *
- * The verdict itself changed with the Gauss–Markov wave state. It used to be "NIS ≈ 25, the
+ * With the Gauss–Markov wave state the verdict is not "NIS ≈ 25, the
  * model is over-confident"; with the Gauss–Markov wave state carrying the
  * correlated part of the residual it is "NIS ≈ 1 — and here is the ≈70 it
  * would have been without the state", which fit-ra now measures in a second
@@ -246,7 +246,7 @@ static void test_fitra_matches_bench_nis(void)
            "fit-ra: the wave state accounts for the difference");
 
     /* With the 25γ gate almost nothing should be rejected — the property the
-     * gate widening was made for. The old 9γ gate must show visibly more. */
+     * gate widening was made for. A 9γ gate must show visibly more. */
     EXPECT(rep.d2_frac_over_rej < 0.02,
            "almost nothing exceeds the shipped 25-gamma reject gate");
     EXPECT(rep.d2_frac_over_9g >= rep.d2_frac_over_rej,

@@ -94,7 +94,7 @@ static struct {
  * The next burst's oldest sample follows the previous burst's newest by ONE
  * sample period -- the FIFO queues what the reader missed, so starvation makes
  * bursts bigger, not later.  Eight periods is loose enough for scheduler jitter
- * and tight enough to catch the class of bad read that used to get through: at
+ * and tight enough to catch the class of bad read it exists for: at
  * 104 Hz that is 3072 ticks against the 65,706 one landed at.  Overflow is the
  * only legitimate break in the chain, and the guard is reset on it instead.
  */
@@ -111,7 +111,7 @@ static struct {
  * 52.06, 26.03 and 13.016.  Every label matches its rung to better than 0.4%
  * except the last, which the table calls 12.5 where the divider gives 13.016.
  *
- * Measured on the reference part 2026-08-20, over 1,624 samples in 119.8 s:
+ * Measured on the reference part over 1,624 samples in 119.8 s:
  * every rung lands on 6664/2^n scaled by this die's INTERNAL_FREQ_FINE trim
  * (+27 steps, x1.0405) to within 0.4%, the bottom rung included -- 13.55 Hz
  * predicted, 13.55 measured, against 13.03 if the rung really were 12.5.
@@ -439,7 +439,7 @@ static int lsm_read(const imud_bus_t *bus,
                  */
                 /*
                  * Both directions, and refuse either.  A read far BEHIND the
-                 * previous burst used to be passed through as a counter
+                 * previous burst was once passed through as a counter
                  * reset — see chip_ts.h for why that premise does not hold
                  * inside a run, and for what it emitted on the bench.
                  */

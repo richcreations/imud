@@ -11,7 +11,7 @@
  * rotation, and the calibration application.
  *
  * These transforms carry the daemon's timestamp and calibration correctness
- * but were previously only compiled into the TSan concurrency test, which
+ * but are otherwise compiled only into the TSan concurrency test, which
  * never asserts their numeric output.  Pure and portable — builds and runs on
  * the macOS dev box too.
  */
@@ -48,14 +48,14 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * The missed-interrupt recovery interval.
  *
  * A latched data-ready yields exactly one rising edge per acknowledge, so one
- * missed edge leaves the line asserted with nothing to clear it -- measured on
+ * missed edge leaves the line asserted with nothing to clear it -- seen on
  * an MMC5983MA as 0 further edges in 3 s after a single acknowledge. The
  * fallback read is the only way back, which makes this interval load-bearing
  * rather than a safety net, and a flat constant wrong at both ends of a ladder
  * spanning 1 Hz to 6664.
  */
 /*
- * A magnetometer that stops delivering used to produce no log line at all --
+ * A magnetometer that stops delivering otherwise produces no log line --
  * read() returning "no new measurement" is normal, so the reader looped on it
  * for ever.  Measured: 800 s with zero mag samples and one line in the log,
  * from the fusion aligner at t+5 s.  This is the policy behind the warning
@@ -66,7 +66,7 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * Calibration must be applied in the frame it was measured in.
  *
  * imud-cal reads the driver directly and never applies the mount rotation, so
- * every calibration it writes is in SENSOR axes.  The daemon used to rotate
+ * every calibration it writes is in SENSOR axes.  Rotating
  * board->body FIRST and calibrate second, which subtracts a sensor-frame offset
  * from body-frame data.  With [mount] identity the two frames coincide and
  * nothing is visibly wrong, which is why it survived: the defect only appears
@@ -191,11 +191,11 @@ static void test_int_fallback_ms(void)
      */
     /* 100 Hz, per-sample DRDY, 2 samples of grace: 3 periods = 30 ms. */
     EXPECT(imu_int_fallback_ms(100000, 1, 2) == 30, "100 Hz, depth 1, grace 2");
-    /* The old code returned HALF a period here, expiring before the very edge
-     * it was waiting for could arrive. */
+    /* Must exceed one period: half a period expires before the very edge it
+     * is waiting for can arrive. */
     EXPECT(imu_int_fallback_ms(100000, 1, 2) > 10, "longer than one period");
     /* 833 Hz with the default wm=64: 66 periods = 79 ms, against the flat
-     * 10 ms that suppressed the watermark entirely. */
+     * 10 ms that would suppress the watermark entirely. */
     EXPECT(imu_int_fallback_ms(833000, 64, 2) == 79, "833 Hz, wm 64, grace 2");
     EXPECT(imu_int_fallback_ms(6664000, 64, 2) == 10, "6664 Hz, wm 64, grace 2");
     EXPECT(imu_int_fallback_ms(20000, 1, 2) == 150, "20 Hz, depth 1, grace 2");
@@ -210,7 +210,7 @@ static void test_int_fallback_ms(void)
 
     /*
      * Monotonic: a faster rate never waits longer than a slower one.  Seeded
-     * at LONG_MAX so the first entry is always accepted -- the old helper
+     * at LONG_MAX so the first entry is always accepted -- a helper
      * clamped at 250 ms, so a literal seed worked; unclamped, 1 Hz with one
      * sample of depth and two of grace is 3000 ms.
      */
@@ -224,7 +224,7 @@ static void test_int_fallback_ms(void)
     }
     EXPECT(mono, "the interval never grows as the rate rises");
 
-    /* An unknown rate falls back to the constant this replaced. */
+    /* An unknown rate falls back to the fixed constant. */
     EXPECT(imu_int_fallback_ms(0, 1, 2) == 20, "an unknown rate keeps the old 20 ms");
     EXPECT(imu_int_fallback_ms(-5, 1, 2) == 20, "and so does a nonsense one");
 
@@ -262,8 +262,8 @@ static void test_nearest_odr(void)
  * The rounding every register-table driver's odr_encode() chain performs, and
  * therefore the rate the chip really runs at. It differs from nearest_odr for
  * every request that falls in the lower half of a gap — which is the whole
- * reason this function exists: the daemon used to tune the filter with
- * nearest_odr while the driver programmed the snap-up rate.
+ * reason this function exists: tuning the filter with nearest_odr while the
+ * driver programs the snap-up rate makes the two disagree.
  */
 static void test_snap_odr_up(void)
 {
@@ -468,19 +468,17 @@ static uint32_t ticks_over(uint64_t wall_ns, double err_pct)
 /*
  * Which host instant the anchor pairs the newest sample's chip_ts with.
  *
- * The defect this exists for.  The anchor used to take the MIDPOINT of the
- * burst read, which was right while a driver's chip_ts for the newest sample
- * came from reading the chip counter AFTER the drain — that value means "now
- * at t_after", so the midpoint split the difference.  1.9.0 started batching
- * the FIFO's own timestamp, and chip_ts became the instant the sample was
- * actually taken, which is EARLIER than t_before.  Pairing that with the
- * midpoint placed every reconstructed timestamp late by about half the read
+ * A chip_ts read AFTER the drain means "now at t_after", so the midpoint of
+ * the burst read is the right pairing for it.  A chip_ts batched from the
+ * FIFO's own timestamp is the instant the sample was taken, which is EARLIER
+ * than t_before; pairing that with the midpoint places every reconstructed
+ * timestamp late by about half the read
  * duration.
  *
  * Nothing caught it: dt is a difference, so the offset cancelled before it
  * reached the filter, and imud-imutest's imu.chipts.wall grades the chip/wall
  * RATIO, which a constant offset leaves at 1.0000.  It surfaced on the
- * 2026-08-14 bench only as a sample-latency term that read low.
+ * the bench only as a sample-latency term that reads low.
  */
 static void test_anchor_pairs_the_sample_instant(void)
 {
@@ -888,13 +886,13 @@ static void test_lat_reset_keeps_all_time_max(void)
 /*
  * lat_step: the two windows publish independently.
  *
- * The defect.  Both terms used to share one gate, keyed off the FIFO
+ * The two must not share one gate keyed off the FIFO
  * histogram's count.  `pipe` records on essentially every sample, but `fifo`
  * records only while the reconstructed sample time still trails the read
  * stamp — and before ts_anchor_t has measured the chip's tick period, a part a
  * few percent fast makes the extrapolation outrun the read stamp and `fifo`
  * stops filling entirely.  With a shared gate that withheld `pipe` too, which
- * is why the 2026-08-11 Pi 5 latency matrix produced no numbers at all in six
+ * is why a Pi 5 latency matrix produces no numbers at all in six
  * 40 s runs while the 30-minute soak, which outlived the first re-anchor,
  * captured them fine.
  */

@@ -167,7 +167,7 @@ static void test_roundtrip(void)
 
 /*
  * A capture file must be created 0644 by its own choice, not by inheriting a
- * umask.  cap_writer_open used to be a plain fopen(path, "wb") — mode 0666
+ * umask.  A plain fopen(path, "wb") asks for mode 0666
  * masked by whatever the invoking shell had, which under `umask 0` left the
  * black box world-writable.  Force umask 0 so the file's own mode is what is
  * being measured.
