@@ -6,7 +6,7 @@
 
 /*
  * fit_ra.c — measure the accelerometer measurement model against a real
- * capture (see fit_ra.h and ROADMAP §10.1).
+ * capture (see fit_ra.h and docs/math.md §4.7).
  *
  * Method: replay the .imucap through a live MEKF exactly as the daemon
  * would, and at each accel update compute the innovation and its normalised
@@ -426,13 +426,13 @@ void fitra_print(const fitra_report_t *r, const char *capture_path)
                "  can describe it: raising mekf_accel_noise until NIS reaches 1\n"
                "  does make the innovations look consistent, but it weakens the\n"
                "  gravity correction and measurably degrades attitude accuracy.\n"
-               "  Enable mekf_wave_accel instead - see ROADMAP 10.5.\n");
+               "  Enable mekf_wave_accel instead - see man 5 imud.conf.\n");
     } else {
         printf("  With the wave state enabled, mean NIS SHOULD be near 1: the\n"
                "  correlated part of the residual is modelled rather than left\n"
                "  for a white R to absorb. Readings well above 1 mean the seaway\n"
                "  is rougher than mekf_wave_accel allows for; well below 1 means\n"
-               "  calmer. See ROADMAP 10.5 and man 5 imud.conf.\n");
+               "  calmer. See man 5 imud.conf.\n");
     }
 
     if (r->wave_configured) {

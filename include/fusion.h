@@ -86,7 +86,7 @@ typedef struct {
     float acc_quiet_ema; /* EMA of (|a|/g−1)², τ≈2 s — platform quiescence */
     float speed_mps;     /* speed over ground for centripetal correction; 0 = off */
 
-    /* ── Gauss–Markov wave-acceleration state (ROADMAP §10.5) ─────────────
+    /* ── Gauss–Markov wave-acceleration state (docs/math.md §4.1.1) ────────
      * Derived in mekf_derive_tuning from mekf_wave_accel / _tau_s. */
     float wave_tau;      /* GM correlation time, s */
     float wave_sig2;     /* GM steady-state variance per axis, g² */
@@ -129,7 +129,7 @@ typedef struct {
      * d² = νᵀS⁻¹ν and S = HPHᵀ + R. Reads 1.0 when the filter's own
      * covariance correctly predicts the spread of its innovations, > 1
      * when it is over-confident (measurements disagree with P more than P
-     * claims they should). This is the field instrument for ROADMAP §10.1:
+     * claims they should). This is the field instrument for docs/math.md §4.7:
      * unlike innov_weight/innov_reject — which say how hard the Huber cap
      * is being LEANED ON — NIS says how wrong the model is, and it keeps
      * rising after the cap saturates.

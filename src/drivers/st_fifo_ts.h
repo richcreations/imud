@@ -27,8 +27,8 @@
  * sample-set (01), but that is a third word alongside the accel and gyro pair:
  * +50% FIFO word traffic, so a 128-word watermark holds 42 sample-sets instead
  * of 64.  fifo_wm would quietly stop meaning what docs/manual.md says it means,
- * and the sample-latency figures ROADMAP section 3.1 exists to measure would
- * move under the measurement.  At 32 (11) it is one extra word per 32 sets —
+ * and the sample-latency figures in spec.md §14 would move under the
+ * measurement.  At 32 (11) it is one extra word per 32 sets —
  * +1.6%, so the same watermark holds 63 sets rather than 64 — and one anchor
  * inside a burst is all the arithmetic needs.  Anchoring is the goal; a stamp
  * per sample is not.

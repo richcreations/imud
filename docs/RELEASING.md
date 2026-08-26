@@ -80,20 +80,38 @@ The `.texi` is committed but **not** diff-gated: pandoc 3.10 and 3.1.11 emit
 different Texinfo from the same markdown, so the gate is `check-texi` plus
 `makeinfo`, neither of which cares which pandoc wrote the file.
 
-## 2. Write the prose — the part no script can do
+## 2. Write the release notes
 
-- **`NEWS`**: add an `X.Y.Z` section at the top, user-visible changes only.
-- **`debian/changelog`**: add an `imud (X.Y.Z-1) unstable; urgency=medium` stanza.
-  This drives the .deb version and **must** match `include/version.h`.
-  (`dch -v X.Y.Z-1` writes the trailer for you.) The per-dist suffix
-  (`X.Y.Z-1~bookworm1`) is added by CI, not committed.
-- **`packaging/imud/changelog`**: an `imud (X.Y.Z)` stanza — always required.
-- **`packaging/imud-<bridge>/changelog`**: a stanza only for packages that
-  actually changed. `packaging/imud-wmm-data/changelog` is exempt — it tracks
-  the WMM epoch (2025.0), not the imud version.
+Describe the release once, in **`docs/release-notes.toml`**, then render it:
 
-Trailer format is Debian's:
-`-- Name <email>  Day, DD Mon YYYY HH:MM:SS ±ZZZZ`
+```sh
+make docs-release-notes        # python3 only; runs anywhere
+```
+
+That writes the `NEWS` section and the changelog stanza for every package the
+release touches — `packaging/<pkg>/changelog` and `debian/changelog`. Commit
+the output with the registry; do not hand-edit either.
+
+One `[[release.change]]` per user-visible change:
+
+- `kind` is `feature`, `behaviour` or `fix`.
+- `packages` lists the binary packages it belongs to, which decides whose
+  changelog carries it. `imud` always gets a stanza; a bridge only when it is
+  named. `imud-wmm-data` is exempt — it tracks the WMM epoch (2025.0), not the
+  imud version.
+- `text` is the change in **one to three lines, capped at 40 words**. The cap is
+  enforced. Say what imud now does; how the defect was found belongs in the
+  commit message.
+- `impact` and `action` are optional — what it means for an existing install,
+  and anything the user must actually do.
+
+The generator only ever touches the stanza for the version in
+`include/version.h`, so released stanzas and their Debian trailers are never
+rewritten. A new stanza gets a trailer from your git config; the per-dist suffix
+(`X.Y.Z-1~bookworm1`) is added by CI, not committed.
+
+`make check-release-notes` (part of `check-generated-text`) fails if any surface
+drifts from the registry.
 
 ## 3. Verify
 

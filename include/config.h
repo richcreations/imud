@@ -90,7 +90,7 @@ typedef struct {
     double mekf_gyro_bias;       /* rad/s — in-run bias instability */
     double mekf_accel_noise;     /* m/s²/√Hz — from datasheet */
     double mekf_mag_noise;       /* Gauss/√Hz — from datasheet */
-    /* Gauss–Markov wave-acceleration state (ROADMAP §10.5). Models the
+    /* Gauss–Markov wave-acceleration state (docs/math.md §4.1.1). Models the
      * time-correlated seaway disturbance on the gravity measurement; either
      * key at 0 disables the state entirely. NOTE: unrelated to wave_tau_s
      * above, which is the sea-state REPORTING window. */

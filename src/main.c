@@ -350,7 +350,7 @@ static void *health_thread(void *arg)
              * periods, so it is always later than the watermark it backs up:
              * on a healthy line E dominates and T is one or none per run.  A
              * climbing T means edges are not arriving and residence has
-             * stretched to the fallback.  See ROADMAP §3.1.
+             * stretched to the fallback.  See spec.md §14.
              */
             char drn[96] = "";
             {

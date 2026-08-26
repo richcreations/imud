@@ -24,8 +24,8 @@ The role carries these tasks, and there is nobody else to hand them to:
 - **Review and merge.** Every pull request is reviewed and merged by the
   maintainer. Nothing lands on `main` without that.
 - **Triage.** Read and answer issues, reproduce bugs, and decide what is a
-  defect, what is deferred to [docs/ROADMAP.md](docs/ROADMAP.md), and what is
-  out of scope.
+  defect, what is a future feature ([docs/ROADMAP.md](docs/ROADMAP.md)), and
+  what is out of scope.
 - **Release.** Cut versions per [docs/RELEASING.md](docs/RELEASING.md), and
   own the apt repository and its signing key.
 - **Handle security reports.** Run the private disclosure process in
@@ -96,7 +96,8 @@ will be turned down regardless of how good the code is:
 
 Decisions are recorded where they can be found later: the commit message for
 why a change is the way it is, `NEWS` for what a release changed, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for what was deliberately deferred.
+[docs/ROADMAP.md](docs/ROADMAP.md) for where the project is going and what
+was deliberately set aside.
 
 ## How a change gets in
 

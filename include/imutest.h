@@ -5,7 +5,7 @@
  */
 
 /*
- * imutest.h — hardware validation of a registered sensor driver (ROADMAP §1).
+ * imutest.h — hardware validation of a registered sensor driver.
  *
  * A driver's register map is checked against the datasheet when it is written,
  * and test/test_drivers.c proves its encode/decode against a mock I2C bus.

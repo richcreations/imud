@@ -275,15 +275,6 @@ This sets both buffer depth and, with
 sample latency: the reader waits
 .RB \(dq fifo_wm\ +\ int_grace \(dq
 sample periods, so a watermark of 64 at 833\~Hz batches about 77\~ms.
-Earlier releases documented this key as having
-.I no
-effect on latency, from a bench run that measured the same 33\~ms
-residence at every setting.
-That measurement was real and its conclusion was wrong: the reader then
-used a flat 10\~ms fallback, which drained before the watermark could
-assert and, because a level watermark deasserts once a drain empties
-the FIFO, suppressed the interrupt entirely at nine of the ten rates.
-The key was inert because its own safety net pre-empted it.
 On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at
 32 and above \(en so the same watermark holds about 63 sample-sets

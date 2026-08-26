@@ -353,6 +353,45 @@ CASES = [
     ("check-math-pdf-stamp", "docs/math.md",
      sub(r"^# ", "# Zzz "),
      "built from a different"),
+
+    # ── gen-release-notes ────────────────────────────────────────────────────
+    # NEWS edited by hand instead of the registry. This is the drift the whole
+    # registry exists to stop: NEWS said one thing and the changelog another
+    # for the same release, and nothing compared them.
+    ("gen-release-notes", "NEWS",
+     sub(r'^\* SPI transport for the IMU and the magnetometer\.',
+         '* SPI transport for the CPU and the magnetometer.'),
+     "NEWS"),
+
+    # A changelog stanza edited by hand. Packagers read this one; a user reads
+    # NEWS. They describe the same release and must not diverge.
+    ("gen-release-notes", "packaging/imud/changelog",
+     sub(r'^  \* SPI transport for the IMU and the magnetometer\.',
+         '  * SPI transport for the CPU and the magnetometer.'),
+     "packaging/imud/changelog"),
+
+    # A change that outgrows the word cap. Every NEWS entry in this project
+    # drifted this way -- 32 words per bullet at 1.4, 217 at 1.8 with one of
+    # 587 -- one reasonable-looking sentence at a time.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^  text     = "The manual installs as an Info page: info imud\."',
+         '  text     = "The manual installs as an Info page, which is worth '
+         'recording at length because the investigation behind it ran for '
+         'several days and produced a number of measurements that seemed '
+         'important at the time and are set down here in full detail."'),
+     "cap"),
+
+    # A package that does not exist, so the stanza would be written nowhere.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^  packages = \["imud-utils"\]', '  packages = ["imud-nope"]'),
+     "imud-nope"),
+
+    # A kind outside feature/behaviour/fix, which would silently vanish from
+    # the rendered output rather than being reported.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^  kind     = "behaviour"', '  kind     = "improvement"'),
+     "improvement"),
+
 ]
 
 

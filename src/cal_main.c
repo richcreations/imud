@@ -855,7 +855,7 @@ static int do_fit_temp(imud_cal_t *cal, const char *from, double settle_sec)
  *
  * Unlike every other mode this one writes nothing: the answer belongs in
  * imud.conf's [fusion] section, not in cal.json, because it is filter tuning
- * rather than a property of the sensor. See ROADMAP §10.1.
+ * rather than a property of the sensor. See docs/math.md §4.7.
  */
 static int do_fit_ra(const imud_config_t *cfg, const imud_cal_t *cal,
                      const char *path)

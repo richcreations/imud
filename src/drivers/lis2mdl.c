@@ -150,7 +150,7 @@ const mag_ops_t lis2mdl_ops = {
      *
      * Enabling either would be a change to how the part is READ, not just how
      * it is addressed, so it belongs in a commit of its own with hardware to
-     * check it against.  See docs/ROADMAP.md.
+     * check it against.
      */
     .bus_caps         = { .spi_capable = false },
     .probe            = li2_probe,

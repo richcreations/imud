@@ -629,6 +629,7 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
         docs-config docs-tables docs-texi docs-man math-pdf \
+        check-release-notes docs-release-notes \
         check-generated-man install-info-doc uninstall-info-doc
 $(CHECK_DOC_TOOLS):
 	@python3 tools/$@.py
@@ -637,7 +638,7 @@ $(CHECK_DOC_TOOLS):
 # touching a document.
 check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
                      check-config-docs check-packet-docs check-driver-docs \
-                     check-texi check-math-pdf-stamp
+                     check-release-notes check-texi check-math-pdf-stamp
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
 # the man5 entries, the manual tables and the generated defaults test on disk
@@ -653,6 +654,19 @@ check-config-docs:
 # and manual regions ship in the packages.
 docs-config:
 	@python3 tools/gen-config-docs.py --write
+
+# NEWS from 1.7 onward and the current release's changelog stanzas, from
+# docs/release-notes.toml.  The registry is what keeps the three surfaces
+# saying the same thing, and its word cap is what keeps a NEWS entry a
+# user-visible change rather than an account of how the defect was found.
+check-release-notes:
+	@python3 tools/gen-release-notes.py
+
+# Write them.  Run after editing docs/release-notes.toml.  Older NEWS entries
+# and already-released changelog stanzas are never rewritten: only the stanza
+# for the version in include/version.h is touched.
+docs-release-notes:
+	@python3 tools/gen-release-notes.py --write
 
 # spec.md's packet table and flags bitmask, from include/types.h.  Offsets in
 # a packed struct are cumulative sizeof: insert a field and every row below it

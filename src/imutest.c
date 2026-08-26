@@ -2604,7 +2604,7 @@ static void check_drdy(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     /*
      * Pass 2: the same window with the FIFO left alone.
      *
-     * This is the experiment ROADMAP section 1.1 asked for.  The 2026-08-10
+     * This is the experiment that characterises the edge rate.  The 2026-08-10
      * bench measured ~18.3 Hz on the reference part at 833 Hz with fifo_wm 64,
      * which fits neither the per-sample model (833) nor the watermark model
      * (13), and an edge count alone cannot say why.  The surviving hypothesis

@@ -203,7 +203,7 @@ static char g_cap[256];
  * than the data. fit-ra's uniform mean over the window disagreed, and the
  * disagreement was the bug.
  *
- * The verdict itself changed with ROADMAP §10.5. It used to be "NIS ≈ 25, the
+ * The verdict itself changed with the Gauss–Markov wave state. It used to be "NIS ≈ 25, the
  * model is over-confident"; with the Gauss–Markov wave state carrying the
  * correlated part of the residual it is "NIS ≈ 1 — and here is the ≈70 it
  * would have been without the state", which fit-ra now measures in a second
@@ -297,7 +297,7 @@ static void test_fitra_suggests_wave_knobs(void)
 /*
  * The seaway residual is wave-driven and therefore strongly time-correlated.
  * That measurement is what justified NOT trying to fix covariance consistency
- * with a bigger scalar R (ROADMAP §10.1) and what motivated the Gauss–Markov
+ * with a bigger scalar R (docs/math.md §4.7) and what motivated the Gauss–Markov
  * state (§10.5) — and it is now ALSO the pass/fail criterion for that state,
  * from the two ends of the same replay:
  *
@@ -462,7 +462,8 @@ static void test_fitra_print_wave_disabled(void)
            "reports a failed NIS bisection rather than a bogus number");
     EXPECT(strstr(out, "10-30 is NORMAL") != NULL,
            "wave-off guidance explains the high NIS");
-    EXPECT(strstr(out, "ROADMAP 10.5") != NULL, "points at the roadmap item");
+    EXPECT(strstr(out, "man 5 imud.conf") != NULL,
+           "points the operator at a reference they have installed");
     EXPECT(strstr(out, "suggested           mekf_wave_accel") == NULL,
            "no suggestion when sigma_suggest is 0");
     /* The n_accel_upd + n_skipped == 0 guard must not produce nan/inf. */

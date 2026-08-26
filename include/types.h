@@ -246,7 +246,7 @@ typedef struct __attribute__((packed)) {
      * filter's covariance correctly predicts its own innovation spread;
      * > 1 = over-confident. Where innov_weight/innov_reject report how hard
      * the robustness machinery is working, these report whether the noise
-     * model itself is right. See docs/ROADMAP.md §10.1. */
+     * model itself is right. See docs/math.md §4.7. */
     float    nis_accel;      /* accel gravity update, d²/2 */
     float    nis_mag;        /* mag update, d²/2 (3-D) or d²/1 (yaw-only) */
     uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–271 */

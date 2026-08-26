@@ -1736,7 +1736,7 @@ static void test_mag_drdy_rate(void)
 /*
  * The two-pass DRDY count.
  *
- * ROADMAP section 1.1 left the reference part's edge rate uncharacterised:
+ * The reference part's edge rate was uncharacterised:
  * ~18.3 Hz at 833 Hz with fifo_wm 64 fits neither the per-sample model (833)
  * nor the watermark model (13), and a single count cannot say why.  The
  * surviving hypothesis was that INT1_FIFO_TH is a LEVEL condition oscillating

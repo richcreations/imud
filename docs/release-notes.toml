@@ -1,0 +1,329 @@
+# imud release notes — THE registry
+#
+# Source for the NEWS entries from 1.7 onward and for the Debian changelog
+# stanzas.  Edit this file, then `make docs-release-notes`; do not hand-edit
+# NEWS's generated region or a changelog's top stanza.
+#
+# One [[release]] per version, newest first.  One [[release.change]] per
+# user-visible change — what a user would notice, not what a commit touched.
+#
+#   kind      "feature"   something imud can now do
+#             "behaviour" something imud does differently than before
+#             "fix"       a defect a user could have hit
+#   packages  which binary packages the change belongs to; drives which
+#             packaging/<pkg>/changelog carries it.  "imud" always gets a
+#             stanza; a bridge only when it is listed here.  imud-wmm-data is
+#             exempt — it tracks the WMM epoch, not the imud version.
+#   text      the change, in one to three lines.  Say what it does, not how it
+#             was found.  Measurements, refuted theories and bench narrative
+#             belong in the commit message.
+#   impact    optional — what it means for an existing installation.
+#   action    optional — something the user must actually do.  Use sparingly;
+#             it is rendered prominently.
+
+[[release]]
+version = "1.9.0"
+date    = "unreleased"
+summary = """
+An additive release: SPI transport, higher sample rates on three parts, a new
+magnetometer driver, and the manual as an Info page. The wire packet is
+unchanged — still v17 / 276 bytes — and so is the libimud ABI, so nothing here
+forces you to redeploy consumers. Every new key defaults to the behaviour 1.8.2
+had."""
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "Calibration was applied in the wrong frame when [mount] was not identity: the daemon rotated board to body first and applied the sensor-frame calibration second."
+  impact   = "Only affects a rotated mount; with [mount] identity the two frames coincide."
+  action   = "Re-run imud-cal for any sensor on a non-identity mount."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "SPI transport for the IMU and the magnetometer. [imu] and [mag] each gain bus, spi_dev and spi_speed_hz, and choose independently."
+  impact   = "Default is bus = \"i2c\"; existing configs are unaffected."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "New magnetometer driver rm3100 (PNI RM3100): magneto-inductive, no SET/RESET coil, I2C or SPI, 1-600 Hz. Experimental until validated on hardware."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "Higher sample rates: ism330dhcx and lsm6dso gain 3332 and 6664 Hz, icm42688p 4000 through 32000 Hz. These are rates the datasheets always specified and the drivers had never offered."
+  impact   = "6664 Hz needs SPI; icm42688p above 8000 Hz will not run on a Raspberry Pi."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "The manual installs as an Info page: info imud."
+  impact   = "Building from source now requires texinfo."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "Sample latency is instrumented. The [stats] line splits it into FIFO residence, which your fifo_wm and rate decide, and the daemon's own pipeline."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "imud-status says when heading is dead-reckoned. Without a magnetometer calibration the filter's mag update never runs and heading drifts on the gyro alone, which nothing in the output used to show."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-utils"]
+  text     = "Sample rates are carried in milli-Hz throughout, so the advertised rates are now the silicon's own. The ISM330DHCX ladder is 6664/2^n, making its bottom rung 13.016 Hz where the datasheet prints 12.5."
+  impact   = "odr_hz accepts fractional rates. A rate that rounds to zero is refused."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "[mag] odr_hz offers four rates on the MMC5983MA, not seven: the part's continuous-measurement modes are 1, 10, 20, 50, 100 and 200 Hz, and the others were never real."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "imud --replay exits when the capture runs out, after letting the last samples reach the filter. It used to sit there until killed."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "Replaying one capture twice now produces identical filter output, and sim_speed decides the pace rather than the reader threads' hardware poll cadences."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "A reader thread that gives up stops the daemon instead of leaving it running with a dead sensor. A magnetometer that stops delivering is reported once per outage, and again when it recovers."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "[imu] spi_speed_hz below 2.5 MHz warns at startup when the magnetometer shares the same SPI controller, naming the rate to use. Below that the magnetometer can stop measuring while still answering the bus."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "Heave and sea state accumulate in double, so a long run no longer loses resolution in the integrators."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The daemon could not start on arm64 or armhf under its own systemd unit, and installing or upgrading could leave a Raspberry Pi 5 unable to open its GPIO chip."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "Several sample-timestamp defects: chip_ts could run backwards between bursts, a corrupted read could stamp a whole burst seconds into the future, the timer period was trusted rather than measured, and timestamps carried two offsets."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The magnetometer ran at a third of its configured rate, and the MMC5983MA lost its X axis over SPI when a CTRL0 write also cleared an inhibit bit."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag could write a soft-iron scale the swing never measured, stretching an axis to cover data that was never taken. An axis must now be swept through at least 0.8 of the fitted radius, capping any correction at 1.25x."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "An MPU FIFO overflow desynchronised every later read: the bytes the part drops to make room are never a whole number of sample-sets, and this FIFO carries no tag to resync from."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-utils"]
+  text     = "imud-imutest measures the magnetometer the way the daemon reads it, and counts data-ready edges against the drain rather than a timer of its own."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-influxdb"]
+  text     = "imud-influxdb half-applied its output enables on SIGHUP, so a reload could leave some outputs on and others off."
+
+[[release]]
+version = "1.8.2"
+date    = "2026-08-05"
+summary = "A correctness release: bad configuration and bad calibration are now refused rather than absorbed."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "A bad value in a config file is fatal instead of silently accepted. An over-long path was truncated and used, an out-of-range integer wrapped, and nan, inf and 1e999 loaded cleanly into any float key."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "imud --config PATH means that file and no other; it no longer falls back to a different config when the named one is missing."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "libimud"]
+  text     = "New flag bit FLAG_STATE_RESET (bit 14): the filter found a non-finite value in its own state, reset, and is re-aligning."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A non-finite or absurdly large calibration poisoned the filter permanently. cal.json values are now validated on load."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "SIGHUP reload failed outright on a daemon started from a $HOME config, and deleting a key and reloading kept the old value."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A failed output thread left its socket bound with nothing behind it, so a client connected successfully and then waited forever."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The shipped systemd unit forbade the gpiochip the shipped config asked for."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-utils"]
+  text     = "imud-imutest accepted garbage in its numeric options rather than rejecting it."
+
+[[release]]
+version = "1.8.1"
+date    = "2026-08-03"
+summary = "A packaging and hardening release. The group change affects every installation."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "Device access is governed by a new imud group rather than gpio. Every unit hardcoded Group=gpio, but nothing created it, so imud did not start on stock Debian."
+  action   = "Add any user who runs the tools by hand to the imud group."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "A configured rate of zero is a fatal config error rather than a silent fallback."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-mqtt", "imud-influxdb"]
+  text     = "The two bridge configs that hold credentials were world-readable. They are now installed 0640, owned by the imud group."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "One configured ODR now means one rate everywhere. The filter was tuned from a rate rounded differently than the one the driver programmed."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A config file that exists but cannot be read was reported as \"disabled in config\"."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-prometheus"]
+  text     = "A client that connected to the metrics port and then said nothing could stall the exporter."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "All six units gain tier-2 systemd sandboxing, and every file descriptor the daemon, tools and client libraries open is close-on-exec."
+
+[[release]]
+version = "1.8"
+date    = "2026-07-31"
+summary = "Hardware validation tooling, two new driver families, and a much smaller source tarball."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud-utils"]
+  text     = "New tool imud-imutest: validates a sensor driver against real hardware and writes a Markdown report to attach to an issue. This is how an experimental driver becomes a supported one."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "New drivers mpu9250 and mpu9255 (IMU) with ak8963 (magnetometer), for the InvenSense/TDK MPU-925x 9-axis breakouts. All three experimental."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal accel printed the wrong physical instructions for all six positions, so an operator following them produced a calibration for the wrong orientations."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag over-stated the soft-iron correction on any board with hard iron."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The IMU chip timer's declared period was trusted rather than measured, so a part whose oscillator ran off nominal produced timestamps that drifted."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "Release artifacts carry a verifiable provenance attestation, and the source tarball no longer contains binaries."
+
+[[release]]
+version = "1.7"
+date    = "2026-07-27"
+summary = """
+A filter release. The wire packet grows to v17 (276 bytes) with four new
+diagnostic fields, and the MEKF gains a wave-acceleration state that models the
+correlated part of the gravity residual in a seaway."""
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "libimud", "imud-utils"]
+  text     = "Wire format v17: the packet grows 260 to 276 bytes with four MEKF diagnostic fields — two reporting how hard the update gates are working, two reporting whether the noise model is honest."
+  impact   = "Consumers reading the raw packet must be rebuilt and deployed with the daemon; libimud applications are unaffected."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "The MEKF error state grows from 6 to 9 with a Gauss-Markov wave-acceleration term. In a seaway the gravity residual is wave-orbital and time-correlated, which no single white noise value can describe."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "New imud-cal fit-ra mode: replays a rough-water capture through the filter and reports whether the noise model matches the water it was recorded in."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "New [fusion] key mekf_mag_dip_sigma_deg and new [mount] key rotation_matrix, which takes the board-to-body rotation directly as nine row-major elements."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The initial attitude alignment averaged a hardcoded one second — about a fifth of a roll period — so a daemon started underway aligned to an arbitrary point in the wave cycle."
+  impact   = "The window is now align_window_sec, default 5 s."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The MEKF declared its innovation covariance singular on an absolute determinant threshold, discarding most accelerometer updates in ordinary conditions. The test is now relative to the matrix scale."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "The gross-outlier reject gate was rejecting a quarter of ordinary wave motion, and the health metrics used a gain that assumed every sample produced an update, making their true time constant ten minutes instead of thirty seconds."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A config reload no longer leaves the engine-vibration state half-applied, and it recomputes the magnetic reference adaptation rate when the magnetometer rate changes."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "An unrecognised [mount] preset name is a fatal error rather than a warning that silently left the mount unrotated."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "libimud"]
+  text     = "Flag bit 6 (FLAG_MOTION) is formally retired. It was defined but never set."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-signalk"]
+  text     = "imud-signalk's dest_addr accepted a numeric IPv4 address only, while every other bridge resolved a hostname."

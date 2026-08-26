@@ -323,7 +323,7 @@ int imt_write_md(const imt_report_t *r, const char *path,
      * verdict: an interrupt that only fires while something drains the FIFO
      * is a level condition, and only the second number can say so.  Worth
      * spelling out in the appendix rather than leaving inside a check note,
-     * since this is the number ROADMAP section 1.1 is waiting on.
+     * since this is the number that characterises the interrupt behaviour.
      */
     if (w->gpio_why == IMT_GPIO_OK && w->gpio_edges >= 0) {
         char idle[64];

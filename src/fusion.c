@@ -10,7 +10,7 @@
  * ── Conventions ────────────────────────────────────────────────────────────
  * q = [w, x, y, z] represents the body→NED rotation: v_NED = R(q) × v_body.
  * Error-state δx = [δθ(3), δb(3), δa_w(3)] (Solà §5.4, plus the Gauss–Markov
- * wave-acceleration state of ROADMAP §10.5).
+ * wave-acceleration state of docs/math.md §4.1.1).
  * P is 9×9, top-left 3×3 is attitude error covariance (rad²).
  *
  * Gravity reference:    g_ref = [0, 0, 1]  (unit gravity in NED, Z-down)
@@ -342,14 +342,14 @@ static void q_from_rotvec(const float v[3], float dq[4])
  * where the old value rejected beyond 3×.
  *
  * Note what this does NOT fix: NIS stays around 20–25, so the measurement
- * model really is over-confident, as ROADMAP §10.1 says. Widening the gate
+ * model really is over-confident, as docs/math.md §4.7 sets out. Widening the gate
  * removes the damage the gate itself was doing; it does not make Ra right.
  * See the Ra discussion in docs/math.md §4.7 for why no scalar value can be.
  *
  * Overridable for the sweep in test_fusion.c; see docs/math.md §4.7.
  */
 /*
- * Huber covariance-consistency variant (ROADMAP §10.2), for measurement only.
+ * Huber covariance-consistency variant (docs/math.md §4.5), for measurement only.
  *   0 = shipped: attenuate ν, leave K at full confidence
  *   1 = K ← w·K   (exact Joseph for the suboptimal gain)
  *   2 = R → R/w   (one IRLS re-solve, uncapped ν)
@@ -391,7 +391,7 @@ static void dir_jacobian(const float h[3], float H[3][MEKF_N])
 
 /*
  * Measurement Jacobian and predicted direction for the gravity update with the
- * Gauss–Markov wave state active (ROADMAP §10.5).
+ * Gauss–Markov wave state active (docs/math.md §4.1.1).
  *
  * The measured direction is z = −normalize(specific force).  Writing the
  * specific force in normalised gravity units, that is
@@ -594,7 +594,7 @@ static int eskf_update(mekf_t *f,
      * the measurements are least trustworthy. Making the bookkeeping honest
      * removes that, and the extra wave energy admitted costs far more than
      * the covariance error it fixes. It stays.
-     * See docs/ROADMAP.md §10.2 and docs/math.md §4.5.
+     * See docs/math.md §4.5.
      *
      * innov_weight_ema / innov_reject_ema below expose how hard the cap is
      * being leaned on; nis_accel_ema / nis_mag_ema expose whether the noise
@@ -903,7 +903,7 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
     f->Rm = Nm * Nm * mag_odr_hz;
 
     /*
-     * Gauss–Markov wave-acceleration state (ROADMAP §10.5).
+     * Gauss–Markov wave-acceleration state (docs/math.md §4.1.1).
      *
      * The seaway gravity residual is wave-orbital: correlated over ~0.3–1 s,
      * not white. Feeding 833 such samples per second to a white-noise R tells

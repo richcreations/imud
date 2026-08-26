@@ -6,7 +6,7 @@
 
 /*
  * fit_ra.h — offline analysis of the MEKF accelerometer measurement model
- * against a real .imucap capture (ROADMAP §10.1).
+ * against a real .imucap capture (docs/math.md §4.7).
  *
  * `imud-cal characterize` cannot answer this question: it assumes a
  * stationary platform, gates out anything that moves, and block-averages the
@@ -62,7 +62,7 @@ typedef struct {
     double na_configured;      /* what the config passed in, for comparison */
 
     /*
-     * Gauss–Markov wave state (ROADMAP §10.5).
+     * Gauss–Markov wave state (docs/math.md §4.1.1).
      *
      * The suggestions come from a SEPARATE replay with the wave state forced
      * off, because the disturbance has to be measured before it is modelled:

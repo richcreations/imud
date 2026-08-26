@@ -337,10 +337,10 @@ $[\,1-s_k,\ 1+s_k\,]$ with $s_k=$ `accel_skip_thresh`;
 $mag\_reject\_sq = (\text{mag\_reject\_gauss})^2$; convergence threshold
 $conv\_thresh = 3\,\theta_c^2$ with
 $\theta_c = \max(0.5°,\ 0.30\,\arcsin\sigma_g)$ — 1.40° at the default
-$\sigma$. The flat 0.5° it used to be was set against a filter whose
-steady-state attitude variance was not believable; with the wave state $P$
-tells the truth, and the truth has a floor near 0.9°/axis that a 0.5°
-threshold would never reach (§4.1.1). m_ref EMA gain
+$\sigma$. It scales with $\sigma_g$ rather than being flat because with the
+wave state $P$ reports a believable steady-state attitude variance, and that
+has a floor near 0.9°/axis: a fixed 0.5° threshold would never be reached
+(§4.1.1). m_ref EMA gain
 $mref\_alpha = 1/(\tau_{mref}\, f_{s,\text{mag}})$ with $\tau_{mref}=300$ s
 (`:467`).
 
@@ -698,7 +698,7 @@ $$ \alpha = 1-\exp(-\Delta t/\tau), $$
 $\Delta t$ accumulated over *every* sample, accepted or skipped. This is exact
 at any feed rate and reduces to $\Delta t/\tau$ when updates are frequent.
 
-**What $R_a$ can and cannot do (ROADMAP §10.1).** $R_a$ derives from the
+**What $R_a$ can and cannot do.** $R_a$ derives from the
 datasheet noise floor, and the filter is measurably over-confident about it:
 mean NIS over the wave benchmark is 19 (3-D) / 25 (yaw-only) where a
 consistent model reads 1. The natural remedy — raise `mekf_accel_noise` until
@@ -747,7 +747,7 @@ tuning it upward "a little" lands in the worst available region.
 > but the absolute numbers are not reproducible on current code and the table is
 > kept as the historical record of why §10.5 was undertaken.
 
-#### 4.7.1 The Gauss–Markov wave state — outcome (ROADMAP §10.5)
+#### 4.7.1 The Gauss–Markov wave state — outcome
 
 Fixing `m33_inv` removed an accidental 87% decimation of accel updates. That
 decimation had been doing real work: it crudely decorrelated the
@@ -764,12 +764,11 @@ repeated correlated samples correctly stop adding information. Over the
 | `m33_inv` fixed, no wave state | 9.488° | 7.255° | 11.424° | 8.801° | 259 / 252 | 933 / 1086 | 56.5 / 56.9 | .148/.160 |
 | **+ wave state (shipped)** | **4.452°** | **0.828°** | **2.308°** | **1.016°** | **3.47 / 0.99** | 335 / **10.1** | **1.01 / 0.69** | .000/.000 |
 
-(The 3-D columns of this table were themselves measured through a broken
-benchmark alignment; §4.8.1 re-bases them. The wave-state conclusions are
-unaffected — they rest on the yaw-only default and on the NIS column — but the
-3-D attitude and NEES(strict) figures here are superseded.)
+(For 3-D attitude and NEES(strict), §4.8.1 carries the authoritative figures:
+it measures them with the benchmark's alignment corrected. The wave-state
+conclusion here rests on the yaw-only default and on the NIS column.)
 
-Against the bar ROADMAP §10.5 set (the old baseline): 3-D attitude −21%, 3-D
+Against the old baseline: 3-D attitude −21%, 3-D
 heading −73%, yaw heading −48%, yaw attitude a dead heat, NIS from 19–25 to
 ≈1, NEES(trace) from 18.3/7.8 to 3.47/0.99, and both the Huber cap and the
 gross-reject gate go completely idle (weight 1.000, reject 0.0000) — the
@@ -813,7 +812,7 @@ calibration defect can be what it measures. See §4.8.1: it is the magnetic
 reference's DIP error, and ~96% of it was the benchmark aligning from a single
 instantaneous sample where the daemon averages a window.
 
-#### 4.7.2 The filter across the whole rate ladder (ROADMAP §10.9)
+#### 4.7.2 The filter across the whole rate ladder
 
 Every figure above, and every figure elsewhere in this document, was measured at
 one point: 833 Hz IMU with a ~104 Hz magnetometer. The drivers advertise **29
@@ -928,7 +927,7 @@ attitude-error component of the innovation does not. NEES(strict) correspondingl
 independent corroboration of the dip-error diagnosis in §4.8.1: fewer 3-D mag
 updates inject less alignment dip bias into roll and pitch.
 
-**The gyro pad.** ROADMAP §10.3 describes `mekf_gyro_noise = 0.007` as a ~58×
+**The gyro pad.** `mekf_gyro_noise = 0.007` is a ~58×
 pad standing in for wave-induced angular dynamics. If that were all it covered it
 should be rate-invariant, since $Q_g = N_g^2\Delta t$ already delivers the same
 rad²/second at any rate. Measured, the RMS-optimal $N_g$ is **0.002 at 833 Hz and
@@ -993,7 +992,7 @@ $m_{ref}$ is fixed once, at alignment, from the tilt estimate available at that
 moment (§4.3). In a seaway that tilt is wrong, and the error is baked in
 permanently — in 3-D mode it becomes a **constant roll/pitch bias** that $P$ has
 no term for, which is what a large NEES(strict) is reporting. Measured over the
-12-seed benchmark (this supersedes the 3-D columns of §4.7.1's table):
+12-seed benchmark — these are the authoritative 3-D figures:
 
 | 3-D mode | dip error | att RMS | hdg RMS | NEES(tr) | NEES(st) |
 |---|---|---|---|---|---|

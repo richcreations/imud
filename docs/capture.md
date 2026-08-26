@@ -66,8 +66,7 @@ timestamps.
 
 **Replay is deterministic, and it runs on the capture's clock.** Replaying one
 file repeatedly produces bit-identical filter output — same quaternion, same
-bias, same `dt`, frame for frame. Three things are needed for that, and each
-one was a defect until 1.9.0:
+bias, same `dt`, frame for frame. Three properties make that true:
 
 - Each read hands back the **burst that was recorded**, not whatever is due at
   the instant the reader thread is scheduled. The writer stamps every sample of

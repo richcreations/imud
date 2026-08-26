@@ -1494,14 +1494,6 @@ And the watermark is the lever, at both ends of the ladder:
 |6664|32|32.0|10.7 ms|0.26 / 0.26 ms|
 |6664|64|63.8|14.6 ms|0.26 / 0.51 ms|
 
-**Earlier releases of this document said the opposite** — that a 10 ms drain
-timer pre-empted the watermark, that `fifo_wm` mattered only while
-`fifo_wm / odr_hz` stayed under 10 ms, and that it should be set below
-`odr_hz / 100` to have any effect at all. That described the code of the time
-and is no longer true: the flat timeout was replaced by the rate-sized fallback
-above, which is what let the watermark start deciding. The measurements behind
-the old claim were sound; the code they described is gone.
-
 ### The three terms
 
 |Term|Target|Measured (Pi 5, 833 Hz, SPI)|
@@ -1617,71 +1609,7 @@ make CC=aarch64-linux-gnu-gcc
 
 -----
 
-## 16. Open Items
-
-1. **Pi 5 compatibility** — Pi 5 uses the RP1 I/O chip; `gpiod` is the correct
-   abstraction layer but interrupt latency should be re-profiled on Pi 5
-   hardware. I2C is on `/dev/i2c-1` with a different underlying driver.
-
-2. **Marine vibration characterization** — Near a diesel or outboard, the
-   ISM330DHCX's embedded low-pass filter settings (LPF2) and the MEKF accel
-   update skip threshold may need tuning. The ISM330DHCX's onboard Machine
-   Learning Core (MLC) can detect engine-on state and assert a GPIO flag,
-   allowing the daemon to tighten `accel_skip_thresh` automatically.
-   (1.7 fixed the software detector's time constant and added threshold
-   hysteresis; the remaining response-side work is `docs/ROADMAP.md` §10.5.)
-
-3. **`cal_file` default** — `config_defaults()` sets `/etc/imud/cal.json`
-   (alongside the main config; written by `imud-cal`, read-only by the daemon).
-
-4. **The measurement model was over-confident** — RESOLVED in 1.7 by modelling
-   the correlation, after confirming it could not be fixed by retuning `Ra`.
-   Sweeping `mekf_accel_noise` across four orders of magnitude showed NIS
-   reaching 1.0 only at `Na` ≈ 0.03, which cost the marine default 2.31° →
-   8.58° of attitude RMS and drove NEES the wrong way, while NEES(strict) for
-   3-D stayed pinned at 44–64 throughout: P's *shape* was wrong, and no
-   isotropic scalar can fix that. The cause is that the seaway residual is
-   wave-orbital and time-correlated, and a white isotropic R cannot describe a
-   coloured disturbance.
-
-   The fix is the Gauss–Markov wave-acceleration state (`mekf_wave_accel`,
-   `mekf_wave_accel_tau_s`), which carries the correlated part in the filter
-   state so repeated samples correctly stop adding information. Measured over
-   the 12-seed benchmark, against the pre-1.7 baseline: accel NIS 19.3/25.2 →
-   1.01/0.69, NEES(trace) 18.3/7.8 → 3.47/0.99, 3-D attitude RMS 5.65° →
-   4.45°, 3-D heading 3.07° → 0.83°, yaw-only heading 1.96° → 1.02° with
-   attitude unchanged at 2.31°, and both the Huber cap and the gross-reject
-   gate idle. `docs/math.md` §4.7.1.
-
-   Doing this exposed a further real bug: `m33_inv` tested for singularity on
-   an absolute `|det| < 1e-12`, but S for the gravity update carries physical
-   units and its determinant sits near 1e-13 at ordinary conditioning — so
-   **87% of accel updates in the benchmark were being silently discarded** and
-   the health EMAs were fed only by the survivors. The test is now relative to
-   the matrix scale.
-
-   That in turn exposed a third bug, in the initial alignment: it averaged a
-   hardcoded ~1 s of sensor data, about a fifth of a roll period, so a daemon
-   started underway aligned to an arbitrary point in the wave cycle and baked
-   the resulting tilt error permanently into the magnetic reference's dip
-   (47.7° of attitude RMS in the marine default against 2.19° at a 5 s window).
-   The window is now `align_window_sec`, default 5 s. The residual dip error
-   cannot be learned out at sea, so 3-D vector mode admits it into the
-   covariance via `mekf_mag_dip_sigma_deg` — a rank-1 anisotropic term in the
-   magnetometer noise. `docs/math.md` §4.3 and §4.8.1, `docs/ROADMAP.md` §10.5.
-
-   Investigating this found and fixed two separate real bugs: the gross-outlier
-   reject gate was rejecting 26% of ordinary wave motion at 9γ (now 25γ, which
-   improved attitude RMS 17%/35% and halved NEES at no cost), and the
-   health/NIS EMAs used a gain that assumed every IMU sample produced an
-   update, making their true time constant ten minutes instead of 30 s.
-   Field instruments: `nis_accel` / `nis_mag` (wire v17) live, `imud-cal
-   fit-ra` offline. Full detail: `docs/ROADMAP.md` §10.1–10.2,
-   `docs/math.md` §4.5 / §4.7 / §8.2.
-
------
-
-## 17. Timestamp Architecture — Camera Correlation
+## 16. Timestamp Architecture — Camera Correlation
 
 ### System Context
 

@@ -41,9 +41,10 @@ Notes for the future packager (Debian-archive submission)
   upstream tarball (imud-X.Y.tar.gz -> imud_X.Y.orig.tar.gz), format
   "3.0 (quilt)" is already set, and include/version.h must match
   debian/changelog at release time (see docs/RELEASING.md).
-* Known lintian refinements deliberately deferred: /usr/lib multiarch
-  triplet paths, changelog.Debian.gz naming (upstream changelogs are
-  installed as changelog.gz by the Makefile).
+* Known lintian refinement deliberately deferred: /usr/lib multiarch
+  triplet paths.  (changelog.Debian.gz naming is handled: the Makefile
+  installs changelog.gz, which is correct for a source install, and
+  debian/rules renames it per Policy 12.7 when building the .deb.)
 * Build with the packaging paths:
       make PREFIX=/usr SVCDIR=/lib/systemd/system DESTDIR=<stage> install
   When DESTDIR is set, the install is a pure file copy: no useradd and no

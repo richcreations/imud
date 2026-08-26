@@ -30,7 +30,7 @@
  * THE REAL FIX, AND WHY IT IS NOT THIS.  These parts can batch timestamps into
  * the FIFO itself (ST: DEC_TS_BATCH + tag 0x04; ICM: bytes [14:15] of each
  * packet), which times samples where they are produced instead of inferring it
- * afterwards.  That is the right answer and it is on the ROADMAP.  It is not
+ * afterwards.  That is the right answer.  It is not
  * done here because DS13012 never states whether the timestamp word precedes
  * or follows the sample set it describes, because batching changes FIFO word
  * traffic and therefore the watermark arithmetic — moving the very sample

@@ -296,7 +296,7 @@ long imu_mag_stall_ms(int odr_mhz);
  * not about missed edges. It is the drain CADENCE, and it is what actually
  * bounds FIFO residence: the reader takes whichever of the watermark and this
  * timeout comes first, so `fifo_wm` has an effect only while wm/odr is under
- * it. ROADMAP §3.1 and spec.md §14 both quote that rule, and the four-cell
+ * it. spec.md §14 quotes that rule, and the four-cell
  * sweep behind it, against this number.
  *
  * Shared so imud-imutest paces its drains the way the daemon does rather than

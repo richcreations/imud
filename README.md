@@ -217,4 +217,5 @@ in-situ `imud-cal mag`. See the
   `imud-imutest(8)` by `make install-utils`; `imud-signalk(8)` / `imud-mqtt(8)` /
   `imud-influxdb(8)` / `imud-mavlink(8)` / `imud-prometheus(8)` (each with
   an `imud-<name>.conf(5)`) by the matching `install-<name>` target.
-- **[ROADMAP](docs/ROADMAP.md)** — deferred and future work.
+- **[ROADMAP](docs/ROADMAP.md)** — future features, hardware support and
+  project direction.

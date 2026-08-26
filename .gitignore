@@ -97,6 +97,12 @@ CLAUDE.md
 continuespidrama.md
 openfor1.9.0.md
 
+# Engineering record: bench measurements, refuted theories, open work items.
+# A directory rather than another filename per note, because these accumulate.
+# Tracked docs say what imud does today; how we found out lives here and in the
+# commit messages.  Never cited from tracked code or docs — see CLAUDE.md.
+notes/
+
 # devbox/ is TRACKED — the Debian build/test container (devbox/README.md) is a
 # contributor tool, not local tooling.  Nothing in the build, the packaging or
 # CI refers to it and none of it ships in a .deb; it exists so that the suites

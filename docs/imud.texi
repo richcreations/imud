@@ -702,17 +702,9 @@ rates of some parts are beyond what a Raspberry Pi can sustain.
 raising its interrupt. This sets @strong{both buffer depth and sample
 latency} --- with @code{int_grace}, the reader waits
 @code{fifo_wm + int_grace} sample periods, so 64 at 833 Hz batches about
-77 ms. Earlier releases documented this key as having @emph{no} effect
-on latency, citing a bench run that measured the same 33 ms residence at
-every setting. That measurement was real and the conclusion drawn from
-it was wrong: the reader then used a flat 10 ms fallback, which drained
-before the watermark could assert --- and because a level watermark
-deasserts as soon as a drain empties the FIFO, the interrupt was
-suppressed entirely at nine of the ten ISM330DHCX rates. The key was
-inert because its own safety net pre-empted it. On the ST parts a
-watermark of 8 or more also batches the chip timestamp into the FIFO
-(§1.1); at 32 and above that costs 1.6% of the word budget, so the same
-watermark holds about 63 sample-sets rather than 64.
+77 ms. On the ST parts a watermark of 8 or more also batches the chip
+timestamp into the FIFO; at 32 and above that costs 1.6% of the word
+budget, so the same watermark holds about 63 sample-sets rather than 64.
 @item 
 @code{int_grace}
  @tab int
@@ -1363,8 +1355,7 @@ sample periods if the line is late. The fallback is by construction
 later than the watermark it backs up, so on a healthy line the watermark
 decides and residence is about @code{fifo_wm / odr_hz} --- measured at
 75.8 ms against a predicted 76.8 ms at 833 Hz with @code{wm = 64}. See
-the @code{fifo_wm} entry above. Earlier releases said the opposite,
-describing a flat 10 ms timer that has since been replaced.
+the @code{fifo_wm} entry above.
 @item
 @strong{It takes a few seconds to appear}, because the chip's real tick
 period has to be measured against the host clock first. On

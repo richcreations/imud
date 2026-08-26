@@ -1,32 +1,14 @@
 imud-utils (1.9.0) unstable; urgency=medium
 
-  * imud-imutest knows the RM3100's register map, so its control-register
-    diff across init() skips the measurement results at 0x24-0x2C: reading
-    those is what clears DRDY on that part, and a blind sweep would have
-    consumed the sample the next check waits for.
-  * Both tools follow the daemon to 1.9.0; no other change.
+  * Sample rates are carried in milli-Hz throughout, so the advertised
+    rates are now the silicon's own. The ISM330DHCX ladder is 6664/2^n,
+    making its bottom rung 13.016 Hz where the datasheet prints 12.5.
+    odr_hz accepts fractional rates. A rate that rounds to zero is
+    refused.
+  * imud-imutest measures the magnetometer the way the daemon reads it,
+    and counts data-ready edges against the drain rather than a timer of
+    its own.
 
-  * imud-imutest: imu.chipts.wall no longer warns when the chip's timebase
-    runs FAST. Since 1.8 the daemon measures the counter's real period per
-    anchor rather than trusting ts_tick_ns, so ordinary oscillator
-    tolerance is absorbed -- a bench run on the reference ISM330DHCX read
-    1.041 and was flagged as a defect. Chip time running SHORT still
-    warns: that is a dropped counter wrap, which no measured period can
-    recover. The row also reports INTERNAL_FREQ_FINE where the part
-    declares one, so the oscillator explanation is confirmed by the chip
-    rather than inferred from the ratio.
-
-  * imud-imutest counts DRDY edges twice over the same window, once
-    draining the FIFO on every edge and once not. A watermark interrupt is
-    a level condition -- it asserts once and stays asserted when nothing
-    empties the FIFO -- while a per-sample data-ready keeps pulsing, and a
-    single count cannot tell those apart. Both rates are reported, and the
-    check no longer grades a part down for matching neither model, which
-    the healthy reference part does. No edges at all still fails, and more
-    edges than the part has samples still warns.
-  * imud-imutest grades chip_ts against the tick period the daemon will
-    actually use, including one a part declares for itself, rather than
-    against the driver's datasheet typical.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud-utils (1.8.2) unstable; urgency=medium

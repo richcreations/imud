@@ -1,118 +1,68 @@
 imud (1.9.0-1) unstable; urgency=medium
 
   * SPI transport for the IMU and the magnetometer. [imu] and [mag] each
-    gain bus, spi_dev and spi_speed_hz; the default bus = "i2c" preserves
-    1.8.2 behaviour for any config that does not mention them. The two
-    sections choose independently, so a SPI IMU with an I2C compass is a
-    legal rig -- and on a 9-axis board the only one, since the AKM
-    compasses have no SPI port. A driver whose part has no SPI port
-    refuses bus = "spi" at startup by name. An unrecognised bus value is
-    fatal rather than a silent fallback to I2C, which on a SPI-wired
-    board would look like dead hardware instead of a typo.
-  * The hardened systemd unit allows /dev/spidev0.0 and /dev/spidev0.1
-    (SPI0 CE0 and CE1) and gains the spi supplementary group. Under
-    DevicePolicy=closed, bus = "spi" would otherwise have failed at open
-    looking like a permissions problem. A board on SPI1..6 still needs
-    its own DeviceAllow= line.
-  * ism330dhcx and lsm6dso advertise 3332 and 6664 Hz; icm42688p
-    advertises 4000 through 32000 Hz. These were missing rather than
-    disabled -- the datasheets specify them all. No behaviour change at
-    any rate that already worked. 6664 Hz needs bus = "spi" (I2C at
-    400 kHz cannot carry the FIFO drain), and icm42688p at 16000/32000
-    will not run on a Raspberry Pi.
-  * New magnetometer driver rm3100 (PNI RM3100), magneto-inductive
-    rather than AMR: ~13 nT sensitivity, no offset drift, and no
-    SET/RESET coil, so set_period_s does nothing on this part. I2C at
-    0x20-0x23 or SPI, ODR 1-600 Hz. Flagged experimental -- it has not
-    run on real silicon, and the daemon warns at startup.
-  * The manual installs as an Info page: `info imud`. Building from
-    source now requires texinfo.
-  * ts_wall_ns and ts_tai_ns are documented correctly at last. They have
-    always carried the instant the sensor sampled, reconstructed from the
-    chip counter, but every header called them "CLOCK_REALTIME of last
-    prediction step" -- which reads as emit time and hid that the field
-    exists for correlating a packet with another sensor and for computing
-    end-to-end age. The fields did not change; only their documentation
-    was wrong. On icm20948 and mpu925x, which have no hardware timestamp
-    counter, they degrade to the time of the I2C read and cannot see FIFO
-    residence.
-  * Heave and sea state accumulate in double. A measured precision sweep
-    found the float accumulators to be the dominant error term in those
-    two estimators; attitude is unaffected.
-  * Sample latency is instrumented and split into FIFO residence and the
-    daemon's own pipeline, only the second of which imud controls.
-  * The wire packet is unchanged (v17, 276 bytes) and so is the libimud
-    ABI (SONAME libimud.so.0), so consumers need no rebuild.
+    gain bus, spi_dev and spi_speed_hz, and choose independently.  Default
+    is bus = "i2c"; existing configs are unaffected.
+  * New magnetometer driver rm3100 (PNI RM3100): magneto-inductive, no
+    SET/RESET coil, I2C or SPI, 1-600 Hz. Experimental until validated on
+    hardware.
+  * Higher sample rates: ism330dhcx and lsm6dso gain 3332 and 6664 Hz,
+    icm42688p 4000 through 32000 Hz. These are rates the datasheets always
+    specified and the drivers had never offered.  6664 Hz needs SPI;
+    icm42688p above 8000 Hz will not run on a Raspberry Pi.
+  * The manual installs as an Info page: info imud.  Building from source
+    now requires texinfo.
+  * Sample latency is instrumented. The [stats] line splits it into FIFO
+    residence, which your fifo_wm and rate decide, and the daemon's own
+    pipeline.
+  * imud-status says when heading is dead-reckoned. Without a magnetometer
+    calibration the filter's mag update never runs and heading drifts on
+    the gyro alone, which nothing in the output used to show.
+  * Sample rates are carried in milli-Hz throughout, so the advertised
+    rates are now the silicon's own. The ISM330DHCX ladder is 6664/2^n,
+    making its bottom rung 13.016 Hz where the datasheet prints 12.5.
+    odr_hz accepts fractional rates. A rate that rounds to zero is
+    refused.
+  * [mag] odr_hz offers four rates on the MMC5983MA, not seven: the part's
+    continuous-measurement modes are 1, 10, 20, 50, 100 and 200 Hz, and
+    the others were never real.
+  * imud --replay exits when the capture runs out, after letting the last
+    samples reach the filter. It used to sit there until killed.
+  * Replaying one capture twice now produces identical filter output, and
+    sim_speed decides the pace rather than the reader threads' hardware
+    poll cadences.
+  * A reader thread that gives up stops the daemon instead of leaving it
+    running with a dead sensor. A magnetometer that stops delivering is
+    reported once per outage, and again when it recovers.
+  * [imu] spi_speed_hz below 2.5 MHz warns at startup when the
+    magnetometer shares the same SPI controller, naming the rate to use.
+    Below that the magnetometer can stop measuring while still answering
+    the bus.
+  * Heave and sea state accumulate in double, so a long run no longer
+    loses resolution in the integrators.
+  * Calibration was applied in the wrong frame when [mount] was not
+    identity: the daemon rotated board to body first and applied the
+    sensor-frame calibration second.  Only affects a rotated mount; with
+    [mount] identity the two frames coincide.  ACTION: Re-run imud-cal for
+    any sensor on a non-identity mount.
+  * The daemon could not start on arm64 or armhf under its own systemd
+    unit, and installing or upgrading could leave a Raspberry Pi 5 unable
+    to open its GPIO chip.
+  * Several sample-timestamp defects: chip_ts could run backwards between
+    bursts, a corrupted read could stamp a whole burst seconds into the
+    future, the timer period was trusted rather than measured, and
+    timestamps carried two offsets.
+  * The magnetometer ran at a third of its configured rate, and the
+    MMC5983MA lost its X axis over SPI when a CTRL0 write also cleared an
+    inhibit bit.
+  * imud-cal mag could write a soft-iron scale the swing never measured,
+    stretching an axis to cover data that was never taken. An axis must
+    now be swept through at least 0.8 of the fitted radius, capping any
+    correction at 1.25x.
+  * An MPU FIFO overflow desynchronised every later read: the bytes the
+    part drops to make room are never a whole number of sample-sets, and
+    this FIFO carries no tag to resync from.
 
-  * Fix: the daemon was SIGSYS-killed by its own systemd unit on arm64
-    and armhf, before fusing a sample. SystemCallFilter= re-allowed
-    adjtimex, which is a syscall NAME: glibc's adjtimex() is adjtimex on
-    x86-64 but clock_adjtime on arm64 (no adjtimex syscall exists there)
-    and clock_adjtime64 on armhf, so the name resolved to nothing and
-    nothing was re-allowed. All three are named now. CI gained an arm64
-    runtime check that starts the daemon under the shipped filter, plus a
-    text checker over the list -- every prior test ran the binary with no
-    seccomp at all.
-  * Fix: installing or upgrading could leave a Raspberry Pi 5 unable to
-    open /dev/gpiochip4 until the next reboot. The post-install
-    `udevadm trigger --subsystem-match=gpio` re-ran Pi OS's compatibility
-    rule, whose `test ! -c /dev/gpiochip4` guard oscillates: with the
-    symlink present it adds nothing and udev drops the existing one. The
-    gpio subsystem is no longer triggered; group and mode are applied
-    directly to /dev/gpiochip* instead.
-  * Fix: chip_ts could go backwards across FIFO burst boundaries on
-    ism330dhcx, lsm6dso and icm42688p, because the burst was timed from
-    the chip's live counter read after the drain -- "now", not the newest
-    sample's time, with a lag that varies. No filter output was affected;
-    imu.c already rejected a non-increasing timestamp and used the nominal
-    period. The driver contract required monotonic, so it now is.
-  * All three parts now take the timestamp from the FIFO instead of from a
-    read after it, so the varying lag is not there at all: the ST parts
-    batch the counter into the stream as tag-0x04 words (DEC_TS_BATCH) and
-    anchor the burst on one, matched to its sample-set by TAG_CNT rather
-    than by position; icm42688p uses the per-packet stamp in bytes [14:15]
-    that it already read and discarded. Both cross-check the result against
-    the post-drain register read and fall back for the whole burst if it
-    fails. On the ST parts this costs 1.6 % of the FIFO word budget at
-    fifo_wm 32 and above -- so a watermark holds about 63 sample-sets
-    rather than 64 -- and below fifo_wm 8 nothing is batched.
-  * Fix: the chip timer's period now comes from the part rather than the
-    datasheet. imu_ops_t gains an optional ts_tick_ns_actual hook; the ST
-    6-axis parts implement it from INTERNAL_FREQ_FINE (0x63), a factory
-    trim in 0.15 % steps. The reference part declares +27, so 24027 ns
-    against the 25000 typical. This matters before ts_anchor_t has measured
-    the real period, which needs two anchors 20 s apart: until then
-    chip_to_wall extrapolates from the declared value, and on a part 4 %
-    fast that outruns the host clock in seconds and stops the sample
-    latency histogram recording.
-  * Also on latency: the daemon re-anchors at 25 s until it has measured
-    the tick period (60 s after, as before), and the FIFO-residence and
-    pipeline terms now publish on their own counts. Previously one gate
-    covered both, so an empty residence window suppressed the pipeline
-    figure with it and a short run reported no latency at all.
-  * Fix: icm42688p declared a 1 us timestamp tick. DS-000347 12.7 scales
-    the counter by 32/30 whenever the part is not clocked from CLKIN,
-    which is every configuration this driver programs, so the tick is
-    1067 ns and one second is 937500 ticks -- a 6.7 % correction.
-
-  * Fix: ts_wall_ns and ts_tai_ns carried two offsets, neither of which
-    reached the filter. The anchor paired the newest sample's chip_ts with
-    the MIDPOINT of the burst read, which was right while that value came
-    from a counter read after the drain and wrong once the driver began
-    reporting the true sample instant -- every timestamp landed late by
-    about half a read, 2-3 ms at 833 Hz over I2C. Separately, chip_to_wall
-    took its tick delta as unsigned, so a sample older than the anchor came
-    out 29.8 hours in the future; the reader anchors on a burst's newest
-    sample and publishes the rest of that burst after, so about eight
-    samples a minute at 833 Hz went out that way. The second predates
-    1.9.0. imud-imutest's imu.chipts.wall could not catch either: it grades
-    the chip/wall ratio, which a constant offset leaves at 1.0000.
-  * Sample latency measured on a Raspberry Pi 5: the pipeline term is
-    0.26 ms p99 against a 1.5 ms budget. fifo_wm is documented differently
-    as a result -- it bounds buffer depth and overflow headroom, not
-    latency, because the reader also wakes on a 10 ms timeout and drains
-    whatever is there. No daemon behaviour changed; the documentation had
-    simply never been measured against.
  -- Richard Simpson <richcreations@gmail.com>  Mon, 10 Aug 2026 04:48:20 -0700
 
 imud (1.8.2-1) unstable; urgency=medium

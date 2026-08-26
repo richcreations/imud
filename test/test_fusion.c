@@ -68,7 +68,7 @@ static double bench_ra_override = 0.0;
 
 /*
  * Same, for mekf_gyro_noise — the ~58x pad over the raw sensor floor that
- * ROADMAP §10.3 describes.  Only BENCH_SWEEP_NG sets it.
+ * docs/math.md §4.7.2 describes.  Only BENCH_SWEEP_NG sets it.
  *
  * Added because the pad is the one shipped knob with no override, and the rate
  * sweep gave a reason to want one: Qg = Ng^2 * dt delivers the same rad^2 per
@@ -1390,7 +1390,7 @@ TEST(test_reset_jacobian_rotates_P)
         EXPECT(f.P[i][i] > 0.0f, "wave block keeps positive variance through reset");
 }
 
-/* ── Gauss–Markov wave-acceleration state (ROADMAP §10.5) ───────────────────── */
+/* ── Gauss–Markov wave-acceleration state (docs/math.md §4.1.1) ──────────────── */
 
 static imud_config_t make_cfg_nowave(void)
 {
@@ -1915,7 +1915,7 @@ TEST(test_gate_health_emas)
 }
 
 /*
- * Rolling NIS (ROADMAP §10.1 instrument). The properties that matter:
+ * Rolling NIS (docs/math.md §4.7 instrument). The properties that matter:
  *
  *  (a) on-model data reads ≈ 1 — the definition of a consistent covariance;
  *  (b) sustained GROSS outliers, which the gross-outlier gate throws away, must still
@@ -3406,7 +3406,7 @@ static void test_bench_stream_fingerprint(void)
 }
 
 /*
- * ROADMAP §10.1 tuning sweep — not built by default.
+ * R_a tuning sweep (docs/math.md §4.7) — not built by default.
  *
  *   make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall -Wextra -std=c11 \
  *       -pthread -Iinclude -DBENCH_SWEEP_RA" && ./test_fusion
@@ -3443,7 +3443,7 @@ static void bench_sweep_ra(void)
 #endif
 
 /*
- * ROADMAP §10.5 tuning sweep for the Gauss–Markov wave state — not built by
+ * Tuning sweep for the Gauss–Markov wave state (docs/math.md §4.1.1) — not built by
  * default. `make` does not track CFLAGS, so remove the binary first:
  *
  *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
@@ -3497,7 +3497,7 @@ static void bench_sweep_wave(void)
 #endif
 
 /*
- * ROADMAP §10.3 gyro-pad sweep — not built by default.  `make` does not track
+ * Gyro-pad sweep (docs/math.md §4.7.2) — not built by default.  `make` does not track
  * CFLAGS, so remove the binary first:
  *
  *   rm -f test_fusion && make test_fusion CFLAGS="-D_GNU_SOURCE -O2 -Wall \
@@ -3900,7 +3900,7 @@ static void test_wave_benchmark(void)
      * Regression bounds, on the MEAN over N_BENCH_SEEDS draws (see the
      * scenario comment for why a single seed is not a usable signal).
      *
-     * ── Recorded change: gross-reject gate 9γ → 25γ (ROADMAP §10.1) ───────
+     * ── Recorded change: gross-reject gate 9γ → 25γ (docs/math.md §4.7) ───────
      * Investigating §10.1's claim that Ra was far too optimistic for a seaway
      * showed the opposite: the 9γ gate was rejecting 7–11% of ordinary wave
      * motion, starving the filter, and the resulting drift produced the large
@@ -3933,7 +3933,7 @@ static void test_wave_benchmark(void)
      * scenario-luck statistic rather than a filter-quality one.
      *
      * ── Recorded change: m33_inv singularity test, and the Gauss–Markov
-     *    wave-acceleration state (ROADMAP §10.5) ───────────────────────────
+     *    wave-acceleration state (docs/math.md §4.1.1) ─────────────────────
      *
      * The numbers above were, it turned out, measured through a bug. m33_inv
      * declared S singular on an ABSOLUTE |det| < 1e-12, but S = HPHᵀ + R·I for
@@ -3961,7 +3961,7 @@ static void test_wave_benchmark(void)
      *   inv fixed only   9.488°    7.255°   11.424°    8.801°   259 / 252  56.5/56.9
      *   + wave state     4.452°    0.828°    2.308°    1.016°  3.47/0.99  1.01/0.69
      *
-     * The old baseline is the honest bar (ROADMAP §10.5 states the criterion
+     * The old baseline is the honest bar (docs/math.md §4.7.1 states the criterion
      * against it), and the wave state clears it everywhere: 3-D attitude −21%,
      * 3-D heading −73%, yaw heading −48%, yaw attitude a dead heat, NIS from
      * 19–25 to ≈1, NEES(trace) from 18.3/7.8 to 3.47/0.99, and the Huber cap

@@ -80,7 +80,7 @@ static inline uint32_t st_freq_fine_tick_ns(const imud_bus_t *bus,
  * gates and the generated documentation tables all key off, and it is resolved
  * before the bus is open.  Making it per-part is a separate decision with a
  * much wider blast radius; ts_anchor_t already measures the true sample
- * interval at runtime.  See docs/ROADMAP.md §1.1.
+ * interval at runtime.
  */
 
 #endif /* IMUD_DRIVERS_ST_FREQ_FINE_H */

@@ -18,7 +18,7 @@
  * Count files, not ops: three of those files register two parts each, so the
  * registry has fifteen *_ops entries (sim is two of them) against twelve files.
  *
- * A mock cannot replace bench validation (ROADMAP §1) — it cannot tell you
+ * A mock cannot replace bench validation — it cannot tell you
  * the chip→board axis remap matches the physical part.  What it does catch is
  * everything transcribed from a datasheet: register addresses, full-scale
  * encoding, byte order, and the return-code contract.
@@ -1204,7 +1204,7 @@ static void test_ak_read_decode(void)
  * validation, so until now nothing had ever executed a line of them — a
  * transposed register or a sign error would have waited for hardware.
  *
- * These do not replace hardware validation (ROADMAP §1): a mock cannot tell
+ * These do not replace hardware validation: a mock cannot tell
  * you the chip-to-board axis remap matches the physical part. What it does
  * catch is the register map, the full-scale encoding, the byte order, and the
  * return-code contract — the parts that are transcribed from a datasheet and

@@ -2,8 +2,12 @@ imud NEWS — user-visible changes
 ================================
 
 Newest first. This file records notable, user-visible changes per release. The
-per-package changelogs under /usr/share/doc/<pkg>/changelog.gz hold the
-packaging-level record, and the git history holds the full detail.
+per-package changelogs under /usr/share/doc/<pkg>/ hold the packaging-level
+record (changelog.Debian.gz in a .deb, changelog.gz from a source install), and
+the git history holds the full detail.
+
+Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
+registry rather than this file.
 
 
 1.9.0
@@ -11,866 +15,218 @@ packaging-level record, and the git history holds the full detail.
 An additive release: SPI transport, higher sample rates on three parts, a new
 magnetometer driver, and the manual as an Info page. The wire packet is
 unchanged — still v17 / 276 bytes — and so is the libimud ABI, so nothing here
-forces you to redeploy consumers. Existing configurations keep working: every
-new key defaults to the behaviour 1.8.2 had.
+forces you to redeploy consumers. Every new key defaults to the behaviour
+1.8.2 had.
 
-* **Fix: calibration was applied in the wrong frame on a non-identity
-  `[mount]`.** The daemon rotated board→body first and applied the calibration
-  second, which subtracts a sensor-frame offset from body-frame data.
-  `imud-cal` reads the driver directly and never applies `[mount]`, so every
-  calibration it writes is in SENSOR axes. With `[mount]` identity the two
-  frames coincide and nothing looks wrong, which is how this survived — the
-  defect appears only on a rotated mount, which is precisely when you want one.
-  If you calibrated a rotated sensor under 1.8.2, re-run `imud-cal`.
+Added:
 
-* **Fix: `imud-cal mag` could write a soft-iron scale the swing never
-  measured.** A bench swing produced a Z scale of 2.07 — not distortion, but
-  the fit stretching an axis to cover data that was never taken, which doubles
-  the vertical field the moment the sensor leaves level. The guard existed but
-  its bound was too loose, admitting up to 3.3×. An axis must now be swept
-  through at least 0.8 of the fitted radius, capping any emitted scale at
-  1.25×; a poorly covered axis is left at 1.0 rather than corrected with a
-  guess.
+* SPI transport for the IMU and the magnetometer. [imu] and [mag] each gain
+  bus, spi_dev and spi_speed_hz, and choose independently.
+  Default is bus = "i2c"; existing configs are unaffected.
+* New magnetometer driver rm3100 (PNI RM3100): magneto-inductive, no SET/RESET
+  coil, I2C or SPI, 1-600 Hz. Experimental until validated on hardware.
+* Higher sample rates: ism330dhcx and lsm6dso gain 3332 and 6664 Hz, icm42688p
+  4000 through 32000 Hz. These are rates the datasheets always specified and
+  the drivers had never offered.
+  6664 Hz needs SPI; icm42688p above 8000 Hz will not run on a Raspberry Pi.
+* The manual installs as an Info page: info imud.
+  Building from source now requires texinfo.
+* Sample latency is instrumented. The [stats] line splits it into FIFO
+  residence, which your fifo_wm and rate decide, and the daemon's own
+  pipeline.
+* imud-status says when heading is dead-reckoned. Without a magnetometer
+  calibration the filter's mag update never runs and heading drifts on the
+  gyro alone, which nothing in the output used to show.
 
-* **`imud-status` now says when heading is dead-reckoned.** With no
-  magnetometer calibration every mag sample is marked invalid, the filter's
-  mag update never runs, and heading comes from the gyro alone — measured on a
-  static bench, it walked 220° in 24 minutes while pitch and roll held to a
-  tenth of a degree. Nothing else in the output looks wrong while that happens.
-  The `Calibration: mag no` line was a statement about whether a file exists;
-  the heading is now qualified directly.
+Changed:
 
-* **A magnetometer that stops delivering now says so.** `read()` returning
-  "no new measurement" is normal — the poll can outrun the part at any rate —
-  so a part that had stopped entirely produced no log line at all: 800 seconds
-  with zero mag samples and nothing after the aligner's line at t+5 s, with
-  the daemon otherwise looking healthy, stats included. imud now warns once per
-  outage, naming the gap and the configured rate, and logs the recovery.
+* Sample rates are carried in milli-Hz throughout, so the advertised rates are
+  now the silicon's own. The ISM330DHCX ladder is 6664/2^n, making its bottom
+  rung 13.016 Hz where the datasheet prints 12.5.
+  odr_hz accepts fractional rates. A rate that rounds to zero is refused.
+* [mag] odr_hz offers four rates on the MMC5983MA, not seven: the part's
+  continuous-measurement modes are 1, 10, 20, 50, 100 and 200 Hz, and the
+  others were never real.
+* imud --replay exits when the capture runs out, after letting the last
+  samples reach the filter. It used to sit there until killed.
+* Replaying one capture twice now produces identical filter output, and
+  sim_speed decides the pace rather than the reader threads' hardware poll
+  cadences.
+* A reader thread that gives up stops the daemon instead of leaving it running
+  with a dead sensor. A magnetometer that stops delivering is reported once
+  per outage, and again when it recovers.
+* [imu] spi_speed_hz below 2.5 MHz warns at startup when the magnetometer
+  shares the same SPI controller, naming the rate to use. Below that the
+  magnetometer can stop measuring while still answering the bus.
+* Heave and sea state accumulate in double, so a long run no longer loses
+  resolution in the integrators.
 
-* **Fix: an MPU FIFO overflow desynchronised every later read.** `mpu925x`
-  detected the overflow, reported it, and carried on draining. The FIFO is 512
-  bytes and a sample-set is 12, so the bytes the part drops to make room are
-  never a whole number of sample-sets and everything after is parsed one field
-  late — the direct registers read gravity on Z while the FIFO path read it on
-  X in the same run. Unlike the ST parts this FIFO carries no per-word tag to
-  resync from, so recovery is now explicit.
+Fixed:
 
-* **Sample rates are carried in milli-Hz, and the advertised rates are now the
-  silicon's.** No part on the shelf runs a whole-Hz ladder: the ST 6-axis chain
-  is 6664/2ⁿ, so its bottom rung is 13.016 Hz where the datasheet prints
-  "12.5". `ism330dhcx` advertised 12 for a rung that delivers 13.016 — 7.8%
-  below the silicon — which made `imud-imutest` report a correct chip as
-  defective at that rung on every run. `odr_hz` accepts fractional rates.
+* Calibration was applied in the wrong frame when [mount] was not identity:
+  the daemon rotated board to body first and applied the sensor-frame
+  calibration second.
+  Only affects a rotated mount; with [mount] identity the two frames coincide.
+  ACTION: Re-run imud-cal for any sensor on a non-identity mount.
+* The daemon could not start on arm64 or armhf under its own systemd unit, and
+  installing or upgrading could leave a Raspberry Pi 5 unable to open its GPIO
+  chip.
+* Several sample-timestamp defects: chip_ts could run backwards between
+  bursts, a corrupted read could stamp a whole burst seconds into the future,
+  the timer period was trusted rather than measured, and timestamps carried
+  two offsets.
+* The magnetometer ran at a third of its configured rate, and the MMC5983MA
+  lost its X axis over SPI when a CTRL0 write also cleared an inhibit bit.
+* imud-cal mag could write a soft-iron scale the swing never measured,
+  stretching an axis to cover data that was never taken. An axis must now be
+  swept through at least 0.8 of the fitted radius, capping any correction at
+  1.25x.
+* An MPU FIFO overflow desynchronised every later read: the bytes the part
+  drops to make room are never a whole number of sample-sets, and this FIFO
+  carries no tag to resync from.
+* imud-imutest measures the magnetometer the way the daemon reads it, and
+  counts data-ready edges against the drain rather than a timer of its own.
+* imud-influxdb half-applied its output enables on SIGHUP, so a reload could
+  leave some outputs on and others off.
 
-* **Replay is deterministic, and it runs at the speed you asked for.** Both
-  reader threads slept a cadence sized for a real part filling a real FIFO, and
-  `sim_speed` could not reach it, so a capture recorded with a ~105 Hz
-  magnetometer replayed at 33 Hz: a 125 s file took 372 s and fused a third of
-  the field samples the live daemon had. `dt` was also anchored to the replay
-  machine's clock, and burst boundaries were set by thread scheduling, so the
-  same file replayed twice did not agree with itself. Replay now runs on the
-  capture's own clock and replays its recorded bursts: the same file is
-  bit-identical across runs, in 120 s. Diff replays at `sim_speed = 1` — `0`
-  is still deterministic but drops frames and starves the aligner.
-
-* **`[imu] spi_speed_hz` below 2.5 MHz now warns** when the magnetometer
-  shares the same SPI controller, naming the rate to use. The magnetometer
-  answers SPI perfectly throughout — the product id reads back on every
-  transfer, a single-shot trigger still converts — but continuous mode stops,
-  and re-running `init()` cannot hold it. The part picks its interface from the
-  CS level and has no `I2C_disable`, so while its CS is high it sits on the
-  IMU's clock and data lines as an I²C slave, and a slow clock lets the run of
-  zero bytes spidev sends as a burst read's data phase through its input
-  filter. Measured with a probe: at 1 MHz a payload of `0x00` kills it while
-  `0xFF`, `0x60` and `0xAA` do not, and `0x00` at 10 MHz does not. The knee
-  measured at 2.2 MHz; the warning sits at 2.5 MHz to keep margin.
-
-* **`imud --replay` now ends when the capture does.** It used to log
-  `[sim] playback finished` and then sit there until killed, which made it
-  unusable in a script and easy to mistake for a hang. It now exits 0 once the
-  file runs out — after waiting for the last samples to reach the filter, so
-  the tail is not thrown away — and exits 1 if the capture cannot be opened or
-  read, instead of idling on a mistyped path. It also ignores `sim_loop`, since
-  the flag's contract should not depend on a line in whichever config happens
-  to be installed. Configuring playback the other way, through
-  `[device] sim_file`, is unchanged: the daemon keeps running at end of file.
-
-* **A reader thread that gives up now actually stops the daemon.** After three
-  failed chip resets the IMU and magnetometer readers escalate to shutdown.
-  They did it with `raise()`, which signals only the calling thread, and since
-  the daemon blocks SIGTERM before starting any thread the signal went nowhere
-  and was discarded when the reader exited. The daemon carried on reporting
-  active with a dead reader. It now signals the process.
-
-* **SPI transport for the IMU and the magnetometer.** `[imu]` and `[mag]` each
-  gain `bus`, `spi_dev` and `spi_speed_hz`. The default is `bus = "i2c"`, so a
-  config that says nothing behaves exactly as before. The two sections choose
-  independently — a SPI IMU alongside an I²C compass is a legal rig, and on a
-  9-axis board it is the only one, because the AKM compasses have no SPI port.
-  A driver whose part has no SPI port refuses `bus = "spi"` at startup by name
-  rather than mis-framing the transfers. `bus` is a closed set: an
-  unrecognised value is fatal, because a silent fallback to I²C on a
-  SPI-wired board looks like dead hardware rather than a typo.
-
-  If you run the packaged systemd unit, it now allows `/dev/spidev0.0` and
-  `/dev/spidev0.1` (SPI0 CE0 and CE1, the two chip selects the Pi header
-  exposes) and adds the `spi` group. A board on SPI1–6 needs its own
-  `DeviceAllow=` line; the manual says how.
-
-* **Three parts now advertise the rates their silicon actually has.**
-  `ism330dhcx` and `lsm6dso` gain 3332 and 6664 Hz; `icm42688p` gains 4000
-  through 32000 Hz. These were missing, not disabled — the datasheets have
-  always specified them. No behaviour changes at any rate that already
-  worked. Two cautions: 6664 Hz needs `bus = "spi"`, since I²C at 400 kHz
-  cannot carry the FIFO drain, and `icm42688p` at 16000/32000 will not run on
-  a Raspberry Pi — treat those as available for larger hosts.
-
-* **New driver: `rm3100`** (PNI RM3100), magneto-inductive rather than AMR.
-  ~13 nT sensitivity, no offset drift, and no SET/RESET coil — so
-  `set_period_s` does nothing on this part. I²C at 0x20–0x23 or SPI. ODR
-  1–600 Hz, where the top two rungs trade resolution for rate because the
-  cycle count sets both. Flagged experimental: it has never run on real
-  silicon, and the daemon says so at startup.
-
-* **`info imud`.** The manual now installs as an Info page — the only
-  navigable rendering, in a reader already on every Debian system. The
-  generated man pages end with a pointer to it. Building the package from
-  source now needs `texinfo`.
-
-* **Timestamp semantics documented, not changed.** `ts_wall_ns` / `ts_tai_ns`
-  have always carried the instant the *sensor sampled*, reconstructed from
-  the chip counter — not the moment the packet was emitted. Every header and
-  client comment said "CLOCK_REALTIME of last prediction step", which reads
-  as emit time and hid what the field is for: correlating an imud packet with
-  a camera frame, and computing end-to-end age as `now() - ts_wall_ns` at
-  receipt. The fields are unchanged; only their documentation was wrong. Note
-  the caveat now spelled out: on `icm20948` and `mpu925x`, which have no
-  hardware timestamp counter, these degrade to the time of the I²C read that
-  delivered the sample and cannot see FIFO residence.
-
-* **Heave and sea state accumulate in double.** A measured precision sweep,
-  not a speculative one — the float accumulators were the dominant error term
-  in those two estimators. Attitude is unaffected.
-
-* Sample latency is now instrumented and split into its two terms, FIFO
-  residence and the daemon's own pipeline. Only the second is under imud's
-  control, and only their sum had ever been discussed. Measured on a
-  Raspberry Pi 5: the pipeline term is **0.26 ms p99**, six times under the
-  1.5 ms the spec budgets for it.
-
-  **`fifo_wm` is documented differently as a result.** It bounds buffer depth
-  and overflow headroom; it does not set latency, because the reader also wakes
-  on a 10 ms timeout and drains whatever is there. `fifo_wm / odr_hz` — the
-  "64 at 833 Hz is 77 ms" arithmetic the manual used to invite — was never the
-  residence in any configuration anyone runs. Nothing about the daemon changed
-  here; what changed is that it had been measured.
-
-The rest are fixes from three pre-release bench runs on a Raspberry Pi 5.
-**The first is the reason to upgrade if you run on ARM at all.**
-
-* **Fix: the daemon could not start on arm64 or armhf under its own systemd
-  unit.** systemd killed it with SIGSYS before it fused a sample. The unit
-  re-allowed `adjtimex` after removing `@privileged`, and that is a syscall
-  *name*: glibc's `adjtimex()` is `adjtimex` on x86-64 but `clock_adjtime` on
-  arm64 (which has no `adjtimex` syscall at all) and `clock_adjtime64` on
-  armhf. The name resolved to nothing on ARM, so nothing was re-allowed. All
-  three are named now. Every existing test ran the binary without the unit's
-  seccomp, and the jobs that did apply it ran on x86 where the wrong list
-  happens to work — so CI now starts the daemon under the shipped filter on an
-  arm64 runner, and a checker pins the list in text.
-
-* **Fix: installing or upgrading could leave a Raspberry Pi 5 unable to open
-  its GPIO chip.** imud's post-install `udevadm trigger --subsystem-match=gpio`
-  fired Pi OS's compatibility rule for `/dev/gpiochip4`, whose
-  `test ! -c /dev/gpiochip4` guard *oscillates*: with the symlink present the
-  rule adds nothing and udev drops it. The daemon then failed with "cannot open
-  /dev/gpiochip4" until the next reboot. imud no longer triggers the gpio
-  subsystem; the group and mode are applied directly instead. If you hit this
-  on an earlier version, re-run the trigger or reboot. `gpio_chip` is now
-  documented as "run `gpiodetect` and use what it lists" — the number comes
-  from probe order and is not stable across kernels, and Pi 5 moved from
-  `gpiochip4` to `gpiochip0` in mid-2024.
-
-* **Fix: `chip_ts` could go backwards between FIFO bursts** on `ism330dhcx`,
-  `lsm6dso` and `icm42688p` — measured at 2–4 reversals per 5 s at 833 Hz.
-  The burst was timed by reading the chip's live counter *after* the drain,
-  which reads "now" rather than the newest sample's time, and that lag varies.
-  No filter output was affected: `imu.c` already refused a non-increasing
-  timestamp and fell back to the nominal period. The driver contract said
-  monotonic, so now it is.
-
-  All three parts now take the timestamp from the FIFO itself instead, so the
-  lag is not there to vary: the ST parts batch the counter into the stream as
-  tag-`0x04` words and anchor the burst on one, and the ICM-42688-P uses the
-  per-packet stamp it was already reading and discarding. Each falls back to
-  the old method, for the whole burst, if the batched value fails its checks.
-  On the ST parts this batching costs 1.6% of the FIFO word budget at
-  `fifo_wm` 32 and above, so a watermark holds about 63 sample-sets rather
-  than 64; below 8 nothing is batched at all.
-
-* **Fix: the magnetometer ran at a third of its sample rate.** The daemon
-  waits on the MMC5983MA's interrupt line; the driver then confirmed the
-  sample by reading `Meas_M_Done`. But that bit is also the interrupt
-  acknowledge — writing 1 to it is the only way to re-arm the latched INT, and
-  the same write takes the bit away, after which it comes back only while the
-  bus is being polled. A reader blocked on an edge is not polling, so every
-  wake was spent on a read reporting "no data", and with the interrupt latched
-  there was no second edge to recover with: each sample cost a wasted edge plus
-  the reader's full 20 ms timeout. Measured on a Pi 5 over SPI, a part
-  converting at 105.5 Hz delivered 35 Hz. The driver now trusts the edge when
-  the caller is waiting on one, still acknowledges, and drops a sample whose
-  output registers have not advanced — so a broken interrupt line degrades to
-  fewer real samples rather than repeating one. Polling callers (`imud-cal`,
-  `imud-imutest`) are unchanged. Nothing to configure; heading simply gets three
-  times the magnetometer data it was getting.
-
-  The other interrupt-capable magnetometer drivers are not affected: none of
-  them acknowledges DRDY with a write that clears the bit their `read()`
-  checks.
-
-* **`imud-imutest` measures the magnetometer the way the daemon reads it.** A
-  new `mag.drdy.rate` check waits on the mag interrupt line and grades the
-  result against the polled `mag.rate`. Every other magnetometer check in the
-  tool polls, which is why the defect above survived a clean report: the tool
-  was measuring a path the daemon does not use. SKIPs on a part with no
-  interrupt pin, or when `[mag] int_gpio` is 0.
-
-* **Fix: the MMC5983MA lost its X axis over SPI.** A write to `CTRL0` also
-  lands in `CTRL1` on this part, and `INT_en`'s bit 2 reads there as
-  X-inhibit — so `init()`'s own interrupt-enable stopped the X axis measuring
-  while Y and Z carried on looking healthy, and the periodic SET re-applied it
-  every 5 seconds. Heading is `atan2(-my, mx)`, so a dead X axis takes the
-  heading with it. `CTRL1` is now written after every `CTRL0` write, in
-  `init()` and after each degauss pulse.
-
-  Two more faults on the same part, found alongside it. It could come up
-  **saturated** — a few hundred µT on every axis, for the rest of the run —
-  because a control write within ~40 ms of enabling continuous mode is not
-  tolerated; `init()` now holds the bus quiet for 100 ms afterwards. And at
-  `[mag] odr_hz = 1000` it could **fail to start at all**, 7 times in 20, with
-  `init()` returning success and no sample ever arriving: `CM_Freq`'s meaning
-  depends on the bandwidth, and continuous mode was being enabled before the
-  bandwidth was programmed. Both are fixed, and none of the three is visible
-  on I²C.
-
-* **Fix: one corrupted timestamp read could stamp a whole FIFO burst seconds
-  into the future.** The ST and InvenSense drivers take the counter read that
-  follows a FIFO drain as the newest sample's time, and the guard added earlier
-  in this release only corrects timestamps that go *backwards* across a burst
-  seam. A read that came back wrong in the forward direction was never checked
-  — so on the reference ISM330DHCX one burst of 9 samples in 94,539 was stamped
-  2,163,509 ticks, or 54 seconds, ahead, with the sample counter continuous
-  across it. The burst afterwards was correct, because the jump back to real
-  time re-seeded the guard, which is why this looked like a single unexplained
-  reversal. Nothing reached the filter, which rejects a non-increasing
-  timestamp, but `ts_wall_ns` and `ts_tai_ns` carried it to the wire. An
-  implausible forward read is now refused and the burst is extrapolated one
-  sample period from the previous one; a plausible advance is still taken from
-  the counter.
-
-* **Behaviour change: `[mag] odr_hz` offers four rates on the MMC5983MA, not
-  seven.** The part does not honour three of the seven output rates its
-  datasheet lists: asking for 10, 50 or 200 Hz left it free-running at about
-  130, 130 and 256 Hz while fusion sized the magnetometer noise variance for
-  the rate you asked for — a wrong rate reported as the right one. The driver
-  now advertises `1`, `20`, `100` and `1000`, and a request rounds **up** to
-  one of those as the documentation always said it would: 10 → 20, 50 → 100,
-  200 → 1000. The default, 100 Hz, is unchanged and unaffected. This is one
-  die; `imud-imutest`'s `mag.rate` is the check that would show a part which
-  behaves differently.
-
-* **Fix: the chip timer's period is now taken from the part, not the
-  datasheet.** A datasheet tick period is a typical, and the tolerance is not
-  small — the reference ISM330DHCX runs 4.05% fast, which is ordinary silicon
-  and well in spec. The ST parts carry their own factory trim in
-  `INTERNAL_FREQ_FINE`, and the daemon now reads it.
-
-  This is not cosmetic. `imud` measures the real period at runtime, but only
-  once it holds two timestamp anchors 20 s apart, and until then it
-  extrapolates from the declared value; on a part several percent off, the
-  extrapolation outruns the host clock within seconds and the sample-latency
-  telemetry stops recording. Alongside it, the daemon now re-anchors at 25 s
-  until it has a measurement (60 s after, as before), and the two latency
-  terms publish independently — previously an empty FIFO-residence window
-  suppressed the pipeline figure with it, which is why a short run could show
-  no latency data at all.
-
-  Separately, `icm42688p`'s declared tick was wrong by 6.7%: its timestamp
-  counter runs at 32/30 µs per LSB, not 1 µs, whenever the part is not clocked
-  from an external RTC — which is every configuration this driver programs.
-
-* **Fix: sample timestamps carried two offsets.** `ts_wall_ns` / `ts_tai_ns`
-  are documented as the instant the sensor sampled, and were not.
-
-  The anchor that maps chip time to host time paired the newest sample's
-  counter value with the *midpoint* of the burst read. That was right while
-  that value came from reading the counter after the drain; once the driver
-  started reporting when the sample was actually taken (above), the midpoint
-  put every timestamp late by about half a read — 2–3 ms at 833 Hz on I²C,
-  more at deeper watermarks or slower buses. And separately, the conversion
-  took its tick delta as unsigned, so a sample *older* than the anchor came out
-  29.8 hours in the future; the reader anchors on a burst's newest sample and
-  publishes the rest of that burst afterwards, so roughly eight samples a
-  minute at 833 Hz went out that way. That one predates 1.9.0.
-
-  Neither reached the filter — the dt clamp and the anchor-generation check
-  discard the discontinuity, and a constant offset cancels out of a difference
-  — so attitude was never affected. Anyone correlating an imud packet with an
-  external event, which is what these fields exist for, was.
-
-* **`imud-imutest` counts DRDY edges twice**, once draining the FIFO on every
-  edge and once not. A watermark interrupt is a level condition, so it asserts
-  once and stays asserted when nothing empties the FIFO, while a per-sample
-  data-ready keeps pulsing — a single count cannot tell those apart, and the
-  check no longer pretends otherwise. It reports both rates and grades only
-  what it can defend: no edges at all is still a failure, and more edges than
-  the part has samples still warns.
-
-* **Fix: `imud-influxdb` half-applied its output enables on SIGHUP.**
-  `udp_enabled` and `http_enabled` are `[restart]` keys and the reload logged
-  as much — and then applied them anyway. Turning UDP **on** with a reload was
-  the damaging half: the socket is opened at startup, guarded on the enable in
-  force at the time, so the reload left the descriptor closed while the publish
-  path believed UDP was live. `sendto()` then ran on a bad descriptor at the
-  emit rate for the life of the process, logging `EBADF` every time. Turning it
-  **off** stopped the output immediately, which is exactly what the warning
-  promises will not happen until a restart. The running enables now survive the
-  reload. If you want an enable change to take effect, restart the bridge — as
-  the manual has always said.
 
 1.8.2
 -----
-A fix release, almost entirely from a review of 1.8 and the fuzzing that
-followed it. No wire-format change: the packet stays v17 / 276 bytes, and
-one previously reserved flag bit gains a meaning. Nothing here asks you to
-change a configuration — but three classes of bad value that used to load
-silently are now refused at startup, so read the first entry before upgrading a
-host whose config you have not looked at in a while.
+A correctness release: bad configuration and bad calibration are now refused
+rather than absorbed.
 
-* **Behaviour change: a bad value in a config file is now fatal.** Three
-  classes, all previously accepted with no message at any log level. A value
-  too long for its field was truncated and used, so a 130-character `[stream]
-  socket` became a different, perfectly valid 107-character path — the daemon
-  bound and served *that* while every bridge and libimud client connected to
-  the path written in the config file and found nothing there. An out-of-range
-  integer wrapped: `dest_port = 4294977414` landed as port 10118 and `odr_hz =
-  4294968129` landed as 833, both positive, both plausible, neither written by
-  the operator. And `nan`, `inf` and `1e999` converted cleanly into any float
-  key. All three now stop the daemon and all five bridges at startup with the
-  offending line named, and a SIGHUP reload keeps the running config. 18
-  integer keys also gained real bounds — ports are 1..65535, `int_gpio`
-  0..255, `i2c_addr` 0x00..0x7F — because `dest_port = 70000` fits an int
-  perfectly well and then becomes port 4464 the moment `htons()` truncates it.
-* **Behaviour change: `imud --config PATH` now means that file and no other.**
-  The `$HOME/.config/imud/imud.conf` fallback ran whether or not `--config` was
-  given, so `imud --config /misspelled` silently started the daemon on someone
-  else's config — while `imud(8)` has documented `--config` as replacing the
-  search path since the beginning. It now names one file: no fallback, and a
-  warning plus built-in defaults if the file does not exist. A daemon started
-  *without* `--config` still searches `/etc/imud/imud.conf` then `$HOME`.
-* Fixed: **a non-finite calibration poisoned the filter permanently.** A
-  `cal.json` containing `{"gyro":{"bias":[nan,0,0]}}` loaded without complaint,
-  and `w = gyro - bias` was then non-finite on every predict step. Quaternion
-  normalisation could not repair it — NaN fails the `n > 1e-10` test, so the
-  quaternion passed through untouched — and nothing downstream re-aligns, so it
-  never washed out: 1000 perfectly level, noiseless samples later, the published
-  roll, pitch, yaw and quaternion were still all NaN, rendered as the literal
-  `nan` into an NMEA sentence. The realistic trigger was imud's own tooling,
-  since `imud-cal` writes `%.8f`, which round-trips a NaN straight back out.
-  Both loaders now reject non-finite values and name the offending field,
-  `imud-cal` refuses to write one, and the filter sanitises its own state once
-  per fusion loop as a backstop.
-* Fixed: **a calibration that is finite but enormous is refused too.** A
-  `soft_iron` element of 3.33e37 is finite, so the check above accepted it — and
-  `soft_iron × (sample − hard_iron)` for a sample of *zero* is −3.8e38, which
-  overflows a float. `imud-cal` now checks that the calibration arithmetic
-  survives ordinary samples rather than bounding what a calibration may
-  physically be: the probes are 0 and ±1000, above the full scale of every
-  sensor imud supports, so a calibration has to be some thirty-five orders of
-  magnitude out before it trips and a legitimate fit cannot be rejected.
-* New flag bit: **`FLAG_STATE_RESET` (bit 14)** — the filter found a non-finite
-  value in its own state and reset itself. It shows as `R` in `imud-mon`,
-  `imud_state_reset` in the Prometheus bridge, and `IMUD_FLAG_STATE_RESET` in
-  both client libraries. It is latched from the reset until the filter
-  re-converges rather than being a single-packet pulse, because at up to 500 Hz
-  a momentary bit is invisible to a 1 Hz consumer. `IMUD_VERSION` does not
-  move: the packet layout is unchanged and a reserved bit simply gained a
-  meaning. Bit 15 is now the last spare.
-* Fixed: **`SIGHUP` reload did nothing but fail on a daemon started from the
-  `$HOME` config.** Reload re-read the path the daemon was *asked* for, not the
-  one it had actually read, so a daemon that came up on the fallback answered
-  every `systemctl reload` with `config reload failed` — re-reading a file it
-  had never opened, and naming no path at all. Hot reload was dead for source
-  installs and developer machines; packaged installs always have
-  `/etc/imud/imud.conf` and were unaffected. Reload messages now name the file.
-* Fixed: **deleting a key and reloading kept the old value.** Reload seeded
-  from the running config rather than from the defaults, so removing `[nmea]
-  rate_hz` to get the default back left the previous rate in place while the
-  daemon logged `config reloaded` — and the next restart then behaved
-  differently from the reload before it. Reload is now identical to a restart
-  for the hot-reloadable fields. A config file that has been *deleted* still
-  keeps the running config, deliberately unlike startup: a file removed out
-  from under a running daemon must not silently revert it.
-* Fixed: **a failed output thread left its socket bound with nothing behind
-  it.** Every listener is bound before any thread exists, so a `pthread_create`
-  failure left a socket up that nobody would ever `accept()` from — a client
-  connected successfully, into the backlog, and then waited forever. Silence is
-  the worst diagnostic shape available. Losing the binary stream is now fatal,
-  because it is the output the five bridges and every libimud consumer read, so
-  a daemon without it produces nothing while systemd reports it active; the
-  unit is `Restart=on-failure` with `RestartSec=3`, so that is a retry three
-  seconds later. The NMEA, high-rate and position threads are opt-in and still
-  warn and carry on, but now close what they had bound, so a client gets
-  `ECONNREFUSED` rather than a connection that never answers. `READY=1` now
-  means the threads are running, not merely that the sockets are bound.
-* Fixed: **the shipped unit forbade the gpiochip the shipped config asked
-  for.** `config/imud.conf` shipped `gpio_chip = "gpiochip4"`, correct for a Pi
-  5, while `imud.service` allowed only `/dev/gpiochip0` under
-  `DevicePolicy=closed`, with the gpiochip4 line commented out. No combination
-  of the two files as shipped was correct on any board. The unit now lists all
-  four supported nodes — an allow for a node the board does not have is inert,
-  so one unit serves Pi 4 and Pi 5 alike — and the "comment out the other one"
-  instruction is gone.
-* Fixed: **`imud-imutest` accepted garbage in its numeric options.** `--odr`,
-  `--imu-addr`, `--int-gpio` and the rest used `atoi`/`atof`, which report no
-  error, and the three failed differently: a bad `--odr` was silently
-  discarded, a bad `--imu-addr` became 0 and *took*, probing I²C address 0, and
-  a bad `--int-gpio` became 0 — which is documented as "skip the interrupt
-  check", so the check the operator asked for was skipped while the report
-  still said PASS. All twelve conversions now reject a bad value as a usage
-  error.
+Added:
+
+* New flag bit FLAG_STATE_RESET (bit 14): the filter found a non-finite value
+  in its own state, reset, and is re-aligning.
+
+Changed:
+
+* A bad value in a config file is fatal instead of silently accepted. An over-
+  long path was truncated and used, an out-of-range integer wrapped, and nan,
+  inf and 1e999 loaded cleanly into any float key.
+* imud --config PATH means that file and no other; it no longer falls back to
+  a different config when the named one is missing.
+
+Fixed:
+
+* A non-finite or absurdly large calibration poisoned the filter permanently.
+  cal.json values are now validated on load.
+* SIGHUP reload failed outright on a daemon started from a $HOME config, and
+  deleting a key and reloading kept the old value.
+* A failed output thread left its socket bound with nothing behind it, so a
+  client connected successfully and then waited forever.
+* The shipped systemd unit forbade the gpiochip the shipped config asked for.
+* imud-imutest accepted garbage in its numeric options rather than rejecting
+  it.
 
 
 1.8.1
 -----
-A fix release. No wire-format change: the packet stays v17 / 276 bytes. Three
-things change behaviour, and the first one will be noticed on Raspberry Pi OS —
-read it before upgrading.
+A packaging and hardening release. The group change affects every
+installation.
 
-* **Behaviour change: access is now governed by the `imud` group, not `gpio`.**
-  The daemon and all five bridges run with `imud` as their primary group, and
-  the stream socket, `/run/imud` and `/var/lib/imud` become `imud:imud`. Only
-  `imud.service` keeps `gpio` and `i2c`, as supplementary groups, because only
-  the daemon touches hardware. **Anything that read the stream socket or ran
-  `imud-status` by virtue of `gpio` membership must join `imud` instead** — on
-  Pi OS the default user is in `gpio`, so `imud-status` will report the daemon
-  unreachable until you run `sudo adduser "$USER" imud` and log back in. This
-  is deliberate: reading telemetry should not require a group that also grants
-  raw GPIO and I²C access.
-* Fixed: **imud did not start on stock Debian.** Every unit hardcoded
-  `Group=gpio`, but nothing ever created the `gpio` or `i2c` groups —
-  Raspberry Pi OS ships them, plain bookworm/trixie ships neither, and systemd
-  refuses to start a unit whose groups cannot be resolved. `systemctl start
-  imud` therefore failed outright (216/GROUP) on any machine that had never had
-  Raspberry Pi packages installed, while README and INSTALL both advertise
-  Debian. Both groups are now created if absent, on every install rather than
-  only when the user is first created, so an upgrade repairs an affected host.
-  A new udev rule (`60-imud.rules`) grants them access to `/dev/i2c-*` and
-  `/dev/gpiochip*`, which is what Pi OS supplies in its own `99-com.rules`; it
-  is numbered 60 so the distribution's file still wins where there is one.
-* Fixed: **the two bridge configs that hold credentials were world-readable.**
-  `imud-mqtt.conf` carries a broker password and `imud-influxdb.conf` an
-  InfluxDB API token, both with a SECURITY comment telling the operator to
-  restrict the file — and both installed mode 0644, in the .deb as well as from
-  `make install`. They are now 0640 `root:imud`, including when upgrading over
-  an existing 0644 file, which is the common case. The pristine templates under
-  `/usr/share/doc/*/examples/` stay 0644.
-* Fixed: an unreadable config was reported as "disabled in config". A config
-  file that exists but cannot be read fell through to defaults, and since
-  `enabled` defaults to false for the bridges, the bridge exited announcing it
-  was disabled — naming the wrong cause entirely for what is a permissions
-  problem. A permission failure is now distinct from a missing file and is
-  fatal for both the daemon and the bridges. A genuinely missing config still
-  means defaults, as documented.
-* Fixed: **one configured ODR now means one rate everywhere.** The filter was
-  tuned from a rate rounded to *nearest*, while every register-table driver
-  programs the chip by rounding *up*, so the rate the MEKF was tuned for was
-  not the rate the hardware ran at. `[imu] odr_hz = 900` tuned the filter for
-  833 Hz while an ISM330DHCX sampled at 1660. The magnetometer was worse: its
-  rate was never snapped at all, so `[mag] odr_hz = 137` sized Rm for 137 Hz
-  while an MMC5983MA sampled at 200, and `imud-imutest` measured the part
-  against a third answer again. The driver is now the authority — the rate is
-  resolved once, up front, and the resolved value is what reaches the chip, the
-  filter's noise model and `imud-imutest` alike. Startup now logs "N Hz
-  requested, M Hz actual" whenever the two differ, a diagnostic that was
-  missing entirely for the magnetometer. **Nothing changes with the shipped
-  defaults**: 833 and 100 are both already on their grids, and the wave
-  benchmark is bit-identical. If you set an off-grid rate, the filter is now
-  tuned for the rate your hardware actually runs.
-* **Behaviour change: a rate of zero is now a fatal config error.** `odr_hz`
-  and the seven `rate_hz` keys accepted 0 and negative values. `[mag] odr_hz =
-  0` produced Rm = 0 and hence a magnetometer Kalman gain of exactly 1 — the
-  same degeneracy that is already fatal for the noise densities. A config
-  setting any of these to a non-positive value started before and now refuses
-  to start.
-* Fixed: a silent scraper could stall `imud-prometheus`. A client that
-  connected to the metrics port and then sent nothing froze the bridge's single
-  loop — the stream reader included — for a full 2 s per iteration. Measured
-  against a 50 Hz stream while holding one silent connection open for 2.6 s,
-  the bridge consumed 47 packets before the fix and 112 after. The request is
-  now read incrementally inside the loop's own poll and a client that goes
-  quiet is dropped at its deadline. One scrape is still served at a time; the
-  man page and spec said otherwise and now describe the real mechanism.
-* Fixed: `imud-imutest` wrote its report to a file literally named `imud-im`,
-  and said so, when `--report` was not given. Only the auto-generated default
-  path was affected.
-* Hardening: all six units gain tier-2 systemd sandboxing — an empty
-  `CapabilityBoundingSet=`, a `@system-service` syscall allow-list, namespace
-  and personality restrictions, `ProtectProc=invisible`, `ProcSubset=pid` and
-  an explicit `UMask=`. `imud.service` deliberately does *not* set
-  `ProtectClock=`, because that blocks even the read-only `adjtimex()` call the
-  startup CLOCK_TAI check uses; setting the clock remains impossible without
-  `CAP_SYS_TIME`, which the empty capability set removes. The reasoning is
-  recorded in the unit itself. The AF_UNIX sockets are also now *born* 0660
-  rather than created wide and narrowed a moment later.
-* Hardening: every file descriptor the daemon, tools and client libraries open
-  is now close-on-exec. Accepted sockets were the real gap — POSIX does not
-  carry `FD_CLOEXEC` across `accept()`, so every NMEA/high-rate TCP client,
-  every binary stream subscriber and every `imud-status` connection was
-  inheritable by any child process on Linux.
-* Packaging: the binary packages now declare the little-endian architectures
-  they can actually build for (`amd64 arm64 armel armhf i386 ppc64el riscv64`)
-  instead of `any`. The wire packet is a packed struct sent without byte-order
-  conversion and the source refuses to compile on a big-endian host, so `any`
-  promised a build that cannot succeed. dpkg now says so up front.
+Added:
+
+* All six units gain tier-2 systemd sandboxing, and every file descriptor the
+  daemon, tools and client libraries open is close-on-exec.
+
+Changed:
+
+* Device access is governed by a new imud group rather than gpio. Every unit
+  hardcoded Group=gpio, but nothing created it, so imud did not start on stock
+  Debian.
+  ACTION: Add any user who runs the tools by hand to the imud group.
+* A configured rate of zero is a fatal config error rather than a silent
+  fallback.
+
+Fixed:
+
+* The two bridge configs that hold credentials were world-readable. They are
+  now installed 0640, owned by the imud group.
+* One configured ODR now means one rate everywhere. The filter was tuned from
+  a rate rounded differently than the one the driver programmed.
+* A config file that exists but cannot be read was reported as "disabled in
+  config".
+* A client that connected to the metrics port and then said nothing could
+  stall the exporter.
+
 
 1.8
 ---
-* New tool `imud-imutest` (in the imud-utils package): validates a sensor
-  driver against real hardware and writes a Markdown report to attach to an
-  issue. Ten of imud's twelve drivers have never run on physical silicon and
-  are flagged `experimental`; their register maps are datasheet-checked and
-  their encode/decode is unit-tested against a mock I²C bus, but nothing until
-  now covered timing, real output rate, FIFO and interrupt behaviour, or
-  whether the chip-to-board axis remap is correct. A passive phase checks all
-  of that automatically — including a deliberate FIFO overflow, `seq`
-  continuity, the -1-means-I²C-error contract, `chip_ts` wrap handling, and a
-  sweep that re-initialises the part at every advertised full scale — and
-  three guided phases walk the operator through the six-face, rotation and
-  magnetometer-spin checks that actually prove the axis conventions. The spin
-  phase cross-checks the magnetometer's heading against the gyro's Z integral,
-  which is what catches the most common magnetometer-driver defect. Refuses to
-  run alongside the daemon, since both would drain the same FIFO. A clean
-  report is what clears an `experimental` flag: see ROADMAP §1.
-* New drivers `mpu9250` / `mpu9255` (IMU) and `ak8963` (magnetometer), for the
-  widely-deployed InvenSense/TDK MPU-925x 9-axis breakouts, by user request.
-  All three are `experimental`. The magnetometer sits behind the IMU's I²C
-  bypass at 0x0C, the same arrangement as the ICM-20948 and its AK09916, and
-  the driver applies the AK8963's factory fuse-ROM sensitivity correction.
-  Note the AK8963 is *rotated* relative to the host gyro/accel, unlike the
-  AK09916 — see the header comment in `src/drivers/ak8963.c`. `probe()`
-  rejects the relabelled MPU-6500s that are common in this market by name,
-  rather than letting the failure surface later as an unexplained I²C error.
-  Three of imud's defaults do not suit this part (FIFO watermark, ODR grid,
-  and `mekf_accel_noise`) — see the fitting notes in manual §5.
-* Fixed: `imud-cal accel` printed the wrong physical instructions for all six
-  positions, so an operator following them measured the wrong thing. imud's
-  board frame has **Z pointing down**, meaning the axis pointing *up* reads
-  +g — but the prompts said things like "+Z up (flat, normal side up)", and
-  flat component-side up puts +Z *down*. The Z pair was inverted and the X and
-  Y pairs were swapped with each other and inverted. The fit then divided by a
-  negative or near-zero half-range and silently fell back to `scale = 1.0`
-  with no warning, so the tool printed a clean-looking result and offered to
-  save it. **If you have run `imud-cal accel` and followed the printed
-  instructions, your accelerometer calibration almost certainly does nothing**
-  — an identity scale and zero offset are what cal.json already defaults to,
-  so the practical effect is that the daemon reported `FLAG_ACCEL_CAL` for a
-  calibration that was not there. Worse outcomes were reachable: on real
-  hardware a near-zero half-range can land just above the old 0.1 m/s^2
-  threshold and produce a scale of up to ~98x, which warned but was still
-  offered for saving. Re-run `imud-cal accel` with the corrected prompts.
-  The six positions are now named the same way `imud-imutest` names them
-  (flat component-side up, flat upside down, nose down, nose up, starboard
-  side down, port side down), each prompt states the expected reading before
-  you take it, and a geometrically impossible reading now names the offending
-  position and exits without writing anything instead of silently fitting an
-  identity. The position table and the fit moved to `src/cal_math.c` so both
-  are covered by `test_cal_math`, including a regression case built from the
-  exact readings the old instructions produced.
-* Fixed: `imud-cal mag` over-stated the soft-iron correction on any board with
-  hard iron. The per-axis extent used for the diagonal fit seeded its running
-  min/max from the *raw* first sample and then compared *centered* samples
-  against it, so wherever the raw seed fell outside the centered range it was
-  never displaced and the half-range came out inflated by roughly the
-  hard-iron offset. That under-scaled the diagonal soft-iron factors and
-  over-stated the radius handed to the 2-D ellipse fit — a swing that
-  happened to start pointing away from the iron was mis-scaled by around 20%
-  on one axis. **Re-run `imud-cal mag`**; a soft-iron matrix saved by an
-  earlier release is biased by an amount that depends on which heading the
-  swing began at. The extent and the diagonal scale moved to `src/cal_math.c`
-  and are now covered by `test_cal_math`, which had no case over the
-  magnetometer fit at all before this.
-* Fixed: the IMU chip timer's declared period was trusted rather than measured,
-  so a part whose oscillator was off by a few percent put sample timestamps
-  seconds out and scaled all integrated rotation by the same factor. The
-  ISM330DHCX on the reference board measures **4.08% fast** — its 25 µs tick is
-  really about 24.02 µs — against a spec error budget that had assumed 100 ppm.
-  Because the daemon multiplied ticks by the nominal 25 µs, reported sample
-  time ran about **2.4 s ahead** over each 60 s anchor epoch and then jumped
-  backwards when the anchor refreshed, in the `ts_wall_ns` / `ts_tai_ns` fields
-  that reach the wire; and every per-sample `dt` handed to the fusion filter
-  was 4% long, which scales integrated rotation one-for-one. The timestamp
-  anchor now measures the counter's real period against `CLOCK_MONOTONIC`
-  across consecutive anchors and uses that instead, falling back to the
-  declared value until it has a measurement (the first 60 s) and rejecting any
-  measurement more than 10% from nominal, which is what a reset counter or a
-  lost wrap looks like. `imud` logs the measured period once at startup when it
-  is more than 1% off. Driver authors: `ts_tick_ns` may now be the datasheet's
-  nominal figure — what your driver has to get right is that the counter
-  advances monotonically at a rate independent of bus traffic, not the exact
-  duration of a tick.
-* `imud-imutest` corrections made after its first working version. The tool is
-  new in this release, so this matters only if you built and ran it from git
-  before 2026-07-30: such a report is still readable, but on an ISM330DHCX
-  four of its ten warnings were artefacts of the tool rather than findings
-  about the driver, and one number in it was garbage. Re-run rather than
-  re-reading an old report.
-  - The register snapshot read into the FIFO data port and popped it. On the ST
-    6-axis parts `FIFO_DATA_OUT` is seven registers wide (0x78 tag, then X/Y/Z
-    low/high through 0x7E) and a read of any of them pops a word, but only 0x78
-    and 0x79 were excluded — so every snapshot ate five FIFO words, and
-    0x7A/0x7B/0x7D appeared in the control-register diff as though the driver
-    had written them. Affected `ism330dhcx`, `lsm6dso` and `lsm6dsox`.
-  - The control-register diff and `imu.init.idempotent` compared the whole
-    mapped range, including sensor output, status, FIFO level and the timestamp
-    counter, which change on their own. On an ISM330DHCX that made the diff 29
-    registers where only 9 were writes, and made a second `init()` look
-    state-dependent with "23 registers differ". Registers that move are now
-    found by reading the range several times with the part running and excluded
-    from both; every report prints how many were excluded and how many
-    compared. The filter is empirical rather than a hand-written table, so it
-    stays correct for drivers that do not exist yet, and its one blind spot —
-    a register that happens to hold the same value through every pass — is
-    stated in the report.
-  - `mag.init.regdiff` warned on the MMC5983MA for a property of the silicon:
-    its control registers are write-only, so no readback can show what `init()`
-    wrote. It now skips and says so.
-  - `imu.rest.gravity`'s note read "averaged over 1 s; ratio to true g is
-    0.000" because its format string had two conversions and was passed one
-    argument, so the second read off the end of the argument list. The window
-    and the ratio are now both real. `add_check()` and `fmtbuf()` carry printf
-    format attributes, so `-Wall` catches this class at build time.
-  - The gyro rotation appendix dropped the Z turn: three turns were graded but
-    the row cap was two, so the table had X and Y only.
-  - `imu.fs.gyro` is now INFO rather than graded. It asserted that noise scales
-    with full scale, which only holds where quantisation dominates the noise
-    floor — on an ISM330DHCX the ±125 dps step is 7.6e-5 rad/s against a
-    measured floor near 1.9e-3, so sigma is flat and the check graded coin
-    flips. Sigma *falling* as the range widens still warns.
-  - `imu.chipts.wall` says which direction the error is. Short is a lost
-    counter wrap; long cannot be, and means the counter runs faster than
-    `ts_tick_ns` claims — which matters because `imud` multiplies that constant
-    into every per-sample `dt`. The note now prints the implied tick, and
-    `imu.odr` cross-references it, so the two rows no longer read as
-    contradicting each other on the same number.
-  - The FIFO depth table measured the caller's buffer once the FIFO was deeper
-    than 128 sample-sets, so the second and third rows always read 128.
-  - Appendix section 5.6 vanished when there was nothing to show, leaving a gap
-    in the numbering; a "-0.00" was printed for the first full-scale row, which
-    has no previous range to compare against; and a clean run recommended
-    clearing `experimental` for drivers that already had it clear.
-* Release artifacts now carry a verifiable provenance attestation as a release
-  asset, `imud-X.Y.intoto.jsonl`. The attestation was already being recorded —
-  `gh attestation verify <file> --repo richcreations/imud` has worked since
-  1.7 — but it lived only in GitHub's attestation store, so nothing that saw
-  just the release could find it. It is now attached alongside the .debs and
-  the tarball, and can be checked offline with
-  `gh attestation verify <file> --bundle imud-1.8.intoto.jsonl`.
-* The source tarball no longer contains binaries. `make dist` had been
-  sweeping in the committed apt pool, so `imud-1.7.tar.gz` was 6.1 MB of which
-  most was the *previous three releases'* .deb files; it had grown from 1.86 MB
-  at 1.6 and would have kept growing. The apt pool moved to a separate branch
-  and `apt/` and `web/` are excluded from the archive, so 1.8's tarball is
-  0.79 MB and is source only. Nothing changes for apt users — same repository
-  URL, same packages, same signing key. Anyone who clones the git repository
-  will find it much smaller (75 MB to 5.5 MB); that involved rewriting history,
-  so an existing clone should be re-cloned rather than pulled.
+Hardware validation tooling, two new driver families, and a much smaller
+source tarball.
+
+Added:
+
+* New tool imud-imutest: validates a sensor driver against real hardware and
+  writes a Markdown report to attach to an issue. This is how an experimental
+  driver becomes a supported one.
+* New drivers mpu9250 and mpu9255 (IMU) with ak8963 (magnetometer), for the
+  InvenSense/TDK MPU-925x 9-axis breakouts. All three experimental.
+
+Changed:
+
+* Release artifacts carry a verifiable provenance attestation, and the source
+  tarball no longer contains binaries.
+
+Fixed:
+
+* imud-cal accel printed the wrong physical instructions for all six
+  positions, so an operator following them produced a calibration for the
+  wrong orientations.
+* imud-cal mag over-stated the soft-iron correction on any board with hard
+  iron.
+* The IMU chip timer's declared period was trusted rather than measured, so a
+  part whose oscillator ran off nominal produced timestamps that drifted.
+
 
 1.7
 ---
-* Wire format v17 (packet grows 260 → 276 bytes). Four new MEKF diagnostic
-  fields. Two report how hard the filter is having to distrust its own
-  sensors: `innov_weight` (EMA of the Huber weight applied to accepted
-  updates; 1.0 = never capped) and `innov_reject` (EMA of the fraction of
-  updates thrown out by the innovation gate). Two report whether the noise
-  model itself is right: `nis_accel` and `nis_mag`, rolling averages of the
-  normalised innovation squared d²/dof, where 1.0 means the filter's
-  covariance is consistent with the innovations it actually sees and higher
-  means it is over-confident. The NIS pair is accumulated before the Huber
-  cap and includes gate-rejected updates, so — unlike `innov_weight`, which
-  saturates once the cap engages — it keeps climbing as the model gets
-  worse. Exposed via libimud, the Python client, and the Prometheus
-  (`imud_nis_accel_ratio`, `imud_nis_mag_ratio`) and InfluxDB bridges. The
-  daemon, all five bridges, and imud-mon validate the wire version and must
-  be upgraded together; libimud consumers do not need recompiling.
-* Fusion: the MEKF error state grows from 6 to 9 states with the addition of a
-  Gauss-Markov wave-acceleration component, and the daemon now models the
-  seaway's disturbance of the gravity measurement instead of pretending it is
-  white sensor noise. Two new hot-reloadable keys tune it, `mekf_wave_accel`
-  (steady-state sigma in m/s^2, default 0.8) and `mekf_wave_accel_tau_s`
-  (correlation time in seconds, default 0.5); setting either to 0 disables the
-  state and gives back the previous 6-state filter exactly. There is no wire
-  change -- the new states are appended, so the covariance and gyro-bias
-  variance fields keep their meaning and layout.
+A filter release. The wire packet grows to v17 (276 bytes) with four new
+diagnostic fields, and the MEKF gains a wave-acceleration state that models
+the correlated part of the gravity residual in a seaway.
 
-  Wave-orbital acceleration is correlated over roughly a second, so at 833 Hz
-  the filter was being told it had 833 independent measurements of gravity per
-  second when it had closer to one per wave. Modelling the correlation makes
-  repeated samples correctly stop adding information. Measured over the 12-seed
-  wave benchmark against 1.6: accelerometer NIS 19.3/25.2 -> 1.01/0.69 (1.0 =
-  the noise model matches reality), covariance consistency NEES 18.3/7.8 ->
-  3.47/0.99, attitude RMS 5.65 -> 4.45 deg (3-D) and unchanged at 2.31 deg
-  (yaw-only, the marine default), heading RMS 3.07 -> 0.83 and 1.96 -> 1.02
-  deg. Both the Huber innovation cap and the gross-outlier gate now sit
-  completely idle in an ordinary seaway. This closes the long-standing
-  "measurement model is over-confident" item (ROADMAP 10.1/10.5).
+Added:
 
-  `mekf_accel_noise` is unchanged and should now be understood as describing
-  sensor noise only: rough weather is `mekf_wave_accel`'s job. `imud-cal
-  fit-ra` replays a capture twice -- once as configured, once with the wave
-  state forced off -- and prints suggested values for both new keys alongside
-  the disturbance it measured.
-* Fixed: the initial attitude alignment averaged a hardcoded ~1 second of
-  sensor data. That is about a fifth of a typical roll period, so a daemon
-  started underway aligned to an arbitrary point in the wave cycle, and the
-  resulting tilt error was baked permanently into the magnetic reference's dip.
-  Measured over the wave benchmark, attitude RMS in the marine default: 47.7
-  degrees at a 1 s window against 2.19 degrees at 5 s, flat beyond. The window
-  is now `align_window_sec` in `[calibration]`, default 5 s. Installs that
-  start up at a mooring were unaffected; anything starting up in a seaway was
-  not.
-* New `[fusion]` key `mekf_mag_dip_sigma_deg` (default 1.0), the uncertainty of
-  the magnetic reference's dip angle. It only affects 3-D vector fusion
-  (`mag_yaw_only = false`), where the field's dip constrains roll and pitch and
-  a wrong dip reference therefore biases them. That error cannot be learned out
-  at sea, so it is now admitted into the covariance instead: the magnetometer
-  update gains a rank-1 anisotropic noise term along the one direction a dip
-  error acts on. Covariance consistency (NEES-strict) in 3-D mode improves 12.8
-  to 5.7 with attitude and heading both marginally better; the marine yaw-only
-  default is bit-for-bit unchanged. Note this lowers the `nis_mag` wire field in
-  3-D mode (0.52 to 0.31) by design -- the dip channel is deliberately trusted
-  less. Set it to 0 if a position source supplies WMM field invariants, which
-  removes the dip error at the source and is the better answer where available.
-* Docs: the wire spec, libimud spec and manual now state explicitly that the
-  Euler attitude fields (`pitch`, `roll`, `yaw`, `heading_deg`,
-  `rate_of_turn`) are ZYX intrinsic angles and are singular at pitch +/-90 deg
-  by construction -- approaching vertical, roll and yaw stop being separately
-  determined and swing wildly. Consumers that can encounter steep pitch
-  (gimbals, tilting camera rigs, aircraft) must read `quat_*`, which is never
-  singular, as is the covariance in `cov[9]`. Nothing changed in the packet:
-  the quaternion has always been there. Surface-vessel consumers are
-  unaffected and can keep using the Euler fields.
-* Flag bit 6 (`FLAG_MOTION` / `IMUD_FLAG_MOTION`) is formally retired. It was
-  defined but never set in any released version, and everything it could have
-  reported is already on the wire at higher fidelity: `accel_quiescence` as a
-  continuous float, and `FLAG_ENGINE_ON`. The define stays in all headers so
-  existing code compiles; the bit will never be set and will not be reused.
-  Previously the wire spec described it as "significant motion detected",
-  which implied a feature that did not exist.
-* Fixed: `imud-signalk`'s `dest_addr` accepted a numeric IPv4 address only,
-  while every other bridge resolved its destination with getaddrinfo(3) and
-  accepted hostnames. It now uses the same shared helper, so a hostname, an
-  IPv6 address, or a broadcast address all work. The bridge's systemd unit
-  gains AF_INET6 to match -- without it a hostname resolving to IPv6 would
-  fail at socket() under the unit's sandbox. The daemon's own [output] and
-  [highrate] destinations remain numeric-only by design: there is no DNS in
-  the daemon's send path.
-* Earlier 1.7 notes attributed the 3-D-mode covariance inconsistency to the
-  2-D swing-circle magnetometer calibration. That was wrong -- the cause was
-  the alignment window above -- and the documentation has been corrected.
-* Fixed: the MEKF declared its innovation covariance singular using an
-  absolute determinant threshold (1e-12). That matrix carries physical units,
-  and for the gravity update its determinant sits near 1e-13 at perfectly
-  ordinary conditioning -- so the accelerometer update was being silently
-  skipped whenever the filter converged, discarding 87% of accelerometer
-  updates in the wave benchmark and leaving attitude uncertainty pinned at
-  whatever value kept the determinant above the threshold instead of letting
-  it converge. The health and consistency metrics were fed only by the
-  surviving updates. The test is now relative to the size of the matrix, which
-  is what "singular" actually means. Numbers recorded in earlier documentation
-  for filter accuracy and consistency were measured with this bug present and
-  are not comparable; the current figures are in docs/math.md 4.7.
-* Fixed: `imud-cal fit-ra` estimated the residual correlation time by dividing
-  by the IMU sample period, but its autocorrelation is computed over the
-  samples that survive the accelerometer skip band -- typically 3 to 10 times
-  further apart. Reported correlation times were low by that factor.
-* Fixed: `imud-cal fit-ra` duplicated the filter's innovation and d-squared
-  computation rather than calling it, and the two had drifted apart (different
-  singularity thresholds). It now calls the filter's own code, so the offline
-  report and the live `nis_accel` field cannot disagree.
-* Fusion: the MEKF's gross-outlier rejection threshold moves from 9x to 25x
-  the chi-squared innovation gate. At 9x it was discarding 26% of the wave
-  benchmark's accelerometer updates -- ordinary wave-orbital motion, not
-  outliers -- which starved the filter; the resulting drift produced larger
-  innovations, which tripped the gate more often still. Widening it improves
-  every measured quantity in both magnetometer modes at no cost: attitude RMS
-  6.85 deg -> 5.65 deg (3-D) and 3.57 deg -> 2.31 deg (yaw-only, the marine
-  default), heading RMS 4.27 -> 3.07 and 3.10 -> 1.96, and covariance
-  consistency NEES 28.9 -> 18.3 and 21.1 -> 7.8. It also collapses the
-  benchmark's worst-case spread (3-D 13.68 -> 7.02, yaw-only 9.59 -> 2.34),
-  which had previously been put down to scenario luck. The Huber cap that
-  bounds each update's influence is unchanged, as is `mekf_accel_noise`.
-* Fixed: the update-gate health and consistency metrics (`innov_weight`,
-  `innov_reject`, `nis_accel`) averaged with a per-update gain derived from
-  the IMU sample rate, but the accelerometer skip band discards 85-95% of
-  samples in a seaway, so their true time constant was around ten minutes
-  rather than the intended 30 s -- long enough that they reported their
-  initial values instead of the data. The gain is now derived from elapsed
-  time, which is correct at any update rate.
-* Fusion: the error-state reset Jacobian G = I − ½[δθ]× is now applied to the
-  covariance after each correction is injected. Measured over the wave
-  benchmark this improves yaw-only attitude RMS 4.10° → 3.57° and covariance
-  consistency (NEES 32.4 → 28.4), with 3-D attitude unchanged. (Both figures
-  predate the rejection-gate change above.)
-* New `imud-cal fit-ra` mode: replays a rough-water .imucap capture through
-  the filter and reports the gravity-direction residual, its correlation
-  time, the innovation-distance distribution against the gates, and the mean
-  NIS -- the same statistic the daemon publishes live. Unlike the other
-  modes it writes nothing: the value it comments on is filter tuning in
-  imud.conf, not a sensor property. Requires --from FILE and a magnetometer
-  calibration.
-* Config: the four MEKF noise densities (`mekf_gyro_noise`, `mekf_gyro_bias`,
-  `mekf_accel_noise`, `mekf_mag_noise`) are now rejected at load if zero or
-  negative. Each becomes a variance in a denominator; `mekf_accel_noise = 0`
-  gave a Kalman gain of exactly 1, snapping attitude onto every raw
-  accelerometer sample.
-* Fixed: the packet fuzz target's seed corpus still held a v14/260-byte
-  frame, which packet_ok() rejects on size and version before reaching any
-  decode logic -- so the nightly fuzz run had been starting that target from
-  an empty effective corpus since the wire moved to v17. The seed is now
-  generated from packet_build() itself (`make fuzz-seeds`) and test_packet
-  asserts it still matches the wire the code implements, so the next wire
-  change fails a test instead of silently degrading the fuzzer.
-* Documented: `mekf_accel_noise` should not be hand-tuned upward to "allow
-  for waves". The default is a sharp local optimum for the marine
-  configuration and the range 0.003-0.03 is markedly worse than either side
-  of it. See man 5 imud.conf and docs/math.md 4.7 for the full sweep.
-* Engine-vibration detector: the EMA time constant is now derived from the
-  sample rate instead of being a fixed per-sample constant, so it is a true
-  ~1 s regardless of FIFO burst depth (previously it sped up as bursts got
-  deeper). The threshold gained hysteresis — it releases at 70% of the assert
-  level — so a signal sitting on the boundary no longer chatters `Ra_scale`,
-  the accel skip band, the log, and the `ENGINE_ON` wire flag.
-* Fixed: a config reload (SIGHUP) while the engine was running left the accel
-  skip band narrow with the noise inflation still applied, and stayed that
-  way until the engine next stopped.
-* Fixed: a config reload did not recompute the m_ref adaptation rate, so
-  changing `mag_odr_hz` left it running at the old rate indefinitely.
-* Config, `[mount]`: an unrecognised `preset` name is now a fatal error
-  instead of a warning. It previously left the mount marked as configured
-  with whatever angles happened to be in place, so a typo silently applied a
-  wrong rotation to every sample. `rotation_euler_deg` now requires exactly
-  three values; a short array was previously accepted with the missing angles
-  left at their defaults.
-* Config, `[mount]`: new `rotation_matrix` key accepts the board→body
-  rotation directly as 9 row-major values, validated at load against
-  RᵀR = I and det(R) = +1 (a reflection — typically a sign-flipped axis —
-  is rejected, which an orthogonality-only check would not catch).
-* The rough-sea wave benchmark now averages over a fixed set of 12 seeds
-  instead of asserting on one. The single seed it used was unrepresentative:
-  it scored 5.15° where the mean across seeds is 6.71° and the worst draw
-  13.78°, which both flattered the filter and made unrelated changes look
-  like regressions.
+* The MEKF error state grows from 6 to 9 with a Gauss-Markov wave-acceleration
+  term. In a seaway the gravity residual is wave-orbital and time-correlated,
+  which no single white noise value can describe.
+* New imud-cal fit-ra mode: replays a rough-water capture through the filter
+  and reports whether the noise model matches the water it was recorded in.
+* New [fusion] key mekf_mag_dip_sigma_deg and new [mount] key rotation_matrix,
+  which takes the board-to-body rotation directly as nine row-major elements.
+
+Changed:
+
+* Wire format v17: the packet grows 260 to 276 bytes with four MEKF diagnostic
+  fields — two reporting how hard the update gates are working, two reporting
+  whether the noise model is honest.
+  Consumers reading the raw packet must be rebuilt and deployed with the
+  daemon; libimud applications are unaffected.
+* An unrecognised [mount] preset name is a fatal error rather than a warning
+  that silently left the mount unrotated.
+* Flag bit 6 (FLAG_MOTION) is formally retired. It was defined but never set.
+
+Fixed:
+
+* The initial attitude alignment averaged a hardcoded one second — about a
+  fifth of a roll period — so a daemon started underway aligned to an
+  arbitrary point in the wave cycle.
+  The window is now align_window_sec, default 5 s.
+* The MEKF declared its innovation covariance singular on an absolute
+  determinant threshold, discarding most accelerometer updates in ordinary
+  conditions. The test is now relative to the matrix scale.
+* The gross-outlier reject gate was rejecting a quarter of ordinary wave
+  motion, and the health metrics used a gain that assumed every sample
+  produced an update, making their true time constant ten minutes instead of
+  thirty seconds.
+* A config reload no longer leaves the engine-vibration state half-applied,
+  and it recomputes the magnetic reference adaptation rate when the
+  magnetometer rate changes.
+* imud-signalk's dest_addr accepted a numeric IPv4 address only, while every
+  other bridge resolved a hostname.
+
 
 1.6.2
 -----

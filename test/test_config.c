@@ -970,7 +970,7 @@ static void test_fusion_marine_keys(void)
 }
 
 /*
- * [fusion] Gauss–Markov wave-state keys (ROADMAP §10.5).
+ * [fusion] Gauss–Markov wave-state keys (docs/math.md §4.1.1).
  *
  * These deliberately use NEED_DBL, not NEED_POS_DBL: unlike the noise
  * densities above, 0 is a documented value here — it disables the state and
