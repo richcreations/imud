@@ -17,6 +17,7 @@
 #include "imud_client.h"   /* wire struct + constants; must precede imud.h */
 #include "imud.h"
 #include "../include/version.h"
+#include "../include/crc32.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -62,18 +63,7 @@ struct imud {
     int            have;
 };
 
-/* ── Private CRC32 + validation (same algorithm as the wire spec) ────────── */
-
-static uint32_t crc32_ieee(const uint8_t *data, size_t len)
-{
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
+/* ── Packet validation ───────────────────────────────────────────────────── */
 
 static int packet_ok(const uint8_t *buf, size_t len)
 {
