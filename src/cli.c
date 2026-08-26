@@ -382,6 +382,12 @@ static void usage_imutest(FILE *o, const char *prog)
 "  --no-overflow        Do not deliberately overflow the FIFO\n"
 "  --no-regdiff         Do not read control registers back\n"
 "\n"
+"Recovery (runs instead of the phases)\n"
+"  --degauss            Pulse the magnetometer's degauss coil and report the\n"
+"                       field either side of it. For a bridge left magnetised\n"
+"                       by a strong external field, which reads a few hundred\n"
+"                       uT and stays there.\n"
+"\n"
 "  --force              Run even if imud appears to be running\n"
 "  --quiet              Digest only; no live progress lines\n"
 "  --version            Print version and exit\n"
@@ -488,6 +494,7 @@ int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
         else if (strcmp(s, "--no-fs-sweep") == 0) a->no_fs = true;
         else if (strcmp(s, "--no-overflow") == 0) a->no_ovf = true;
         else if (strcmp(s, "--no-regdiff") == 0)  a->no_regdiff = true;
+        else if (strcmp(s, "--degauss") == 0)     a->degauss    = true;
         else if (strcmp(s, "--force") == 0) a->force = true;
         else if (strcmp(s, "--quiet") == 0) a->quiet = true;
         else if (strcmp(s, "--version") == 0) {

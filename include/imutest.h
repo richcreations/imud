@@ -396,6 +396,14 @@ void imt_opts_defaults(imt_opts_t *o);
  * Returns 0 when the run completed (the check statuses carry the verdict),
  * -1 on a setup error that prevented any measurement (message in errbuf).
  */
+/*
+ * Recovery, not a check: pulse the magnetometer's degauss coil and print |B|
+ * either side of it.  Runs instead of the phases (imud-imutest --degauss) and
+ * writes no report.  Returns 0 recovered, 2 still out of range, -1 error with
+ * errbuf set.
+ */
+int imt_degauss(const imud_config_t *cfg, char *errbuf, size_t errbufsz);
+
 int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
             imt_report_t *out, char *errbuf, size_t errbufsz);
 

@@ -452,7 +452,8 @@ static void test_imutest(void)
                a.ov_turn < 0 && a.ov_grav_tol < 0 && a.ov_odr_tol < 0,
                "double overrides negative");
         EXPECT(!a.force && !a.quiet && !a.non_interactive &&
-               !a.no_fs && !a.no_ovf && !a.no_regdiff, "booleans clear");
+               !a.no_fs && !a.no_ovf && !a.no_regdiff && !a.degauss,
+               "booleans clear");
     }
 
     {   char *v[] = { "imud-imutest", "--config", "/tmp/i.conf", NULL };
@@ -636,6 +637,15 @@ static void test_imutest(void)
         cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && a.no_fs && a.no_ovf && a.no_regdiff && a.force &&
                a.quiet && a.non_interactive, "all six booleans");
+    }
+
+    /* Recovery mode is a plain boolean and does not disturb the phase bits:
+     * imutest_main runs it instead of them, so a stray phase flag alongside
+     * it must not change what --degauss does. */
+    {   char *v[] = { "imud-imutest", "--degauss", NULL };
+        cap_begin(); rc = cli_parse_imutest(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.degauss, "--degauss sets the flag");
+        EXPECT(a.phases == IMT_PHASE_ALL, "and leaves the phase default alone");
     }
 
     {   char *v[] = { "imud-imutest", "--version", NULL };

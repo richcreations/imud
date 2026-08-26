@@ -205,6 +205,17 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* ── Recovery mode ───────────────────────────────────────────────────── */
+    if (args.degauss) {
+        char errbuf[256] = "";
+        int rc = imt_degauss(&cfg, errbuf, sizeof errbuf);
+        if (rc < 0) {
+            fprintf(stderr, "imud-imutest --degauss: %s\n", errbuf);
+            return 1;
+        }
+        return rc;
+    }
+
     /* ── Options ─────────────────────────────────────────────────────────── */
     term_ui_t term = { .quiet = quiet, .interactive = interactive, .last_len = 0 };
 

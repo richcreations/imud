@@ -133,6 +133,14 @@ Do not deliberately overflow the FIFO
 .TP
 \fB\-\-no\-regdiff\fR
 Do not read control registers back
+.PP
+Recovery (runs instead of the phases)
+.TP
+\fB\-\-degauss\fR
+Pulse the magnetometer's degauss coil and report the
+field either side of it. For a bridge left magnetised
+by a strong external field, which reads a few hundred
+uT and stays there.
 .TP
 \fB\-\-force\fR
 Run even if imud appears to be running

@@ -114,6 +114,9 @@ typedef struct {
     double ov_odr_win, ov_noise_win, ov_drdy_win;
     double ov_turn, ov_grav_tol, ov_odr_tol;
     bool   no_fs, no_ovf, no_regdiff;
+    /* Recovery mode, not a check: pulse the magnetometer's degauss coil and
+     * report |B| either side of it.  Runs instead of the phases. */
+    bool   degauss;
 } cli_imutest_t;
 
 /*

@@ -1361,8 +1361,15 @@ imud-imutest [--config PATH] [--report PATH]
              [--odr-window S] [--noise-window S] [--drdy-window S]
              [--turn-deg N] [--grav-tol M] [--odr-tol PCT]
              [--no-fs-sweep] [--no-overflow] [--no-regdiff]
+             [--degauss]
              [--force] [--quiet] [--version] [-h|--help]
 ```
+
+`--degauss` is a recovery action rather than a check: it pulses the
+magnetometer's degauss coil once (RESET then SET) and prints |B| either side,
+for a bridge left magnetised by a strong external field. It runs instead of the
+phases, writes no report, and exits 0 if the field came back into a plausible
+range, 2 if it did not.
 
 Four phases. **Passive** needs no operator: probe and bogus-address rejection,
 reset timing, a control-register snapshot diff around `init()` plus an
