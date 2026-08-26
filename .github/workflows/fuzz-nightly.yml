@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [config, json, packet, capture, wmm, cal]
+        target: [config, json, packet, capture, wmm, cal, argv]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -48,6 +48,7 @@ jobs:
             capture) DEPS="src/capture.c" ;;
             wmm)     DEPS="src/wmm.c src/log.c" ;;
             cal)     DEPS="src/cal.c src/imu_math.c src/log.c" ;;
+            argv)    DEPS="src/cli.c" ;;
           esac
           # shellcheck disable=SC2086  # $DEPS is a deliberate word-split list
           clang -g -O1 -fsanitize=fuzzer,address,undefined \

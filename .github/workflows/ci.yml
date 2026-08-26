@@ -916,8 +916,8 @@ jobs:
 
   fuzz:
     runs-on: ubuntu-latest
-    # Six harnesses now: ~6 min of fuzzing plus six ASan+UBSan builds.
-    timeout-minutes: 20
+    # Seven harnesses now: ~7 min of fuzzing plus seven ASan+UBSan builds.
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -937,13 +937,17 @@ jobs:
           # evaluation / apply_*_cal), not just the parse.
           $FZ fuzz/fuzz_wmm.c     src/wmm.c src/log.c                 -o fuzz_wmm     -lm
           $FZ fuzz/fuzz_cal.c     src/cal.c src/imu_math.c src/log.c  -o fuzz_cal     -lm
+          # argv crosses no trust boundary; it is fuzzed for the conversions
+          # and fixed-buffer copies the five front-ends do on arbitrary
+          # strings, and because parse_int's ERANGE guard is ABI-conditional.
+          $FZ fuzz/fuzz_argv.c    src/cli.c                            -o fuzz_argv    -lm
 
       # -max_total_time is only checked BETWEEN inputs; -timeout caps a
       # single input (default is 1200 s!) so a hang-inducing input fails
       # the run in seconds and gets dumped as a timeout-* reproducer.
       - name: Run fuzzers (60 s each)
         run: |
-          for t in config json packet capture wmm cal; do
+          for t in config json packet capture wmm cal argv; do
             echo "=== fuzz_$t ==="
             ./fuzz_$t -max_total_time=60 -timeout=10 -rss_limit_mb=1024 \
                       -close_fd_mask=3 "test/fuzz/corpus/$t"
