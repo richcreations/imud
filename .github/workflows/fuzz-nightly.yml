@@ -90,6 +90,10 @@ jobs:
       - name: Open or update the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job deliberately does not check out the repo, so gh has no
+          # git remote to infer the repository from and every call fails with
+          # "fatal: not a git repository".  GH_REPO supplies it directly.
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Nightly fuzz failure"
