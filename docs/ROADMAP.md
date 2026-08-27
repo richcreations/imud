@@ -42,9 +42,13 @@ from the WMM) are examples of what the daemon can carry, not what it is.
 Two parts are validated on real silicon and are the reference pair:
 **ISM330DHCX** (IMU) and **MMC5983MA** (magnetometer), over both I²C and SPI.
 
-Twelve further drivers ship marked **experimental**: `lsm6dso`, `lsm6dsox`,
-`icm42688p`, `icm20948`, `mpu9250`, `mpu9255` on the inertial side, and
+**Nine further parts ship marked experimental**: `lsm6dso`/`lsm6dsox`,
+`icm42688p`, `icm20948` and `mpu9250`/`mpu9255` on the inertial side, and
 `lis3mdl`, `lis2mdl`, `rm3100`, `ak09916`, `ak8963` on the magnetometer side.
+That is eleven configurable driver names over nine drivers, because
+`lsm6dso`/`lsm6dsox` and `mpu9250`/`mpu9255` are each one driver answering to
+two part numbers.
+
 Their register maps are checked against the vendor datasheets and their
 encode/decode paths are covered by tests against a mock bus, but they have never
 run against the physical part. The daemon says so at startup.
