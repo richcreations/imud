@@ -56,7 +56,10 @@ run against the physical part. The daemon says so at startup.
 **The intent is for all of them to become supported.** A driver's experimental
 flag clears when someone runs `imud-imutest` against the real board and attaches
 the report — the tool exists to make that a ten-minute job for someone who owns
-the hardware, not a design exercise. That is the main way the supported-parts
+the hardware, not a design exercise. The walkthrough, and the per-part wiring
+notes, live in the [wiki](https://github.com/richcreations/imud/wiki): they are
+hardware-specific and benefit from being edited as people learn, which is not
+something a versioned document does well. That is the main way the supported-parts
 list is expected to grow, and contributions of new parts are welcome on the same
 terms.
 
