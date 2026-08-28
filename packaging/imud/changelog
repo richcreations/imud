@@ -18,6 +18,10 @@ imud (1.9.0) unstable; urgency=medium
   * imud-status says when heading is dead-reckoned. Without a magnetometer
     calibration the filter's mag update never runs and heading drifts on
     the gyro alone, which nothing in the output used to show.
+  * Startup warns when [imu] spi_speed_hz is below 2.5 MHz and a
+    magnetometer shares the same SPI controller, naming the rate to use —
+    below that the magnetometer can stop measuring while still answering
+    the bus.
   * Sample rates are carried in milli-Hz throughout, so the advertised
     rates are now the silicon's own. The ISM330DHCX ladder is 6664/2^n,
     making its bottom rung 13.016 Hz where the datasheet prints 12.5.
@@ -31,10 +35,6 @@ imud (1.9.0) unstable; urgency=medium
   * A reader thread that gives up stops the daemon instead of leaving it
     running with a dead sensor. A magnetometer that stops delivering is
     reported once per outage, and again when it recovers.
-  * [imu] spi_speed_hz below 2.5 MHz warns at startup when the
-    magnetometer shares the same SPI controller, naming the rate to use.
-    Below that the magnetometer can stop measuring while still answering
-    the bus.
   * Heave and sea state accumulate in double, so a long run no longer
     loses resolution in the integrators.
   * Calibration was applied in the wrong frame when [mount] was not
@@ -49,9 +49,10 @@ imud (1.9.0) unstable; urgency=medium
     bursts, a corrupted read could stamp a whole burst seconds into the
     future, the timer period was trusted rather than measured, and
     timestamps carried two offsets.
-  * The magnetometer ran at a third of its configured rate, and the
-    MMC5983MA lost its X axis over SPI when a CTRL0 write also cleared an
-    inhibit bit.
+  * The magnetometer ran at a third of its configured rate: the driver
+    confirmed each sample by reading Meas_M_Done, but that bit is also the
+    interrupt acknowledge, so a reader blocked on the edge never saw it
+    set.  Only affected an installation with [mag] int_gpio set.
   * imud-cal mag could write a soft-iron scale the swing never measured,
     stretching an axis to cover data that was never taken. An axis must
     now be swept through at least 0.8 of the fitted radius, capping any

@@ -93,9 +93,9 @@ had."""
   text     = "A reader thread that gives up stops the daemon instead of leaving it running with a dead sensor. A magnetometer that stops delivering is reported once per outage, and again when it recovers."
 
   [[release.change]]
-  kind     = "behaviour"
+  kind     = "feature"
   packages = ["imud"]
-  text     = "[imu] spi_speed_hz below 2.5 MHz warns at startup when the magnetometer shares the same SPI controller, naming the rate to use. Below that the magnetometer can stop measuring while still answering the bus."
+  text     = "Startup warns when [imu] spi_speed_hz is below 2.5 MHz and a magnetometer shares the same SPI controller, naming the rate to use — below that the magnetometer can stop measuring while still answering the bus."
 
   [[release.change]]
   kind     = "behaviour"
@@ -115,7 +115,8 @@ had."""
   [[release.change]]
   kind     = "fix"
   packages = ["imud"]
-  text     = "The magnetometer ran at a third of its configured rate, and the MMC5983MA lost its X axis over SPI when a CTRL0 write also cleared an inhibit bit."
+  text     = "The magnetometer ran at a third of its configured rate: the driver confirmed each sample by reading Meas_M_Done, but that bit is also the interrupt acknowledge, so a reader blocked on the edge never saw it set."
+  impact   = "Only affected an installation with [mag] int_gpio set."
 
   [[release.change]]
   kind     = "fix"
