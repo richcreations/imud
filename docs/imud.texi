@@ -3,7 +3,7 @@
 @c Edit the manual, then run `make docs-texi`.
 @setfilename imud.info
 @set VERSION 1.9.0
-@set RELEASEDATE 2026-08-10
+@set RELEASEDATE 2026-08-28
 
 @dircategory System administration
 @direntry

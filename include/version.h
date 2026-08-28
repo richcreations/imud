@@ -29,6 +29,6 @@
  *
  * tools/bump-version.sh writes both macros.
  */
-#define IMUD_RELEASE_DATE "2026-08-10"
+#define IMUD_RELEASE_DATE "2026-08-28"
 
 #endif /* IMUD_VERSION_H */
