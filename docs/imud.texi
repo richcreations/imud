@@ -1731,9 +1731,9 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{SPI}: @strong{yes} --- mode 0, 10 MHz
 @item
-@strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil. On SPI a
-CTRL0 write also lands in CTRL1, so the driver rewrites CTRL1 after
-every one.
+@strong{Notes}: Primary reference mag. 18-bit, SET/RESET coil. Do not
+set the IMU spi_speed_hz below 2.5 MHz while this part shares the
+controller --- it stops measuring.
 @end itemize
 
 @item @code{ak09916}

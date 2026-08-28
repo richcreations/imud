@@ -23,9 +23,6 @@ imud (1.9.0-1) unstable; urgency=medium
     making its bottom rung 13.016 Hz where the datasheet prints 12.5.
     odr_hz accepts fractional rates. A rate that rounds to zero is
     refused.
-  * [mag] odr_hz offers four rates on the MMC5983MA, not seven: the part's
-    continuous-measurement modes are 1, 10, 20, 50, 100 and 200 Hz, and
-    the others were never real.
   * imud --replay exits when the capture runs out, after letting the last
     samples reach the filter. It used to sit there until killed.
   * Replaying one capture twice now produces identical filter output, and

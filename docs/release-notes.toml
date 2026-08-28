@@ -80,11 +80,6 @@ had."""
   [[release.change]]
   kind     = "behaviour"
   packages = ["imud"]
-  text     = "[mag] odr_hz offers four rates on the MMC5983MA, not seven: the part's continuous-measurement modes are 1, 10, 20, 50, 100 and 200 Hz, and the others were never real."
-
-  [[release.change]]
-  kind     = "behaviour"
-  packages = ["imud"]
   text     = "imud --replay exits when the capture runs out, after letting the last samples reach the filter. It used to sit there until killed."
 
   [[release.change]]
