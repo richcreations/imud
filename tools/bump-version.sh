@@ -156,7 +156,8 @@ done
 [ "$stale" -eq 0 ] && echo "  (none — all changelogs already at $VERSION)"
 
 echo
-echo "Also by hand: NEWS (user-visible changes for $VERSION)."
+echo "Also: describe the release in docs/release-notes.toml, then"
+echo "  make docs-release-notes   # renders NEWS and the changelog stanzas"
 echo
 echo "Then regenerate what carries the version:"
 echo "  make docs-texi    # docs/imud.texi's @set VERSION (needs pandoc)"
