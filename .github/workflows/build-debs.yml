@@ -74,13 +74,25 @@ jobs:
         env:
           LINTIAN: ${{ inputs.lintian }}
         run: |
+          # devbox/Dockerfile is the one place a Debian base is pinned, so
+          # Dependabot's bump of that file is the whole change and needs no
+          # follow-up here.  This workflow is reachable from ci.yml and
+          # release.yml, so it reads the pin itself rather than depending on a
+          # job in either caller.
+          base=$(sed -n "s|^FROM debian:${{ matrix.dist }}@\(sha256:[0-9a-f]\{64\}\).*|\1|p" \
+                     devbox/Dockerfile | head -1)
+          if [ -z "$base" ]; then
+            echo "::error file=devbox/Dockerfile::no pinned digest for debian:${{ matrix.dist }}" >&2
+            exit 1
+          fi
           docker run --rm --platform ${{ matrix.platform }} \
             -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
             -e DEBIAN_FRONTEND=noninteractive \
             -e DEBEMAIL=richcreations@gmail.com \
             -e "DEBFULLNAME=Richard Simpson" \
             -e "LINTIAN=$LINTIAN" \
-            debian:${{ matrix.dist }} bash -euo pipefail -c '
+            "debian:${{ matrix.dist }}@$base" \
+            bash -euo pipefail -c '
               # Two different fetch failures, two different mitigations, and
               # they are NOT interchangeable.
               #

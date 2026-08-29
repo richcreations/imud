@@ -32,6 +32,20 @@ updates:
   # — a digest on a FROM line is exactly what this ecosystem maintains, so the
   # pin stays fresh without anyone having to remember it.  Same grouping and
   # prefix as the actions, so a bump is one review either way.
+  #
+  # This ecosystem reads FROM lines and nothing else, so a `container:` image
+  # or a `docker run` argument in a workflow is invisible to it.  The
+  # workflows therefore do NOT carry digests of their own: ci.yml's `bases`
+  # job reads them out of this Dockerfile and publishes them as outputs, and
+  # build-debs.yml — reachable from two callers, so it cannot depend on a job
+  # in either — reads the same line itself.
+  #
+  # That is deliberate, and the requirement it satisfies is that a Dependabot
+  # PR merges and simply works.  Copying the digests into the workflows as
+  # well would leave every bump half-applied, so a routine base update would
+  # stop being a merge and start being a chore — with a checker to catch the
+  # half that was forgotten, which is a worse design than not being able to
+  # forget it.
   - package-ecosystem: docker
     directory: /devbox
     schedule:

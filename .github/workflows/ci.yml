@@ -20,6 +20,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The Debian base digests, read out of devbox/Dockerfile and published as
+  # outputs.
+  #
+  # devbox/Dockerfile is the ONLY place a digest is written, because it is the
+  # only place Dependabot can maintain one: its docker ecosystem reads FROM
+  # lines, and a `container:` image or a `docker run` argument in a workflow is
+  # invisible to it.  Hard-coding the digests here as well would mean every
+  # Dependabot bump landed half-applied and had to be finished by hand — so a
+  # routine base bump would stop being a merge and start being a chore.
+  #
+  # Deriving them instead costs one ~10 s job that every containerised gate
+  # waits on, and makes a Dependabot PR merge and simply work.
+  bases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      bookworm: ${{ steps.pins.outputs.bookworm }}
+      trixie: ${{ steps.pins.outputs.trixie }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned bases from devbox/Dockerfile
+        id: pins
+        run: |
+          set -euo pipefail
+          for d in bookworm trixie; do
+            digest=$(sed -n "s|^FROM debian:$d@\(sha256:[0-9a-f]\{64\}\).*|\1|p" \
+                         devbox/Dockerfile | head -1)
+            if [ -z "$digest" ]; then
+              echo "::error file=devbox/Dockerfile::no pinned digest for debian:$d" >&2
+              exit 1
+            fi
+            echo "$d=$digest" >> "$GITHUB_OUTPUT"
+            echo "debian:$d -> $digest"
+          done
+
   # The canonical version lives in include/version.h and everything else is
   # hand-propagated across ~28 files at release time (docs/RELEASING.md).
   # This is the guard that catches a half-finished bump before it is tagged.
@@ -216,22 +254,42 @@ jobs:
 
   # Runs on amd64 and arm64: the target hardware is a Raspberry Pi, so the
   # packed wire struct and the full test suite must prove out on arm.
+  # Three legs, not two.  amd64 and arm64 cover the architectures; bookworm
+  # covers the libgpiod **v1** API path, which `GPIOD_V2` guards at four sites
+  # in src/imu.c and which no job ran the suite against before — bookworm's
+  # debs were built and installed, but never tested.  trixie ships libgpiod 2.x
+  # and so does Ubuntu, so every green run used to be evidence about v2 only.
   build-and-test:
+    needs: bases
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: ubuntu-latest
+            dist: trixie
+          - runner: ubuntu-24.04-arm
+            dist: trixie
+          - runner: ubuntu-latest
+            dist: bookworm
+    runs-on: ${{ matrix.runner }}
+    container:
+      # Indexed by the leg's dist, so the digests stay in devbox/Dockerfile.
+      image: debian:${{ matrix.dist }}@${{ needs.bases.outputs[matrix.dist] }}
     timeout-minutes: 30
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev devscripts mandoc \
-                                  help2man texinfo
+          . .github/ci-setup.sh
+          apt_setup devscripts mandoc help2man texinfo
 
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
@@ -241,75 +299,6 @@ jobs:
       # (installed above); imud-signalk is pure C.
       - name: Build bridges
         run: make bridges
-
-      # The daemon under its own seccomp filter, on a real kernel.
-      #
-      # THIS IS THE ONLY CHECK THAT CATCHES THE 1.9.0 RC BUG. SystemCallFilter=
-      # takes syscall NAMES resolved against the running architecture, and
-      # glibc's adjtimex() is adjtimex on x86-64 but clock_adjtime on arm64 and
-      # clock_adjtime64 on armhf. A unit naming only "adjtimex" therefore
-      # allows nothing on ARM, ~@privileged keeps clock_adjtime blocked, and
-      # the daemon is SIGSYS-killed before fusing a sample. Every other test in
-      # this repo runs the binary with NO seccomp at all, and the x86 leg gets
-      # the right syscall by accident — so nothing saw it until a Pi 5 did.
-      #
-      # The filter lines are READ OUT OF THE SHIPPED UNIT, never retyped: a
-      # copy here would drift from the thing it is supposed to guard, and would
-      # then pass while the unit was broken.
-      #
-      # Runs on both matrix legs. The arm64 leg is the one with teeth; the
-      # amd64 leg proves the wider list did not regress the architecture that
-      # already worked.
-      - name: Daemon starts under its own SystemCallFilter
-        run: |
-          set -euo pipefail
-          # Generate rather than reuse: the .service is not built by `all`, and
-          # a stale one would let this pass against a unit nobody ships.
-          make etc/imud.service
-          # The sim driver needs no hardware; int_gpio = 0 uses the timer path.
-          cat > /tmp/seccomp-sim.conf <<'EOF'
-          [imu]
-          driver   = "sim"
-          int_gpio = 0
-          [mag]
-          driver   = "sim"
-          int_gpio = 0
-          [stream]
-          socket   = "/tmp/imud-seccomp-test.sock"
-          [logging]
-          level    = "info"
-          EOF
-          props=()
-          while IFS= read -r line; do
-              props+=(--property="$line")
-          done < <(grep '^SystemCallFilter=' etc/imud.service)
-          echo "Applying ${#props[@]} filter line(s) from etc/imud.service:"
-          printf '  %s\n' "${props[@]}"
-
-          sudo systemd-run --unit=imud-seccomp-test --collect \
-               "${props[@]}" \
-               "$PWD/imud" --config /tmp/seccomp-sim.conf
-          sleep 5
-
-          result=$(systemctl show imud-seccomp-test -p Result --value || true)
-          status=$(systemctl show imud-seccomp-test -p ExecMainStatus --value || true)
-          journalctl -u imud-seccomp-test --no-pager | tail -20 || true
-          sudo systemctl stop imud-seccomp-test 2>/dev/null || true
-
-          # status 31 is SIGSYS — the seccomp kill. Anything else that stopped
-          # it is also a failure here, but name the seccomp case explicitly
-          # because that is the regression this step exists for.
-          if [ "$status" = "31" ]; then
-              echo "::error::imud was SIGSYS-killed under its own SystemCallFilter=." \
-                   "A syscall the daemon issues on $(uname -m) is not re-allowed." \
-                   "See the SystemCallFilter= comment in etc/imud.service.in."
-              exit 1
-          fi
-          if [ "$result" != "success" ] && [ -n "$result" ]; then
-              echo "::error::imud did not survive 5 s under its own filter (Result=$result, status=$status)"
-              exit 1
-          fi
-          echo "OK: daemon ran 5 s under the shipped SystemCallFilter= on $(uname -m)"
 
       # make test builds and runs all host-side test binaries; it must run
       # from the repo root (test_wmm loads data/WMM.COF by relative path).
@@ -587,6 +576,104 @@ jobs:
           grep -q '^\* imud: (imud)\.' imud.info
           echo "info manual OK"
 
+  # Extracted from build-and-test when that job moved into a Debian container:
+  # this check needs systemd as PID 1 (systemd-run, systemctl, journalctl), and
+  # no container provides it.  So it stays on the GitHub runner, which is
+  # Ubuntu — the one gate here that is not Debian, because the alternative is a
+  # privileged systemd-in-container rig for a check about syscall NAMES, which
+  # glibc resolves the same way on both distributions.
+  #
+  # Both architectures, for the reason the step's own comment gives: the arm64
+  # leg is the one with teeth.
+  seccomp-unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+
+      - name: Build (the check runs the daemon it just built)
+        run: make
+
+      # The daemon under its own seccomp filter, on a real kernel.
+      #
+      # THIS IS THE ONLY CHECK THAT CATCHES THE 1.9.0 RC BUG. SystemCallFilter=
+      # takes syscall NAMES resolved against the running architecture, and
+      # glibc's adjtimex() is adjtimex on x86-64 but clock_adjtime on arm64 and
+      # clock_adjtime64 on armhf. A unit naming only "adjtimex" therefore
+      # allows nothing on ARM, ~@privileged keeps clock_adjtime blocked, and
+      # the daemon is SIGSYS-killed before fusing a sample. Every other test in
+      # this repo runs the binary with NO seccomp at all, and the x86 leg gets
+      # the right syscall by accident — so nothing saw it until a Pi 5 did.
+      #
+      # The filter lines are READ OUT OF THE SHIPPED UNIT, never retyped: a
+      # copy here would drift from the thing it is supposed to guard, and would
+      # then pass while the unit was broken.
+      #
+      # Runs on both matrix legs. The arm64 leg is the one with teeth; the
+      # amd64 leg proves the wider list did not regress the architecture that
+      # already worked.
+      - name: Daemon starts under its own SystemCallFilter
+        run: |
+          set -euo pipefail
+          # Generate rather than reuse: the .service is not built by `all`, and
+          # a stale one would let this pass against a unit nobody ships.
+          make etc/imud.service
+          # The sim driver needs no hardware; int_gpio = 0 uses the timer path.
+          cat > /tmp/seccomp-sim.conf <<'EOF'
+          [imu]
+          driver   = "sim"
+          int_gpio = 0
+          [mag]
+          driver   = "sim"
+          int_gpio = 0
+          [stream]
+          socket   = "/tmp/imud-seccomp-test.sock"
+          [logging]
+          level    = "info"
+          EOF
+          props=()
+          while IFS= read -r line; do
+              props+=(--property="$line")
+          done < <(grep '^SystemCallFilter=' etc/imud.service)
+          echo "Applying ${#props[@]} filter line(s) from etc/imud.service:"
+          printf '  %s\n' "${props[@]}"
+
+          sudo systemd-run --unit=imud-seccomp-test --collect \
+               "${props[@]}" \
+               "$PWD/imud" --config /tmp/seccomp-sim.conf
+          sleep 5
+
+          result=$(systemctl show imud-seccomp-test -p Result --value || true)
+          status=$(systemctl show imud-seccomp-test -p ExecMainStatus --value || true)
+          journalctl -u imud-seccomp-test --no-pager | tail -20 || true
+          sudo systemctl stop imud-seccomp-test 2>/dev/null || true
+
+          # status 31 is SIGSYS — the seccomp kill. Anything else that stopped
+          # it is also a failure here, but name the seccomp case explicitly
+          # because that is the regression this step exists for.
+          if [ "$status" = "31" ]; then
+              echo "::error::imud was SIGSYS-killed under its own SystemCallFilter=." \
+                   "A syscall the daemon issues on $(uname -m) is not re-allowed." \
+                   "See the SystemCallFilter= comment in etc/imud.service.in."
+              exit 1
+          fi
+          if [ "$result" != "success" ] && [ -n "$result" ]; then
+              echo "::error::imud did not survive 5 s under its own filter (Result=$result, status=$status)"
+              exit 1
+          fi
+          echo "OK: daemon ran 5 s under the shipped SystemCallFilter= on $(uname -m)"
+
   # The suite on 32-bit ARM.  armhf .debs are built and published, but until
   # now nothing ever RAN the tests there: build-and-test covers amd64 and
   # arm64 only.  32-bit is where the packed wire struct, time_t width and
@@ -596,6 +683,7 @@ jobs:
   # Same explicit `docker run` as build-debs.yml, for the same reason: the
   # `container:` key cannot host an armhf rootfs on an arm64 runner.
   test-armhf:
+    needs: bases
     runs-on: ubuntu-24.04-arm
     # Two full build+test passes now (plain, then UBSan).  The plain pass
     # takes ~3 min; instrumented builds and runs are slower, so the budget
@@ -607,12 +695,15 @@ jobs:
           persist-credentials: false
 
       - name: Build and test under 32-bit armhf (trixie)
+        env:
+          BASE: debian:trixie@${{ needs.bases.outputs.trixie }}
         run: |
           docker run --rm --platform linux/arm/v7 \
             -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
             -e DEBIAN_FRONTEND=noninteractive \
             -e UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-            debian:trixie bash -euo pipefail -c '
+            "$BASE" \
+            bash -euo pipefail -c '
               # Acquire::Retries for connection failures, apt_retry for a
               # truncated download — Retries does not cover the latter.  The
               # reasoning, and the measurements behind it, are in build-debs.yml.
@@ -663,17 +754,27 @@ jobs:
   # codeql.yml — it is slower and reports into the Security tab.
   static-analysis:
     runs-on: ubuntu-latest
+    needs: bases
+    container:
+      # Digest from devbox/Dockerfile, via the `bases` job.  It is a
+      # manifest-list digest, so it resolves on both the amd64 and arm64
+      # runners.
+      image: debian:trixie@${{ needs.bases.outputs.trixie }}
     timeout-minutes: 20
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev cppcheck \
-                                  clang-tools pyflakes3
+          . .github/ci-setup.sh
+          apt_setup cppcheck clang-tools pyflakes3
 
       # Blocking: the tree is clean under these checks today.  The single
       # known false positive is suppressed inline at its site with the
@@ -805,16 +906,38 @@ jobs:
   # (TSan + fuzzers run as their own jobs below.)
   sanitizers:
     runs-on: ubuntu-latest
+    # Debian, for the reason given on `coverage` below: the gates should run on
+    # the distribution this project ships packages for.
+    #
+    # ASan needs vm.mmap_rnd_bits low enough for its shadow mapping.  That
+    # sysctl is NOT namespaced, so the container reads the host runner's value
+    # — the same value this job already passes with today.  If it ever does
+    # trip here, the fix is `options: --privileged` on the container, not a
+    # move back to Ubuntu.
+    needs: bases
+    container:
+      # Digest from devbox/Dockerfile, via the `bases` job.  It is a
+      # manifest-list digest, so it resolves on both the amd64 and arm64
+      # runners.
+      image: debian:trixie@${{ needs.bases.outputs.trixie }}
     timeout-minutes: 30
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+          . .github/ci-setup.sh
+          # This gate needs nothing beyond the base set; SC2119 reads the
+          # bare call as a forgotten "$@" forward, which it is not.
+          # shellcheck disable=SC2119
+          apt_setup
 
       - name: Test under ASan + UBSan
         env:
@@ -830,16 +953,30 @@ jobs:
   # _Atomic), and test_ring exercises the ring handshake directly.
   tsan:
     runs-on: ubuntu-latest
+    needs: bases
+    container:
+      # Digest from devbox/Dockerfile, via the `bases` job.  It is a
+      # manifest-list digest, so it resolves on both the amd64 and arm64
+      # runners.
+      image: debian:trixie@${{ needs.bases.outputs.trixie }}
     timeout-minutes: 30
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev
+          . .github/ci-setup.sh
+          # This gate needs nothing beyond the base set; SC2119 reads the
+          # bare call as a forgotten "$@" forward, which it is not.
+          # shellcheck disable=SC2119
+          apt_setup
 
       - name: Test under TSan
         env:
@@ -866,16 +1003,40 @@ jobs:
   # failure; it just never fails for being a few tenths lower than yesterday.
   coverage:
     runs-on: ubuntu-latest
+    # Runs in Debian, not on the Ubuntu runner.  Ubuntu's lcov reports 0.0%
+    # function coverage for EVERY file and a line rate an order of magnitude
+    # low; Debian's reports the same tree correctly, on the same upstream
+    # versions (both say "LCOV version 2.0-1", both gcov 13.3.0), so the
+    # difference is Ubuntu's patchset rather than a version to pin.  Reduced
+    # to one source file and one test binary, Ubuntu says 16.4%/0.0% where
+    # Debian says 100%/100%.
+    #
+    # Every lcov call has to be in here, the summary below included: running
+    # the capture in Debian and the summary on the host would put the wrong
+    # numbers back in the job summary.
+    needs: bases
+    container:
+      # Digest from devbox/Dockerfile, via the `bases` job.  It is a
+      # manifest-list digest, so it resolves on both the amd64 and arm64
+      # runners.
+      image: debian:trixie@${{ needs.bases.outputs.trixie }}
     timeout-minutes: 30
     steps:
+      # Before checkout, which uses git when it is present and falls back to a
+      # slower tarball download when it is not.
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgpiod-dev libmosquitto-dev lcov
+          . .github/ci-setup.sh
+          apt_setup lcov
 
       - name: Build and run the suite with coverage
         run: make coverage
@@ -916,12 +1077,39 @@ jobs:
 
   fuzz:
     runs-on: ubuntu-latest
+    needs: bases
+    container:
+      # Digest from devbox/Dockerfile, via the `bases` job.  It is a
+      # manifest-list digest, so it resolves on both the amd64 and arm64
+      # runners.
+      image: debian:trixie@${{ needs.bases.outputs.trixie }}
     # Seven harnesses now: ~7 min of fuzzing plus seven ASan+UBSan builds.
     timeout-minutes: 22
     steps:
+      - name: Bootstrap
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends git ca-certificates
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # clang is preinstalled on the GitHub runner images and is NOT in a
+      # Debian base, so this step exists only because the job moved into a
+      # container.  The libFuzzer runtime has to come with it, or
+      # -fsanitize=fuzzer links against nothing.
+      - name: Install dependencies
+        run: |
+          . .github/ci-setup.sh
+          apt_setup clang
+          rt=$(clang_rt_package)
+          if [ -z "$rt" ]; then
+            echo "no libclang-rt-*-dev in the archive; -fsanitize=fuzzer will fail" >&2
+            exit 1
+          fi
+          echo "fuzzer runtime: $rt"
+          apt_retry apt-get install -y --no-install-recommends "$rt"
 
       - name: Build fuzz harnesses
         run: |
@@ -990,7 +1178,7 @@ jobs:
   # second container for no new signal, since maintainer scripts are
   # architecture-independent shell.
   install-test:
-    needs: debs
+    needs: [debs, bases]
     strategy:
       fail-fast: false
       matrix:
@@ -1004,11 +1192,14 @@ jobs:
           path: debs
 
       - name: Install, verify, reconfigure and purge (${{ matrix.dist }}/arm64)
+        env:
+          BASE: debian:${{ matrix.dist }}@${{ needs.bases.outputs[matrix.dist] }}
         run: |
           docker run --rm --platform linux/arm64 \
             -v "$PWD/debs:/debs:ro" \
             -e DEBIAN_FRONTEND=noninteractive \
-            debian:${{ matrix.dist }} bash -euo pipefail -c '
+            "$BASE" \
+            bash -euo pipefail -c '
               # This job fetches from the archive too: apt-get install of a
               # local .deb still resolves its shlibs dependencies over the
               # network.  Same two mitigations, same reasoning as build-debs.yml.
