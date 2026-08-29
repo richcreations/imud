@@ -62,7 +62,7 @@ rotation:
 
 $$ v_{NED} = R(q)\, v_{b}, \qquad R(q)\in SO(3). $$
 
-The rotation matrix `q_to_R()` (`fusion.c:179`) is
+The rotation matrix `q_to_R()` (`fusion.c:280`) is
 
 $$
 R(q)=\begin{bmatrix}
@@ -72,12 +72,12 @@ R(q)=\begin{bmatrix}
 \end{bmatrix}.
 $$
 
-The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:161`) uses the
+The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:243`) uses the
 standard scalar-first convention (Solà eq. 16).
 
 **Units.** Gyroscope rad·s⁻¹; accelerometer m·s⁻²; magnetometer µT on the
 wire, converted to **Gauss** (×0.01) inside the filter; angles rad; time s.
-Standard gravity `G_MS2` $=g=9.80665\,\mathrm{m\,s^{-2}}$ (`fusion.c:42`).
+Standard gravity `G_MS2` $=g=9.80665\,\mathrm{m\,s^{-2}}$ (`fusion.c:43`).
 
 **Gravity reference.** $g_{ref}=[0,0,1]$ (unit, NED, Z-down). The
 accelerometer's *specific force* at rest reads $-g$ on Z; the filter works
@@ -86,7 +86,7 @@ with the **gravity direction** $z_a=-\widehat{a}_b$ (§4.7).
 **As-implemented.** MEKF state — quaternion, bias, wave acceleration, and the
 covariance $P$ — is single precision (`float`); calibration fits and WMM are
 double precision. The quaternion is renormalized (`q_normalize`,
-`fusion.c:169`) after every multiplicative update, guarding unit-norm drift
+`fusion.c:266`) after every multiplicative update, guarding unit-norm drift
 from float round-off, and $P$ uses the Joseph form for the same reason
 (§4.5): the simple $(I-KH)P$ form slowly loses symmetry and
 positive-definiteness at 833 Hz over multi-day runs.
@@ -179,7 +179,7 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu_math.c:106`) applies a fixed 3×3 board→body
+`apply_mount_rot_if_set()` (`imu_math.c:393`) applies a fixed 3×3 board→body
 matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
@@ -198,7 +198,7 @@ fails.
 
 ### 3.2 Inertial calibration
 
-`apply_imu_cal()` (`imu_math.c:25`), per axis $i$:
+`apply_imu_cal()` (`imu_math.c:26`), per axis $i$:
 
 - **Gyro temperature compensation** (when `cal->has_gyro_temp`):
   $$ \omega_i \leftarrow \omega_i - c_i\,(T - T_{ref}), $$
@@ -210,7 +210,7 @@ fails.
 
 ### 3.3 Magnetometer hard/soft-iron
 
-`apply_mag_cal()` (`imu_math.c:43`), when `cal->has_mag`:
+`apply_mag_cal()` (`imu_math.c:44`), when `cal->has_mag`:
 
 $$ m_{cal} = S_{soft}\,(m_{raw} - b_{hard}), $$
 
@@ -238,7 +238,7 @@ multiplicatively so the quaternion never leaves the unit sphere.
 
 ### 4.1 State and covariance
 
-Nominal state (`mekf_t`, `fusion.h:31`):
+Nominal state (`mekf_t`, `fusion.h:46`):
 - $q$ — unit quaternion, body→NED (`q[4]`).
 - $b$ — gyro bias, rad·s⁻¹ (`bias[3]`).
 - $a_w$ — wave acceleration, body frame, normalized gravity units
@@ -305,7 +305,7 @@ the measurement Jacobian in §4.5.
 **Source:** Solà 2017 §5.4 *(code comment)*; Markley & Crassidis 2014 §6.1;
 Trawny & Roumeliotis 2005 *(canonical)*.
 
-### 4.2 Initialization — `mekf_init()` (`fusion.c:560`)
+### 4.2 Initialization — `mekf_init()` (`fusion.c:1019`)
 
 Nominal: $q=[1,0,0,0]$, $b=$ `gyro_bias_init` (from the startup still window,
 §10; may be 0).
@@ -328,9 +328,10 @@ densities). Stored as `f->Qg`, `f->Qb`.
 Measurement-noise variances:
 $$ R_a = \left(\frac{N_a}{g}\right)^2 \text{ODR},\qquad
    R_m = N_m^2\,f_{s,\text{mag}}, $$
-`f->Ra` (`fusion.c:538`) in normalized (gravity-direction) units,
-`f->Rm` (`:449`) in Gauss², with $N_a=$ `mekf_accel_noise`,
-$N_m=$ `mekf_mag_noise`, $f_{s,\text{mag}}=$ `mag_odr_hz`.
+`f->Ra` (`mekf_derive_tuning`, `fusion.c:897`) in normalized
+(gravity-direction) units, `f->Rm` (`:898`) in Gauss², with
+$N_a=$ `mekf_accel_noise`, $N_m=$ `mekf_mag_noise`,
+$f_{s,\text{mag}}=$ `mag_odr_hz`.
 
 Derived thresholds: accel skip band
 $[\,1-s_k,\ 1+s_k\,]$ with $s_k=$ `accel_skip_thresh`;
@@ -342,7 +343,7 @@ wave state $P$ reports a believable steady-state attitude variance, and that
 has a floor near 0.9°/axis: a fixed 0.5° threshold would never be reached
 (§4.1.1). m_ref EMA gain
 $mref\_alpha = 1/(\tau_{mref}\, f_{s,\text{mag}})$ with $\tau_{mref}=300$ s
-(`:467`).
+(`:941`).
 
 **As-implemented.** $Q_g,Q_b$ are *per nominal step*; during prediction they
 are rescaled by the actual $dt$ (§4.4). The bias process is modeled as a
@@ -352,7 +353,7 @@ not driven by the Allan-variance characterization of §12.5.
 
 **Source:** Solà 2017 §4.1 for discrete process noise *(code comment)*.
 
-### 4.3 Alignment — `mekf_align()` (`fusion.c:617`)
+### 4.3 Alignment — `mekf_align()` (`fusion.c:1077`)
 
 Deterministic initial attitude from one static accel+mag pair (a
 tilt-then-heading decomposition, TRIAD-family).
@@ -387,7 +388,7 @@ $$ \phi = \operatorname{atan2}(\widehat g_{b,y},\ \widehat g_{b,z}),\qquad
    \sqrt{\widehat g_{b,y}^2+\widehat g_{b,z}^2}\big). $$
 
 Tilt quaternion $q_{tilt}=q_\theta\otimes q_\phi$ built directly from
-half-angles (`fusion.c:508`).
+half-angles (`mekf_align`, `fusion.c:1094`).
 
 **Heading from magnetometer.** Rotate $m_b$ by $R(q_{tilt})$ into the
 tilt-levelled frame; with horizontal components $m_x,m_y$ there,
@@ -406,7 +407,7 @@ $\operatorname{atan2}(-m_y,m_x)$, **not** $\operatorname{atan2}(+m_y,m_x)$;
 the levelled field is the true NED field rotated by $-\psi$, so the negative
 sign recovers vessel yaw. (The `+m_y` form returns $-\psi$, mirrored about
 north — a historical bug invisible when aligning while pointing north; see
-the in-code comment at `fusion.c:519`.) The initial `m_ref` inherits any
+the in-code comment at `fusion.c:1104`.) The initial `m_ref` inherits any
 alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 (§4.8) and the WMM invariants (§4.9) later remove; its horizontal
 **direction** is the heading datum and is never subsequently adapted.
@@ -414,7 +415,7 @@ alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 **Source:** tilt/heading coarse alignment — Farrell 2008 §10; TRIAD lineage
 Shuster & Oh 1981 *(canonical)*.
 
-### 4.4 Prediction — `mekf_predict()` (`fusion.c:674`)
+### 4.4 Prediction — `mekf_predict()` (`fusion.c:1134`)
 
 Per IMU sample, with measured interval $dt$ (from hardware timestamps, §11;
 falls back to nominal $1/\text{ODR}$).
@@ -422,7 +423,7 @@ falls back to nominal $1/\text{ODR}$).
 **Bias-corrected rate:** $\omega = s.\text{gyro} - b$.
 
 **Quaternion propagation** by the exponential map (`q_from_rotvec`,
-`fusion.c:192`):
+`fusion.c:293`):
 $$ q \leftarrow q \otimes \exp\!\big(\tfrac12\,[\,0,\ \omega\,dt\,]\big),
 \qquad
 \exp(\phi) = \Big[\cos\tfrac{|\vartheta|}{2},\
@@ -432,7 +433,7 @@ $\delta q\approx[1,\tfrac12\vartheta]$ for $|\vartheta|<10^{-7}$. Renormalized
 after.
 
 **Covariance propagation** $P \leftarrow \Phi P \Phi^\top + Q_d$, first-order
-discrete transition (`fusion.c:711`):
+discrete transition (`mekf_predict`, `fusion.c:1162`):
 
 $$
 \Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt & 0_3 \\
@@ -473,7 +474,7 @@ error convention.
 **Source:** Solà 2017 eq. 259 (integration), eq. 268 (covariance)
 *(code comment)*.
 
-### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:228`)
+### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:495`)
 
 Measurement of a known NED reference observed in body: predicted $h$, actual
 $z$, isotropic noise $R_{noise}$, gate `chi2_gate`.
@@ -487,7 +488,7 @@ enabled — see §4.5.1. The mag channels use this one, unchanged.
 
 **Innovation covariance and gain:**
 $$ S = H P H^\top + R_{noise} I_3,\qquad K = P H^\top S^{-1}, $$
-$S^{-1}$ by Cramer's rule (`m33_inv`, `fusion.c:73`; singular ⇒ skip).
+$S^{-1}$ by Cramer's rule (`m33_inv`, `fusion.c:95`; singular ⇒ skip).
 
 **The singularity test is relative, not absolute** (1.7). $S$ carries physical
 units, and for the gravity update they are tiny: with $R_a\approx4.2\times
@@ -645,7 +646,7 @@ $\lVert v\rVert$ is guarded at 0.5; below that the acceleration is comparable
 to gravity itself and the linearisation is meaningless, so the update falls
 back to the plain direction form.
 
-### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:418`)
+### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:758`)
 
 Heading-only correction (a 1-D measurement). Innovation $y$ (rad, wrapped to
 $\pm\pi$), variance $R_{noise}$. The Jacobian projects the error onto the
@@ -658,7 +659,7 @@ $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
 
 **Source:** scalar-measurement EKF specialization of §4.5 *(canonical)*.
 
-### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:751`)
+### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1374`)
 
 **Speed-aided centripetal correction.** In a turn the accelerometer senses
 $a = a_{platform} - g$, and with speed-over-ground $v$ (body $\approx[v,0,0]$,
@@ -972,7 +973,7 @@ off optimal for 3-D — a deliberate compromise favouring the marine default, no
 an arbitrary number. Reproduce with `-DBENCH_SWEEP_NG`, composable with
 `-DBENCH_ODR_HZ=<rate>`.
 
-### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:820`)
+### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1438`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field
 $h_{raw}=R^\top m_{ref}$, magnitude $|h_{raw}|$.
@@ -1116,9 +1117,10 @@ and its dip channel is least trustworthy.
 
 **Source:** heading-only / tilt-compensated magnetometer fusion — standard
 marine AHRS practice, Farrell 2008 *(canonical)*; gauge-feedback avoidance is
-imud-specific design (see in-code rationale `fusion.c:923`).
+imud-specific design (see the in-code rationale in `mekf_update_mag`,
+`fusion.c:1550`).
 
-### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:597`)
+### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1057`)
 
 Given WMM horizontal magnitude $H$ and vertical $Z$ (Gauss) at a known
 position (from §13), rescale `m_ref` to those invariants while preserving
@@ -1130,7 +1132,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:1140`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:1988`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1142,14 +1144,14 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1128`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1918`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
 a new config on hot-reload; $q$, $P$, $b$, $dt$ and the runtime scalars
 (`Ra_scale`, `acc_quiet_ema`, the health EMAs) are untouched, so the filter
 keeps running. Both this and `mekf_init()` derive their tuning through one
-shared helper (`mekf_derive_tuning`, `fusion.c:513`), so no value can be
+shared helper (`mekf_derive_tuning`, `fusion.c:864`), so no value can be
 updated in one path and forgotten in the other — `mref_alpha` previously was,
 leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
@@ -1157,9 +1159,9 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`imu.c:940`–`978`) from the bias-corrected
-body rate $\omega = s.\text{gyro}-b$ and the current Euler angles, using the
-inverse of the 3-2-1 kinematic relation.
+Computed in the fusion thread (`fusion_thread`, `imu.c:1429`–`1476`) from the
+bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
+angles, using the inverse of the 3-2-1 kinematic relation.
 
 **Roll rate** (for sea-state, §7), with a near-gimbal-lock fallback:
 $$ \dot\phi = \omega_x + \tan\theta\,(\omega_y\sin\phi + \omega_z\cos\phi),
@@ -1183,7 +1185,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:1003`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1771`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -1219,18 +1221,18 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:1051`–`1122`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1829`–`1916`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1060`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1847`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:944`).
+`fusion.c:1854`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):
@@ -1271,7 +1273,7 @@ recursion, West 1979 / Finch 2009 *(canonical)*.
 
 ---
 
-## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:820`)
+## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1438`)
 
 Two EMAs ($\alpha=1/3000$, $\tau\approx30$ s at 100 Hz mag ODR), updated
 **before** the rejection gates so that gated-out anomalies still register:
@@ -1294,7 +1296,7 @@ pre-gate innovations because the rejected samples are precisely the anomalies
 these metrics exist to surface. The 30 s time constant scales inversely with a
 non-standard mag rate (acceptable for a health indicator).
 
-### 8.1 Update-gate health — `gate_health()` (`fusion.c:129`)
+### 8.1 Update-gate health — `gate_health()` (`fusion.c:159`)
 
 Two further EMAs ($\tau\approx30$ s, gain per §4.7), written by every
 `eskf_update` / `eskf_update_yaw` call — accepted, capped and rejected alike,
@@ -1319,7 +1321,7 @@ from a synthetic benchmark.
 **Source:** exponential moving average, standard *(canonical)*; innovation
 consistency monitoring Bar-Shalom et al. 2001 *(canonical)*.
 
-### 8.2 Measurement-model consistency — `nis_record()` (`fusion.c:167`)
+### 8.2 Measurement-model consistency — `nis_record()` (`fusion.c:197`)
 
 Where §8.1 reports how hard the robustness machinery is *working*, this
 reports whether the noise model underneath it is *right*. Two EMAs of the
@@ -1401,7 +1403,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:592`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:934`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$
@@ -1415,11 +1417,11 @@ $\max_k\sigma_k > 0.00873$ rad·s⁻¹ ($0.5°$·s⁻¹) the window is **doubled
 
 ---
 
-## 11. Timestamp anchoring and per-sample dt — `imu_math.c:57`–`104`
+## 11. Timestamp anchoring and per-sample dt — `imu_math.c:58`–`194`
 
 A single anchor $(\text{chip\_ticks}, \text{wall\_ns}, \text{tai\_ns},
 \text{gen})$ maps the sensor's free-running counter to system time. Per
-sample (`chip_to_wall`, `imu_math.c:81`), with `tick_ns` the counter period:
+sample (`chip_to_wall`, `imu_math.c:178`), with `tick_ns` the counter period:
 $$ \text{offset} = (\text{chip\_ts} - \text{chip\_ticks})\cdot\text{tick\_ns},
 \qquad t_{wall} = \text{wall\_ns} + \text{offset}, $$
 $t_{tai}$ likewise. Subtraction is unsigned 32-bit (wrap-safe within one
@@ -1443,7 +1445,7 @@ the per-sample time).
 
 ## 12. Offline calibration fits (`imud-cal`, `cal_math.c`)
 
-### 12.1 Linear solver — `gauss4()` (`cal_math.c:24`)
+### 12.1 Linear solver — `gauss4()` (`cal_math.c:25`)
 
 Gaussian elimination with **partial pivoting** on the augmented $4\times5$
 system, then back-substitution. Returns $-1$ if any pivot $<10^{-12}$.
@@ -1451,13 +1453,13 @@ Double precision.
 
 **Source:** Golub & Van Loan 2013 §3.4 *(canonical)*.
 
-### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:125`)
+### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:153`)
 
 Algebraic (linearized) sphere fit. The sphere
 $(x-c_x)^2+(y-c_y)^2+(z-c_z)^2=r^2$ is linearized as
 $$ x^2+y^2+z^2 = 2c_x x + 2c_y y + 2c_z z + (r^2 - \lVert c\rVert^2), $$
 and the normal equations $A^\top A\,p = A^\top b$ are accumulated
-incrementally (`sphere_add`, `cal_math.c:58`) over sums
+incrementally (`sphere_add`, `cal_math.c:59`) over sums
 $\Sigma x,\Sigma x^2,\Sigma xy,\Sigma x r^2,\dots$. Solved by `gauss4`:
 $$ A^\top A =
 \begin{bmatrix}
@@ -1478,7 +1480,7 @@ versus a geometric fit.
 **Source:** algebraic sphere/magnetometer fit, Renaudin et al. 2010; Coope
 1993 *(canonical)*.
 
-### 12.3 Soft-iron 2-D ellipse fit — `ellipse_fit()` (`cal_math.c:78`)
+### 12.3 Soft-iron 2-D ellipse fit — `ellipse_fit()` (`cal_math.c:106`)
 
 Conic least-squares on the horizontal magnetometer locus
 $A x^2 + B xy + C y^2 = 1$ (regressors $x^2,xy,y^2$; normal equations from
@@ -1504,7 +1506,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:151`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:308`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1512,7 +1514,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:170`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:327`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1520,7 +1522,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:203`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:360`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1535,7 +1537,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:227`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:384`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,

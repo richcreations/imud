@@ -225,6 +225,37 @@ CASES = [
      sub(r"`src/fusion\.c`", "`src/no_such_file.c`"),
      "no_such_file"),
 
+    # The drift that shipped: 25 of 26 line citations pointed at the wrong
+    # line by 1.9.0 while the checker passed, because it only read names.
+    # A line outside the function it names must fail.
+    ("check-math-citations", "docs/math.md",
+     sub(r"`eskf_update\(\)` \(`fusion\.c:\d+`", "`eskf_update()` (`fusion.c:999`"),
+     "fusion.c:999"),
+
+    # A citation that names no symbol (they point at a comment or an
+    # expression) still has to land inside SOME definition — 453 is a gap
+    # between two functions.
+    ("check-math-citations", "docs/math.md",
+     sub(r"the in-code comment at `fusion\.c:\d+`",
+         "the in-code comment at `fusion.c:453`"),
+     "fusion.c:453"),
+
+    # A line past the end of the file.
+    ("check-math-citations", "docs/math.md",
+     sub(r"`gate_health\(\)` \(`fusion\.c:\d+`", "`gate_health()` (`fusion.c:99999`"),
+     "99999"),
+
+    # A range that runs backwards.
+    ("check-math-citations", "docs/math.md",
+     sub(r"`fusion\.c:1829`–`\d+`", "`fusion.c:1829`–`999`"),
+     "run forwards"),
+
+    # The `:449` shorthand, which continues whichever file was named last,
+    # rots exactly like a full citation and is resolved the same way.
+    ("check-math-citations", "docs/math.md",
+     sub(r"`f->Rm` \(`:\d+`\)", "`f->Rm` (`:450`)"),
+     "fusion.c:450"),
+
     ("check-links", "docs/manual.md",
      sub(r"\]\(#6-calibration\)", "](#no-such-heading)"),
      "no-such-heading"),
