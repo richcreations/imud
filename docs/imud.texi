@@ -2796,15 +2796,26 @@ re-converges. Repeated resets are a bug --- capture the log line
 produced it.
 @item 
 Fusion never converges
- @tab Magnetometer uncalibrated, or a strong local magnetic disturbance.
-Run @code{imud-cal mag}; check the fit residual.
+ @tab The flag needs every attitude axis to have a measurement behind
+it. Roll and pitch come from gravity; heading comes from the
+magnetometer. If the magnetometer is not being fused ---
+@code{mag_fuse_uncal = false} with no @code{cal.json}, no magnetometer
+configured, or the withdrawal gate latched under gross iron --- the
+heading axis is unobservable, its covariance grows without bound, and
+the flag correctly never sets. @code{imud-status} says which under
+Attitude. With the magnetometer fused, suspect a strong local magnetic
+disturbance: run @code{imud-cal mag} and check the fit residual.
 @item 
 Heading drifts steadily while pitch and roll stay put
- @tab The magnetometer is uncalibrated, so every mag sample is marked
-invalid, the filter's mag update never runs and heading is dead-reckoned
-from the gyro --- measured on a static bench, 220° in 24 minutes while
-pitch and roll held to a tenth of a degree. @code{imud-status} says so
-explicitly under Attitude; the fix is @code{imud-cal mag}.
+ @tab The magnetometer is not being fused, so heading is dead-reckoned
+from the gyro and drifts without bound --- several degrees per minute on
+a static bench, while pitch and roll hold to a tenth of a degree. The
+default @code{mag_fuse_uncal = true} fuses an uncalibrated field
+heading-only, which bounds the drift, so reaching this state means
+fusion is off: @code{mag_fuse_uncal = false}, no magnetometer
+configured, or the withdrawal gate latched. @code{imud-status}
+distinguishes the three cases under Attitude --- DEAD RECKONED,
+UNCALIBRATED, or neither. The fix is @code{imud-cal mag}.
 @item 
 Heading stopped updating altogether
  @tab The magnetometer has stopped delivering. The daemon warns once per
