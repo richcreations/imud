@@ -437,6 +437,14 @@ directly consumable by any downstream Kalman filter, visual-inertial odometry
 pipeline, or bundle adjustment — the consumer knows not just attitude but
 *how uncertain* that attitude estimate is.
 
+The covariance is held to what each measurement can actually support. A
+gravity-direction measurement carries no information about rotation *about*
+gravity, so the accelerometer update is constrained to leave that axis of the
+covariance untouched, and to make no correction about it. With no magnetometer
+aiding heading, the heading axis therefore grows without bound and
+`fusion_converged` stays clear, rather than collapsing under a tilt disturbance
+and reporting a confidence the filter has not earned. See `docs/math.md` §4.7.
+
 ### State and Noise Model
 
 The error-state is a 3-vector δθ (small-angle rotation error), a 3-vector
@@ -486,6 +494,9 @@ Every accel sample (833 Hz, when |a| within 5% of 1g — not under lin. accel):
     3. ACCEL UPDATE:
        Same structure as mag update, using gravity reference vector
        Skipped when linear acceleration detected (|a - g| > threshold)
+       K's attitude rows projected onto the plane orthogonal to h, so
+       gravity neither rotates the estimate about gravity nor reduces
+       the covariance there
 ```
 
 The accel update skip condition is important for marine use — wave-induced

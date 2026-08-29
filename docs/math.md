@@ -680,6 +680,33 @@ $R_{eff}=R_a\cdot$ `Ra_scale`. Then `eskf_update(h, z, R_eff, 11.34)` with
 $\gamma=11.34$ ($\chi^2_3$ 99%). The gravity direction $z$ is stashed as
 `g_body` (attitude-independent dip reference for §4.8).
 
+**Protected axis.** $h$ is also passed as `eskf_update`'s `protect` argument,
+which projects the attitude rows of $K$ onto the plane orthogonal to it:
+$$ K_{\delta\theta} \leftarrow (I - hh^\top)\,K_{\delta\theta}. $$
+Two properties follow, and they are what the update is entitled to claim:
+$$ \delta\theta \cdot h = 0, \qquad h^\top P^+ h = h^\top P^- h, $$
+the second because $K^\top(h,0,0) = (h^\top K_{\delta\theta})^\top = 0$
+leaves both $(I-KH)^\top$ and $KRK^\top$ inert along $h$. Joseph form holds
+for any gain, so nothing else in §4.5 changes.
+
+$H_{\delta\theta}h = 0$ already holds exactly for both Jacobians — the
+projection subtracts nothing at small angle. It exists for the large-angle
+regime. Once $\operatorname{tr}P[0{:}3]$ reaches $O(1)$ rad², which is where an
+unaided yaw axis ends up, the gain is large enough that a single innovation
+moves $q$ further than the first-order reset $G=I-\tfrac12[\delta\theta]_\times$
+tracks $h$; the misalignment leaks the unobservable variance into the observable
+subspace, the next update annihilates it, and the filter reports a collapsed
+covariance and a heading correction gravity cannot justify.
+
+**Attitude rows only.** A gyro-bias component along $h$ is equally unobservable
+from this measurement at this instant, but $h$ rotates in the body frame as the
+platform moves, so that component becomes observable a moment later. A yaw error
+does not: $\Phi$ rotates $\delta\theta$ with the body and $h$ rotates with the
+body, so $\delta\theta \parallel h$ stays parallel to $h$ for all time.
+Projecting rows 0–2 is therefore correct and projecting rows 3–5 would not be.
+The magnetometer passes `protect = NULL` (§4.8): it is the measurement that does
+carry heading.
+
 **As-implemented.** `Ra_scale` is set to 4 by the fusion thread while engine
 vibration is detected (§9) — vibration is high-frequency, near-zero-mean, so
 deweighting (not gating) is correct. Wave *direction* disturbance is handled

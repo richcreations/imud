@@ -29,6 +29,17 @@ Changed:
   ACTION: Run imud-cal mag for a heading accurate enough to navigate on; this
   is a floor, not a substitute.
 
+Fixed:
+
+* The accelerometer update no longer corrects heading or shrinks the attitude
+  covariance about the gravity axis. Gravity says nothing about rotation about
+  gravity, and doing either could collapse the covariance and report the
+  filter converged while heading was wrong.
+  With no magnetometer aiding heading, cov[9] and FLAG_FUSION_CONVERGED now
+  report an unaided heading axis honestly: the covariance grows and the
+  converged flag stays clear. A consumer that treated the flag as permission
+  to trust heading was previously misled in exactly that case.
+
 
 1.9.0
 -----

@@ -502,6 +502,263 @@ TEST(test_accel_reject_linear_acceleration)
     EXPECT_NEAR(f.q[3], q_before[3], 1e-6f, "z unchanged under linear accel");
 }
 
+/* ── Gravity carries no heading (the accel update's protected axis) ────────── */
+
+/*
+ * Specific force for a given roll/pitch, magnitude exactly 1 g so the skip
+ * band never fires: down-in-body is R[2][:] = (−sinθ, cosθ sinφ, cosθ cosφ)
+ * and the accelerometer reads its negation.
+ */
+static imu_sample_t accel_at(float roll, float pitch)
+{
+    float sp = sinf(pitch), cp = cosf(pitch);
+    float sr = sinf(roll),  cr = cosf(roll);
+    return make_accel(G*sp, -G*cp*sr, -G*cp*cr);
+}
+
+/*
+ * Down-in-body — the third row of R(q).  This is the axis heading is measured
+ * about, and the null direction of both accel Jacobians, so it is the axis a
+ * gravity measurement must leave alone.
+ */
+static void q_down_body(const float q[4], float h[3])
+{
+    float w=q[0],x=q[1],y=q[2],z=q[3];
+    h[0] = 2*(x*z - w*y);
+    h[1] = 2*(y*z + w*x);
+    h[2] = 1 - 2*(x*x + y*y);
+}
+
+/* uᵀ·P[0:3][0:3]·u — the attitude variance about direction u. */
+static float p_att_quad(const mekf_t *f, const float u[3])
+{
+    float s = 0;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) s += u[i] * f->P[i][j] * u[j];
+    return s;
+}
+
+typedef struct {
+    float yaw_var_first;  /* hᵀP[0:3]h at the end of the growth phase, rad² */
+    float yaw_var_min;    /* smallest value it took during the disturbance */
+    float trace_first;
+    float trace_min;
+    float hdg_span_deg;   /* largest heading excursion from the start */
+    bool  converged_seen; /* FLAG_FUSION_CONVERGED set at any point */
+} unaided_run_t;
+
+/*
+ * The regime issue #16 was reported in: no magnetometer reaches the filter, so
+ * yaw is open-loop, the attitude covariance has grown to its ~1 rad² ceiling,
+ * and the platform is disturbed in tilt.
+ *
+ * Two deliberate choices, both of which cost a wrong answer to get right:
+ *
+ * The ceiling is GROWN at the shipped tuning, not seeded.  Writing λ·hhᵀ into
+ * P arrives with none of the yaw↔bias correlation the real filter carries, and
+ * a seeded run reports a leak an order of magnitude off the grown one.  Growth
+ * costs ~384k steps and is worth it.
+ *
+ * The gyro does NOT see the tilt.  That is not a claim about real hardware; it
+ * is how the correction is forced to be large.  Feeding the matching body rate
+ * makes the leak vanish entirely (0% at amplitudes up to ±45°), because then
+ * the prediction already carries the motion and δθ stays small.  What is under
+ * test is what a LARGE gravity correction does to the protected axis, and this
+ * is the deterministic way to ask for one.
+ */
+/* Roll 92°, as recorded on the bench: the board is on its side, so the
+ * protected axis is nowhere near a body axis and a projection that only worked
+ * for a flat board would show up here. */
+#define UNAIDED_ROLL (92.0f * DEG)
+
+/* Level running at the shipped tuning until tr(P[0:3]) reaches 1 rad². */
+static void grow_to_ceiling(mekf_t *f)
+{
+    imud_config_t cfg = make_cfg();
+    float bias[3] = {0};
+    mekf_init(f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+
+    imu_sample_t level = accel_at(UNAIDED_ROLL, 0.0f);
+    mekf_align(f, level.accel, (float[]){20.0f, 0, 5.0f});
+
+    imu_sample_t zg = make_gyro(0, 0, 0);
+    for (long i = 0; i < 2000000L && p_att_trace(f) < 1.0f; i++) {
+        mekf_predict(f, &zg, f->dt);
+        mekf_update_accel(f, &level);
+    }
+}
+
+static unaided_run_t run_unaided_tilt(void)
+{
+    /* One scenario, two assertions in separate tests; the growth phase is half
+     * a second of CPU, so it runs once. */
+    static bool done = false;
+    static unaided_run_t cached;
+    if (done) return cached;
+
+    mekf_t f;
+    grow_to_ceiling(&f);
+    const float roll0 = UNAIDED_ROLL;
+    imu_sample_t zg = make_gyro(0, 0, 0);
+
+    float h0[3];
+    q_down_body(f.q, h0);
+
+    unaided_run_t r;
+    r.yaw_var_first = r.yaw_var_min = p_att_quad(&f, h0);
+    r.trace_first   = r.trace_min   = p_att_trace(&f);
+    r.hdg_span_deg  = 0.0f;
+    r.converged_seen = false;
+
+    float roll, pitch, yaw, yaw0;
+    q_to_euler(f.q, &roll, &pitch, &yaw0);
+
+    /* ±10° of pitch at 0.2 Hz for two minutes. */
+    const int steps = (int)(120.0f * 833.0f);
+    for (int i = 0; i < steps; i++) {
+        float t = (float)i / 833.0f;
+        imu_sample_t a = accel_at(roll0,
+                                  -10.0f * DEG * sinf(2.0f*(float)M_PI*t/5.0f));
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_accel(&f, &a);
+
+        float h[3];
+        q_down_body(f.q, h);
+        float yv = p_att_quad(&f, h);
+        if (yv < r.yaw_var_min) r.yaw_var_min = yv;
+        float tr = p_att_trace(&f);
+        if (tr < r.trace_min) r.trace_min = tr;
+        if (f.converged) r.converged_seen = true;
+
+        q_to_euler(f.q, &roll, &pitch, &yaw);
+        float d = fabsf(yaw - yaw0);
+        if (d > (float)M_PI) d = 2.0f*(float)M_PI - d;
+        if (d / DEG > r.hdg_span_deg) r.hdg_span_deg = d / DEG;
+    }
+    cached = r;
+    done = true;
+    return cached;
+}
+
+/*
+ * A gravity-direction measurement carries no information about rotation ABOUT
+ * gravity, so it must not reduce the covariance on that axis — however large
+ * that covariance has grown.  Issue #16: it did, and the collapse was reported
+ * as convergence.
+ */
+TEST(test_accel_update_preserves_yaw_variance)
+{
+    unaided_run_t r = run_unaided_tilt();
+
+    printf("\n    [#16] yaw var %.4g -> %.4g   trace %.4g -> %.4g"
+           "   heading span %.2f deg\n    ",
+           (double)r.yaw_var_first, (double)r.yaw_var_min,
+           (double)r.trace_first,   (double)r.trace_min,
+           (double)r.hdg_span_deg);
+
+    /* Growth from Qg is expected and fine; any fall is the defect.  The bound
+     * is slack for float rounding on a quantity of order 1, not a tolerance on
+     * a measurement. */
+    EXPECT(r.yaw_var_min > 0.999f * r.yaw_var_first,
+           "unaided yaw variance never falls under a tilt disturbance");
+
+    /* The trace DOES fall, legitimately: it also carries the two tilt axes,
+     * which the accelerometer is entitled to collapse.  What it may not do is
+     * fall past the yaw variance underneath them. */
+    EXPECT(r.trace_min > 0.999f * r.yaw_var_first,
+           "trace never falls below the unaided yaw variance it contains");
+}
+
+/*
+ * The same property from the state side, exactly: a gravity correction must be
+ * orthogonal to the gravity axis.
+ *
+ * It is asserted per-update rather than as a heading excursion because Euler
+ * yaw is NOT invariant under a tilt correction — a rotation about a horizontal
+ * axis changes the azimuth of the body X axis in general.  Heading therefore
+ * still wanders in the run above (blind gyro, no compass, nothing constrains
+ * it) and is entitled to: the filter reports σ ≈ 57° on that axis throughout.
+ * What was wrong was the covariance claiming otherwise.
+ *
+ * Three constraints pin the scenario, and each was found by getting it wrong:
+ *   - It must start from the GROWN ceiling.  A fresh filter has no yaw↔bias
+ *     correlation, and the leak lives there: the same measurement gives a
+ *     ratio of 2e-8 on a fresh filter either way, which tests nothing.
+ *   - The tilt must be small.  At the ceiling the tilt block is tight, so an
+ *     8° innovation is past the gross-reject gate and no update happens at all
+ *     (|δθ| = 7e-9).
+ *   - 2° is comfortably above the float noise floor of recovering δθ from the
+ *     quaternion change; the ratio is the same at 0.1° and 0.5°, which is how
+ *     that was checked.
+ */
+TEST(test_accel_correction_is_orthogonal_to_gravity)
+{
+    mekf_t f;
+    grow_to_ceiling(&f);
+
+    float h[3], q0[4];
+    q_down_body(f.q, h);
+    memcpy(q0, f.q, sizeof q0);
+
+    /* 2° in one step, split across both horizontal axes so δθ is not confined
+     * to a single body axis. */
+    imu_sample_t tilted = accel_at(UNAIDED_ROLL - 2.0f*DEG, 2.0f*DEG);
+    mekf_update_accel(&f, &tilted);
+
+    float qc[4] = { q0[0], -q0[1], -q0[2], -q0[3] };
+    float dq[4] = {
+        qc[0]*f.q[0] - qc[1]*f.q[1] - qc[2]*f.q[2] - qc[3]*f.q[3],
+        qc[0]*f.q[1] + qc[1]*f.q[0] + qc[2]*f.q[3] - qc[3]*f.q[2],
+        qc[0]*f.q[2] - qc[1]*f.q[3] + qc[2]*f.q[0] + qc[3]*f.q[1],
+        qc[0]*f.q[3] + qc[1]*f.q[2] - qc[2]*f.q[1] + qc[3]*f.q[0],
+    };
+    float dth[3] = { 2.0f*dq[1], 2.0f*dq[2], 2.0f*dq[3] };
+    float mag   = sqrtf(dth[0]*dth[0] + dth[1]*dth[1] + dth[2]*dth[2]);
+    float along = fabsf(dth[0]*h[0] + dth[1]*h[1] + dth[2]*h[2]);
+
+    printf("\n    [#16] one 2 deg correction: |dth| = %.3e rad,"
+           " |dth.h|/|dth| = %.2e\n    ", (double)mag, (double)(along/mag));
+
+    EXPECT(mag > 1e-4f, "the update really did make a substantial correction");
+    EXPECT(along / mag < 1e-3f,
+           "a gravity correction is orthogonal to the gravity axis");
+}
+
+/*
+ * The protection is specific to the accelerometer.  The magnetometer is the
+ * measurement that DOES carry heading, and it must still be able to collapse
+ * the same yaw variance — otherwise the fix has disabled the compass.
+ */
+TEST(test_mag_still_collapses_yaw_variance)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    float h0[3];
+    q_down_body(f.q, h0);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) f.P[i][j] += 1.0f * h0[i] * h0[j];
+    float yv0 = p_att_quad(&f, h0);
+
+    imu_sample_t sa = make_accel(0, 0, -G);
+    imu_sample_t zg = make_gyro(0, 0, 0);
+    mag_sample_t sm = make_mag(0.2f, 0, 0.05f);
+    for (int i = 0; i < 10000; i++) {
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_accel(&f, &sa);
+        if (i % 8 == 0) mekf_update_mag(&f, &sm);
+    }
+
+    float h[3];
+    q_down_body(f.q, h);
+    EXPECT_LT(p_att_quad(&f, h), 0.01f * yv0,
+              "an aided yaw axis still collapses");
+    EXPECT(f.converged, "and still reports convergence");
+}
+
 /*
  * Mag update corrects yaw error:
  * Inject 20° yaw error, run mag updates with correct mag, verify yaw improves.
@@ -4234,6 +4491,9 @@ int main(void)
     RUN(test_align_30deg_roll);
     RUN(test_accel_update_corrects_roll);
     RUN(test_accel_reject_linear_acceleration);
+    RUN(test_accel_update_preserves_yaw_variance);
+    RUN(test_accel_correction_is_orthogonal_to_gravity);
+    RUN(test_mag_still_collapses_yaw_variance);
     RUN(test_mag_update_corrects_yaw);
     RUN(test_mag_reject_anomaly);
     RUN(test_covariance_decreases_with_updates);

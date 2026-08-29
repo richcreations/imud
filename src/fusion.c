@@ -484,6 +484,10 @@ static void dir_S(const float H[3][MEKF_N], const float PHt[MEKF_N][3],
  *            the mag channels and a disabled wave state are untouched.
  * R33:       full 3×3 measurement noise, or NULL for isotropic R_noise·I₃.
  *            Same contract as aw: NULL is the scalar path, unchanged.
+ * protect:   unit direction (body frame) about which this measurement carries
+ *            no rotation information, or NULL when it constrains all three
+ *            attitude axes.  See the projection below.  Same contract again:
+ *            NULL runs no projection arithmetic at all.
  *
  * Returns 0 on success, -1 if S is singular, +1 if the innovation gate
  * rejected the measurement (update skipped either way).
@@ -496,7 +500,8 @@ static int eskf_update(mekf_t *f,
                        float *nis_ema,
                        float nis_alpha,
                        const float *aw,
-                       const float (*R33)[3])
+                       const float (*R33)[3],
+                       const float *protect)
 {
     /* Local, so the Huber R-inflating variants can repoint it at a scaled
      * copy without touching the caller's matrix. */
@@ -621,6 +626,34 @@ static int eskf_update(mekf_t *f,
         }
     }
     #undef ESKF_SOLVE_GAIN
+
+    /*
+     * Observability constraint: project the ATTITUDE rows of K onto the plane
+     * orthogonal to `protect`, so a measurement that carries no rotation about
+     * that axis makes no correction about it and reduces no covariance on it —
+     *
+     *   δx[0:3]·n = 0     and     nᵀP⁺n = nᵀP⁻n
+     *
+     * the second because Kᵀ(n,0,0) = (nᵀK_att)ᵀ = 0 leaves both (I−KH)ᵀ and
+     * K·R·Kᵀ inert along n.  Joseph form holds for any gain.  H_δθ·n = 0
+     * already holds exactly, so this subtracts nothing at small angle; it is
+     * what keeps the property true once P is large enough that one correction
+     * outruns the first-order reset G.  docs/math.md §4.7.
+     *
+     * ATTITUDE ROWS ONLY.  A gyro-bias component along n is also unobservable
+     * here, but n rotates in the body frame as the platform moves, so that
+     * component becomes observable a moment later; a yaw error never does,
+     * because Φ rotates δθ and n together.  Projecting rows 3–5 would be wrong.
+     */
+    if (protect) {
+        for (int j = 0; j < 3; j++) {
+            float d = protect[0]*K[0][j] + protect[1]*K[1][j]
+                    + protect[2]*K[2][j];
+            K[0][j] -= protect[0]*d;
+            K[1][j] -= protect[1]*d;
+            K[2][j] -= protect[2]*d;
+        }
+    }
 
     /* δx = K × innovation  (MEKF_N×1) */
     float dx[MEKF_N] = {0};
@@ -1394,9 +1427,12 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
     f->g_body[2] = z[2];
     f->g_body_valid = true;
 
+    /* h is the third row of R, hence unit: the NED-down axis in body terms,
+     * which is the axis heading is measured about and the exact null direction
+     * of both accel Jacobians. */
     eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE,
                 &f->nis_accel_ema, alpha_a,
-                f->wave_enabled ? f->wave_acc : NULL, NULL);
+                f->wave_enabled ? f->wave_acc : NULL, NULL, h);
 }
 
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
@@ -1673,8 +1709,10 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
             }
         }
         /* aw NULL: the magnetic field is not contaminated by acceleration. */
+        /* No protected axis: the magnetometer is the measurement that DOES
+         * carry heading, so all three attitude axes are constrained here. */
         rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE,
-                         &f->nis_mag_ema, f->nis_mag_alpha, NULL, Rp);
+                         &f->nis_mag_ema, f->nis_mag_alpha, NULL, Rp, NULL);
         if (rc == 0) f->mag_accepted++;
     }
     (void)rc;
