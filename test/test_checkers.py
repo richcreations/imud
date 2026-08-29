@@ -392,6 +392,24 @@ CASES = [
      sub(r'^  kind     = "behaviour"', '  kind     = "improvement"'),
      "improvement"),
 
+    # A release that shipped with its date never stamped, leaving two stanzas
+    # claiming to be the one still accumulating. The older then keeps taking
+    # entries that render into the wrong NEWS section. 1.9.0 shipped this way.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^date    = "2026-08-28"', 'date    = "unreleased"'),
+     "unreleased"),
+
+    # The date in a form nothing downstream can order or parse.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^date    = "2026-08-28"', 'date    = "Aug 28 2026"'),
+     "YYYY-MM-DD"),
+
+    # The accumulating stanza left behind a newer one, so changes land in a
+    # section that has already shipped.
+    ("gen-release-notes", "docs/release-notes.toml",
+     sub(r'^version = "1\.9\.1"', 'version = "1.8.0"'),
+     "is newer"),
+
 
     # ── check-comment-refs ───────────────────────────────────────────────────
     # A comment naming a function that does not exist -- what a rename leaves

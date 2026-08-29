@@ -41,6 +41,37 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME matches include/version.h ($ver)"
 
+      # docs/release-notes.toml marks a release `date = "unreleased"` while it
+      # is being accumulated.  Leaving it that way through a release is only
+      # visible in hindsight: before the tag the marker is correct, and
+      # afterwards nothing on main can tell that it should have changed — so
+      # the word ships into NEWS and into every changelog stanza generated
+      # from that release afterwards.  1.9.0 shipped in exactly that state.
+      #
+      # gen-release-notes.py pins what a text-only checker can see (one
+      # `unreleased` stanza, and it is the newest).  Whether that stanza has
+      # been TAGGED is knowable only here.
+      - name: Registry stanza for this version is dated
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          python3 - "$tag" <<'PY'
+          import sys, tomllib
+          tag = sys.argv[1]
+          with open("docs/release-notes.toml", "rb") as f:
+              releases = tomllib.load(f).get("release", [])
+          rel = next((r for r in releases if r.get("version") == tag), None)
+          if rel is None:
+              print(f"::error::docs/release-notes.toml has no stanza for {tag}")
+              sys.exit(1)
+          date = rel.get("date", "")
+          if date == "unreleased":
+              print(f"::error::docs/release-notes.toml still marks {tag} as "
+                    f'"unreleased" — stamp it with the release date before '
+                    f"tagging, or NEWS and the changelogs ship that word")
+              sys.exit(1)
+          print(f"release-notes.toml dates {tag} as {date}")
+          PY
+
       # A tag is not evidence that anything passed.  ci.yml triggers on pushes
       # to main, this workflow triggers on tags, and nothing joined the two: a
       # tag placed on a commit whose CI went red still built 32 .debs and

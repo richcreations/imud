@@ -58,6 +58,11 @@ GENERATED_FLOOR = "1.7"
 WORD_CAP        = 40
 WIDTH           = 78
 
+# The date of a release that has not shipped yet.  Also the accumulator: a
+# change lands in this stanza until the version is tagged and dated.
+UNRELEASED = "unreleased"
+DATE_RE    = re.compile(r"\d{4}-\d{2}-\d{2}")
+
 KINDS   = ("feature", "behaviour", "fix")
 HEADING = {"feature": "Added", "behaviour": "Changed", "fix": "Fixed"}
 
@@ -105,6 +110,40 @@ def load_registry(rep):
                       f"shorter or split it; the detail belongs in the commit "
                       f"message: {text[:70]}...")
         rep.check(bool(rel.get("change")), f"release {v} lists no changes")
+
+    #
+    # `unreleased` marks the release currently being accumulated: changes land
+    # in that stanza until the version ships.  The workflow leans on the marker
+    # meaning what it says, so pin what a text-only check can see — that one
+    # stanza carries it, that it is the newest, and that every other date is
+    # orderable.
+    #
+    # A second `unreleased` stanza means a release was tagged without its date
+    # being stamped, and the older of the two then keeps collecting entries
+    # that render into the wrong NEWS section.
+    #
+    # Whether the NEWEST stanza has itself already been tagged cannot be
+    # decided here: a git tag is not available to a text-only checker and is
+    # absent from a `make dist` tarball entirely.  release.yml's check-tag job
+    # covers that, at the only moment it is knowable.
+    #
+    pending = [r for r in releases if r.get("date") == UNRELEASED]
+    rep.check(len(pending) <= 1,
+              f"{len(pending)} releases are marked {UNRELEASED!r} "
+              f"({', '.join(r.get('version', '?') for r in pending)}) — only "
+              f"the one being accumulated may be, so another shipped without "
+              f"its date being stamped")
+    if len(pending) == 1 and releases:
+        newest = max(releases, key=lambda r: vkey(r.get("version", "0")))
+        rep.check(pending[0] is newest,
+                  f"release {pending[0].get('version', '?')} is marked "
+                  f"{UNRELEASED!r} but {newest.get('version', '?')} is newer — "
+                  f"the unreleased stanza is the one still being accumulated")
+    for rel in releases:
+        d = rel.get("date", "")
+        rep.check(d == UNRELEASED or bool(DATE_RE.fullmatch(d)),
+                  f"release {rel.get('version', '?')}: date must be YYYY-MM-DD "
+                  f"or {UNRELEASED!r}, got {d!r}")
     return releases
 
 

@@ -92,6 +92,20 @@ That writes the `NEWS` section and the changelog stanza for every package the
 release touches — `packaging/<pkg>/changelog` and `debian/changelog`. Commit
 the output with the registry; do not hand-edit either.
 
+Each `[[release]]` carries `version`, `date` and `summary`. **`date` is
+`"unreleased"` while the release is being accumulated, and the release date —
+`YYYY-MM-DD` — once it ships.** That marker is the working list for the next
+release: a fix lands in the newest stanza as it is made, rather than being
+reconstructed from the log at release time. Stamping it is part of cutting the
+release, and two gates hold it: `gen-release-notes` fails if a second stanza
+claims `unreleased`, or if the one that does is not the newest, and
+`release.yml` refuses a tag whose stanza still says `unreleased`.
+
+Note the interaction with the paragraph below: while a stanza is newer than
+`include/version.h`, it renders into `NEWS` but into no changelog, because the
+generator only writes the changelog for the current version. The changelog
+entries appear when the version is bumped. That is expected, not drift.
+
 One `[[release.change]]` per user-visible change:
 
 - `kind` is `feature`, `behaviour` or `fix`.
