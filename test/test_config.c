@@ -959,13 +959,32 @@ static void test_fusion_marine_keys(void)
     const char *path = write_tmpconf(16,
         "[fusion]\n"
         "mag_yaw_only = false\n"
+        "mag_fuse_uncal = false\n"
+        "mag_uncal_reject_frac = 0.25\n"
         "heave_tau_s  = 8.0\n");
     imud_config_t cfg;
     config_defaults(&cfg);
     EXPECT(config_load(path, &cfg) == 0,        "fusion marine keys load");
     EXPECT(cfg.mag_yaw_only == false,           "mag_yaw_only=false loaded");
+    EXPECT(cfg.mag_fuse_uncal == false,         "mag_fuse_uncal=false loaded");
+    EXPECT_NEAR_D(cfg.mag_uncal_reject_frac, 0.25, 1e-9,
+                  "mag_uncal_reject_frac loaded");
     EXPECT_NEAR_D(cfg.heave_tau_s, 8.0, 1e-5,   "heave_tau_s loaded");
     remove(path);
+
+    /* Out of range is a hard parse error, not a clamp: a fraction above 1
+     * cannot be reached by mag_anom_ema against a ratio below 1, so the gate
+     * would silently never fire. */
+    const char *bad = write_tmpconf(17,
+        "[fusion]\n"
+        "mag_uncal_reject_frac = 1.5\n");
+    imud_config_t cfg2;
+    config_defaults(&cfg2);
+    EXPECT(config_load(bad, &cfg2) == CONFIG_ERR_PARSE,
+           "mag_uncal_reject_frac > 1 rejected");
+    EXPECT_NEAR_D(cfg2.mag_uncal_reject_frac, 0.4, 1e-9,
+                  "rejected value leaves the default in place");
+    remove(bad);
     end_test(fb);
 }
 
@@ -1536,6 +1555,8 @@ static void fill_distinct(imud_config_t *c)
     c->mag_odr_mhz = 28;
     c->mag_set_period_s = 22.5;
     c->mag_yaw_only = !c->mag_yaw_only;
+    c->mag_fuse_uncal = !c->mag_fuse_uncal;
+    c->mag_uncal_reject_frac = 0.375;
     c->heave_tau_s = 24.5;
     c->wave_tau_s = 25.5;
     c->mekf_gyro_noise = 26.5;
@@ -1751,7 +1772,8 @@ static void test_mount_preset(void)
 #define HOT_FIELDS(X) \
     X(nmea_rate_hz) X(highrate_rate_hz) X(stream_rate_hz) X(log_stats_hz) \
     X(log_level) \
-    X(mag_yaw_only) X(heave_tau_s) X(wave_tau_s) \
+    X(mag_yaw_only) X(mag_fuse_uncal) X(mag_uncal_reject_frac) \
+    X(heave_tau_s) X(wave_tau_s) \
     X(mekf_gyro_noise) X(mekf_gyro_bias) X(mekf_accel_noise) X(mekf_mag_noise) \
     X(mekf_wave_accel) X(mekf_wave_accel_tau_s) X(mekf_mag_dip_sigma_deg) \
     X(mag_reject_gauss) X(accel_skip_thresh) \

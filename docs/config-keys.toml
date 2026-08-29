@@ -793,7 +793,7 @@ to disable.'''
 name = "fusion"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["mekf_gyro_noise", "mekf_gyro_bias", "mekf_accel_noise", "mekf_mag_noise", "mekf_wave_accel", "mekf_wave_accel_tau_s", "mekf_mag_dip_sigma_deg", "mag_reject_gauss", "accel_skip_thresh", "mag_yaw_only", "heave_tau_s", "wave_tau_s", "engine_vibration_g2", "engine_accel_skip_thresh"]]
+md_groups = [["mekf_gyro_noise", "mekf_gyro_bias", "mekf_accel_noise", "mekf_mag_noise", "mekf_wave_accel", "mekf_wave_accel_tau_s", "mekf_mag_dip_sigma_deg", "mag_reject_gauss", "accel_skip_thresh", "mag_yaw_only", "mag_fuse_uncal", "mag_uncal_reject_frac", "heave_tau_s", "wave_tau_s", "engine_vibration_g2", "engine_accel_skip_thresh"]]
 
   [[section.key]]
   names = ["mekf_gyro_noise"]
@@ -1009,6 +1009,52 @@ calibration).'''
   md_default = '`true`'
   desc = '''
 Heading-only magnetometer fusion (marine default): the mag corrects heading and never pulls on roll/pitch. The swing-circle calibration is structurally 2D, so the field's vertical (dip) channel is its least-calibrated component. Set `false` for full 3D vector fusion — appropriate only for magnetically clean installs with a true 3D calibration.'''
+
+  [[section.key]]
+  names = ["mag_fuse_uncal"]
+  fields = ["mag_fuse_uncal"]
+  macros = ["NEED_BOOL"]
+  type = 'bool'
+  default = 'default:\ true'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Fuse the magnetometer when no calibration file is present. Heading is then
+offset by the uncorrected hard iron, but bounded and repeatable. Forced
+heading-only regardless of
+.BR mag_yaw_only ,
+and withdrawn automatically above
+.BR mag_uncal_reject_frac .
+Set
+.B false
+to dead-reckon heading instead.'''
+  md_type = 'bool'
+  md_default = '`true`'
+  desc = '''
+Fuse the magnetometer when no `cal.json` is present. The heading is then offset by the uncorrected hard iron — wrong by a bounded, repeatable, heading-dependent deviation rather than the unbounded drift of gyro dead reckoning, which is what a heading-hold consumer needs. The update is forced heading-only regardless of `mag_yaw_only`, so the uncorrected dip cannot reach roll or pitch, and it is withdrawn automatically above `mag_uncal_reject_frac`. `FLAG_MAG_UNCAL` (bit 15) is the wire signal for this state; `FLAG_MAG_VALID` keeps its original meaning and stays clear. Set `false` to restore dead reckoning.'''
+
+  [[section.key]]
+  names = ["mag_uncal_reject_frac"]
+  fields = ["mag_uncal_reject_frac"]
+  macros = ["NEED_RANGE_DBL"]
+  type = 'double'
+  default = 'default:\ 0.4'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Withdrawal threshold for an uncalibrated magnetometer, as a fraction of the
+reference horizontal/total field ratio. Above roughly that ratio the hard
+iron exceeds the horizontal field and indicated heading stops being
+monotonic in true heading. A coarse backstop against gross iron, not a
+precise boundary.
+.B 0
+never withdraws. Ignored unless
+.B mag_fuse_uncal
+is in effect.'''
+  md_type = 'double'
+  md_default = '`0.4`'
+  desc = '''
+Withdrawal threshold for an uncalibrated magnetometer, as a fraction of the reference horizontal/total field ratio |H|/|B|. Once the horizontal hard iron exceeds the horizontal field, two true headings read the same and the sense of the error inverts over half the compass rose, so a heading-hold consumer diverges rather than degrades; that boundary is what this gate approximates, using the `mag_anomaly` field-magnitude EMA. Deliberately coarse: the EMA is a mean rather than a peak (it under-reads a constant-rate turn by about 2/π) and a mostly-vertical offset inflates it without harming heading-only fusion, so treat it as a backstop against gross iron, not a precise boundary. Re-admission is hysteretic at 0.8x. `0` never withdraws. Ignored unless `mag_fuse_uncal` is in effect.'''
 
   [[section.key]]
   names = ["heave_tau_s"]

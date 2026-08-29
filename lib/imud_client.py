@@ -66,6 +66,7 @@ class Flags:
     # Latched until the filter re-converges, so a slow poller still sees it;
     # FUSION_CONVERGED is clear for the same span.
     STATE_RESET          = 1 << 14  # MEKF reset itself after non-finite state
+    MAG_UNCAL            = 1 << 15  # fused from an uncalibrated field
 
     @staticmethod
     def describe(flags: int) -> str:
@@ -82,6 +83,7 @@ class Flags:
             Flags.FIFO_OVERFLOW:     '!',
             Flags.SHUTDOWN:          'X',
             Flags.STATE_RESET:       'R',
+            Flags.MAG_UNCAL:         'U',
         }
         return ''.join(c for f, c in chars.items() if flags & f)
 

@@ -80,6 +80,11 @@ typedef struct {
     float mag_reject_sq; /* skip mag update if |residual|² > this */
     float conv_thresh;   /* trace threshold for converged flag */
     bool  mag_yaw_only;  /* heading-only mag fusion (marine default) */
+    bool  mag_fuse_uncal;      /* fuse the mag with no cal.json (heading-only) */
+    float mag_uncal_reject;    /* withdrawal threshold, fraction of |H_ref|/|B_ref| */
+    bool  mag_uncal_withdrawn; /* hysteretic: uncal mag currently refused */
+    float mag_uncal_limit;     /* anomaly threshold the latch was judged against */
+    bool  mag_uncal_seen;      /* an uncalibrated sample has reached the update */
     float mref_alpha;    /* per-sample EMA gain for m_ref re-estimation */
     float g_body[3];     /* latest accel-measured gravity direction, body */
     bool  g_body_valid;  /* true once an accel update has stashed g_body */
@@ -107,6 +112,12 @@ typedef struct {
      * are evidence of anomaly, not noise to hide. Exported on the wire. */
     float mag_anom_ema;  /* EMA of ||B|−|B_ref||/|B_ref| — interference / iron-cal drift */
     float mag_resid_ema; /* EMA of |heading innovation|, rad — compass-vs-filter disagreement */
+    /* Counter of mag updates that actually reached a measurement update, as
+     * opposed to returning at one of the gates above it. The caller cannot
+     * see inside mekf_update_mag, and "a mag sample arrived" is not the same
+     * claim as "the yaw estimate is being corrected" — FLAG_MAG_VALID is the
+     * second one. */
+    uint32_t mag_accepted;
 
     /* ── Update-gate health (τ ≈ 30 s) ────────────────────────────────────
      * Fed by every eskf update (accel, 3-D mag, yaw), so at the 833 Hz accel

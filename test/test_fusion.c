@@ -138,6 +138,8 @@ static imud_config_t make_cfg(void)
     c.mekf_wave_accel       = bench_wave_sigma;
     c.mekf_wave_accel_tau_s = bench_wave_tau;
     c.mekf_mag_dip_sigma_deg = bench_dip_sigma;
+    c.mag_fuse_uncal         = true;
+    c.mag_uncal_reject_frac  = 0.4;
     if (bench_ra_override   > 0.0) c.mekf_accel_noise = bench_ra_override;
     if (bench_gyro_override > 0.0) c.mekf_gyro_noise  = bench_gyro_override;
     return c;
@@ -177,7 +179,17 @@ static mag_sample_t make_mag(float mx, float my, float mz)
     m.field[1] = my * 100.0f;
     m.field[2] = mz * 100.0f;
     m.valid = true;
+    /* Calibrated by default: the uncalibrated path has its own tests, and a
+     * helper that silently produced uncalibrated samples would move every
+     * other test onto the forced heading-only branch. */
+    m.calibrated = true;
     return m;
+}
+
+static float mref_norm(const mekf_t *f)
+{
+    const float *v = f->m_ref;
+    return sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
 }
 
 /* Quaternion to yaw/pitch/roll (NED 3-2-1). */
@@ -841,6 +853,213 @@ TEST(test_mag_update_skips_invalid)
     mekf_update_mag(&f, &m);
     EXPECT_NEAR(f.q[0], q0[0], 1e-7f, "w unchanged when m_ref_valid=false");
     EXPECT_NEAR(f.q[3], q0[3], 1e-7f, "z unchanged when m_ref_valid=false");
+}
+
+/*
+ * An uncalibrated sample is FUSED, not discarded.  This is the whole point of
+ * the change: dead-reckoned yaw drifts without bound, while an uncalibrated
+ * compass is merely offset.  valid and calibrated are independent now, so
+ * assert both axes — invalid still skips whatever calibrated says.
+ */
+TEST(test_mag_uncalibrated_is_fused)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+
+    /* Field rotated 20° in the horizontal plane: a real heading innovation. */
+    float c20 = cosf(0.349f), s20 = sinf(0.349f);
+    mag_sample_t m = make_mag(0.20f*c20, -0.20f*s20, 0.05f);
+    m.calibrated = false;
+
+    float q0[4]; memcpy(q0, f.q, sizeof q0);
+    uint32_t a0 = f.mag_accepted;
+    for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
+
+    EXPECT(f.mag_accepted > a0, "uncalibrated sample reaches the update");
+    EXPECT(fabsf(f.q[3] - q0[3]) > 1e-4f, "uncalibrated sample moves yaw");
+
+    /* An invalid sample is still discarded regardless of calibrated. */
+    mekf_t g;
+    mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+    uint32_t b0 = g.mag_accepted;
+    m.valid = false;
+    for (int i = 0; i < 50; i++) mekf_update_mag(&g, &m);
+    EXPECT(g.mag_accepted == b0, "invalid sample still skipped when uncalibrated");
+
+    /* And mag_fuse_uncal = false restores the old discard behaviour. */
+    imud_config_t off = make_cfg();
+    off.mag_fuse_uncal = false;
+    mekf_t h;
+    mekf_init(&h, &off, 833.0f, (float)off.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&h, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+    uint32_t c0 = h.mag_accepted;
+    m.valid = true;
+    for (int i = 0; i < 50; i++) mekf_update_mag(&h, &m);
+    EXPECT(h.mag_accepted == c0, "mag_fuse_uncal=false discards uncalibrated");
+}
+
+/*
+ * An uncalibrated field is forced heading-only even with mag_yaw_only=false.
+ * The uncorrected dip is exactly what would drag roll and pitch, and those
+ * are the two outputs that are correct without any calibration at all.
+ */
+TEST(test_mag_uncalibrated_never_touches_roll_pitch)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mag_yaw_only = false;          /* 3-D vector fusion requested */
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+
+    float r0, p0, y0;
+    q_to_euler(f.q, &r0, &p0, &y0);
+
+    /* Badly wrong dip: +0.10 Gauss of vertical error. In 3-D fusion this
+     * pulls roll/pitch; heading-only must ignore it entirely. */
+    mag_sample_t m = make_mag(0.20f, 0.0f, 0.15f);
+    m.calibrated = false;
+    for (int i = 0; i < 200; i++) mekf_update_mag(&f, &m);
+
+    float r1, p1, y1;
+    q_to_euler(f.q, &r1, &p1, &y1);
+    EXPECT_NEAR(r1, r0, 1e-4f, "uncalibrated dip error leaves roll alone");
+    EXPECT_NEAR(p1, p0, 1e-4f, "uncalibrated dip error leaves pitch alone");
+}
+
+/*
+ * The withdrawal backstop. mag_anom_ema measures |b|/|B|; the inversion
+ * boundary is |b_h| > |H|, i.e. an anomaly of mh_ref/h_mag. Past the
+ * configured fraction of that the mag is refused, and re-admission is
+ * hysteretic at 0.8x so a marginal install cannot chatter.
+ */
+TEST(test_mag_uncalibrated_withdrawal)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+
+    mag_sample_t m = make_mag(0.20f, 0.02f, 0.05f);
+    m.calibrated = false;
+
+    /* Drive the anomaly EMA above the limit directly — the EMA has a 30 s
+     * time constant, and this test is about the gate, not about how long the
+     * EMA takes to fill. */
+    float h_mag  = mref_norm(&f);
+    float mh_ref = sqrtf(f.m_ref[0]*f.m_ref[0] + f.m_ref[1]*f.m_ref[1]);
+    float limit  = cfg.mag_uncal_reject_frac * (mh_ref / h_mag);
+
+    f.mag_anom_ema = limit * 1.5f;
+    uint32_t a0 = f.mag_accepted;
+    for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
+    EXPECT(f.mag_uncal_withdrawn, "gross anomaly withdraws the uncalibrated mag");
+    EXPECT(f.mag_accepted == a0,  "withdrawn mag applies no update");
+
+    /* Hysteresis: just under the limit is NOT enough to come back. */
+    f.mag_anom_ema = limit * 0.9f;
+    for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
+    EXPECT(f.mag_uncal_withdrawn, "re-admission needs more than dropping below the limit");
+    EXPECT(f.mag_accepted == a0,  "still no update while withdrawn");
+
+    /* Below 0.8x it comes back. */
+    f.mag_anom_ema = limit * 0.5f;
+    for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
+    EXPECT(!f.mag_uncal_withdrawn, "anomaly under 0.8x re-admits");
+    EXPECT(f.mag_accepted > a0,    "re-admitted mag applies updates again");
+
+    /* A calibrated mag is never subject to this gate. */
+    mekf_t g;
+    mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+    g.mag_anom_ema = limit * 5.0f;
+    uint32_t b0 = g.mag_accepted;
+    mag_sample_t cal_m = make_mag(0.20f, 0.02f, 0.05f);
+    for (int i = 0; i < 20; i++) mekf_update_mag(&g, &cal_m);
+    EXPECT(!g.mag_uncal_withdrawn, "calibrated mag is never withdrawn by this gate");
+    EXPECT(g.mag_accepted > b0,    "calibrated mag keeps updating");
+}
+
+/*
+ * Regression, and the quiet failure mode of this whole feature: the
+ * converged-only reject gate tests the 3-vector residual, which stays large
+ * forever for an uncalibrated field (wrong magnitude, wrong dip). If it were
+ * applied on the heading-only path the mag would be silently dropped the
+ * moment the filter converged.
+ */
+TEST(test_mag_uncalibrated_survives_convergence)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+
+    /* Residual well past mag_reject_gauss (0.05 G): dip off by 0.10 G. */
+    mag_sample_t m = make_mag(0.20f, 0.0f, 0.15f);
+    m.calibrated = false;
+
+    f.converged = true;
+    uint32_t a0 = f.mag_accepted;
+    for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
+    EXPECT(f.mag_accepted > a0,
+           "converged filter keeps accepting an uncalibrated mag");
+
+    /* The same residual on a CALIBRATED sample is still rejected — the gate
+     * has not simply been removed. */
+    mekf_t g;
+    mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+    g.converged = true;
+    uint32_t b0 = g.mag_accepted;
+    mag_sample_t cal_m = make_mag(0.20f, 0.0f, 0.15f);
+    for (int i = 0; i < 50; i++) mekf_update_mag(&g, &cal_m);
+    EXPECT(g.mag_accepted == b0,
+           "converged filter still rejects a calibrated mag past the threshold");
+}
+
+/*
+ * The m_ref magnitude/dip EMA must not run on an uncalibrated field. Its
+ * premise is that |B| and the dip are attitude-independent invariants; under
+ * uncorrected hard iron |B| depends on heading, so the EMA would chase the
+ * measurement around a turn and walk the reference with it.
+ *
+ * Same setup as test_mref_ema_heals_dip, which proves the healing works —
+ * this asserts the identical run does NOT heal when the sample is
+ * uncalibrated, so it measures the skip and not a setup that never ran.
+ */
+TEST(test_mag_uncalibrated_does_not_move_mref)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    f.m_ref[0] = 0.24f;   /* true horizontal is 0.20 */
+    f.m_ref[2] = 0.34f;   /* true vertical   is 0.40 */
+    f.mref_alpha = 1.0f / (15.0f * 833.0f);
+
+    imu_sample_t still = make_accel(0, 0, -G);
+    imu_sample_t zg    = make_gyro(0, 0, 0);
+    mag_sample_t m     = make_mag(0.20f, 0.0f, 0.40f);
+    m.calibrated = false;
+
+    for (int i = 0; i < 60000; i++) {
+        mekf_predict(&f, &zg, f.dt);
+        mekf_update_mag(&f, &m);
+        mekf_update_accel(&f, &still);
+    }
+
+    /* Untouched at the corrupted values, not healed toward 0.20 / 0.40. */
+    float mh = sqrtf(f.m_ref[0]*f.m_ref[0] + f.m_ref[1]*f.m_ref[1]);
+    EXPECT_NEAR(mh,         0.24f, 1e-5f, "m_ref horizontal left uncorrected");
+    EXPECT_NEAR(f.m_ref[2], 0.34f, 1e-5f, "m_ref dip left uncorrected");
 }
 
 /*
@@ -3214,6 +3433,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
                 m.field[k] = (Rt[0][k]*m_ned[0] + Rt[1][k]*m_ned[1] + Rt[2][k]*m_ned[2])
                              * 100.0f + bench_noise(0.3f * mag_nscale);
             m.valid = true;
+            m.calibrated = true;   /* the benchmark models a calibrated mag */
             mekf_update_mag(&f, &m);
         }
 
@@ -4025,6 +4245,11 @@ int main(void)
     RUN(test_get_state_heading_wrap);
     RUN(test_align_accel_too_weak);
     RUN(test_mag_update_skips_invalid);
+    RUN(test_mag_uncalibrated_is_fused);
+    RUN(test_mag_uncalibrated_never_touches_roll_pitch);
+    RUN(test_mag_uncalibrated_withdrawal);
+    RUN(test_mag_uncalibrated_survives_convergence);
+    RUN(test_mag_uncalibrated_does_not_move_mref);
     RUN(test_mag_ratio_gate);
     RUN(test_mekf_reconfigure);
     RUN(test_reconfigure_rederives_mag_tuning);

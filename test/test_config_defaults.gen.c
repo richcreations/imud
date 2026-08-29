@@ -73,6 +73,8 @@ CK_DBL (c.mekf_mag_dip_sigma_deg,   1.0,     "[fusion] mekf_mag_dip_sigma_deg");
 CK_DBL (c.mag_reject_gauss,         0.05,    "[fusion] mag_reject_gauss");
 CK_DBL (c.accel_skip_thresh,        0.05,    "[fusion] accel_skip_thresh");
 CK_BOOL(c.mag_yaw_only,             true,    "[fusion] mag_yaw_only");
+CK_BOOL(c.mag_fuse_uncal,           true,    "[fusion] mag_fuse_uncal");
+CK_DBL (c.mag_uncal_reject_frac,    0.4,     "[fusion] mag_uncal_reject_frac");
 CK_FLT (c.heave_tau_s,              12.0,    "[fusion] heave_tau_s");
 CK_FLT (c.wave_tau_s,               120.0,   "[fusion] wave_tau_s");
 CK_DBL (c.engine_vibration_g2,      0.0,     "[fusion] engine_vibration_g2");

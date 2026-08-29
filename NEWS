@@ -10,6 +10,26 @@ Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
 registry rather than this file.
 
 
+1.9.1
+-----
+A correctness release. The magnetometer is now used for heading even without a
+calibration, which replaces an unbounded heading drift with a bounded one.
+
+Changed:
+
+* An uncalibrated magnetometer is now fused for heading instead of ignored.
+  Heading is offset by the uncorrected hard iron but bounded, where before it
+  dead-reckoned without bound. Heading-only, so roll and pitch are untouched,
+  and withdrawn automatically under gross iron.
+  New flag bit 15, FLAG_MAG_UNCAL, marks the uncalibrated-but-fused state.
+  FLAG_MAG_VALID is unchanged and still means calibrated and healthy, so
+  existing consumers need no change. The wire packet is byte-identical and
+  still v17. This spends the last free flag bit. Set mag_fuse_uncal = false to
+  restore the old behaviour.
+  ACTION: Run imud-cal mag for a heading accurate enough to navigate on; this
+  is a floor, not a substitute.
+
+
 1.9.0
 -----
 An additive release: SPI transport, higher sample rates on three parts, a new

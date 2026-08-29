@@ -88,6 +88,7 @@
  * polling well below the packet rate can still see it.  While it is set the
  * filter is re-aligning and IMUD_FLAG_FUSION_CONVERGED is clear. */
 #define IMUD_FLAG_STATE_RESET          (1u << 14) /* MEKF reset itself after non-finite state */
+#define IMUD_FLAG_MAG_UNCAL            (1u << 15) /* fused from an uncalibrated field */
 
 /* ── Wire packet — 276 bytes, little-endian ─────────────────────────────── */
 

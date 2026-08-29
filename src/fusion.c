@@ -902,6 +902,8 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
     f->mag_reject_sq = mr * mr;
 
     f->mag_yaw_only = cfg->mag_yaw_only;
+    f->mag_fuse_uncal   = cfg->mag_fuse_uncal;
+    f->mag_uncal_reject = (float)cfg->mag_uncal_reject_frac;
 
     f->mref_alpha = (mag_odr_hz > 0.0f && MREF_TAU_S < 1e9f)
         ? 1.0f / (MREF_TAU_S * mag_odr_hz)
@@ -1401,6 +1403,21 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
 {
     if (!f->initialized || !f->m_ref_valid || !m->valid) return;
 
+    /*
+     * An uncalibrated sample carries an uncorrected hard/soft-iron error.  It
+     * is still fused, because the heading it yields is wrong by a bounded,
+     * repeatable, heading-dependent deviation while dead reckoning is wrong
+     * without bound.  Two constraints come with it, both enforced below:
+     * the update is forced heading-only so the uncorrected dip cannot reach
+     * roll or pitch, and it is withdrawn once the field-magnitude evidence
+     * says the hard iron may exceed the horizontal field.
+     */
+    bool uncal = !m->calibrated;
+    if (uncal) {
+        if (!f->mag_fuse_uncal) return;
+        f->mag_uncal_seen = true;
+    }
+
     /* Convert µT → Gauss for comparison with m_ref (stored in Gauss) */
     float mx = m->field[0] * 0.01f;
     float my = m->field[1] * 0.01f;
@@ -1500,7 +1517,13 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
      * converged-only anomaly threshold below, which would reject exactly
      * the persistent reference error this exists to heal.
      */
-    if (f->mref_alpha > 0.0f && f->g_body_valid && res_sq < 0.1f &&
+    /*
+     * Skipped for an uncalibrated field: both targets are invariants only
+     * because a calibrated magnitude does not depend on heading.  Under
+     * uncorrected hard iron it does, so the EMA would chase the measurement
+     * around a turn and walk the reference with it.
+     */
+    if (!uncal && f->mref_alpha > 0.0f && f->g_body_valid && res_sq < 0.1f &&
         f->acc_quiet_ema < 2e-4f /* platform calm: |a| within ~1.4% of g */) {
         float sin_dip = (mx*f->g_body[0] + my*f->g_body[1] + mz*f->g_body[2])
                         / z_mag;
@@ -1519,11 +1542,22 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         f->m_ref[2] += f->mref_alpha * (tgt_v - f->m_ref[2]);
     }
 
-    /* Tight anomaly threshold (converged only), scaled to normalised units. */
-    if (f->converged && res_sq > f->mag_reject_sq / (h_mag * h_mag)) return;
+    /*
+     * Tight anomaly threshold (converged only), scaled to normalised units.
+     *
+     * res_sq is the full 3-vector residual, so it answers a question the
+     * heading-only path never asks: an uncalibrated field has a permanently
+     * wrong magnitude and dip, and res_sq stays large once yaw has converged
+     * onto the offset heading.  Applying this gate there would reject every
+     * sample from the moment the filter converged and revert to dead
+     * reckoning without saying so.  YAW_CHI2_GATE inside eskf_update_yaw is
+     * the right test for that path and still runs.
+     */
+    if (!uncal && f->converged && res_sq > f->mag_reject_sq / (h_mag * h_mag))
+        return;
 
     int rc;
-    if (f->mag_yaw_only) {
+    if (f->mag_yaw_only || uncal) {
         /*
          * Heading-only fusion (marine default): the swing-circle mag cal is
          * structurally 2D, so the field's dip component is the least
@@ -1546,8 +1580,39 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
 
         /* Heading noise: per-axis field noise over the horizontal magnitude */
+        /*
+         * Withdrawal backstop for an uncalibrated field.  Indicated heading
+         * stops being monotonic in true heading once the horizontal hard iron
+         * exceeds the horizontal field: two true headings then read the same,
+         * and the sense of the error inverts over half the rose, so a
+         * heading-hold consumer diverges rather than degrades.  That boundary
+         * is |b_h| = |H|; mag_anom_ema measures |b|/|B| against the TOTAL
+         * field, so the equivalent threshold is the reference ratio
+         * |H_ref|/|B_ref| = mh_ref/h_mag, scaled by a margin.
+         *
+         * Two limits are deliberate.  The EMA is a mean, not a peak — over a
+         * constant-rate turn it under-reads the peak by about 2/π — and a
+         * mostly-vertical offset inflates it without harming heading here.
+         * So this is a backstop against gross iron, not a precise boundary,
+         * and the margin is set well below 1.  Hysteresis at 0.8 keeps a
+         * marginal installation from chattering.
+         *
+         * The transition is only recorded here; imu.c logs it.  fusion.c
+         * links against libm alone, and two test suites depend on that.
+         */
+        if (uncal && f->mag_uncal_reject > 0.0f) {
+            float limit = f->mag_uncal_reject * (mh_ref / h_mag);
+            f->mag_uncal_limit = limit;
+            if (!f->mag_uncal_withdrawn && f->mag_anom_ema > limit)
+                f->mag_uncal_withdrawn = true;
+            else if (f->mag_uncal_withdrawn && f->mag_anom_ema < 0.8f * limit)
+                f->mag_uncal_withdrawn = false;
+            if (f->mag_uncal_withdrawn) return;
+        }
+
         float R_psi = f->Rm / (mh_ref * mh_ref);
         rc = eskf_update_yaw(f, y, R_psi);
+        if (rc == 0) f->mag_accepted++;
     } else {
         /*
          * 3-D vector fusion. Here the field's DIP constrains roll and pitch,
@@ -1610,6 +1675,7 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         /* aw NULL: the magnetic field is not contaminated by acceleration. */
         rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE,
                          &f->nis_mag_ema, f->nis_mag_alpha, NULL, Rp);
+        if (rc == 0) f->mag_accepted++;
     }
     (void)rc;
 }
@@ -1875,6 +1941,9 @@ bool mekf_sanitize(mekf_t *f)
     f->converged    = false;
     f->m_ref_valid  = false;
     f->state_reset  = true;
+    /* mag_uncal_withdrawn deliberately survives: it is an assessment of the
+     * magnetometer's hard iron, which a filter reset does not change, and the
+     * mag_anom_ema it was made from survives too. */
     return true;
 }
 

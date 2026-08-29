@@ -184,7 +184,7 @@ static int replay(const char *path, const imud_config_t *cfg_in,
         } else if (rec.type == CAP_REC_MAG) {
             mag_sample_t m = rec.mag;
             mag_finalise_sample(&cfg, cal, &m);
-            m.valid = cal->has_mag;
+            m.calibrated = cal->has_mag;
             (*n_mag)++;
 
             if (!aligned && have_imu) {

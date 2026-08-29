@@ -68,6 +68,9 @@ extern "C" {
 #ifndef IMUD_FLAG_ENGINE_ON
 #define IMUD_FLAG_ENGINE_ON            (1u << 13) /* engine-vibration detector asserting */
 #endif
+#ifndef IMUD_FLAG_MAG_UNCAL
+#define IMUD_FLAG_MAG_UNCAL            (1u << 15) /* fused from an uncalibrated field */
+#endif
 #ifndef IMUD_FLAG_STATE_RESET
 /* MEKF found a non-finite value in its own state and reset itself; latched
  * until it re-converges, during which IMUD_FLAG_FUSION_CONVERGED is clear. */

@@ -66,6 +66,15 @@
  * is set the filter is re-aligning, so the attitude is valid but unconverged —
  * FLAG_FUSION_CONVERGED is clear for the same span. */
 #define FLAG_STATE_RESET       (1u << 14) /* MEKF reset itself after non-finite state */
+/* Heading is being corrected by a magnetometer that has NO calibration, so
+ * the uncorrected hard iron offsets it by a deviation that varies with
+ * heading — bounded by asin(|b|/|H|) and repeatable, which a heading-hold
+ * consumer can use, but not a number to navigate on.  Mutually exclusive with
+ * FLAG_MAG_VALID, which keeps its original meaning and stays clear whenever
+ * there is no calibration; both clear means heading is dead-reckoned from the
+ * gyro and drifts without bound.  A consumer that only ever tested
+ * FLAG_MAG_VALID therefore behaves exactly as before. */
+#define FLAG_MAG_UNCAL         (1u << 15) /* fused from an uncalibrated field */
 
 /* ── IMU sample — one calibrated sample from the configured IMU ────────────── */
 
@@ -105,7 +114,15 @@ typedef struct {
     float    field[3];       /* µT, calibrated; field[2] has Z sign flipped */
     float    field_raw[3];   /* µT, pre-calibration (after mount rotation) */
     uint64_t wall_ns;        /* CLOCK_REALTIME at read time (ns) */
-    bool     valid;          /* false: uncalibrated or sensor fault */
+    /*
+     * Two independent statements, deliberately not merged.  valid is the
+     * DRIVER's: the reading came back and is usable.  calibrated is the
+     * CALIBRATION's: hard/soft-iron correction was applied to field[].  An
+     * uncalibrated sample is still fused (heading-only); only an invalid one
+     * is discarded.
+     */
+    bool     valid;          /* sensor reading is good */
+    bool     calibrated;     /* hard/soft-iron cal applied to field[] */
 } mag_sample_t;
 
 /* ── MEKF fused state — written by fusion thread, read by output threads ───── */

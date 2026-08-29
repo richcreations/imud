@@ -232,12 +232,13 @@ static void test_flag_str(void)
     mon_flag_str(FLAG_FUSION_CONVERGED, b, sizeof b);
     EXPECT(strcmp(b, "0x0004 [C]") == 0, "one flag, hex value included");
 
-    /* Order is fixed: C V A G M D S ! R */
+    /* Order is fixed: C V A G M D S ! R U */
     uint16_t all = FLAG_FUSION_CONVERGED | FLAG_MAG_VALID | FLAG_ACCEL_CAL |
                    FLAG_GYRO_CAL | FLAG_MAG_CAL | FLAG_DECLINATION_VALID |
-                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET;
+                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET |
+                   FLAG_MAG_UNCAL;
     mon_flag_str(all, b, sizeof b);
-    EXPECT(strstr(b, "[CVAGMDS!R]") != NULL, "all nine, in order");
+    EXPECT(strstr(b, "[CVAGMDS!RU]") != NULL, "all ten, in order");
 
     /* Bits 0 and 4, but printed in the table's order (V before G), not the
      * bit order — the label sequence is a display choice, not the flags word. */
@@ -248,14 +249,14 @@ static void test_flag_str(void)
      * it must not truncate. */
     char real[32];
     mon_flag_str(0xFFFF, real, sizeof real);
-    EXPECT(strlen(real) == 18, "the 32-byte call-site buffer is not tight");
+    EXPECT(strlen(real) == 19, "the 32-byte call-site buffer is not tight");
     EXPECT(real[strlen(real) - 1] == ']', "and the summary is closed");
 
     end(fb);
 }
 
 /*
- * Every buffer size, with all eight flags set — the case that walked the old
+ * Every buffer size, with every flag set — the case that walked the old
  * implementation's remaining-space counter from 1 to 0 to SIZE_MAX and then
  * wrote past the end.  Guard bytes either side catch that directly.
  */
@@ -266,7 +267,8 @@ static void test_flag_str_truncation(void)
 
     uint16_t all = FLAG_FUSION_CONVERGED | FLAG_MAG_VALID | FLAG_ACCEL_CAL |
                    FLAG_GYRO_CAL | FLAG_MAG_CAL | FLAG_DECLINATION_VALID |
-                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET;
+                   FLAG_STARTUP | FLAG_FIFO_OVERFLOW | FLAG_STATE_RESET |
+                   FLAG_MAG_UNCAL;
 
     char full[64];
     mon_flag_str(all, full, sizeof full);

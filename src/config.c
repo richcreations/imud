@@ -247,6 +247,8 @@ void config_defaults(imud_config_t *cfg)
 
     /* [fusion] */
     cfg->mag_yaw_only      = true;   /* marine default: mag corrects heading only */
+    cfg->mag_fuse_uncal    = true;   /* bounded-and-offset beats unbounded drift */
+    cfg->mag_uncal_reject_frac = 0.4;
     cfg->heave_tau_s       = 12.0f;
     cfg->wave_tau_s        = 120.0f;
     cfg->mekf_gyro_noise   = 0.007;   /* tuned Kalman Q, intentionally above the datasheet gyro floor; see imud.conf */
@@ -552,6 +554,8 @@ void config_apply_hot(imud_config_t *dst, const imud_config_t *src)
     /* Fusion gains and thresholds — pushed into the running filter by
      * imu_ctx_update_config(). */
     dst->mag_yaw_only              = src->mag_yaw_only;
+    dst->mag_fuse_uncal            = src->mag_fuse_uncal;
+    dst->mag_uncal_reject_frac     = src->mag_uncal_reject_frac;
     dst->heave_tau_s               = src->heave_tau_s;
     dst->wave_tau_s                = src->wave_tau_s;
     dst->mekf_gyro_noise           = src->mekf_gyro_noise;
@@ -902,6 +906,16 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         return -1; } \
         (field) = iv; } while (0)
 
+#define NEED_RANGE_DBL(field, lo, hi, what) \
+    do { if (!parse_double(val, &dv)) { \
+        LOG_E("%s:%d: '%s': expected number\n", path, lineno, key); \
+        return -1; } \
+        if (dv < (lo) || dv > (hi)) { \
+        LOG_E("%s:%d: '%s': %s must be %g..%g (got %g)\n", \
+              path, lineno, key, (what), (double)(lo), (double)(hi), dv); \
+        return -1; } \
+        (field) = dv; } while (0)
+
 #define NEED_PORT(field)     NEED_RANGE_INT((field), 1, 65535, "a TCP/UDP port")
 #define NEED_GPIO(field)     NEED_RANGE_INT((field), 0, 255, "a GPIO line")
 
@@ -1099,6 +1113,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_FUSION:
         if      (strcmp(key, "mag_yaw_only")      == 0) NEED_BOOL(cfg->mag_yaw_only);
+        else if (strcmp(key, "mag_fuse_uncal")    == 0) NEED_BOOL(cfg->mag_fuse_uncal);
+        else if (strcmp(key, "mag_uncal_reject_frac") == 0)
+            NEED_RANGE_DBL(cfg->mag_uncal_reject_frac, 0.0, 1.0,
+                           "a fraction of the horizontal/total field ratio");
         else if (strcmp(key, "heave_tau_s")       == 0) NEED_FLT(cfg->heave_tau_s);
         else if (strcmp(key, "wave_tau_s")        == 0) NEED_FLT(cfg->wave_tau_s);
         else if (strcmp(key, "mekf_gyro_noise")   == 0) NEED_POS_DBL(cfg->mekf_gyro_noise);

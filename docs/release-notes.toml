@@ -22,8 +22,22 @@
 #             it is rendered prominently.
 
 [[release]]
-version = "1.9.0"
+version = "1.9.1"
 date    = "unreleased"
+summary = """
+A correctness release. The magnetometer is now used for heading even without a
+calibration, which replaces an unbounded heading drift with a bounded one."""
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "An uncalibrated magnetometer is now fused for heading instead of ignored. Heading is offset by the uncorrected hard iron but bounded, where before it dead-reckoned without bound. Heading-only, so roll and pitch are untouched, and withdrawn automatically under gross iron."
+  impact   = "New flag bit 15, FLAG_MAG_UNCAL, marks the uncalibrated-but-fused state. FLAG_MAG_VALID is unchanged and still means calibrated and healthy, so existing consumers need no change. The wire packet is byte-identical and still v17. This spends the last free flag bit. Set mag_fuse_uncal = false to restore the old behaviour."
+  action   = "Run imud-cal mag for a heading accurate enough to navigate on; this is a floor, not a substitute."
+
+[[release]]
+version = "1.9.0"
+date    = "2026-08-28"
 summary = """
 An additive release: SPI transport, higher sample rates on three parts, a new
 magnetometer driver, and the manual as an Info page. The wire packet is

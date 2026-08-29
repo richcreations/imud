@@ -65,15 +65,20 @@ static void baseline(imud_config_t *cfg, status_input_t *in)
 /* ── The always-present lines ────────────────────────────────────────────── */
 
 /*
- * Heading is dead-reckoned whenever the yaw update is not running, and the
- * number on its own gives no hint of it: measured on a static bench with no mag
- * calibration, heading walked 220 degrees in 24 minutes while pitch and roll
- * stayed correct to a tenth of a degree.  FLAG_MAG_VALID is set only once
- * mekf_update_mag() has actually run, so it is the precise signal.
+ * Three distinct states, and an operator needs to tell them apart:
  *
- * "Calibration: mag no" already appears above, but that reports whether a FILE
- * exists.  This reports whether the heading can be believed, which is the
- * question an operator is actually asking.
+ *   MAG_VALID        heading stands on its own (calibrated and healthy)
+ *   MAG_UNCAL        fused from an uncalibrated field — bounded and
+ *                    repeatable, but offset by the uncorrected hard iron
+ *   neither          dead-reckoned; measured on a static bench with the mag
+ *                    not fused, heading walked 220 degrees in 24 minutes
+ *                    while pitch and roll stayed correct to a tenth of a
+ *                    degree, so the number itself gives no hint
+ *
+ * Both are set only while mekf_update_mag() is actually applying updates, so
+ * they are the precise signal for the third.  "Calibration: mag no"
+ * appears above but reports whether a FILE exists; these report whether the
+ * heading can be believed, which is the question actually being asked.
  */
 static void test_heading_dead_reckoned_is_called_out(void)
 {
@@ -83,13 +88,28 @@ static void test_heading_dead_reckoned_is_called_out(void)
     imud_config_t cfg; status_input_t in;
     char buf[4096];
 
-    /* Yaw update running: the heading stands on its own. */
+    /* Fused and calibrated: the heading stands on its own. */
     baseline(&cfg, &in);
-    in.state.flags = FLAG_MAG_VALID;
+    in.state.flags = FLAG_MAG_VALID | FLAG_MAG_CAL;
     status_format(buf, sizeof buf, &in);
     EXPECT(has(buf, "heading=123.4 M"), "heading still reported when fused");
     EXPECT(!has(buf, "DEAD RECKONED"),
            "no warning when the magnetometer is being fused");
+    EXPECT(!has(buf, "UNCALIBRATED"),
+           "no uncalibrated caveat when a calibration is applied");
+
+    /* Fused but uncalibrated: usable for holding a heading, not for reading
+     * one off, and the two are not the same claim.  MAG_VALID stays CLEAR
+     * here — it keeps its original "calibrated and healthy" meaning, so a
+     * consumer that only tests it is unaffected by uncalibrated fusion. */
+    baseline(&cfg, &in);
+    in.state.flags = FLAG_MAG_UNCAL;
+    status_format(buf, sizeof buf, &in);
+    EXPECT(has(buf, "heading=123.4 M"), "heading reported when uncalibrated");
+    EXPECT(!has(buf, "DEAD RECKONED"),
+           "an uncalibrated mag is fused, so it is not dead reckoning");
+    EXPECT(has(buf, "UNCALIBRATED"), "uncalibrated fusion is called out");
+    EXPECT(has(buf, "imud-cal mag"), "and says what to do about it");
 
     /* Yaw update not running: the number needs the caveat beside it. */
     baseline(&cfg, &in);

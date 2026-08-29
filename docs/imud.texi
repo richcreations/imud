@@ -933,6 +933,26 @@ its least-calibrated component. Set @code{false} for full 3D vector
 fusion --- appropriate only for magnetically clean installs with a true
 3D calibration.
 @item 
+@code{mag_fuse_uncal}
+ @tab bool
+ @tab @code{true}
+ @tab Fuse the magnetometer when no @code{cal.json} is present. The
+heading is then offset by the uncorrected hard iron --- wrong by a
+bounded, repeatable, heading-dependent deviation rather than the
+unbounded drift of gyro dead reckoning, which is what a heading-hold
+consumer needs. The update is forced heading-only regardless of
+@code{mag_yaw_only}, so the uncorrected dip cannot reach roll or pitch,
+and it is withdrawn automatically above @code{mag_uncal_reject_frac}.
+@code{FLAG_MAG_UNCAL} (bit 15) is the wire signal for this state;
+@code{FLAG_MAG_VALID} keeps its original meaning and stays clear. Set
+@code{false} to restore dead reckoning.
+@item 
+@code{mag_uncal_reject_frac}
+ @tab double
+ @tab @code{0.4}
+ @tab Withdrawal threshold for an uncalibrated magnetometer, as a
+fraction of the reference horizontal/total field ratio
+@item 
 @code{heave_tau_s}
  @tab float
  @tab @code{12.0}

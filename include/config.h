@@ -83,6 +83,18 @@ typedef struct {
 
     /* [fusion]  [hot]: gains and thresholds */
     bool   mag_yaw_only;          /* [hot] heading-only mag fusion (marine default) */
+    /* Fuse the magnetometer when no cal.json is present.  The heading is then
+     * offset by the uncorrected hard iron, but bounded and repeatable, which
+     * beats the unbounded drift of dead reckoning.  Forced heading-only
+     * regardless of mag_yaw_only, so the uncorrected dip cannot reach roll or
+     * pitch.  Withdrawn automatically above mag_uncal_reject_frac. */
+    bool   mag_fuse_uncal;        /* [hot] fuse an uncalibrated mag */
+    /* Withdrawal threshold for an uncalibrated mag, as a fraction of the
+     * reference horizontal/total field ratio.  Above roughly that ratio the
+     * hard iron exceeds the horizontal field and indicated heading stops being
+     * monotonic in true heading — the feedback sense inverts, so a heading-hold
+     * consumer would diverge.  0 = never withdraw. */
+    double mag_uncal_reject_frac; /* [hot] */
     float  heave_tau_s;           /* [hot] heave filter time constant, s; 0 = off */
     float  wave_tau_s;            /* [hot] sea-state averaging window, s; 0 = off;
                                    * needs heave_tau_s > 0 */

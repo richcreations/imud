@@ -607,6 +607,27 @@ data has real 3D coverage.
   self-regulates: inactive while the filter is still acquiring.
 - **`mag_yaw_only` (default true)**: scalar heading update via
   H = [−(R̂ e_D)ᵀ | 0]; the magnetometer never pulls on roll/pitch.
+- **`mag_fuse_uncal` (default true)**: with no `cal.json` the magnetometer is
+  still fused. The uncorrected hard iron offsets heading by a deviation that
+  varies with heading, but it is bounded by asin(|b|/|H|) and repeatable,
+  whereas gyro dead reckoning is unbounded. The update is forced heading-only
+  regardless of `mag_yaw_only` (the uncorrected dip must not reach roll or
+  pitch), the m_ref self-healing below is suspended (its invariants stop being
+  attitude-independent once |B| varies with heading), and the converged-only
+  3-vector reject gate is not applied (an uncalibrated residual stays large
+  permanently, so the gate would silently drop every sample after
+  convergence). `FLAG_MAG_UNCAL` (bit 15) is the wire signal for
+  this state; `FLAG_MAG_VALID` keeps its original "calibrated and healthy"
+  meaning and stays clear, so a consumer that only tests it is unaffected.
+- **Uncalibrated withdrawal (`mag_uncal_reject_frac`, default 0.4)**: past
+  |b_h| > |H| an uncalibrated compass is not merely offset — indicated heading
+  stops being monotonic in true heading, so two headings read alike and the
+  error's sense inverts over half the rose. The gate approximates that
+  boundary as `mag_anomaly > frac · (|H_ref|/|B_ref|)` and reverts to dead
+  reckoning above it, re-admitting hysteretically at 0.8×. Deliberately
+  coarse: `mag_anomaly` is a 30 s mean rather than a peak (it under-reads a
+  constant-rate turn by ≈2/π) and a mostly-vertical offset inflates it without
+  harming heading-only fusion. A backstop against gross iron, not a boundary.
 - **m_ref self-healing**: the magnetic reference's magnitude and dip are
   slowly (τ ≈ 5 min) re-estimated from attitude-independent invariants
   (field magnitude; angle between mag vector and the accel-measured gravity
@@ -875,7 +896,19 @@ bit 14  state_reset        The MEKF found a non-finite value in its own state
                            to a 1 Hz consumer. Bit 2 is clear for the same
                            span. Attitude remains readable throughout; it is
                            unconverged, not invalid.
-bit 15  reserved (a flags_ext field can be appended in a future revision)
+bit 15  mag_uncal          Heading is being corrected by a magnetometer with
+                           NO calibration. The uncorrected hard iron offsets
+                           heading by a deviation that varies with heading —
+                           bounded by asin(|b|/|H|) and repeatable, so a
+                           heading-hold consumer can use it, but not a number
+                           to navigate on. Mutually exclusive with bit 0, which
+                           keeps its original meaning and stays clear whenever
+                           there is no calibration, so a consumer that only
+                           tests bit 0 is unaffected. Both clear means heading
+                           is dead-reckoned from the gyro and drifts without
+                           bound. Withdrawn automatically under gross iron
+                           (mag_uncal_reject_frac).
+        all 16 bits are assigned; a further flag needs a flags_ext field
 ```
 <!-- END GENERATED: packet-flags -->
 
@@ -1198,7 +1231,7 @@ The following fields take effect immediately on SIGHUP without restarting:
 
 | Section     | Fields                                                                 |
 |-------------|------------------------------------------------------------------------|
-| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `heave_tau_s`, `wave_tau_s`, `mekf_wave_accel`, `mekf_wave_accel_tau_s`, `mekf_mag_dip_sigma_deg` — applied next predict |
+| `[fusion]`  | All noise/threshold params, `mag_yaw_only`, `mag_fuse_uncal`, `mag_uncal_reject_frac`, `heave_tau_s`, `wave_tau_s`, `mekf_wave_accel`, `mekf_wave_accel_tau_s`, `mekf_mag_dip_sigma_deg` — applied next predict |
 | `[nmea]`    | `rate_hz`                                                              |
 | `[highrate]`| `rate_hz`                                                              |
 | `[stream]`  | `rate_hz`                                                              |

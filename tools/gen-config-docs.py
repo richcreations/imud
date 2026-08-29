@@ -209,6 +209,7 @@ CK = {
     "NEED_FLT":       "CK_FLT",
     "NEED_DBL":       "CK_DBL",
     "NEED_POS_DBL":   "CK_DBL",
+    "NEED_RANGE_DBL": "CK_DBL",
     "NEED_BUS_KIND":  "CK_ENUM",
 }
 

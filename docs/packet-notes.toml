@@ -140,7 +140,19 @@ The MEKF found a non-finite value in its own state
                            to a 1 Hz consumer. Bit 2 is clear for the same
                            span. Attitude remains readable throughout; it is
                            unconverged, not invalid.'''
+mag_uncal = '''
+Heading is being corrected by a magnetometer with
+                           NO calibration. The uncorrected hard iron offsets
+                           heading by a deviation that varies with heading —
+                           bounded by asin(|b|/|H|) and repeatable, so a
+                           heading-hold consumer can use it, but not a number
+                           to navigate on. Mutually exclusive with bit 0, which
+                           keeps its original meaning and stays clear whenever
+                           there is no calibration, so a consumer that only
+                           tests bit 0 is unaffected. Both clear means heading
+                           is dead-reckoned from the gyro and drifts without
+                           bound. Withdrawn automatically under gross iron
+                           (mag_uncal_reject_frac).'''
 
-# Rows that are not a FLAG_* define: bit 15 has no symbol, only a
-# promise about what a future revision may do with it.
-trailer = 'bit 15  reserved (a flags_ext field can be appended in a future revision)'
+# A closing note, not a FLAG_* define.
+trailer = '        all 16 bits are assigned; a further flag needs a flags_ext field'

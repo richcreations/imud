@@ -206,6 +206,9 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
             out->mag.field[2] = rec.field[2];
             out->mag.wall_ns  = rec.wall_ns;
             out->mag.valid    = (fr.flags & CAP_MAGF_VALID) != 0;
+            /* The tap records the field pre-calibration, so a replayed sample
+             * is uncalibrated until the replay path applies a cal of its own. */
+            out->mag.calibrated = false;
             return 1;
         }
         case CAP_REC_MARK: {

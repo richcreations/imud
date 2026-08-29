@@ -561,6 +561,30 @@ heading and never pulls on roll/pitch. Set
 for full 3D vector fusion (magnetically clean installs with a true 3D
 calibration).
 .TP
+.B mag_fuse_uncal
+.RI (bool,\ default:\ true)
+Fuse the magnetometer when no calibration file is present. Heading is then
+offset by the uncorrected hard iron, but bounded and repeatable. Forced
+heading-only regardless of
+.BR mag_yaw_only ,
+and withdrawn automatically above
+.BR mag_uncal_reject_frac .
+Set
+.B false
+to dead-reckon heading instead.
+.TP
+.B mag_uncal_reject_frac
+.RI (double,\ default:\ 0.4)
+Withdrawal threshold for an uncalibrated magnetometer, as a fraction of the
+reference horizontal/total field ratio. Above roughly that ratio the hard
+iron exceeds the horizontal field and indicated heading stops being
+monotonic in true heading. A coarse backstop against gross iron, not a
+precise boundary.
+.B 0
+never withdraws. Ignored unless
+.B mag_fuse_uncal
+is in effect.
+.TP
 .B heave_tau_s
 .RI (float,\ default:\ 12.0)
 Heave filter time constant, seconds. Vertical displacement from band-passed

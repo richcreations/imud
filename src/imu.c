@@ -800,9 +800,11 @@ void *mag_reader_thread(void *arg)
             cap_ring_push_mag(&ctx->cap_ring, &s, ts_ns(&tm));
         }
 
-        /* Calibrate in sensor axes, then rotate — the ism_reader twin above. */
+        /* Calibrate in sensor axes, then rotate — the ism_reader twin above.
+         * The driver already set s.valid; leave it alone.  Whether a cal was
+         * applied is a separate statement the fusion thread decides on. */
         mag_finalise_sample(&cfg, &ctx->cal, &s);
-        s.valid = ctx->cal.has_mag;
+        s.calibrated = ctx->cal.has_mag;
 
         mag_ring_push(&ctx->mag_ring, &s);
         ctx->mag_sample_count++;
@@ -967,19 +969,23 @@ void *fusion_thread(void *arg)
     if (ctx->cal.has_mag)   cal_flags |= FLAG_MAG_CAL;
 
     /*
-     * Without a mag calibration every mag sample is marked invalid (see where
-     * s.valid is set from cal.has_mag) and mekf_update_mag() returns on
-     * !m->valid -- so the yaw update never runs and heading is dead-reckoned.
-     * That is a considerable degradation to leave implicit: on a
-     * static bench, heading walked 220 degrees in 24 minutes while pitch and
-     * roll held to a tenth of a degree, so nothing else in the output looks
-     * wrong while it happens.
+     * An uncalibrated magnetometer is still fused, heading-only: the hard-iron
+     * error offsets heading by a bounded, repeatable, heading-dependent
+     * deviation, which a heading-hold consumer can work with.  Dead reckoning
+     * is unbounded and cannot be.  Yaw-only keeps the uncorrected dip off
+     * roll and pitch.
      */
+    else if (ctx->mag_ops && cfg.mag_fuse_uncal)
+        LOG_W("[fusion] no magnetometer calibration — heading is fused "
+              "heading-only from the raw field, so it is bounded and "
+              "repeatable but offset by the uncorrected hard iron. Pitch and "
+              "roll are unaffected. Run `imud-cal mag` for an accurate "
+              "number.\n");
     else if (ctx->mag_ops)
-        LOG_W("[fusion] no magnetometer calibration — the yaw update is "
-              "disabled, so heading is dead-reckoned from the gyro and drifts "
-              "without bound. Pitch and roll are unaffected. Run "
-              "`imud-cal mag`.\n");
+        LOG_W("[fusion] no magnetometer calibration and mag_fuse_uncal is "
+              "off — the yaw update is disabled, so heading is dead-reckoned "
+              "from the gyro and drifts without bound. Pitch and roll are "
+              "unaffected. Run `imud-cal mag`.\n");
 
     if (ctx->cal.has_gyro) {
         memcpy(init_bias, ctx->cal.gyro_bias, sizeof(init_bias));
@@ -1130,11 +1136,8 @@ void *fusion_thread(void *arg)
         imu_sample_t isample;
         mag_sample_t msample;
 
-        /* Uncalibrated mag: the reader marks every sample invalid so the
-         * hard-iron error never steers the filter, but for the one-shot
-         * initial alignment a raw field is still a far better heading
-         * reference than the forward-is-North fallback.  Accept invalid
-         * samples here only; Phase 4 fusion stays gated on msample.valid. */
+        /* Alignment always uses the raw field — a measured heading, however
+         * offset, beats the forward-is-North fallback. Only for the log. */
         bool mag_uncal = !ctx->cal.has_mag;
 
         while (acc_n < n_avg && !ctx->stop) {
@@ -1146,7 +1149,7 @@ void *fusion_thread(void *arg)
             }
             while (mag_n < n_mag_avg
                    && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid || mag_uncal) {
+                if (msample.valid) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
                     mag_sum[2] += msample.field[2];
@@ -1166,7 +1169,7 @@ void *fusion_thread(void *arg)
                            + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
             if (elapsed > mag_wait_s) break;
             if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid || mag_uncal) {
+                if (msample.valid) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
                     mag_sum[2] += msample.field[2];
@@ -1216,7 +1219,34 @@ void *fusion_thread(void *arg)
     imu_sample_t s;
     mag_sample_t m;
     int prev_engine_on = -1;   /* track transitions for logging */
-    bool mag_healthy   = false; /* set on first valid mag update; drives FLAG_MAG_VALID */
+    /*
+     * The mag flags say whether the yaw estimate is being corrected RIGHT NOW,
+     * not that a mag sample once arrived.  mekf_update_mag has a dozen
+     * internal gates that can silently reject every sample — a strong magnet
+     * parks the field outside the magnitude band, and an uncalibrated mag can
+     * be withdrawn — so acceptance is counted inside the filter and read back
+     * here, and the flags go clear when acceptances stop.
+     *
+     * Measured in SECONDS of accumulated dt, not in loop iterations: the IMU
+     * arrives in FIFO batches (imu_fifo_wm samples at a time), so the loop
+     * runs a whole batch back-to-back before the mag ring is next drained.
+     * An iteration count sized from the rate ratio alone is exceeded on every
+     * batch, which clears the flag on a magnetometer that is updating
+     * perfectly well.  Accumulating dt is immune to that, and to the rate
+     * ladder, without costing a clock_gettime per sample.
+     *
+     * The floor covers the batch period (fifo_wm/odr, 77 ms at the 833 Hz /
+     * 64-sample default) with room to spare.
+     */
+    uint32_t prev_mag_accepted = 0;   /* f.mag_accepted at the last check */
+    float mag_stale_s = 0.5f;
+    if (f.mag_odr_hz > 0.0f) {
+        float w = 10.0f / f.mag_odr_hz;
+        if (w > mag_stale_s) mag_stale_s = w;
+    }
+    /* Starts stale, so the flags are clear until the first acceptance. */
+    float mag_accept_age_s = mag_stale_s;
+    bool prev_uncal_withdrawn = false;  /* for logging the transition */
     uint64_t prev_wall_ns = 0;  /* previous sample time for per-sample dt */
     uint32_t prev_gen     = 0;
 
@@ -1298,7 +1328,28 @@ void *fusion_thread(void *arg)
         while (mag_ring_try_pop(&ctx->mag_ring, &m) == 0) {
             if (m.valid) {
                 mekf_update_mag(&f, &m);
-                mag_healthy = true;
+                if (f.mag_accepted != prev_mag_accepted) {
+                    prev_mag_accepted = f.mag_accepted;
+                    mag_accept_age_s  = 0.0f;
+                }
+                /* The filter records the withdrawal decision but does not log
+                 * — it links against libm alone.  Report the edges here. */
+                if (f.mag_uncal_withdrawn != prev_uncal_withdrawn) {
+                    prev_uncal_withdrawn = f.mag_uncal_withdrawn;
+                    if (f.mag_uncal_withdrawn)
+                        LOG_W("[fusion] uncalibrated magnetometer withdrawn: "
+                              "field anomaly %.2f over %.2f, so the hard iron "
+                              "may exceed the horizontal field and heading "
+                              "would not be monotonic. Heading is now "
+                              "dead-reckoned. Run `imud-cal mag`.\n",
+                              (double)f.mag_anom_ema,
+                              (double)f.mag_uncal_limit);
+                    else
+                        LOG_W("[fusion] uncalibrated magnetometer re-admitted: "
+                              "field anomaly %.2f back under %.2f\n",
+                              (double)f.mag_anom_ema,
+                              (double)(0.8f * f.mag_uncal_limit));
+                }
             }
 
             /* Always update latest_mag regardless of valid flag. */
@@ -1394,8 +1445,20 @@ void *fusion_thread(void *arg)
         if (ctx->engine_on)
             state.flags |= FLAG_ENGINE_ON;
 
-        if (mag_healthy)
-            state.flags |= FLAG_MAG_VALID;
+        /*
+         * Two mutually exclusive flags, and the distinction is the point.
+         * FLAG_MAG_VALID keeps its original meaning — calibrated and healthy —
+         * so a consumer that only ever tested it is unaffected by uncalibrated
+         * fusion.  FLAG_MAG_UNCAL is the new state: heading is being corrected,
+         * but from a field with no hard/soft-iron correction, so it is bounded
+         * and repeatable rather than accurate.  Both clear means dead
+         * reckoning.
+         */
+        if (mag_accept_age_s < mag_stale_s)
+            state.flags |= ctx->cal.has_mag ? FLAG_MAG_VALID : FLAG_MAG_UNCAL;
+        /* Stops accumulating once stale: the answer cannot change after that,
+         * and an unbounded float sum eventually stops advancing at all. */
+        if (mag_accept_age_s < mag_stale_s) mag_accept_age_s += dt;
 
         if (ctx->mag_set_flag) {
             state.flags |= FLAG_MAG_SET_RESET;
