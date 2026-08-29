@@ -95,8 +95,13 @@ CATEGORIES = [
     ("Python (build tools)",
      lambda p: p.startswith("tools/") and _ext(p) == ".py",
      True, True),
+    # A shell script under .github/ is CI infrastructure, not loose tooling:
+    # .github/ci-setup.sh is sourced by the workflow jobs and has no life
+    # outside them, so it belongs with the workflows it serves.  Qualified
+    # here rather than ordered around, for the reason given above — the
+    # overlap guard is what caught this.
     ("Shell",
-     lambda p: _ext(p) == ".sh",
+     lambda p: _ext(p) == ".sh" and not p.startswith(".github/"),
      False, True),
     ("Build system",
      lambda p: p in ("Makefile", "debian/rules"),

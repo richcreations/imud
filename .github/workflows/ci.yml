@@ -19,6 +19,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# `run:` steps get bash everywhere, containers included.
+#
+# On a host runner GitHub defaults to bash; inside a `container:` it defaults to
+# sh, and Debian's sh is dash.  Moving the gates into containers therefore
+# re-interpreted every existing step under a different shell — arrays,
+# `set -o pipefail` and `<(...)` all stop being syntax.  The first run after the
+# move failed nine jobs on exactly that, with dash reporting
+# `Syntax error: "(" unexpected`.
+#
+# Pinning the shell here keeps a step's meaning independent of where it runs,
+# which is what makes moving a job between host and container safe.  bash is
+# Essential in Debian, so it is present in every image used below.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # The Debian base digests, read out of devbox/Dockerfile and published as
   # outputs.
