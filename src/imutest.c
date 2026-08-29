@@ -4488,7 +4488,16 @@ static void fill_environment(imt_report_t *r, const imud_config_t *cfg)
     gmtime_r(&now, &tm);
     strftime(r->started_utc, sizeof r->started_utc, "%Y-%m-%dT%H:%M:%SZ", &tm);
 
-    snprintf(r->i2c_bus,   sizeof r->i2c_bus,   "%s", cfg->i2c_bus);
+    /* Through the same helpers the bus layer opens with, so the report names
+     * the node that was actually used rather than the [device] i2c_bus
+     * default — which a SPI run never touches. */
+    bus_spec_t ibs, mbs;
+    config_imu_bus_spec(cfg, &ibs);
+    config_mag_bus_spec(cfg, &mbs);
+    snprintf(r->imu_bus, sizeof r->imu_bus, "%s", ibs.node ? ibs.node : "");
+    snprintf(r->mag_bus, sizeof r->mag_bus, "%s", mbs.node ? mbs.node : "");
+    r->imu_bus_spi = ibs.kind == BUS_SPI;
+    r->mag_bus_spi = mbs.kind == BUS_SPI;
     snprintf(r->gpio_chip, sizeof r->gpio_chip, "%s", cfg->gpio_chip);
 }
 

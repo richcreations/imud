@@ -279,7 +279,12 @@ typedef struct {
     bool     gpiod_v2;
     char     started_utc[32];       /* ISO-8601 Z */
     double   wall_duration_s;
-    char     config_path[256], i2c_bus[64], gpio_chip[32];
+    char     config_path[256], gpio_chip[32];
+    /* The transport and device node each sensor was actually opened on.
+     * Per sensor, not per run: [imu] and [mag] carry their own `bus` key,
+     * so a board may have one part on SPI and the other on I2C. */
+    char     imu_bus[64], mag_bus[64];
+    bool     imu_bus_spi, mag_bus_spi;
     bool     daemon_was_running;
     char     cmdline[512];          /* reproduce-this-run line */
 

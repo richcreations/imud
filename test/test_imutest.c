@@ -2235,6 +2235,69 @@ static void test_spin_hard_iron_still_tracks(void)
     end(fb);
 }
 
+/*
+ * The report has to name the transport each part was actually opened on.  It
+ * printed `[device] i2c_bus` unconditionally, so a SPI run -- which never
+ * opens that node -- produced a report attributing the run to I2C.  That is
+ * the artifact a reviewer reads to clear a driver's `experimental` flag, and
+ * a driver validated on SPI is not thereby validated on I2C.
+ */
+static void test_report_names_the_transport(void)
+{
+    begin("test_report_names_the_transport");
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    const char *path = "test_imutest_bus_report.md";
+    char err[256] = "";
+    static char buf[262144];
+
+    /* I2C: the default node, named as I2C. */
+    mock_base();
+    script_reset(&o);
+    imt_report_t *i2c = run(&cfg, &o);
+    EXPECT(imt_write_md(i2c, path, err, sizeof err) == 0, "I2C report writes");
+    FILE *f = fopen(path, "r");
+    EXPECT(f != NULL, "I2C report exists");
+    if (f) {
+        buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+        fclose(f);
+        EXPECT(strstr(buf, "| IMU bus | I2C `/dev/i2c-1` |") != NULL,
+               "an I2C run names the I2C bus");
+        EXPECT(strstr(buf, "| magnetometer bus | I2C `/dev/i2c-1` |") != NULL,
+               "and names it for the magnetometer too");
+    }
+    free(i2c);
+
+    /* SPI: the spidev nodes, named as SPI, and the I2C default nowhere. */
+    cfg.imu_bus_kind = BUS_SPI;
+    cfg.mag_bus_kind = BUS_SPI;
+    snprintf(cfg.imu_spi_dev, sizeof cfg.imu_spi_dev, "/dev/spidev0.0");
+    snprintf(cfg.mag_spi_dev, sizeof cfg.mag_spi_dev, "/dev/spidev0.1");
+
+    mock_base();
+    script_reset(&o);
+    imt_report_t *spi = run_spi(&cfg, &o);
+    EXPECT(imt_write_md(spi, path, err, sizeof err) == 0, "SPI report writes");
+    f = fopen(path, "r");
+    EXPECT(f != NULL, "SPI report exists");
+    if (f) {
+        buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+        fclose(f);
+        EXPECT(strstr(buf, "| IMU bus | SPI `/dev/spidev0.0` |") != NULL,
+               "a SPI run names the IMU's spidev node");
+        EXPECT(strstr(buf, "| magnetometer bus | SPI `/dev/spidev0.1` |") != NULL,
+               "and the magnetometer's, which is a different chip select");
+        /* The defect exactly: the I2C default appearing in a SPI report. */
+        EXPECT(strstr(buf, "/dev/i2c-") == NULL,
+               "a SPI run names no I2C device anywhere in the report");
+    }
+    free(spi);
+    remove(path);
+}
+
 static void test_report_and_exit_codes(void)
 {
     begin("test_report_and_exit_codes");
@@ -3514,6 +3577,7 @@ int main(void)
     test_spin_frame_agreement();
     test_spin_hard_iron_still_tracks();
     test_report_and_exit_codes();
+    test_report_names_the_transport();
     test_sim_like_no_recommendation();
     test_degauss_split();
     test_chipts_accounting();

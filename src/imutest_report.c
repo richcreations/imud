@@ -166,7 +166,15 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "| run duration | %.1f s |\n", r->wall_duration_s);
     fprintf(f, "| config file | `%s` |\n",
             r->config_path[0] ? r->config_path : "(defaults)");
-    fprintf(f, "| I2C bus / GPIO chip | `%s` / `%s` |\n", r->i2c_bus, r->gpio_chip);
+    /* Per sensor: a board may run one part on SPI and the other on I2C, and
+     * which transport a driver was validated on is a fact a reviewer clearing
+     * `experimental` has to be able to read off this report. */
+    fprintf(f, "| IMU bus | %s `%s` |\n",
+            r->imu_bus_spi ? "SPI" : "I2C", r->imu_bus);
+    if (r->have_mag)
+        fprintf(f, "| magnetometer bus | %s `%s` |\n",
+                r->mag_bus_spi ? "SPI" : "I2C", r->mag_bus);
+    fprintf(f, "| GPIO chip | `%s` |\n", r->gpio_chip);
     fprintf(f, "| imud.service | %s |\n",
             r->daemon_was_running ? "**running** (see warning above)"
                                   : "not running");
