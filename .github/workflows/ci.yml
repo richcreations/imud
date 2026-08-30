@@ -375,11 +375,18 @@ jobs:
           # last line of a step it would take the step's exit status from a
           # false test, under the `bash -e -o pipefail` these run with.  The
           # `if` does not depend on what comes after it.
+          # Captured into a variable and matched with `case`, not piped into
+          # grep: these steps run under `bash -o pipefail`, so a pipeline takes
+          # its status from ANY member, and `hardening-check --help` exiting
+          # non-zero would then hide a match grep did make.  That is what went
+          # wrong on the first attempt — the option was there, the probe said
+          # it was not, and amd64 kept failing on Branch Protection.
           bp=()
-          if [ "$(uname -m)" = "x86_64" ] \
-             && hardening-check --help 2>&1 | grep -q -- --nobranchprotection
-          then
-            bp=(--nobranchprotection)
+          if [ "$(uname -m)" = "x86_64" ]; then
+            hc_help=$(hardening-check --help 2>&1 || true)
+            case "$hc_help" in
+              *--nobranchprotection*) bp=(--nobranchprotection) ;;
+            esac
           fi
           hardening-check --nocfprotection "${bp[@]}" \
                           imud imud-signalk imud-influxdb imud-prometheus
@@ -566,8 +573,23 @@ jobs:
       - name: Dist tarball content
         run: |
           make dist
-          tar tzf imud-*.tar.gz | grep -q 'LICENSE'
-          tar tzf imud-*.tar.gz | grep -q 'include/version.h'
+
+          # List ONCE into a file, then match the file.
+          #
+          # This step used four `tar … | grep -q` pipelines and exited 141 —
+          # 128 + SIGPIPE — on two legs after the move into containers, having
+          # passed on the Ubuntu runner.  grep -q leaves at its first match, so
+          # tar can take SIGPIPE, and `-o pipefail` then reports the pipeline
+          # as failed even though the assertion it was making succeeded.  Which
+          # of the four raced, and why the timing differs between runner and
+          # container, is NOT established: the race does not reproduce locally.
+          # What is certain is that these pipelines are the only SIGPIPE source
+          # in the step, and that matching a file has no pipeline to poison.
+          # It also runs tar once rather than four times.
+          tar tzf imud-*.tar.gz > /tmp/dist-list.txt
+
+          grep -q 'LICENSE' /tmp/dist-list.txt
+          grep -q 'include/version.h' /tmp/dist-list.txt
 
           # `if grep; then exit 1; fi`, NOT `! tar ... | grep ...`.  The
           # negated form could not fail: a `run:` block is `bash -e {0}`, and
@@ -576,8 +598,8 @@ jobs:
           # the status of the final `echo` — 0.  This guard silently passed on
           # a tarball full of .debs for as long as it has existed.  Adding
           # `-o pipefail` does not fix it; only losing the `!` does.
-          if tar tzf imud-*.tar.gz \
-               | grep -E '\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$'; then
+          if grep -E '\.gitignore|\.gitattributes|\.pyc|\.DS_Store|\.dSYM|datasheets/|apt/pool|\.deb$' \
+                  /tmp/dist-list.txt; then
             echo "::error::dist tarball contains repo-only files (listed above)" >&2
             exit 1
           fi
@@ -586,7 +608,7 @@ jobs:
           # used to assert.  GitHub's source tarball honours export-ignore and
           # Scorecard analyses that tarball, so hiding the workflows from the
           # archive hid them from Scorecard too — see .gitattributes.
-          tar tzf imud-*.tar.gz | grep -q '\.github/workflows/ci\.yml'
+          grep -q '\.github/workflows/ci\.yml' /tmp/dist-list.txt
 
           # A source tarball for this project is well under a megabyte; an
           # order-of-magnitude jump means something binary got committed.
