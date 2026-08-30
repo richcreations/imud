@@ -97,10 +97,18 @@ CLAUDE.md
 continuespidrama.md
 openfor1.9.0.md
 
-# Engineering record: bench measurements, refuted theories, open work items.
-# A directory rather than another filename per note, because these accumulate.
-# Tracked docs say what imud does today; how we found out lives here and in the
-# commit messages.  Never cited from tracked code or docs — see CLAUDE.md.
+# notes/ is NOT a place to put things.  It held the engineering record until
+# 2026-08-29, when it had reached 1.6 GB and 208 files and every live item in
+# it turned out to be already visible in ROADMAP, an issue, or a commit
+# message.  It was deleted, not migrated.
+#
+# The rule is now: open work is an issue, direction is docs/ROADMAP.md, and
+# measurements and refuted theories go in the commit message they justify.
+# See "History / provenance" in CLAUDE.md.
+#
+# The ignore stays as a guard: a scratch directory by that name will still
+# never be committed, which is what makes re-creating one a private mistake
+# rather than a public one.
 notes/
 
 # devbox/ is TRACKED — the Debian build/test container (devbox/README.md) is a
