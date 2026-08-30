@@ -305,7 +305,13 @@ jobs:
       - name: Install dependencies
         run: |
           . .github/ci-setup.sh
-          apt_setup devscripts mandoc help2man texinfo
+          # systemd is for `systemd-analyze verify/security` in the unit-lint
+          # step.  It is present on the GitHub runner images and is NOT in a
+          # Debian base, so it only became a dependency when this job moved
+          # into a container — devbox/Dockerfile installs it for the same
+          # reason.  systemd is never PID 1 here; only the offline analyser is
+          # used.
+          apt_setup devscripts mandoc help2man texinfo systemd
 
       - name: Build (imud, imud-cal, imud-status, imud-mon)
         run: make
@@ -340,8 +346,28 @@ jobs:
           export DEB_BUILD_MAINT_OPTIONS="hardening=+all"
           eval "$(dpkg-buildflags --export=sh)"
           make imud imud-cal imud-imutest imud-status imud-mon && make bridges
-          hardening-check --nocfprotection imud imud-signalk imud-influxdb imud-prometheus
-          hardening-check --nocfprotection --nopie --nofortify libimud.so.0.0
+          # Branch Protection is AArch64's BTI/PAC — the architecture-specific
+          # sibling of the control-flow protection waived above.  Debian's
+          # hardening-check tests it and Ubuntu's did not, which is why it
+          # surfaced only when this job moved.
+          #
+          # Waived on x86-64 ONLY, where it can never be satisfied because the
+          # architecture has CET instead and there is nothing to find.  The
+          # arm64 leg keeps the check and passes it: Debian's hardening=+all
+          # does emit branch protection there, which is the architecture every
+          # shipped .deb is built for.  Waiving it unconditionally would drop a
+          # real, currently-passing check on the arch that matters.
+          # An `if` rather than `[ … ] && bp=(…)`: both are safe here, but the
+          # && form is only safe because another command follows it.  As the
+          # last line of a step it would take the step's exit status from a
+          # false test, under the `bash -e -o pipefail` these run with.  The
+          # `if` does not depend on what comes after it.
+          bp=()
+          if [ "$(uname -m)" = "x86_64" ]; then bp=(--nobranchprotection); fi
+          hardening-check --nocfprotection "${bp[@]}" \
+                          imud imud-signalk imud-influxdb imud-prometheus
+          hardening-check --nocfprotection "${bp[@]}" \
+                          --nopie --nofortify libimud.so.0.0
 
       # libimud must export exactly the public API (version script honored)
       # and the bridges must actually link it.
@@ -795,11 +821,20 @@ jobs:
       # Blocking: the tree is clean under these checks today.  The single
       # known false positive is suppressed inline at its site with the
       # reason, so new findings are real findings.
+      # --check-level=exhaustive analyses every branch instead of bailing out
+      # of the deeply-nested ones.  Debian's cppcheck 2.17 reports that it
+      # limited itself (normalCheckLevelMaxBranches), which --error-exitcode=1
+      # turns into a failure even though the note is informational rather than
+      # a finding; Ubuntu's older build never said so, which is why this only
+      # appeared when the job moved.  Asking for the fuller analysis answers
+      # the note at its cause rather than suppressing it, and the tree is clean
+      # under it: measured at ~4 min for src + lib, against this job's 20 min.
       - name: cppcheck
         run: |
           cppcheck --enable=warning,performance,portability \
                    --inline-suppr --std=c11 -Iinclude \
                    --suppress=missingIncludeSystem \
+                   --check-level=exhaustive \
                    --error-exitcode=1 --quiet src lib
           echo "cppcheck clean"
 
