@@ -297,6 +297,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -357,13 +364,23 @@ jobs:
           # does emit branch protection there, which is the architecture every
           # shipped .deb is built for.  Waiving it unconditionally would drop a
           # real, currently-passing check on the arch that matters.
+          # Gated on the option EXISTING as well as on the architecture:
+          # bookworm's older hardening-check has no --nobranchprotection and
+          # does not test branch protection at all (no "branch" in its --help),
+          # so passing the flag there is `Unknown option` and an immediate
+          # failure.  Only trixie both tests it and can waive it.
+          #
           # An `if` rather than `[ … ] && bp=(…)`: both are safe here, but the
           # && form is only safe because another command follows it.  As the
           # last line of a step it would take the step's exit status from a
           # false test, under the `bash -e -o pipefail` these run with.  The
           # `if` does not depend on what comes after it.
           bp=()
-          if [ "$(uname -m)" = "x86_64" ]; then bp=(--nobranchprotection); fi
+          if [ "$(uname -m)" = "x86_64" ] \
+             && hardening-check --help 2>&1 | grep -q -- --nobranchprotection
+          then
+            bp=(--nobranchprotection)
+          fi
           hardening-check --nocfprotection "${bp[@]}" \
                           imud imud-signalk imud-influxdb imud-prometheus
           hardening-check --nocfprotection "${bp[@]}" \
@@ -808,6 +825,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -977,6 +1001,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1016,6 +1047,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1079,6 +1117,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1141,6 +1186,13 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends git ca-certificates
+          # The workspace is bind-mounted from the host and owned by a
+          # different uid than root-in-container, so git refuses it with
+          # "detected dubious ownership".  actions/checkout marks it safe for
+          # its own use, under a temporarily overridden HOME, so the setting
+          # does not survive into later steps — and `make dist` is
+          # `git archive HEAD`, which then fails with git's exit 128.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
