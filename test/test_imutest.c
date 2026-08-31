@@ -1873,6 +1873,42 @@ static void test_faces_good_and_swapped(void)
     EXPECT(r->raw.n_faces == 6, "six face rows recorded");
     expect_faces_sampled(r);
     dump_faces_on_failure(r, fb);
+
+    /*
+     * The rendered table has to carry the sample count, not just the mean
+     * vector and its magnitude.  Ten samples and ten thousand produce the
+     * same three numbers, so the count is the only thing in the report that
+     * says a face was measured on almost no data.
+     */
+    {
+        const char *path = "test_imutest_faces.md";
+        char err[256] = "";
+        static char buf[262144];
+        EXPECT(imt_write_md(r, path, err, sizeof err) == 0, "the report writes");
+        FILE *f = fopen(path, "r");
+        EXPECT(f != NULL, "the report file exists");
+        if (f) {
+            buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+            fclose(f);
+            char *sec = strstr(buf, "### 5.8 Six-face orientation");
+            EXPECT(sec != NULL, "the six-face appendix is present");
+            if (sec) {
+                /* Bound the search to 5.8 itself — a bare "| 41 |" would
+                 * otherwise match a count printed by any later table. */
+                char *end = strstr(sec, "\nDerived accel calibration");
+                if (end) *end = '\0';
+                EXPECT(strstr(sec, "| Face | Expected | Measured (m/s^2) | "
+                                   "\\|a\\| | Samples | Verdict |") != NULL,
+                       "5.8 heads a sample count column");
+                char want[64];
+                EXPECT(r->raw.face[0].n > 0, "face 1 did collect samples");
+                snprintf(want, sizeof want, "| %d | ", r->raw.face[0].n);
+                EXPECT(strstr(sec, want) != NULL,
+                       "and face 1 prints the count it recorded");
+            }
+        }
+        remove(path);
+    }
     free(r);
 
     /* Y and Z swapped — the defect a wrong chip-to-board remap produces. */

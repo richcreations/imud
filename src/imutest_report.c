@@ -532,16 +532,22 @@ int imt_write_md(const imt_report_t *r, const char *path,
     }
 
     if (w->n_faces > 0) {
+        /* The sample count carries what the mean vector cannot: a face
+         * averaged from ten samples reads the same as one averaged from ten
+         * thousand, and a face the phase skipped for too few samples is in
+         * the table with the count as its only mark. */
         fprintf(f, "### 5.8 Six-face orientation\n\n");
-        fprintf(f, "| Face | Expected | Measured (m/s^2) | \\|a\\| | Verdict |\n");
-        fprintf(f, "|---|---|---|---|---|\n");
+        fprintf(f, "| Face | Expected | Measured (m/s^2) | \\|a\\| | Samples "
+                   "| Verdict |\n");
+        fprintf(f, "|---|---|---|---|---|---|\n");
         static const char an[3] = { 'X', 'Y', 'Z' };
         for (int i = 0; i < w->n_faces; i++) {
             const imt_face_row_t *fr = &w->face[i];
-            fprintf(f, "| %d. %s | %c%c | [%+.2f, %+.2f, %+.2f] | %.3f | %s |\n",
+            fprintf(f, "| %d. %s | %c%c | [%+.2f, %+.2f, %+.2f] | %.3f | %d "
+                       "| %s |\n",
                     fr->idx + 1, fr->label ? fr->label : "",
                     fr->exp_sign > 0 ? '+' : '-', an[fr->exp_axis],
-                    fr->a[0], fr->a[1], fr->a[2], fr->norm,
+                    fr->a[0], fr->a[1], fr->a[2], fr->norm, fr->n,
                     imt_status_str(fr->status));
         }
         fprintf(f, "\nDerived accel calibration: offset "
