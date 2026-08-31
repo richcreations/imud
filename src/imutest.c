@@ -349,6 +349,42 @@ typedef struct {
      * test is that this part's multi-byte read lands where the driver assumes.
      */
     uint8_t     out_lo, out_hi;
+    /*
+     * The part's DIRECT (non-FIFO) measurement registers, for the cross-check
+     * that reads the same quantity both ways.
+     *
+     * base = 0 means undeclared and check_direct_vs_fifo() SKIPs.  The window
+     * is one contiguous block on every part here, so a channel is named by its
+     * byte offset within it; -1 = the part does not carry that channel there.
+     *
+     * This is a THIRD window and deliberately not either of the other two.
+     * out_lo/out_hi is "the window the driver bursts", which on the ST parts
+     * is the FIFO at 0x78-0x7E and not these registers at all; vol_reg is an
+     * address range with no layout, endianness or sign in it.  Two of the
+     * three coincide on some parts and none of them mean the same thing.
+     *
+     * `sign` is the driver's chip-frame → board-frame remap, which the FIFO
+     * values have already been through and these raw counts have not.  Every
+     * driver in the tree applies {+1,-1,-1} (X fwd, Y stbd, Z down; see the
+     * remap comment in each read()), but it is declared per part rather than
+     * assumed: a part whose silicon is mounted differently would otherwise
+     * fail this check for a reason that has nothing to do with framing.
+     *
+     * fifo_temp is the trap.  The comparison is only evidence where the FIFO
+     * is really the source, and on mpu925x.c and icm20948.c the driver reads
+     * temperature from THESE registers for every sample -- so comparing them
+     * would be comparing a register against itself, and would report a
+     * "canary" that cannot fail.  False on those two, and the temperature
+     * half SKIPs with that as the reason.
+     */
+    struct {
+        uint8_t base, len;
+        bool    be;                    /* 16-bit pairs are big-endian */
+        int8_t  a_off, g_off, t_off;   /* byte offset of the X axis / temp */
+        int8_t  sign[3];               /* driver's chip → board axis remap */
+        bool    fifo_temp;             /* the FIFO really sources temperature */
+        float   t_zero_c, t_lsb_per_c; /* raw → °C: raw/lsb_per_c + zero_c */
+    } dir;
     bool        ctrl_writeonly;  /* control registers do not read back at all */
     /*
      * Register reporting the part's own timebase error, if it has one.
@@ -435,6 +471,12 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "ism330dhcx", .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6B,
+      /* DS13012 §9.27-9.33: OUT_TEMP_L 20h .. OUTZ_H_A 2Dh, little-endian,
+       * temp then gyro then accel.  256 LSB/°C with 0 = 25 °C (§6.1 TSen);
+       * the driver batches temp into the FIFO under TAG_TEMP. */
+      .dir = { .base = 0x20, .len = 14, .be = false,
+               .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
        * status saturates.  Neither can be caught by observation. */
       .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
@@ -444,6 +486,10 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "lsm6dso",    .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6C,
+      /* Same output file and temperature scaling as the ISM330DHCX. */
+      .dir = { .base = 0x20, .len = 14, .be = false,
+               .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
        * status saturates.  Neither can be caught by observation. */
       .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
@@ -453,6 +499,10 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
       .whoami_reg = 0x0F, .whoami_val = 0x6D,
+      /* Same output file and temperature scaling as the ISM330DHCX. */
+      .dir = { .base = 0x20, .len = 14, .be = false,
+               .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
        * status saturates.  Neither can be caught by observation. */
       .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
@@ -466,6 +516,13 @@ static const imt_regmap_t imt_regmaps[] = {
       .vol_reg = { {0x1D,0x2C} }, .nvol_reg = 1,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
       .whoami_reg = 0x75, .whoami_val = 0x47,
+      /* DS rev 1.7 §14: TEMP_DATA1 1Dh .. GYRO_DATA_Z0 2Ah, big-endian, temp
+       * then accel then gyro.  Direct temp is 16-bit at 132.48 LSB/°C + 25
+       * (§14.5); the FIFO packet carries only the 8-bit field, so the two
+       * agree to about a degree and the tolerance below allows for it. */
+      .dir = { .base = 0x1D, .len = 14, .be = true,
+               .t_off = 0, .a_off = 2, .g_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 132.48f },
       .nrd_lo = 1, .nrd_hi = 0 },
         /* icm20948 WHO_AM_I is bank-0 register 0x00, and 0 is this field's
      * "no identity register" sentinel, so it uses the probe() fallback. */
@@ -474,16 +531,36 @@ static const imt_regmap_t imt_regmaps[] = {
        * starts at 0x3B. */
       .vol_reg = { {0x2D,0x3A} }, .nvol_reg = 1,
       .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
+      /* DS rev 1.3 §8.18-8.31: bank 0 ACCEL_XOUT_H 2Dh .. TEMP_OUT_L 3Ah,
+       * big-endian, accel then gyro then temp.  fifo_temp is false because
+       * icm20948.c reads TEMP_OUT_H directly for every sample rather than
+       * taking it from the FIFO -- comparing it here would compare a register
+       * against itself. */
+      .dir = { .base = 0x2D, .len = 14, .be = true,
+               .a_off = 0, .g_off = 6, .t_off = 12, .sign = { 1, -1, -1 },
+               .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
       /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
       .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
       .whoami_reg = 0x75, .whoami_val = 0x71,
+      /* Register map rev 1.6 pp.7-8: ACCEL_XOUT_H 3Bh .. GYRO_ZOUT_L 48h,
+       * big-endian, accel then temp then gyro.  Accel and gyro DO come from
+       * the FIFO, which is what makes this cross-check worth having on this
+       * family; temperature does not -- mpu925x.c reads TEMP_OUT_H directly
+       * for every sample -- so fifo_temp is false. */
+      .dir = { .base = 0x3B, .len = 14, .be = true,
+               .a_off = 0, .t_off = 6, .g_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
       /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
       .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
       .whoami_reg = 0x75, .whoami_val = 0x73,
+      /* Same output file and temperature scaling as the MPU-9250. */
+      .dir = { .base = 0x3B, .len = 14, .be = true,
+               .a_off = 0, .t_off = 6, .g_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     /*
      * Mags.  The MMC5983MA's readable file ends at 0x08, which is read-to-clear
@@ -2296,6 +2373,296 @@ static uint64_t collect_stats(const imt_opts_t *o, drain_ctx_t *d, double secs,
     return gn;
 }
 
+/* ── Direct data registers against the FIFO ────────────────────────────────── */
+
+/*
+ * Is the declared direct window safe to read on this part?
+ *
+ * The window is hand-written table data, and the cost of getting it wrong is
+ * not a bad reading: on the reference ISM330DHCX, sweeping RESERVED addresses
+ * leaves the part returning a wrong byte on roughly 1 read in 100, across
+ * processes, until it is power-cycled (see the resv comment above).  A
+ * diagnostic that can only be undone by walking to the boat is worth one
+ * bounds check, so the window is re-validated against the same table that
+ * declares it rather than trusted because it was typed carefully.
+ *
+ * Also refuses a window overlapping the destructive range or a skipped
+ * register, either of which would consume the sample the FIFO is about to be
+ * asked for.
+ */
+static bool regmap_dir_safe(const imt_regmap_t *m)
+{
+    if (!m || !m->dir.base || !m->dir.len) return false;
+    int lo = m->dir.base, hi = m->dir.base + m->dir.len - 1;
+    if (hi > 0xFF || hi > (int)m->hi || lo < (int)m->lo) return false;
+    for (int i = 0; i < m->nresv; i++)
+        if (lo <= (int)m->resv[i].hi && hi >= (int)m->resv[i].lo) return false;
+    if (m->nrd_lo <= m->nrd_hi &&
+        lo <= (int)m->nrd_hi && hi >= (int)m->nrd_lo) return false;
+    for (int i = 0; i < m->nskip; i++)
+        if ((int)m->skip[i] >= lo && (int)m->skip[i] <= hi) return false;
+    return true;
+}
+
+/*
+ * Test seam: the direct measurement window declared for `driver`.
+ *
+ * Exposed for the same reason as the volatile and reserved seams above -- it
+ * is table data, the bus mock stands in for one part pair only, and getting it
+ * wrong on a part nobody here owns means reading reserved space on that part.
+ * Returns false when no window is declared or the declared one is not safe to
+ * read, so a test can require both across every registered driver.
+ */
+bool imt_regmap_direct(const char *driver, uint8_t *base, uint8_t *len,
+                       bool *fifo_temp)
+{
+    const imt_regmap_t *m = regmap_for(driver);
+    if (!m || !m->dir.base || !regmap_dir_safe(m)) return false;
+    if (base)      *base      = m->dir.base;
+    if (len)       *len       = m->dir.len;
+    if (fifo_temp) *fifo_temp = m->dir.fifo_temp;
+    return true;
+}
+
+/*
+ * Is the part answering for bank 0, where every direct window here lives?
+ *
+ * The drivers leave bank 0 and the readers never change it, so this should
+ * always hold -- but reading the wrong bank would produce a confident FAIL
+ * about framing from what is really a bank mismatch.  Never WRITES the bank:
+ * putting the part in a bank to suit the tool is how a diagnostic becomes the
+ * fault it is looking for.
+ */
+static bool dir_bank_ok(const imud_bus_t *bus, const imt_regmap_t *m)
+{
+    if (!m->bank_reg) return true;
+    uint8_t bank = 0;
+    return bus_reg_read(bus, m->bank_reg, &bank) == 0 && bank == 0;
+}
+
+/* Decode one 3-axis channel out of a direct-window image, in board frame. */
+static void dir_triple(const imt_regmap_t *m, const uint8_t *w, int off,
+                       double v[3])
+{
+    for (int k = 0; k < 3; k++) {
+        const uint8_t *p = w + off + 2 * k;
+        int16_t raw = m->dir.be ? (int16_t)(((uint16_t)p[0] << 8) | p[1])
+                                : (int16_t)(((uint16_t)p[1] << 8) | p[0]);
+        v[k] = (double)raw * (double)m->dir.sign[k];
+    }
+}
+
+static double vec_norm3(const double v[3])
+{
+    return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+/* Angle between two vectors, degrees; -1 if either is degenerate. */
+static double vec_angle_deg(const double a[3], const double b[3])
+{
+    double na = vec_norm3(a), nb = vec_norm3(b);
+    if (na < 1e-9 || nb < 1e-9) return -1.0;
+    double dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (na * nb);
+    if (dot > 1.0) dot = 1.0;
+    if (dot < -1.0) dot = -1.0;
+    return acos(dot) * 180.0 / M_PI;
+}
+
+/*
+ * imu.direct.accel / imu.direct.temp — does the FIFO carry what the part's own
+ * output registers hold?
+ *
+ * The FIFO and the direct registers are two views of the same measurement, so
+ * at rest they must agree.  When they do not, the sensor is fine and the
+ * DECODE is wrong: a framing offset, a byte order, an axis landing in the
+ * wrong slot.  That is not a distinction the rest of this tool can make —
+ * every other check reads the FIFO and can only say that what came out looks
+ * implausible, never whether the silicon or the driver put it there.  It is
+ * the comparison that identified the FIFO framing defect fixed in 689133e,
+ * where the direct registers read gravity on Z and the FIFO path read it on X.
+ *
+ * Compared as a DIRECTION rather than in physical units, deliberately.  The
+ * raw counts would otherwise have to be scaled by the configured full scale,
+ * which means this check would carry a second copy of every driver's
+ * sensitivity table and would fail whenever that copy drifted.  A unit vector
+ * needs none of it, and every decode fault worth catching moves the direction:
+ * an axis swap is 90 degrees, a sign flip 180, a byte order somewhere absurd.
+ *
+ * Temperature is the exception and is compared in degrees, because it is the
+ * most sensitive framing canary on a still bench — bounded, slowly varying,
+ * and one register pair wide, so an offset of a single byte moves it tens of
+ * degrees.  It is only evidence where the FIFO actually sources it; see
+ * fifo_temp in the register map.
+ */
+#define IMT_DIRECT_PASSES 24
+
+static void check_direct_vs_fifo(imt_report_t *r, const imt_opts_t *o,
+                                 drain_ctx_t *d, const imt_regmap_t *m)
+{
+    char mb[96], eb[64];
+    static const char *ACC_NAME = "Direct accel registers against the FIFO";
+    static const char *TMP_NAME = "Direct temperature against the FIFO";
+
+    if (!m || !m->dir.base) {
+        skip_check_structural(r, "imu.direct.accel", ACC_NAME,
+                   "no direct measurement window is declared for this driver "
+                   "in imt_regmaps[], so there is nothing to read two ways");
+        skip_check_structural(r, "imu.direct.temp", TMP_NAME,
+                   "no direct measurement window is declared for this driver "
+                   "in imt_regmaps[]");
+        return;
+    }
+    if (!regmap_dir_safe(m)) {
+        skip_check_structural(r, "imu.direct.accel", ACC_NAME,
+                   "the declared direct window overlaps reserved, skipped or "
+                   "destructive registers and was not read");
+        skip_check_structural(r, "imu.direct.temp", TMP_NAME,
+                   "the declared direct window is not safe to read");
+        return;
+    }
+    if (!dir_bank_ok(d->bus, m)) {
+        skip_check(r, "imu.direct.accel", ACC_NAME,
+                   "the part is not on register bank 0, so the direct "
+                   "window could not be read");
+        skip_check(r, "imu.direct.temp", TMP_NAME,
+                   "the part is not on register bank 0");
+        return;
+    }
+
+    imu_sample_t buf[128];
+    uint8_t w[32];
+    int len = m->dir.len > (int)sizeof w ? (int)sizeof w : m->dir.len;
+    double dsum[3] = { 0, 0, 0 }, fsum[3] = { 0, 0, 0 };
+    double dtsum = 0, ftsum = 0;
+    uint64_t dn = 0, fn = 0, dtn = 0, ftn = 0;
+    int ioerr = 0;
+
+    /*
+     * Averaged rather than bracketed.  check_burst_framing() can demand two
+     * identical reads around its comparison because both sides are register
+     * reads microseconds apart; here a FIFO drain sits in the middle, and at
+     * 833 Hz the output registers have moved on long before it returns, so a
+     * bracket would never close.  What this compares instead is slowly varying
+     * on a still bench -- a direction and a temperature -- and averaging both
+     * sides over the same window beats the noise without needing the sample to
+     * hold still.
+     */
+    for (int pass = 0; pass < IMT_DIRECT_PASSES && !g_abort; pass++) {
+        if (bus_burst_read(d->bus, m->dir.base, w, (uint16_t)len) < 0) {
+            if (++ioerr > 4) break;
+            continue;
+        }
+        if (m->dir.a_off >= 0) {
+            double v[3];
+            dir_triple(m, w, m->dir.a_off, v);
+            for (int k = 0; k < 3; k++) dsum[k] += v[k];
+            dn++;
+        }
+        if (m->dir.t_off >= 0) {
+            const uint8_t *p = w + m->dir.t_off;
+            int16_t raw = m->dir.be ? (int16_t)(((uint16_t)p[0] << 8) | p[1])
+                                    : (int16_t)(((uint16_t)p[1] << 8) | p[0]);
+            dtsum += (double)raw / m->dir.t_lsb_per_c + m->dir.t_zero_c;
+            dtn++;
+        }
+
+        int n = 0;
+        if (drain_once(d, buf, 128, &n) == 0) {
+            for (int i = 0; i < n; i++) {
+                for (int k = 0; k < 3; k++) fsum[k] += buf[i].accel[k];
+                fn++;
+                ftsum += buf[i].temp_c;
+                ftn++;
+            }
+        }
+        ui_progress(o, "imu.direct", (double)(pass + 1) / IMT_DIRECT_PASSES, NULL);
+        drain_pace(d);
+    }
+
+    /* Graded independently: a part may carry one channel in the window and not
+     * the other, and a missing accel must not silently take temperature with
+     * it. */
+    double dv[3] = { 0, 0, 0 }, fv[3] = { 0, 0, 0 };
+    double ang = -1.0;
+    if (dn > 0 && fn > 0) {
+        for (int k = 0; k < 3; k++) {
+            dv[k] = dsum[k] / (double)dn;
+            fv[k] = fsum[k] / (double)fn;
+        }
+        ang = vec_angle_deg(dv, fv);
+        for (int k = 0; k < 3; k++) {
+            r->raw.direct_accel[k] = dv[k];
+            r->raw.fifo_accel[k]   = fv[k];
+        }
+        r->raw.direct_angle_deg = ang;
+        r->raw.direct_n         = (int)dn;
+    }
+
+    if (m->dir.a_off < 0)
+        skip_check_structural(r, "imu.direct.accel", ACC_NAME,
+                   "this part carries no accelerometer data in the direct "
+                   "window");
+    else if (dn == 0 || fn == 0)
+        skip_check(r, "imu.direct.accel", ACC_NAME,
+                   dn == 0 ? "the direct registers could not be read"
+                           : "no FIFO samples arrived to compare against");
+    else if (vec_norm3(dv) < 1e-6)
+        add_check(r, "imu.direct.accel", ACC_NAME, IMT_FAIL,
+                  "direct registers read zero", "a gravity vector",
+                  "0x%02X-0x%02X holds nothing on any axis — the accelerometer "
+                  "output registers are not being updated, so the FIFO cannot "
+                  "be checked against them.",
+                  m->dir.base + m->dir.a_off, m->dir.base + m->dir.a_off + 5);
+    else if (ang < 0)
+        skip_check(r, "imu.direct.accel", ACC_NAME,
+                   "one side averaged to zero, so no direction could be compared");
+    else
+        add_check(r, "imu.direct.accel", ACC_NAME,
+                  ang < 5.0 ? IMT_PASS : ang < 15.0 ? IMT_WARN : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.1f deg apart", ang),
+                  "< 5 deg",
+                  ang < 5.0
+                    ? "the FIFO and the direct registers at 0x%02X see gravity "
+                      "in the same direction over %d reads, so the FIFO is "
+                      "being framed and decoded as the driver assumes."
+                    : "the FIFO and the direct registers at 0x%02X disagree "
+                      "about which way gravity points over %d reads. The "
+                      "sensor is producing data either way — this is the "
+                      "decode: check the FIFO framing, the tag order and the "
+                      "byte order before suspecting the part.",
+                  m->dir.base + m->dir.a_off, (int)dn);
+
+    if (m->dir.t_off < 0)
+        skip_check_structural(r, "imu.direct.temp", TMP_NAME,
+                   "this part carries no temperature in the direct window");
+    else if (!m->dir.fifo_temp)
+        skip_check_structural(r, "imu.direct.temp", TMP_NAME,
+                   "this driver reads temperature from the direct register "
+                   "rather than the FIFO, so the two sides would be the same "
+                   "register and the comparison could not fail");
+    else if (dtn == 0 || ftn == 0)
+        skip_check(r, "imu.direct.temp", TMP_NAME, "no temperature samples");
+    else {
+        double dt = dtsum / (double)dtn, ft = ftsum / (double)ftn;
+        double diff = fabs(dt - ft);
+        r->raw.direct_temp_c = dt;
+        r->raw.fifo_temp_c   = ft;
+        add_check(r, "imu.direct.temp", TMP_NAME,
+                  diff < 3.0 ? IMT_PASS : IMT_FAIL,
+                  fmtbuf(mb, sizeof mb, "%.1f vs %.1f C", dt, ft),
+                  fmtbuf(eb, sizeof eb, "within 3.0 C"),
+                  diff < 3.0
+                    ? "the FIFO temperature tracks register 0x%02X, which is "
+                      "the tightest evidence here that the FIFO is framed "
+                      "correctly: one byte of offset moves it tens of degrees."
+                    : "the FIFO temperature and register 0x%02X disagree by "
+                      "%.1f C. Temperature is bounded and slowly varying, so "
+                      "a gap this size is a framing or byte-order fault in the "
+                      "FIFO decode, not a hot part.",
+                  m->dir.base + m->dir.t_off, diff);
+    }
+}
+
 static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                            const imu_ops_t *imu, const imud_bus_t *bus,
                            const imu_cfg_t *base)
@@ -3691,6 +4058,17 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
     double dt_nominal = 1.0 / (double)eff_odr;
 
+    /*
+     * The direct gyro registers, sampled alongside the FIFO for the whole
+     * phase.  Costs one burst read per poll and answers the question the
+     * integral cannot: when a turn integrates to nothing, was the gyro silent
+     * or was the FIFO decode wrong?  Both are "theta ~ 0" in the report today.
+     */
+    const imt_regmap_t *gm = regmap_for(imu->name);
+    bool have_dir = gm && gm->dir.base && gm->dir.g_off >= 0 &&
+                    regmap_dir_safe(gm) && dir_bank_ok(d->bus, gm);
+    double gpeak[3] = { 0, 0, 0 };
+
     for (int t = 0; t < 3 && !g_abort; t++) {
         int axis = imt_turns[t].axis;
         snprintf(body, sizeof body,
@@ -3735,6 +4113,20 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     theta[k] += (double)buf[i].gyro[k] * dt * 180.0 / M_PI;
                 count++;
             }
+            /* Sampled per poll, not per FIFO sample: this is a peak detector
+             * for "did the registers move at all", and the poll cadence is far
+             * finer than a hand turn. */
+            if (have_dir) {
+                uint8_t w[32];
+                int len = gm->dir.len > (int)sizeof w ? (int)sizeof w : gm->dir.len;
+                if (bus_burst_read(d->bus, gm->dir.base, w, (uint16_t)len) == 0) {
+                    double gv[3];
+                    dir_triple(gm, w, gm->dir.g_off, gv);
+                    for (int k = 0; k < 3; k++)
+                        if (fabs(gv[k]) > gpeak[k]) gpeak[k] = fabs(gv[k]);
+                }
+            }
+
             fmtbuf(mb, sizeof mb, "%+.1f / %+.1f / %+.1f deg",
                    theta[0], theta[1], theta[2]);
             ui_progress(o, imt_turns[t].id, -1.0, mb);
@@ -3830,6 +4222,83 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                   "value means swapped axes or a sloppy turn.",
                   theta[0], theta[1], theta[2]);
     }
+
+    /*
+     * imu.direct.gyro — separates a silent gyro from a mis-decoded FIFO.
+     *
+     * The three sign checks above grade an INTEGRAL of FIFO samples, and a
+     * turn that integrates to nothing has two very different causes that they
+     * report identically: the gyro is not responding, or the gyro is fine and
+     * the FIFO decode is losing it.  The direct registers are upstream of the
+     * FIFO, so they tell the two apart — and on the MPU parts that matters
+     * particularly, because the register map documents the FIFO as continuing
+     * to buffer gyro data while the gyro data path is in standby.  Plausible
+     * bytes in the FIFO are not evidence that the sensor is live.
+     *
+     * Graded against the configured full scale rather than an absolute count,
+     * since the same hand turn is ~490 counts at 2000 dps and ~3900 at 250.
+     * The threshold is deliberately low: this asks whether the registers moved
+     * AT ALL, not whether they moved by the commanded amount.
+     */
+    if (r->raw.n_turns == 0) return;
+
+    for (int k = 0; k < 3; k++) r->raw.direct_gyro_peak[k] = gpeak[k];
+
+    if (!have_dir) {
+        skip_check_structural(r, "imu.direct.gyro", "Direct gyro registers respond",
+                   "no direct gyro window is declared for this driver in "
+                   "imt_regmaps[], so the FIFO could not be cross-checked");
+        return;
+    }
+
+    /* 5 deg/s of the configured full scale, in counts. */
+    double fs_dps = r->gyro_dps > 0 ? (double)r->gyro_dps : 2000.0;
+    double thresh = 5.0 / fs_dps * 32768.0;
+    double peak = 0, integ = 0;
+    for (int k = 0; k < 3; k++) {
+        if (gpeak[k] > peak) peak = gpeak[k];
+        for (int i = 0; i < r->raw.n_turns; i++)
+            if (fabs(r->raw.turn[i].theta[k]) > integ)
+                integ = fabs(r->raw.turn[i].theta[k]);
+    }
+
+    bool reg_moved = peak > thresh;
+    bool fifo_moved = integ > IMT_TURN_SIGN_MIN_FRAC * fabs(o->turn_deg);
+    char mb2[96], eb2[64];
+
+    if (reg_moved && !fifo_moved)
+        add_check(r, "imu.direct.gyro", "Direct gyro registers respond", IMT_FAIL,
+                  fmtbuf(mb2, sizeof mb2, "peak %.0f counts, FIFO %.1f deg",
+                         peak, integ),
+                  fmtbuf(eb2, sizeof eb2, "> %.0f counts and a matching turn",
+                         thresh),
+                  "the direct gyro registers moved during the turn but the "
+                  "FIFO integrated to almost nothing. The gyro IS responding, "
+                  "so this is the FIFO path: check the decode, the tag order "
+                  "and whether the gyro is being batched at all.");
+    else if (!reg_moved && !fifo_moved)
+        add_check(r, "imu.direct.gyro", "Direct gyro registers respond", IMT_FAIL,
+                  fmtbuf(mb2, sizeof mb2, "peak %.0f counts", peak),
+                  fmtbuf(eb2, sizeof eb2, "> %.0f counts", thresh),
+                  "neither the FIFO nor the direct gyro registers saw the "
+                  "commanded turn. The gyro data path is not producing data — "
+                  "this is upstream of the FIFO, so the decode is not the "
+                  "cause. Check that the gyro is powered and out of standby.");
+    else if (!reg_moved && fifo_moved)
+        add_check(r, "imu.direct.gyro", "Direct gyro registers respond", IMT_WARN,
+                  fmtbuf(mb2, sizeof mb2, "peak %.0f counts, FIFO %.1f deg",
+                         peak, integ),
+                  fmtbuf(eb2, sizeof eb2, "> %.0f counts", thresh),
+                  "the FIFO integrated a turn the direct registers did not "
+                  "show. The turn may have finished between polls, or the "
+                  "declared direct gyro window is wrong for this part.");
+    else
+        add_check(r, "imu.direct.gyro", "Direct gyro registers respond", IMT_PASS,
+                  fmtbuf(mb2, sizeof mb2, "peak %.0f counts, FIFO %.1f deg",
+                         peak, integ),
+                  fmtbuf(eb2, sizeof eb2, "> %.0f counts", thresh),
+                  "the direct gyro registers and the FIFO both saw the turn, "
+                  "so the gyro is live and the FIFO is carrying it.");
 }
 
 /* ── Phase D: guided magnetometer spin ────────────────────────────────────── */
@@ -4656,6 +5125,10 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         /* seq before the deliberate overflow: an overflow is a legitimate gap */
         check_fifo(r, opts, &d, imu, eff_hz, cfg->imu_fifo_wm);
         check_rest(r, opts, &d);
+        /* After check_rest, which is what establishes the bench was still --
+         * the direction comparison is only evidence on a platform that is not
+         * being waved about. */
+        check_direct_vs_fifo(r, opts, &d, regmap_for(imu->name));
         /* check_drdy opens the same line itself, and a line request is
          * exclusive even within one process -- so hand it over and take it
          * back. Bracketing the CALL rather than the body keeps it correct

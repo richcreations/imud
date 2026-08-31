@@ -363,6 +363,34 @@ int imt_write_md(const imt_report_t *r, const char *path,
             w->temp_mean, w->temp_min, w->temp_max, w->temp_distinct);
     fprintf(f, "```\n\n");
 
+    /*
+     * The two sides are in different units on purpose -- raw counts against
+     * m/s^2 -- so the table prints both and grades only the angle between
+     * them. Anyone reading a decode fault wants to see WHICH axis each side
+     * put gravity on, which the angle alone does not say.
+     */
+    if (w->direct_n > 0) {
+        fprintf(f, "### 5.2a Direct registers against the FIFO\n\n");
+        fprintf(f, "```\n");
+        fprintf(f, "                        X            Y            Z\n");
+        fprintf(f, "direct accel %12.1f %12.1f %12.1f  raw counts\n",
+                w->direct_accel[0], w->direct_accel[1], w->direct_accel[2]);
+        fprintf(f, "FIFO   accel %12.5f %12.5f %12.5f  m/s^2\n",
+                w->fifo_accel[0], w->fifo_accel[1], w->fifo_accel[2]);
+        fprintf(f, "angle between them %.2f deg over %d reads\n",
+                w->direct_angle_deg, w->direct_n);
+        if (w->direct_temp_c != 0.0 || w->fifo_temp_c != 0.0)
+            fprintf(f, "temperature  direct %.2f C, FIFO %.2f C\n",
+                    w->direct_temp_c, w->fifo_temp_c);
+        if (w->direct_gyro_peak[0] != 0.0 || w->direct_gyro_peak[1] != 0.0 ||
+            w->direct_gyro_peak[2] != 0.0)
+            fprintf(f, "direct gyro peak during phase C "
+                       "%.0f / %.0f / %.0f raw counts\n",
+                    w->direct_gyro_peak[0], w->direct_gyro_peak[1],
+                    w->direct_gyro_peak[2]);
+        fprintf(f, "```\n\n");
+    }
+
     if (w->fifo_steps > 0) {
         fprintf(f, "### 5.3 FIFO depth against wait\n\n");
         fprintf(f, "| wait (s) | samples returned |\n|---|---|\n");

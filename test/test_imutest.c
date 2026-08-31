@@ -235,6 +235,33 @@ static void ism_advance_ts(void)
  */
 static int g_stage_saturated;
 
+/*
+ * When set, stage_sample() feeds the FIFO and leaves the direct output
+ * registers alone, so a test can drive the two apart on purpose.  That is the
+ * defect imu.direct.accel exists to catch: the sensor is producing data and
+ * the FIFO path is decoding it into the wrong place.
+ */
+static bool g_stage_skew_direct;
+
+/* Write one 16-bit little-endian value into an ISM330DHCX register pair. */
+static void ism_set_le16(uint8_t reg, int16_t v)
+{
+    i2cmock_set_reg(ISM_ADDR, reg,             (uint8_t)((uint16_t)v & 0xFF));
+    i2cmock_set_reg(ISM_ADDR, (uint8_t)(reg + 1), (uint8_t)((uint16_t)v >> 8));
+}
+
+/*
+ * The ST direct output window: OUT_TEMP_L 0x20, gyro 0x22-0x27, accel
+ * 0x28-0x2D, little-endian (DS13012 §9.27-9.33).  Counts are chip-frame, the
+ * same as the FIFO words -- the driver's Y/Z flip is applied after both.
+ */
+static void ism_set_direct(int16_t ax, int16_t ay, int16_t az,
+                           int16_t gx, int16_t gy, int16_t gz)
+{
+    ism_set_le16(0x22, gx); ism_set_le16(0x24, gy); ism_set_le16(0x26, gz);
+    ism_set_le16(0x28, ax); ism_set_le16(0x2A, ay); ism_set_le16(0x2C, az);
+}
+
 static void stage_sample(const double accel_ms2[3], const double gyro_rads[3])
 {
     /*
@@ -258,6 +285,14 @@ static void stage_sample(const double accel_ms2[3], const double gyro_rads[3])
 
     ism_push(0x02, ax, ay, az);
     ism_push(0x01, gx, gy, gz);
+    /*
+     * The same sample in the part's DIRECT output registers, which real
+     * silicon updates alongside the FIFO and which imu.direct.* reads to
+     * cross-check the FIFO decode.  Staging only the FIFO would model a part
+     * whose output registers are dead, and the cross-check would correctly
+     * call that a fault in every test in this file.
+     */
+    if (!g_stage_skew_direct) ism_set_direct(ax, ay, az, gx, gy, gz);
     /* Two more FIFO words are now pending. */
     uint8_t cur = i2cmock_get_reg(ISM_ADDR, 0x3A);
     i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(cur + 2));
@@ -270,6 +305,7 @@ static void mock_base(void)
 {
     i2cmock_reset();
     g_chip_ts = 1000;
+    g_stage_skew_direct = false;
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);       /* WHO_AM_I */
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);       /* OUT_TEMP */
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
@@ -377,6 +413,15 @@ typedef struct {
     /* Re-arm the mock's one-shot I2C failure on every iteration, so a whole
      * check sees errors rather than just the first read. */
     bool   inject_errors;
+    /*
+     * Push a TAG_TEMP word carrying this temperature into the FIFO on every
+     * iteration, so the FIFO's temperature and the direct register's diverge.
+     * Setting the register alone cannot do it: ism330dhcx.c seeds last_temp
+     * from that same register at init(), so both sides move together and the
+     * comparison agrees at whatever value was staged.
+     */
+    bool   push_fifo_temp;
+    double fifo_temp_c;
 } script_t;
 
 static script_t g_s;
@@ -437,6 +482,12 @@ static void s_progress(void *user, const char *id, double frac,
             g[s->cur_turn] = s->turn_rate_dps[s->cur_turn] * M_PI / 180.0;
         }
         stage_sample(s->accel, g);
+        if (s->push_fifo_temp) {
+            /* ST temperature word: 256 LSB/degC with 0 = 25 degC. */
+            ism_push(0x03, (int16_t)lrint((s->fifo_temp_c - 25.0) * 256.0), 0, 0);
+            uint8_t cur = i2cmock_get_reg(ISM_ADDR, 0x3A);
+            i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(cur + 1));
+        }
     }
     if (s->feed_mag && s->spinning) {
         /* Sweep the horizontal field so the heading unwraps, at the same rate
@@ -1276,6 +1327,179 @@ static void test_burst_framing(void)
     EXPECT(note_contains(stuck, "mag.burst_framing", "spi_inc_mask"),
            "the note names the field to go and check");
     free(stuck);
+
+    end(fb);
+}
+
+/*
+ * imu.direct.* — the FIFO measured against the part's own output registers.
+ *
+ * The mock stages every sample into both, as silicon does, so the agreeing
+ * case is the default.  The cases that matter are the disagreements, and the
+ * one worth naming is the second: gravity on Z in the direct registers and on
+ * X in the FIFO is literally the framing defect fixed in 689133e, which no
+ * other check in this file can see — every one of them reads the FIFO, and the
+ * FIFO's numbers are perfectly plausible.
+ */
+static void test_direct_vs_fifo(void)
+{
+    begin("test_direct_vs_fifo");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+
+    mock_base();
+    script_reset(&o);
+    imt_report_t *r = run(&cfg, &o);
+
+    EXPECT(status_of(r, "imu.direct.accel") == IMT_PASS,
+           "FIFO and direct registers agree when both carry the same sample");
+    EXPECT(r->raw.direct_n > 0, "the comparison recorded how many reads it made");
+    EXPECT(r->raw.direct_angle_deg >= 0.0 && r->raw.direct_angle_deg < 5.0,
+           "...and the recorded angle is small");
+    /* Non-degeneracy: a real gravity vector on both sides, not two zeroes
+     * agreeing with themselves. */
+    EXPECT(fabs(r->raw.direct_accel[2]) > 100.0,
+           "the direct side holds a real staged gravity vector, in counts");
+    EXPECT(fabs(r->raw.fifo_accel[2]) > 5.0,
+           "the FIFO side holds a real gravity vector, in m/s^2");
+    EXPECT(status_of(r, "imu.direct.temp") == IMT_PASS,
+           "the FIFO temperature tracks the direct temperature register");
+    free(r);
+
+    /*
+     * The framing defect: the FIFO says gravity is on X, the registers say Z.
+     * Staged by freezing the direct window while the FIFO is fed a rotated
+     * vector, which is what a decode landing an axis in the wrong slot looks
+     * like from outside.
+     */
+    mock_base();
+    script_reset(&o);
+    g_stage_skew_direct = true;
+    ism_set_direct(0, 0, (int16_t)lrint(9.80665 / ISM_ACCEL_LSB), 0, 0, 0);
+    g_s.accel[0] = -9.80665; g_s.accel[1] = 0; g_s.accel[2] = 0;
+    imt_report_t *sk = run(&cfg, &o);
+
+    EXPECT(status_of(sk, "imu.direct.accel") == IMT_FAIL,
+           "gravity on Z in the registers and on X in the FIFO FAILs");
+    EXPECT(sk->raw.direct_angle_deg > 45.0,
+           "...and the reported angle shows how far apart they are");
+    EXPECT(note_contains(sk, "imu.direct.accel", "FIFO framing"),
+           "the note sends the reader to the FIFO decode, not to the part");
+    free(sk);
+
+    /* Output registers that never update at all: a distinct fault, and one
+     * the angle comparison cannot express. */
+    mock_base();
+    script_reset(&o);
+    g_stage_skew_direct = true;
+    ism_set_direct(0, 0, 0, 0, 0, 0);
+    imt_report_t *dead = run(&cfg, &o);
+    EXPECT(status_of(dead, "imu.direct.accel") == IMT_FAIL,
+           "direct registers stuck at zero FAIL rather than comparing");
+    EXPECT(note_contains(dead, "imu.direct.accel", "not being updated"),
+           "...and say so, rather than reporting a direction");
+    free(dead);
+
+    /*
+     * Temperature is the framing canary: one byte of offset moves it tens of
+     * degrees.  The FIFO is fed 65 C while register 0x20 is left at its 25 C
+     * default -- the register cannot be moved instead, because the driver
+     * seeds its running temperature FROM that register at init(), so both
+     * sides would shift together and agree.
+     */
+    mock_base();
+    script_reset(&o);
+    g_s.push_fifo_temp = true;
+    g_s.fifo_temp_c    = 65.0;
+    imt_report_t *hot = run(&cfg, &o);
+    EXPECT(status_of(hot, "imu.direct.temp") == IMT_FAIL,
+           "a FIFO temperature far from the direct register's FAILs");
+    EXPECT(fabs(hot->raw.direct_temp_c - 25.0) < 1.0 &&
+           hot->raw.fifo_temp_c > 60.0,
+           "...and the appendix records both sides, not just the verdict");
+    free(hot);
+
+    end(fb);
+}
+
+/*
+ * The direct-window table itself, for every registered driver.
+ *
+ * This is the half no mock run can reach: the bus mock stands in for the
+ * ISM330DHCX and the MMC5983MA, and a wrong window on an MPU or an ICM would
+ * be found by whoever owns that board, on their bench, by reading reserved
+ * space on it.  imt_regmap_direct() refuses an unsafe window, so requiring it
+ * to succeed pins the bounds check as well as the declaration.
+ */
+static void test_direct_window_table(void)
+{
+    begin("test_direct_window_table");
+    int fb = g_fail;
+
+    /* Every IMU driver that has a FIFO to cross-check should declare one. */
+    static const struct { const char *drv; uint8_t base, len; bool fifo_temp; }
+    want[] = {
+        { "ism330dhcx", 0x20, 14, true  },
+        { "lsm6dso",    0x20, 14, true  },
+        { "lsm6dsox",   0x20, 14, true  },
+        { "icm42688p",  0x1D, 14, true  },
+        /* icm20948.c and mpu925x.c read temperature from the direct register
+         * for every sample rather than from the FIFO, so comparing the two
+         * would compare a register against itself. */
+        { "icm20948",   0x2D, 14, false },
+        { "mpu9250",    0x3B, 14, false },
+        { "mpu9255",    0x3B, 14, false },
+    };
+
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        uint8_t base = 0, len = 0;
+        bool ft = false;
+        char msg[128];
+        bool have = imt_regmap_direct(want[i].drv, &base, &len, &ft);
+        snprintf(msg, sizeof msg, "%s declares a safe direct window",
+                 want[i].drv);
+        EXPECT(have, msg);
+        snprintf(msg, sizeof msg, "%s direct window starts at 0x%02X",
+                 want[i].drv, want[i].base);
+        EXPECT(have && base == want[i].base, msg);
+        snprintf(msg, sizeof msg, "%s direct window is %u bytes",
+                 want[i].drv, want[i].len);
+        EXPECT(have && len == want[i].len, msg);
+        snprintf(msg, sizeof msg, "%s fifo_temp matches what its driver does",
+                 want[i].drv);
+        EXPECT(have && ft == want[i].fifo_temp, msg);
+    }
+
+    /*
+     * The declared window must lie inside a range the map already calls
+     * volatile: both describe the same output registers, and a window that
+     * escaped that range would be pointing at control registers.
+     */
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        uint8_t base = 0, len = 0;
+        char msg[128];
+        if (!imt_regmap_direct(want[i].drv, &base, &len, NULL)) continue;
+        bool all_vol = true;
+        for (int reg = base; reg < base + len; reg++)
+            if (!imt_regmap_known_volatile(want[i].drv, (uint8_t)reg))
+                all_vol = false;
+        snprintf(msg, sizeof msg,
+                 "%s direct window lies inside its known-volatile range",
+                 want[i].drv);
+        EXPECT(all_vol, msg);
+    }
+
+    /* Magnetometers have no FIFO to cross-check, and must not declare one. */
+    static const char *no_window[] = { "mmc5983ma", "lis3mdl", "lis2mdl",
+                                       "ak8963", "ak09916", "rm3100" };
+    for (size_t i = 0; i < sizeof no_window / sizeof no_window[0]; i++) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "%s declares no direct window", no_window[i]);
+        EXPECT(!imt_regmap_direct(no_window[i], NULL, NULL, NULL), msg);
+    }
 
     end(fb);
 }
@@ -2137,6 +2361,76 @@ static void test_faces_thin_face(void)
     EXPECT(status_of(r, "faces.symmetry") != IMT_INFO,
            "and no offset/scale is fitted through a face that was not measured");
     free(r);
+
+    end(fb);
+}
+
+/*
+ * imu.direct.gyro — telling a silent gyro from a mis-decoded FIFO.
+ *
+ * The three sign checks cannot make this distinction: both causes integrate to
+ * nothing and both are reported as "the board did not move or the gyro is not
+ * responding". The direct registers sit upstream of the FIFO, so they settle
+ * it. The second case here is the shape reported in issue #31 — a gyro whose
+ * instantaneous figures look healthy while a commanded 90-degree turn
+ * integrates to a fraction of a degree.
+ */
+static void test_direct_gyro_vs_fifo(void)
+{
+    begin("test_direct_gyro_vs_fifo");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases   = IMT_PHASE_GYRO;
+    o.turn_deg = 90.0;
+
+    /* A healthy part: the FIFO and the registers both see the turn. */
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    for (int k = 0; k < 3; k++) g_s.turn_rate_dps[k] = 400.0;
+    imt_report_t *ok = run(&cfg, &o);
+    EXPECT(status_of(ok, "imu.direct.gyro") == IMT_PASS,
+           "a turn both sides can see PASSes");
+    EXPECT(ok->raw.direct_gyro_peak[0] > 0.0,
+           "the direct gyro peak reaches the appendix");
+    free(ok);
+
+    /*
+     * The FIFO decode loses the turn while the registers show it. This is the
+     * case the sign checks report as a dead gyro and that this one has to
+     * contradict, naming the FIFO path instead.
+     */
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    for (int k = 0; k < 3; k++) g_s.turn_rate_dps[k] = 0.0;
+    g_stage_skew_direct = true;
+    ism_set_direct(0, 0, (int16_t)lrint(9.80665 / ISM_ACCEL_LSB), 5000, 5000, 5000);
+    imt_report_t *lost = run(&cfg, &o);
+    EXPECT(status_of(lost, "imu.direct.gyro") == IMT_FAIL,
+           "registers turning while the FIFO integrates nothing FAILs");
+    EXPECT(note_contains(lost, "imu.direct.gyro", "gyro IS responding"),
+           "...and the note contradicts the dead-gyro reading of the same run");
+    EXPECT(note_contains(lost, "imu.direct.gyro", "FIFO path"),
+           "...and sends the reader to the FIFO decode");
+    /* The sign checks, on the same run, say the opposite — which is exactly
+     * why this check had to exist. */
+    EXPECT(status_of(lost, "gyro.x.sign") == IMT_FAIL,
+           "the sign check still fails, reading it as a dead gyro");
+    free(lost);
+
+    /* Nothing anywhere: the data path really is silent, upstream of the FIFO. */
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    for (int k = 0; k < 3; k++) g_s.turn_rate_dps[k] = 0.0;
+    g_stage_skew_direct = true;
+    ism_set_direct(0, 0, (int16_t)lrint(9.80665 / ISM_ACCEL_LSB), 0, 0, 0);
+    imt_report_t *dead = run(&cfg, &o);
+    EXPECT(status_of(dead, "imu.direct.gyro") == IMT_FAIL,
+           "neither side seeing the turn FAILs");
+    EXPECT(note_contains(dead, "imu.direct.gyro", "not producing data"),
+           "...and names the gyro data path rather than the decode");
+    free(dead);
 
     end(fb);
 }
@@ -3748,6 +4042,8 @@ int main(void)
     test_mag_degauss_skips_without_the_op();
     test_mag_writeonly_ctrl_skips();
     test_burst_framing();
+    test_direct_vs_fifo();
+    test_direct_window_table();
     test_probe_reject_skips_on_spi();
     test_sweep_avoids_write_only_registers();
     test_rate_above_configured_odr_fails();
@@ -3764,6 +4060,7 @@ int main(void)
     test_faces_skipped_not_absent();
     test_faces_thin_face();
     test_gyro_sign();
+    test_direct_gyro_vs_fifo();
     test_spin_frame_agreement();
     test_spin_hard_iron_still_tracks();
     test_report_and_exit_codes();

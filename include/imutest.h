@@ -162,6 +162,27 @@ typedef struct {
     double        grav_mean, grav_sigma;
     double        temp_min, temp_max, temp_mean;
     int           temp_distinct;
+    /*
+     * The FIFO path measured against the part's own output registers.
+     *
+     * direct_accel is in raw counts and fifo_accel in m/s², so the two are NOT
+     * comparable term by term — only their DIRECTIONS are, which is what
+     * direct_angle_deg holds and what the check grades. Both vectors are
+     * reported anyway: a reader chasing a decode fault wants to see which axis
+     * the two sides put gravity on, and the angle alone does not say.
+     * direct_n = 0 means the comparison did not run.
+     */
+    double        direct_accel[3], fifo_accel[3];
+    double        direct_angle_deg;
+    double        direct_temp_c, fifo_temp_c;
+    int           direct_n;
+    /*
+     * Peak |raw count| seen in the direct gyro registers during phase C, per
+     * axis. Compared against the FIFO-integrated angle in the same phase: a
+     * gyro that is not responding leaves both near zero, while a decode fault
+     * moves these and not the integral. Zero when phase C did not run.
+     */
+    double        direct_gyro_peak[3];
     uint32_t      ts_first, ts_last;
     double        ts_median_delta, ts_implied_tick_ns, ts_wall_ratio;
     /* Reversals and repeats are separate faults: a repeat is one reading
@@ -723,6 +744,16 @@ bool imt_regmap_identity(const char *driver, uint8_t *reg, uint8_t *val);
 /* Test seam — see src/imutest.c.  True if `reg` is declared volatile for
  * `driver` regardless of what the volatility scan observes. */
 bool imt_regmap_known_volatile(const char *driver, uint8_t reg);
+
+/*
+ * The direct (non-FIFO) measurement window declared for `driver`, if it has
+ * one that is safe to read.  False when none is declared, or when the declared
+ * window overlaps reserved, skipped or destructive registers -- on the
+ * reference ISM330DHCX, reading reserved space degrades the part until it is
+ * power-cycled, so this is validated rather than trusted.
+ */
+bool imt_regmap_direct(const char *driver, uint8_t *base, uint8_t *len,
+                       bool *fifo_temp);
 
 
 /*
