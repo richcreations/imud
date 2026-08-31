@@ -475,12 +475,43 @@ test_imutest: src/imutest.c src/imutest_report.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm
 
+# imud-cal and imud-imutest end to end, main() included.  These two tools held
+# the last sources that no test binary compiled at all -- cal_main.c,
+# imutest_main.c, imutest_open.c, imutest_gpio.c -- so lcov did not report them
+# as 0%, it did not report them.
+#
+# One binary rather than two, for test_bridge_e2e's stated reason: each shared
+# source is then compiled exactly once for the whole suite, which is what keeps
+# lcov able to attribute it.
+#
+# The source list is the UNION of what the two tools link, so a file added to
+# either of them joins this suite without a second edit here.  $(sort) is for
+# the dedupe, not the ordering -- the overlap between the two lists is most of
+# both.
+HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
+
+# The wraps, in order.  --wrap=ioctl / __ioctl_time64 is test/bus_mock.c serving
+# the real mmc5983ma driver for the --degauss path, exactly as test_imutest
+# does.  --wrap on the three imu_gpio_* entry points is the seam for
+# imutest_gpio.c: its counting POLICY is pure logic over injectable callbacks,
+# and only imu_gpio_* (in src/imu.c, which IMUTEST_SRCS links deliberately)
+# touch a line -- so --wrap rather than stubs, which would collide with the
+# real definitions.  Same shape as --wrap=pthread_create in test_daemon.
+# Linux/GNU-ld only, and -lgpiod, like it.
+test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
+                  $(HWTOOLS_SRCS) test/bus_mock.c test/test_hwtools_e2e.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 \
+	    -Wl,--wrap=imu_gpio_open -Wl,--wrap=imu_gpio_wait_edge \
+	    -Wl,--wrap=imu_gpio_close \
+	    -o $@ $(filter %.c %.o,$^) -lgpiod -lm
+
 TEST_BINS = test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_drivers test_imutest
+      test_drivers_registry test_imu_math test_drivers test_imutest test_hwtools_e2e
 
 # Every test binary depends on every project header.
 #
@@ -537,6 +568,7 @@ test: $(TEST_BINS)
 	./test_imu_math
 	./test_drivers
 	./test_imutest
+	./test_hwtools_e2e
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -1318,6 +1350,7 @@ clean:
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_drivers test_imutest \
+      test_hwtools_e2e \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      mkseed_packet imud.info \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \

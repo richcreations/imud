@@ -52,10 +52,17 @@ def reported(info_path):
 
 
 def notes_for(src):
-    """.gcno files that belong to `src`, under either naming scheme."""
+    """.gcno files that belong to `src`, under any of the naming schemes."""
     base = os.path.splitext(os.path.basename(src))[0]
-    hits = glob.glob(os.path.join(os.path.dirname(src), base + ".gcno"))
+    d = os.path.dirname(src)
+    hits = glob.glob(os.path.join(d, base + ".gcno"))
     hits += glob.glob("*-" + base + ".gcno")
+    # The Makefile's src/%.entry.o rule -- a daemon's real main() compiled as
+    # <base>_entry for the end-to-end suites -- writes src/<base>.entry.gcno.
+    # Without this pattern an .entry.o source that lost lcov attribution would
+    # be reported as "in NO test binary" rather than as a stamp mismatch, which
+    # is the one answer this tool must not get wrong.
+    hits += glob.glob(os.path.join(d, base + ".entry.gcno"))
     return hits
 
 
