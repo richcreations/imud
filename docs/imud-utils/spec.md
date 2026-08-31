@@ -153,10 +153,17 @@ between passes: the counter reads identically every time, is classified static,
 and then `init()` flushes the FIFO and `imu.init.idempotent` reports "2
 registers differ". That is a question about whether the FIFO was emptied
 wearing the costume of a question about `init()`, and it cost a bench
-investigation chasing a driver defect that did not exist. Registers in that
-class are declared per part, because the defining property is that inference
-cannot reach them. The list is deliberately tiny and is not a general volatile
-table — everything the experiment *can* find, it still finds.
+investigation chasing a driver defect that did not exist. The TDK parts carry
+the same counter in a different register file: `FIFO_COUNTH`/`FIFO_COUNTL` at
+0x72–0x73 on the MPU-925x and 0x70–0x71 on the ICM-20948, whose drivers both
+flush the FIFO inside `init()`. Registers in that class are declared per part,
+because the defining property is that inference cannot reach them. The list is
+deliberately tiny and is not a general volatile table — everything the
+experiment *can* find, it still finds. **Check the addresses against the part's
+own register map**: the FIFO count and the FIFO data port sit next to each
+other and swap places across this family, and declaring the port volatile
+instead would leave the counter in the compare and put a destructive read in
+the sweep.
 
 **Write-only control registers** are a third case, and only a listed flag can
 express them: `ctrl_writeonly` on the MMC5983MA, whose CTRL0/1/2 the datasheet

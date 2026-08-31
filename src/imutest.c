@@ -528,8 +528,11 @@ static const imt_regmap_t imt_regmaps[] = {
      * "no identity register" sentinel, so it uses the probe() fallback. */
     { .driver = "icm20948",   .lo = 0x00, .hi = 0x7F,
       /* Bank 0 ACCEL_XOUT_H (0x2D) .. TEMP_OUT_L (0x3A); EXT_SLV_SENS_DATA
-       * starts at 0x3B. */
-      .vol_reg = { {0x2D,0x3A} }, .nvol_reg = 1,
+       * starts at 0x3B.  Plus FIFO_COUNTH/L (0x70-0x71), the live byte count:
+       * icm20948.c enables and resets the FIFO in init(), so the counter is
+       * the saturating case above.  Note the addresses differ from the MPU
+       * family -- here 0x72 is the data port, not the count. */
+      .vol_reg = { {0x2D,0x3A}, {0x70,0x71} }, .nvol_reg = 2,
       .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
       /* DS rev 1.3 §8.18-8.31: bank 0 ACCEL_XOUT_H 2Dh .. TEMP_OUT_L 3Ah,
        * big-endian, accel then gyro then temp.  fifo_temp is false because
@@ -541,8 +544,12 @@ static const imt_regmap_t imt_regmaps[] = {
                .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
-      /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
-      .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
+      /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42.  Plus
+       * FIFO_COUNTH/L (0x72-0x73), the live byte count: mpu925x.c enables the
+       * FIFO and flushes it in init(), so the counter is the saturating case
+       * above and a second init() drops it.  0x74 is the data port and is in
+       * skip[] instead -- reading it would pop a sample. */
+      .vol_reg = { {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 2,
       .whoami_reg = 0x75, .whoami_val = 0x71,
       /* Register map rev 1.6 pp.7-8: ACCEL_XOUT_H 3Bh .. GYRO_ZOUT_L 48h,
        * big-endian, accel then temp then gyro.  Accel and gyro DO come from
@@ -554,8 +561,8 @@ static const imt_regmap_t imt_regmaps[] = {
                .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
-      /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42. */
-      .vol_reg = { {0x3B,0x48} }, .nvol_reg = 1,
+      /* Same output and FIFO-count windows as the MPU-9250. */
+      .vol_reg = { {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 2,
       .whoami_reg = 0x75, .whoami_val = 0x73,
       /* Same output file and temperature scaling as the MPU-9250. */
       .dir = { .base = 0x3B, .len = 14, .be = true,

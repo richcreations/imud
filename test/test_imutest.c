@@ -3377,6 +3377,26 @@ static void test_daemon_conflict_checks_both_sockets(void)
     end(fb);
 }
 
+/*
+ * One declared known-volatile window, pinned at both ends.  A window that is
+ * too WIDE silently suppresses real idempotency findings, which is worse than
+ * the false WARN it exists to stop, so `below` and `above` are asserted too.
+ */
+static void expect_vol_window(const char *drv, uint8_t lo, uint8_t hi,
+                              uint8_t below, uint8_t above)
+{
+    char msg[112];
+
+    snprintf(msg, sizeof msg, "%s declares 0x%02X volatile", drv, lo);
+    EXPECT(imt_regmap_known_volatile(drv, lo), msg);
+    snprintf(msg, sizeof msg, "%s declares 0x%02X volatile", drv, hi);
+    EXPECT(imt_regmap_known_volatile(drv, hi), msg);
+    snprintf(msg, sizeof msg, "%s does not over-reach below 0x%02X", drv, lo);
+    EXPECT(!imt_regmap_known_volatile(drv, below), msg);
+    snprintf(msg, sizeof msg, "%s does not over-reach above 0x%02X", drv, hi);
+    EXPECT(!imt_regmap_known_volatile(drv, above), msg);
+}
+
 static void test_saturating_counters_are_declared_volatile(void)
 {
     begin("test_saturating_counters_are_declared_volatile");
@@ -3405,9 +3425,7 @@ static void test_saturating_counters_are_declared_volatile(void)
 
     /*
      * The same class on every other part, each window taken from that part's
-     * datasheet rather than assumed. A window that is too WIDE silently
-     * suppresses real idempotency findings, which is worse than a false WARN,
-     * so the upper and lower bounds are both pinned.
+     * datasheet rather than assumed.
      */
     static const struct { const char *drv; uint8_t lo, hi, below, above; } win[] = {
         { "icm42688p", 0x1D, 0x2C, 0x1C, 0x2D },  /* TEMP_DATA1..TMST_FSYNCL   */
@@ -3417,19 +3435,41 @@ static void test_saturating_counters_are_declared_volatile(void)
         { "lis3mdl",   0x28, 0x2D, 0x27, 0x2E },  /* OUT_X_L..OUT_Z_H          */
         { "lis2mdl",   0x68, 0x6D, 0x67, 0x6E },  /* OUTX_L..OUTZ_H            */
     };
-    for (unsigned i = 0; i < sizeof win / sizeof win[0]; i++) {
-        snprintf(msg, sizeof msg, "%s declares 0x%02X volatile",
-                 win[i].drv, win[i].lo);
-        EXPECT(imt_regmap_known_volatile(win[i].drv, win[i].lo), msg);
-        snprintf(msg, sizeof msg, "%s declares 0x%02X volatile",
-                 win[i].drv, win[i].hi);
-        EXPECT(imt_regmap_known_volatile(win[i].drv, win[i].hi), msg);
-        snprintf(msg, sizeof msg, "%s does not over-reach below 0x%02X",
-                 win[i].drv, win[i].lo);
-        EXPECT(!imt_regmap_known_volatile(win[i].drv, win[i].below), msg);
-        snprintf(msg, sizeof msg, "%s does not over-reach above 0x%02X",
-                 win[i].drv, win[i].hi);
-        EXPECT(!imt_regmap_known_volatile(win[i].drv, win[i].above), msg);
+    for (unsigned i = 0; i < sizeof win / sizeof win[0]; i++)
+        expect_vol_window(win[i].drv, win[i].lo, win[i].hi,
+                          win[i].below, win[i].above);
+
+    /*
+     * TDK: the FIFO byte count, which is the ST FIFO_STATUS case in a
+     * different register file. mpu925x.c and icm20948.c both enable the FIFO
+     * and flush it inside init(), so the count reads its maximum through every
+     * probing pass, is classified static, then drops at the second init() and
+     * surfaces as imu.init.idempotent -- reported from an mpu9255 bench run
+     * alongside 0x6A (USER_CTRL), which is a real finding and must still be
+     * compared.
+     *
+     * The addresses are NOT the same across the family, which is the trap:
+     * MPU-925x has FIFO_COUNTH/L at 0x72-0x73 with the data port at 0x74, and
+     * the ICM-20948 has them at 0x70-0x71 with the port at 0x72. Reading one
+     * part's numbers onto the other declares the data port volatile and leaves
+     * the real counter in the compare.
+     */
+    static const struct { const char *drv; uint8_t lo, hi, below, above; }
+    fifocnt[] = {
+        { "mpu9250",   0x72, 0x73, 0x71, 0x74 },
+        { "mpu9255",   0x72, 0x73, 0x71, 0x74 },
+        { "icm20948",  0x70, 0x71, 0x6F, 0x72 },
+    };
+    for (unsigned i = 0; i < sizeof fifocnt / sizeof fifocnt[0]; i++)
+        expect_vol_window(fifocnt[i].drv, fifocnt[i].lo, fifocnt[i].hi,
+                          fifocnt[i].below, fifocnt[i].above);
+
+    /* USER_CTRL is the finding the false positive was buried in, so it must
+     * stay in the compare on the parts whose FIFO count just left it. */
+    static const char *tdk[] = { "mpu9250", "mpu9255" };
+    for (unsigned i = 0; i < sizeof tdk / sizeof tdk[0]; i++) {
+        snprintf(msg, sizeof msg, "%s still compares USER_CTRL", tdk[i]);
+        EXPECT(!imt_regmap_known_volatile(tdk[i], 0x6A), msg);
     }
 
     /* Not a blanket exclusion: control registers must still be compared, or
