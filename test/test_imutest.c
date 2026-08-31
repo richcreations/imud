@@ -2106,6 +2106,44 @@ static void test_gyro_sign(void)
            "diagnosis names a gyro that is not responding");
     EXPECT(!note_contains(r, "gyro.x.sign", "inverted"),
            "and does not misdiagnose it as an inverted sign");
+
+    /*
+     * The rendered table has to carry the sample count and the interval, not
+     * just the integral.  A driver that delivered nothing and one that
+     * delivered samples reading zero both integrate to ~0 deg, so the count is
+     * the only thing in the report that tells the two apart — and this run is
+     * the second of them.
+     */
+    {
+        const char *path = "test_imutest_turns.md";
+        char err[256] = "";
+        static char buf[262144];
+        EXPECT(imt_write_md(r, path, err, sizeof err) == 0, "the report writes");
+        FILE *f = fopen(path, "r");
+        EXPECT(f != NULL, "the report file exists");
+        if (f) {
+            buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+            fclose(f);
+            const char *sec = strstr(buf, "### 5.9 Gyro rotation");
+            EXPECT(sec != NULL, "the rotation appendix is present");
+            if (sec) {
+                EXPECT(strstr(sec, "| Axis | Commanded | thetaX | thetaY | "
+                                   "thetaZ | Samples | Duration | dt source | "
+                                   "Verdict |") != NULL,
+                       "5.9 heads a sample count and a duration column");
+                char want[64];
+                EXPECT(r->raw.turn[0].n > 0, "the X turn did deliver samples");
+                snprintf(want, sizeof want, "| %d | ", r->raw.turn[0].n);
+                EXPECT(strstr(sec, want) != NULL,
+                       "and the X row prints the count it recorded");
+                snprintf(want, sizeof want, "| %.1f s |",
+                         r->raw.turn[0].dur_s);
+                EXPECT(strstr(sec, want) != NULL,
+                       "beside the interval it integrated over");
+            }
+        }
+        remove(path);
+    }
     free(r);
 
     /*

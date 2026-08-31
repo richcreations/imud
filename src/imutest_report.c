@@ -551,15 +551,22 @@ int imt_write_md(const imt_report_t *r, const char *path,
     }
 
     if (w->n_turns > 0) {
+        /* Samples and duration are the pair that separates a driver that
+         * delivered nothing through the turn from one that delivered samples
+         * reading zero.  Both integrate to ~0 deg, and without the count the
+         * two are indistinguishable in the table. */
         fprintf(f, "### 5.9 Gyro rotation\n\n");
-        fprintf(f, "| Axis | Commanded | thetaX | thetaY | thetaZ | dt source | Verdict |\n");
-        fprintf(f, "|---|---|---|---|---|---|---|\n");
+        fprintf(f, "| Axis | Commanded | thetaX | thetaY | thetaZ | Samples "
+                   "| Duration | dt source | Verdict |\n");
+        fprintf(f, "|---|---|---|---|---|---|---|---|---|\n");
         static const char an[3] = { 'X', 'Y', 'Z' };
         for (int i = 0; i < w->n_turns; i++) {
             const imt_turn_row_t *tr = &w->turn[i];
-            fprintf(f, "| %c | %+.0f deg | %+.1f | %+.1f | %+.1f | %s | %s |\n",
+            fprintf(f, "| %c | %+.0f deg | %+.1f | %+.1f | %+.1f | %d "
+                       "| %.1f s | %s | %s |\n",
                     an[tr->axis], tr->cmd_deg,
                     tr->theta[0], tr->theta[1], tr->theta[2],
+                    tr->n, tr->dur_s,
                     tr->used_chip_ts ? "chip_ts" : "nominal ODR",
                     imt_status_str(tr->status));
         }
