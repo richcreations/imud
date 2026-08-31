@@ -796,6 +796,212 @@ static void test_akm_sweep_avoids_forbidden_registers(void)
     end(fb);
 }
 
+/*
+ * Seven register maps were declared as flat address ranges over files that are
+ * sparse, so the regdiff snapshot read addresses the vendor lists nowhere: 69
+ * of 128 on the ICM-42688-P, 63 on the ICM-20948, 28 on each MPU-925x, 39 on
+ * the LIS3MDL and 42 on the RM3100.  The LIS2MDL was the extreme case -- its
+ * 0x00-0x3F window lies entirely inside the 00h-44h block its datasheet marks
+ * Reserved, so all 64 addresses were undocumented and none of the registers
+ * the driver uses were swept at all.
+ *
+ * An unlisted address is not a read of nothing -- on the reference ISM330DHCX
+ * sweeping reserved space leaves the part returning a wrong byte until it is
+ * power-cycled -- and only the ISM330DHCX and MMC5983MA are on this bench, so
+ * the table is the only thing standing between the tool and silicon nobody
+ * here can inspect.
+ *
+ * Pinned by address against the vendor maps (DS-000347 rev 1.6 §13.1,
+ * DS-000189 rev 1.3 §7.1, MPU-925x register map rev 1.6 §3, LIS3MDL Table 16,
+ * LIS2MDL Table 15, RM3100 user manual V11.0 Table 5-1) rather than by
+ * trusting the range bounds, and with the swept totals asserted so that
+ * neither a missing hole nor an over-eager one passes.
+ */
+static void test_sweep_avoids_undocumented_registers(void)
+{
+    begin("test_sweep_avoids_undocumented_registers");
+    int fb = g_fail;
+
+    static const struct {
+        const char *drv; uint8_t lo, hi; const char *why;
+    } undoc[] = {
+        /* ICM-42688-P: bank 0 is DEVICE_CONFIG 11h .. REG_BANK_SEL 76h. */
+        { "icm42688p", 0x00, 0x10, "below DEVICE_CONFIG" },
+        { "icm42688p", 0x12, 0x12, "between DEVICE_CONFIG and DRIVE_CONFIG" },
+        { "icm42688p", 0x15, 0x15, "between INT_CONFIG and FIFO_CONFIG" },
+        { "icm42688p", 0x17, 0x1C, "between FIFO_CONFIG and TEMP_DATA1" },
+        { "icm42688p", 0x39, 0x4A, "between INT_STATUS3 and SIGNAL_PATH_RESET" },
+        { "icm42688p", 0x55, 0x55, "between TMST_CONFIG and APEX_CONFIG0" },
+        { "icm42688p", 0x58, 0x5E, "between SMD_CONFIG and FIFO_CONFIG1" },
+        { "icm42688p", 0x67, 0x67, "between INT_SOURCE1 and INT_SOURCE3" },
+        { "icm42688p", 0x6A, 0x6B, "between INT_SOURCE4 and FIFO_LOST_PKT0" },
+        { "icm42688p", 0x6E, 0x6F, "between FIFO_LOST_PKT1 and SELF_TEST_CONFIG" },
+        { "icm42688p", 0x71, 0x74, "between SELF_TEST_CONFIG and WHO_AM_I" },
+        { "icm42688p", 0x77, 0x7F, "past REG_BANK_SEL, the last register" },
+        /* ICM-20948: bank 0 is WHO_AM_I 00h .. REG_BANK_SEL 7Fh. */
+        { "icm20948",  0x01, 0x02, "between WHO_AM_I and USER_CTRL" },
+        { "icm20948",  0x04, 0x04, "between USER_CTRL and LP_CONFIG" },
+        { "icm20948",  0x08, 0x0E, "between PWR_MGMT_2 and INT_PIN_CFG" },
+        { "icm20948",  0x14, 0x16, "between INT_ENABLE_3 and I2C_MST_STATUS" },
+        { "icm20948",  0x18, 0x18, "between I2C_MST_STATUS and INT_STATUS" },
+        { "icm20948",  0x1D, 0x27, "between INT_STATUS_3 and DELAY_TIMEH" },
+        { "icm20948",  0x2A, 0x2C, "between DELAY_TIMEL and ACCEL_XOUT_H" },
+        { "icm20948",  0x53, 0x65, "between EXT_SLV_SENS_DATA_23 and FIFO_EN_1" },
+        { "icm20948",  0x6A, 0x6F, "between FIFO_MODE and FIFO_COUNTH" },
+        { "icm20948",  0x73, 0x73, "between FIFO_R_W and DATA_RDY_STATUS" },
+        { "icm20948",  0x75, 0x75, "between DATA_RDY_STATUS and FIFO_CFG" },
+        { "icm20948",  0x77, 0x7E, "between FIFO_CFG and REG_BANK_SEL" },
+        /* MPU-925x: bank is SELF_TEST_X_GYRO 00h .. ZA_OFFSET_L 7Eh. */
+        { "mpu9250",   0x03, 0x0C, "between SELF_TEST_Z_GYRO and SELF_TEST_X_ACCEL" },
+        { "mpu9250",   0x10, 0x12, "between SELF_TEST_Z_ACCEL and XG_OFFSET_H" },
+        { "mpu9250",   0x20, 0x22, "between WOM_THR and FIFO_EN" },
+        { "mpu9250",   0x39, 0x39, "between INT_ENABLE and INT_STATUS" },
+        { "mpu9250",   0x61, 0x62, "between I2C_SLV4_DI and I2C_SLV0_DO" },
+        { "mpu9250",   0x6D, 0x71, "between PWR_MGMT_2 and FIFO_COUNTH" },
+        { "mpu9250",   0x76, 0x76, "between WHO_AM_I and XA_OFFSET_H" },
+        { "mpu9250",   0x79, 0x79, "between XA_OFFSET_L and YA_OFFSET_H" },
+        { "mpu9250",   0x7C, 0x7C, "between YA_OFFSET_L and ZA_OFFSET_H" },
+        { "mpu9250",   0x7F, 0x7F, "past ZA_OFFSET_L, the last register" },
+        { "mpu9255",   0x03, 0x0C, "between SELF_TEST_Z_GYRO and SELF_TEST_X_ACCEL" },
+        { "mpu9255",   0x10, 0x12, "between SELF_TEST_Z_ACCEL and XG_OFFSET_H" },
+        { "mpu9255",   0x20, 0x22, "between WOM_THR and FIFO_EN" },
+        { "mpu9255",   0x39, 0x39, "between INT_ENABLE and INT_STATUS" },
+        { "mpu9255",   0x61, 0x62, "between I2C_SLV4_DI and I2C_SLV0_DO" },
+        { "mpu9255",   0x6D, 0x71, "between PWR_MGMT_2 and FIFO_COUNTH" },
+        { "mpu9255",   0x76, 0x76, "between WHO_AM_I and XA_OFFSET_H" },
+        { "mpu9255",   0x79, 0x79, "between XA_OFFSET_L and YA_OFFSET_H" },
+        { "mpu9255",   0x7C, 0x7C, "between YA_OFFSET_L and ZA_OFFSET_H" },
+        { "mpu9255",   0x7F, 0x7F, "past ZA_OFFSET_L, the last register" },
+        /* LIS3MDL: OFFSET_X_REG_L_M 05h .. INT_THS_H 33h, DS Table 16. */
+        { "lis3mdl",   0x00, 0x04, "DS Table 16 marks 00h-04h Reserved" },
+        { "lis3mdl",   0x0B, 0x0E, "DS Table 16 marks 0Bh-0Eh Reserved" },
+        { "lis3mdl",   0x10, 0x1F, "DS Table 16 marks 10h-1Fh Reserved" },
+        { "lis3mdl",   0x25, 0x26, "DS Table 16 marks 25h-26h Reserved" },
+        { "lis3mdl",   0x34, 0x3F, "past INT_THS_H, the last register" },
+        /*
+         * LIS2MDL: the whole of 00h-44h is one Reserved block in DS Table 15,
+         * and the old window lay inside it.  0x00-0x3F must now be untouched
+         * and the real file at 45h-6Fh swept instead.
+         */
+        { "lis2mdl",   0x00, 0x3F, "inside the 00h-44h Reserved block" },
+        { "lis2mdl",   0x40, 0x44, "inside the 00h-44h Reserved block" },
+        { "lis2mdl",   0x4B, 0x4E, "DS Table 15 marks 4Bh-4Ch Reserved, 4Dh-4Eh unlisted" },
+        { "lis2mdl",   0x50, 0x5F, "DS Table 15 marks 50h-5Fh Reserved" },
+        { "lis2mdl",   0x70, 0x7F, "past TEMP_OUT_H_REG, the last register" },
+        /* RM3100: user manual V11.0 Table 5-1. */
+        { "rm3100",    0x02, 0x03, "between CMM and CCX" },
+        { "rm3100",    0x0A, 0x0A, "between CCZ and TMRC" },
+        { "rm3100",    0x0C, 0x23, "between TMRC and MX" },
+        { "rm3100",    0x2D, 0x32, "between MZ and BIST" },
+        { "rm3100",    0x37, 0x3F, "past REVID, the last register" },
+    };
+    char msg[128];
+    for (unsigned i = 0; i < sizeof undoc / sizeof undoc[0]; i++)
+        for (int reg = undoc[i].lo; reg <= (int)undoc[i].hi; reg++) {
+            snprintf(msg, sizeof msg, "%s never reads 0x%02X (%s)",
+                     undoc[i].drv, reg, undoc[i].why);
+            EXPECT(!imt_regmap_reads(undoc[i].drv, (uint8_t)reg), msg);
+        }
+
+    /*
+     * ...and every control register the driver writes is still swept, so the
+     * exclusions cannot be widened until the regdiff has nothing left to
+     * compare.  Addresses from each part's driver in src/drivers/.
+     */
+    static const struct { const char *drv; uint8_t reg; const char *name; }
+    kept[] = {
+        { "icm42688p", 0x11, "DEVICE_CONFIG" },
+        { "icm42688p", 0x14, "INT_CONFIG" },
+        { "icm42688p", 0x16, "FIFO_CONFIG" },
+        { "icm42688p", 0x4B, "SIGNAL_PATH_RESET" },
+        { "icm42688p", 0x4D, "INTF_CONFIG1" },
+        { "icm42688p", 0x4E, "PWR_MGMT0" },
+        { "icm42688p", 0x4F, "GYRO_CONFIG0" },
+        { "icm42688p", 0x50, "ACCEL_CONFIG0" },
+        { "icm42688p", 0x54, "TMST_CONFIG" },
+        { "icm42688p", 0x5F, "FIFO_CONFIG1" },
+        { "icm42688p", 0x60, "FIFO_CONFIG2" },
+        { "icm42688p", 0x61, "FIFO_CONFIG3" },
+        { "icm42688p", 0x64, "INT_CONFIG1" },
+        { "icm42688p", 0x65, "INT_SOURCE0" },
+        { "icm42688p", 0x75, "WHO_AM_I" },
+        { "icm20948",  0x00, "WHO_AM_I" },
+        { "icm20948",  0x03, "USER_CTRL" },
+        { "icm20948",  0x06, "PWR_MGMT_1" },
+        { "icm20948",  0x07, "PWR_MGMT_2" },
+        { "icm20948",  0x0F, "INT_PIN_CFG" },
+        { "icm20948",  0x11, "INT_ENABLE_1" },
+        { "icm20948",  0x67, "FIFO_EN_2" },
+        { "icm20948",  0x68, "FIFO_RST" },
+        { "icm20948",  0x69, "FIFO_MODE" },
+        { "mpu9250",   0x19, "SMPLRT_DIV" },
+        { "mpu9250",   0x1A, "CONFIG" },
+        { "mpu9250",   0x1B, "GYRO_CONFIG" },
+        { "mpu9250",   0x1C, "ACCEL_CONFIG" },
+        { "mpu9250",   0x1D, "ACCEL_CONFIG2" },
+        { "mpu9250",   0x23, "FIFO_EN" },
+        { "mpu9250",   0x37, "INT_PIN_CFG" },
+        { "mpu9250",   0x38, "INT_ENABLE" },
+        { "mpu9250",   0x6A, "USER_CTRL" },
+        { "mpu9250",   0x6B, "PWR_MGMT_1" },
+        { "mpu9250",   0x6C, "PWR_MGMT_2" },
+        { "mpu9250",   0x75, "WHO_AM_I" },
+        { "mpu9255",   0x19, "SMPLRT_DIV" },
+        { "mpu9255",   0x6B, "PWR_MGMT_1" },
+        { "mpu9255",   0x75, "WHO_AM_I" },
+        { "lis3mdl",   0x0F, "WHO_AM_I" },
+        { "lis3mdl",   0x20, "CTRL_REG1" },
+        { "lis3mdl",   0x21, "CTRL_REG2" },
+        { "lis3mdl",   0x22, "CTRL_REG3" },
+        { "lis3mdl",   0x23, "CTRL_REG4" },
+        { "lis3mdl",   0x24, "CTRL_REG5" },
+        { "lis3mdl",   0x27, "STATUS_REG" },
+        { "lis2mdl",   0x4F, "WHO_AM_I" },
+        { "lis2mdl",   0x60, "CFG_REG_A" },
+        { "lis2mdl",   0x61, "CFG_REG_B" },
+        { "lis2mdl",   0x62, "CFG_REG_C" },
+        { "lis2mdl",   0x67, "STATUS_REG" },
+        { "lis2mdl",   0x68, "OUTX_L_REG" },
+        { "rm3100",    0x00, "POLL" },
+        { "rm3100",    0x01, "CMM" },
+        { "rm3100",    0x04, "CCX" },
+        { "rm3100",    0x0B, "TMRC" },
+        { "rm3100",    0x34, "STATUS" },
+        { "rm3100",    0x36, "REVID" },
+    };
+    for (unsigned i = 0; i < sizeof kept / sizeof kept[0]; i++) {
+        snprintf(msg, sizeof msg, "%s still reads 0x%02X (%s)",
+                 kept[i].drv, kept[i].reg, kept[i].name);
+        EXPECT(imt_regmap_reads(kept[i].drv, kept[i].reg), msg);
+    }
+
+    /*
+     * The totals, which fail in both directions -- documented registers less
+     * whatever skip[]/nrd/bank_reg already withheld.  ICM-42688-P: 59 less
+     * FIFO_COUNTH/L, FIFO_DATA and the bank selector.  ICM-20948: 65 less
+     * FIFO_R_W, DATA_RDY_STATUS and its bank selector.  MPU-925x: 100 less
+     * FIFO_R_W.  RM3100: 22 less the nine result registers that clear DRDY.
+     * Before the maps were corrected these were 124, 124, 127, 127, 64, 64
+     * and 55.
+     */
+    static const struct { const char *drv; int n; } swept[] = {
+        { "icm42688p", 55 }, { "icm20948", 62 },
+        { "mpu9250",   99 }, { "mpu9255",  99 },
+        { "lis3mdl",   25 }, { "lis2mdl",  23 },
+        { "rm3100",    13 },
+    };
+    for (unsigned i = 0; i < sizeof swept / sizeof swept[0]; i++) {
+        int n = 0;
+        for (int reg = 0; reg <= 0xFF; reg++)
+            if (imt_regmap_reads(swept[i].drv, (uint8_t)reg)) n++;
+        snprintf(msg, sizeof msg, "%s sweeps exactly %d registers (got %d)",
+                 swept[i].drv, swept[i].n, n);
+        EXPECT(n == swept[i].n, msg);
+    }
+
+    end(fb);
+}
+
 static void test_volatile_registers_filtered(void)
 {
     begin("test_volatile_registers_filtered");
@@ -4075,6 +4281,7 @@ int main(void)
     test_bringup_bad_whoami();
     test_sweep_avoids_reserved_registers();
     test_akm_sweep_avoids_forbidden_registers();
+    test_sweep_avoids_undocumented_registers();
     test_volatile_registers_filtered();
     test_nonidempotent_init_names_registers();
     test_fifo_port_window_not_swept();

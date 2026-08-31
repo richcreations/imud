@@ -336,7 +336,7 @@ typedef struct {
      * behind FUNC_CFG_ACCESS at 0x01.  Poking at either is how a diagnostic
      * tool becomes the fault it is looking for.
      */
-    struct { uint8_t lo, hi; } resv[10];
+    struct { uint8_t lo, hi; } resv[16];
     int         nresv;
     uint8_t     bank_reg;        /* 0x00 = not banked */
     uint8_t     nrd_lo, nrd_hi;  /* destructive window; lo > hi = none */
@@ -509,13 +509,29 @@ static const imt_regmap_t imt_regmaps[] = {
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
-    /* TDK: FIFO ports and banked register files. */
-    { .driver = "icm42688p",  .lo = 0x00, .hi = 0x7F,
+    /*
+     * TDK: FIFO ports and banked register files.
+     *
+     * Both bank-0 maps are sparse, and the sweep used to run straight across
+     * the gaps: 69 of 128 addresses on the ICM-42688-P and 63 on the
+     * ICM-20948 appear in no register table.  The holes below are the
+     * complement of the vendor bank-0 maps -- DS-000347 rev 1.6 §13.1 and
+     * DS-000189 rev 1.3 §7.1 -- and `hi` stops at the last register each part
+     * documents, exactly as the AKM entries below do.  An address the vendor
+     * does not list is not a read of nothing; the ISM330DHCX note above is
+     * what that costs when it goes wrong on a part somebody owns.
+     */
+    { .driver = "icm42688p",  .lo = 0x00, .hi = 0x76,
       /* TEMP_DATA1 (0x1D) .. TMST_FSYNCL (0x2C): temp, accel, gyro and the
        * FSYNC timestamp, all sample-varying. DS rev 1.7 register map. */
       .vol_reg = { {0x1D,0x2C} }, .nvol_reg = 1,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
       .whoami_reg = 0x75, .whoami_val = 0x47,
+      /* Bank 0 runs DEVICE_CONFIG 11h .. REG_BANK_SEL 76h with 11 interior
+       * gaps; 77h-7Fh past the end is excluded by `hi`. */
+      .resv = { {0x00,0x10}, {0x12,0x12}, {0x15,0x15}, {0x17,0x1C},
+                {0x39,0x4A}, {0x55,0x55}, {0x58,0x5E}, {0x67,0x67},
+                {0x6A,0x6B}, {0x6E,0x6F}, {0x71,0x74} }, .nresv = 11,
       /* DS rev 1.7 §14: TEMP_DATA1 1Dh .. GYRO_DATA_Z0 2Ah, big-endian, temp
        * then accel then gyro.  Direct temp is 16-bit at 132.48 LSB/°C + 25
        * (§14.5); the FIFO packet carries only the 8-bit field, so the two
@@ -533,7 +549,15 @@ static const imt_regmap_t imt_regmaps[] = {
        * the saturating case above.  Note the addresses differ from the MPU
        * family -- here 0x72 is the data port, not the count. */
       .vol_reg = { {0x2D,0x3A}, {0x70,0x71} }, .nvol_reg = 2,
-      .skip = { 0x72, 0x73, 0x74 }, .nskip = 3, .bank_reg = 0x7F,
+      /* 0x72 FIFO_R_W pops a sample; 0x74 DATA_RDY_STATUS is read-to-clear.
+       * 0x73 is not a register and belongs in resv, not here. */
+      .skip = { 0x72, 0x74 }, .nskip = 2, .bank_reg = 0x7F,
+      /* Bank 0 runs WHO_AM_I 00h .. REG_BANK_SEL 7Fh with 12 gaps, the widest
+       * being 53h-65h between EXT_SLV_SENS_DATA_23 and FIFO_EN_1. */
+      .resv = { {0x01,0x02}, {0x04,0x04}, {0x08,0x0E}, {0x14,0x16},
+                {0x18,0x18}, {0x1D,0x27}, {0x2A,0x2C}, {0x53,0x65},
+                {0x6A,0x6F}, {0x73,0x73}, {0x75,0x75},
+                {0x77,0x7E} }, .nresv = 12,
       /* DS rev 1.3 §8.18-8.31: bank 0 ACCEL_XOUT_H 2Dh .. TEMP_OUT_L 3Ah,
        * big-endian, accel then gyro then temp.  fifo_temp is false because
        * icm20948.c reads TEMP_OUT_H directly for every sample rather than
@@ -543,7 +567,15 @@ static const imt_regmap_t imt_regmaps[] = {
                .a_off = 0, .g_off = 6, .t_off = 12, .sign = { 1, -1, -1 },
                .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .nrd_lo = 1, .nrd_hi = 0 },
-    { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7F,
+    /*
+     * MPU-925x: register map rev 1.6 / rev 1.0 pp.7-8, identical files.  Bank
+     * runs SELF_TEST_X_GYRO 00h .. ZA_OFFSET_L 7Eh with nine interior gaps;
+     * 7Fh past the end is excluded by `hi`.
+     */
+    { .driver = "mpu9250",    .lo = 0x00, .hi = 0x7E,
+      .resv = { {0x03,0x0C}, {0x10,0x12}, {0x20,0x22}, {0x39,0x39},
+                {0x61,0x62}, {0x6D,0x71}, {0x76,0x76}, {0x79,0x79},
+                {0x7C,0x7C} }, .nresv = 9,
       /* ACCEL_XOUT_H (0x3B) .. GYRO_ZOUT_L (0x48), temp at 0x41-0x42.  Plus
        * FIFO_COUNTH/L (0x72-0x73), the live byte count: mpu925x.c enables the
        * FIFO and flushes it in init(), so the counter is the saturating case
@@ -560,7 +592,11 @@ static const imt_regmap_t imt_regmaps[] = {
                .a_off = 0, .t_off = 6, .g_off = 8, .sign = { 1, -1, -1 },
                .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
-    { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7F,
+    { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7E,
+      /* Same register file, and so the same gaps, as the MPU-9250. */
+      .resv = { {0x03,0x0C}, {0x10,0x12}, {0x20,0x22}, {0x39,0x39},
+                {0x61,0x62}, {0x6D,0x71}, {0x76,0x76}, {0x79,0x79},
+                {0x7C,0x7C} }, .nresv = 9,
       /* Same output and FIFO-count windows as the MPU-9250. */
       .vol_reg = { {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 2,
       .whoami_reg = 0x75, .whoami_val = 0x73,
@@ -622,18 +658,36 @@ static const imt_regmap_t imt_regmaps[] = {
       .skip = { 0x02 }, .nskip = 1, .nrd_lo = 0x03, .nrd_hi = 0x09,
       .resv = { {0x0D,0x0E} }, .nresv = 1 },
     /* lis3mdl is the one part with a real auto-increment bit, so it is the one
-     * where the framing check has something to catch: OUT_X_L..OUT_Z_H. */
-    { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+     * where the framing check has something to catch: OUT_X_L..OUT_Z_H.
+     * DS Table 16: OFFSET_X_REG_L_M 05h .. INT_THS_H 33h, with 00h-04h,
+     * 0Bh-0Eh, 10h-1Fh and 25h-26h marked Reserved and nothing above 33h. */
+    { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x33, .nrd_lo = 1, .nrd_hi = 0,
+      .resv = { {0x00,0x04}, {0x0B,0x0E}, {0x10,0x1F},
+                {0x25,0x26} }, .nresv = 4,
       .vol_reg = { {0x28,0x2D} }, .nvol_reg = 1,   /* OUT_X_L..OUT_Z_H */
       .whoami_reg = 0x0F, .whoami_val = 0x3D,
       .out_lo = 0x28, .out_hi = 0x2D },
-    { .driver = "lis2mdl",    .lo = 0x00, .hi = 0x3F, .nrd_lo = 1, .nrd_hi = 0,
+    /*
+     * The LIS2MDL's register file starts at 0x45.  DS Table 15 marks 00h-44h
+     * "Reserved" as a single block, so the old 0x00-0x3F window was not a
+     * sparse map of this part -- it lay entirely inside the reserved block and
+     * reached none of the registers lis2mdl.c uses (WHO_AM_I 4Fh, CFG_REG_A-C
+     * 60h-62h, STATUS_REG 67h, OUTX_L 68h).  The window below is the file the
+     * datasheet documents, with its two interior reserved ranges declared;
+     * outputs are swept and declared volatile, as on the LIS3MDL above.
+     */
+    { .driver = "lis2mdl",    .lo = 0x45, .hi = 0x6F, .nrd_lo = 1, .nrd_hi = 0,
+      .resv = { {0x4B,0x4E}, {0x50,0x5F} }, .nresv = 2,
       .vol_reg = { {0x68,0x6D} }, .nvol_reg = 1,   /* OUTX_L..OUTZ_H */
       .whoami_reg = 0x4F, .whoami_val = 0x40 },
     /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
      * so a sweep through them would consume the sample the next check is
-     * waiting for. */
-    { .driver = "rm3100",     .lo = 0x00, .hi = 0x3F,
+     * waiting for.  User manual V11.0 Table 5-1 lists POLL 00h, CMM 01h,
+     * CCX-CCZ 04h-09h, TMRC 0Bh, MX-MZ 24h-2Ch, BIST 33h, STATUS 34h,
+     * HSHAKE 35h and REVID 36h, and nothing else. */
+    { .driver = "rm3100",     .lo = 0x00, .hi = 0x36,
+      .resv = { {0x02,0x03}, {0x0A,0x0A}, {0x0C,0x23},
+                {0x2D,0x32} }, .nresv = 4,
       .nrd_lo = 0x24, .nrd_hi = 0x2C },
 };
 
