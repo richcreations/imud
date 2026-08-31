@@ -3648,6 +3648,18 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
  * catch factor errors, and the two that matter are 57.30 (returned deg/s where
  * the contract says rad/s) and 0.01745 (converted twice).
  */
+
+/*
+ * The magnitude the sign check needs before it grades, as a fraction of the
+ * commanded angle so it tracks --turn-deg.  The sign of an integral near zero
+ * is whichever way the noise fell, so without a floor a gyro producing nothing
+ * PASSes all three — and those three are in the required set that clears a
+ * driver's `experimental` flag.  It sits below the scale check's 0.6 FAIL band
+ * deliberately: a gyro that responds but is badly scaled still gets its sign
+ * graded.
+ */
+#define IMT_TURN_SIGN_MIN_FRAC 0.25
+
 static const struct {
     const char *id;
     const char *cmd;
@@ -3747,21 +3759,33 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
         }
 
         double got = theta[axis];
+        double floor_deg = IMT_TURN_SIGN_MIN_FRAC * fabs(o->turn_deg);
 
-        /* Sign */
+        /* Sign, once the turn has registered at all */
         snprintf(id, sizeof id, "%s.sign", imt_turns[t].id);
-        row->status = got > 0 ? IMT_PASS : IMT_FAIL;
         fmtbuf(mb, sizeof mb, "%+.1f deg", got);
         fmtbuf(eb, sizeof eb, "%+.0f deg", o->turn_deg);
-        if (got > 0)
+        if (fabs(got) < floor_deg) {
+            row->status = IMT_FAIL;
+            add_check(r, id, nm, IMT_FAIL, mb, eb,
+                      "a commanded +%.0f degree turn about %c integrated to "
+                      "%+.1f, below the %.1f deg this check needs before a "
+                      "sign means anything: either the board did not move or "
+                      "the %c gyro is not responding.",
+                      o->turn_deg, axis_name[axis], got, floor_deg,
+                      axis_name[axis]);
+        } else if (got > 0) {
+            row->status = IMT_PASS;
             add_check(r, id, nm, IMT_PASS, mb, eb,
                       "integrated the right way for a commanded +%.0f degrees "
                       "about %c", o->turn_deg, axis_name[axis]);
-        else
+        } else {
+            row->status = IMT_FAIL;
             add_check(r, id, nm, IMT_FAIL, mb, eb,
                       "the %c gyro sign is inverted: a commanded +%.0f degree "
                       "turn integrated to %+.1f.",
                       axis_name[axis], o->turn_deg, got);
+        }
 
         /* Scale */
         snprintf(id, sizeof id, "%s.scale", imt_turns[t].id);

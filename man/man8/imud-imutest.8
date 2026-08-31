@@ -184,7 +184,10 @@ Prompts for a deliberate turn about each axis and checks the sign follows the
 right-hand rule, and that the integrated angle is the right order of magnitude.
 A hand turn is only good to about ten percent, so this catches factor errors \(em
 notably returning degrees per second where the contract requires radians \(em
-rather than measuring sensitivity.
+rather than measuring sensitivity. The sign check fails outright when the turn
+integrates to less than a quarter of the commanded angle: the sign of a value
+near zero carries no information, so a gyro that is not responding must not
+score a pass on it.
 .TP
 .B Magnetometer spin
 Prompts for two slow level circles and checks the field magnitude, that every

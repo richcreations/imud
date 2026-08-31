@@ -2082,6 +2082,53 @@ static void test_gyro_sign(void)
     EXPECT(status_of(r, "gyro.y.sign") == IMT_PASS, "Y still passes");
     free(r);
 
+    /*
+     * A gyro that produces nothing through the commanded turn.  The sign of an
+     * integral near zero is whichever way the noise fell, so grading the sign
+     * alone scored three PASSes on a dead data path — and these three checks
+     * are in the set that clears a driver's `experimental` flag, so the run
+     * recommended clearing it.  A shipped report did exactly that at +0.1 deg
+     * against a commanded +90.
+     */
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    for (int k = 0; k < 3; k++) g_s.turn_rate_dps[k] = 0.5;
+
+    r = run(&cfg, &o);
+    EXPECT(r->raw.n_turns == 3, "every turn still recorded a row");
+    EXPECT(fabs(r->raw.turn[0].theta[0]) < 0.25 * o.turn_deg,
+           "the X integral really is below the floor");
+    EXPECT(status_of(r, "gyro.x.sign") == IMT_FAIL, "a gyro that did not move fails");
+    EXPECT(status_of(r, "gyro.y.sign") == IMT_FAIL, "on every axis");
+    EXPECT(status_of(r, "gyro.z.sign") == IMT_FAIL, "on every axis");
+    EXPECT(r->raw.turn[0].status == IMT_FAIL, "the appendix row carries the verdict");
+    EXPECT(note_contains(r, "gyro.x.sign", "not responding"),
+           "diagnosis names a gyro that is not responding");
+    EXPECT(!note_contains(r, "gyro.x.sign", "inverted"),
+           "and does not misdiagnose it as an inverted sign");
+    free(r);
+
+    /*
+     * Either side of the floor, pinned against the integral the run actually
+     * recorded rather than against the scripted rate: X below it fails, Y above
+     * it is graded on its sign as before.
+     */
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    g_s.turn_rate_dps[0] = 100.0;
+    g_s.turn_rate_dps[1] = 160.0;
+    g_s.turn_rate_dps[2] = 400.0;
+
+    r = run(&cfg, &o);
+    EXPECT(r->raw.turn[0].theta[0] < 0.25 * o.turn_deg,
+           "X landed below the floor");
+    EXPECT(r->raw.turn[1].theta[1] > 0.25 * o.turn_deg,
+           "Y landed above it");
+    EXPECT(status_of(r, "gyro.x.sign") == IMT_FAIL, "below the floor fails");
+    EXPECT(status_of(r, "gyro.y.sign") == IMT_PASS,
+           "a turn over the floor is still graded on its sign");
+    free(r);
+
     end(fb);
 }
 
