@@ -3443,7 +3443,13 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
 {
     char mb[64], eb[64], id[32], nm[64], body[512];
     static const char axis_name[3] = { 'X', 'Y', 'Z' };
-    int frame_bad = 0, frame_unusable = 0;
+    /*
+     * frame_measured counts faces that collected enough samples to judge;
+     * n_faces counts rows in the report, which includes a face that did not.
+     * They are separate because the rollup below speaks for all six faces and
+     * a row exists to carry the sample count that says why one is missing.
+     */
+    int frame_bad = 0, frame_unusable = 0, frame_measured = 0;
 
     for (int f = 0; f < 6 && !g_abort; f++) {
         double want[3] = { 0, 0, 0 };
@@ -3492,10 +3498,11 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
             row->status = IMT_SKIP;
             snprintf(id, sizeof id, "%s.sign", imt_faces[f].id);
             skip_check(r, id, nm, "too few samples collected at this face");
-            if (r->raw.n_faces < 5) r->raw.n_faces++;
+            if (r->raw.n_faces < 6) r->raw.n_faces++;
             continue;
         }
         if (r->raw.n_faces < 6) r->raw.n_faces++;
+        frame_measured++;
 
         /* Magnitude */
         double err = fabs(grav - IMT_G_MS2);
@@ -3579,7 +3586,7 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     }
 
     /* Rollup */
-    if (r->raw.n_faces < 6) {
+    if (frame_measured < 6) {
         skip_check(r, "faces.frame", "Board frame matches NED",
                    "not all six faces were measured");
     } else if (frame_unusable > 0) {
@@ -3604,11 +3611,11 @@ static void phase_faces(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
      * readings.  Recorded for information: a sane offset/scale pair here means
      * a calibration run on this board would produce something usable.
      */
-    if (r->raw.n_faces == 6 && frame_unusable > 0) {
+    if (frame_measured == 6 && frame_unusable > 0) {
         skip_check(r, "faces.symmetry", "Derived accel offset and scale",
                    "some faces did not measure gravity; a scale fitted through "
                    "them would be meaningless");
-    } else if (r->raw.n_faces == 6) {
+    } else if (frame_measured == 6) {
         bool have[3] = { false, false, false };
         double plus[3] = { 0, 0, 0 }, minus[3] = { 0, 0, 0 };
         for (int i = 0; i < 6; i++) {

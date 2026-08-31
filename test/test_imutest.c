@@ -362,6 +362,9 @@ typedef struct {
     double face_vec[6][3];
     bool   use_face_vecs;
     int    cur_face;
+    /* Stage nothing while this check id is collecting, so the phase reaches
+     * its too-few-samples path.  NULL feeds every face. */
+    const char *starve_id;
     /* Phase C: per-axis rate, deg/s, for the gyro turns. */
     double turn_rate_dps[3];
     int    cur_turn;
@@ -426,7 +429,7 @@ static void s_progress(void *user, const char *id, double frac,
 
     if (s->inject_errors) i2cmock_fail_all(1);
 
-    if (s->feed_imu) {
+    if (s->feed_imu && !(s->starve_id && strcmp(id, s->starve_id) == 0)) {
         double g[3] = { s->gyro[0], s->gyro[1], s->gyro[2] };
         /* During a gyro turn, spin the commanded axis. */
         if (strncmp(id, "gyro.", 5) == 0 && s->cur_turn >= 0) {
@@ -2073,6 +2076,71 @@ static void test_faces_skipped_not_absent(void)
     end(fb);
 }
 
+/*
+ * A face that collected almost nothing is the one the sample count exists to
+ * expose, so it must reach the table — and it must not count toward a rollup
+ * that speaks for all six faces.  Both are the same conflation: n_faces is the
+ * number of rows, not the number of faces judged.
+ */
+static void test_faces_thin_face(void)
+{
+    begin("test_faces_thin_face");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_FACES;
+
+    /* The last face: its row is the one a row count that stops at five drops. */
+    mock_base(); script_reset(&o);
+    g_s.starve_id = "face.6";
+
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT(r->raw.n_faces == 6, "the starved face still gets a row");
+    EXPECT(r->raw.face[5].n < 10, "and that row records how little it collected");
+    EXPECT(status_of(r, "face.6.sign") == IMT_SKIP, "its sign check is SKIP");
+    EXPECT(status_of(r, "faces.frame") == IMT_SKIP,
+           "the frame rollup does not speak for a face it never judged");
+
+    {
+        const char *path = "test_imutest_thin.md";
+        char err[256] = "";
+        static char buf[262144];
+        EXPECT(imt_write_md(r, path, err, sizeof err) == 0, "the report writes");
+        FILE *f = fopen(path, "r");
+        EXPECT(f != NULL, "the report file exists");
+        if (f) {
+            buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+            fclose(f);
+            char *sec = strstr(buf, "### 5.8 Six-face orientation");
+            EXPECT(sec != NULL, "the six-face appendix is present");
+            if (sec) {
+                char *end = strstr(sec, "\nDerived accel calibration");
+                if (end) *end = '\0';
+                EXPECT(strstr(sec, "| 6. Port side down |") != NULL,
+                       "the starved face is a row in 5.8, not an absence");
+            }
+        }
+        remove(path);
+    }
+    free(r);
+
+    /* The same conflation, one face earlier: five good faces and a starved
+     * first one must not read as six confirmed. */
+    mock_base(); script_reset(&o);
+    g_s.starve_id = "face.1";
+
+    r = run(&cfg, &o);
+    EXPECT(r->raw.n_faces == 6, "six rows either way");
+    EXPECT(status_of(r, "faces.frame") == IMT_SKIP,
+           "a starved first face skips the rollup too");
+    EXPECT(status_of(r, "faces.symmetry") != IMT_INFO,
+           "and no offset/scale is fitted through a face that was not measured");
+    free(r);
+
+    end(fb);
+}
+
 static void test_gyro_sign(void)
 {
     begin("test_gyro_sign");
@@ -3694,6 +3762,7 @@ int main(void)
     test_faces_good_and_swapped();
     test_faces_bad_magnitude_does_not_blame_the_remap();
     test_faces_skipped_not_absent();
+    test_faces_thin_face();
     test_gyro_sign();
     test_spin_frame_agreement();
     test_spin_hard_iron_still_tracks();
