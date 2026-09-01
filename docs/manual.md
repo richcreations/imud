@@ -108,6 +108,23 @@ make            # builds imud, imud-cal, imud-imutest, imud-status, imud-mon
 make test       # builds and runs the host-side unit tests (no hardware needed)
 ```
 
+`./configure` is optional — `make` detects libgpiod, 64-bit atomics and the
+host on its own. Run it to check the host before building, and to record the
+answers in `config.mk`, which the Makefile then includes ahead of its own
+defaults:
+
+```sh
+./configure                  # prints what this host can and cannot build
+./configure --help           # options, including --prefix and --without-gpiod
+make distclean               # remove config.mk
+```
+
+It fails only on the daemon's own dependencies: a C11 compiler, pthreads,
+libm, the Linux `i2c-dev` and `spidev` headers, and a little-endian host (the
+binary packet is written in host order). Everything else — libmosquitto for
+the MQTT bridge, and the tools that regenerate documentation — is reported
+with what its absence costs, and never fails the run.
+
 `make test` must be run from the repository root — one test loads
 `data/WMM.COF` by relative path.
 

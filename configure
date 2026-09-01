@@ -1,0 +1,444 @@
+#!/bin/sh
+#
+# imud — IMU daemon
+# Copyright (c) 2026 Richard Simpson
+# SPDX-License-Identifier: MIT
+#
+# configure — probe the host, then write config.mk for the Makefile.
+#
+# Optional.  The Makefile detects libgpiod, 64-bit atomics and the host OS on
+# its own and defaults everything else, so `make` works with no configure step
+# — which is what CI, debian/rules and a packager's build all do.  Running this
+# first replaces those probes with recorded answers and reports what else the
+# host can and cannot do.
+#
+# Three tiers, and only the first can fail the run:
+#
+#   required   the daemon cannot be built without it
+#   selected   a real choice, recorded in config.mk (GPIO backend, libatomic)
+#   reported   an optional target or a maintainer tool; a miss costs that one
+#              thing and never the daemon
+#
+# Hand-rolled on purpose: the tree has one library choice and a handful of
+# tools, which is well under what autoconf earns.
+
+set -u
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+
+CC=${CC:-}
+CFLAGS_PROBE=${CFLAGS:-}
+prefix=/usr/local
+etcdir=/etc/imud
+svcdir=/etc/systemd/system
+udevdir=/etc/udev/rules.d
+libdir=
+mandir=
+docdir=
+infodir=
+want_gpiod=auto
+out=config.mk
+
+self=$0
+srcdir=${0%/*}
+[ "$srcdir" = "$0" ] && srcdir=.
+
+# Release version, read from the header that owns it.  Missing when configure
+# is run detached from the tree, which is not an error — it only names the
+# summary.
+version=
+while IFS= read -r line; do
+    case $line in
+        '#define IMUD_VERSION_STR '*)
+            version=${line#*\"}
+            version=${version%\"*}
+            break
+            ;;
+    esac
+done < "$srcdir/include/version.h" 2>/dev/null
+
+die() {
+    echo "configure: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $self [OPTION]...
+
+Probes this host and writes $out, which the Makefile includes ahead of its
+own defaults.  Optional: \`make\` alone detects the same things.
+
+Options take their value with an =, as shown.
+
+  --help                    print this and exit
+  --version                 print the imud version and exit
+
+  --prefix=DIR              install prefix [$prefix]
+  --libdir=DIR              libimud + pkg-config metadata [PREFIX/lib]
+  --mandir=DIR              man pages [PREFIX/share/man]
+  --docdir=DIR              package documentation [PREFIX/share/doc]
+  --infodir=DIR             imud.info [PREFIX/share/info]
+  --etcdir=DIR              configuration [$etcdir]
+  --svcdir=DIR              systemd units [$svcdir]
+  --udevdir=DIR             udev rules [$udevdir]
+
+  --with-gpiod              require libgpiod; fail if it is absent
+  --without-gpiod           build the null GPIO backend even where it is present
+
+Environment: CC, CFLAGS.
+
+Packagers pass the same variables to make instead, or on top of these:
+make PREFIX=/usr SVCDIR=/usr/lib/systemd/system DESTDIR=<stage>.
+EOF
+}
+
+# ── Arguments ────────────────────────────────────────────────────────────────
+
+for arg do
+    case $arg in
+        --help|-h)        usage; exit 0 ;;
+        --version)        echo "imud ${version:-unknown}"; exit 0 ;;
+        --prefix=*)       prefix=${arg#*=} ;;
+        --libdir=*)       libdir=${arg#*=} ;;
+        --mandir=*)       mandir=${arg#*=} ;;
+        --docdir=*)       docdir=${arg#*=} ;;
+        --infodir=*)      infodir=${arg#*=} ;;
+        --etcdir=*)       etcdir=${arg#*=} ;;
+        --svcdir=*)       svcdir=${arg#*=} ;;
+        --udevdir=*)      udevdir=${arg#*=} ;;
+        --with-gpiod)     want_gpiod=yes ;;
+        --without-gpiod)  want_gpiod=no ;;
+        *) die "unrecognized option: $arg (see --help)" ;;
+    esac
+done
+
+: "${libdir:=$prefix/lib}"
+: "${mandir:=$prefix/share/man}"
+: "${docdir:=$prefix/share/doc}"
+: "${infodir:=$prefix/share/info}"
+
+# ── Probe helpers ────────────────────────────────────────────────────────────
+#
+# Each probe compiles and links what the build itself would, rather than
+# matching a version or a machine name: the question is always whether this
+# toolchain can produce the object, and only a link answers it.  -o /dev/null
+# keeps them free of temporary files.
+#
+# The flags go AFTER the source, because Debian links with --as-needed: a -l
+# that precedes the object referencing it is dropped, leaving exactly the
+# undefined symbols the probe was asking about.  That reports every optional
+# library as absent on a host that has it.
+
+# -D_GNU_SOURCE because the Makefile puts it in CPPFLAGS unconditionally.  A
+# probe that omits it reports accept4 and friends absent on a host that has
+# them, since glibc hides them behind the feature-test macro.
+try_link() {   # try_link <flag>...  — program on stdin
+    $CC $CFLAGS_PROBE -D_GNU_SOURCE -x c - "$@" -o /dev/null >/dev/null 2>&1
+}
+
+have_tool() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+missing=
+
+require() {    # require <what> <hint>
+    missing="$missing  $1
+      $2
+"
+}
+
+# ── Required: a C11 toolchain ────────────────────────────────────────────────
+
+if [ -z "$CC" ]; then
+    for c in cc gcc clang; do
+        have_tool "$c" && { CC=$c; break; }
+    done
+fi
+[ -n "$CC" ] || die "no C compiler found (tried cc, gcc, clang; set CC=)"
+
+# cc_ok gates the probes below it: with no working compiler they would all
+# fail, and reporting six missing dependencies for one broken toolchain buries
+# the answer.  Everything else records itself through require().
+cc_ok=no
+endian=unknown
+
+if echo 'int main(void){return 0;}' | try_link; then
+    cc_ok=yes
+else
+    require "a working C compiler ($CC)" "apt install build-essential, or set CC="
+fi
+
+if [ "$cc_ok" = yes ]; then
+    if ! echo '_Static_assert(1,"c11");
+int main(void){return 0;}' | try_link -std=c11; then
+        require "a C11 compiler" "$CC does not accept -std=c11"
+    fi
+
+    if ! echo '#include <pthread.h>
+static void *t(void *a){return a;}
+int main(void){pthread_t h;pthread_create(&h,0,t,0);pthread_join(h,0);return 0;}' \
+       | try_link -pthread; then
+        require "POSIX threads" "$CC cannot link -pthread"
+    fi
+
+    if ! echo '#include <math.h>
+int main(void){return (int)sqrt(4.0)-2;}' | try_link -lm; then
+        require "libm" "$CC cannot link -lm"
+    fi
+
+    # The bus backend the drivers have today: i2c-dev ioctls and spidev.  This
+    # is the one Linux-specific requirement, and it is why imud does not build
+    # on a BSD or a Mac yet (issue #44 moves it behind a backend).
+    if ! echo '#include <linux/i2c.h>
+#include <linux/i2c-dev.h>
+#include <linux/spi/spidev.h>
+int main(void){return I2C_RDWR==0;}' | try_link; then
+        require "Linux i2c-dev and spidev headers" \
+                "apt install linux-libc-dev; imud has no other bus backend yet"
+    fi
+
+    # Little-endian host.  The wire packet and .imucap are packed structs
+    # memcpy'd in host order, so a big-endian build emits packets no consumer
+    # can read and CRCs the wrong bytes.  include/types.h refuses to compile
+    # there; naming it here turns a #error deep in a header into an answer
+    # (issue #46 does the byte-swapping that would lift this).
+    if echo '#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#error big-endian
+#endif
+int main(void){return 0;}' | try_link; then
+        endian=little
+    else
+        endian=big
+        require "a little-endian host" \
+                "the binary wire format is little-endian; imud does not byte-swap yet"
+    fi
+fi
+
+# ── Selected: 64-bit atomics ─────────────────────────────────────────────────
+#
+# Lock-free on aarch64 and ARMv7; ARMv6 has no 64-bit exclusive load/store, so
+# gcc emits calls that live in libatomic.  Probed by linking, because the
+# requirement follows the instruction set the compiler targets and no uname
+# string reports that.
+
+atomic_prog='#include <stdatomic.h>
+_Atomic unsigned long long v;
+int main(void){atomic_fetch_add(&v,1);return (int)atomic_load(&v);}'
+atomic_lib=
+atomic_how=unavailable
+if [ "$cc_ok" = yes ]; then
+    if echo "$atomic_prog" | try_link; then
+        atomic_how="inline (no libatomic)"
+    elif echo "$atomic_prog" | try_link -latomic; then
+        atomic_lib=-latomic
+        atomic_how="-latomic"
+    else
+        require "64-bit atomics" "$CC links neither inline nor -latomic"
+    fi
+fi
+
+# ── Selected: the GPIO backend ───────────────────────────────────────────────
+#
+# libgpiod is optional at build time and the interrupt line is optional at run
+# time: with the null backend the reader threads stay on the rate-sized timer
+# they already fall back to when int_gpio = 0.
+
+gpiod_ver=
+have_tool pkg-config && gpiod_ver=$(pkg-config --modversion libgpiod 2>/dev/null)
+gpiod_maj=${gpiod_ver%%.*}
+
+case $want_gpiod in
+    yes)
+        [ -n "$gpiod_maj" ] || die "--with-gpiod: pkg-config finds no libgpiod"
+        no_gpiod=0 ;;
+    no)
+        no_gpiod=1; gpiod_maj= ;;
+    *)
+        if [ -n "$gpiod_maj" ]; then no_gpiod=0; else no_gpiod=1; fi ;;
+esac
+
+# ── Reported: the host runtime the threads sit on ────────────────────────────
+#
+# None of these is fatal — the tree already carries a fallback for each, and
+# the fallback is the degraded path, not the broken one.  They are here so a
+# port has the answers before it starts guessing: this is the checklist issue
+# #45 works through, and a 0 says which piece that host still owes.
+#
+#   clock_nanosleep   src/output.c's absolute-deadline output cadence.  The
+#                     relative-sleep stub re-derives the delay from the current
+#                     time each cycle, so it drifts where the syscall does not.
+#   adjtimex          src/main.c reads the TAI offset with it.  Without it the
+#                     packet timestamp loses its leap-second correction.
+#   accept4           SOCK_CLOEXEC on an accepted fd.  POSIX accept() does not
+#                     carry FD_CLOEXEC, so without accept4 every accepted
+#                     connection leaks across an exec.
+
+have_clock_nanosleep=0
+have_adjtimex=0
+have_accept4=0
+if [ "$cc_ok" = yes ]; then
+    echo '#include <time.h>
+int main(void){struct timespec t={0,0};
+return clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&t,0);}' \
+        | try_link && have_clock_nanosleep=1
+
+    echo '#include <sys/timex.h>
+int main(void){struct timex t={0};return adjtimex(&t);}' \
+        | try_link && have_adjtimex=1
+
+    echo '#include <sys/socket.h>
+int main(void){return accept4(0,0,0,SOCK_CLOEXEC);}' \
+        | try_link && have_accept4=1
+fi
+
+# ── Reported: optional targets and maintainer tools ──────────────────────────
+#
+# Never fatal.  Each line names what the miss costs, so the summary reads as a
+# list of unavailable targets rather than a list of complaints.
+
+# libmosquitto is the only external library any bridge needs; imud-signalk,
+# imud-influxdb, imud-mavlink and imud-prometheus are pure C over libimud, so
+# their absence from this list is the answer, not an omission.
+have_mosquitto=0
+if [ "$cc_ok" = yes ] && echo '#include <mosquitto.h>
+int main(void){return mosquitto_lib_init();}' | try_link -lmosquitto; then
+    have_mosquitto=1
+fi
+
+have_python3=0
+if have_tool python3 && python3 -c 'import sys
+sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    have_python3=1
+fi
+
+tool_flag() { have_tool "$1" && echo 1 || echo 0; }
+
+have_pandoc=$(tool_flag pandoc)
+have_makeinfo=$(tool_flag makeinfo)
+have_help2man=$(tool_flag help2man)
+have_mandoc=$(tool_flag mandoc)
+have_pyflakes3=$(tool_flag pyflakes3)
+have_clang=$(tool_flag clang)
+have_cppcheck=$(tool_flag cppcheck)
+have_lcov=$(tool_flag lcov)
+
+have_texengine=0
+if have_tool tectonic || have_tool xelatex; then
+    have_texengine=1
+fi
+
+# ── Bail out on anything required ────────────────────────────────────────────
+
+if [ -n "$missing" ]; then
+    printf 'configure: cannot build imud on this host.\n\n%s' "$missing" >&2
+    echo "No $out was written." >&2
+    exit 1
+fi
+
+# ── Write config.mk ──────────────────────────────────────────────────────────
+
+{
+cat <<EOF
+# Generated by ./configure — do not edit.  Re-run configure to change it, or
+# \`make distclean\` to delete it and return to the Makefile's own probes.
+#
+# The Makefile includes this ahead of its defaults, so every variable set here
+# wins over the value it would otherwise detect.
+
+CC = $CC
+
+UNAME_S = $(uname -s)
+UNAME_M = $(uname -m)
+HOST_ENDIAN = $endian
+
+# GPIO backend.  0 links libgpiod (src/imu_gpio.c); 1 builds the null backend
+# (src/imu_gpio_null.c) and drops -lgpiod from every link line, which leaves
+# both reader threads on their rate-sized timer.  GPIOD_MAJ picks the v1 or v2
+# API and is meaningful only when NO_GPIOD is 0.
+NO_GPIOD = $no_gpiod
+GPIOD_MAJ = $gpiod_maj
+
+# Empty unless 64-bit atomics need libatomic (ARMv6).  It must follow the
+# objects on the link line, never sit in LDFLAGS.
+ATOMIC_LIB = $atomic_lib
+
+PREFIX = $prefix
+ETCDIR = $etcdir
+SVCDIR = $svcdir
+UDEVDIR = $udevdir
+LIBDIR = $libdir
+MANDIR = $mandir
+DOCDIR = $docdir
+INFODIR = $infodir
+
+# Reported, not consumed by the build: the host runtime the threads sit on.
+# Each has a fallback in the tree, and a 0 names the degraded path.
+HAVE_CLOCK_NANOSLEEP = $have_clock_nanosleep
+HAVE_ADJTIMEX = $have_adjtimex
+HAVE_ACCEPT4 = $have_accept4
+
+# Reported, not consumed by the build: what this host can do beyond the
+# daemon.  A 0 costs the one target named in configure's summary.
+HAVE_MOSQUITTO = $have_mosquitto
+HAVE_PYTHON3 = $have_python3
+HAVE_PANDOC = $have_pandoc
+HAVE_MAKEINFO = $have_makeinfo
+HAVE_HELP2MAN = $have_help2man
+HAVE_MANDOC = $have_mandoc
+HAVE_PYFLAKES3 = $have_pyflakes3
+HAVE_TEXENGINE = $have_texengine
+HAVE_CLANG = $have_clang
+HAVE_CPPCHECK = $have_cppcheck
+HAVE_LCOV = $have_lcov
+EOF
+} > "$out" || die "cannot write $out"
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+
+report() {     # report <flag> <label> <what it costs>
+    if [ "$1" = 1 ]; then
+        printf '    %-18s yes   %s\n' "$2" "$3"
+    else
+        printf '    %-18s NO    %s\n' "$2" "$3"
+    fi
+}
+
+echo "imud ${version:-unknown} — configured for $(uname -s) $(uname -m)"
+echo
+printf '    %-18s %s\n' "compiler" "$CC (C11, pthreads, libm)"
+printf '    %-18s %s\n' "64-bit atomics" "$atomic_how"
+printf '    %-18s %s\n' "bus backend" "Linux i2c-dev + spidev"
+printf '    %-18s %s\n' "byte order" "$endian-endian"
+if [ "$no_gpiod" = 0 ]; then
+    printf '    %-18s %s\n' "GPIO backend" "libgpiod $gpiod_ver (v$gpiod_maj API)"
+else
+    printf '    %-18s %s\n' "GPIO backend" \
+           "null — no interrupts, set int_gpio = 0 in imud.conf"
+fi
+echo
+echo "  host runtime:"
+report "$have_clock_nanosleep" clock_nanosleep "absolute output deadlines"
+report "$have_adjtimex"        adjtimex        "TAI offset for the packet timestamp"
+report "$have_accept4"         accept4         "close-on-exec on accepted sockets"
+echo
+echo "  optional:"
+report "$have_mosquitto" libmosquitto   "make imud-mqtt"
+report "$have_python3"   "python3 3.11+" "make check-generated-text, docs-config, docs-tables"
+report "$have_pandoc"    pandoc         "make docs-texi"
+report "$have_makeinfo"  makeinfo       "make imud.info"
+report "$have_help2man"  help2man       "make docs-man"
+report "$have_mandoc"    mandoc         "man-page lint"
+report "$have_texengine" tectonic/xelatex "make math-pdf"
+report "$have_pyflakes3" pyflakes3      "Python lint"
+report "$have_clang"     clang          "make fuzz"
+report "$have_cppcheck"  cppcheck       "static analysis"
+report "$have_lcov"      lcov           "make coverage"
+echo
+printf '    %-18s %s\n' "prefix" "$prefix"
+printf '    %-18s %s\n' "config" "$etcdir"
+printf '    %-18s %s\n' "systemd units" "$svcdir"
+printf '    %-18s %s\n' "udev rules" "$udevdir"
+echo
+echo "Wrote $out.  Now run: make"

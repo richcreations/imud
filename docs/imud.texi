@@ -109,6 +109,12 @@ declination current. See
 
 @strong{Dependencies.} C11, POSIX, @code{libgpiod} (1.x or 2.x,
 auto-detected), and the C standard library. Nothing else.
+@code{libgpiod} is itself optional: @code{make NO_GPIOD=1} builds
+without it, and the Makefile drops it automatically when
+@code{pkg-config} cannot find it. Both interrupt lines are then
+unavailable and the reader threads use their rate-sized timer, so set
+@code{int_gpio = 0} under @code{[imu]} and @code{[mag]} --- a line the
+config asks for is a startup failure.
 
 @strong{Binaries.}
 
@@ -207,7 +213,8 @@ Not every driver supports SPI; see
 @item
 @code{libgpiod-dev}. Bookworm ships 1.6.x and trixie ships 2.x; both are
 supported and the Makefile auto-detects the installed version via
-@code{pkg-config}.
+@code{pkg-config}. Omit it and the build falls back to a GPIO backend
+that takes no interrupts; see @strong{Dependencies} above.
 @end itemize
 
 @verbatim
@@ -222,6 +229,24 @@ sudo apt update && sudo apt install -y build-essential libgpiod-dev
 make            # builds imud, imud-cal, imud-imutest, imud-status, imud-mon
 make test       # builds and runs the host-side unit tests (no hardware needed)
 @end verbatim
+
+@code{./configure} is optional --- @code{make} detects libgpiod, 64-bit
+atomics and the host on its own. Run it to check the host before
+building, and to record the answers in @code{config.mk}, which the
+Makefile then includes ahead of its own defaults:
+
+@verbatim
+./configure                  # prints what this host can and cannot build
+./configure --help           # options, including --prefix and --without-gpiod
+make distclean               # remove config.mk
+@end verbatim
+
+It fails only on the daemon's own dependencies: a C11 compiler,
+pthreads, libm, the Linux @code{i2c-dev} and @code{spidev} headers, and
+a little-endian host (the binary packet is written in host order).
+Everything else --- libmosquitto for the MQTT bridge, and the tools that
+regenerate documentation --- is reported with what its absence costs,
+and never fails the run.
 
 @code{make test} must be run from the repository root --- one test loads
 @code{data/WMM.COF} by relative path.

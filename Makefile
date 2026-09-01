@@ -1,3 +1,9 @@
+# Optional ./configure output, included FIRST so every `?=` default below and
+# every $(origin ...) guard defers to it. Absent by default: `make` alone
+# probes the same things, which is what CI, debian/rules and a packager's
+# build all do. `make distclean` removes it.
+-include config.mk
+
 # Toolchain and flags. Externally-set CC/CFLAGS/CPPFLAGS/LDFLAGS are respected
 # (e.g. dpkg-buildflags hardening injection); the `override +=` lines below add
 # the flags the build cannot work without, even past a command-line override.
@@ -17,7 +23,14 @@ VERSION := $(shell sed -n 's/^\#define IMUD_VERSION_STR *"\(.*\)"/\1/p' include/
 
 # Auto-detect libgpiod major version; default to v1 (Bookworm ships 1.x).
 # Pass -DGPIOD_V2 when pkg-config reports version 2.x or newer.
+#
+# $(origin) rather than ?=, here and for ATOMIC_LIB and UNAME_S below: config.mk
+# answers each of these, and one of the answers is legitimately EMPTY (no
+# libatomic needed, no libgpiod found). ?= and ifndef both treat an empty value
+# as unset and would re-probe past it.
+ifeq ($(origin GPIOD_MAJ),undefined)
 GPIOD_MAJ := $(shell pkg-config --modversion libgpiod 2>/dev/null | cut -d. -f1)
+endif
 
 # The GPIO backend behind include/imu_gpio.h.  src/imu_gpio.c is libgpiod;
 # src/imu_gpio_null.c is the same three entry points failing with ENOSYS, which
@@ -27,8 +40,8 @@ GPIOD_MAJ := $(shell pkg-config --modversion libgpiod 2>/dev/null | cut -d. -f1)
 #
 # Off automatically when pkg-config finds no libgpiod, so a host without it
 # builds rather than failing at the link; NO_GPIOD=1 forces it off where the
-# library IS present.  This is the switch, not the interface: issue #50 puts a
-# ./configure step in front of it.
+# library IS present.  `./configure --without-gpiod` writes the same 1 into
+# config.mk, and --with-gpiod refuses rather than downgrading silently.
 ifeq ($(GPIOD_MAJ),)
     NO_GPIOD ?= 1
 endif
@@ -67,8 +80,10 @@ endif
 # It has to come AFTER the objects on the link line, never in LDFLAGS: Debian
 # links with --as-needed, which drops a library that precedes the objects
 # referencing it, leaving exactly the undefined references it was added for.
+ifeq ($(origin ATOMIC_LIB),undefined)
 ATOMIC_LIB := $(shell printf '#include <stdatomic.h>\n_Atomic unsigned long long v;\nint main(void){atomic_fetch_add(&v,1);return (int)atomic_load(&v);}\n' \
                       | $(CC) -x c - -o /dev/null 2>/dev/null || echo -latomic)
+endif
 
 # ── libimud — the public client shared library ───────────────────────────────
 # Linux builds the versioned .so (SONAME libimud.so.0) and the bridges link it
@@ -76,7 +91,9 @@ ATOMIC_LIB := $(shell printf '#include <stdatomic.h>\n_Atomic unsigned long long
 # object directly so the macOS dev/test workflow keeps working. In-tree bridge
 # runs on Linux need LD_LIBRARY_PATH=. (the installed copy is found via
 # ldconfig).
+ifeq ($(origin UNAME_S),undefined)
 UNAME_S := $(shell uname -s)
+endif
 SONAME   = libimud.so.0
 SHLIB    = libimud.so.0.0
 ifeq ($(UNAME_S),Linux)
@@ -320,6 +337,14 @@ test_packet: src/packet.c test/test_packet.c
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+
+# ./configure itself.  `configure` is a prerequisite, not a translation unit:
+# the suite runs the script, so an edit to it must rebuild nothing but must
+# re-run this — and it must be listed, or a changed script is tested by a
+# binary make believes is up to date.  $(filter %.c) keeps it off the compiler
+# command line.  No sources from src/: the subject is the script.
+test_configure: test/test_configure.c configure
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
 # The no-libgpiod GPIO backend, linked on its own: it is what imud carries
 # where the library is absent, so this must not depend on $(GPIO_SRC) — it
@@ -569,7 +594,8 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest test_hwtools_e2e
+      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest test_hwtools_e2e \
+      test_configure
 
 # Every test binary depends on every project header.
 #
@@ -628,6 +654,7 @@ test: $(TEST_BINS)
 	./test_drivers
 	./test_imutest
 	./test_hwtools_e2e
+	./test_configure
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -1410,7 +1437,7 @@ clean:
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
 	      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest \
-      test_hwtools_e2e \
+      test_hwtools_e2e test_configure \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      fuzz_argv \
 	      mkseed_packet imud.info \
@@ -1418,3 +1445,10 @@ clean:
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
 	      etc/*.service imud-*.tar.gz
 	rm -rf coverage-html *.dSYM
+
+# GNU convention: clean removes what make built, distclean also removes what
+# configure wrote.  Deleting config.mk returns the build to the Makefile's own
+# probes, which is the state CI and debian/rules always build in.
+.PHONY: distclean
+distclean: clean
+	rm -f config.mk

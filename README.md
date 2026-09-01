@@ -151,6 +151,7 @@ Optional bridges and the network monitor are separate packages:
 
 ```sh
 sudo apt update && sudo apt install -y build-essential libgpiod-dev
+./configure                  # optional: reports what this host can build
 make
 sudo make install
 sudo make install-wmm-data   # World Magnetic Model data (for true heading)

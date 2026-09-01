@@ -18,7 +18,7 @@ Two audiences:
 
 ## Why
 
-`make test` runs 35 suites. macOS builds 29 of them. It cannot link `imud`,
+`make test` runs 37 suites. macOS builds 31 of them. It cannot link `imud`,
 `imud-cal` or `imud-imutest` at all (no libgpiod, no `<linux/i2c.h>`, no
 `pthread_condattr_setclock`), cannot build `test_ring`, `test_concurrency`,
 `test_drivers`, `test_drivers_registry`, `test_imutest` or `test_hwtools_e2e`

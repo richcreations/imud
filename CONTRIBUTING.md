@@ -26,6 +26,11 @@ cd imud
   ARMv6 baseline is what lets a single 32-bit package run on every Pi.
 - `libmosquitto-dev` — only for building the MQTT bridge.
 
+`./configure` reports which of these the host has, and which of the tools
+below. It is optional — `make` alone probes what it needs — and it fails only
+on the daemon's own dependencies, so a missing entry from the table below is
+printed, not fatal.
+
 Nothing above is needed to *check* the documentation: every `make
 check-generated-text` gate is Python 3.11+ and nothing else, which is why CI
 runs them in a job that compiles no C.
@@ -58,8 +63,8 @@ runs `make && make bridges && make test`. Add or extend a test for any new
 behaviour.
 
 **Not developing on Linux?** `devbox/run make -j4 test` runs the whole suite in
-a throwaway Debian container matching CI's environment. macOS builds only 29 of
-the 35 suites, and it can actively prove the *wrong* thing — a macOS-only
+a throwaway Debian container matching CI's environment. macOS builds only 31 of
+the 37 suites, and it can actively prove the *wrong* thing — a macOS-only
 `fcntl()` once passed the local gate and turned every Linux job in CI red — so
 this is the check to run before pushing. Setup, and the recipes macOS cannot run
 at all (sanitizers, coverage, `.deb` builds, systemd unit verification), are in

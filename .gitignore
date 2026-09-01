@@ -1,3 +1,9 @@
+# ./configure's output.  The script is tracked and ships in the tarball; what
+# it writes is a record of ONE host and must never be committed — a config.mk
+# from this Pi would hand a packager an arm64 answer for their own build.
+# `make distclean` removes it.
+/config.mk
+
 # Build artifacts.
 # Binary names are anchored with a leading "/" so they match only the repo-root
 # executables, NOT same-named directories like docs/imud-signalk/ or
@@ -61,6 +67,7 @@ src/drivers/*.d
 /test_tools_e2e
 /test_hwtools_e2e
 /test_daemon
+/test_configure
 
 # Coverage artifacts (make coverage)
 *.gcno

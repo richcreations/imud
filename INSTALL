@@ -38,11 +38,26 @@ World Magnetic Model data (needed for true-heading output):
     sudo make install
     sudo make install-wmm-data
 
+There is an optional ./configure step. `make` alone detects everything it has
+to, so it is never required; run it to see what this host can build before
+building, and to record the answers:
+
+    ./configure                  # writes config.mk, prints what is and is not here
+    ./configure --help           # the options
+    make distclean               # remove config.mk and start over
+
+It fails only on what the daemon itself needs — a C11 compiler, pthreads,
+libm, the Linux i2c-dev and spidev headers, a little-endian host. Everything
+else is reported, not required: a missing libmosquitto costs the MQTT bridge
+and a missing pandoc costs `make docs-texi`.
+
 Installs to /usr/local by default. Override the prefix, or stage into a
-packaging root, with the standard variables:
+packaging root, with the standard variables — or with the matching configure
+option, which writes them into config.mk instead:
 
     sudo make install PREFIX=/usr
     make install DESTDIR=/tmp/stage PREFIX=/usr        # staged, no root needed
+    ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu
 
 Users and groups: `make install` creates the system user imud, whose primary
 group imud owns /run/imud and both AF_UNIX sockets. Hardware access is by the
