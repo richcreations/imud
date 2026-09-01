@@ -22,6 +22,27 @@ ifeq ($(GPIOD_MAJ),2)
     override CPPFLAGS += -DGPIOD_V2
 endif
 
+# Auto-detect whether 64-bit atomics need libatomic.
+#
+# The cross-thread counters and timestamps are _Atomic on 64-bit types. Those
+# are lock-free on aarch64 and on ARMv7, which have LDREXD/STREXD, so the
+# compiler inlines them and nothing extra is linked. ARMv6 has no 64-bit
+# exclusive load/store at all, so gcc emits calls to __atomic_load_8,
+# __atomic_store_8, __atomic_fetch_add_8 and __atomic_exchange_8 instead, and
+# those live in libatomic. The armhf packages are built for ARMv6 (see
+# tools/bootstrap-raspbian.sh), which is where this bites.
+#
+# Probed by linking, not matched against a machine name: the requirement
+# follows the instruction set the compiler is targeting, which no uname string
+# reliably reports. Empty on every architecture that does not need it, so the
+# link lines below are unchanged there.
+#
+# It has to come AFTER the objects on the link line, never in LDFLAGS: Debian
+# links with --as-needed, which drops a library that precedes the objects
+# referencing it, leaving exactly the undefined references it was added for.
+ATOMIC_LIB := $(shell printf '#include <stdatomic.h>\n_Atomic unsigned long long v;\nint main(void){atomic_fetch_add(&v,1);return (int)atomic_load(&v);}\n' \
+                      | $(CC) -x c - -o /dev/null 2>/dev/null || echo -latomic)
+
 # ── libimud — the public client shared library ───────────────────────────────
 # Linux builds the versioned .so (SONAME libimud.so.0) and the bridges link it
 # (they are its first consumers). Darwin has no .so here: bridges link the
@@ -124,49 +145,49 @@ all: imud imud-cal imud-imutest imud-status imud-mon
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
 imud: $(IMUD_OBJS) src/main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
 
 # imud-cal requires src/cal_main.c
 imud-cal: $(CAL_OBJS) src/cal_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
 
 # imud-imutest exercises any registered driver against real silicon and writes
 # a Markdown validation report (ROADMAP §1).  Ships in imud-utils alongside
 # imud-mon, but unlike imud-mon it must run on the box with the sensor.
 # -lgpiod (the interrupt edge-count check) makes it Linux-only, like imud.
 imud-imutest: $(IMUTEST_OBJS) src/imutest_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
 
 # imud-status is a plain socket client: no hardware libs.  src/cli.c stays off
 # log.c precisely so this link line does not grow a pthread dependency.
 imud-status: src/cli.o src/status_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(ATOMIC_LIB)
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
 imud-mon: src/cli.o src/config.o src/log.o src/mon_parse.o src/mon_main.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.
 # Stream access + validation come from libimud ($(LIBIMUD) in $^ is either the
 # versioned .so — linked directly, embedding its SONAME — or, on Darwin, the
 # plain object).
 imud-signalk: src/sk_delta.o src/config.o src/log.o src/netserv.o src/bridge.o src/sdnotify.o src/signalk_main.o $(LIBIMUD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # imud-mqtt bridges the AF_UNIX stream to MQTT: scalar telemetry topics plus
 # Home Assistant discovery, via libmosquitto.  Needs libmosquitto-dev.
 imud-mqtt: src/mqtt_publish.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/mqtt_main.o $(LIBIMUD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lmosquitto -lm $(ATOMIC_LIB)
 
 # imud-influxdb bridges the AF_UNIX stream to InfluxDB line protocol over UDP or
 # HTTP.  Pure C — no external dependencies beyond libimud.
 imud-influxdb: src/influx_line.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/influx_main.o $(LIBIMUD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # imud-mavlink bridges the AF_UNIX stream to MAVLink (v1/v2) over UDP and/or
 # serial.  Pure C — hand-rolled encoder, no external dependencies beyond libimud.
 imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/bridge.o src/sdnotify.o src/mavlink_main.o $(LIBIMUD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # Optional bridge daemons — each has its own config file, service, and man page,
 # and installs via its own `install-*` target (prep for per-bridge packaging).
@@ -175,7 +196,7 @@ imud-mavlink: src/mavlink_encode.o src/config.o src/log.o src/netserv.o src/brid
 # C — no external dependencies beyond libimud; the first bridge built purely
 # on the ABI-stable imud_data_t (no wire pinning).
 imud-prometheus: src/prom_metrics.o src/prom_http.o src/config.o src/log.o src/bridge.o src/sdnotify.o src/prom_main.o $(LIBIMUD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
 
@@ -227,110 +248,110 @@ src/%.entry.o: src/%.c
 # and report a pass for rates they never ran.  $(filter %.c,$^) keeps the
 # header off the compiler command line.
 test_fusion: src/fusion.c test/test_fusion.c test/rate_ladder.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_fit_ra: src/fit_ra.c src/fusion.c src/imu_math.c src/capture.c test/test_fit_ra.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # The .gen.c is a prerequisite but not a translation unit: test_config.c
 # #includes it inside a function.  Listed so regenerating it rebuilds the
 # suite, filtered out so the compiler is not handed it twice.
 test_config: src/config.c src/log.c test/test_config.c \
              test/test_config_defaults.gen.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter-out %.gen.c,$(filter %.c %.o,$^)) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter-out %.gen.c,$(filter %.c %.o,$^)) -lm $(ATOMIC_LIB)
 
 # imud-mon's stream decoding (src/mon_parse.c): packet CRC, NMEA field
 # extraction, flag summary.  Pure — no sockets, no config.
 test_mon: src/mon_parse.c test/test_mon.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # imud-status report text (src/status_fmt.c): the gated lines, and the WS()
 # truncation bound at every buffer size.  Pure formatter — config.c is here
 # only for config_defaults() in the fixtures.
 test_status: src/status_fmt.c src/config.c src/log.c test/test_status.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # argv parsing for the five non-bridge entry points (src/cli.c).  This is what
 # SECURITY.md means by "the CLI parsers are covered by unit tests instead" —
 # the bridges' shared parser is covered by test_bridge.  cli.c deliberately
 # depends on nothing but libc, so this link line is one source file.
 test_cli: src/cli.c test/test_cli.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
 test_nmea: src/nmea.c test/test_nmea.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c test/test_capture.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_packet: src/packet.c test/test_packet.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lgpiod -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
 
 test_ring: src/ring.c test/test_ring.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_mount: src/config.c src/log.c test/test_mount.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_cal: src/cal.c src/cal_capture.c src/capture.c src/log.c test/test_cal.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # include/cal_math.h is a prerequisite, not just an include: CAL_SI_MIN_SPAN
 # lives there, and a header-only edit to it left this suite stale AND green --
 # a mutation of the coverage guard fired nothing until the binary was deleted
 # by hand.  Same reasoning, and same $(filter %.c,$^), as test_fusion above.
 test_cal_math: src/cal_math.c test/test_cal_math.c include/cal_math.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_wmm: src/wmm.c src/log.c test/test_wmm.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_position: src/position.c src/wmm.c src/config.c src/log.c test/test_position.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Wire-format compatibility: daemon packet_build vs lib/imud_client.h.
 # test_client_impl.c compiles the client header in its own translation unit,
 # exactly as a third-party consumer would.
 test_client: src/packet.c test/test_client.c test/test_client_impl.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # End-to-end AF_UNIX + TCP subscription stream: real output.c, stubbed imu accessors
 test_stream: src/output.c src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # netserv TCP broadcast server (pure sockets; macOS-buildable)
 test_netserv: src/netserv.c src/log.c test/test_netserv.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_log: src/log.c test/test_log.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Signal K delta encoder (pure function; reuses lib/imud_client.h for the struct)
 test_signalk: src/sk_delta.c test/test_signalk.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # MQTT message builders (pure functions; no libmosquitto needed)
 test_mqtt: src/mqtt_publish.c test/test_mqtt.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Prometheus metrics encoder (pure function)
 test_prometheus: src/prom_metrics.c src/prom_http.c test/test_prometheus.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_influxdb: src/influx_line.c test/test_influxdb.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # MAVLink encoder (pure function; golden frames from a pymavlink cross-check)
 test_mavlink: src/mavlink_encode.c test/test_mavlink.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # libimud public API: end-to-end over a local AF_UNIX server + UDP loopback,
 # packets built by the daemon's real encoder (src/packet.c).
 test_libimud: lib/libimud.c src/packet.c test/test_libimud.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # The bridge daemons end to end, main() included.  Links each real
 # entry point renamed to <base>_entry by the src/%.entry.o rule, and drives it
@@ -349,7 +370,7 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
                  src/config.c src/log.c src/netserv.c \
                  src/bridge.c src/sdnotify.c src/packet.c lib/libimud.c \
                  test/test_bridge_e2e.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lmosquitto -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lmosquitto -lm $(ATOMIC_LIB)
 
 # The daemon end to end, main() included: startup with no
 # sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
@@ -393,14 +414,14 @@ test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 test_tools_e2e: src/status_main.entry.o src/mon_main.entry.o \
                 src/cli.c src/config.c src/log.c src/mon_parse.c src/packet.c \
                 test/test_tools_e2e.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Bridge scaffolding (src/bridge.c + src/sdnotify.c): CLI matrix, emit-tick
 # timespec math (period/wait/due/advance/earlier), config load / reload /
 # disabled flows, and sd_notify delivery over a test-bound NOTIFY_SOCKET.
 # Links libimud directly, like test_libimud.
 test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c test/test_bridge.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # cal_capture.c is here for the .imucap loading behind `imud-cal characterize`
 # and `fit-temp`; capture.c is its reader.
@@ -418,13 +439,13 @@ test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
                        test/rate_ladder.h \
                        src/drivers/bus_io.h src/drivers/chip_ts.h \
                        src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
 # calibration application — the helpers factored into src/imu_math.c.  Pure
 # (no <linux/*> or CLOCK_MONOTONIC), so it also builds on the macOS dev box.
 test_imu_math: src/imu_math.c test/test_imu_math.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Per-driver register decode/encode over a mock I2C bus (test/bus_mock.c wraps
 # ioctl with --wrap — GNU ld only).  Covers the two hardware-validated drivers
