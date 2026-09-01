@@ -2,7 +2,7 @@
 
 ## `imud` — a general-purpose IMU daemon ("gpsd for IMUs")
 
-**Version:** 1.9.0  
+**Version:** 1.9.1  
 **What:** owns an IMU + magnetometer, fuses to attitude/heading, and publishes
 on NMEA 0183 (UDP/TCP), binary UDP, and a local stream socket with an
 optional TCP listener, for any number of

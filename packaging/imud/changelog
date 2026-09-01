@@ -1,3 +1,28 @@
+imud (1.9.1) unstable; urgency=medium
+
+  * An uncalibrated magnetometer is now fused for heading instead of
+    ignored. Heading is offset by the uncorrected hard iron but bounded,
+    where before it dead-reckoned without bound. Heading-only, so roll and
+    pitch are untouched, and withdrawn automatically under gross iron.
+    New flag bit 15, FLAG_MAG_UNCAL, marks the uncalibrated-but-fused
+    state. FLAG_MAG_VALID is unchanged and still means calibrated and
+    healthy, so existing consumers need no change. The wire packet is
+    byte-identical and still v17. This spends the last free flag bit. Set
+    mag_fuse_uncal = false to restore the old behaviour.  ACTION: Run
+    imud-cal mag for a heading accurate enough to navigate on; this is a
+    floor, not a substitute.
+  * The accelerometer update no longer corrects heading or shrinks the
+    attitude covariance about the gravity axis. Gravity says nothing about
+    rotation about gravity, and doing either could collapse the covariance
+    and report the filter converged while heading was wrong.  With no
+    magnetometer aiding heading, cov[9] and FLAG_FUSION_CONVERGED now
+    report an unaided heading axis honestly: the covariance grows and the
+    converged flag stays clear. A consumer that treated the flag as
+    permission to trust heading was previously misled in exactly that
+    case.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 31 Aug 2026 16:49:28 -0700
+
 imud (1.9.0) unstable; urgency=medium
 
   * SPI transport for the IMU and the magnetometer. [imu] and [mag] each

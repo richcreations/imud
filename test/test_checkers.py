@@ -53,6 +53,15 @@ def sub(pattern, repl, count=1):
     return apply
 
 
+def chain(*fns):
+    """Apply several substitutions in order, as one fixture."""
+    def apply(text):
+        for f in fns:
+            text = f(text)
+        return text
+    return apply
+
+
 CASES = [
     # ── check-imutest-checks ─────────────────────────────────────────────────
     # A new check added to the tool and not to the spec. mag.drdy.restore
@@ -396,9 +405,14 @@ CASES = [
 
     # A changelog stanza edited by hand. Packagers read this one; a user reads
     # NEWS. They describe the same release and must not diverge.
+    #
+    # Pinned to the stanza for the version in include/version.h, because the
+    # generator only ever rewrites that one -- a bullet in a shipped stanza is
+    # frozen and a hand-edit to it is invisible. So this fixture re-pins at
+    # every release; sub() raises when the pattern stops matching.
     ("gen-release-notes", "packaging/imud/changelog",
-     sub(r'^  \* SPI transport for the IMU and the magnetometer\.',
-         '  * SPI transport for the CPU and the magnetometer.'),
+     sub(r'^  \* An uncalibrated magnetometer is now fused for heading',
+         '  * An uncalibrated accelerometer is now fused for heading'),
      "packaging/imud/changelog"),
 
     # A change that outgrows the word cap. Every NEWS entry in this project
@@ -426,9 +440,13 @@ CASES = [
     # A release that shipped with its date never stamped, leaving two stanzas
     # claiming to be the one still accumulating. The older then keeps taking
     # entries that render into the wrong NEWS section. 1.9.0 shipped this way.
+    #
+    # Both dates are unstamped here because the tree carries no unreleased
+    # stanza between releases -- stamping the newest is what cutting one does.
     ("gen-release-notes", "docs/release-notes.toml",
-     sub(r'^date    = "2026-08-28"', 'date    = "unreleased"'),
-     "unreleased"),
+     chain(sub(r'^date    = "2026-08-31"', 'date    = "unreleased"'),
+           sub(r'^date    = "2026-08-28"', 'date    = "unreleased"')),
+     "2 releases"),
 
     # The date in a form nothing downstream can order or parse.
     ("gen-release-notes", "docs/release-notes.toml",
@@ -436,9 +454,11 @@ CASES = [
      "YYYY-MM-DD"),
 
     # The accumulating stanza left behind a newer one, so changes land in a
-    # section that has already shipped.
+    # section that has already shipped. Reached by unstamping an older stanza
+    # rather than renaming the newest, which would only trip the separate
+    # check that include/version.h has a stanza at all.
     ("gen-release-notes", "docs/release-notes.toml",
-     sub(r'^version = "1\.9\.1"', 'version = "1.8.0"'),
+     sub(r'^date    = "2026-08-28"', 'date    = "unreleased"'),
      "is newer"),
 
 

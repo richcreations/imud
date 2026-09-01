@@ -1,3 +1,15 @@
+imud-utils (1.9.1) unstable; urgency=medium
+
+  * imud-imutest no longer recommends clearing experimental on a gyro that
+    produced nothing: the per-axis sign check now requires a quarter of
+    the commanded turn, so a dead data path fails instead of passing on
+    noise.  A report generated before this could pass all three gyro sign
+    checks on integrated noise while the scale checks failed against the
+    same value. Re-run imud-imutest for any driver cleared on such a
+    report.
+
+ -- Richard Simpson <richcreations@gmail.com>  Mon, 31 Aug 2026 16:54:04 -0700
+
 imud-utils (1.9.0) unstable; urgency=medium
 
   * Sample rates are carried in milli-Hz throughout, so the advertised

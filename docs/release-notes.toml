@@ -23,14 +23,14 @@
 
 [[release]]
 version = "1.9.1"
-date    = "unreleased"
+date    = "2026-08-31"
 summary = """
 A correctness release. The magnetometer is now used for heading even without a
 calibration, which replaces an unbounded heading drift with a bounded one."""
 
   [[release.change]]
   kind     = "behaviour"
-  packages = ["imud"]
+  packages = ["imud", "libimud"]
   text     = "An uncalibrated magnetometer is now fused for heading instead of ignored. Heading is offset by the uncorrected hard iron but bounded, where before it dead-reckoned without bound. Heading-only, so roll and pitch are untouched, and withdrawn automatically under gross iron."
   impact   = "New flag bit 15, FLAG_MAG_UNCAL, marks the uncalibrated-but-fused state. FLAG_MAG_VALID is unchanged and still means calibrated and healthy, so existing consumers need no change. The wire packet is byte-identical and still v17. This spends the last free flag bit. Set mag_fuse_uncal = false to restore the old behaviour."
   action   = "Run imud-cal mag for a heading accurate enough to navigate on; this is a floor, not a substitute."
@@ -40,6 +40,12 @@ calibration, which replaces an unbounded heading drift with a bounded one."""
   packages = ["imud"]
   text     = "The accelerometer update no longer corrects heading or shrinks the attitude covariance about the gravity axis. Gravity says nothing about rotation about gravity, and doing either could collapse the covariance and report the filter converged while heading was wrong."
   impact   = "With no magnetometer aiding heading, cov[9] and FLAG_FUSION_CONVERGED now report an unaided heading axis honestly: the covariance grows and the converged flag stays clear. A consumer that treated the flag as permission to trust heading was previously misled in exactly that case."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-utils"]
+  text     = "imud-imutest no longer recommends clearing experimental on a gyro that produced nothing: the per-axis sign check now requires a quarter of the commanded turn, so a dead data path fails instead of passing on noise."
+  impact   = "A report generated before this could pass all three gyro sign checks on integrated noise while the scale checks failed against the same value. Re-run imud-imutest for any driver cleared on such a report."
 
 [[release]]
 version = "1.9.0"
