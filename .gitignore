@@ -89,12 +89,10 @@ __pycache__/
 *.swo
 *~
 .vscode/settings.json
-.claude
 
 # Local agent guidance (not shipped)
 AGENTS.md
 audit.md
-CLAUDE.md
 continuespidrama.md
 openfor1.9.0.md
 issue23-coverage-plan.md
@@ -106,7 +104,6 @@ issue23-coverage-plan.md
 #
 # The rule is now: open work is an issue, direction is docs/ROADMAP.md, and
 # measurements and refuted theories go in the commit message they justify.
-# See "History / provenance" in CLAUDE.md.
 #
 # The ignore stays as a guard: a scratch directory by that name will still
 # never be committed, which is what makes re-creating one a private mistake
