@@ -6,7 +6,11 @@
 [![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
 [![Fuzz (nightly)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/fuzz-nightly.yml)  
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/richcreations/imud/badge)](https://scorecard.dev/viewer/?uri=github.com/richcreations/imud)
+<!-- Scorecard badge: the canonical api.scorecard.dev/.../badge URL redirects to
+     shields' ossf-scorecard route, which reads the diverged legacy host and has
+     served a stale score since 2026-08-25.  Revert to the canonical URL once
+     https://github.com/badges/shields/issues/12117 is fixed. -->
+[![OpenSSF Scorecard](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.scorecard.dev%2Fprojects%2Fgithub.com%2Frichcreations%2Fimud&query=%24.score&label=openssf%20scorecard&color=green)](https://scorecard.dev/viewer/?uri=github.com/richcreations/imud)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13917/badge)](https://www.bestpractices.dev/projects/13917)
 
 
