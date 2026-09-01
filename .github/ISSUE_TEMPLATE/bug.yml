@@ -4,21 +4,16 @@ labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: |
-        Three things make a report actionable: what happened, how to reproduce
-        it, and the version, platform and driver it happened on. A theory about
-        the cause is welcome at the end, but it is not needed — and a report
-        without one is not a lesser report.
-
-        Not here: security vulnerabilities. Use
-        [private reporting](https://github.com/richcreations/imud/security/advisories/new)
-        instead — see [SECURITY.md](https://github.com/richcreations/imud/blob/main/SECURITY.md).
+      value: >-
+        Security vulnerabilities go to
+        [private reporting](https://github.com/richcreations/imud/security/advisories/new),
+        not here.
 
   - type: textarea
     id: what
     attributes:
       label: What happens
-      description: The observed behaviour in a sentence or two, and what you expected instead.
+      description: What you saw, and what you expected instead.
     validations:
       required: true
 
@@ -28,8 +23,7 @@ body:
       label: How to reproduce
       description: >-
         The command, the config keys that differ from the defaults, or the input
-        file. If it is intermittent, say how often it happens and what it takes
-        to catch it.
+        file. Say if it is intermittent.
     validations:
       required: true
 
@@ -37,19 +31,14 @@ body:
     id: output
     attributes:
       label: Output or error text
-      description: >-
-        Log lines, terminal output, `imud-status`, or the last of
-        `journalctl -u imud -n 50 --no-pager`. Raise `logging.level` to `debug`
-        if the default is quiet about it.
+      description: "`journalctl -u imud -n 50 --no-pager`, `imud-status`, or the terminal output."
       render: text
 
   - type: input
     id: version
     attributes:
       label: Version
-      description: >-
-        `imud --version`, or the version of whichever tool misbehaved
-        (`imud-cal`, `imud-imutest`, `imud-status`, `imud-mon`, a bridge).
+      description: "`imud --version`, or the tool that misbehaved."
       placeholder: imud 1.9.1
     validations:
       required: true
@@ -68,9 +57,8 @@ body:
     attributes:
       label: Sensors and bus
       description: >-
-        IMU driver, magnetometer driver, I2C or SPI, and whether the interrupt
-        lines are wired or the driver is polling. Leave blank if no hardware is
-        involved — the `sim` driver, a replay, a bridge, or the docs.
+        Both driver names, I2C or SPI, and whether the interrupt lines are
+        wired. Blank if no hardware is involved.
       placeholder: ism330dhcx + mmc5983ma, SPI (spidev0.0 / 0.1), INT on GPIO 17 and 27
 
   - type: dropdown

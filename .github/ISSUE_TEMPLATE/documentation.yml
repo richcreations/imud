@@ -4,26 +4,17 @@ labels: ["documentation"]
 body:
   - type: markdown
     attributes:
-      value: |
-        A doc that is wrong costs more than a doc that is missing, so a
-        one-sentence "this says X, the daemon does Y" is a good issue.
-
-        Several surfaces are **generated**, so the fix belongs in the source
-        rather than the page — say what is wrong and it will be corrected
-        there. The man1 and man8 pages come from each binary's `--help`; the
-        manual's config tables, the man5 entries and the driver table come from
-        `docs/config-keys.toml` and `src/drivers.c`; `spec.md`'s packet layout
-        comes from `include/types.h`. Generated regions are marked in place
-        with `BEGIN GENERATED`.
+      value: >-
+        Several surfaces are generated — man1/man8 from each binary's `--help`,
+        the config and driver tables from `docs/config-keys.toml` and
+        `src/drivers.c`, `spec.md`'s packet layout from `include/types.h`. Say
+        what is wrong; the fix goes in the source.
 
   - type: input
     id: where
     attributes:
       label: Where
-      description: >-
-        The file and section, the man page, or the URL —
-        `docs/manual.md` §5, `man 5 imud.conf` under `[fusion]`, the quick
-        start on the website.
+      description: The file and section, the man page, or the URL.
       placeholder: docs/manual.md §4, mag.declination_deg
     validations:
       required: true
@@ -32,7 +23,7 @@ body:
     id: problem
     attributes:
       label: What is wrong
-      description: What it says, and what imud actually does — or what a reader needs and cannot find.
+      description: What it says, and what imud actually does — or what is missing.
     validations:
       required: true
 
@@ -40,4 +31,4 @@ body:
     id: fix
     attributes:
       label: What it should say
-      description: Optional. A suggested wording, or the fact that is missing.
+      description: Optional.
