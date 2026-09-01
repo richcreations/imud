@@ -32,7 +32,7 @@ jobs:
   # The Python is not incidental: lib/imud_client.py is a SHIPPED public client,
   # the third independent copy of the wire format, and tools/check-*.py are what
   # ci.yml's version-consistency job runs to gate a release.  Both were
-  # unanalysed while the C had two static analysers, CodeQL and six fuzzers.
+  # unanalysed while the C had two static analysers, CodeQL and seven fuzzers.
   #
   # fail-fast: false — a finding in one language should not cancel the other
   # language's analysis before it uploads.

@@ -7,7 +7,7 @@
 """
 gen-config-docs.py — render the config-key documentation from one registry.
 
-150 keys, each stated on three surfaces: the shipped .conf template, a man5
+156 keys, each stated on three surfaces: the shipped .conf template, a man5
 .TP entry and a docs/manual.md table row.  check-docs.py proves a key REACHED
 all three; nothing proved they agreed, and man/man5/imud.conf.5 spent several
 releases telling operators the ISM330DHCX topped out at 1660 Hz while the

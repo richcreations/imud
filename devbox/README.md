@@ -18,12 +18,12 @@ Two audiences:
 
 ## Why
 
-`make test` runs 34 suites. macOS builds 29 of them. It cannot link `imud`,
+`make test` runs 35 suites. macOS builds 29 of them. It cannot link `imud`,
 `imud-cal` or `imud-imutest` at all (no libgpiod, no `<linux/i2c.h>`, no
 `pthread_condattr_setclock`), cannot build `test_ring`, `test_concurrency`,
-`test_drivers`, `test_drivers_registry` or `test_imutest` (the last three need
-GNU ld's `--wrap`), and `make coverage` there is blind to `imu.c`, `ring.c` and
-all twelve drivers.
+`test_drivers`, `test_drivers_registry`, `test_imutest` or `test_hwtools_e2e`
+(the last four need GNU ld's `--wrap`), and `make coverage` there is blind to
+`imu.c`, `ring.c` and all twelve drivers.
 
 It can also prove the wrong thing. `APPLY_CLOEXEC` is a real `fcntl()` on macOS
 and `((void)0)` on Linux, so `39df6b4` passed the local gate and turned every

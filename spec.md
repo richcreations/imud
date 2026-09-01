@@ -1645,8 +1645,9 @@ imud-mon:    src/config.o src/mon_main.c
 ```
 
 `make install` also installs the five man pages (imud.8, imud-cal.8,
-imud.conf.5, imud-status.1, libimud.3); imud-mon.1 ships with `make
-install-utils` (the imud-utils package). WMM coefficient data is a separate
+imud.conf.5, imud-status.1, libimud.3); imud-mon.1 and imud-imutest.8 ship
+with `make install-utils` (the imud-utils package), and each bridge's pair
+with its own `make install-<name>`. WMM coefficient data is a separate
 target — `make install-wmm-data` puts `data/WMM.COF` → `/usr/share/imud/` so
 it can be packaged (imud-wmm-data) and updated independently of the daemon;
 an operator-supplied `/etc/imud/WMM.COF` overrides it.

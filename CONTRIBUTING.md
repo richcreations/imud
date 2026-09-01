@@ -59,7 +59,7 @@ behaviour.
 
 **Not developing on Linux?** `devbox/run make -j4 test` runs the whole suite in
 a throwaway Debian container matching CI's environment. macOS builds only 29 of
-the 34 suites, and it can actively prove the *wrong* thing — a macOS-only
+the 35 suites, and it can actively prove the *wrong* thing — a macOS-only
 `fcntl()` once passed the local gate and turned every Linux job in CI red — so
 this is the check to run before pushing. Setup, and the recipes macOS cannot run
 at all (sanitizers, coverage, `.deb` builds, systemd unit verification), are in

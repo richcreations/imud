@@ -529,6 +529,46 @@ CASES = [
          'ZZZZ38D0D76E8B5D638872819165938D90FDDD2E'),
      "is not pinned"),
 
+    # ── check-fuzz-targets ───────────────────────────────────────────────────
+    # A harness reaching some of the seven surfaces that name it and not the
+    # rest.  This is fuzz_argv's history: added in 6bc6a51, present in CI and
+    # nowhere else, so SECURITY.md went on telling reporters argv was not
+    # fuzzed.  Each surface fails for its own reason, so each gets a case.
+
+    # Built but never run.  The build still passes, which is what makes this
+    # the quiet one.
+    ("check-fuzz-targets", ".github/workflows/ci.yml",
+     sub(r'^(\s*for t in .*) argv; do$', r'\1; do'),
+     "smoke loop"),
+
+    # ...and the reverse: dropped from the build while the loop still runs it.
+    ("check-fuzz-targets", ".github/workflows/ci.yml",
+     sub(r'^\s*\$FZ fuzz/fuzz_cal\.c.*\n', ''),
+     "$FZ build lines"),
+
+    # The nightly's per-target link line.  A missing case arm links the
+    # harness against no sources at all.
+    ("check-fuzz-targets", ".github/workflows/fuzz-nightly.yml",
+     sub(r'^\s*cal\)\s+DEPS=.*\n', ''),
+     "DEPS case"),
+
+    # The document a reporter actually reads.
+    ("check-fuzz-targets", "SECURITY.md",
+     sub(r'`fuzz_wmm`', '`fuzz_zzz`'),
+     "fuzz_zzz"),
+
+    # Left ungitignored, a built harness sits in `git status` waiting to be
+    # staged by a wildcard -- the same trap as the crash-* reproducers.
+    ("check-fuzz-targets", ".gitignore",
+     sub(r'^/fuzz_packet$', ''),
+     ".gitignore"),
+
+    # A stated count going stale.  The table was corrected once already and
+    # the prose around it was not.
+    ("check-fuzz-targets", ".github/workflows/codeql.yml",
+     sub(r'seven fuzzers', 'three fuzzers'),
+     "three fuzzers"),
+
 ]
 
 

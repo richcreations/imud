@@ -1109,10 +1109,6 @@ jobs:
             CFLAGS="-O1 -g -fsanitize=thread -Wall -Wextra" \
             LDFLAGS="-fsanitize=thread"
 
-  # libFuzzer over the four parsers of untrusted input: the config file,
-  # the gpsd/Signal K JSON, the wire packet decode, and the .imucap capture
-  # reader.  Seed corpora live in test/fuzz/corpus/; -close_fd_mask silences
-  # the parsers' own error logging so the runs stay fast.
   # Line/function/branch coverage over the WHOLE suite, which is the point:
   # test_ring, test_concurrency, test_drivers, test_drivers_registry and
   # test_imutest cannot build on the macOS dev box, so imu.c, ring.c and the
@@ -1205,6 +1201,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # libFuzzer over the six parsers of untrusted input — the config file, the
+  # gpsd/Signal K JSON, the wire packet decode, the .imucap capture reader,
+  # cal.json and WMM.COF — plus argv, which crosses no trust boundary and is
+  # fuzzed for its conversions (see SECURITY.md).  Seed corpora live in
+  # test/fuzz/corpus/; -close_fd_mask silences the parsers' own error logging
+  # so the runs stay fast.
   fuzz:
     runs-on: ubuntu-latest
     needs: bases

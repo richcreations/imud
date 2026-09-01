@@ -29,8 +29,9 @@ available — but only the newest of those receives fixes.
 ## What is in scope
 
 imud runs as an unprivileged system user (`imud`) and reads several inputs it
-does not control. Those parsers are the interesting attack surface, and each
-has a dedicated fuzz harness under `fuzz/` that runs for an hour a night:
+does not control. Those parsers are the interesting attack surface. Each of
+them — and the command line, which is not one, for the reason below — has a
+dedicated fuzz harness under `fuzz/` that runs for an hour a night:
 
 | Input | Source | Harness |
 | --- | --- | --- |
@@ -40,6 +41,7 @@ has a dedicated fuzz harness under `fuzz/` that runs for an hour a night:
 | `.imucap` captures | replayed capture files | `fuzz_capture` |
 | Calibration | `/etc/imud/cal.json` | `fuzz_cal` |
 | Magnetic model | `WMM.COF` coefficient file | `fuzz_wmm` |
+| Command line | `argv`, from whoever starts the process | `fuzz_argv` |
 
 The last two go beyond the parse: values that survive validation are fed into
 the code that consumes them — `apply_imu_cal` / `apply_mag_cal` on the sample
@@ -47,9 +49,14 @@ hot path, and the spherical-harmonic field evaluation at the poles and far
 from the model epoch — because a non-finite value quietly poisoning the filter
 is a worse outcome than a rejected file.
 
-Command-line arguments are deliberately **not** fuzzed: `argv` is supplied by
-whoever launches the process, at that user's privilege, so it crosses no trust
-boundary. The CLI parsers are covered by unit tests instead — `test_cli` for
+Command-line arguments cross no trust boundary: `argv` is supplied by whoever
+launches the process, at that user's privilege. `fuzz_argv` drives them anyway,
+because the five front-ends in `src/cli.c` do `strtol`/`strtod` conversions and
+fixed-buffer copies over arbitrary strings, and `parse_int`'s `ERANGE` guard is
+ABI-conditional (`#if LONG_MAX > INT_MAX`), so 64- and 32-bit builds take
+different paths through it.
+
+It runs alongside the unit tests rather than in place of them — `test_cli` for
 the five tool front-ends and `test_bridge` for the bridges' shared parser.
 Every flag that consumes the argument after it is driven as the final
 argument, so each `i + 1 < argc` guard is asserted individually.

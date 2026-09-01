@@ -33,6 +33,7 @@ src/drivers/*.d
 /fuzz_capture
 /fuzz_wmm
 /fuzz_cal
+/fuzz_argv
 /test_ring
 /test_concurrency
 /test_mount

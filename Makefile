@@ -677,7 +677,8 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-mqtt-topics check-bridge-outputs \
                   check-libimud-api check-math-citations check-manpages \
                   check-seccomp check-package-descriptions \
-                  check-imutest-checks check-comment-refs check-arch-claims
+                  check-imutest-checks check-comment-refs check-arch-claims \
+                  check-fuzz-targets
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
@@ -1373,6 +1374,7 @@ clean:
 	      test_drivers_registry test_imu_math test_drivers test_imutest \
       test_hwtools_e2e \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
+	      fuzz_argv \
 	      mkseed_packet imud.info \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
