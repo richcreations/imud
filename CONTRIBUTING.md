@@ -21,7 +21,9 @@ cd imud
   or v2 (trixie ships 2.x). The target is Linux generally — anything with I²C
   and a GPIO character device. Packages are built for arm64 and armhf on both
   bookworm and trixie, and Raspberry Pi OS is the most exercised host, not a
-  requirement.
+  requirement. The arm64 packages are built on Debian, which is what Raspberry
+  Pi OS 64-bit uses as its base; the armhf ones are built on Raspbian, whose
+  ARMv6 baseline is what lets a single 32-bit package run on every Pi.
 - `libmosquitto-dev` — only for building the MQTT bridge.
 
 Nothing above is needed to *check* the documentation: every `make

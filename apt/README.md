@@ -81,6 +81,12 @@ Only arm64/armhf + arch-`all` debs belong here — the packages target the Pi
 splits the per-arch indexes by filename, and each arch index carries the
 arch-`all` debs.
 
+There is exactly **one** armhf deb per version, built on Raspbian at the ARMv6
+baseline so it serves every 32-bit Pi. Never add a second armhf build at
+Debian's ARMv7 baseline: both ports report `armhf`, so apt would see two
+packages distinguished only by version and would hand some machines a binary
+their CPU cannot execute.
+
 ## One-time setup (do this once to bring the repo live)
 
 ### 1. Generate a dedicated signing key

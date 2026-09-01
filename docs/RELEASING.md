@@ -150,6 +150,14 @@ That fires `.github/workflows/release.yml`, which checks the tag against
 build provenance, and opens a **draft** GitHub Release with the debs and the
 `make dist` tarball attached.
 
+The arm64 legs build in a digest-pinned `debian:<suite>` image; the armhf legs
+build in a **Raspbian** rootfs bootstrapped by `mmdebstrap`, because Raspbian's
+ARMv6 baseline is what makes one 32-bit deb work on every Pi. The rootfs trusts
+the Raspbian archive key pinned by fingerprint in `build-debs.yml`, taken from
+the `raspbian-archive-keyring` package — **not** from the `raspbian.public.key`
+file on the website, whose 2012 export carries only SHA-1 binding signatures
+that Sequoia `sqv` (what apt uses from trixie onward) rejects outright.
+
 ## 5. Publish — this is the gate
 
 Review the draft release, write the notes, and click **Publish**.

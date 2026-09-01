@@ -763,8 +763,13 @@ jobs:
   #
   # Same explicit `docker run` as build-debs.yml, for the same reason: the
   # `container:` key cannot host an armhf rootfs on an arm64 runner.
+  #
+  # RASPBIAN, not Debian, and for the same reason build-debs.yml builds the
+  # armhf packages there: Debian armhf is ARMv7-A while the packages ship at
+  # Raspbian's ARMv6 baseline.  Testing on Debian would exercise a different
+  # instruction set and a different VFP revision from the one that ships —
+  # correct-looking coverage of a binary nobody runs.
   test-armhf:
-    needs: bases
     runs-on: ubuntu-24.04-arm
     # Two full build+test passes now (plain, then UBSan).  The plain pass
     # takes ~3 min; instrumented builds and runs are slower, so the budget
@@ -775,15 +780,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build and test under 32-bit armhf (trixie)
-        env:
-          BASE: debian:trixie@${{ needs.bases.outputs.trixie }}
+      # Same script build-debs.yml bootstraps with, so the rootfs the suite
+      # runs in and the rootfs the packages are built in cannot drift apart.
+      - name: Bootstrap Raspbian rootfs (trixie/armhf)
         run: |
-          docker run --rm --platform linux/arm/v7 \
+          sudo apt-get update
+          sudo apt-get install -y mmdebstrap
+          sudo tools/bootstrap-raspbian.sh trixie rootfs.tar
+          docker import --platform linux/arm/v6 rootfs.tar imud-raspbian:trixie
+
+      - name: Build and test under 32-bit armhf (Raspbian trixie, ARMv6)
+        run: |
+          docker run --rm --platform linux/arm/v6 \
             -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
             -e DEBIAN_FRONTEND=noninteractive \
             -e UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-            "$BASE" \
+            imud-raspbian:trixie \
             bash -euo pipefail -c '
               # Acquire::Retries for connection failures, apt_retry for a
               # truncated download — Retries does not cover the latter.  The

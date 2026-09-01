@@ -34,6 +34,12 @@ it — the first passive check that proves the sensing elements are live."""
   text     = "imud-imutest runs the IMU's built-in self-test and grades the per-axis response against the datasheet window. It needs no motion and no operator, so it runs under --passive."
   impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx; other drivers structurally skip it and stay clearable."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud", "libimud", "imud-utils", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "The armhf packages are now built on Raspbian at the ARMv6 baseline, so they run on every Raspberry Pi that boots a 32-bit userland. Previously they were built to Debian's ARMv7 baseline."
+  impact   = "On a Pi 1 or Pi Zero/Zero W the previous packages installed without complaint and then died on an illegal instruction, because both ports report the same \"armhf\" architecture. Those boards can now install from the apt repository. The arm64 packages are unchanged."
+
 [[release]]
 version = "1.9.1"
 date    = "2026-08-31"

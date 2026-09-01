@@ -10,10 +10,11 @@
 # I2C hardware and the bridges live on the daemon's machine, so amd64 debs
 # have no real audience (an x86 imud-mon user builds from source; amd64
 # COMPILATION is still covered by ci.yml's build-and-test and the
-# sanitizer/fuzz jobs).  armhf serves 32-bit Raspberry Pi OS (ARMv7, Pi 2
-# and later).  The bookworm build doubles as continuous coverage of the
-# libgpiod v1 API path (bookworm ships 1.6; trixie ships 2.x — the Makefile
-# auto-detects).
+# sanitizer/fuzz jobs).  armhf serves 32-bit Raspberry Pi OS and is built on
+# RASPBIAN, at its ARMv6 baseline, so one package covers every Pi including
+# the Pi 1 and Pi Zero/Zero W — see the note on the bootstrap step.  The
+# bookworm build doubles as continuous coverage of the libgpiod v1 API path
+# (bookworm ships 1.6; trixie ships 2.x — the Makefile auto-detects).
 #
 # The containers are driven with explicit `docker run` instead of the
 # workflow `container:` key: GitHub's arm runners (Neoverse N2) execute
@@ -49,9 +50,19 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             binary_flag: -b   # arch-dep + arch:all (imud-wmm-data)
+            # Debian arm64 IS the base Raspberry Pi OS 64-bit ships: a Pi
+            # running it pulls from deb.debian.org and layers
+            # archive.raspberrypi.com on top only for firmware.  Bootstrapping
+            # a Pi OS rootfs here would produce the same bytes from a weaker
+            # trust anchor, so this leg stays on the digest-pinned image.
+            arm_baseline: armv8-a
+            archive: debian
           - arch: armhf
-            platform: linux/arm/v7
+            platform: linux/arm/v6
             binary_flag: -B   # arch-dep only: arch:all is built once, on arm64
+            # Raspbian, NOT Debian.  See the note on the bootstrap step.
+            arm_baseline: armv6
+            archive: raspbian
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
@@ -61,6 +72,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # ── Resolve the build image ──────────────────────────────────────────
+      #
+      # "armhf" names two different architectures, which is why there are two
+      # image paths here.  Debian's armhf port is ARMv7-A/VFPv3-D16.
+      # Raspberry Pi OS 32-bit is a SEPARATE port (Raspbian) rebuilt for
+      # ARMv6/VFPv2 so that it still runs on the Pi 1 and Pi Zero/Zero W.
+      # Both report the identical string from `dpkg --print-architecture`, so
+      # apt cannot distinguish them: a package built to the Debian baseline
+      # installs without complaint on an ARMv6 board and then dies on an
+      # illegal instruction the first time it runs.
+      #
+      # ARMv6 code executes on every later core, so building the 32-bit deb on
+      # Raspbian makes ONE armhf package correct on every Pi.  Shipping both
+      # baselines is not an alternative: they would collide in the pool as the
+      # same name and architecture, separated only by version, and apt would
+      # hand some machines a binary their CPU cannot run.
+      - name: Resolve Debian base image (${{ matrix.dist }}/${{ matrix.arch }})
+        if: matrix.archive == 'debian'
+        run: |
+          # devbox/Dockerfile is the one place a Debian base is pinned, so
+          # Dependabot's bump of that file is the whole change and needs no
+          # follow-up here.  This workflow is reachable from ci.yml and
+          # release.yml, so it reads the pin itself rather than depending on a
+          # job in either caller.
+          base=$(sed -n "s|^FROM debian:${{ matrix.dist }}@\(sha256:[0-9a-f]\{64\}\).*|\1|p" \
+                     devbox/Dockerfile | head -1)
+          if [ -z "$base" ]; then
+            echo "::error file=devbox/Dockerfile::no pinned digest for debian:${{ matrix.dist }}" >&2
+            exit 1
+          fi
+          echo "BUILD_IMAGE=debian:${{ matrix.dist }}@$base" >> "$GITHUB_ENV"
+
+      # tools/bootstrap-raspbian.sh carries the archive, the pinned key and the
+      # reasoning.  ci.yml's test-armhf job bootstraps through the same script,
+      # so the rootfs the packages are built in and the rootfs the suite is
+      # tested in cannot drift apart.
+      - name: Bootstrap Raspbian rootfs (${{ matrix.dist }}/${{ matrix.arch }})
+        if: matrix.archive == 'raspbian'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mmdebstrap
+          sudo tools/bootstrap-raspbian.sh "${{ matrix.dist }}" rootfs.tar
+          docker import --platform linux/arm/v6 rootfs.tar "imud-raspbian:${{ matrix.dist }}"
+          echo "BUILD_IMAGE=imud-raspbian:${{ matrix.dist }}" >> "$GITHUB_ENV"
 
       # Suffix the version per distribution (1.5-1~bookworm1) so packages
       # for different dists never collide as filenames/release assets, and
@@ -74,24 +130,13 @@ jobs:
         env:
           LINTIAN: ${{ inputs.lintian }}
         run: |
-          # devbox/Dockerfile is the one place a Debian base is pinned, so
-          # Dependabot's bump of that file is the whole change and needs no
-          # follow-up here.  This workflow is reachable from ci.yml and
-          # release.yml, so it reads the pin itself rather than depending on a
-          # job in either caller.
-          base=$(sed -n "s|^FROM debian:${{ matrix.dist }}@\(sha256:[0-9a-f]\{64\}\).*|\1|p" \
-                     devbox/Dockerfile | head -1)
-          if [ -z "$base" ]; then
-            echo "::error file=devbox/Dockerfile::no pinned digest for debian:${{ matrix.dist }}" >&2
-            exit 1
-          fi
           docker run --rm --platform ${{ matrix.platform }} \
             -v "$GITHUB_WORKSPACE:/work/src" -w /work/src \
             -e DEBIAN_FRONTEND=noninteractive \
             -e DEBEMAIL=richcreations@gmail.com \
             -e "DEBFULLNAME=Richard Simpson" \
             -e "LINTIAN=$LINTIAN" \
-            "debian:${{ matrix.dist }}@$base" \
+            "$BUILD_IMAGE" \
             bash -euo pipefail -c '
               # Two different fetch failures, two different mitigations, and
               # they are NOT interchangeable.

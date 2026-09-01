@@ -503,6 +503,32 @@ CASES = [
      sub(r'imu_math\.c:265', 'imu_math.c:999999'),
      "imu_math.c:999999"),
 
+    # ── check-arch-claims ────────────────────────────────────────────────────
+    # The build moves to another CPU baseline and the documentation does not
+    # follow.  This is the direction that actually ships a broken package: the
+    # docs keep promising ARMv6 while the release is built for something a Pi 1
+    # cannot execute.  Every documented surface must report, so the fixture
+    # asserts on the one carrying the full explanation.
+    ("check-arch-claims", ".github/workflows/build-debs.yml",
+     sub(r'^(\s*)arm_baseline: armv6$', r'\1arm_baseline: armv9-a'),
+     "docs/manual.md"),
+
+    # The reverse: the build is right and a document lost the fact.  count=0
+    # because docs/manual.md states ARMv6 three times -- replacing only the
+    # first leaves the other two satisfying the check, and the mutation would
+    # prove nothing.
+    ("check-arch-claims", "docs/manual.md",
+     sub(r'ARMv6', 'ARMv9', 0),                        # count=0: ALL of them
+     "docs/manual.md"),
+
+    # The archive key silently swapped for another.  The rootfs has no image
+    # digest to pin, so the fingerprint is the only trust anchor the armhf
+    # build has -- an unpinned one would trust whatever the mirror served.
+    ("check-arch-claims", "tools/bootstrap-raspbian.sh",
+     sub(r'A0DA38D0D76E8B5D638872819165938D90FDDD2E',
+         'ZZZZ38D0D76E8B5D638872819165938D90FDDD2E'),
+     "is not pinned"),
+
 ]
 
 

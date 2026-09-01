@@ -89,6 +89,12 @@ Prebuilt arm64 and armhf .debs for Debian/Raspberry Pi OS bookworm and trixie ar
 attached to GitHub releases (https://github.com/richcreations/imud/releases):
 imud, imud-utils, libimud0, libimud-dev, the five bridges, and imud-wmm-data.
 
+The armhf .debs are built on Raspbian, whose baseline is ARMv6, so they run on
+every Raspberry Pi that boots a 32-bit userland -- the Pi 1 and Pi Zero/Zero W
+included. A package built to Debian's own armhf baseline (ARMv7) installs on
+those boards and then dies on an illegal instruction, because both ports report
+the same "armhf" from dpkg --print-architecture.
+
 Edit the configuration for your hardware, then enable the service:
 
     sudo nano /etc/imud/imud.conf

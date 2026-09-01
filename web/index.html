@@ -27,7 +27,7 @@
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "System daemon, sensor fusion, marine navigation, robotics",
   "operatingSystem": "Linux, Raspberry Pi OS, Debian",
-  "processorRequirements": "arm64, armhf",
+  "processorRequirements": "arm64 (ARMv8-A), armhf (ARMv6 and later)",
   "softwareVersion": "1.9.1",
   "license": "https://opensource.org/licenses/MIT",
   "codeRepository": "https://github.com/richcreations/imud",
@@ -295,6 +295,9 @@ imud [--config PATH] [--replay FILE] [--skip-bias-cal]
   <p>Prebuilt, signed packages for <strong>Raspberry Pi OS</strong> and
   <strong>Debian</strong> — arm64 and armhf, suites <em>bookworm</em> and
   <em>trixie</em> — are in the <a href="apt/">imud apt repository</a>. The
+  armhf packages are built at the ARMv6 baseline, so they run on every
+  Raspberry Pi that boots a 32-bit userland, the Pi 1 and Pi Zero/Zero W
+  included. The
   suite is read from your machine, so these are the same four commands on
   either release:</p>
 

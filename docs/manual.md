@@ -73,6 +73,14 @@ C standard library. Nothing else.
 - A Linux system with an I²C **or** SPI bus and a GPIO character device.
   Debian bookworm and trixie are the packaged targets (arm64 and armhf);
   Raspberry Pi OS is the most exercised host, not a requirement.
+- **The armhf packages are built for ARMv6**, so they run on every Raspberry
+  Pi that boots a 32-bit userland — the Pi 1 and Pi Zero/Zero W included.
+  Raspberry Pi OS 32-bit is a separate port built to ARMv6, while Debian's own
+  armhf baseline is ARMv7-A; both call themselves `armhf` and
+  `dpkg --print-architecture` reports the same string on either, so a package
+  built to the Debian baseline installs happily on an ARMv6 board and then
+  dies on an illegal instruction. imud's armhf packages are therefore built on
+  Raspbian, which makes them correct on both ports.
 - The bus you intend to use, enabled:
   - **I²C** — on Raspberry Pi OS `sudo raspi-config` → Interface Options →
     I²C. Elsewhere, load `i2c-dev` and confirm a `/dev/i2c-*` node appears.
