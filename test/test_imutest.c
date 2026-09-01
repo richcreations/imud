@@ -736,19 +736,20 @@ static void test_bringup_good(void)
     EXPECT(r->imu_experimental == false, "ism330dhcx not flagged experimental");
     EXPECT(r->have_mag, "mag present");
     /* Nothing moves in a plain register file, so the observational scan finds
-     * nothing.  The 16 that ARE excluded are declared rather than observed:
-     * the output window 0x20-0x2D (14) and FIFO_STATUS1/2 (2).  Neither can be
-     * caught by observation -- outputs read static on a quiet platform, and
-     * DIFF_FIFO saturates.  Asserting the exact count still catches a scan
-     * that starts flagging registers spuriously. */
+     * nothing.  The 17 that ARE excluded are declared rather than observed:
+     * the output window 0x20-0x2D (14), FIFO_STATUS1/2 (2) and STATUS_REG (1).
+     * None can be caught by observation -- outputs read static on a quiet
+     * platform, DIFF_FIFO saturates, and the sweep's own read of the outputs
+     * clears STATUS_REG.  Asserting the exact count still catches a scan that
+     * starts flagging registers spuriously. */
     EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x3A) &&
            imt_regmap_known_volatile("ism330dhcx", 0x3B),
            "the FIFO status pair is declared volatile");
-    EXPECT(r->raw.n_volatile_imu == 16,
-           "static mock adds nothing beyond the 16 declared registers");
+    EXPECT(r->raw.n_volatile_imu == 17,
+           "static mock adds nothing beyond the 17 declared registers");
     /* 69 documented, readable registers (DS13012 Table 19 marks about 60 of
      * the 0x00-0x7F span RESERVED and the sweep does not touch them), less the
-     * 16 declared volatile, leaves 53 actually compared. */
+     * 17 declared volatile, leaves 52 actually compared. */
     EXPECT(r->raw.n_scanned_imu > 45, "the documented range was compared");
     EXPECT(r->raw.n_scanned_imu < 70, "and the reserved span was not");
     /*
@@ -1090,7 +1091,14 @@ static void test_volatile_registers_filtered(void)
     /*
      * Registers the ISM driver never touches, so making them move exercises
      * the scan without perturbing the FIFO level or the timestamp the driver
-     * itself reads: STATUS_REG and two gyro output words.
+     * itself reads: ALL_INT_SRC and two gyro output words.
+     *
+     * ALL_INT_SRC (0x1A) is the stand-in for "live, and NOT declared": the
+     * driver enables no free-fall, wake-up, tap or 6D function, so the part
+     * holds it at 0 and the declaration deliberately leaves it in the compare.
+     * STATUS_REG next door used to play this part and cannot any more -- it is
+     * declared now, because the sweep's own read of 0x20-0x2D is what clears
+     * it and observation therefore never sees it move.
      *
      * Not 0x50 and 0x51, which DS13012 Table 19 marks RESERVED.
      * Using undefined addresses as stand-ins is the same habit that put ~420
@@ -1098,7 +1106,7 @@ static void test_volatile_registers_filtered(void)
      * them, so the test would have been asserting against addresses nothing
      * looks at.
      */
-    i2cmock_set_live(ISM_ADDR, 0x1E, 3);   /* STATUS_REG */
+    i2cmock_set_live(ISM_ADDR, 0x1A, 3);   /* ALL_INT_SRC */
     i2cmock_set_live(ISM_ADDR, 0x22, 7);   /* OUTX_L_G  */
     i2cmock_set_live(ISM_ADDR, 0x23, 1);   /* OUTX_H_G  */
 
@@ -1110,23 +1118,23 @@ static void test_volatile_registers_filtered(void)
     imt_report_t *r = run(&cfg, &o);
 
     /*
-     * 16 are declared up front (output window 0x20-0x2D plus FIFO_STATUS1/2).
-     * Of the three made live here, 0x22 and 0x23 fall INSIDE that window and
-     * were already excluded; 0x1E STATUS_REG is outside it and has to be
-     * caught by observation. So exactly 17 -- which asserts both that the
-     * scan still detects a live register the declaration does not cover, and
-     * that it does not over-match everything else.
+     * 17 are declared up front (STATUS_REG, the output window 0x20-0x2D and
+     * FIFO_STATUS1/2).  Of the three made live here, 0x22 and 0x23 fall INSIDE
+     * that declaration and were already excluded; 0x1A ALL_INT_SRC is outside
+     * it and has to be caught by observation. So exactly 18 -- which asserts
+     * both that the scan still detects a live register the declaration does
+     * not cover, and that it does not over-match everything else.
      */
     EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x22) &&
            imt_regmap_known_volatile("ism330dhcx", 0x23),
            "the live output bytes are covered by the declaration");
-    EXPECT(!imt_regmap_known_volatile("ism330dhcx", 0x1E),
-           "STATUS_REG is not declared, so observation must find it");
-    EXPECT(r->raw.n_volatile_imu == 17,
-           "16 declared + STATUS_REG found by observation, and nothing else");
+    EXPECT(!imt_regmap_known_volatile("ism330dhcx", 0x1A),
+           "ALL_INT_SRC is not declared, so observation must find it");
+    EXPECT(r->raw.n_volatile_imu == 18,
+           "17 declared + ALL_INT_SRC found by observation, and nothing else");
     for (int i = 0; i < r->raw.n_regdiff_imu; i++) {
         uint8_t g = r->raw.regdiff_imu[i].reg;
-        EXPECT(g != 0x1E && g != 0x50 && g != 0x51,
+        EXPECT(g != 0x1A && g != 0x50 && g != 0x51,
                "a live register reached the diff");
     }
     /* The point of the filter: a moving register must not read as a
@@ -1137,6 +1145,77 @@ static void test_volatile_registers_filtered(void)
            "control-register writes still show through the filter");
     EXPECT(r->raw.n_scanned_imu + r->raw.n_volatile_imu > 60,
            "excluded plus compared covers the documented range");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * A data-ready status register must not read as a state-dependent init().
+ *
+ * STATUS_REG holds one value through every probing pass, because the sweep
+ * clears TDA/GDA/XLDA itself by reading 0x20-0x2D and the next sample sets
+ * them again before the pass after it gets there.  Observation therefore calls
+ * it static.  init() then reconfigures the part, and whether a sample happens
+ * to be pending when the second snapshot reads 0x1E is a race -- which is why
+ * the bench saw it intermittently: two consecutive --passive runs on an
+ * ISM330DHCX at 208 Hz on 2026-08-31 gave one WARN naming 0x1E and one clean
+ * exit.  The mock takes the losing side of that race deterministically.
+ */
+static int g_init_writes;
+
+static void ism_status_race_cb(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    ism_selftest_cb(addr, reg, val);
+
+    /*
+     * INT1_CTRL is the last register init() writes, so the second write to it
+     * lands between the two snapshots imu.init.idempotent compares.  Dropping
+     * TDA models the real losing case: temperature is batched at 12.5 Hz, two
+     * orders below the accel and gyro, so it is the bit most likely to be
+     * unset at an arbitrary instant after a reconfigure.
+     */
+    if (addr != ISM_ADDR || reg != 0x0D) return;
+    if (++g_init_writes == 2) i2cmock_set_reg(ISM_ADDR, 0x1E, 0x03);
+}
+
+static void test_status_reg_does_not_break_idempotency(void)
+{
+    begin("test_status_reg_does_not_break_idempotency");
+    int fb = g_fail;
+
+    mock_base();
+    g_init_writes = 0;
+    i2cmock_on_write(ism_status_race_cb);
+    /* Static through the whole volatile scan, exactly as the silicon is. */
+    i2cmock_set_reg(ISM_ADDR, 0x1E, 0x07);
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = run(&cfg, &o);
+
+    /* The premise: the register really did move across the second init(), so
+     * a PASS below is the filter working and not the scenario failing to
+     * happen. */
+    EXPECT(g_init_writes >= 2, "the second init() ran");
+    EXPECT(i2cmock_get_reg(ISM_ADDR, 0x1E) == 0x03,
+           "STATUS_REG moved between the two snapshots");
+    EXPECT(imt_regmap_known_volatile("ism330dhcx", 0x1E),
+           "STATUS_REG is declared, because observation cannot reach it");
+
+    EXPECT(status_of(r, "imu.init.idempotent") == IMT_PASS,
+           "a data-ready bit moving across init() is not a state-dependent "
+           "init()");
+    for (int i = 0; i < r->raw.n_idem_imu; i++)
+        EXPECT(r->raw.idem_imu[i].reg != 0x1E,
+               "STATUS_REG does not reach the idempotency diff");
+
+    /* Not a blanket suppression: the check still sees the real writes. */
+    EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
+           "control-register writes still show through the filter");
 
     free(r);
     end(fb);
@@ -1245,10 +1324,11 @@ static void test_fifo_port_window_not_swept(void)
         EXPECT(r->raw.regdiff_imu[i].reg < 0x78 ||
                r->raw.regdiff_imu[i].reg > 0x7E,
                "a FIFO-port register reached the diff");
-    /* 16, not zero: the declared output window plus the FIFO status pair. None
-     * of them is in the port window this test is about (0x78-0x7E), so the
-     * claim it makes is unchanged -- nothing there was read or flagged. */
-    EXPECT(r->raw.n_volatile_imu == 16,
+    /* 17, not zero: the declared output window, the FIFO status pair and
+     * STATUS_REG. None of them is in the port window this test is about
+     * (0x78-0x7E), so the claim it makes is unchanged -- nothing there was
+     * read or flagged. */
+    EXPECT(r->raw.n_volatile_imu == 17,
            "nothing in the port window looked volatile, so nothing read it");
     EXPECT(status_of(r, "imu.init.regdiff") == IMT_PASS,
            "the control-register diff still ran");
@@ -3898,16 +3978,75 @@ static void test_saturating_counters_are_declared_volatile(void)
     }
 
     /*
+     * The data-ready register on every part that has one, which is the third
+     * mechanism: the sweep's own read is what clears it, so it reads identical
+     * on all four passes and observation calls it static.  Then init()
+     * reconfigures the part and the second snapshot lands on the other side of
+     * a sample -- an intermittent WARN naming a register no init() ever wrote.
+     *
+     * The addresses are per part and checked against each vendor map, for the
+     * same reason the FIFO-count addresses below are: a status word and the
+     * data port it sits beside are one address apart on several of these.
+     */
+    static const struct { const char *drv; uint8_t reg; } dready[] = {
+        { "ism330dhcx", 0x1E },   /* STATUS_REG  TDA/GDA/XLDA      */
+        { "lsm6dso",    0x1E },
+        { "lsm6dsox",   0x1E },
+        { "icm42688p",  0x2D },   /* INT_STATUS  FIFO_THS_INT, R/C */
+        { "icm20948",   0x1A },   /* INT_STATUS_1 RAW_DATA_0, R/C  */
+        { "mpu9250",    0x3A },   /* INT_STATUS  RAW_DATA_RDY      */
+        { "mpu9255",    0x3A },
+        { "lis3mdl",    0x27 },   /* STATUS_REG  ZYXDA             */
+        { "lis2mdl",    0x67 },   /* STATUS_REG  Zyxda             */
+        { "rm3100",     0x34 },   /* STATUS      DRDY, latched     */
+    };
+    for (unsigned i = 0; i < sizeof dready / sizeof dready[0]; i++) {
+        snprintf(msg, sizeof msg, "%s declares its data-ready register 0x%02X",
+                 dready[i].drv, dready[i].reg);
+        EXPECT(imt_regmap_known_volatile(dready[i].drv, dready[i].reg), msg);
+    }
+
+    /*
+     * And NOT the event-source registers beside them.  Those belong to
+     * functions no driver here enables -- free-fall, wake-up, tap, 6D, WOM --
+     * so the part holds them at 0, observation can see them perfectly well,
+     * and an init() that switched one on has to still show up.  This is the
+     * line between "the register the part sets every sample" and "a blanket
+     * status exclusion", and only the first one is wanted.
+     */
+    static const struct { const char *drv; uint8_t reg; } compared[] = {
+        { "ism330dhcx", 0x1A }, { "ism330dhcx", 0x1D },  /* ALL_INT_SRC, D6D  */
+        { "lsm6dso",    0x1A }, { "lsm6dsox",   0x1A },
+        { "icm42688p",  0x37 }, { "icm42688p",  0x38 },  /* INT_STATUS2/3     */
+        { "icm20948",   0x19 }, { "icm20948",   0x1B },  /* INT_STATUS, _2    */
+        { "mpu9250",    0x38 }, { "mpu9255",    0x38 },  /* INT_ENABLE        */
+        { "rm3100",     0x33 }, { "rm3100",     0x36 },  /* BIST, REVID       */
+    };
+    for (unsigned i = 0; i < sizeof compared / sizeof compared[0]; i++) {
+        snprintf(msg, sizeof msg, "%s still compares 0x%02X",
+                 compared[i].drv, compared[i].reg);
+        EXPECT(!imt_regmap_known_volatile(compared[i].drv, compared[i].reg),
+               msg);
+    }
+
+    /*
      * The same class on every other part, each window taken from that part's
      * datasheet rather than assumed.
      */
+    /*
+     * `below`/`above` are the nearest address OUTSIDE everything the part
+     * declares, which on four of these is no longer the one next door: the
+     * data-ready register sits immediately below the output window on the
+     * ICM-42688-P, both MPUs and both ST mags, and is declared in its own
+     * right by the table further down.
+     */
     static const struct { const char *drv; uint8_t lo, hi, below, above; } win[] = {
-        { "icm42688p", 0x1D, 0x2C, 0x1C, 0x2D },  /* TEMP_DATA1..TMST_FSYNCL   */
+        { "icm42688p", 0x1D, 0x2C, 0x1C, 0x2E },  /* TEMP_DATA1..TMST_FSYNCL   */
         { "icm20948",  0x2D, 0x3A, 0x2C, 0x3B },  /* ACCEL_XOUT_H..TEMP_OUT_L  */
-        { "mpu9250",   0x3B, 0x48, 0x3A, 0x49 },  /* ACCEL_XOUT_H..GYRO_ZOUT_L */
-        { "mpu9255",   0x3B, 0x48, 0x3A, 0x49 },
-        { "lis3mdl",   0x28, 0x2D, 0x27, 0x2E },  /* OUT_X_L..OUT_Z_H          */
-        { "lis2mdl",   0x68, 0x6D, 0x67, 0x6E },  /* OUTX_L..OUTZ_H            */
+        { "mpu9250",   0x3B, 0x48, 0x39, 0x49 },  /* ACCEL_XOUT_H..GYRO_ZOUT_L */
+        { "mpu9255",   0x3B, 0x48, 0x39, 0x49 },
+        { "lis3mdl",   0x28, 0x2D, 0x26, 0x2E },  /* OUT_X_L..OUT_Z_H          */
+        { "lis2mdl",   0x68, 0x6D, 0x66, 0x6E },  /* OUTX_L..OUTZ_H            */
     };
     for (unsigned i = 0; i < sizeof win / sizeof win[0]; i++)
         expect_vol_window(win[i].drv, win[i].lo, win[i].hi,
@@ -4551,6 +4690,7 @@ int main(void)
     test_akm_sweep_avoids_forbidden_registers();
     test_sweep_avoids_undocumented_registers();
     test_volatile_registers_filtered();
+    test_status_reg_does_not_break_idempotency();
     test_nonidempotent_init_names_registers();
     test_fifo_port_window_not_swept();
     test_mag_degauss_ordering_and_restore();

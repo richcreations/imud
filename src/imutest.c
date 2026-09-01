@@ -454,6 +454,23 @@ typedef struct {
      * of these, at 0x23, 0x25 and 0x27: OUTX/Y/Z_H_G, every one a gyro output
      * high byte and not a single control register among them.
      *
+     * A DATA-READY status register is the third mechanism, and the one the
+     * scan cannot see by construction: the sweep's own read is what clears it.
+     * On the ST parts STATUS_REG is cleared by reading the output registers,
+     * which every pass does; the TDK interrupt-status registers are marked
+     * read-to-clear and the sweep clears them directly.  Either way the bit is
+     * set again by the next sample, so all four passes read the same byte and
+     * the register is classified static -- and then init() reconfigures the
+     * part and the second snapshot catches it on the other side of a sample.
+     * The RM3100 reaches the same place from the opposite direction: its DRDY
+     * clears only on a read of the measurement registers, which nrd_lo..nrd_hi
+     * keeps out of the sweep, so the bit latches high and never moves at all.
+     *
+     * Only the register the part sets per sample is declared.  The event
+     * sources beside it -- ST 0x1A-0x1D, the TDK WOM/tap/wake words -- belong
+     * to functions no driver here enables, so they hold 0 and stay in the
+     * compare where a stray enable would show up.
+     *
      * Ranges rather than single addresses, because an output window is
      * contiguous.  Note this cannot reuse out_lo/out_hi: that field means "the
      * window the driver bursts" for check_burst_framing(), and the ST driver
@@ -478,8 +495,10 @@ static const imt_regmap_t imt_regmaps[] = {
                .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
                .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
-       * status saturates.  Neither can be caught by observation. */
-      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
+       * status saturates; STATUS_REG (DS13012 Table 74 -- TDA, GDA, XLDA) is
+       * cleared by the sweep's own read of 0x20-0x2D and set again by the next
+       * sample.  None can be caught by observation. */
+      .vol_reg = { {0x1E,0x1E}, {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 3,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
@@ -491,8 +510,10 @@ static const imt_regmap_t imt_regmaps[] = {
                .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
                .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
-       * status saturates.  Neither can be caught by observation. */
-      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
+       * status saturates; STATUS_REG (DS13012 Table 74 -- TDA, GDA, XLDA) is
+       * cleared by the sweep's own read of 0x20-0x2D and set again by the next
+       * sample.  None can be caught by observation. */
+      .vol_reg = { {0x1E,0x1E}, {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 3,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
@@ -504,8 +525,10 @@ static const imt_regmap_t imt_regmaps[] = {
                .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },
                .fifo_temp = true, .t_zero_c = 25.0f, .t_lsb_per_c = 256.0f },
       /* OUT_TEMP/gyro/accel outputs read static on a quiet bench; FIFO
-       * status saturates.  Neither can be caught by observation. */
-      .vol_reg = { {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 2,
+       * status saturates; STATUS_REG (DS13012 Table 74 -- TDA, GDA, XLDA) is
+       * cleared by the sweep's own read of 0x20-0x2D and set again by the next
+       * sample.  None can be caught by observation. */
+      .vol_reg = { {0x1E,0x1E}, {0x20,0x2D}, {0x3A,0x3B} }, .nvol_reg = 3,
       .resv = { {0x00,0x00}, {0x03,0x06}, {0x1F,0x1F}, {0x2E,0x34},
                 {0x3C,0x3F}, {0x44,0x55}, {0x60,0x62}, {0x64,0x6E},
                 {0x76,0x77} }, .nresv = 9 },
@@ -523,8 +546,11 @@ static const imt_regmap_t imt_regmaps[] = {
      */
     { .driver = "icm42688p",  .lo = 0x00, .hi = 0x76,
       /* TEMP_DATA1 (0x1D) .. TMST_FSYNCL (0x2C): temp, accel, gyro and the
-       * FSYNC timestamp, all sample-varying. DS rev 1.7 register map. */
-      .vol_reg = { {0x1D,0x2C} }, .nvol_reg = 1,
+       * FSYNC timestamp, all sample-varying. DS rev 1.7 register map.
+       * INT_STATUS (0x2D) is R/C in that map: icm42688p.c enables
+       * FIFO_THS_INT1_EN, so FIFO_THS_INT re-asserts between passes and the
+       * sweep's own read clears it. */
+      .vol_reg = { {0x1D,0x2C}, {0x2D,0x2D} }, .nvol_reg = 2,
       .skip = { 0x2E, 0x2F, 0x30 }, .nskip = 3, .bank_reg = 0x76,
       .whoami_reg = 0x75, .whoami_val = 0x47,
       /* Bank 0 runs DEVICE_CONFIG 11h .. REG_BANK_SEL 76h with 11 interior
@@ -547,8 +573,11 @@ static const imt_regmap_t imt_regmaps[] = {
        * starts at 0x3B.  Plus FIFO_COUNTH/L (0x70-0x71), the live byte count:
        * icm20948.c enables and resets the FIFO in init(), so the counter is
        * the saturating case above.  Note the addresses differ from the MPU
-       * family -- here 0x72 is the data port, not the count. */
-      .vol_reg = { {0x2D,0x3A}, {0x70,0x71} }, .nvol_reg = 2,
+       * family -- here 0x72 is the data port, not the count.  Plus
+       * INT_STATUS_1 (0x1A), R/C in DS rev 1.3 §8.13: icm20948.c sets
+       * RAW_DATA_0_RDY_EN, so the sweep clears the bit and the next sample
+       * sets it. */
+      .vol_reg = { {0x1A,0x1A}, {0x2D,0x3A}, {0x70,0x71} }, .nvol_reg = 3,
       /* 0x72 FIFO_R_W pops a sample; 0x74 DATA_RDY_STATUS is read-to-clear.
        * 0x73 is not a register and belongs in resv, not here. */
       .skip = { 0x72, 0x74 }, .nskip = 2, .bank_reg = 0x7F,
@@ -580,8 +609,12 @@ static const imt_regmap_t imt_regmaps[] = {
        * FIFO_COUNTH/L (0x72-0x73), the live byte count: mpu925x.c enables the
        * FIFO and flushes it in init(), so the counter is the saturating case
        * above and a second init() drops it.  0x74 is the data port and is in
-       * skip[] instead -- reading it would pop a sample. */
-      .vol_reg = { {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 2,
+       * skip[] instead -- reading it would pop a sample.  Plus INT_STATUS
+       * (0x3A): mpu925x.c sets RAW_RDY_EN and leaves INT_ANYRD_2CLEAR at 0,
+       * which register map rev 1.6 §4.19 defines as "cleared only by reading
+       * INT_STATUS" -- which is the sweep -- so the bit is back by the next
+       * sample and reads identical on every pass. */
+      .vol_reg = { {0x3A,0x3A}, {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 3,
       .whoami_reg = 0x75, .whoami_val = 0x71,
       /* Register map rev 1.6 pp.7-8: ACCEL_XOUT_H 3Bh .. GYRO_ZOUT_L 48h,
        * big-endian, accel then temp then gyro.  Accel and gyro DO come from
@@ -597,8 +630,8 @@ static const imt_regmap_t imt_regmaps[] = {
       .resv = { {0x03,0x0C}, {0x10,0x12}, {0x20,0x22}, {0x39,0x39},
                 {0x61,0x62}, {0x6D,0x71}, {0x76,0x76}, {0x79,0x79},
                 {0x7C,0x7C} }, .nresv = 9,
-      /* Same output and FIFO-count windows as the MPU-9250. */
-      .vol_reg = { {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 2,
+      /* Same output, INT_STATUS and FIFO-count windows as the MPU-9250. */
+      .vol_reg = { {0x3A,0x3A}, {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 3,
       .whoami_reg = 0x75, .whoami_val = 0x73,
       /* Same output file and temperature scaling as the MPU-9250. */
       .dir = { .base = 0x3B, .len = 14, .be = true,
@@ -664,7 +697,9 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "lis3mdl",    .lo = 0x00, .hi = 0x33, .nrd_lo = 1, .nrd_hi = 0,
       .resv = { {0x00,0x04}, {0x0B,0x0E}, {0x10,0x1F},
                 {0x25,0x26} }, .nresv = 4,
-      .vol_reg = { {0x28,0x2D} }, .nvol_reg = 1,   /* OUT_X_L..OUT_Z_H */
+      /* STATUS_REG (0x27, DS Table 33) then OUT_X_L..OUT_Z_H.  ZYXDA clears
+       * when the outputs are read, which every sweep pass does. */
+      .vol_reg = { {0x27,0x27}, {0x28,0x2D} }, .nvol_reg = 2,
       .whoami_reg = 0x0F, .whoami_val = 0x3D,
       .out_lo = 0x28, .out_hi = 0x2D },
     /*
@@ -678,7 +713,9 @@ static const imt_regmap_t imt_regmaps[] = {
      */
     { .driver = "lis2mdl",    .lo = 0x45, .hi = 0x6F, .nrd_lo = 1, .nrd_hi = 0,
       .resv = { {0x4B,0x4E}, {0x50,0x5F} }, .nresv = 2,
-      .vol_reg = { {0x68,0x6D} }, .nvol_reg = 1,   /* OUTX_L..OUTZ_H */
+      /* STATUS_REG (0x67, DS Table 39) then OUTX_L..OUTZ_H, on the same
+       * cleared-by-reading-the-outputs footing as the LIS3MDL. */
+      .vol_reg = { {0x67,0x67}, {0x68,0x6D} }, .nvol_reg = 2,
       .whoami_reg = 0x4F, .whoami_val = 0x40 },
     /* PNI: reading the measurement results (0x24-0x2C) is what CLEARS DRDY,
      * so a sweep through them would consume the sample the next check is
@@ -688,6 +725,12 @@ static const imt_regmap_t imt_regmaps[] = {
     { .driver = "rm3100",     .lo = 0x00, .hi = 0x36,
       .resv = { {0x02,0x03}, {0x0A,0x0A}, {0x0C,0x23},
                 {0x2D,0x32} }, .nresv = 4,
+      /* STATUS (0x34) bit 7 DRDY, the inverse of the other parts here: it
+       * clears only on a read of the results at 0x24-0x2C, which nrd keeps out
+       * of the sweep, so it latches high and reads identical on every pass.
+       * rm3100.c's init() drains the results and restarts CMM, so whether the
+       * second snapshot catches DRDY set is a race against one measurement. */
+      .vol_reg = { {0x34,0x34} }, .nvol_reg = 1,
       .nrd_lo = 0x24, .nrd_hi = 0x2C },
 };
 

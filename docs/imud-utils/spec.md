@@ -159,11 +159,29 @@ investigation chasing a driver defect that did not exist. The TDK parts carry
 the same counter in a different register file: `FIFO_COUNTH`/`FIFO_COUNTL` at
 0x72–0x73 on the MPU-925x and 0x70–0x71 on the ICM-20948, whose drivers both
 flush the FIFO inside `init()`. Registers in that class are declared per part,
-because the defining property is that inference cannot reach them. The list is
-deliberately tiny and is not a general volatile table — everything the
-experiment *can* find, it still finds. **Check the addresses against the part's
-own register map**: the FIFO count and the FIFO data port sit next to each
-other and swap places across this family, and declaring the port volatile
+because the defining property is that inference cannot reach them.
+
+A **data-ready register** is the other one, and there the sweep's own read is
+what hides it. `STATUS_REG` on the ST parts clears when the output registers
+are read, which every pass does; the TDK `INT_STATUS` words are marked
+read-to-clear and the pass clears them directly. Either way the next sample
+sets the bit again, so all four passes read the same byte, the register is
+classified static, and then `init()` reconfigures the part and the second
+snapshot catches it on the far side of a sample. That surfaces as an
+*intermittent* `imu.init.idempotent` WARN naming a register no `init()` ever
+writes — intermittent because whether a sample is pending at that instant is a
+race. The RM3100 arrives at the same place from the opposite direction: its
+`DRDY` clears only on a read of the measurement registers, which the
+destructive-window exclusion keeps out of the sweep, so the bit latches high
+and never moves at all. Only the register the part sets *per sample* is
+declared; the event sources beside it — free-fall, wake-up, tap, 6D, WOM —
+belong to functions no driver here enables, so they hold 0, the experiment can
+see them perfectly well, and they stay in the compare.
+
+The list is deliberately tiny and is not a general volatile table — everything
+the experiment *can* find, it still finds. **Check the addresses against the
+part's own register map**: the FIFO count and the FIFO data port sit next to
+each other and swap places across this family, and declaring the port volatile
 instead would leave the counter in the compare and put a destructive read in
 the sweep.
 
