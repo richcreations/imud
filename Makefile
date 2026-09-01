@@ -405,7 +405,7 @@ src/main.entry.o: Makefile
 # like test_drivers — this suite is already Linux-only.
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) -lgpiod -lm
+	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
 
 # imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
@@ -473,7 +473,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # The imud-imutest checker logic over the mock I2C bus, with a scripted
 # imt_ui_t standing in for the operator so the guided phases are covered too.
@@ -494,7 +494,7 @@ test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm
+	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # imud-cal and imud-imutest end to end, main() included.  These two tools held
 # the last sources that no test binary compiled at all -- cal_main.c,
@@ -525,9 +525,9 @@ test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 \
 	    -Wl,--wrap=imu_gpio_open -Wl,--wrap=imu_gpio_wait_edge \
 	    -Wl,--wrap=imu_gpio_close \
-	    -o $@ $(filter %.c %.o,$^) -lgpiod -lm
+	    -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
 
-TEST_BINS = test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
+TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
@@ -622,7 +622,7 @@ bump-version:
 .PHONY: fuzz-seeds
 fuzz-seeds:
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o mkseed_packet \
-	    src/packet.c fuzz/mkseed_packet.c -lm
+	    src/packet.c fuzz/mkseed_packet.c -lm $(ATOMIC_LIB)
 	@rm -f test/fuzz/corpus/packet/valid_v*.bin
 	./mkseed_packet test/fuzz/corpus/packet/valid_v$(shell sed -n 's/^\#define IMUD_VERSION *\([0-9]*\).*/\1/p' include/types.h).bin
 	@rm -f mkseed_packet
