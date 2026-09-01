@@ -37,6 +37,7 @@ static uint32_t g_fifo_drops[NADDR];  /* pushes discarded at FIFOSZ */
 static uint8_t g_selfclear[NADDR][REGSZ];  /* self-clearing bit masks */
 static uint8_t g_live[NADDR][REGSZ];       /* post-read increment, 0 = static */
 static int     g_alias[NADDR][REGSZ];      /* write also lands here, or -1 */
+static i2cmock_write_cb g_on_write;        /* fired after each write, or NULL */
 static uint32_t g_reads[NADDR][REGSZ];     /* per-register read tally */
 static uint8_t  g_wlog[NADDR][WLOGSZ];     /* registers written, in order */
 static uint32_t g_wlog_n[NADDR];           /* total writes; may exceed WLOGSZ */
@@ -94,6 +95,7 @@ void i2cmock_reset(void)
     g_wfail_reg  = -1;
     g_wfail_left = 0;
     g_wfail_hit  = 0;
+    g_on_write   = NULL;
 }
 
 void spimock_bind_inc(int fd, uint8_t addr, spimock_inc_t mode, uint8_t mask)
@@ -130,6 +132,11 @@ void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step)
 void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also)
 {
     g_alias[addr & (NADDR - 1)][reg] = also;
+}
+
+void i2cmock_on_write(i2cmock_write_cb cb)
+{
+    g_on_write = cb;
 }
 
 uint32_t i2cmock_read_count(uint8_t addr, uint8_t reg)
@@ -305,6 +312,10 @@ static void dev_write(int a, int *reg_ptr, uint8_t v)
      * from a broken one, because both leave the same final bytes. */
     if (g_alias[a][r] >= 0) g_reg[a][g_alias[a][r]] = v;
     (*reg_ptr)++;
+
+    /* Last, so the callback sees the register file the write has already
+     * landed in and can respond to the part's new configuration. */
+    if (g_on_write) g_on_write((uint8_t)a, r, v);
 }
 
 /* ── Wrapped ioctl ───────────────────────────────────────────────────────── */

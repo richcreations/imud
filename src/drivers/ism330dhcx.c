@@ -14,6 +14,7 @@
  */
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -43,9 +44,13 @@
 #define REG_FUNC_CFG_ACCESS   0x01  /* FUNC_CFG_EN | SHUB_REG_ACCESS | … */
 #define REG_CTRL4_C           0x13  /* … | DRDY_MASK | I2C_disable | … */
 #define CTRL4_I2C_DISABLE     0x04  /* bit 2, DS13012 Table 49 */
+#define REG_CTRL5_C           0x14  /* ROUNDING[1:0] | ST[1:0]_G | ST[1:0]_XL */
+#define REG_STATUS_REG        0x1E  /* … | TDA | GDA | XLDA (primary interface) */
 #define REG_CTRL9_XL          0x18  /* DEN_* | DEVICE_CONF | 0 */
 #define REG_CTRL10_C          0x19  /* 0[7:6] | TIMESTAMP_EN | 0[4:0] */
 #define REG_OUT_TEMP_L        0x20  /* temperature output L; H at 0x21 (256 LSB/°C, 0=25°C) */
+#define REG_OUTX_L_G          0x22  /* gyro  X/Y/Z, little-endian, through 0x27 */
+#define REG_OUTX_L_A          0x28  /* accel X/Y/Z, little-endian, through 0x2D */
 #define REG_FIFO_STATUS1      0x3A  /* DIFF_FIFO[7:0] */
 #define REG_FIFO_STATUS2      0x3B  /* FIFO_WTM_IA | FIFO_OVR_IA | FIFO_FULL_IA | ... | DIFF_FIFO[9:8] */
 #define REG_TIMESTAMP0        0x40  /* 32-bit chip counter [7:0],  25 µs/tick */
@@ -718,6 +723,138 @@ static int ism_read(const imud_bus_t *bus,
     return overflow ? 1 : 0;
 }
 
+/* ── Built-in self-test ───────────────────────────────────────────────────── */
+
+/*
+ * DS13012 Rev 7 defines the measurement (Table 2 notes 13 and 16, p.12): with
+ * the device stationary, the absolute value of OUTPUT with self-test enabled
+ * minus OUTPUT with it disabled.  The windows it must land in are Table 2
+ * itself (p.11) — accel 40..1700 mg, full-scale independent per note 14; gyro
+ * 150..700 dps, quoted per full scale, which is why the ranges below are
+ * programmed rather than left at whatever the daemon configured.
+ *
+ * Diagnostic only: the daemon never calls this, and it leaves the part
+ * configured for the measurement rather than for use.  See drivers.h.
+ */
+
+#define ST_ACCEL_LO_MG     40.0
+#define ST_ACCEL_HI_MG   1700.0
+#define ST_GYRO_LO_DPS    150.0
+#define ST_GYRO_HI_DPS    700.0
+
+/* Sensitivity of the two ranges programmed below, Table 2 cols LA_So / G_So. */
+#define ST_MG_PER_LSB      0.122   /* ±4 g       */
+#define ST_MDPS_PER_LSB   70.0     /* ±2000 dps  */
+
+/*
+ * Settle before each average.  Ton is 35 ms (electrical characteristics table,
+ * p.11) and the same figure covers a full-scale or self-test change reaching
+ * the output; 100 ms is that with margin, and at the 52 Hz programmed below it
+ * is also five sample periods, so the discarded sample is genuinely stale.
+ */
+#define ST_SETTLE_US   100000
+#define ST_AVG_N            5
+
+#define ST_STATUS_XLDA  0x01
+#define ST_STATUS_GDA   0x02
+
+/*
+ * Average ST_AVG_N fresh sample-sets from the direct output registers,
+ * discarding one first.
+ *
+ * Gated on STATUS_REG rather than timed: a blind sleep would average the same
+ * register image several times over if the part were not producing samples,
+ * and read as a plausible number.  A part that produces nothing here fails the
+ * call instead, which is the answer this whole check exists to get.
+ */
+static int st_average(const imud_bus_t *bus, uint8_t base, uint8_t ready,
+                      double out[3])
+{
+    double acc[3] = { 0.0, 0.0, 0.0 };
+
+    for (int i = 0; i < ST_AVG_N + 1; i++) {
+        int waited;
+        for (waited = 0; waited < 200; waited++) {
+            uint8_t st;
+            if (bus_reg_read(bus, REG_STATUS_REG, &st) < 0) return -1;
+            if (st & ready) break;
+            usleep(1000);
+        }
+        if (waited == 200) {
+            LOG_E("ism330dhcx: self-test: no sample within 200 ms "
+                  "(STATUS_REG bit 0x%02X never set)\n", ready);
+            return -1;
+        }
+
+        uint8_t b[6];
+        if (bus_burst_read(bus, base, b, 6) < 0) return -1;
+        if (i == 0) continue;   /* discard the first: it may predate the settle */
+        for (int a = 0; a < 3; a++)
+            acc[a] += (double)reg_s16le(&b[a * 2]);
+    }
+
+    for (int a = 0; a < 3; a++) out[a] = acc[a] / (double)ST_AVG_N;
+    return 0;
+}
+
+static int ism_self_test(const imud_bus_t *bus, imu_selftest_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->accel_lo_mg  = ST_ACCEL_LO_MG;
+    out->accel_hi_mg  = ST_ACCEL_HI_MG;
+    out->gyro_lo_dps  = ST_GYRO_LO_DPS;
+    out->gyro_hi_dps  = ST_GYRO_HI_DPS;
+
+    if (ism_reset(bus) < 0) return -1;
+
+    /* Bank and transport settled first, for the reasons ism_init gives. */
+    if (bus_reg_write(bus, REG_FUNC_CFG_ACCESS, 0x00) < 0) return -1;
+    if (bus->kind == BUS_SPI &&
+        bus_reg_write(bus, REG_CTRL4_C, CTRL4_I2C_DISABLE) < 0) return -1;
+    /* BDU=1 so a six-byte burst cannot straddle two samples, IF_INC=1 so it
+     * walks the address at all. */
+    if (bus_reg_write(bus, REG_CTRL3_C,  0x44) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL9_XL, 0x02) < 0) return -1;
+    /* 52 Hz (ODR code 0x3) at ±4 g and ±2000 dps — the ranges the limits above
+     * are quoted for.  LPF2 is deliberately left off: the datasheet defines the
+     * measurement on the unfiltered output. */
+    if (bus_reg_write(bus, REG_CTRL1_XL, (uint8_t)((0x3 << 4) | 0x08)) < 0) return -1;
+    if (bus_reg_write(bus, REG_CTRL2_G,  (uint8_t)((0x3 << 4) | 0x0C)) < 0) return -1;
+
+    int rc = -1;
+    double off[3], on[3];
+
+    usleep(ST_SETTLE_US);
+
+    /* Accelerometer: ST1_XL=0, ST0_XL=1 — positive sign (Table 54). */
+    if (st_average(bus, REG_OUTX_L_A, ST_STATUS_XLDA, off) < 0) goto done;
+    if (bus_reg_write(bus, REG_CTRL5_C, 0x01) < 0) goto done;
+    usleep(ST_SETTLE_US);
+    if (st_average(bus, REG_OUTX_L_A, ST_STATUS_XLDA, on) < 0) goto done;
+    if (bus_reg_write(bus, REG_CTRL5_C, 0x00) < 0) goto done;
+    for (int a = 0; a < 3; a++)
+        out->accel_mg[a] = fabs(on[a] - off[a]) * ST_MG_PER_LSB;
+
+    /* Gyroscope: ST1_G=0, ST0_G=1 — positive sign (Table 53).  Its own
+     * baseline rather than the accelerometer's, so nothing rests on the two
+     * sensors' offsets having held still across the pass above. */
+    usleep(ST_SETTLE_US);
+    if (st_average(bus, REG_OUTX_L_G, ST_STATUS_GDA, off) < 0) goto done;
+    if (bus_reg_write(bus, REG_CTRL5_C, 0x04) < 0) goto done;
+    usleep(ST_SETTLE_US);
+    if (st_average(bus, REG_OUTX_L_G, ST_STATUS_GDA, on) < 0) goto done;
+    for (int a = 0; a < 3; a++)
+        out->gyro_dps[a] = fabs(on[a] - off[a]) * ST_MDPS_PER_LSB / 1000.0;
+    rc = 0;
+
+done:
+    /* Self-test off on every path, including the failures: the contract
+     * promises the caller a part that is merely misconfigured, never one still
+     * driving its proof masses. */
+    if (bus_reg_write(bus, REG_CTRL5_C, 0x00) < 0) rc = -1;
+    return rc;
+}
+
 /* ── Driver descriptor ─────────────────────────────────────────────────────── */
 
 const imu_ops_t ism330dhcx_ops = {
@@ -750,6 +887,7 @@ const imu_ops_t ism330dhcx_ops = {
     .has_hw_timestamp = true,
     .ts_tick_ns       = 25000,   /* 32-bit counter, 25 µs/tick typical */
     .ts_tick_ns_actual = ism_ts_tick_ns_actual,
+    .self_test        = ism_self_test,
     /* DS13012 Rev 7 Table 43 (CTRL1_XL, §9.12) and Table 46 (CTRL2_G, §9.13):
      * both give 0x9 = 3.33 kHz and 0xA = 6.66 kHz in high-performance mode.
      * The two tables agreeing at the top is what makes writing one shared odr

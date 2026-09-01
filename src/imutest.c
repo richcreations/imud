@@ -2932,6 +2932,138 @@ static void check_fs_sweep(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     drain_flush(d);
 }
 
+/* ── Built-in self-test ───────────────────────────────────────────────────── */
+
+/*
+ * Ask the part to actuate its own sensing elements and grade what came back.
+ *
+ * This is the only passive check that proves the data path is LIVE.  Every
+ * other one here grades numbers the part produced, and a part producing
+ * plausible numbers from a dead sensing element passes all of them: at rest a
+ * working gyro and a broken one both read about zero, with the same noise
+ * floor and the same seq and timestamp behaviour.  Until now the only evidence
+ * an element responded at all came from the guided rotation phase, which needs
+ * somebody at the bench.  A self-test needs neither motion nor an operator.
+ *
+ * Runs after the full-scale sweep because it reconfigures the part the same
+ * way, and restores the configured setup after itself for the same reason.
+ */
+static void check_self_test(imt_report_t *r, drain_ctx_t *d,
+                            const imu_ops_t *imu, const imud_bus_t *bus,
+                            const imu_cfg_t *base)
+{
+    char mb[96], eb[64];
+
+    if (!imu->self_test) {
+        skip_check_structural(r, "imu.selftest.accel",
+                              "Accelerometer built-in self-test",
+                              "this driver exposes no self_test() hook");
+        skip_check_structural(r, "imu.selftest.gyro",
+                              "Gyroscope built-in self-test",
+                              "this driver exposes no self_test() hook");
+        skip_check_structural(r, "imu.selftest.restore",
+                              "Configured setup restored after self-test",
+                              "no self-test ran, so nothing was disturbed");
+        return;
+    }
+
+    /*
+     * The datasheet measurement is defined on a stationary part: gravity is
+     * common-mode and cancels in the difference, a rotation between the two
+     * averages does not.  So a bench that moved can produce an out-of-window
+     * number from healthy silicon, and grading that as a defect would send
+     * somebody after a part that is fine.  Recorded as a warning instead, with
+     * the reason on the row.
+     */
+    const imt_check_t *still = imt_find(r, "imu.rest.still");
+    bool was_still = still && still->status == IMT_PASS;
+
+    imu_selftest_t st;
+    if (imu->self_test(bus, &st) < 0) {
+        const char *why = "the driver could not complete the measurement — a "
+                          "bus error, or the part produced no samples to "
+                          "average. The log carries which.";
+        add_check(r, "imu.selftest.accel", "Accelerometer built-in self-test",
+                  IMT_FAIL, "self_test() failed", "0", "%s", why);
+        add_check(r, "imu.selftest.gyro", "Gyroscope built-in self-test",
+                  IMT_FAIL, "self_test() failed", "0", "%s", why);
+    } else {
+        const struct {
+            const char *id, *name, *unit;
+            const double *v;
+            double lo, hi;
+        } sensor[2] = {
+            { "imu.selftest.accel", "Accelerometer built-in self-test", "mg",
+              st.accel_mg, st.accel_lo_mg, st.accel_hi_mg },
+            { "imu.selftest.gyro", "Gyroscope built-in self-test", "dps",
+              st.gyro_dps, st.gyro_lo_dps, st.gyro_hi_dps },
+        };
+
+        for (int s = 0; s < 2; s++) {
+            const double *v = sensor[s].v;
+            double lo = sensor[s].lo, hi = sensor[s].hi;
+
+            /* A driver with no window for this sensor reports the response and
+             * leaves the judgement out — 0/0 is "the datasheet does not say". */
+            bool graded = hi > lo;
+            int  bad = 0;
+            for (int a = 0; graded && a < 3; a++)
+                if (v[a] < lo || v[a] > hi) bad++;
+
+            imt_status_t status = !graded ? IMT_INFO
+                                : bad     ? (was_still ? IMT_FAIL : IMT_WARN)
+                                          : IMT_PASS;
+
+            /* Built here rather than as a ternary of format strings: the
+             * branches carry different conversions, which is the trap the
+             * note above add_check() describes. */
+            char note[sizeof r->check[0].note];
+            if (!graded)
+                snprintf(note, sizeof note,
+                         "the response to the part's own actuation, per axis. "
+                         "Recorded, NOT graded: this driver reports no window "
+                         "for it.");
+            else if (bad && !was_still)
+                snprintf(note, sizeof note,
+                         "%d axis/axes outside the datasheet window, but the "
+                         "platform moved (see imu.rest.still) and motion lands "
+                         "in this difference. Re-run on a still bench first.",
+                         bad);
+            else if (bad)
+                snprintf(note, sizeof note,
+                         "%d axis/axes outside the datasheet window on a still "
+                         "bench: that axis did not respond to the part's own "
+                         "actuation, so its data path is not carrying the "
+                         "sensing element.", bad);
+            else
+                snprintf(note, sizeof note,
+                         "every axis responded to the part's own actuation "
+                         "within the datasheet window — the sensing elements "
+                         "are live, not merely quiet.");
+
+            add_check(r, sensor[s].id, sensor[s].name, status,
+                      fmtbuf(mb, sizeof mb, "%.0f / %.0f / %.0f %s",
+                             v[0], v[1], v[2], sensor[s].unit),
+                      graded ? fmtbuf(eb, sizeof eb, "%.0f..%.0f %s per axis",
+                                      lo, hi, sensor[s].unit)
+                             : "-",
+                      "%s", note);
+        }
+    }
+
+    /* The hook leaves the part configured for the measurement, not for use. */
+    bool ok = (imu->reset(bus) == 0) && (imu->init(bus, base) == 0);
+    add_check(r, "imu.selftest.restore",
+              "Configured setup restored after self-test",
+              ok ? IMT_PASS : IMT_FAIL,
+              ok ? "restored" : "failed",
+              fmtbuf(eb, sizeof eb, "%d g / %d dps", base->accel_g, base->gyro_dps),
+              ok ? "back to the configured setup after the self-test"
+                 : "could not restore the configured setup — later checks in "
+                   "this run are not trustworthy.");
+    drain_flush(d);
+}
+
 /* ── Phase A: DRDY / watermark interrupt line ─────────────────────────────── */
 
 static void drain_cb(void *user)
@@ -4643,6 +4775,13 @@ static const char *imt_required_imu[] = {
     "imu.err.nodata_not_error", "imu.err.no_spurious",
     "imu.noise.accel", "imu.noise.gyro", "imu.rest.gravity",
     "imu.temp.plausible", "imu.chipts.presence", "imu.fs.accel",
+    /*
+     * Structurally skipped on a part with no self_test() hook, which does not
+     * block — see imt_decide_verdict.  So this claims "where the silicon can
+     * answer, it did", and a part that cannot be asked stays clearable on the
+     * evidence of the rest.
+     */
+    "imu.selftest.accel", "imu.selftest.gyro",
     "faces.frame", "gyro.x.sign", "gyro.y.sign", "gyro.z.sign",
     NULL
 };
@@ -5206,6 +5345,10 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
         }
         /* last: every init() in the sweep resets the driver's seq counter */
         check_fs_sweep(r, opts, &d, imu, ibus, &icfg);
+        /* After it, and for the same reason: the self-test reconfigures the
+         * part too, and it needs check_rest to have settled whether the bench
+         * was still before it can grade what it measures. */
+        check_self_test(r, &d, imu, ibus, &icfg);
         r->phases_run |= IMT_PHASE_PASSIVE;
     }
 

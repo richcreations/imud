@@ -137,6 +137,25 @@ void i2cmock_set_live(uint8_t addr, uint8_t reg, uint8_t step);
 void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also);
 
 /*
+ * Called after every register write, with the file the write landed in, the
+ * register and the byte.  NULL (the i2cmock_reset() default) disables it.
+ *
+ * The register file above is passive: what a test preloads is what the driver
+ * reads back.  That cannot model a part whose OUTPUT depends on its own
+ * CONTROL registers — the ISM330DHCX's built-in self-test being the case in
+ * hand, where setting CTRL5_C shifts the data registers by the actuation the
+ * check exists to measure.  A hook is enough, and it keeps each part's
+ * semantics in the test that cares rather than accumulating chip-specific
+ * behaviour in here.
+ *
+ * The callback runs INSIDE the driver's ioctl, so it may call
+ * i2cmock_set_reg() and i2cmock_set_regs() (that is the point) but must not
+ * call anything that re-enters the driver.
+ */
+typedef void (*i2cmock_write_cb)(uint8_t addr, uint8_t reg, uint8_t val);
+void i2cmock_on_write(i2cmock_write_cb cb);
+
+/*
  * How many times `reg` on `addr` has been read since i2cmock_reset().
  *
  * For asserting that code does NOT touch a register — a write-only control

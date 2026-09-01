@@ -301,11 +301,90 @@ static void stage_sample(const double accel_ms2[3], const double gyro_rads[3])
 
 static void mmc_set_field(double ut_x, double ut_y, double ut_z);
 
+/* ── Built-in self-test: the one part of the mock that is not passive ─────── */
+
+/*
+ * How far the mock's self-test actuation moves each output, in raw counts.
+ * A test lowers one of these to model an element that does not respond.
+ */
+static int16_t g_st_accel_lsb[3];
+static int16_t g_st_gyro_lsb[3];
+/* What is currently applied, so a repeated CTRL5_C write is not double-counted
+ * and an unbalanced enable/disable cannot leave a permanent bias behind. */
+static bool g_st_applied_a, g_st_applied_g;
+
+static int16_t ism_get_le16(uint8_t reg)
+{
+    return (int16_t)((uint16_t)i2cmock_get_reg(ISM_ADDR, reg) |
+                     ((uint16_t)i2cmock_get_reg(ISM_ADDR, (uint8_t)(reg + 1)) << 8));
+}
+
+static void ism_bias_direct(uint8_t base, const int16_t d[3], int sign)
+{
+    for (int a = 0; a < 3; a++) {
+        uint8_t r = (uint8_t)(base + a * 2);
+        ism_set_le16(r, (int16_t)(ism_get_le16(r) + sign * d[a]));
+    }
+}
+
+/*
+ * CTRL5_C's ST bits shift the output registers by the actuation above
+ * (DS13012 Tables 51-54; the driver's ism_self_test measures the difference).
+ *
+ * The register file is otherwise passive — what a test preloads is what comes
+ * back — so without this the difference the driver measures is exactly zero
+ * and healthy silicon would be indistinguishable from a dead sensing element.
+ * Which is the whole thing imu.selftest.* exists to tell apart, so the mock
+ * has to be able to be both.
+ */
+static void ism_selftest_cb(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    if (addr != ISM_ADDR || reg != 0x14) return;
+
+    bool want_a = (val & 0x03) != 0;   /* ST[1:0]_XL */
+    bool want_g = (val & 0x0C) != 0;   /* ST[1:0]_G  */
+
+    if (want_a != g_st_applied_a) {
+        ism_bias_direct(0x28, g_st_accel_lsb, want_a ? +1 : -1);
+        g_st_applied_a = want_a;
+    }
+    if (want_g != g_st_applied_g) {
+        ism_bias_direct(0x22, g_st_gyro_lsb, want_g ? +1 : -1);
+        g_st_applied_g = want_g;
+    }
+}
+
+/*
+ * A healthy response: the counts the REFERENCE PART produced, measured on the
+ * bench ISM330DHCX over SPI on 2026-08-31 — 160/201/203 mg and 430/387/433 dps
+ * at 0.122 mg/LSB and 70 mdps/LSB.  Invented round numbers would do for the
+ * pass/fail logic, but not for the margin: the real accelerometer response
+ * sits about 4x its 40 mg floor, where a made-up 800 mg sat 20x clear of it,
+ * and a mock that models a part far healthier than the silicon makes the
+ * dead-element boundary look further away than it is.
+ *
+ * Set here for the same reason mock_base seeds a plausible earth field below:
+ * a zeroed default would fail a check for a reason unrelated to the code
+ * under test.
+ */
+static const int16_t ST_HEALTHY_ACCEL_LSB[3] = { 1311, 1648, 1664 };
+static const int16_t ST_HEALTHY_GYRO_LSB[3]  = { 6143, 5529, 6186 };
+
 static void mock_base(void)
 {
     i2cmock_reset();
     g_chip_ts = 1000;
     g_stage_skew_direct = false;
+    for (int a = 0; a < 3; a++) {
+        g_st_accel_lsb[a] = ST_HEALTHY_ACCEL_LSB[a];
+        g_st_gyro_lsb[a]  = ST_HEALTHY_GYRO_LSB[a];
+    }
+    g_st_applied_a = g_st_applied_g = false;
+    i2cmock_on_write(ism_selftest_cb);
+    /* STATUS_REG: TDA | GDA | XLDA.  ism_self_test gates each average on a
+     * fresh sample rather than sleeping blind, so a mock that never reports
+     * data ready would stall it into a timeout. */
+    i2cmock_set_reg(ISM_ADDR, 0x1E, 0x07);
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);       /* WHO_AM_I */
     i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);       /* OUT_TEMP */
     i2cmock_set_reg(ISM_ADDR, 0x21, 0x00);
@@ -1267,6 +1346,194 @@ static void test_mag_degauss_skips_without_the_op(void)
     /* The plain SET pulse still runs — set_reset is unaffected. */
     EXPECT(status_of(r, "mag.set_reset") == IMT_PASS,
            "the production degauss is unaffected");
+
+    free(r);
+    end(fb);
+}
+
+/* ── Built-in self-test ───────────────────────────────────────────────────── */
+
+static const char *measured_of(const imt_report_t *r, const char *id)
+{
+    const imt_check_t *c = imt_find(r, id);
+    return c ? c->measured : "";
+}
+
+/* A part whose elements respond within the datasheet window passes. */
+static void test_selftest_healthy(void)
+{
+    begin("test_selftest_healthy");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                &ism330dhcx_ops, &mmc5983ma_ops, &cfg, &o, r, err, sizeof err);
+
+    EXPECT(status_of(r, "imu.selftest.accel") == IMT_PASS,
+           "the accelerometer responds within the window");
+    EXPECT(status_of(r, "imu.selftest.gyro") == IMT_PASS,
+           "the gyroscope responds within the window");
+
+    /*
+     * The numbers, not just the verdict, and they are the bench part's own.
+     * Both windows are wide enough that a driver using the wrong sensitivity
+     * constant — 0.061 mg/LSB for ±2 g rather than 0.122 for ±4 g — would
+     * halve every figure and still PASS, so the two assertions above cannot
+     * see it and these have to.
+     */
+    EXPECT(strcmp(measured_of(r, "imu.selftest.accel"),
+                  "160 / 201 / 203 mg") == 0,
+           "the accel response is reported in mg, per axis");
+    EXPECT(strcmp(measured_of(r, "imu.selftest.gyro"),
+                  "430 / 387 / 433 dps") == 0,
+           "the gyro response is reported in dps, per axis");
+
+    /* The hook leaves the part configured for the measurement; the check has
+     * to put the configured setup back or nothing after it means anything. */
+    EXPECT(status_of(r, "imu.selftest.restore") == IMT_PASS,
+           "the configured setup is restored afterwards");
+    /* CTRL5_C back to 0: never leave a part driving its own proof masses. */
+    EXPECT(i2cmock_get_reg(ISM_ADDR, 0x14) == 0x00,
+           "self-test is disabled when the check is done");
+
+    /*
+     * Each average waits for a fresh sample rather than sleeping blind: four
+     * averages of six sample-sets is 24 STATUS_REG polls at the very least,
+     * against the handful the register sweep contributes.  A driver that
+     * slept instead would average one register image several times over and
+     * report a plausible number from a part producing nothing.
+     */
+    EXPECT(i2cmock_read_count(ISM_ADDR, 0x1E) >= 24,
+           "every average is gated on STATUS_REG, not on a timer");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * An element that does not respond to its own actuation.  This is the defect
+ * the whole check exists for: at rest such a part reads plausible zeros with a
+ * normal noise floor, so every other passive check passes it.
+ */
+static void test_selftest_dead_axis_fails(void)
+{
+    begin("test_selftest_dead_axis_fails");
+    int fb = g_fail;
+
+    mock_base();
+    /* Gyro Y produces 10 dps against a 150 dps floor; X and Z are healthy. */
+    g_st_gyro_lsb[1] = 143;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                &ism330dhcx_ops, &mmc5983ma_ops, &cfg, &o, r, err, sizeof err);
+
+    EXPECT(status_of(r, "imu.selftest.gyro") == IMT_FAIL,
+           "an axis below the datasheet floor fails");
+    EXPECT(note_contains(r, "imu.selftest.gyro", "1 axis"),
+           "the note says how many axes");
+    /* The accelerometer is untouched, so the failure must not spread to it —
+     * a check that condemned the whole part would not localise anything. */
+    EXPECT(status_of(r, "imu.selftest.accel") == IMT_PASS,
+           "the healthy accelerometer still passes");
+    EXPECT(r->recommend_clear_experimental == false,
+           "a failed self-test withholds the experimental recommendation");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * A part that never reports data ready.
+ *
+ * This is what the STATUS_REG gate is for, and it is only visible here: an
+ * implementation that slept instead would average the same register image six
+ * times over and report a confident 0 mg — a number, from a part that produced
+ * nothing.  Both spellings end in a FAIL, so the status alone cannot tell them
+ * apart; the measured column is where they differ, and it decides whether the
+ * reader goes looking at the sensing element or at the bus.
+ */
+static void test_selftest_stalled_part_fails(void)
+{
+    begin("test_selftest_stalled_part_fails");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    /* No XLDA/GDA, ever.  Set through the write hook so the register sweep's
+     * own writes cannot put it back. */
+    i2cmock_set_reg(ISM_ADDR, 0x1E, 0x00);
+    imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                &ism330dhcx_ops, &mmc5983ma_ops, &cfg, &o, r, err, sizeof err);
+
+    EXPECT(status_of(r, "imu.selftest.accel") == IMT_FAIL,
+           "a part that produces no samples fails the accel self-test");
+    EXPECT(status_of(r, "imu.selftest.gyro") == IMT_FAIL,
+           "and the gyro one");
+    EXPECT(strcmp(measured_of(r, "imu.selftest.accel"), "self_test() failed") == 0,
+           "reported as a failed measurement, not as a 0 mg response");
+    /* The part is still handed back configured, however the call went. */
+    EXPECT(status_of(r, "imu.selftest.restore") == IMT_PASS,
+           "the configured setup is restored even after a failed self-test");
+
+    free(r);
+    end(fb);
+}
+
+/*
+ * A driver with no self_test() hook must skip STRUCTURALLY: most parts here do
+ * not implement it yet, and a plain skip of a required check would make every
+ * one of their reports say it owes work no operator can do.
+ */
+static void test_selftest_skips_without_the_hook(void)
+{
+    begin("test_selftest_skips_without_the_hook");
+    int fb = g_fail;
+
+    mock_base();
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_PASSIVE;
+    script_reset(&o);
+
+    imu_ops_t noop = ism330dhcx_ops;
+    noop.self_test = NULL;
+
+    imt_report_t *r = calloc(1, sizeof *r);
+    char err[256] = "";
+    imt_run_ops(I2CBUS(ISM_ADDR), I2CBUS(MMC_ADDR),
+                &noop, &mmc5983ma_ops, &cfg, &o, r, err, sizeof err);
+
+    const imt_check_t *a = imt_find(r, "imu.selftest.accel");
+    const imt_check_t *g = imt_find(r, "imu.selftest.gyro");
+    EXPECT(a && a->status == IMT_SKIP && a->structural,
+           "no hook skips the accel self-test structurally");
+    EXPECT(g && g->status == IMT_SKIP && g->structural,
+           "no hook skips the gyro self-test structurally");
+    EXPECT(note_contains(r, "imu.selftest.accel", "self_test()"),
+           "the skip says what is missing");
+    /* Nothing was disturbed, so nothing had to be put back. */
+    EXPECT(status_of(r, "imu.selftest.restore") == IMT_SKIP,
+           "there is nothing to restore");
 
     free(r);
     end(fb);
@@ -3136,6 +3403,7 @@ static void stage_clean_report(imt_report_t *r, bool imu_exp, bool mag_exp)
         "imu.err.nodata_not_error", "imu.err.no_spurious",
         "imu.noise.accel", "imu.noise.gyro", "imu.rest.gravity",
         "imu.temp.plausible", "imu.chipts.presence", "imu.fs.accel",
+        "imu.selftest.accel", "imu.selftest.gyro",
         "faces.frame", "gyro.x.sign", "gyro.y.sign", "gyro.z.sign",
         "mag.probe", "mag.init.rc", "mag.rate", "mag.nodata_not_error",
         "mag.field_magnitude", "mag.noise", "mag.wall_ns",
@@ -4287,6 +4555,10 @@ int main(void)
     test_fifo_port_window_not_swept();
     test_mag_degauss_ordering_and_restore();
     test_mag_degauss_skips_without_the_op();
+    test_selftest_healthy();
+    test_selftest_dead_axis_fails();
+    test_selftest_stalled_part_fails();
+    test_selftest_skips_without_the_hook();
     test_mag_writeonly_ctrl_skips();
     test_burst_framing();
     test_direct_vs_fifo();

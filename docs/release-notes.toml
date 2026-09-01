@@ -22,6 +22,19 @@
 #             it is rendered prominently.
 
 [[release]]
+version = "1.10.0"
+date    = "unreleased"
+summary = """
+Drivers can now expose their part's built-in self-test, and imud-imutest grades
+it — the first passive check that proves the sensing elements are live."""
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud-utils"]
+  text     = "imud-imutest runs the IMU's built-in self-test and grades the per-axis response against the datasheet window. It needs no motion and no operator, so it runs under --passive."
+  impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx; other drivers structurally skip it and stay clearable."
+
+[[release]]
 version = "1.9.1"
 date    = "2026-08-31"
 summary = """

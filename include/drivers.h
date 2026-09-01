@@ -97,6 +97,28 @@ typedef struct {
  * than calling the hook directly, so the NULL default lives in one place.
  */
 
+/* ── Built-in self-test ───────────────────────────────────────────────────── */
+
+/*
+ * What a part's built-in self-test produced, per axis, against the window its
+ * datasheet says the response must land in.
+ *
+ * Units are the datasheet's own — mg and dps — not the SI units the sample
+ * path carries.  The numbers here are only ever compared against a printed
+ * table and shown to whoever is reading the report, so carrying them in the
+ * units that table uses keeps the driver's constants recognisable against the
+ * page they came from.  Field names say which unit, as elsewhere in the tree.
+ *
+ * `lo`/`hi` are inclusive.  A pair left 0/0 means the datasheet gives no
+ * window for that sensor and the caller must not grade it.
+ */
+typedef struct {
+    double accel_mg[3];    /* |output(self-test on) - output(off)|, X Y Z */
+    double gyro_dps[3];
+    double accel_lo_mg,  accel_hi_mg;
+    double gyro_lo_dps,  gyro_hi_dps;
+} imu_selftest_t;
+
 /* ── IMU driver operations ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -163,6 +185,32 @@ typedef struct {
      * cannot produce an absurd period — bound it if it can.
      */
     uint32_t (*ts_tick_ns_actual)(const imud_bus_t *bus);
+
+    /*
+     * Optional: run the part's built-in self-test.  NULL on a part that has
+     * none.  Returns 0 with *out filled, or -1 when the measurement could not
+     * be made at all — a bus error, or a part that produced no samples to
+     * average.  Unlike read(), there is no third return: nothing here is
+     * "not yet", because the implementation waits for what it needs.
+     *
+     * DIAGNOSTIC ONLY.  The daemon never calls this — it is what lets
+     * imud-imutest say the data path is live with nobody at the bench.  At
+     * rest a working gyro and a dead one both read about zero, so without it
+     * the only evidence the sensing element responds at all comes from the
+     * guided rotation phase.  The self-test applies a known electrostatic
+     * force to the proof mass and the response is graded against the factory
+     * window, which needs no motion and no operator.
+     *
+     * The measurement is defined on a STATIONARY part: gravity is common-mode
+     * and cancels in the difference, but a rotation between the two averages
+     * does not.  The caller establishes stillness; the driver assumes it.
+     *
+     * An implementation reconfigures the part freely and LEAVES ITS
+     * CONFIGURATION UNDEFINED, with only self-test itself guaranteed off.  The
+     * caller must reset() and init() afterwards before anything else reads
+     * from it — imutest checks that this happened rather than assuming it.
+     */
+    int (*self_test)(const imud_bus_t *bus, imu_selftest_t *out);
 
     int  supported_odr_mhz[16];  /* milli-Hz, ascending, 0-terminated */
     int  supported_accel_g[8];   /* ascending, 0-terminated */

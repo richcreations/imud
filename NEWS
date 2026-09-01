@@ -10,6 +10,22 @@ Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
 registry rather than this file.
 
 
+1.10.0
+------
+Drivers can now expose their part's built-in self-test, and imud-imutest
+grades it — the first passive check that proves the sensing elements are live.
+
+Added:
+
+* imud-imutest runs the IMU's built-in self-test and grades the per-axis
+  response against the datasheet window. It needs no motion and no operator,
+  so it runs under --passive.
+  This is the only passive check that distinguishes a live sensing element
+  from a dead one: at rest both read about zero and pass every other check.
+  Implemented for ism330dhcx; other drivers structurally skip it and stay
+  clearable.
+
+
 1.9.1
 -----
 A correctness release. The magnetometer is now used for heading even without a

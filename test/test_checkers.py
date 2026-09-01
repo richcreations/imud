@@ -467,11 +467,12 @@ CASES = [
     # claiming to be the one still accumulating. The older then keeps taking
     # entries that render into the wrong NEWS section. 1.9.0 shipped this way.
     #
-    # Both dates are unstamped here because the tree carries no unreleased
-    # stanza between releases -- stamping the newest is what cutting one does.
+    # Both fixtures below are written against a tree that DOES carry an
+    # unreleased stanza, because between releases it does -- that is the state
+    # the marker exists for. Unstamping a second date is therefore enough to
+    # reach two, and reaching "is newer" needs the real one stamped first.
     ("gen-release-notes", "docs/release-notes.toml",
-     chain(sub(r'^date    = "2026-08-31"', 'date    = "unreleased"'),
-           sub(r'^date    = "2026-08-28"', 'date    = "unreleased"')),
+     sub(r'^date    = "2026-08-31"', 'date    = "unreleased"'),
      "2 releases"),
 
     # The date in a form nothing downstream can order or parse.
@@ -480,11 +481,13 @@ CASES = [
      "YYYY-MM-DD"),
 
     # The accumulating stanza left behind a newer one, so changes land in a
-    # section that has already shipped. Reached by unstamping an older stanza
-    # rather than renaming the newest, which would only trip the separate
-    # check that include/version.h has a stanza at all.
+    # section that has already shipped. Reached by stamping the real
+    # accumulating stanza and unstamping an older one, rather than renaming the
+    # newest, which would only trip the separate check that include/version.h
+    # has a stanza at all.
     ("gen-release-notes", "docs/release-notes.toml",
-     sub(r'^date    = "2026-08-28"', 'date    = "unreleased"'),
+     chain(sub(r'^date    = "unreleased"', 'date    = "2026-09-01"'),
+           sub(r'^date    = "2026-08-28"', 'date    = "unreleased"')),
      "is newer"),
 
 

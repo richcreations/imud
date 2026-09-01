@@ -1618,6 +1618,48 @@ If your chip has **no hardware timer**, set `has_hw_timestamp = false` and
 leave `chip_ts = 0` in every sample. The anchor mechanism in `imu.c` handles
 this by updating the wall-clock anchor on every burst.
 
+#### `self_test` (optional, diagnostic)
+
+Most 6-axis parts can apply a known electrostatic force to their own proof
+masses and are specified for how far the output must move when they do.
+Implement `self_test(bus, &out)` and `imud-imutest` will run it, grading the
+response per axis against the window you report alongside it.
+
+It is worth implementing because it answers a question nothing else here can.
+At rest a working gyroscope and one whose sensing element is dead both read
+about zero, with the same noise floor and the same sequence and timestamp
+behaviour, so every other passive check passes both. Without a self-test the
+only evidence that an element responds at all comes from the guided rotation
+phase — which needs a person at the bench, and so cannot run unattended or in
+`--passive`.
+
+The contract is deliberately loose about state and strict about the
+measurement:
+
+- **The daemon never calls it.** It is a diagnostic, like `degauss` below.
+- Report the response and the datasheet's window in **the datasheet's own
+  units** — mg and dps — not the SI units the sample path carries. These
+  numbers are only ever compared against a printed table and shown to whoever
+  is reading the report. Leave a window at `0`/`0` and the check records the
+  response without grading it.
+- Program whatever ranges the limits are quoted for. They usually are
+  per-range: the ISM330DHCX's accelerometer window is full-scale independent
+  but its gyroscope one is not, so the driver selects ±2000 dps rather than
+  grading against whatever the operator configured.
+- **Wait for fresh samples rather than sleeping.** A blind sleep will average
+  one register image several times over and report a confident number from a
+  part that is producing nothing — the exact failure the check exists to
+  catch. Gate each read on the part's data-ready status and fail the call if
+  it never comes.
+- You may leave the part configured however the measurement needed, but
+  **self-test itself must be off on every exit path**, including the failures.
+  The caller re-runs `reset()` and `init()` afterwards and checks that it
+  worked.
+
+Return `-1` if the measurement could not be made at all — a bus error, or no
+samples to average. There is no third return here: unlike `read()`, nothing is
+"not yet", because the implementation waits for what it needs.
+
 ### Writing a magnetometer driver (`mag_ops_t`)
 
 #### `probe`, `reset`, `init`
