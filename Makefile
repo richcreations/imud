@@ -62,6 +62,25 @@ else
     override CPPFLAGS += -DIMUD_NO_GPIOD
 endif
 
+# The bus backend behind include/bus_backend.h.  src/bus_linux.c is the
+# i2c-dev and spidev ioctls; src/bus_null.c is the same five entry points with
+# open() and close() real and every transfer failing ENOSYS, which leaves a
+# `driver = sim` build running the whole pipeline on a host that has neither.
+# That is the state a port starts from — a BSD or a Mac builds and runs before
+# it has a backend of its own.
+#
+# Detected by ./configure, which writes NO_LINUX_BUS into config.mk; the
+# default here is the Linux backend, so a plain `make` on the target platform
+# needs no configure step.
+NO_LINUX_BUS ?= 0
+
+ifeq ($(NO_LINUX_BUS),0)
+    BUS_SRC = src/bus_linux.c
+else
+    BUS_SRC = src/bus_null.c
+    override CPPFLAGS += -DIMUD_NO_LINUX_BUS
+endif
+
 # Auto-detect whether 64-bit atomics need libatomic.
 #
 # The cross-thread counters and timestamps are _Atomic on 64-bit types. Those
@@ -137,6 +156,7 @@ IMUD_SRCS   = src/cal.c \
               src/status_fmt.c \
               src/wmm.c \
               src/bus.c \
+              $(BUS_SRC) \
               src/drivers.c \
               $(DRIVER_SRCS)
 
@@ -149,6 +169,7 @@ CAL_SRCS    = src/cal.c \
               src/cal_math.c \
               src/config.c \
               src/bus.c \
+              $(BUS_SRC) \
               src/drivers.c \
               src/fusion.c \
               src/imu_math.c \
@@ -173,6 +194,7 @@ IMUTEST_SRCS = src/cli.c \
                src/cal_math.c \
                src/imu_math.c \
                src/bus.c \
+               $(BUS_SRC) \
                src/drivers.c \
                src/imutest.c \
                src/imutest_open.c \
@@ -352,6 +374,12 @@ test_configure: test/test_configure.c configure
 test_imu_gpio_null: src/imu_gpio_null.c test/test_imu_gpio_null.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
+# The no-i2c-dev bus backend, on the same terms as test_imu_gpio_null above:
+# linked on its own, never through $(BUS_SRC), so it builds and runs
+# identically whichever backend the tree is configured for.
+test_bus_null: src/bus_null.c test/test_bus_null.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
+
 test_ring: src/ring.c test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
@@ -496,8 +524,13 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # rate_ladder.h listed for the same reason as test_fusion: this suite is the
 # guard that the ladder covers the registry, and a stale binary would compare
 # the new tables against the old ladder — or the reverse — and pass.
+# src/bus_null.c rather than $(BUS_SRC): the subject is the registry — names,
+# counts, ODR ladders — and it issues no transfer.  Pinning the null backend
+# keeps the suite identical on every host, and makes a stray transfer fail
+# with ENOSYS rather than reach whatever fd it was handed.
 test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
-                       src/imu_math.c test/test_drivers_registry.c \
+                       src/imu_math.c src/bus_null.c \
+                       test/test_drivers_registry.c \
                        test/rate_ladder.h \
                        src/drivers/bus_io.h src/drivers/chip_ts.h \
                        src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h
@@ -509,13 +542,12 @@ test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
 test_imu_math: src/imu_math.c test/test_imu_math.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
-# Per-driver register decode/encode over a mock I2C bus (test/bus_mock.c wraps
-# ioctl with --wrap — GNU ld only).  Covers the two hardware-validated drivers
-# (ism330dhcx IMU, mmc5983ma mag) plus the MPU-925x pair, whose fuse-ROM
-# correction and rotated magnetometer axes are worth pinning down off-hardware.
-# Also wrap __ioctl_time64: on 32-bit glibc with -D_TIME_BITS=64 (Debian armhf)
-# ioctl() is redirected to that symbol, so wrapping plain ioctl alone misses
-# every call there.
+# Per-driver register decode/encode over a mock bus.  test/bus_mock.c is a
+# third implementation of include/bus_backend.h and is linked in place of
+# $(BUS_SRC), so this needs no --wrap and no GNU ld.  Covers the two
+# hardware-validated drivers (ism330dhcx IMU, mmc5983ma mag) plus the MPU-925x
+# pair, whose fuse-ROM correction and rotated magnetometer axes are worth
+# pinning down off-hardware.
 # src/imu_math.c is linked for snap_odr_up / odr_actual_*: test_odr_agreement
 # checks each driver's own ODR encoding against the shared default rule, which
 # is the invariant that lets imu.c hand the resolved rate back to the driver.
@@ -535,13 +567,13 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
-# The imud-imutest checker logic over the mock I2C bus, with a scripted
+# The imud-imutest checker logic over the mock bus, with a scripted
 # imt_ui_t standing in for the operator so the guided phases are covered too.
 # Links the driver ops structs directly (not src/drivers.c) and stubs
 # imt_gpio_count_edges, so it needs neither the registry nor -lgpiod.
-# Same --wrap pair as test_drivers; Linux/GNU-ld only.
+# test/bus_mock.c is the backend, as in test_drivers.
 # -Isrc is for test/test_imutest.c alone: it checks the mock's FIFO-port window
 # through drivers/i2c_io.h, the same single-byte read path imud-imutest's
 # register sweep uses, and a quoted include only searches the including file's
@@ -556,7 +588,7 @@ test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # imud-cal and imud-imutest end to end, main() included.  These two tools held
 # the last sources that no test binary compiled at all -- cal_main.c,
@@ -573,18 +605,20 @@ test_imutest: src/imutest.c src/imutest_report.c \
 # both.
 HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 
-# The wraps, in order.  --wrap=ioctl / __ioctl_time64 is test/bus_mock.c serving
-# the real mmc5983ma driver for the --degauss path, exactly as test_imutest
-# does.  --wrap on the three imu_gpio_* entry points is the seam for
+# test/bus_mock.c replaces $(BUS_SRC) here, serving the real mmc5983ma driver
+# for the --degauss path exactly as test_imutest does — hence the filter-out,
+# since HWTOOLS_SRCS carries the real backend.
+#
+# --wrap on the three imu_gpio_* entry points is the seam for
 # imutest_gpio.c: its counting POLICY is pure logic over injectable callbacks,
 # and only imu_gpio_* (in $(GPIO_SRC), which IMUTEST_SRCS links deliberately)
 # touch a line -- so --wrap rather than stubs, which would collide with the
 # real definitions.  Same shape as --wrap=pthread_create in test_daemon.
 # Linux/GNU-ld only, and the GPIO backend, like it.
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
-                  $(HWTOOLS_SRCS) test/bus_mock.c test/test_hwtools_e2e.c
+                  $(filter-out $(BUS_SRC),$(HWTOOLS_SRCS)) \
+                  test/bus_mock.c test/test_hwtools_e2e.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 \
 	    -Wl,--wrap=imu_gpio_open -Wl,--wrap=imu_gpio_wait_edge \
 	    -Wl,--wrap=imu_gpio_close \
 	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
@@ -594,7 +628,7 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest test_hwtools_e2e \
+      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_drivers test_imutest test_hwtools_e2e \
       test_configure
 
 # Every test binary depends on every project header.
@@ -651,6 +685,7 @@ test: $(TEST_BINS)
 	./test_drivers_registry
 	./test_imu_math
 	./test_imu_gpio_null
+	./test_bus_null
 	./test_drivers
 	./test_imutest
 	./test_hwtools_e2e
@@ -1436,7 +1471,7 @@ clean:
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
-	      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest \
+	      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_drivers test_imutest \
       test_hwtools_e2e test_configure \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      fuzz_argv \

@@ -5,12 +5,13 @@
  */
 
 /*
- * bus_mock.h — an in-memory I2C register-map device for driver unit tests.
+ * bus_mock.h — an in-memory register-map device for driver unit tests.
  *
- * The sensor drivers do all their I/O through ioctl(fd, I2C_RDWR, ...).  Built
- * with `-Wl,--wrap=ioctl` (GNU ld), this harness replaces that syscall with a
- * software model so a driver's probe/init/read can be exercised with no
- * hardware:
+ * The third implementation of include/bus_backend.h, beside src/bus_linux.c
+ * and src/bus_null.c: a suite links this file in place of either, and the
+ * drivers reach it through exactly the framing they use on real silicon.  It
+ * models a device, not a syscall, so a driver's probe/init/read can be
+ * exercised with no hardware:
  *
  *   - A per-address 256-byte register file with the usual auto-increment
  *     semantics: a write message's first byte is the register pointer, the
@@ -186,12 +187,12 @@ uint32_t i2cmock_writes(uint8_t addr);
 int      i2cmock_write_at(uint8_t addr, uint32_t n);
 int      i2cmock_last_write(uint8_t addr);
 
-/* Make the next wrapped ioctl() fail (-1, errno=EIO), then resume normally.
- * Drives the drivers' "I2C error" branches. */
-void i2cmock_fail_next_ioctl(void);
+/* Make the next transfer fail (-1, errno=EIO), then resume normally.
+ * Drives the drivers' "bus error" branches. */
+void i2cmock_fail_next_xfer(void);
 
 /*
- * Sticky version: every ioctl fails until disabled, modelling a wedged bus.
+ * Sticky version: every transfer fails until disabled, modelling a wedged bus.
  * Needed where the code under test has no per-iteration hook to re-arm the
  * one-shot through — imud-imutest's sustained-read check, for one.
  */
@@ -215,5 +216,20 @@ void i2cmock_fail_all(int enable);
  * fail, which is the wedged-bus case where recovery cannot work either.
  */
 void i2cmock_fail_write_to(uint8_t addr, int reg, int times);
+
+/*
+ * The shape of the last SPI message: how many legs, and each one's word width
+ * and byte count.  Recorded whether or not the transfer was armed to fail.
+ *
+ * For asserting the FRAMING rather than the result, which no register
+ * readback can show.  bus_io.h sends a one-byte read as ONE 16-bit word
+ * precisely so a controller that deasserts chip-select between words cannot
+ * split it, and a burst read as TWO 8-bit legs because that one cannot be
+ * made atomic.  Both leave identical bytes in the register file, so a change
+ * that collapsed or split them would pass every other assertion here.
+ */
+unsigned spimock_last_nlegs(void);
+uint8_t  spimock_last_bits(unsigned leg);
+uint32_t spimock_last_len(unsigned leg);
 
 #endif /* IMUD_TEST_I2C_MOCK_H */

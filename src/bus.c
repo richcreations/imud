@@ -12,17 +12,17 @@
  * the same configurations for the same reasons.  The per-transfer register
  * helpers are elsewhere, in src/drivers/bus_io.h, because they have to stay
  * static inline inside each driver TU.
+ *
+ * The policy here is host-independent — which transports a part offers, what
+ * clock it can take — so the host's answer is reached through
+ * include/bus_backend.h rather than written inline.
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <string.h>
-#include <unistd.h>
-
-#include <linux/spi/spidev.h>
-#include <sys/ioctl.h>
 
 #include "bus.h"
+#include "bus_backend.h"
 #include "log.h"
 
 static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
@@ -52,20 +52,17 @@ static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
         return -1;
     }
 
-    int fd = open(spec->node, O_RDWR | O_CLOEXEC);
+    int fd = bus_be_open(spec->node);
     if (fd < 0) {
         LOG_E("[%s] cannot open %s: %s\n", who, spec->node, strerror(errno));
         return -1;
     }
 
-    uint8_t  mode = caps->spi_mode;
-    uint8_t  bits = 8;
-    if (ioctl(fd, SPI_IOC_WR_MODE, &mode) < 0 ||
-        ioctl(fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0 ||
-        ioctl(fd, SPI_IOC_WR_MAX_SPEED_HZ, &hz) < 0) {
+    uint8_t mode = caps->spi_mode;
+    if (bus_be_spi_setup(fd, mode, 8, hz) < 0) {
         LOG_E("[%s] cannot configure %s for SPI mode %u at %u Hz: %s\n",
               who, spec->node, mode, hz, strerror(errno));
-        close(fd);
+        bus_be_close(fd);
         return -1;
     }
 
@@ -80,9 +77,7 @@ static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
 
 static int open_i2c(imud_bus_t *b, const bus_spec_t *spec, const char *who)
 {
-    /* O_CLOEXEC on the open itself, per the tree-wide close-on-exec rule —
-     * there is no window here for a fork to inherit the descriptor. */
-    int fd = open(spec->node, O_RDWR | O_CLOEXEC);
+    int fd = bus_be_open(spec->node);
     if (fd < 0) {
         LOG_E("[%s] cannot open %s: %s\n", who, spec->node, strerror(errno));
         return -1;
@@ -130,6 +125,6 @@ int bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
 void bus_close(imud_bus_t *b)
 {
     if (!b) return;
-    if (b->fd >= 0) close(b->fd);
+    bus_be_close(b->fd);
     bus_init(b);
 }

@@ -31,10 +31,10 @@
 #include <stdint.h>
 
 /*
- * Deliberately no Linux kernel headers here: include/config.h includes this
- * one, and test_config builds on the macOS dev box.  The Linux-only pieces
- * live in src/bus.c and src/drivers/bus_io.h, which are only ever linked into
- * Linux-only binaries.
+ * Deliberately no kernel headers here, and none in src/bus.c or
+ * src/drivers/bus_io.h either: every one of them lives behind
+ * include/bus_backend.h, in src/bus_linux.c.  That is what lets a host with
+ * no i2c-dev take src/bus_null.c instead and still build.
  */
 
 typedef enum {
@@ -45,6 +45,10 @@ typedef enum {
 /* A live bus.  fd < 0 means "not open". */
 typedef struct {
     bus_kind_t kind;
+    /* The backend's token, from bus_be_open() — a file descriptor on the
+     * hosts that have device nodes, not necessarily on one that does not.
+     * Only src/bus.c and src/drivers/bus_io.h read it, and both hand it
+     * straight back to the backend. */
     int        fd;
     uint8_t    i2c_addr;     /* BUS_I2C: the 7-bit slave address */
     /* BUS_SPI: resolved at open from the driver's limits and the operator's

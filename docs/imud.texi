@@ -2947,14 +2947,12 @@ int bus_reg_write (const imud_bus_t *bus, uint8_t reg, uint8_t val);
 int bus_burst_read(const imud_bus_t *bus, uint8_t reg, uint8_t *buf, uint16_t len);
 @end verbatim
 
-The handle carries the descriptor, the transport, and whatever addresses
-the part --- the 7-bit slave address on I²C, the resolved clock and
-framing bits on SPI. @strong{Write the register logic once; it runs on
-either bus.} The helpers are @code{static inline} so every driver still
-issues its own single @code{ioctl()}, which is what
-@code{test/bus_mock.c} intercepts with @code{--wrap=ioctl}; do not
-reroute them through @code{I2C_SLAVE}, SMBus calls, or
-@code{read()}/@code{write()}.
+The handle carries the transport, the backend's token, and whatever
+addresses the part --- the 7-bit slave address on I²C, the resolved
+clock and framing bits on SPI. @strong{Write the register logic once; it
+runs on either bus.} The helpers frame the transfer and hand it to the
+host's backend (@code{include/bus_backend.h}), so a driver is written
+against the framing and not against any one kernel's ioctls.
 
 To offer SPI, fill in @code{bus_caps} from the datasheet:
 
@@ -3114,10 +3112,13 @@ that column is the SPI command byte with the read bit already set, and
 using it as an I²C sub-address addresses a register that does not exist.
 
 The helpers are @code{static inline}, so each driver still issues its
-own single @code{ioctl()} per transfer --- which is exactly what the
-mock bus (@code{test/bus_mock.c}, @code{--wrap=ioctl}) intercepts. Keep
-any new I/O on this path; SMBus calls, @code{I2C_SLAVE}, or
-@code{read()}/@code{write()} would bypass the mock.
+own single transfer, through the backend behind
+@code{include/bus_backend.h}. The mock bus (@code{test/bus_mock.c}) is
+one of its three implementations, beside @code{src/bus_linux.c} and
+@code{src/bus_null.c}. Keep any new I/O on this path; a raw
+@code{ioctl()}, an SMBus call, @code{I2C_SLAVE} or
+@code{read()}/@code{write()} would bypass both the mock and every
+non-Linux host.
 
 @node Writing an IMU driver imu_ops_t
 @section Writing an IMU driver (imu_ops_t)

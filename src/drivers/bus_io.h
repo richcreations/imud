@@ -7,12 +7,15 @@
 /*
  * bus_io.h — shared register helpers for the hardware drivers.
  *
- * static inline in a driver-private header on purpose: every driver TU still
- * issues its own single ioctl() per transfer, which is exactly what
- * test/bus_mock.c intercepts via --wrap=ioctl. Do not reroute these through
- * I2C_SLAVE, SMBus calls, or read()/write() — the mock models only
- * ioctl(I2C_RDWR) with 1 or 2 messages and ioctl(SPI_IOC_MESSAGE) with the
- * same 1-or-2 shape.
+ * This is FRAMING, not transport: what goes in the command byte, how many
+ * legs a transfer takes and how wide each one is. The transfer itself is the
+ * host's, through include/bus_backend.h, so every driver runs unchanged on
+ * any backend — src/bus_linux.c, src/bus_null.c, or test/bus_mock.c, which is
+ * the third and is what the driver suites run against.
+ *
+ * static inline in a driver-private header on purpose: each driver TU still
+ * issues its own single transfer, with no per-call dispatch between the
+ * register logic and the bus.
  *
  * The bus handle carries the address, the transport and the SPI clock, so a
  * driver names only the register it wants and the same register logic runs on
@@ -24,12 +27,9 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <linux/spi/spidev.h>
-#include <sys/ioctl.h>
 
 #include "bus.h"
+#include "bus_backend.h"
 
 /*
  * SPI command framing. Every part imud drives spells the direction in the top
@@ -69,20 +69,13 @@ static inline int i2c_burst_read(const imud_bus_t *b, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
     uint8_t r = reg;
-    struct i2c_msg msgs[2] = {
-        { .addr = b->i2c_addr, .flags = 0,        .len = 1,   .buf = &r  },
-        { .addr = b->i2c_addr, .flags = I2C_M_RD, .len = len, .buf = buf },
-    };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(b->fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
+    return bus_be_i2c_xfer(b, &r, 1, buf, len);
 }
 
 static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = { reg, val };
-    struct i2c_msg msg = { .addr = b->i2c_addr, .flags = 0, .len = 2, .buf = buf };
-    struct i2c_rdwr_ioctl_data xfer = { .msgs = &msg, .nmsgs = 1 };
-    return ioctl(b->fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
+    return bus_be_i2c_xfer(b, buf, 2, NULL, 0);
 }
 
 /*
@@ -101,8 +94,8 @@ static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
  *
  * 2. A MULTI-byte read cannot be made atomic -- a 7-byte ST FIFO word is four
  *    16-bit words, with three boundaries -- so instead it clocks out a byte
- *    that is SAFE to be misread as a command.  spidev sends zeros when no
- *    tx_buf is given, and 0x00 has bit 7 clear, which on these parts means
+ *    that is SAFE to be misread as a command.  A leg with no tx clocks zeros,
+ *    and 0x00 has bit 7 clear, which on these parts means
  *    WRITE: a split read was issuing writes into register 0x00.  Clocking
  *    SPI_IDLE_CMD instead makes a split read a READ of WHO_AM_I, which changes
  *    nothing anywhere.
@@ -125,17 +118,17 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
     if (len == 1) {
         /* Command and data in one 16-bit word: no boundary to split. */
         uint16_t tx = (uint16_t)((uint16_t)cmd << 8), rx = 0;
-        struct spi_ioc_transfer tr = {
-            .tx_buf = (uintptr_t)&tx, .rx_buf = (uintptr_t)&rx, .len = 2,
-            .speed_hz = b->spi_hz, .bits_per_word = 16,
+        bus_spi_leg_t leg = {
+            .tx = (const uint8_t *)&tx, .rx = (uint8_t *)&rx,
+            .len = 2, .bits = 16,
         };
-        if (ioctl(b->fd, SPI_IOC_MESSAGE(1), &tr) < 0) return -1;
+        if (bus_be_spi_msg(b, &leg, 1) < 0) return -1;
         buf[0] = (uint8_t)(rx & 0xFFu);
         return 0;
     }
 
     /*
-     * Multi-byte: two transfers, data phase left as spidev's zero fill.
+     * Multi-byte: two legs, data phase left as the backend's zero fill.
      *
      * Clocking a read opcode (0x8F) here instead was tried, on the reasoning
      * that a split would then be misread as a harmless READ rather than a
@@ -161,24 +154,21 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
      * It does not arise at the default speed, only at an explicitly low
      * imu spi_speed_hz.
      */
-    struct spi_ioc_transfer tr[2] = {
-        { .tx_buf = (uintptr_t)&cmd, .len = 1,
-          .speed_hz = b->spi_hz, .bits_per_word = 8 },
-        { .rx_buf = (uintptr_t)buf,  .len = len,
-          .speed_hz = b->spi_hz, .bits_per_word = 8 },
+    bus_spi_leg_t legs[2] = {
+        { .tx = &cmd, .len = 1,   .bits = 8 },
+        { .rx = buf,  .len = len, .bits = 8 },
     };
-    return ioctl(b->fd, SPI_IOC_MESSAGE(2), tr) < 0 ? -1 : 0;
+    return bus_be_spi_msg(b, legs, 2);
 }
 
 static inline int spi_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 {
     uint16_t word = (uint16_t)(((uint16_t)(reg & (uint8_t)~BUS_SPI_READ) << 8)
                                | val);
-    struct spi_ioc_transfer tr = {
-        .tx_buf = (uintptr_t)&word, .len = 2,
-        .speed_hz = b->spi_hz, .bits_per_word = 16,
+    bus_spi_leg_t leg = {
+        .tx = (const uint8_t *)&word, .len = 2, .bits = 16,
     };
-    return ioctl(b->fd, SPI_IOC_MESSAGE(1), &tr) < 0 ? -1 : 0;
+    return bus_be_spi_msg(b, &leg, 1);
 }
 
 /* ── Transport dispatch ─────────────────────────────────────────────────── */

@@ -1602,19 +1602,22 @@ implemented directly. No filter library, no JSON library, no scripting runtime.
 ### I2C Burst Read Pattern
 
 Use a combined write+read transaction to eliminate the repeated-start overhead
-(saves ~40 µs per burst vs separate transactions):
+(saves ~40 µs per burst vs separate transactions). Drivers do not write this
+themselves: they call the framing helpers in `src/drivers/bus_io.h`, which
+hand the transfer to the host's backend behind `include/bus_backend.h`.
 
 ```c
-static int burst_read(int fd, uint8_t addr, uint8_t reg,
-                      uint8_t *buf, size_t len) {
-    struct i2c_msg msgs[2] = {
-        { .addr = addr, .flags = 0,        .len = 1,   .buf = &reg },
-        { .addr = addr, .flags = I2C_M_RD, .len = len, .buf = buf  },
-    };
-    struct i2c_rdwr_ioctl_data data = { .msgs = msgs, .nmsgs = 2 };
-    return ioctl(fd, I2C_RDWR, &data);
+static inline int i2c_burst_read(const imud_bus_t *b, uint8_t reg,
+                                 uint8_t *buf, uint16_t len)
+{
+    uint8_t r = reg;
+    return bus_be_i2c_xfer(b, &r, 1, buf, len);
 }
 ```
+
+`src/bus_linux.c` turns that into one `ioctl(I2C_RDWR)` of two messages.
+`src/bus_null.c` fails it with `ENOSYS`, which is what lets the tree build on
+a host with no i2c-dev.
 
 ### Build
 

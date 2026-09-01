@@ -37,6 +37,7 @@ mandir=
 docdir=
 infodir=
 want_gpiod=auto
+want_linux_bus=auto
 out=config.mk
 
 self=$0
@@ -85,6 +86,8 @@ Options take their value with an =, as shown.
 
   --with-gpiod              require libgpiod; fail if it is absent
   --without-gpiod           build the null GPIO backend even where it is present
+  --with-linux-bus          require i2c-dev and spidev; fail if absent
+  --without-linux-bus       build the null bus backend even where they are present
 
 Environment: CC, CFLAGS.
 
@@ -109,6 +112,8 @@ for arg do
         --udevdir=*)      udevdir=${arg#*=} ;;
         --with-gpiod)     want_gpiod=yes ;;
         --without-gpiod)  want_gpiod=no ;;
+        --with-linux-bus)    want_linux_bus=yes ;;
+        --without-linux-bus) want_linux_bus=no ;;
         *) die "unrecognized option: $arg (see --help)" ;;
     esac
 done
@@ -163,6 +168,7 @@ fi
 # the answer.  Everything else records itself through require().
 cc_ok=no
 endian=unknown
+have_linux_bus=0
 
 if echo 'int main(void){return 0;}' | try_link; then
     cc_ok=yes
@@ -188,15 +194,17 @@ int main(void){return (int)sqrt(4.0)-2;}' | try_link -lm; then
         require "libm" "$CC cannot link -lm"
     fi
 
-    # The bus backend the drivers have today: i2c-dev ioctls and spidev.  This
-    # is the one Linux-specific requirement, and it is why imud does not build
-    # on a BSD or a Mac yet (issue #44 moves it behind a backend).
-    if ! echo '#include <linux/i2c.h>
+    # The bus backend behind include/bus_backend.h.  Not fatal: with no
+    # i2c-dev and no spidev the tree takes src/bus_null.c, which keeps open()
+    # and close() and fails every transfer with ENOSYS.  That still builds and
+    # runs `driver = sim` end to end, which is where a port starts.
+    if echo '#include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 #include <linux/spi/spidev.h>
 int main(void){return I2C_RDWR==0;}' | try_link; then
-        require "Linux i2c-dev and spidev headers" \
-                "apt install linux-libc-dev; imud has no other bus backend yet"
+        have_linux_bus=1
+    else
+        have_linux_bus=0
     fi
 
     # Little-endian host.  The wire packet and .imucap are packed structs
@@ -257,6 +265,25 @@ case $want_gpiod in
         no_gpiod=1; gpiod_maj= ;;
     *)
         if [ -n "$gpiod_maj" ]; then no_gpiod=0; else no_gpiod=1; fi ;;
+esac
+
+# ── Selected: the bus backend ────────────────────────────────────────────────
+#
+# i2c-dev and spidev are optional at build time the same way libgpiod is: with
+# the null backend every transfer fails ENOSYS, so a real driver stops at its
+# probe, but open() and close() stay real and `driver = sim` runs the whole
+# pipeline.  That is what a BSD or a Mac builds and runs before it has a
+# backend of its own — issues #48 and #49.
+
+case $want_linux_bus in
+    yes)
+        [ "$have_linux_bus" = 1 ] ||
+            die "--with-linux-bus: no i2c-dev or spidev headers found"
+        no_linux_bus=0 ;;
+    no)
+        no_linux_bus=1 ;;
+    *)
+        if [ "$have_linux_bus" = 1 ]; then no_linux_bus=0; else no_linux_bus=1; fi ;;
 esac
 
 # ── Reported: the host runtime the threads sit on ────────────────────────────
@@ -360,6 +387,12 @@ HOST_ENDIAN = $endian
 NO_GPIOD = $no_gpiod
 GPIOD_MAJ = $gpiod_maj
 
+# Bus backend.  0 links the i2c-dev and spidev ioctls (src/bus_linux.c);
+# 1 builds the null backend (src/bus_null.c), whose open() and close() are
+# real and whose every transfer fails ENOSYS -- which still runs
+# \`driver = sim\` end to end.
+NO_LINUX_BUS = $no_linux_bus
+
 # Empty unless 64-bit atomics need libatomic (ARMv6).  It must follow the
 # objects on the link line, never sit in LDFLAGS.
 ATOMIC_LIB = $atomic_lib
@@ -409,7 +442,12 @@ echo "imud ${version:-unknown} — configured for $(uname -s) $(uname -m)"
 echo
 printf '    %-18s %s\n' "compiler" "$CC (C11, pthreads, libm)"
 printf '    %-18s %s\n' "64-bit atomics" "$atomic_how"
-printf '    %-18s %s\n' "bus backend" "Linux i2c-dev + spidev"
+if [ "$no_linux_bus" = 0 ]; then
+    printf '    %-18s %s\n' "bus backend" "Linux i2c-dev + spidev"
+else
+    printf '    %-18s %s\n' "bus backend" \
+           "null -- no I2C or SPI; only driver = sim will run"
+fi
 printf '    %-18s %s\n' "byte order" "$endian-endian"
 if [ "$no_gpiod" = 0 ]; then
     printf '    %-18s %s\n' "GPIO backend" "libgpiod $gpiod_ver (v$gpiod_maj API)"

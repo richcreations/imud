@@ -353,6 +353,54 @@ static void test_gpiod_forced(void)
     EXPECT(cfg_is("NO_GPIOD", "0"), "with the libgpiod backend");
 }
 
+/*
+ * The bus backend, on the same terms as the GPIO one above.
+ *
+ * A host with no i2c-dev and no spidev must CONFIGURE, not fail: src/bus_null.c
+ * keeps open() and close() and fails only the transfers, which still runs the
+ * sim driver end to end.  That is the state a BSD or a Mac port starts from,
+ * and configure refusing it would be the thing standing in the way.
+ */
+static void test_bus_absent(void)
+{
+    printf("test_bus_absent\n");
+    fixture_reset();
+    setenv("STUB_BUS", "0", 1);
+
+    EXPECT(run("") == 0, "a host with no i2c-dev/spidev still configures");
+    EXPECT(cfg_is("NO_LINUX_BUS", "1"), "NO_LINUX_BUS = 1 selects the null backend");
+    EXPECT(strstr(out("stdout"), "null") != NULL,
+           "and the summary says the backend is null");
+    EXPECT(strstr(out("stdout"), "sim") != NULL,
+           "naming the one driver that still runs");
+
+    /* Present is the ordinary case, and must stay the default. */
+    fixture_reset();
+    EXPECT(run("") == 0, "a host with them configures");
+    EXPECT(cfg_is("NO_LINUX_BUS", "0"), "with the Linux backend");
+}
+
+static void test_bus_forced(void)
+{
+    printf("test_bus_forced\n");
+    fixture_reset();
+
+    EXPECT(run("--without-linux-bus") == 0, "--without-linux-bus configures");
+    EXPECT(cfg_is("NO_LINUX_BUS", "1"), "and takes the null backend anyway");
+
+    /* Same asymmetry as --with-gpiod: asking for the Linux bus and silently
+     * getting the null one would hand back a build that cannot reach a sensor. */
+    fixture_reset();
+    setenv("STUB_BUS", "0", 1);
+    EXPECT(run("--with-linux-bus") == 1, "--with-linux-bus fails when absent");
+    EXPECT(strstr(out("stderr"), "i2c-dev") != NULL, "saying so on stderr");
+    EXPECT(!wrote_config_mk(), "and writes no config.mk");
+
+    fixture_reset();
+    EXPECT(run("--with-linux-bus") == 0, "--with-linux-bus succeeds when present");
+    EXPECT(cfg_is("NO_LINUX_BUS", "0"), "with the Linux backend");
+}
+
 /* Only the daemon's own dependencies are fatal.  Each of these is one of them,
  * and each must name itself rather than failing generically. */
 static void test_required_failures(void)
@@ -380,12 +428,8 @@ static void test_required_failures(void)
     EXPECT(run("") == 1, "no libm fails");
     EXPECT(strstr(out("stderr"), "libm") != NULL, "naming libm");
 
-    /* The one Linux-specific requirement, and the reason imud does not build
-     * on a BSD or a Mac yet. */
-    fixture_reset();
-    setenv("STUB_BUS", "0", 1);
-    EXPECT(run("") == 1, "no i2c-dev/spidev headers fails");
-    EXPECT(strstr(out("stderr"), "i2c-dev") != NULL, "naming them");
+    /* NOT here any more: i2c-dev and spidev are a backend CHOICE, not a
+     * requirement — see test_bus_absent below. */
 
     /* include/types.h refuses to compile on a big-endian host.  Answering it
      * here turns a #error deep in a header into a named configure result. */
@@ -398,10 +442,10 @@ static void test_required_failures(void)
      * has to re-run configure once per missing header learns nothing. */
     fixture_reset();
     setenv("STUB_LIBM", "0", 1);
-    setenv("STUB_BUS", "0", 1);
+    setenv("STUB_PTHREAD", "0", 1);
     EXPECT(run("") == 1, "two missing dependencies fail");
     EXPECT(strstr(out("stderr"), "libm") != NULL &&
-           strstr(out("stderr"), "i2c-dev") != NULL,
+           strstr(out("stderr"), "POSIX threads") != NULL,
            "and BOTH are listed");
 }
 
@@ -625,6 +669,8 @@ int main(void)
     test_gpiod_v1();
     test_gpiod_absent();
     test_gpiod_forced();
+    test_bus_absent();
+    test_bus_forced();
     test_required_failures();
     test_atomics();
     test_link_order();

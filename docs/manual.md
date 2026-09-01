@@ -1333,12 +1333,12 @@ int bus_reg_write (const imud_bus_t *bus, uint8_t reg, uint8_t val);
 int bus_burst_read(const imud_bus_t *bus, uint8_t reg, uint8_t *buf, uint16_t len);
 ```
 
-The handle carries the descriptor, the transport, and whatever addresses the
-part — the 7-bit slave address on I²C, the resolved clock and framing bits on
-SPI. **Write the register logic once; it runs on either bus.** The helpers are
-`static inline` so every driver still issues its own single `ioctl()`, which
-is what `test/bus_mock.c` intercepts with `--wrap=ioctl`; do not reroute them
-through `I2C_SLAVE`, SMBus calls, or `read()`/`write()`.
+The handle carries the transport, the backend's token, and whatever addresses
+the part — the 7-bit slave address on I²C, the resolved clock and framing bits
+on SPI. **Write the register logic once; it runs on either bus.** The helpers
+frame the transfer and hand it to the host's backend
+(`include/bus_backend.h`), so a driver is written against the framing and not
+against any one kernel's ioctls.
 
 To offer SPI, fill in `bus_caps` from the datasheet:
 
@@ -1464,9 +1464,11 @@ command byte with the read bit already set, and using it as an I²C
 sub-address addresses a register that does not exist.
 
 The helpers are `static inline`, so each driver still issues its own single
-`ioctl()` per transfer — which is exactly what the mock bus
-(`test/bus_mock.c`, `--wrap=ioctl`) intercepts. Keep any new I/O on this path;
-SMBus calls, `I2C_SLAVE`, or `read()`/`write()` would bypass the mock.
+transfer, through the backend behind `include/bus_backend.h`. The mock bus
+(`test/bus_mock.c`) is one of its three implementations, beside
+`src/bus_linux.c` and `src/bus_null.c`. Keep any new I/O on this path; a raw
+`ioctl()`, an SMBus call, `I2C_SLAVE` or `read()`/`write()` would bypass both
+the mock and every non-Linux host.
 
 ### Writing an IMU driver (`imu_ops_t`)
 

@@ -128,7 +128,7 @@ static void test_ism_probe(void)
     EXPECT(ism->probe(I2CBUS(ISM_ADDR)) != 0, "probe rejects wrong WHO_AM_I");
 
     i2cmock_set_reg(ISM_ADDR, 0x0F, 0x6B);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(ism->probe(I2CBUS(ISM_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
@@ -462,7 +462,7 @@ static void test_ism_read_overflow_and_empty(void)
     EXPECT(n == 0, "no samples produced");
 
     /* I2C error on the status read. */
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     n = 99;
     EXPECT(ism->read(I2CBUS(ISM_ADDR), NULL, 0, &n) == -1, "I2C error returns -1");
 
@@ -510,7 +510,7 @@ static void test_mmc_probe(void)
     EXPECT(mmc->probe(I2CBUS(MMC_ADDR)) != 0, "probe rejects wrong product ID");
 
     i2cmock_set_reg(MMC_ADDR, 0x2F, 0x30);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mmc->probe(I2CBUS(MMC_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
@@ -619,7 +619,7 @@ static void test_mmc_read_decode(void)
     EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == 1, "M_DONE clear returns 1");
 
     /* I2C error on the status read. */
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == -1, "I2C error returns -1");
 
     end(fb);
@@ -809,9 +809,9 @@ static void test_mmc_set_reset(void)
 
     /* Bus error propagates from both entry points. */
     i2cmock_reset();
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mmc->set_reset(I2CBUS(MMC_ADDR)) == -1, "set_reset reports a bus error");
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mmc->degauss(I2CBUS(MMC_ADDR), MAG_DEGAUSS_SET) == -1,
            "degauss reports a bus error");
 
@@ -855,7 +855,7 @@ static void test_mpu_probe(void)
     EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe rejects missing AK8963");
 
     mpu_stage_genuine(0x71);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
@@ -982,7 +982,7 @@ static void test_mpu_read_overflow_and_errors(void)
     EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 4, &n) == 1, "overflow returns 1");
 
     /* I2C error on the count read. */
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(mpu->read(I2CBUS(MPU_ADDR), buf, 4, &n) == -1, "I2C error returns -1");
 
     end(fb);
@@ -1045,7 +1045,7 @@ static void test_ak_probe(void)
     EXPECT(ak->probe(I2CBUS(AK_ADDR)) != 0, "probe rejects AK09916 id 0x09");
 
     i2cmock_set_reg(AK_ADDR, 0x00, 0x48);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(ak->probe(I2CBUS(AK_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
@@ -1183,7 +1183,7 @@ static void test_ak_read_decode(void)
     EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == 1, "DRDY timeout returns 1, not -1");
 
     i2cmock_set_reg(AK_ADDR, 0x02, 0x01);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(ak->read(I2CBUS(AK_ADDR), &out) == -1, "I2C error returns -1");
 
     end(fb);
@@ -1284,7 +1284,7 @@ static void test_st_freq_fine_tick(void)
          * must not be mistaken for a real one — imu.c and imutest both treat
          * 0 as "leave ts_tick_ns alone". */
         i2cmock_set_reg(a, 0x63, 27);
-        i2cmock_fail_next_ioctl();
+        i2cmock_fail_next_xfer();
         EXPECT(o->ts_tick_ns_actual(I2CBUS(a)) == 0,
                "a failed FREQ_FINE read returns 0, not a guess");
     }
@@ -1482,7 +1482,7 @@ static void test_lsm_probe(void)
     EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe rejects a different ST part");
 
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe fails on I2C error");
     end(fb);
 }
@@ -1523,7 +1523,7 @@ static void test_lsm_init_registers(void)
            "watermark clamps to 511 words");
 
     i2cmock_reset();
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->init(I2CBUS(LSM_ADDR), &cfg) != 0, "init fails on I2C error");
     end(fb);
 }
@@ -1589,7 +1589,7 @@ static void test_lsm_read_overflow_and_errors(void)
 
     /* A bus fault is the ONLY thing allowed to return -1: the reader counts
      * those toward its error-reset threshold. */
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(LSM_ADDR), buf, 4, &n) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -1656,7 +1656,7 @@ static void test_icm42_probe_and_init(void)
     i2cmock_set_reg(ICM42_ADDR, 0x75, 0x67);   /* ICM-42605 */
     EXPECT(d->probe(I2CBUS(ICM42_ADDR)) != 0, "probe rejects a sibling part");
     i2cmock_set_reg(ICM42_ADDR, 0x75, 0x47);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->probe(I2CBUS(ICM42_ADDR)) != 0, "probe fails on I2C error");
 
     i2cmock_reset();
@@ -1727,7 +1727,7 @@ static void test_icm42_read_decode(void)
     n = -1;
     EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == 0 && n == 0, "empty FIFO → 0");
 
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 8, &n) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -1898,7 +1898,7 @@ static void test_icm209_probe(void)
     EXPECT(d->probe(I2CBUS(ICM209_ADDR)) != 0, "probe rejects wrong WHO_AM_I");
 
     i2cmock_set_reg(ICM209_ADDR, 0x00, 0xEA);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->probe(I2CBUS(ICM209_ADDR)) != 0, "probe fails on I2C error");
     end(fb);
 }
@@ -1953,7 +1953,7 @@ static void test_icm209_read_decode(void)
     EXPECT(d->read(I2CBUS(ICM209_ADDR), buf, 8, &n) == 0 && n == 0,
            "a partial sample yields none");
 
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(ICM209_ADDR), buf, 8, &n) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -1974,7 +1974,7 @@ static void test_ak099_probe_and_read(void)
     i2cmock_set_reg(AK099_ADDR, 0x01, 0x48);   /* AK8963's value */
     EXPECT(d->probe(I2CBUS(AK099_ADDR)) != 0, "probe rejects the AK8963 ID");
     i2cmock_set_reg(AK099_ADDR, 0x01, 0x09);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->probe(I2CBUS(AK099_ADDR)) != 0, "probe fails on I2C error");
 
     /* Data ready, no overflow. */
@@ -2007,7 +2007,7 @@ static void test_ak099_probe_and_read(void)
     EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == 1, "no DRDY returns 1 (no data yet)");
 
     i2cmock_set_reg(AK099_ADDR, 0x10, 0x01);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(AK099_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -2066,7 +2066,7 @@ static void test_lis3mdl(void)
     EXPECT_NEAR(m.field[1], -100 * s3, 1e-3, "Y = -chip X (starboard)");
     EXPECT_NEAR(m.field[2], -300 * s3, 1e-3, "Z = -chip Z (down)");
 
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(LIS3_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -2104,7 +2104,7 @@ static void test_lis2mdl(void)
     EXPECT_NEAR(m.field[1], -100 * s2, 1e-3, "Y = -chip X (starboard)");
     EXPECT_NEAR(m.field[2], -300 * s2, 1e-3, "Z = -chip Z (down)");
 
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(LIS2_ADDR), &m) == -1, "I2C error returns -1");
     end(fb);
 }
@@ -2172,7 +2172,7 @@ static void test_rm3100_probe(void)
 
     i2cmock_reset();
     i2cmock_set_reg(RM_ADDR, 0x36, 0x22);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->probe(I2CBUS(RM_ADDR)) != 0, "probe fails on I2C error");
 
     end(fb);
@@ -2199,7 +2199,7 @@ static void test_rm3100_reset_and_init(void)
            rm_get_cc(0x08) == 200, "reset restores CC 200 on all three axes");
 
     i2cmock_reset();
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->reset(I2CBUS(RM_ADDR)) == -1, "reset reports an I2C error");
 
     /* 100 Hz: below the CC=200 ceiling, so full resolution, TMRC ~150 Hz. */
@@ -2232,7 +2232,7 @@ static void test_rm3100_reset_and_init(void)
     EXPECT(i2cmock_get_reg(RM_ADDR, 0x0B) == 0x93, "300 Hz -> TMRC 0x93");
 
     i2cmock_reset();
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->init(I2CBUS(RM_ADDR), &cfg) == -1, "init reports an I2C error");
 
     end(fb);
@@ -2294,7 +2294,7 @@ static void test_rm3100_read_decode(void)
     EXPECT(d->read(I2CBUS(RM_ADDR), &out) == 1, "only bit 7 means ready");
 
     i2cmock_set_reg(RM_ADDR, 0x34, 0x80);
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->read(I2CBUS(RM_ADDR), &out) == -1, "I2C error returns -1");
 
     end(fb);
@@ -2794,7 +2794,7 @@ static void test_driver_resets(void)
         /* Bus fault on the very first write. */
         i2cmock_reset();
         i2cmock_set_selfclear(c->addr, c->reg, c->bit);
-        i2cmock_fail_next_ioctl();
+        i2cmock_fail_next_xfer();
         snprintf(msg, sizeof msg, "%s: reset reports an I2C error", c->name);
         EXPECT(run_reset(c) == -1, msg);
     }
@@ -2805,14 +2805,14 @@ static void test_driver_resets(void)
     EXPECT(lis3mdl_ops.reset(I2CBUS(LIS3_ADDR)) == 0, "lis3mdl: reset succeeds");
     EXPECT(i2cmock_get_reg(LIS3_ADDR, 0x21) == 0x04,
            "lis3mdl: SOFT_RST written to CTRL_REG2");
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(lis3mdl_ops.reset(I2CBUS(LIS3_ADDR)) == -1, "lis3mdl: I2C error returns -1");
 
     i2cmock_reset();
     EXPECT(lis2mdl_ops.reset(I2CBUS(LIS2_ADDR)) == 0, "lis2mdl: reset succeeds");
     EXPECT(i2cmock_get_reg(LIS2_ADDR, 0x60) == 0x20,
            "lis2mdl: SOFT_RST written to CFG_REG_A");
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(lis2mdl_ops.reset(I2CBUS(LIS2_ADDR)) == -1, "lis2mdl: I2C error returns -1");
 
     end(fb);
@@ -2845,7 +2845,7 @@ static void test_ak099_init_modes(void)
 
     i2cmock_reset();
     mag_cfg_t cfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
-    i2cmock_fail_next_ioctl();
+    i2cmock_fail_next_xfer();
     EXPECT(d->init(I2CBUS(AK099_ADDR), &cfg) == -1, "init reports an I2C error");
     end(fb);
 }
@@ -3846,10 +3846,61 @@ static void test_spi_framing(void)
     EXPECT(memcmp(popped, staged, 3) == 0, "spi reads pop the fifo window");
 
     /* Transport errors still surface as -1. */
-    i2cmock_fail_next_ioctl();
-    EXPECT(bus_reg_read(&b, 0x0F, &v) == -1, "spi read propagates ioctl failure");
-    i2cmock_fail_next_ioctl();
-    EXPECT(bus_reg_write(&b, 0x12, 0x00) == -1, "spi write propagates ioctl failure");
+    i2cmock_fail_next_xfer();
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == -1, "spi read propagates transfer failure");
+    i2cmock_fail_next_xfer();
+    EXPECT(bus_reg_write(&b, 0x12, 0x00) == -1, "spi write propagates transfer failure");
+
+    printf("%s\n", g_fail == fb ? "OK" : "FAIL");
+}
+
+/*
+ * The SHAPE of each transfer bus_io.h asks the backend for — how many legs,
+ * and how wide each one's words are.  No register readback can show this: a
+ * one-byte read sent as two 8-bit legs leaves exactly the same byte in the
+ * register file as the 16-bit single word bus_io.h actually sends.
+ *
+ * It is worth pinning because the shape is doing real work.  RP1 deasserts
+ * chip-select between words (raspberrypi/linux#6354), so a multi-word
+ * transfer can be cut at any boundary; a single read is framed as ONE 16-bit
+ * word precisely so it has no boundary to be cut at.  A change that split it
+ * would pass every other assertion in this file and corrupt the part's state
+ * on real silicon.
+ */
+static void test_backend_leg_shapes(void)
+{
+    begin("test_backend_leg_shapes");
+    int fb = g_fail;
+
+    imud_bus_t b = spi_bus(0);
+    uint8_t v = 0;
+
+    /* Single read: one 16-bit word, command in the high byte. */
+    i2cmock_set_reg(SPI_ADDR, 0x0F, 0x6B);
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == 0, "single read succeeds");
+    EXPECT(spimock_last_nlegs() == 1, "single read is ONE leg");
+    EXPECT(spimock_last_bits(0) == 16, "and 16 bits per word");
+    EXPECT(spimock_last_len(0) == 2, "carrying command and data in 2 bytes");
+
+    /* Write: likewise one 16-bit word. */
+    EXPECT(bus_reg_write(&b, 0x12, 0x44) == 0, "write succeeds");
+    EXPECT(spimock_last_nlegs() == 1, "write is ONE leg");
+    EXPECT(spimock_last_bits(0) == 16, "and 16 bits per word");
+    EXPECT(spimock_last_len(0) == 2, "carrying register and value in 2 bytes");
+
+    /* Burst read: two 8-bit legs, command then data — it cannot be made
+     * atomic, so it is framed to be harmless when split instead. */
+    uint8_t got[6] = { 0 };
+    EXPECT(bus_burst_read(&b, 0x28, got, 6) == 0, "burst read succeeds");
+    EXPECT(spimock_last_nlegs() == 2, "burst read is TWO legs");
+    EXPECT(spimock_last_bits(0) == 8 && spimock_last_bits(1) == 8,
+           "both 8 bits per word");
+    EXPECT(spimock_last_len(0) == 1, "a 1-byte command leg");
+    EXPECT(spimock_last_len(1) == 6, "then a data leg of the requested length");
+
+    /* The boundary between the two: 2 bytes is already a burst, not a word. */
+    EXPECT(bus_burst_read(&b, 0x28, got, 2) == 0, "2-byte read succeeds");
+    EXPECT(spimock_last_nlegs() == 2, "a 2-byte read is a burst, not one word");
 
     printf("%s\n", g_fail == fb ? "OK" : "FAIL");
 }
@@ -4025,6 +4076,7 @@ int main(void)
     test_dual_transport_others();
 
     test_spi_framing();
+    test_backend_leg_shapes();
     test_spi_inc_mask();
     test_bus_open_policy();
 
