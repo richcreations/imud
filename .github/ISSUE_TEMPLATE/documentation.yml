@@ -1,0 +1,43 @@
+name: Documentation
+description: Something in the manual, a man page, the spec or the website is wrong, missing or unclear.
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A doc that is wrong costs more than a doc that is missing, so a
+        one-sentence "this says X, the daemon does Y" is a good issue.
+
+        Several surfaces are **generated**, so the fix belongs in the source
+        rather than the page — say what is wrong and it will be corrected
+        there. The man1 and man8 pages come from each binary's `--help`; the
+        manual's config tables, the man5 entries and the driver table come from
+        `docs/config-keys.toml` and `src/drivers.c`; `spec.md`'s packet layout
+        comes from `include/types.h`. Generated regions are marked in place
+        with `BEGIN GENERATED`.
+
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: >-
+        The file and section, the man page, or the URL —
+        `docs/manual.md` §5, `man 5 imud.conf` under `[fusion]`, the quick
+        start on the website.
+      placeholder: docs/manual.md §4, mag.declination_deg
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong
+      description: What it says, and what imud actually does — or what a reader needs and cannot find.
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: What it should say
+      description: Optional. A suggested wording, or the fact that is missing.

@@ -1,0 +1,105 @@
+name: imutest report
+description: An imud-imutest run against real silicon — this is what clears a driver's experimental flag.
+title: "imutest report: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A driver's register map is checked against the datasheet when it is
+        written, and unit tests prove its encoding against a mock bus. Neither
+        says anything about timing, real output rate, FIFO or interrupt
+        behaviour, or whether the chip-to-board axis remap is right. A report
+        from `imud-imutest` is the only thing that does, and a clean one is what
+        justifies clearing `experimental = true`.
+
+        Two things about the run:
+
+        - **Stop the daemon first** — `sudo systemctl stop imud`. Both open the
+          same device and drain the same FIFO.
+        - **Run it at the bench, on a terminal.** `--all` over a pipe, or over
+          ssh with no tty, implies `--non-interactive` and runs the passive
+          checks only. The three guided phases — six-face, gyro rotation,
+          magnetometer spin — are the ones that prove the axis remap, so a
+          passive-only report cannot clear the flag. It is still worth filing;
+          say so below and it will be read as what it is.
+
+        ```sh
+        sudo systemctl stop imud
+        imud-imutest --imu-driver icm20948 --mag-driver ak09916 --mag-addr 0x0C --all
+        sudo systemctl start imud
+        ```
+
+        `man 8 imud-imutest` covers the phases, the grading and every flag.
+
+  - type: input
+    id: parts
+    attributes:
+      label: Parts
+      description: The IMU driver and the magnetometer driver, and the physical part or breakout board if it differs from the driver name.
+      placeholder: icm20948 + ak09916 (Adafruit 4554)
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Board, OS and release, 32- or 64-bit, and kernel (`uname -srm`).
+      placeholder: Raspberry Pi 4, Pi OS bookworm 64-bit, Linux 6.12.87 aarch64
+    validations:
+      required: true
+
+  - type: input
+    id: wiring
+    attributes:
+      label: Bus and wiring
+      description: >-
+        I2C or SPI, the device node and addresses, and whether the interrupt
+        lines are wired (which GPIOs) or the driver is polling with
+        `int_gpio = 0`.
+      placeholder: I2C on /dev/i2c-1, IMU 0x68, mag 0x0C, INT on GPIO 17, no mag INT
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`imud-imutest --version`."
+      placeholder: imud-imutest 1.9.1
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: >-
+        Attach the Markdown file `imud-imutest` wrote (drag it into this box),
+        or paste it whole. Please do not summarise it — it prints every
+        threshold inline so a reviewer never needs the source to know what a
+        check asserted, and the appendix of raw measurements is where a
+        borderline WARN gets settled.
+    validations:
+      required: true
+
+  - type: textarea
+    id: bench
+    attributes:
+      label: What the report cannot know
+      description: >-
+        Anything at the bench that explains a WARN or a FAIL — an unlevel
+        surface, a board that moved, a motor or speaker nearby, a steel bench,
+        a busy machine. Also worth saying: how many times you ran it, and
+        whether the result was the same each time.
+
+  - type: checkboxes
+    id: conditions
+    attributes:
+      label: The run
+      options:
+        - label: >-
+            All three guided phases prompted me and I performed them (six-face,
+            gyro rotation, magnetometer spin). Leave unticked for a passive-only
+            run — it is still useful, it just cannot clear the experimental flag.
+        - label: The daemon was stopped for the run, or `--force` was used and I have said why.

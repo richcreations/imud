@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/richcreations/imud/security/advisories/new
+    about: >-
+      Report privately, not as a public issue. Email richcreations@gmail.com
+      with "imud security" in the subject if this form is unavailable to you.
+  - name: Question, setup help, or something you built
+    url: https://github.com/richcreations/imud/discussions
+    about: >-
+      "Is this supposed to happen", wiring and config help, and show-and-tell.
+      File an issue once it looks like a defect.

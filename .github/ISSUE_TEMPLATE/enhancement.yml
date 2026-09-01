@@ -1,0 +1,43 @@
+name: Feature or enhancement
+description: Something imud should be able to do and cannot.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        imud is general-purpose infrastructure — robotics, vision, gimbals,
+        pointing and marine navigation are all first-class. Say what you are
+        trying to do, not only what you want added; the use case is usually what
+        decides the shape of the answer.
+
+        Worth a look first: the config reference is
+        [§4 of the manual](https://github.com/richcreations/imud/blob/main/docs/manual.md),
+        the output formats are in
+        [spec.md](https://github.com/richcreations/imud/blob/main/spec.md), and
+        [docs/ROADMAP.md](https://github.com/richcreations/imud/blob/main/docs/ROADMAP.md)
+        lists what is already planned.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The task, and where imud stops short of it today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you tried
+      description: >-
+        The config, the stream, or the bridge you reached for, and why it did
+        not cover it. If nothing came close, say that.
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it might look like
+      description: >-
+        Optional, and a guess is fine — a config key, a CLI flag, an NMEA
+        sentence, a packet field, a new bridge. If it is support for a part,
+        name the part and link its datasheet.
