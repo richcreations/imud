@@ -62,6 +62,34 @@ def chain(*fns):
     return apply
 
 
+def top_bullet(prefix="Zzz "):
+    """Prefix the first `  * ` bullet of a Debian changelog's TOP stanza.
+
+    gen-release-notes only ever compares the stanza for the version in
+    include/version.h, which is the one on top; every stanza below it shipped
+    and is frozen byte for byte, so a hand-edit down there is invisible.  The
+    top stanza is therefore the only place a fixture can break.
+
+    Finding that bullet structurally -- line 1 is the header, the bullets run
+    to the first ` -- name <mail>  date` trailer -- is what makes this survive
+    a release.  Naming the bullet's text instead pins the fixture to whichever
+    version was current when it was written, and it then stops detecting at
+    the next bump.
+    """
+    def apply(text):
+        lines = text.split("\n")
+        end = next((i for i, l in enumerate(lines) if l.startswith(" -- ")),
+                   None)
+        if end is None:
+            raise AssertionError("no ` -- ` trailer: not a Debian changelog")
+        for i in range(1, end):
+            if lines[i].startswith("  * "):
+                lines[i] = "  * " + prefix + lines[i][4:]
+                return "\n".join(lines)
+        raise AssertionError("top stanza has no `  * ` bullet to break")
+    return apply
+
+
 CASES = [
     # ── check-imutest-checks ─────────────────────────────────────────────────
     # A new check added to the tool and not to the spec. mag.drdy.restore
@@ -406,13 +434,11 @@ CASES = [
     # A changelog stanza edited by hand. Packagers read this one; a user reads
     # NEWS. They describe the same release and must not diverge.
     #
-    # Pinned to the stanza for the version in include/version.h, because the
-    # generator only ever rewrites that one -- a bullet in a shipped stanza is
-    # frozen and a hand-edit to it is invisible. So this fixture re-pins at
-    # every release; sub() raises when the pattern stops matching.
+    # The bullet is found rather than named, because only the top stanza is
+    # compared and which release is on top changes at every version bump. A
+    # fixture naming its bullet detects nothing from the next release onward.
     ("gen-release-notes", "packaging/imud/changelog",
-     sub(r'^  \* An uncalibrated magnetometer is now fused for heading',
-         '  * An uncalibrated accelerometer is now fused for heading'),
+     top_bullet(),
      "packaging/imud/changelog"),
 
     # A change that outgrows the word cap. Every NEWS entry in this project
