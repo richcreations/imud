@@ -5222,8 +5222,12 @@ static void fill_environment(imt_report_t *r, const imud_config_t *cfg)
         snprintf(r->machine, sizeof r->machine, "%s", u.machine);
         snprintf(r->hostname, sizeof r->hostname, "%s", u.nodename);
     }
-#ifdef GPIOD_V2
-    r->gpiod_v2 = true;
+#if defined(IMUD_NO_GPIOD)
+    r->gpiod = "none";
+#elif defined(GPIOD_V2)
+    r->gpiod = "v2";
+#else
+    r->gpiod = "v1";
 #endif
 
     time_t now = time(NULL);

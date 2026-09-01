@@ -161,7 +161,7 @@ int imt_write_md(const imt_report_t *r, const char *path,
     fprintf(f, "| imud version | %s |\n", r->imud_version);
     fprintf(f, "| host / kernel | %s / %s %s %s |\n",
             r->hostname, r->sysname, r->release, r->machine);
-    fprintf(f, "| libgpiod | %s |\n", r->gpiod_v2 ? "v2" : "v1");
+    fprintf(f, "| libgpiod | %s |\n", r->gpiod ? r->gpiod : "v1");
     fprintf(f, "| started (UTC) | %s |\n", r->started_utc);
     fprintf(f, "| run duration | %.1f s |\n", r->wall_duration_s);
     fprintf(f, "| config file | `%s` |\n",

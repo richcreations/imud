@@ -18,8 +18,35 @@ VERSION := $(shell sed -n 's/^\#define IMUD_VERSION_STR *"\(.*\)"/\1/p' include/
 # Auto-detect libgpiod major version; default to v1 (Bookworm ships 1.x).
 # Pass -DGPIOD_V2 when pkg-config reports version 2.x or newer.
 GPIOD_MAJ := $(shell pkg-config --modversion libgpiod 2>/dev/null | cut -d. -f1)
-ifeq ($(GPIOD_MAJ),2)
-    override CPPFLAGS += -DGPIOD_V2
+
+# The GPIO backend behind include/imu_gpio.h.  src/imu_gpio.c is libgpiod;
+# src/imu_gpio_null.c is the same three entry points failing with ENOSYS, which
+# leaves the reader threads on the rate-sized timer they already fall back to
+# when no interrupt is wired.  Empty GPIOD_LIB then drops -lgpiod from every
+# link line, which is what lets imud build where the library does not exist.
+#
+# Off automatically when pkg-config finds no libgpiod, so a host without it
+# builds rather than failing at the link; NO_GPIOD=1 forces it off where the
+# library IS present.  This is the switch, not the interface: issue #50 puts a
+# ./configure step in front of it.
+ifeq ($(GPIOD_MAJ),)
+    NO_GPIOD ?= 1
+endif
+NO_GPIOD ?= 0
+
+ifeq ($(NO_GPIOD),0)
+    GPIO_SRC  = src/imu_gpio.c
+    GPIOD_LIB = -lgpiod
+    # Pass -DGPIOD_V2 when pkg-config reports version 2.x or newer.  Only
+    # meaningful with a libgpiod backend, so it lives here rather than beside
+    # the probe: with no backend there is no v1/v2 to choose between.
+    ifeq ($(GPIOD_MAJ),2)
+        override CPPFLAGS += -DGPIOD_V2
+    endif
+else
+    GPIO_SRC  = src/imu_gpio_null.c
+    GPIOD_LIB =
+    override CPPFLAGS += -DIMUD_NO_GPIOD
 endif
 
 # Auto-detect whether 64-bit atomics need libatomic.
@@ -82,6 +109,7 @@ IMUD_SRCS   = src/cal.c \
               src/ring.c \
               src/fusion.c \
               src/imu.c \
+              $(GPIO_SRC) \
               src/imu_math.c \
               src/nmea.c \
               src/netserv.c \
@@ -122,6 +150,7 @@ IMUTEST_SRCS = src/cli.c \
                src/log.c \
                src/capture.c \
                src/imu.c \
+               $(GPIO_SRC) \
                src/ring.c \
                src/fusion.c \
                src/cal_math.c \
@@ -145,18 +174,20 @@ all: imud imud-cal imud-imutest imud-status imud-mon
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
 imud: $(IMUD_OBJS) src/main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) -lm $(ATOMIC_LIB)
 
-# imud-cal requires src/cal_main.c
+# imud-cal requires src/cal_main.c.  No GPIO library: CAL_SRCS has no imu.c and
+# no driver touches a line, so imud-cal takes its samples by polling.
 imud-cal: $(CAL_OBJS) src/cal_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # imud-imutest exercises any registered driver against real silicon and writes
 # a Markdown validation report (ROADMAP §1).  Ships in imud-utils alongside
 # imud-mon, but unlike imud-mon it must run on the box with the sensor.
-# -lgpiod (the interrupt edge-count check) makes it Linux-only, like imud.
+# It links the GPIO backend for the interrupt edge-count check, so it follows
+# imud's NO_GPIOD switch too.
 imud-imutest: $(IMUTEST_OBJS) src/imutest_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgpiod -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) -lm $(ATOMIC_LIB)
 
 # imud-status is a plain socket client: no hardware libs.  src/cli.c stays off
 # log.c precisely so this link line does not grow a pthread dependency.
@@ -288,7 +319,13 @@ test_packet: src/packet.c test/test_packet.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+
+# The no-libgpiod GPIO backend, linked on its own: it is what imud carries
+# where the library is absent, so this must not depend on $(GPIO_SRC) — it
+# builds and runs identically whichever backend the tree is configured for.
+test_imu_gpio_null: src/imu_gpio_null.c test/test_imu_gpio_null.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
 test_ring: src/ring.c test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
@@ -375,7 +412,7 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
 # The daemon end to end, main() included: startup with no
 # sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
 # restart contract, and shutdown ordering.  Linux-only, like test_concurrency —
-# it links the daemon objects and -lgpiod.
+# it links the daemon objects and the GPIO backend.
 #
 # PID_FILE/STATUS_SOCK are redirected into the build directory for this copy of
 # main.c only: /run/imud/imud.sock is a process-wide singleton, and the suite
@@ -405,7 +442,7 @@ src/main.entry.o: Makefile
 # like test_drivers — this suite is already Linux-only.
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
+	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
 
 # imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
@@ -515,24 +552,24 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 # the real mmc5983ma driver for the --degauss path, exactly as test_imutest
 # does.  --wrap on the three imu_gpio_* entry points is the seam for
 # imutest_gpio.c: its counting POLICY is pure logic over injectable callbacks,
-# and only imu_gpio_* (in src/imu.c, which IMUTEST_SRCS links deliberately)
+# and only imu_gpio_* (in $(GPIO_SRC), which IMUTEST_SRCS links deliberately)
 # touch a line -- so --wrap rather than stubs, which would collide with the
 # real definitions.  Same shape as --wrap=pthread_create in test_daemon.
-# Linux/GNU-ld only, and -lgpiod, like it.
+# Linux/GNU-ld only, and the GPIO backend, like it.
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
                   $(HWTOOLS_SRCS) test/bus_mock.c test/test_hwtools_e2e.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
 	    -Wl,--wrap=ioctl -Wl,--wrap=__ioctl_time64 \
 	    -Wl,--wrap=imu_gpio_open -Wl,--wrap=imu_gpio_wait_edge \
 	    -Wl,--wrap=imu_gpio_close \
-	    -o $@ $(filter %.c %.o,$^) -lgpiod -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
 
 TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_drivers test_imutest test_hwtools_e2e
+      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest test_hwtools_e2e
 
 # Every test binary depends on every project header.
 #
@@ -587,6 +624,7 @@ test: $(TEST_BINS)
 	./test_daemon
 	./test_drivers_registry
 	./test_imu_math
+	./test_imu_gpio_null
 	./test_drivers
 	./test_imutest
 	./test_hwtools_e2e
@@ -1371,7 +1409,7 @@ clean:
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
-	      test_drivers_registry test_imu_math test_drivers test_imutest \
+	      test_drivers_registry test_imu_math test_imu_gpio_null test_drivers test_imutest \
       test_hwtools_e2e \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      fuzz_argv \

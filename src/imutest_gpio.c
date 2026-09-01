@@ -7,9 +7,10 @@
 /*
  * imutest_gpio.c — edge counting for imud-imutest, on the DAEMON's edge wait.
  *
- * This file defers to include/imu_gpio.h rather than carrying its own libgpiod v1/v2 split, a near-copy of the one
- * in src/imu.c. The copy is gone: imu_gpio_open/wait_edge/close come from
- * src/imu.c, which is linked into imud-imutest for exactly this reason.
+ * This file defers to include/imu_gpio.h rather than carrying its own libgpiod
+ * v1/v2 split, a near-copy of the one in src/imu_gpio.c. The copy is gone:
+ * imu_gpio_open/wait_edge/close come from whichever backend the Makefile
+ * selected, which imud-imutest links for exactly this reason.
  *
  * The duplication was not cosmetic. A tool that reimplements the path it is
  * measuring reports differences between the two copies as defects in the
@@ -54,9 +55,14 @@ int imt_gpio_count_edges(const char *chip_name, int gpio, long window_ms,
          * EBUSY almost always means the daemon holds the line. That is a
          * reason to skip the check, never to fail the driver, so the caller
          * needs to tell it apart from a real fault.
+         *
+         * ENOSYS is src/imu_gpio_null.c: this build has no GPIO backend at
+         * all, so there is nothing to measure and nothing wrong with the part.
+         * Reporting it as EIO would fail a driver over a build option.
          */
         *why = (errno == EBUSY)  ? IMT_GPIO_EBUSY
              : (errno == ENOENT) ? IMT_GPIO_ENOCHIP
+             : (errno == ENOSYS) ? IMT_GPIO_UNSUPPORTED
                                  : IMT_GPIO_EIO;
         return -1;
     }

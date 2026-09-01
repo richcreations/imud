@@ -297,7 +297,10 @@ typedef struct {
      * Sized to hold one whole — a hostname clipped at 63 characters in a
      * report written to be pasted into an issue helps nobody. */
     char     sysname[96], release[96], machine[96], hostname[96];
-    bool     gpiod_v2;
+    /* Which GPIO backend this build carries: "v1", "v2", or "none" for
+     * src/imu_gpio_null.c.  A report from a build that cannot take an
+     * interrupt has to say so — its edge counts are absences, not failures. */
+    const char *gpiod;
     char     started_utc[32];       /* ISO-8601 Z */
     double   wall_duration_s;
     char     config_path[256], gpio_chip[32];

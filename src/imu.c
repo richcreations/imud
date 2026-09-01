@@ -28,14 +28,6 @@
 #include <time.h>
 #include <math.h>
 #include <pthread.h>
-#include <gpiod.h>
-
-/* libgpiod v1 exposes struct gpiod_line *; v2 uses struct gpiod_line_request *. */
-#ifdef GPIOD_V2
-typedef struct gpiod_line_request gpio_line_h;
-#else
-typedef struct gpiod_line         gpio_line_h;
-#endif
 
 /* CLOCK_TAI is Linux ≥ 3.10; fall back to CLOCK_REALTIME on other platforms. */
 #ifndef CLOCK_TAI
@@ -85,9 +77,8 @@ struct imu_ctx {
      */
     uint32_t         ts_tick_ns;
 
-    struct gpiod_chip  *gpio_chip;
-    gpio_line_h    *imu_line;   /* GPIO for IMU FIFO watermark interrupt */
-    gpio_line_h    *mag_line;   /* GPIO for magnetometer measurement-done interrupt */
+    imu_gpio_line_t *imu_line;  /* GPIO for IMU FIFO watermark interrupt */
+    imu_gpio_line_t *mag_line;  /* GPIO for magnetometer measurement-done interrupt */
 
     imu_ring_t       imu_ring;
     mag_ring_t       mag_ring;
@@ -171,135 +162,19 @@ struct imu_ctx {
  * nearest_odr / apply_mount_rot_if_set moved to src/imu_math.c (imu_math.h) so
  * they can be unit tested off-thread; imu.c calls them unchanged. */
 
-/* ── GPIO helpers ────────────────────────────────────────────────────────── */
+/* The GPIO edge wait moved to src/imu_gpio.c (imu_gpio.h), which is the one
+ * file that includes <gpiod.h>; src/imu_gpio_null.c replaces it where there is
+ * no libgpiod.  The lines below are opaque handles either way. */
 
 /*
- * wait_gpio_edge — wait up to timeout_ms ms for a rising-edge event.
- * Drains the event so the next call sees a fresh edge.
- * Returns 1 on event, 0 on timeout, -1 on error.
+ * Why an imu_gpio_open failed, naming the one cause strerror cannot: the null
+ * backend returns ENOSYS, which means this build cannot take an interrupt at
+ * all rather than that this particular line is unavailable.  "Function not
+ * implemented" against a GPIO number sends the reader to the wiring.
  */
-static int wait_gpio_edge(gpio_line_h *line, long timeout_ms)
+static const char *gpio_open_err(void)
 {
-#ifdef GPIOD_V2
-    struct gpiod_edge_event_buffer *evbuf = gpiod_edge_event_buffer_new(1);
-    if (!evbuf) return -1;
-    int r = gpiod_line_request_wait_edge_events(line,
-                (int64_t)timeout_ms * 1000000LL);
-    if (r == 1)
-        gpiod_line_request_read_edge_events(line, evbuf, 1);
-    gpiod_edge_event_buffer_free(evbuf);
-    return r;
-#else
-    struct timespec ts = {
-        .tv_sec  = timeout_ms / 1000,
-        .tv_nsec = (timeout_ms % 1000) * 1000000L,
-    };
-    int r = gpiod_line_event_wait(line, &ts);
-    if (r == 1) {
-        struct gpiod_line_event ev;
-        gpiod_line_event_read(line, &ev);
-    }
-    return r;
-#endif
-}
-
-/*
- * open_gpio_line — request one GPIO line for rising-edge detection.
- * Returns an opaque handle on success, NULL on error.
- */
-static gpio_line_h *open_gpio_line_as(struct gpiod_chip *chip,
-                                      unsigned int offset,
-                                      const char *consumer)
-{
-#ifdef GPIOD_V2
-    struct gpiod_line_settings  *ls = gpiod_line_settings_new();
-    struct gpiod_line_config    *lc = gpiod_line_config_new();
-    struct gpiod_request_config *rc = gpiod_request_config_new();
-    if (!ls || !lc || !rc) goto fail;
-    gpiod_line_settings_set_direction(ls, GPIOD_LINE_DIRECTION_INPUT);
-    gpiod_line_settings_set_edge_detection(ls, GPIOD_LINE_EDGE_RISING);
-    gpiod_line_config_add_line_settings(lc, &offset, 1, ls);
-    gpiod_request_config_set_consumer(rc, consumer);
-    gpio_line_h *req = gpiod_chip_request_lines(chip, rc, lc);
-    gpiod_request_config_free(rc);
-    gpiod_line_config_free(lc);
-    gpiod_line_settings_free(ls);
-    return req;
-fail:
-    if (rc) gpiod_request_config_free(rc);
-    if (lc) gpiod_line_config_free(lc);
-    if (ls) gpiod_line_settings_free(ls);
-    return NULL;
-#else
-    gpio_line_h *line = gpiod_chip_get_line(chip, offset);
-    if (!line) return NULL;
-    if (gpiod_line_request_rising_edge_events(line, consumer) < 0)
-        return NULL;
-    return line;
-#endif
-}
-
-static void release_gpio_line(gpio_line_h *line)
-{
-#ifdef GPIOD_V2
-    gpiod_line_request_release(line);
-#else
-    gpiod_line_release(line);
-#endif
-}
-
-/* ── The same edge wait, exposed — see include/imu_gpio.h ────────────────── */
-
-/*
- * imud-imutest waits on an interrupt by calling these, rather than carrying a
- * second copy of the libgpiod v1/v2 split.  Carrying one means every
- * way the copy differed from the daemon showed up as a defect reported against
- * the driver.
- *
- * The handle owns its chip because libgpiod v1 hands back a line that BORROWS
- * the chip -- closing the chip there is a use-after-free -- while v2's request
- * owns what it needs.  Keeping both in one allocation makes that difference
- * invisible to a caller and impossible to get wrong at the call site.
- */
-struct imu_gpio_line {
-    struct gpiod_chip *chip;
-    gpio_line_h       *line;
-};
-
-imu_gpio_line_t *imu_gpio_open(const char *chip_name, unsigned int offset,
-                               const char *consumer)
-{
-    char path[80];
-    snprintf(path, sizeof path, "/dev/%s", chip_name);
-
-    imu_gpio_line_t *h = calloc(1, sizeof *h);
-    if (!h) return NULL;
-
-    h->chip = gpiod_chip_open(path);
-    if (!h->chip) { int e = errno; free(h); errno = e; return NULL; }
-
-    h->line = open_gpio_line_as(h->chip, offset, consumer);
-    if (!h->line) {
-        int e = errno;
-        gpiod_chip_close(h->chip);
-        free(h);
-        errno = e;
-        return NULL;
-    }
-    return h;
-}
-
-int imu_gpio_wait_edge(imu_gpio_line_t *h, long timeout_ms)
-{
-    return h ? wait_gpio_edge(h->line, timeout_ms) : -1;
-}
-
-void imu_gpio_close(imu_gpio_line_t *h)
-{
-    if (!h) return;
-    release_gpio_line(h->line);
-    gpiod_chip_close(h->chip);
-    free(h);
+    return errno == ENOSYS ? "built without libgpiod" : strerror(errno);
 }
 
 /* ── Config snapshot ─────────────────────────────────────────────────────── */
@@ -363,7 +238,7 @@ void *ism_reader_thread(void *arg)
 
     while (!ctx->stop) {
         if (ctx->imu_line) {
-            int gr = wait_gpio_edge(ctx->imu_line, imu_wait_ms);
+            int gr = imu_gpio_wait_edge(ctx->imu_line, imu_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 LOG_E("[ism_reader] GPIO error: %s\n", strerror(errno));
@@ -679,7 +554,7 @@ void *mag_reader_thread(void *arg)
     while (!ctx->stop) {
         if (ctx->mag_line) {
             /* Interrupt-driven, with a rate-sized fallback: see above. */
-            int gr = wait_gpio_edge(ctx->mag_line, mag_wait_ms);
+            int gr = imu_gpio_wait_edge(ctx->mag_line, mag_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 usleep(5000);
@@ -1756,37 +1631,31 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Configure GPIO lines ────────────────────────────────────────────── */
 
-    /* Only open the GPIO chip if at least one interrupt line is configured.
-     * Sim mode sets int_gpio = 0 for both and skips this entirely. */
-    bool need_gpio = cfg->imu_int_gpio > 0 ||
-                     (ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0);
-    if (need_gpio) {
-        char chip_path[80];
-        snprintf(chip_path, sizeof(chip_path), "/dev/%s", cfg->gpio_chip);
-        ctx->gpio_chip = gpiod_chip_open(chip_path);
-        if (!ctx->gpio_chip) {
-            LOG_E("[imu] cannot open /dev/%s: %s\n",
-                    cfg->gpio_chip, strerror(errno));
-            goto fail;
-        }
-    }
+    /* Each line owns its chip handle — see include/imu_gpio.h.  Sim mode sets
+     * int_gpio = 0 for both and requests neither.
+     *
+     * A line the config does ask for is fatal if it cannot be had: the reader
+     * would fall back to its timer and run at a cadence nobody asked for, which
+     * is worse than not starting. */
 
     /* IMU interrupt line — optional (timer fallback used when absent). */
     if (cfg->imu_int_gpio > 0) {
-        ctx->imu_line = open_gpio_line_as(ctx->gpio_chip, (unsigned)cfg->imu_int_gpio, "imud");
+        ctx->imu_line = imu_gpio_open(cfg->gpio_chip,
+                                      (unsigned)cfg->imu_int_gpio, "imud");
         if (!ctx->imu_line) {
-            LOG_E("[imu] cannot request GPIO%d: %s\n",
-                    cfg->imu_int_gpio, strerror(errno));
+            LOG_E("[imu] cannot request GPIO%d on %s: %s\n",
+                    cfg->imu_int_gpio, cfg->gpio_chip, gpio_open_err());
             goto fail;
         }
     }
 
     /* Mag interrupt line — only requested when the driver has an external pin. */
     if (ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
-        ctx->mag_line = open_gpio_line_as(ctx->gpio_chip, (unsigned)cfg->mag_int_gpio, "imud");
+        ctx->mag_line = imu_gpio_open(cfg->gpio_chip,
+                                      (unsigned)cfg->mag_int_gpio, "imud");
         if (!ctx->mag_line) {
-            LOG_E("[imu] cannot request GPIO%d: %s\n",
-                    cfg->mag_int_gpio, strerror(errno));
+            LOG_E("[imu] cannot request GPIO%d on %s: %s\n",
+                    cfg->mag_int_gpio, cfg->gpio_chip, gpio_open_err());
             goto fail;
         }
     }
@@ -1797,9 +1666,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 fail:
     bus_close(&ctx->imu_bus);
     bus_close(&ctx->mag_bus);
-    if (ctx->imu_line)     release_gpio_line(ctx->imu_line);
-    if (ctx->mag_line)     release_gpio_line(ctx->mag_line);
-    if (ctx->gpio_chip)    gpiod_chip_close(ctx->gpio_chip);
+    imu_gpio_close(ctx->imu_line);
+    imu_gpio_close(ctx->mag_line);
     pthread_mutex_destroy(&ctx->shared.lock);
     pthread_mutex_destroy(&ctx->anchor.mtx);
     pthread_mutex_destroy(&ctx->live_lock);
@@ -1914,9 +1782,8 @@ void imu_ctx_free(imu_ctx_t *ctx)
     if (!ctx) return;
     bus_close(&ctx->imu_bus);
     bus_close(&ctx->mag_bus);
-    if (ctx->imu_line)  release_gpio_line(ctx->imu_line);
-    if (ctx->mag_line)  release_gpio_line(ctx->mag_line);
-    if (ctx->gpio_chip) gpiod_chip_close(ctx->gpio_chip);
+    imu_gpio_close(ctx->imu_line);
+    imu_gpio_close(ctx->mag_line);
     pthread_mutex_destroy(&ctx->shared.lock);
     pthread_mutex_destroy(&ctx->anchor.mtx);
     pthread_mutex_destroy(&ctx->live_lock);

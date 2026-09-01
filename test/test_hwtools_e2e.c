@@ -31,7 +31,7 @@
  *   - --wrap on imu_gpio_open/wait_edge/close for imutest_gpio.c.  Its counting
  *     POLICY — the 200 ms wait cap, the latched-vs-level drain rule, the
  *     imt_gpio_why_t classification — is pure logic over injectable callbacks;
- *     only imu_gpio_* (in src/imu.c, linked here for real) touch a line.
+ *     only imu_gpio_* (in the GPIO backend, linked here for real) touch a line.
  *     Unlike test_daemon's --wrap=pthread_create, these wrappers never fall
  *     through to __real_.  A passthrough would request a real interrupt line
  *     on any machine that has one — and imud is developed on the bench Pi,
@@ -1561,6 +1561,15 @@ static void test_gpio_disabled_and_open_errors(void)
     why = IMT_GPIO_OK;
     rc = imt_gpio_count_edges("gpiochip0", 17, 50, NULL, NULL, &why, NULL, 100000);
     EXPECT(rc == -1 && why == IMT_GPIO_EBUSY, "EBUSY is someone else holding it");
+
+    /* ENOSYS is src/imu_gpio_null.c: no GPIO backend in this build.  Nothing
+     * to measure, and nothing wrong with the part — reporting it as EIO would
+     * fail a driver over a build option. */
+    gpio_arm(NULL, 0, ENOSYS);
+    why = IMT_GPIO_OK;
+    rc = imt_gpio_count_edges("gpiochip0", 17, 50, NULL, NULL, &why, NULL, 100000);
+    EXPECT(rc == -1 && why == IMT_GPIO_UNSUPPORTED,
+           "ENOSYS is a build with no GPIO backend");
 
     gpio_arm(NULL, 0, EACCES);
     why = IMT_GPIO_OK;

@@ -47,7 +47,11 @@ SignalK to keep magnetic declination current. See [spec.md §3](../spec.md)
 for the full architecture.
 
 **Dependencies.** C11, POSIX, `libgpiod` (1.x or 2.x, auto-detected), and the
-C standard library. Nothing else.
+C standard library. Nothing else. `libgpiod` is itself optional: `make
+NO_GPIOD=1` builds without it, and the Makefile drops it automatically when
+`pkg-config` cannot find it. Both interrupt lines are then unavailable and the
+reader threads use their rate-sized timer, so set `int_gpio = 0` under `[imu]`
+and `[mag]` — a line the config asks for is a startup failure.
 
 **Binaries.**
 
@@ -89,7 +93,9 @@ C standard library. Nothing else.
     `/dev/spidev0.0` and `/dev/spidev0.1` appear. Not every driver supports
     SPI; see [Supported drivers](#5-supported-drivers).
 - `libgpiod-dev`. Bookworm ships 1.6.x and trixie ships 2.x; both are supported
-  and the Makefile auto-detects the installed version via `pkg-config`.
+  and the Makefile auto-detects the installed version via `pkg-config`. Omit it
+  and the build falls back to a GPIO backend that takes no interrupts; see
+  **Dependencies** above.
 
 ```sh
 sudo apt update && sudo apt install -y build-essential libgpiod-dev

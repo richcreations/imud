@@ -755,6 +755,62 @@ jobs:
           fi
           echo "OK: daemon ran 5 s under the shipped SystemCallFilter= on $(uname -m)"
 
+  # The build with no libgpiod, which is what the BSD and macOS ports need
+  # (#43).  Nothing else covers it: every other job installs libgpiod-dev, so
+  # src/imu_gpio_null.c would rot unnoticed the first time a signature changed.
+  #
+  # libgpiod-dev is deliberately NOT installed rather than passing NO_GPIOD=1,
+  # so this also proves the pkg-config fallback picks the null backend on a
+  # host that simply does not have the library — the case a porter actually
+  # meets.  The guard below fails the job if the runner image ever ships it,
+  # since the build would then silently be testing nothing.
+  no-gpiod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confirm libgpiod is absent
+        run: |
+          if pkg-config --exists libgpiod; then
+            echo "libgpiod is installed on this image — this job would test nothing" >&2
+            exit 1
+          fi
+          echo "OK: no libgpiod, auto-detect must select the null backend"
+
+      - name: Build
+        run: make
+
+      - name: No libgpiod in any binary
+        run: |
+          for b in imud imud-cal imud-imutest; do
+            if ldd "$b" | grep -qi gpiod; then
+              echo "FAIL: $b links libgpiod" >&2; exit 1
+            fi
+          done
+          echo "OK: imud, imud-cal and imud-imutest link no libgpiod"
+
+      - name: The null backend's own suite
+        run: make test_imu_gpio_null && ./test_imu_gpio_null
+
+      # The claim that matters: not that it links, but that it runs.  The sim
+      # driver sets int_gpio = 0 for both sensors, which is the path a host
+      # with no GPIO takes, so the whole pipeline runs on the timer fallback.
+      - name: Run the daemon against the sim driver
+        run: |
+          # sim.conf names no stream socket, so it takes the /run/imud default
+          # that only root can create; point it somewhere writable.
+          cp config/sim.conf /tmp/sim.conf
+          printf '\n[stream]\nenabled = true\nsocket  = "/tmp/imud-nogpiod.sock"\n' \
+            >> /tmp/sim.conf
+          timeout 10 ./imud --config /tmp/sim.conf > /tmp/imud.log 2>&1 || true
+          cat /tmp/imud.log
+          grep -q 'running' /tmp/imud.log || { echo "daemon never started" >&2; exit 1; }
+          grep -q '^\[stats\]' /tmp/imud.log || { echo "fusion never ran" >&2; exit 1; }
+          echo "OK: imud fused samples with no libgpiod"
+
   # The suite on 32-bit ARM.  armhf .debs are built and published, but until
   # now nothing ever RAN the tests there: build-and-test covers amd64 and
   # arm64 only.  32-bit is where the packed wire struct, time_t width and

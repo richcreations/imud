@@ -7,10 +7,11 @@
 /*
  * imu_gpio.h — the daemon's edge-wait, exposed so nothing has to reimplement it.
  *
- * The implementation lives in src/imu.c, beside the reader threads that use it.
- * It is declared here rather than kept static because imud-imutest must wait on
- * an interrupt exactly the way the daemon does, and the alternative -- a second
- * copy of the libgpiod v1/v2 split -- src/imutest_gpio.c defers to it.
+ * The implementation is src/imu_gpio.c, or src/imu_gpio_null.c on a host with
+ * no libgpiod; the Makefile picks one. It is declared here rather than kept
+ * static because imud-imutest must wait on an interrupt exactly the way the
+ * daemon does, and the alternative -- a second copy of the libgpiod v1/v2
+ * split -- src/imutest_gpio.c defers to it.
  *
  * That duplication was not free. imutest paced its own reads on a 5 ms timer
  * where the daemon waits on the watermark, and every difference between the two
@@ -22,7 +23,9 @@
  *
  * The line handle is opaque so callers need no <gpiod.h>: the concrete type is
  * struct gpiod_line_request (v2) or struct gpiod_line (v1), and which one it is
- * is a build-time question that belongs in one file.
+ * is a build-time question that belongs in one file. That opacity is also what
+ * lets there be no libgpiod at all -- a backend that never returns a handle
+ * leaves every caller on the timer it already falls back to.
  */
 #ifndef IMUD_IMU_GPIO_H
 #define IMUD_IMU_GPIO_H
