@@ -71,10 +71,26 @@ if [ "$got" != "$RASPBIAN_KEY_FPR" ]; then
     exit 1
 fi
 
-# apt inside the bootstrap drops to a sandbox user that cannot read a key held
-# under a private temporary directory, so stage it world-readable.
-keyfile=/tmp/imud-raspbian-keyring.gpg
-install -m 0644 "$key" "$keyfile"
+# Stage the key at the path the raspbian-archive-keyring PACKAGE uses, and
+# install that package into the rootfs below, so the one `signed-by=` path is
+# valid in both places it has to resolve.
+#
+# mmdebstrap bakes the sources.list it is given INTO the rootfs.  A host-only
+# path such as /tmp/... therefore bootstraps fine and then leaves an image
+# whose own apt cannot verify the archive: "Failed to parse keyring ...: No
+# such file or directory", reported as "the repository is not signed".  Using
+# the package's canonical path means the key is present on the host (staged
+# here, for the bootstrap itself) and inside the rootfs (from the package).
+#
+# Needs root, which is also what mmdebstrap's root mode needs; CI invokes this
+# under sudo.  The file is the keyring package's own home, so this writes
+# nothing a plain `apt install raspbian-archive-keyring` would not.
+keyfile=/usr/share/keyrings/raspbian-archive-keyring.gpg
+if [ "$(id -u)" -ne 0 ]; then
+    echo "$0: must run as root to stage $keyfile" >&2
+    exit 1
+fi
+install -D -m 0644 "$key" "$keyfile"
 
 # The merged-usr hook is REQUIRED and must not be left to autodetection.
 # Raspbian is merged-usr exactly as Debian is — its base-files ships
@@ -88,12 +104,19 @@ install -m 0644 "$key" "$keyfile"
 #
 # Only main is enabled: every Build-Depends lives there, and the other
 # components would add index downloads for nothing.
+#
+# raspbian-archive-keyring is always included: it is what puts the key at
+# $keyfile INSIDE the rootfs, which is the half of the signed-by path that the
+# bootstrap itself cannot provide.
+include="raspbian-archive-keyring"
+[ -n "$INCLUDE" ] && include="$include,$INCLUDE"
+
 set -- --architectures=armhf --variant=apt --components=main \
        --hook-dir=/usr/share/mmdebstrap/hooks/merged-usr \
        --aptopt='Acquire::Retries "5"' \
        --aptopt='Acquire::http::Timeout "60"' \
-       --aptopt='APT::Sandbox::User "root"'
-[ -n "$INCLUDE" ] && set -- "$@" --include="$INCLUDE"
+       --aptopt='APT::Sandbox::User "root"' \
+       --include="$include"
 
 mmdebstrap "$@" "$SUITE" "$OUT" \
     "deb [signed-by=$keyfile] $RASPBIAN_MIRROR $SUITE main"
