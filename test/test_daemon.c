@@ -112,6 +112,12 @@ int imud_test_pthread_create(pthread_t *restrict tid,
  * fallback. */
 #define T_MISSING_CONF "/tmp/imud_e2e_no_such.conf"
 #define T_REPLAY_LOG   "/tmp/imud_e2e_daemon_replay.log"
+/* A SECOND pair of paths, for the [runtime] case.  They have to differ from
+ * T_PID_FILE/T_STATUS_SOCK above: those two are what the Makefile compiles in
+ * as this copy's PID_FILE/STATUS_SOCK, so the config keys are only proved to
+ * be read if the daemon lands somewhere the compiled-in defaults do not. */
+#define T_ALT_PID_FILE    "/tmp/imud_e2e_daemon_alt.pid"
+#define T_ALT_STATUS_SOCK "/tmp/imud_e2e_daemon_alt.sock"
 
 /* Ports the thread-failure cases need a listener or a receiver on, in the same 27xxx block
  * as the NMEA dest_port the lifecycle test already uses. */
@@ -176,6 +182,9 @@ typedef struct {
      * everything below error.  For a case that has to tell WHY the daemon
      * stopped: the two shutdown paths are one LOG_I line each. */
     const char *log_file;
+    /* Write a [runtime] block naming T_ALT_*, so the daemon's PID file and
+     * status socket come from the config rather than the compiled-in pair. */
+    bool runtime_paths;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
@@ -227,6 +236,12 @@ static void write_conf_opt(conf_opt_t o)
         T_STREAM_SOCK,
         o.log_file ? "info" : "error",
         o.log_file ? o.log_file : "");
+    if (o.runtime_paths)
+        fprintf(f,
+            "[runtime]\n"
+            "pid_file      = \"%s\"\n"
+            "status_socket = \"%s\"\n",
+            T_ALT_PID_FILE, T_ALT_STATUS_SOCK);
     if (o.replay)
         fprintf(f,
             "[device]\n"
@@ -264,10 +279,15 @@ static int connect_unix(const char *path, int timeout_ms)
     return -1;
 }
 
-/* One status report, as imud-status would fetch it. */
-static bool fetch_status(char *buf, size_t bufsz)
+/* One status report, as imud-status would fetch it, from a named socket.
+ * `timeout_ms` bounds the CONNECT only — recv then blocks until the health
+ * thread accepts and answers.  Never wrap this in a retry loop: connect_unix
+ * already retries, so an outer loop multiplies the two budgets together and a
+ * socket that is never going to appear costs minutes instead of seconds. */
+static bool fetch_status_from(const char *path, int timeout_ms,
+                              char *buf, size_t bufsz)
 {
-    int fd = connect_unix(T_STATUS_SOCK, 5000);
+    int fd = connect_unix(path, timeout_ms);
     if (fd < 0) return false;
     size_t got = 0;
     for (;;) {
@@ -279,6 +299,12 @@ static bool fetch_status(char *buf, size_t bufsz)
     buf[got] = '\0';
     close(fd);
     return got > 0;
+}
+
+/* The compiled-in socket, which every case but the [runtime] one uses. */
+static bool fetch_status(char *buf, size_t bufsz)
+{
+    return fetch_status_from(T_STATUS_SOCK, 5000, buf, bufsz);
 }
 
 /* True when the report line beginning `label` also contains `want`. Scoped to
@@ -606,6 +632,70 @@ static void daemon_start(daemon_run_t *d, sigset_t *old)
     atomic_store(&d->done, 0);
     EXPECT(pthread_create(&d->tid, NULL, daemon_thread, d) == 0,
            "daemon thread started");
+}
+
+/*
+ * [runtime] moves the PID file and the status socket off /run/imud, which is
+ * Linux's and root's: without it imud-status has nothing to attach to on an
+ * unprivileged run, or on a host with no /run at all.
+ *
+ * The assertion that carries the case is the NEGATIVE one.  Both compiled-in
+ * defaults are redirected into /tmp for this suite (see T_PID_FILE above), so
+ * a daemon ignoring the config keys would still bind a socket and write a pid
+ * file somewhere the test can reach — just the wrong somewhere.  Proving they
+ * land where the CONFIG says, and that the compiled-in pair stays absent, is
+ * what separates the two.
+ */
+static void test_daemon_runtime_paths(void)
+{
+    begin("test_daemon_runtime_paths");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_PID_FILE);
+    unlink(T_STREAM_SOCK);
+    unlink(T_ALT_STATUS_SOCK);
+    unlink(T_ALT_PID_FILE);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
+                                 .runtime_paths = true });
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    /* A full report, not a bare connect: the responder is the health thread,
+     * so an answer orders this after step 9 and makes the pid-file stat below
+     * a fact rather than a race against startup.  One call — connect_unix does
+     * the retrying, and a wrong path has to fail in 15 s, not in minutes. */
+    char rep[8192];
+    EXPECT(fetch_status_from(T_ALT_STATUS_SOCK, 15000, rep, sizeof rep),
+           "the status socket named in [runtime] answers");
+
+    struct stat st;
+    EXPECT(stat(T_ALT_PID_FILE, &st) == 0, "the pid file named in [runtime] is written");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0,  "the built-in status socket is NOT bound");
+    EXPECT(stat(T_PID_FILE, &st) != 0,     "the built-in pid file is NOT written");
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM sent to main's thread");
+    bool exited = false;
+    for (int waited = 0; waited < 15000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "the daemon stops");
+    if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+
+    /* §13 has to clean up the configured paths, not the compiled-in ones. */
+    EXPECT(d.rc == 0, "exits 0");
+    EXPECT(stat(T_ALT_STATUS_SOCK, &st) != 0, "the configured status socket is unlinked");
+    EXPECT(stat(T_ALT_PID_FILE, &st) != 0,    "the configured pid file is removed");
+
+    drain_pending_sigterm();
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
 }
 
 /*
@@ -1319,6 +1409,7 @@ int main(void)
     test_daemon_refuses_bad_config();
     test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();
+    test_daemon_runtime_paths();
     test_daemon_stream_thread_failure_is_fatal();
     test_daemon_worker_can_signal_shutdown();
     test_daemon_replay_exits_at_end_of_capture();

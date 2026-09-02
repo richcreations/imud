@@ -377,6 +377,20 @@ Hardware bus and GPIO controller. **[restart]**
 | `sim_speed` | float | `1.0` | Playback pacing: `2.0` = double speed, `0` = as fast as the pipeline accepts. |
 <!-- END GENERATED: config-keys device.1 -->
 
+### `[runtime]`
+
+The daemon's own two paths. Both default to `/run/imud`, which is Linux's and
+root's; name them somewhere writable to run unprivileged, or on a host that has
+no `/run` at all. The subscription stream has its own path — see
+[`[stream]` `socket`](#stream). **[restart]**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+<!-- BEGIN GENERATED: config-keys runtime.1 -->
+| `pid_file` | string | `""` | Where the daemon writes its PID. Empty selects `/run/imud/imud.pid`, which the shipped unit provides via `RuntimeDirectory=imud`. Set it when `/run/imud` is not writable — an unprivileged run, or a host with no `/run` at all (macOS). |
+| `status_socket` | string | `""` | The AF_UNIX socket [`imud-status`](#8-monitoring-and-diagnostics) connects to, mode 0660. Empty selects `/run/imud/imud.sock`. Moving it means passing the same path to `imud-status --socket`, which reads no config file of its own. |
+<!-- END GENERATED: config-keys runtime.1 -->
+
 ### `[imu]`
 
 IMU (gyroscope + accelerometer) driver settings. **[restart]**

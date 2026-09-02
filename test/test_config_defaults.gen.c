@@ -29,6 +29,10 @@ CK_STR (c.sim_file,  "",           "[device] sim_file");
 CK_BOOL(c.sim_loop,  false,        "[device] sim_loop");
 CK_FLT (c.sim_speed, 1.0,          "[device] sim_speed");
 
+/* [runtime] */
+CK_STR(c.pid_file,      "", "[runtime] pid_file");
+CK_STR(c.status_socket, "", "[runtime] status_socket");
+
 /* [capture] */
 CK_BOOL(c.capture_enabled,   false,           "[capture] enabled");
 CK_STR (c.capture_dir,       "/var/lib/imud", "[capture] dir");

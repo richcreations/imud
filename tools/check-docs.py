@@ -71,6 +71,7 @@ BRIDGE = {
 CORE = {
     "SEC_MOUNT":       "mount",
     "SEC_DEVICE":      "device",
+    "SEC_RUNTIME":     "runtime",
     "SEC_CAPTURE":     "capture",
     "SEC_IMU":         "imu",
     "SEC_MAG":         "mag",

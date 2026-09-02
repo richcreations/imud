@@ -69,11 +69,16 @@
 
 #include "version.h"                         /* IMUD_VERSION_STR — canonical */
 #define VERSION_STR   IMUD_VERSION_STR
-/* Overridable only so test_daemon can run the real daemon without fighting a
- * live one for /run/imud: the suite must be safe to run on the Pi that is
- * currently serving, and these two paths are the only process-wide singletons
- * main() owns.  Nothing in the shipping build defines them — the .deb, the
- * unit file and RuntimeDirectory=imud all use the values below. */
+/* The defaults behind [runtime] pid_file and status_socket, which override
+ * them when set: these two paths are the only process-wide singletons main()
+ * owns, and /run/imud is not writable everywhere the daemon runs (a non-root
+ * run, a host with no /run at all).
+ *
+ * Also overridable at compile time, so test_daemon can run the real daemon
+ * without fighting a live one for /run/imud — the suite must be safe on the Pi
+ * that is currently serving, and it exercises the config keys separately.
+ * Nothing in the shipping build defines them: the .deb, the unit file and
+ * RuntimeDirectory=imud all use the values below. */
 #ifndef PID_FILE
 # define PID_FILE     "/run/imud/imud.pid"   /* inside RuntimeDirectory=imud */
 #endif
@@ -748,12 +753,19 @@ int main(int argc, char **argv)
 
     /* ── 8. Status socket ────────────────────────────────────────────────── */
 
-    int status_fd = status_sock_open(STATUS_SOCK);
+    /* Resolved once, and read for the rest of main() — including the unlink in
+     * §13.  Pointing into cfg is safe because both keys are [restart]:
+     * config_apply_hot() publishes an enumerated field list that holds neither,
+     * so a SIGHUP cannot move the socket out from under its own unlink. */
+    const char *pid_path    = cfg.pid_file[0]      ? cfg.pid_file      : PID_FILE;
+    const char *status_path = cfg.status_socket[0] ? cfg.status_socket : STATUS_SOCK;
+
+    int status_fd = status_sock_open(status_path);
     /* Not fatal if this fails — imud-status won't work but the daemon runs. */
 
     /* ── 9. PID file ─────────────────────────────────────────────────────── */
 
-    pid_write(PID_FILE);
+    pid_write(pid_path);
     /* READY=1 is deliberately NOT sent here.  Sockets being bound is not the
      * daemon being up: step 10 can still fail, and a unit reported active with
      * no threads behind it is the systemd half of the thread-failure problem.
@@ -777,24 +789,24 @@ int main(int argc, char **argv)
     if (prc != 0) {
         LOG_E("[main] fatal: cannot create ism_reader thread: %s\n", strerror(prc));
         out_ctx_free(out); imu_ctx_free(imu);
-        if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
-        pid_remove(PID_FILE); return 1;
+        if (status_fd >= 0) { close(status_fd); unlink(status_path); }
+        pid_remove(pid_path); return 1;
     }
     prc = pthread_create(&mag_tid, NULL, mag_reader_thread, imu);
         if (prc != 0) {
         LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(prc));
         imu_ctx_stop(imu); join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
-        if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
-        pid_remove(PID_FILE); return 1;
+        if (status_fd >= 0) { close(status_fd); unlink(status_path); }
+        pid_remove(pid_path); return 1;
     }
     prc = pthread_create(&fusion_tid, NULL, fusion_thread, imu);
         if (prc != 0) {
         LOG_E("[main] fatal: cannot create fusion thread: %s\n", strerror(prc));
         imu_ctx_stop(imu); join_thread(mag_tid, "mag_reader"); join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
-        if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
-        pid_remove(PID_FILE); return 1;
+        if (status_fd >= 0) { close(status_fd); unlink(status_path); }
+        pid_remove(pid_path); return 1;
     }
 
     if (cfg.capture_enabled) {
@@ -819,8 +831,8 @@ int main(int argc, char **argv)
         join_thread(fusion_tid, "fusion"); join_thread(mag_tid, "mag_reader");
         join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
-        if (status_fd >= 0) { close(status_fd); unlink(STATUS_SOCK); }
-        pid_remove(PID_FILE); return 1;
+        if (status_fd >= 0) { close(status_fd); unlink(status_path); }
+        pid_remove(pid_path); return 1;
     }
 
     if (cfg.nmea_enabled || cfg.nmea_tcp_enabled) {
@@ -1028,9 +1040,9 @@ teardown:
 
     if (status_fd >= 0) {
         close(status_fd);
-        unlink(STATUS_SOCK);
+        unlink(status_path);
     }
-    pid_remove(PID_FILE);
+    pid_remove(pid_path);
 
     LOG_I("[main] exit\n");
     return exit_rc;

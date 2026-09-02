@@ -166,6 +166,42 @@ which plays a file once and exits.
 Playback pacing: 2.0 is double speed, 0 delivers as fast as the pipeline
 accepts (offline regression runs).
 .\" END GENERATED: config-keys device
+.SS [runtime]
+The daemon's own two paths.
+Both default to
+.IR /run/imud ,
+which is Linux's and root's; name them somewhere writable to run unprivileged,
+or on a host that has no
+.IR /run .
+.B [restart]
+.\" BEGIN GENERATED: config-keys runtime
+.TP
+.B pid_file
+.RI (string,\ default:\ \(dq\(dq)
+Where the daemon writes its PID.
+Empty selects
+.IR /run/imud/imud.pid ,
+which the shipped unit provides through
+.BR RuntimeDirectory=imud .
+Set it when
+.I /run/imud
+is not writable \(em an unprivileged run, or a host with no
+.I /run
+at all.
+.TP
+.B status_socket
+.RI (string,\ default:\ \(dq\(dq)
+The AF_UNIX socket
+.BR imud-status (1)
+connects to, mode 0660.
+Empty selects
+.IR /run/imud/imud.sock .
+Moving it means passing the same path to
+.BR imud-status (1)
+as
+.BR \-\-socket :
+that tool reads no config file.
+.\" END GENERATED: config-keys runtime
 .SS [imu]
 IMU driver settings.
 .B [restart]

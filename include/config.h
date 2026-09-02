@@ -30,6 +30,13 @@ typedef struct {
     bool  sim_loop;             /* repeat the capture (seq/time rebased) */
     float sim_speed;            /* playback pacing; 1.0 real time, 0 = fastest */
 
+    /* [runtime]  [restart]: the two process-wide paths main() owns.  Empty —
+     * the default — means the compiled-in /run/imud location, which is what
+     * the unit's RuntimeDirectory=imud provides; set them when /run/imud is
+     * not writable (a non-root run, a host with no /run). */
+    char  pid_file[256];        /* "" = /run/imud/imud.pid */
+    char  status_socket[108];   /* "" = /run/imud/imud.sock; sized to sun_path */
+
     /* [capture]  [restart]: raw-sample black box (.imucap files) */
     bool  capture_enabled;      /* record every raw sample from both sensors */
     char  capture_dir[256];     /* where imud-YYYYMMDD-HHMMSS.imucap files go */

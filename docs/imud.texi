@@ -592,6 +592,7 @@ key inline and is the fastest way to see a working configuration.
 
 @menu
 * [device]::
+* [runtime]::
 * [imu]::
 * [mag]::
 * [fusion]::
@@ -658,6 +659,39 @@ file once and exits.
  @tab @code{1.0}
  @tab Playback pacing: @code{2.0} = double speed, @code{0} = as fast as
 the pipeline accepts.
+@end multitable
+
+@node [runtime]
+@section [runtime]
+@anchor{#runtime}
+The daemon's own two paths. Both default to @code{/run/imud}, which is
+Linux's and root's; name them somewhere writable to run unprivileged, or
+on a host that has no @code{/run} at all. The subscription stream has
+its own path --- see @ref{[stream],,[stream] socket}. @strong{[restart]}
+
+@multitable @columnfractions 0.21 0.09 0.10 0.60 
+@headitem 
+Key
+ @tab Type
+ @tab Default
+ @tab Description
+@item 
+@code{pid_file}
+ @tab string
+ @tab @code{""}
+ @tab Where the daemon writes its PID. Empty selects
+@code{/run/imud/imud.pid}, which the shipped unit provides via
+@code{RuntimeDirectory=imud}. Set it when @code{/run/imud} is not
+writable --- an unprivileged run, or a host with no @code{/run} at all
+(macOS).
+@item 
+@code{status_socket}
+ @tab string
+ @tab @code{""}
+ @tab The AF_UNIX socket @ref{8 Monitoring and diagnostics,,imud-status}
+connects to, mode 0660. Empty selects @code{/run/imud/imud.sock}. Moving
+it means passing the same path to @code{imud-status --socket}, which
+reads no config file of its own.
 @end multitable
 
 @node [imu]

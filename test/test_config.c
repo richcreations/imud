@@ -1401,6 +1401,59 @@ static void test_position_keys_load(void)
     end_test(fb);
 }
 
+/*
+ * [runtime] moves the two paths main() owns off /run/imud, which is Linux's
+ * and root's.  Empty is not "no path" — it selects the compiled-in default —
+ * so the defaults test asserts the empty string and this asserts the override.
+ */
+static void test_runtime_paths_load(void)
+{
+    begin_test("test_runtime_paths_load");
+    int fb = g_fail;
+    const char *path = write_tmpconf(11,
+        "[runtime]\n"
+        "pid_file      = \"/tmp/imud-elsewhere.pid\"\n"
+        "status_socket = \"/tmp/imud-elsewhere.sock\"\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(cfg.pid_file[0] == '\0',      "pid_file defaults empty");
+    EXPECT(cfg.status_socket[0] == '\0', "status_socket defaults empty");
+
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == 0,                                        "runtime keys load ok");
+    EXPECT_STR(cfg.pid_file,      "/tmp/imud-elsewhere.pid",  "pid_file parsed");
+    EXPECT_STR(cfg.status_socket, "/tmp/imud-elsewhere.sock", "status_socket parsed");
+    remove(path);
+    end_test(fb);
+}
+
+/*
+ * status_socket is bound as a sockaddr_un, so it is sized to sun_path and a
+ * value that does not fit is fatal rather than silently truncated — a short
+ * socket path is a valid path to the wrong place, which every client then
+ * connects to and finds nothing on.
+ */
+static void test_runtime_status_socket_too_long(void)
+{
+    begin_test("test_runtime_status_socket_too_long");
+    int fb = g_fail;
+    char body[256];
+    char longpath[160];
+    memset(longpath, 'x', sizeof longpath - 1);
+    longpath[sizeof longpath - 1] = '\0';
+    longpath[0] = '/';
+    snprintf(body, sizeof body, "[runtime]\nstatus_socket = \"%s\"\n", longpath);
+
+    const char *path = write_tmpconf(12, body);
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    int rc = config_load(path, &cfg);
+    EXPECT(rc == CONFIG_ERR_PARSE,       "an over-long status_socket is a parse error");
+    EXPECT(cfg.status_socket[0] == '\0', "and nothing was stored");
+    remove(path);
+    end_test(fb);
+}
+
 /* config/sim.conf must load cleanly and select the sim driver. */
 static void test_sim_conf_loads(void)
 {
@@ -1419,6 +1472,14 @@ static void test_sim_conf_loads(void)
     EXPECT_STR(cfg.pos_wmm_file, "data/WMM.COF",   "sim wmm_file is dev path");
     EXPECT_NEAR_D(cfg.pos_lat_deg, 0.0,    1e-9, "sim pos_lat_deg = 0 (WMM disabled)");
     EXPECT_NEAR_D(cfg.pos_lon_deg, 0.0,    1e-9, "sim pos_lon_deg = 0 (WMM disabled)");
+    /* The hardware-free config is what a port runs first, so none of the three
+     * paths it binds may need root or a /run: all are named, not defaulted. */
+    EXPECT(strncmp(cfg.pid_file,      "/run/", 5) != 0 && cfg.pid_file[0],
+           "sim pid_file is named and off /run");
+    EXPECT(strncmp(cfg.status_socket, "/run/", 5) != 0 && cfg.status_socket[0],
+           "sim status_socket is named and off /run");
+    EXPECT(strncmp(cfg.stream_socket, "/run/", 5) != 0 && cfg.stream_socket[0],
+           "sim stream socket is named and off /run");
     end_test(fb);
 }
 
@@ -1531,6 +1592,8 @@ static void fill_distinct(imud_config_t *c)
     SET_STR(c->sim_file, "distinct-3");
     c->sim_loop = !c->sim_loop;
     c->sim_speed = 5.5;
+    SET_STR(c->pid_file, "distinct-runtime-pid");
+    SET_STR(c->status_socket, "distinct-runtime-sock");
     c->capture_enabled = !c->capture_enabled;
     SET_STR(c->capture_dir, "distinct-7");
     c->capture_max_mb = 15;
@@ -1939,6 +2002,8 @@ int main(void)
     test_load_tilde_expansion();
     test_load_partial_override();
     test_position_keys_load();
+    test_runtime_paths_load();
+    test_runtime_status_socket_too_long();
     test_sim_conf_loads();
     test_mount_preset();
     test_apply_hot_partition();

@@ -800,12 +800,9 @@ jobs:
       # with no GPIO takes, so the whole pipeline runs on the timer fallback.
       - name: Run the daemon against the sim driver
         run: |
-          # sim.conf names no stream socket, so it takes the /run/imud default
-          # that only root can create; point it somewhere writable.
-          cp config/sim.conf /tmp/sim.conf
-          printf '\n[stream]\nenabled = true\nsocket  = "/tmp/imud-nogpiod.sock"\n' \
-            >> /tmp/sim.conf
-          timeout 10 ./imud --config /tmp/sim.conf > /tmp/imud.log 2>&1 || true
+          # Straight off the shipped config: it names all three of its paths in
+          # /tmp, so an unprivileged run needs no patching here.
+          timeout 10 ./imud --config config/sim.conf > /tmp/imud.log 2>&1 || true
           cat /tmp/imud.log
           grep -q 'running' /tmp/imud.log || { echo "daemon never started" >&2; exit 1; }
           # The <N> is journald's priority prefix. A GitHub runner's agent is
@@ -898,10 +895,9 @@ jobs:
       # asserting on the shutdown line makes this cover the signal path too.
       - name: Run the daemon against the sim driver
         run: |
-          cp config/sim.conf /tmp/sim.conf
-          printf '\n[stream]\nenabled = true\nsocket  = "/tmp/imud-macos.sock"\n' \
-            >> /tmp/sim.conf
-          ./imud --config /tmp/sim.conf > /tmp/imud.log 2>&1 &
+          # Unpatched, which is the point on the host that has no /run at all:
+          # config/sim.conf names its pid file, status socket and stream socket.
+          ./imud --config config/sim.conf > /tmp/imud.log 2>&1 &
           pid=$!
           sleep 12
           kill -TERM "$pid"

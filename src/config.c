@@ -212,6 +212,10 @@ void config_defaults(imud_config_t *cfg)
     cfg->sim_loop    = false;
     cfg->sim_speed   = 1.0f;
 
+    /* [runtime] — empty selects main()'s compiled-in /run/imud paths */
+    cfg->pid_file[0]      = '\0';
+    cfg->status_socket[0] = '\0';
+
     /* [capture] */
     cfg->capture_enabled   = false;
     snprintf(cfg->capture_dir, sizeof(cfg->capture_dir), "/var/lib/imud");
@@ -699,6 +703,7 @@ typedef enum {
     SEC_UNKNOWN,
     SEC_MOUNT,
     SEC_DEVICE,
+    SEC_RUNTIME,
     SEC_CAPTURE,
     SEC_IMU,
     SEC_MAG,
@@ -720,6 +725,7 @@ static section_t parse_section(const char *s)
 {
     if (strcmp(s, "[mount]")       == 0) return SEC_MOUNT;
     if (strcmp(s, "[device]")      == 0) return SEC_DEVICE;
+    if (strcmp(s, "[runtime]")     == 0) return SEC_RUNTIME;
     if (strcmp(s, "[capture]")     == 0) return SEC_CAPTURE;
     if (strcmp(s, "[imu]")         == 0) return SEC_IMU;
     if (strcmp(s, "[mag]")         == 0) return SEC_MAG;
@@ -1070,6 +1076,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "sim_file")  == 0) NEED_STR(cfg->sim_file);
         else if (strcmp(key, "sim_loop")  == 0) NEED_BOOL(cfg->sim_loop);
         else if (strcmp(key, "sim_speed") == 0) NEED_FLT(cfg->sim_speed);
+        else WARN_UNKNOWN();
+        break;
+    case SEC_RUNTIME:
+        if      (strcmp(key, "pid_file")      == 0) NEED_STR(cfg->pid_file);
+        else if (strcmp(key, "status_socket") == 0) NEED_STR(cfg->status_socket);
         else WARN_UNKNOWN();
         break;
     case SEC_CAPTURE:
