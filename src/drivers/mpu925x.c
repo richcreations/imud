@@ -109,6 +109,14 @@
 #define TEMP_SENSITIVITY   333.87f  /* LSB/°C, untrimmed (PS Table 4)         */
 #define TEMP_OFFSET_C      21.0f    /* TEMP_degC = TEMP_OUT/Sens + 21         */
 
+/* Gyro start-up, 35 ms typical from sleep (PS Table 1 — the 30 ms in reset()
+ * is Table 2's ACCELEROMETER figure).  Doubled, as Linux's inv_mpu6050 does
+ * for this family: the datasheet gives a typical, and FIFO_EN (Register 35)
+ * says the FIFO buffers gyro data "even though that data path is not enabled",
+ * so a FIFO started early batches samples nothing downstream can tell are
+ * bad. */
+#define GYRO_STARTUP_US    70000
+
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
 static struct {
@@ -246,23 +254,26 @@ static int mpu9255_probe(const imud_bus_t *bus)
 /*
  * fifo_restart — empty the FIFO and resume writing on a packet boundary.
  *
- * FIFO_EN (0x23) is cleared first so the part cannot be part-way through
- * writing a sample-set when the reset lands: with it clear nothing is being
- * written, so re-enabling it starts the next set at byte 0.  USER_CTRL's
- * FIFO_RST self-clears after one clock cycle on silicon; the register is
- * written back explicitly anyway so init() leaves a deterministic image
- * (`imud-imutest` compares two consecutive inits byte for byte).
- * I2C_MST_EN stays clear throughout — bypass needs the master disabled.
+ * Four writes, in the order the vendor sequence and Linux's inv_mpu6050 driver
+ * use: stop the sensor writes at FIFO_EN (0x23), pulse FIFO_RST with
+ * USER_CTRL's own FIFO_EN bit CLEAR, select the sensors again, and only then
+ * reopen the port.  Pulsing the reset with the port already open leaves it
+ * racing a sample-set that is part-way written, and this FIFO carries no
+ * per-word tag to resync from afterwards.
+ *
+ * FIFO_RST self-clears after one clock cycle on silicon; USER_CTRL is written
+ * back explicitly anyway so init() leaves a deterministic image
+ * (`imud-imutest` compares two consecutive inits byte for byte).  That image is
+ * USER_CTRL 0x40 and FIFO_EN 0x78.  I2C_MST_EN stays clear throughout — bypass
+ * needs the master disabled.
  */
 static int fifo_restart(const imud_bus_t *bus)
 {
     if (bus_reg_write(bus, REG_FIFO_EN, 0x00) < 0) return -1;
-    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
-    if (bus_reg_write(bus, REG_USER_CTRL,
-                      USER_CTRL_FIFO_EN | USER_CTRL_FIFO_RST) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_RST) < 0) return -1;
     usleep(1000);
-    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
     if (bus_reg_write(bus, REG_FIFO_EN, FIFO_EN_ACCEL_GYRO) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL, USER_CTRL_FIFO_EN) < 0) return -1;
     return 0;
 }
 
@@ -332,6 +343,10 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * with A_DLPF_CFG=3, again 41 Hz at 1 kHz. */
     if (bus_reg_write(bus, REG_ACCEL_CONFIG,  afs)  < 0) return -1;
     if (bus_reg_write(bus, REG_ACCEL_CONFIG2, 0x03) < 0) return -1;
+
+    /* PWR_MGMT_1/2 above woke the part and took the gyro out of standby; hold
+     * the FIFO off until its sense path has come up. */
+    usleep(GYRO_STARTUP_US);
 
     /* ── FIFO ────────────────────────────────────────────────────────────── */
 

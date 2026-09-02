@@ -906,6 +906,61 @@ static void test_mpu_init_registers(void)
     end(fb);
 }
 
+/*
+ * fifo_restart() must pulse FIFO_RST with the FIFO port CLOSED.
+ *
+ * USER_CTRL (Register 106) resets the FIFO module and FIFO_EN (Register 35)
+ * selects which sensors write into it.  Pulsing the reset with USER_CTRL's own
+ * FIFO_EN bit still set leaves it racing a sample-set that is part-way
+ * written, and this FIFO carries no per-word tag to resync from — so the
+ * settled image is identical either way and only the write ORDER can show it.
+ * The order asserted here is the vendor sequence, and Linux's inv_mpu6050
+ * driver uses it too.
+ */
+#define MPU_TRACE_MAX 64
+static struct { uint8_t reg, val; } g_mpu_trace[MPU_TRACE_MAX];
+static unsigned g_mpu_trace_n;
+
+static void mpu_trace_cb(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    if (addr != MPU_ADDR || g_mpu_trace_n >= MPU_TRACE_MAX) return;
+    g_mpu_trace[g_mpu_trace_n].reg = reg;
+    g_mpu_trace[g_mpu_trace_n].val = val;
+    g_mpu_trace_n++;
+}
+
+static void test_mpu_fifo_restart_order(void)
+{
+    begin("test_mpu_fifo_restart_order");
+    int fb = g_fail;
+
+    mpu_stage_genuine(0x71);
+    g_mpu_trace_n = 0;
+    i2cmock_on_write(mpu_trace_cb);
+
+    imu_cfg_t cfg = { .odr_mhz = 200000, .accel_g = 8,
+                      .gyro_dps = 2000, .fifo_wm = 32 };
+    EXPECT(mpu->init(I2CBUS(MPU_ADDR), &cfg) == 0, "init succeeds");
+    i2cmock_on_write(NULL);
+
+    int rst = -1, sensors = -1, reopen = -1;
+    for (unsigned i = 0; i < g_mpu_trace_n; i++) {
+        uint8_t r = g_mpu_trace[i].reg, v = g_mpu_trace[i].val;
+        if (r == 0x6A && (v & 0x04) && rst < 0)          rst     = (int)i;
+        if (r == 0x23 && v == 0x78   && sensors < 0)     sensors = (int)i;
+        if (r == 0x6A && v == 0x40   && reopen < 0)      reopen  = (int)i;
+    }
+
+    EXPECT(rst >= 0, "USER_CTRL is written with FIFO_RST");
+    if (rst >= 0)
+        EXPECT((g_mpu_trace[rst].val & 0x40) == 0,
+               "FIFO_RST is pulsed with the FIFO port closed");
+    EXPECT(sensors > rst, "FIFO_EN selects the sensors after the reset");
+    EXPECT(reopen > sensors, "USER_CTRL reopens the port last");
+
+    end(fb);
+}
+
 static void test_mpu_read_decode(void)
 {
     begin("test_mpu_read_decode");
@@ -4026,6 +4081,7 @@ int main(void)
 
     test_mpu_probe();
     test_mpu_init_registers();
+    test_mpu_fifo_restart_order();
     test_mpu_read_decode();
     test_mpu_read_overflow_and_errors();
     test_mpu_overflow_discards_and_restarts();
