@@ -327,6 +327,24 @@ static void test_load_config(void)
 
 /* ── Signals ─────────────────────────────────────────────────────────────── */
 
+/*
+ * raise(sig), but only once its disposition is known not to be SIG_DFL.
+ * Returns false, having raised nothing, when no handler is installed.
+ *
+ * Raising a signal this process does not handle takes the default action and
+ * kills the suite, so the very regression the case exists to catch — an
+ * install that missed one — would end the run with no verdict instead of a
+ * failed assertion.
+ */
+static bool raise_if_handled(int sig)
+{
+    struct sigaction cur;
+    if (sigaction(sig, NULL, &cur) != 0 || cur.sa_handler == SIG_DFL)
+        return false;
+    raise(sig);
+    return true;
+}
+
 static void test_signals(void)
 {
     begin("test_signals");
@@ -336,15 +354,15 @@ static void test_signals(void)
     bridge_reload = 0;
     bridge_install_signals();
 
-    raise(SIGHUP);
+    EXPECT(raise_if_handled(SIGHUP), "a SIGHUP handler is installed");
     EXPECT(bridge_reload == 1 && bridge_stop == 0, "SIGHUP → reload only");
     bridge_reload = 0;
 
-    raise(SIGTERM);
+    EXPECT(raise_if_handled(SIGTERM), "a SIGTERM handler is installed");
     EXPECT(bridge_stop == 1 && bridge_reload == 0, "SIGTERM → stop only");
     bridge_stop = 0;
 
-    raise(SIGINT);
+    EXPECT(raise_if_handled(SIGINT), "a SIGINT handler is installed");
     EXPECT(bridge_stop == 1, "SIGINT → stop");
     bridge_stop = 0;
 

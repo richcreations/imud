@@ -320,15 +320,16 @@ static bool status_line_has(const char *rep, const char *label, const char *want
 }
 
 /*
- * Consume a SIGTERM still pending on this process.
+ * Consume a SIGTERM still pending on this process.  Returns true when there was
+ * one — which means the daemon under test did not take the signal it was sent.
  *
- * The daemon under test is supposed to have taken it.  When a regression means
- * it did not, the signal stays pending — blocked, so harmless — until the case
- * restores the caller's mask, and is then delivered to the suite and kills it.
- * That turns a reportable failure into a dead test run with no verdict, which
- * is how the mutation check for this case first presented.
+ * The daemon is supposed to have taken it.  When a regression means it did not,
+ * the signal stays pending — blocked, so harmless — until the case restores the
+ * caller's mask, and is then delivered to the suite and kills it.  That turns a
+ * reportable failure into a dead test run with no verdict, which is how the
+ * mutation check for this case first presented.
  */
-static void drain_pending_sigterm(void)
+static bool drain_pending_sigterm(void)
 {
     sigset_t pend;
     if (sigpending(&pend) == 0 && sigismember(&pend, SIGTERM) > 0) {
@@ -337,7 +338,9 @@ static void drain_pending_sigterm(void)
         sigaddset(&one, SIGTERM);
         int s;
         sigwait(&one, &s);      /* cannot block: it is already pending */
+        return true;
     }
+    return false;
 }
 
 /* True when the daemon's log file contains `want`.  A missing file is false,
@@ -843,6 +846,13 @@ static void test_daemon_worker_can_signal_shutdown(void)
     EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
     EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
     EXPECT(stat(T_STREAM_SOCK, &st) != 0, "stream socket unlinked");
+
+    /* The kill(getpid()) above is the one process-directed signal this suite
+     * sends, so it is the one that outlives the case if sigwait did not take
+     * it.  Asserted rather than quietly drained: an unconsumed SIGTERM is a
+     * finding, and unblocking it below would otherwise kill the run. */
+    EXPECT(!drain_pending_sigterm(),
+           "the daemon consumed the process-directed SIGTERM");
 
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_CONF);
