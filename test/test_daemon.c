@@ -28,13 +28,11 @@
  * is serving. The tradeoff is that the default path constants are not
  * themselves exercised here.
  *
- * THREAD FAILURE: the Makefile links this suite with
- * -Wl,--wrap=pthread_create, so __wrap_pthread_create below can fail one named
- * thread and leave every other one alone. Without that seam main()'s four
+ * THREAD FAILURE: the Makefile compiles this copy of main.c with
+ * -Dpthread_create=imud_test_pthread_create, so the stand-in below can fail one
+ * named thread and leave every other one alone. Without that seam main()'s four
  * warn-and-continue output arms and its one fatal one are unreachable from a
  * test — nothing an outside process can do makes pthread_create return EAGAIN.
- *
- * Linux-only, like test_concurrency: it links the daemon objects and -lgpiod.
  */
 
 #ifndef _GNU_SOURCE
@@ -74,17 +72,21 @@ typedef void *(*thread_fn_t)(void *);
  * pass every thread straight through. */
 static thread_fn_t _Atomic g_fail_fn;
 
-int __real_pthread_create(pthread_t *restrict, const pthread_attr_t *restrict,
-                          thread_fn_t, void *restrict);
+/* main.c is compiled with -Dpthread_create=imud_test_pthread_create, so its
+ * calls land here.  This file is not, so the pass-through below is the real
+ * one. */
+int imud_test_pthread_create(pthread_t *restrict tid,
+                             const pthread_attr_t *restrict attr,
+                             thread_fn_t fn, void *restrict arg);
 
-int __wrap_pthread_create(pthread_t *restrict tid,
-                          const pthread_attr_t *restrict attr,
-                          thread_fn_t fn, void *restrict arg)
+int imud_test_pthread_create(pthread_t *restrict tid,
+                             const pthread_attr_t *restrict attr,
+                             thread_fn_t fn, void *restrict arg)
 {
     thread_fn_t target = atomic_load(&g_fail_fn);
     if (target != NULL && fn == target)
         return EAGAIN;   /* what the real one returns under resource limits */
-    return __real_pthread_create(tid, attr, fn, arg);
+    return pthread_create(tid, attr, fn, arg);
 }
 
 /* Kept in step with the -D flags in the Makefile's test_daemon rule.
@@ -899,7 +901,19 @@ static void test_daemon_replay_stops_on_signal(void)
     msleep(1000);
     EXPECT(!atomic_load(&d.done), "the replay is still playing");
 
-    EXPECT(kill(getpid(), SIGTERM) == 0, "process-directed SIGTERM sent");
+    /*
+     * Directed at the thread running main(), where the sibling case above
+     * uses kill(getpid()).  The difference is Darwin: its sigpending() reports
+     * only the CALLING thread's pending set, so a process-directed signal that
+     * every thread blocks is visible to the main thread alone — measured, and
+     * the reason this case failed on macOS while the sigwait one passed.
+     * In a real run main() IS the process's main thread and sees it, which a
+     * bench run confirms (caught signal 1, replay complete 0, exit 0); here
+     * main_entry() is on a worker, so the process-directed spelling models a
+     * situation that cannot arise.  The code under test is the same either
+     * way — wait_signal_timed() scans one pending set and calls sigwait().
+     */
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM sent to main's thread");
 
     bool exited = false;
     for (int waited = 0; waited < 15000; waited += 50) {

@@ -16,8 +16,8 @@
  * no GPIO lines are opened.
  *
  * Build/run under TSan in CI's tsan job (make test with -fsanitize=thread).
- * Linux-only in the Makefile like test_ring (links the daemon objects), but
- * it also builds and runs on the dev box against the i2c/gpiod stubs.
+ * Links the daemon objects, like test_ring, and runs anywhere they build —
+ * configure picks the bus, GPIO and clock backends per host.
  */
 
 #include <pthread.h>

@@ -40,7 +40,7 @@ it is generated from:
 
 | Tool | Regenerates | When you need it |
 |---|---|---|
-| `help2man` | the ten `man1`/`man8` pages (`make docs-man`) | you changed a `--help` string. **Linux only** — it runs the binaries, and three of them do not link on macOS |
+| `help2man` | the ten `man1`/`man8` pages (`make docs-man`) | you changed a `--help` string. Regenerate on Linux — the pages carry the Linux `--help` text, and help2man runs each binary to read it |
 | `pandoc` | `docs/imud.texi` (`make docs-texi`) and `docs/math.pdf` | you changed `docs/manual.md` or `docs/math.md` |
 | `texinfo` | `imud.info` (`make imud.info`) | always available in CI; also a Debian build dependency |
 | `tectonic` *or* a XeLaTeX | `docs/math.pdf` (`make math-pdf`) | you changed `docs/math.md`. Prefer tectonic: one binary against TeX Live's several GB |
@@ -62,13 +62,17 @@ Please keep the tree **warning-clean**: the build uses `-Wall -Wextra`, and CI
 runs `make && make bridges && make test`. Add or extend a test for any new
 behaviour.
 
-**Not developing on Linux?** `devbox/run make -j4 test` runs the whole suite in
-a throwaway Debian container matching CI's environment. macOS builds only 31 of
-the 37 suites, and it can actively prove the *wrong* thing — a macOS-only
-`fcntl()` once passed the local gate and turned every Linux job in CI red — so
-this is the check to run before pushing. Setup, and the recipes macOS cannot run
-at all (sanitizers, coverage, `.deb` builds, systemd unit verification), are in
-[devbox/README.md](devbox/README.md). On Linux it is optional, but it is the
+**Not developing on Linux?** `make test-portable` runs the 39 portable suites —
+which is all 39 suites; nothing in `make test` is Linux-only. Adding a suite
+that is takes an entry in `NONPORTABLE_TEST_BINS` with the reason beside it, and
+`make check-portable-tests` will not accept one without.
+
+A green host run is still evidence about the host. `devbox/run make -j4 test`
+runs the gate in a throwaway Debian container matching CI's environment, and a
+macOS-only `fcntl()` that passed a local gate once turned every Linux job in CI
+red — so that is the check before pushing. Setup, and the recipes macOS cannot
+run at all (sanitizers, coverage, `.deb` builds, systemd unit verification), are
+in [devbox/README.md](devbox/README.md). On Linux it is optional, but it is the
 quick way to test the other Debian release (`--dist bookworm`, the libgpiod v1
 path Raspberry Pi OS still ships) without touching your own toolchain.
 
@@ -119,6 +123,7 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 | `check-texi` | `docs/imud.texi` is still `docs/manual.md`: every section has an Info node, the version matches `include/version.h`, every cross-reference resolves, and the Info directory entry is intact |
 | `check-math-pdf-stamp` | `docs/math.pdf` is a render of the `docs/math.md` it ships with, by SHA-256 — not by mtime, which git does not preserve |
 | `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
+| `check-portable-tests` | every suite in `TEST_BINS` is run by `make test`, removed by `clean` and gitignored, and reaches the macOS CI job — a suite kept out of it has to say what a non-Linux host lacks |
 
 Run it before you commit; CI runs it on every push. `make test-tools` then
 checks the checkers themselves still detect drift, by breaking one fact at a

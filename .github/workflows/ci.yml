@@ -836,7 +836,7 @@ jobs:
       matrix:
         runner: [macos-15-intel, macos-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -869,11 +869,29 @@ jobs:
           make         CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
           make bridges CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
 
-      # The clock seam's own conformance suite, held against the rung macOS
-      # actually gets — including that the cond's deadline and its timeout come
-      # from one clock, which is the trap include/host_time.h exists to name.
-      - name: The host_time contracts, against the fallback rung
-        run: make test_host_time && ./test_host_time
+      # The whole gate, not a sample of it.  This step ran test_host_time alone
+      # until 1.9.2 — one suite, so a fusion, packet or config regression went
+      # green here.  make test-portable is TEST_BINS minus
+      # NONPORTABLE_TEST_BINS, which is empty: everything runs.  A new suite
+      # joins this step by existing, and check-portable-tests fails the tree if
+      # one is excluded without a reason or if this line stops naming the
+      # target.
+      #
+      # Same CPPFLAGS/LDFLAGS as the two invocations above, for the reason
+      # stated there — test_bridge_e2e links -lmosquitto, and the objects these
+      # steps share must not be built once and reused under different flags.
+      #
+      # ~13 min on a 2019 Intel Air, of which test_fusion, test_imutest and
+      # test_drivers are 12: they measure a real loop against a real clock and
+      # do not get faster on a quicker box, which is what the 45 min budget is
+      # sized for.  test_host_time is in here — the clock seam's own
+      # conformance suite, held against the rung macOS actually gets, including
+      # that the cond's deadline and its timeout come from one clock.
+      - name: The suite, against the null and fallback rungs
+        run: |
+          prefix="$(brew --prefix)"
+          make -j3 test-portable CPPFLAGS="-I${prefix}/include" \
+                                 LDFLAGS="-L${prefix}/lib"
 
       # The claim that matters: not that it links, but that it runs.  macOS has
       # no `timeout`, so the daemon is backgrounded and signalled by hand — and

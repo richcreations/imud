@@ -223,7 +223,7 @@ IMUD_OBJS    = $(IMUD_SRCS:.c=.o)
 CAL_OBJS     = $(CAL_SRCS:.c=.o)
 IMUTEST_OBJS = $(IMUTEST_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test check check-docs coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test test-portable check check-docs coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-imutest imud-status imud-mon
 
@@ -497,8 +497,8 @@ test_bridge_e2e: src/signalk_main.entry.o src/influx_main.entry.o \
 
 # The daemon end to end, main() included: startup with no
 # sensor (driver = "sim"), the stream and status sockets, SIGHUP's hot-vs-
-# restart contract, and shutdown ordering.  Linux-only, like test_concurrency —
-# it links the daemon objects and the GPIO backend.
+# restart contract, and shutdown ordering.  It links the daemon objects and the
+# GPIO backend, both of which configure resolves per host, so it is portable.
 #
 # PID_FILE/STATUS_SOCK are redirected into the build directory for this copy of
 # main.c only: /run/imud/imud.sock is a process-wide singleton, and the suite
@@ -519,16 +519,23 @@ src/main.entry.o: CPPFLAGS += -DPID_FILE='"/tmp/imud_e2e_daemon.pid"' \
 # the previous one compiled in — which cost a debugging round already.
 src/main.entry.o: Makefile
 
-# --wrap=pthread_create is the seam for the thread-failure paths: main()'s four
+# -Dpthread_create is the seam for the thread-failure paths: main()'s four
 # warn-and-continue output threads (and the one fatal one) are otherwise
 # unreachable, since nothing a test can do from outside makes pthread_create
-# fail.  The wrapper in test_daemon.c passes every thread through untouched
+# fail.  The stand-in in test_daemon.c passes every thread through untouched
 # unless the test has named its entry point, so the other cases in the suite
-# are unaffected.  GNU ld only,
-# like test_drivers — this suite is already Linux-only.
+# are unaffected.
+#
+# A macro rather than -Wl,--wrap because Apple ld has no --wrap and this suite
+# is otherwise portable.  It redirects main.c's calls only, which is every call
+# under test: main.c holds all nine pthread_create calls in src/.  The
+# macro renames the <pthread.h> declaration too, so the stand-in is prototyped
+# by the real header and cannot drift from it.
+src/main.entry.o: CPPFLAGS += -Dpthread_create=imud_test_pthread_create
+
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=pthread_create -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
 
 # imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
@@ -553,7 +560,8 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # and the drivers reference log_emit (LOG_E) on their error branches.
 # imu_math.c is here for odr_actual_imu/odr_actual_mag — the ODR resolution
 # invariant has to hold for every registered driver, which is exactly this
-# suite's job.  Linux-only (the drivers include <linux/i2c.h>), like `test`.
+# suite's job.  Portable: src/bus_linux.c is the only source in the tree that
+# includes a <linux/*> header, and this rule pins the null backend instead.
 # rate_ladder.h listed for the same reason as test_fusion: this suite is the
 # guard that the ladder covers the registry, and a stale binary would compare
 # the new tables against the old ladder — or the reverse — and pass.
@@ -642,19 +650,19 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 # for the --degauss path exactly as test_imutest does — hence the filter-out,
 # since HWTOOLS_SRCS carries the real backend.
 #
-# --wrap on the three imu_gpio_* entry points is the seam for
-# imutest_gpio.c: its counting POLICY is pure logic over injectable callbacks,
-# and only imu_gpio_* (in $(GPIO_SRC), which IMUTEST_SRCS links deliberately)
-# touch a line -- so --wrap rather than stubs, which would collide with the
-# real definitions.  Same shape as --wrap=pthread_create in test_daemon.
-# Linux/GNU-ld only, and the GPIO backend, like it.
+# $(GPIO_SRC) is filtered out for the same reason: test_hwtools_e2e.c defines
+# imu_gpio_open/wait_edge/close itself, which is the seam for imutest_gpio.c —
+# its counting POLICY (the 200 ms wait cap, the latched-vs-level drain rule,
+# the imt_gpio_why_t classification) is pure logic over injectable callbacks,
+# and only those three touch a line.  Withholding the backend rather than
+# -Wl,--wrap'ing over it costs nothing (the wrappers never fell through to
+# __real_, so the real three were dead code here) and drops the GNU-ld
+# dependency: Apple ld has no --wrap.  imu_gpio_null.c has its own suite.
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
-                  $(filter-out $(BUS_SRC),$(HWTOOLS_SRCS)) \
+                  $(filter-out $(BUS_SRC) $(GPIO_SRC),$(HWTOOLS_SRCS)) \
                   test/bus_mock.c test/test_hwtools_e2e.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -Wl,--wrap=imu_gpio_open -Wl,--wrap=imu_gpio_wait_edge \
-	    -Wl,--wrap=imu_gpio_close \
-	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
       test_concurrency \
@@ -663,6 +671,22 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
       test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest test_hwtools_e2e \
       test_configure
+
+# Suites that cannot run off Linux.  EMPTY, and the empty list is the fact
+# worth stating: every suite in TEST_BINS builds and passes on macOS, measured
+# on 2026-09-02 against Apple clang 16 and GNU make 3.81.
+#
+# It exists so the exclusion is a decision.  PORTABLE_TEST_BINS below is a
+# filter-out, so a suite added to TEST_BINS is portable by DEFAULT and reaches
+# the macos CI job with no second edit; keeping one out means naming it here,
+# and check-portable-tests then demands a `#   <suite> — <reason>` line above
+# for it.  The reason has to be something a non-Linux host genuinely lacks --
+# GNU ld's --wrap, a <linux/*> header, /proc, libgpiod.  "Needs a seam nobody
+# has written yet" is not one: test_daemon and test_hwtools_e2e were both here
+# until the seams turned out to be a -D and a filter-out.
+NONPORTABLE_TEST_BINS =
+
+PORTABLE_TEST_BINS = $(filter-out $(NONPORTABLE_TEST_BINS),$(TEST_BINS))
 
 # Every test binary depends on every project header.
 #
@@ -724,6 +748,19 @@ test: $(TEST_BINS)
 	./test_imutest
 	./test_hwtools_e2e
 	./test_configure
+
+# The gate on a host that is not Linux -- what the macos CI job runs, and what
+# to run on any port under way.  Today that is every suite; see
+# NONPORTABLE_TEST_BINS above for what would take one out.
+#
+# A shell loop rather than the explicit list `test:` uses, because the list is
+# computed.  It echoes `./<suite>` per run so a log still answers "how many
+# ran" to `grep -c '^\./test_'`, and exits on the first failure, as the
+# line-per-suite recipe does.
+test-portable: $(PORTABLE_TEST_BINS)
+	@for t in $(PORTABLE_TEST_BINS); do \
+	    echo "./$$t"; ./$$t || exit 1; \
+	done
 
 # ── Release tarball ───────────────────────────────────────────────────────────
 # The upstream release artifact (later renamed imud_$(VERSION).orig.tar.gz for
@@ -812,7 +849,7 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-libimud-api check-math-citations check-manpages \
                   check-seccomp check-package-descriptions \
                   check-imutest-checks check-comment-refs check-arch-claims \
-                  check-fuzz-targets
+                  check-fuzz-targets check-portable-tests
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
@@ -1005,7 +1042,8 @@ loc:
 # Rebuild and run the whole host test suite instrumented with gcov, then
 # summarise with lcov.  A measuring tool for finding residual line/branch gaps
 # in the already-tested modules — not part of `test` or CI's required jobs.
-# Linux only (like `test`: the daemon-linking tests need <linux/*> + gpiod).
+# Linux only, for lcov and gcov rather than for anything in the suites —
+# `make test-portable` runs every one of them on macOS.
 #
 # Caveat: the per-test targets compile each source directly, so a module built
 # into several tests (log.c, config.c, packet.c) gets a fresh .gcno per build

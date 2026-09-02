@@ -569,6 +569,62 @@ CASES = [
      sub(r'seven fuzzers', 'three fuzzers'),
      "three fuzzers"),
 
+    # ── check-portable-tests ─────────────────────────────────────────────────
+    # A suite built by every run and executed by none.  Silent: the binary is
+    # up to date, `make test` succeeds, and nothing it asserts was ever asked.
+    ("check-portable-tests", "Makefile",
+     sub(r'^\t\./test_ring$', ''),
+     "test_ring"),
+
+    # Left out of `clean`, a suite survives it and is then reused against the
+    # next set of flags -- the __gcov_init link failure after `make coverage`.
+    ("check-portable-tests", "Makefile",
+     sub(r'test_hwtools_e2e test_configure', 'test_configure'),
+     "clean recipe"),
+
+    # Left ungitignored, a built suite waits in `git status` for a wildcard.
+    ("check-portable-tests", ".gitignore",
+     sub(r'^/test_daemon$', ''),
+     "test_daemon"),
+
+    # An exclusion with no reason beside it.  The list is where a suite goes to
+    # stop being tested off Linux, so "why" is the whole of its content.
+    ("check-portable-tests", "Makefile",
+     sub(r'^NONPORTABLE_TEST_BINS =$', 'NONPORTABLE_TEST_BINS = test_nmea'),
+     "NONPORTABLE_TEST_BINS with no"),
+
+    # An exclusion naming a suite that does not exist. $(filter-out) takes a
+    # typo without a word, so the suite it was meant to exclude still runs --
+    # or, read the other way, the list stops meaning anything.
+    ("check-portable-tests", "Makefile",
+     sub(r'^NONPORTABLE_TEST_BINS =$', 'NONPORTABLE_TEST_BINS = test_zzzzz'),
+     "test_zzzzz"),
+
+    # PORTABLE_TEST_BINS spelled out by hand. That is the drift itself: the
+    # filter-out is what makes a new suite portable by default.
+    ("check-portable-tests", "Makefile",
+     sub(r'^PORTABLE_TEST_BINS = \$\(filter-out.*$',
+         'PORTABLE_TEST_BINS = test_host_time'),
+     "PORTABLE_TEST_BINS must stay"),
+
+    # The reported defect, put back: the macos job running one named suite
+    # instead of the list. The comment above it still says test-portable, which
+    # is why the checker reads the job with its comments stripped.
+    ("check-portable-tests", ".github/workflows/ci.yml",
+     sub(r'^          make -j3 test-portable.*$',
+         '          make test_host_time && ./test_host_time'),
+     "does not run"),
+
+    # A stated count going stale -- both spellings, since the two are checked
+    # against different lists.
+    ("check-portable-tests", "CONTRIBUTING.md",
+     sub(r'the 39 portable suites', 'the 3 portable suites'),
+     "3 portable suites"),
+
+    ("check-portable-tests", "devbox/README.md",
+     sub(r'runs 39 suites', 'runs 99 suites'),
+     "99 suites"),
+
 ]
 
 

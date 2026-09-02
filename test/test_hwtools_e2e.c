@@ -28,14 +28,14 @@
  *     later one in this process.
  *   - test/bus_mock.c for the mmc5983ma degauss path, the same __wrap_ioctl
  *     register model test_imutest uses.
- *   - --wrap on imu_gpio_open/wait_edge/close for imutest_gpio.c.  Its counting
- *     POLICY — the 200 ms wait cap, the latched-vs-level drain rule, the
- *     imt_gpio_why_t classification — is pure logic over injectable callbacks;
- *     only imu_gpio_* (in the GPIO backend, linked here for real) touch a line.
- *     Unlike test_daemon's --wrap=pthread_create, these wrappers never fall
- *     through to __real_.  A passthrough would request a real interrupt line
- *     on any machine that has one — and imud is developed on the bench Pi,
- *     where gpiochip4 line 17 is the IMU's own.
+ *   - this file's own imu_gpio_open/wait_edge/close, the GPIO backend being
+ *     withheld from the link, for imutest_gpio.c.  Its counting POLICY — the
+ *     200 ms wait cap, the latched-vs-level drain rule, the imt_gpio_why_t
+ *     classification — is pure logic over injectable callbacks; only
+ *     imu_gpio_* touch a line.  None of the three falls through to the real
+ *     one: a passthrough would request a real interrupt line on any machine
+ *     that has one — and imud is developed on the bench Pi, where gpiochip4
+ *     line 17 is the IMU's own.
  *
  * Deliberately dark, and named here so each gap is a decision rather than an
  * oversight:
@@ -82,6 +82,7 @@
 #include "bus_mock.h"
 #include "cal.h"
 #include "capture.h"
+#include "cloexec.h"
 #include "config.h"
 #include "drivers.h"
 #include "imu_gpio.h"
@@ -232,13 +233,10 @@ static int        g_gpio_unscripted; /* calls made outside a gpio case */
 
 static int g_gpio_line_token;        /* address handed back as the line handle */
 
-imu_gpio_line_t *__wrap_imu_gpio_open(const char *chip_name, unsigned int offset,
-                                      const char *consumer);
-int  __wrap_imu_gpio_wait_edge(imu_gpio_line_t *line, long timeout_ms);
-void __wrap_imu_gpio_close(imu_gpio_line_t *line);
-
-imu_gpio_line_t *__wrap_imu_gpio_open(const char *chip_name, unsigned int offset,
-                                      const char *consumer)
+/* The three are declared by imu_gpio.h; the Makefile withholds $(GPIO_SRC)
+ * from this link so these are the whole implementation. */
+imu_gpio_line_t *imu_gpio_open(const char *chip_name, unsigned int offset,
+                               const char *consumer)
 {
     (void)chip_name; (void)offset; (void)consumer;
     if (!g_gpio_armed) { g_gpio_unscripted++; errno = ENODEV; return NULL; }
@@ -247,7 +245,7 @@ imu_gpio_line_t *__wrap_imu_gpio_open(const char *chip_name, unsigned int offset
     return (imu_gpio_line_t *)&g_gpio_line_token;
 }
 
-int __wrap_imu_gpio_wait_edge(imu_gpio_line_t *line, long timeout_ms)
+int imu_gpio_wait_edge(imu_gpio_line_t *line, long timeout_ms)
 {
     (void)line;
     if (!g_gpio_armed) { g_gpio_unscripted++; return -1; }
@@ -259,7 +257,7 @@ int __wrap_imu_gpio_wait_edge(imu_gpio_line_t *line, long timeout_ms)
     return 0;
 }
 
-void __wrap_imu_gpio_close(imu_gpio_line_t *line)
+void imu_gpio_close(imu_gpio_line_t *line)
 {
     (void)line;
     if (!g_gpio_armed) { g_gpio_unscripted++; return; }
@@ -1056,6 +1054,7 @@ static int bind_stream_socket(void)
     unlink(g_sock);
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
+    APPLY_CLOEXEC(fd);
     if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, 4) < 0) {
         close(fd);
         return -1;
