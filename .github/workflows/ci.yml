@@ -857,8 +857,17 @@ jobs:
           done
           echo "OK: bus_null + imu_gpio_null + host_time_fallback, unaided"
 
+      # Homebrew's prefix is /usr/local on Intel, which clang already searches,
+      # and /opt/homebrew on Apple silicon, which it does not — so imud-mqtt
+      # built on one and not the other.  Passed to BOTH invocations rather than
+      # just `bridges`: make does not treat a flag change as a reason to
+      # recompile, so the objects the two share would otherwise be built once
+      # and reused under different flags.
       - name: Build
-        run: make && make bridges
+        run: |
+          prefix="$(brew --prefix)"
+          make         CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
+          make bridges CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
 
       # The clock seam's own conformance suite, held against the rung macOS
       # actually gets — including that the cond's deadline and its timeout come
