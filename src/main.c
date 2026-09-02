@@ -192,6 +192,23 @@ static void clock_health_check(void)
  */
 static int status_sock_open(const char *path)
 {
+    struct sockaddr_un addr;
+    /*
+     * Fail loudly rather than silently binding a truncated path, and before
+     * unlinking anything: a short path is a valid path to the wrong place,
+     * which imud-status then connects to and finds nothing on, and which §13's
+     * unlink of the configured path does not remove.  config.c's NEED_STR has
+     * already refused anything too long on Linux, where cfg.status_socket is
+     * char[108] — exactly sizeof(sun_path).  macOS sun_path is 104, and there
+     * this is the only thing between the config and a truncated bind.
+     */
+    size_t plen = strlen(path);
+    if (plen >= sizeof(addr.sun_path)) {
+        LOG_E("[health] status socket path too long (%zu bytes, max %zu): %s\n",
+              plen, sizeof(addr.sun_path) - 1, path);
+        return -1;
+    }
+
     unlink(path);   /* remove stale socket from a previous run */
 
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -212,10 +229,9 @@ static int status_sock_open(const char *path)
         return -1;
     }
 
-    struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    memcpy(addr.sun_path, path, plen);   /* addr is zeroed → NUL-terminated */
 
     if (bind_unix_mode(fd, (struct sockaddr *)&addr, sizeof(addr),
                        path, 0660) < 0) {

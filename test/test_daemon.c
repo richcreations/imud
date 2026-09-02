@@ -185,6 +185,9 @@ typedef struct {
     /* Write a [runtime] block naming T_ALT_*, so the daemon's PID file and
      * status socket come from the config rather than the compiled-in pair. */
     bool runtime_paths;
+    /* The status_socket that block names, when T_ALT_STATUS_SOCK is not the
+     * point of the case.  Needs runtime_paths too. */
+    const char *status_sock;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
@@ -241,7 +244,8 @@ static void write_conf_opt(conf_opt_t o)
             "[runtime]\n"
             "pid_file      = \"%s\"\n"
             "status_socket = \"%s\"\n",
-            T_ALT_PID_FILE, T_ALT_STATUS_SOCK);
+            T_ALT_PID_FILE,
+            o.status_sock ? o.status_sock : T_ALT_STATUS_SOCK);
     if (o.replay)
         fprintf(f,
             "[device]\n"
@@ -696,6 +700,78 @@ static void test_daemon_runtime_paths(void)
 
     drain_pending_sigterm();
     pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    end(fb);
+}
+
+/*
+ * The status socket at the longest path status_sock_open() will bind — exactly
+ * sizeof(sun_path) - 1, the boundary its length check sits on.  Derived rather
+ * than written as 107, because sun_path is 108 bytes on Linux and 104 on
+ * macOS and the case has to sit on the boundary of whichever host runs it.
+ *
+ * Neither assertion survives a check or a copy that is one out.  A check one
+ * short refuses this path and the daemon comes up with no status socket at
+ * all — silently, since a failed status socket is deliberately not fatal — so
+ * nothing answers.  A copy one short binds a path one character shorter, which
+ * is a real socket that nothing connects to; that is the negative assertion,
+ * and it is the same finding test_daemon_refuses_overlong_socket carries for
+ * the [stream] socket.
+ */
+static void test_daemon_status_socket_max_len(void)
+{
+    begin("test_daemon_status_socket_max_len");
+    int fb = g_fail;
+
+    const size_t maxp = sizeof(((struct sockaddr_un *)0)->sun_path) - 1;
+
+    char sock[160];
+    int n = snprintf(sock, sizeof sock, "/tmp/imud_e2e_maxlen_");
+    memset(sock + n, 'x', maxp - 5 - (size_t)n);
+    memcpy(sock + maxp - 5, ".sock", 5);
+    sock[maxp] = '\0';
+
+    /* One character short of it: what a copy that stopped early would bind. */
+    char trunc[160];
+    memcpy(trunc, sock, maxp - 1);
+    trunc[maxp - 1] = '\0';
+
+    unlink(sock);
+    unlink(trunc);
+    unlink(T_STATUS_SOCK);
+    unlink(T_ALT_PID_FILE);
+    unlink(T_STREAM_SOCK);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
+                                 .runtime_paths = true, .status_sock = sock });
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    char rep[8192];
+    EXPECT(fetch_status_from(sock, 15000, rep, sizeof rep),
+           "a status socket at the full sun_path length answers");
+    EXPECT(access(trunc, F_OK) != 0, "nothing is bound one character short of it");
+
+    EXPECT(pthread_kill(d.tid, SIGTERM) == 0, "SIGTERM sent to main's thread");
+    bool exited = false;
+    for (int waited = 0; waited < 15000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "the daemon stops");
+    if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+
+    EXPECT(d.rc == 0, "exits 0");
+    EXPECT(access(sock, F_OK) != 0, "§13 unlinks the full-length path");
+
+    drain_pending_sigterm();
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(sock);
+    unlink(trunc);
+    unlink(T_ALT_PID_FILE);
     unlink(T_CONF);
     unlink(T_STREAM_SOCK);
     end(fb);
@@ -1420,6 +1496,7 @@ int main(void)
     test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();
     test_daemon_runtime_paths();
+    test_daemon_status_socket_max_len();
     test_daemon_stream_thread_failure_is_fatal();
     test_daemon_worker_can_signal_shutdown();
     test_daemon_replay_exits_at_end_of_capture();
