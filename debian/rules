@@ -17,6 +17,14 @@ DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 %:
 	dh $@
 
+# ./configure is ours, not autotools: it takes --prefix and the seam switches
+# and rejects everything else.  debhelper finds any executable named configure
+# and calls it with the full autotools argument set (--build=, --disable-*,
+# --runstatedir=), which it refuses — so the deb build died at the first option.
+# Skipped rather than taught those options: the Makefile probes for itself when
+# there is no config.mk, and dh_auto_build below already passes what we want.
+override_dh_auto_configure:
+
 override_dh_auto_build:
 	dh_auto_build -- PREFIX=/usr
 	dh_auto_build -- bridges PREFIX=/usr

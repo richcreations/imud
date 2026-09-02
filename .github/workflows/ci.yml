@@ -808,7 +808,12 @@ jobs:
           timeout 10 ./imud --config /tmp/sim.conf > /tmp/imud.log 2>&1 || true
           cat /tmp/imud.log
           grep -q 'running' /tmp/imud.log || { echo "daemon never started" >&2; exit 1; }
-          grep -q '^\[stats\]' /tmp/imud.log || { echo "fusion never ran" >&2; exit 1; }
+          # The <N> is journald's priority prefix. A GitHub runner's agent is
+          # systemd-managed, so INVOCATION_ID reaches the job environment and
+          # src/main.c correctly selects LOG_STYLE_JOURNAL — which a bare ^\[
+          # anchor then misses, reporting a daemon that fused 8300 samples as
+          # one that never ran.
+          grep -qE '^(<[0-9]>)?\[stats\]' /tmp/imud.log || { echo "fusion never ran" >&2; exit 1; }
           echo "OK: imud fused samples with no libgpiod"
 
   # The suite on 32-bit ARM.  armhf .debs are built and published, but until

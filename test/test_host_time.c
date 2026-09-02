@@ -81,7 +81,9 @@ static void on_sig(int s) { (void)s; g_sigs++; }
  * than setitimer so the interruptions keep coming while the main thread is
  * inside the sleep under test, which is the whole point. */
 static pthread_t     g_hammer;
-static volatile int  g_hammer_stop;
+/* _Atomic, not volatile: a plain cross-thread flag is a C11 data race, and the
+ * TSan job says so — volatile orders nothing between threads. Tree-wide rule. */
+static _Atomic int   g_hammer_stop;
 static pthread_t     g_hammer_target;
 
 static void *hammer(void *arg)
@@ -242,8 +244,16 @@ static void test_cond_deadline_matches_cond_clock(void)
     host_monotonic_now(&start);
     host_cond_deadline(&deadline, 100);
 
+    /* Looped, not called once: pthread_cond_timedwait may wake spuriously, and
+     * a bare `rc == ETIMEDOUT` would then fail on a correct rung. Nothing
+     * signals this cond, so every 0 is spurious and the loop re-waits against
+     * the SAME deadline — rebuilding it per iteration would restart the
+     * timeout and hang. */
+    int rc;
     pthread_mutex_lock(&m);
-    int rc = host_cond_timedwait(&c, &m, &deadline);
+    do {
+        rc = host_cond_timedwait(&c, &m, &deadline);
+    } while (rc == 0);
     pthread_mutex_unlock(&m);
 
     host_monotonic_now(&end);
@@ -260,12 +270,31 @@ static void test_cond_deadline_matches_cond_clock(void)
     pthread_mutex_destroy(&m);
 }
 
+/*
+ * Signal `c` under `m`, having set the predicate `ready` first.
+ *
+ * All three parts matter. Signalling without the mutex held lets the signal
+ * land BEFORE the waiter reaches its wait, where it is simply lost and the
+ * waiter then sits until the deadline — 20 ms of head start is plenty on an
+ * idle box and nothing at all on a loaded CI runner. The predicate is what
+ * makes a signal that arrives early still count.
+ */
+struct sig_arg {
+    pthread_cond_t  *c;
+    pthread_mutex_t *m;
+    int             *ready;
+};
+
 static void *signaller(void *arg)
 {
-    pthread_cond_t *c = arg;
+    struct sig_arg *a = arg;
     struct timespec d = { 0, 20 * 1000000L };
     nanosleep(&d, NULL);
-    pthread_cond_signal(c);
+
+    pthread_mutex_lock(a->m);
+    *a->ready = 1;
+    pthread_cond_signal(a->c);
+    pthread_mutex_unlock(a->m);
     return NULL;
 }
 
@@ -282,20 +311,28 @@ static void test_cond_wakes_on_signal(void)
     host_monotonic_now(&start);
     host_cond_deadline(&deadline, 2000);
 
+    int ready = 0;
+    struct sig_arg a = { &c, &m, &ready };
     pthread_t th;
-    pthread_create(&th, NULL, signaller, &c);
+    pthread_create(&th, NULL, signaller, &a);
 
+    /* Wait on the predicate, not on one return: a spurious wake would
+     * otherwise read as the signal arriving, and a signal that beat us to the
+     * wait would read as a timeout. */
+    int rc = 0;
     pthread_mutex_lock(&m);
-    int rc = host_cond_timedwait(&c, &m, &deadline);
+    while (!ready && rc == 0)
+        rc = host_cond_timedwait(&c, &m, &deadline);
     pthread_mutex_unlock(&m);
     pthread_join(th, NULL);
 
     host_monotonic_now(&end);
 
-    /* 0 and not ETIMEDOUT: the wait ended because it was signalled, well
-     * inside a 2 s deadline. A rung whose deadline is in the past would
-     * report ETIMEDOUT here instead, which test_cond_deadline_matches_
-     * cond_clock also catches — this one pins that a real signal still wins. */
+    /* Signalled, not timed out, well inside a 2 s deadline. A rung whose
+     * deadline landed in the past would report ETIMEDOUT here instead — which
+     * test_cond_deadline_matches_cond_clock also catches; this one pins that a
+     * real signal still gets through. */
+    EXPECT(ready, "the signaller ran");
     EXPECT(rc == 0, "a signalled wait returns 0, not ETIMEDOUT");
     EXPECT(ms_between(&start, &end) < 1000.0, "and returns before the deadline");
 
