@@ -62,10 +62,11 @@ Please keep the tree **warning-clean**: the build uses `-Wall -Wextra`, and CI
 runs `make && make bridges && make test`. Add or extend a test for any new
 behaviour.
 
-**Not developing on Linux?** `make test-portable` runs the 39 portable suites —
-which is all 39 suites; nothing in `make test` is Linux-only. Adding a suite
-that is takes an entry in `NONPORTABLE_TEST_BINS` with the reason beside it, and
-`make check-portable-tests` will not accept one without.
+**Not developing on Linux?** `make test-portable` runs the 38 portable suites.
+Every one of the 39 suites *builds* off Linux; `test_imutest` is held out of the
+macOS CI job by `NONPORTABLE_TEST_BINS`, which is where a suite goes when it
+cannot run there and why — the Makefile carries the reason, and `make
+check-portable-tests` will not accept an entry without one.
 
 A green host run is still evidence about the host. `devbox/run make -j4 test`
 runs the gate in a throwaway Debian container matching CI's environment, and a
