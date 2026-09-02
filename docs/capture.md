@@ -171,7 +171,9 @@ capture file is the exact one.
 
 ## File format (.imucap)
 
-Little-endian, packed; authoritative definitions in `include/capture.h`.
+Little-endian, packed; authoritative definitions in `include/capture.h`. The
+byte order is the file's, not the host's — `src/capture.c` converts each field,
+so a capture written on a big-endian machine reads identically anywhere.
 
 **Header (104 bytes):**
 

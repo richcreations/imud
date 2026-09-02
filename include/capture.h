@@ -14,7 +14,8 @@
  * pipeline, and a capture can be re-run against a different cal.json, mount,
  * or filter tuning.
  *
- * Layout (little-endian, packed; the LE-only build guard lives in types.h):
+ * Layout (little-endian on the wire whatever the host's byte order; the structs
+ * below are the host-order form, converted by capture.c on the way in and out):
  *
  *   cap_header_t                  104 bytes, magic "IMUCAP1\0"
  *   repeated records:

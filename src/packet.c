@@ -7,7 +7,9 @@
 /*
  * packet.c — 276-byte binary packet encoder for imud Stream B (§8)
  *
- * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–271.
+ * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–271.  packet_build
+ * fills a host-order struct; packet_encode/packet_decode convert it to and from
+ * the wire bytes with shifts, so both endiannesses run one code path.
  * Coordinate frame: NED by default; "ENU" rotates vectors and quaternion.
  *
  * NED → ENU transform:
@@ -20,6 +22,7 @@
 #include <math.h>
 #include "packet.h"
 #include "crc32.h"
+#include "wire.h"
 
 /* ── NED → ENU ───────────────────────────────────────────────────────────── */
 
@@ -170,6 +173,172 @@ void packet_build(imu_packet_t       *pkt,
     pkt->nis_accel       = state->nis_accel;
     pkt->nis_mag         = state->nis_mag;
 
-    /* CRC32 covers all bytes before the crc32 field */
-    pkt->crc32 = crc32_ieee((const uint8_t *)pkt, offsetof(imu_packet_t, crc32));
+    /* The CRC belongs to the wire bytes, which packet_encode builds. */
+    pkt->crc32 = 0;
+}
+
+/* ── Wire serialisation ──────────────────────────────────────────────────── */
+
+/*
+ * Both directions walk the fields in wire order, spelled out one per line, so
+ * the list reads against spec.md §8's offset table.  A field added to the
+ * struct and forgotten here survives compilation, so test_packet's whole-struct
+ * round-trip over a distinct fill is what catches it.
+ */
+
+uint32_t packet_encode(uint8_t out[IMUD_PACKET_BYTES], const imu_packet_t *pkt)
+{
+    uint8_t *p = out;
+
+    wire_put_u32(p, pkt->magic);            p += 4;
+    wire_put_u16(p, pkt->version);          p += 2;
+    wire_put_u16(p, pkt->flags);            p += 2;
+    wire_put_u64(p, pkt->ts_wall_ns);       p += 8;
+    wire_put_u64(p, pkt->ts_tai_ns);        p += 8;
+    wire_put_u32(p, pkt->ts_chip_ticks);    p += 4;
+    wire_put_u32(p, pkt->anchor_gen);       p += 4;
+
+    wire_put_f32(p, pkt->accel_x);          p += 4;
+    wire_put_f32(p, pkt->accel_y);          p += 4;
+    wire_put_f32(p, pkt->accel_z);          p += 4;
+    wire_put_f32(p, pkt->accel_raw_x);      p += 4;
+    wire_put_f32(p, pkt->accel_raw_y);      p += 4;
+    wire_put_f32(p, pkt->accel_raw_z);      p += 4;
+
+    wire_put_f32(p, pkt->gyro_x);           p += 4;
+    wire_put_f32(p, pkt->gyro_y);           p += 4;
+    wire_put_f32(p, pkt->gyro_z);           p += 4;
+    wire_put_f32(p, pkt->gyro_raw_x);       p += 4;
+    wire_put_f32(p, pkt->gyro_raw_y);       p += 4;
+    wire_put_f32(p, pkt->gyro_raw_z);       p += 4;
+
+    wire_put_f32(p, pkt->mag_x);            p += 4;
+    wire_put_f32(p, pkt->mag_y);            p += 4;
+    wire_put_f32(p, pkt->mag_z);            p += 4;
+    wire_put_f32(p, pkt->mag_raw_x);        p += 4;
+    wire_put_f32(p, pkt->mag_raw_y);        p += 4;
+    wire_put_f32(p, pkt->mag_raw_z);        p += 4;
+
+    wire_put_f32(p, pkt->quat_w);           p += 4;
+    wire_put_f32(p, pkt->quat_x);           p += 4;
+    wire_put_f32(p, pkt->quat_y);           p += 4;
+    wire_put_f32(p, pkt->quat_z);           p += 4;
+
+    wire_put_f32(p, pkt->pitch);            p += 4;
+    wire_put_f32(p, pkt->roll);             p += 4;
+    wire_put_f32(p, pkt->yaw);              p += 4;
+    wire_put_f32(p, pkt->heading_deg);      p += 4;
+    wire_put_f32(p, pkt->rate_of_turn);     p += 4;
+    wire_put_f32(p, pkt->temp_c);           p += 4;
+
+    for (int i = 0; i < 9; i++) { wire_put_f32(p, pkt->cov[i]); p += 4; }
+
+    wire_put_u32(p, pkt->imu_seq);          p += 4;
+    wire_put_f32(p, pkt->declination_deg);  p += 4;
+    wire_put_f32(p, pkt->heave_m);          p += 4;
+
+    wire_put_f32(p, pkt->gyro_bias_x);      p += 4;
+    wire_put_f32(p, pkt->gyro_bias_y);      p += 4;
+    wire_put_f32(p, pkt->gyro_bias_z);      p += 4;
+    wire_put_f32(p, pkt->gyro_bias_var_x);  p += 4;
+    wire_put_f32(p, pkt->gyro_bias_var_y);  p += 4;
+    wire_put_f32(p, pkt->gyro_bias_var_z);  p += 4;
+    wire_put_f32(p, pkt->heave_rate);       p += 4;
+    wire_put_f32(p, pkt->accel_quiescence); p += 4;
+
+    wire_put_f32(p, pkt->wave_height_m);    p += 4;
+    wire_put_f32(p, pkt->wave_period_s);    p += 4;
+    wire_put_f32(p, pkt->roll_period_s);    p += 4;
+    wire_put_f32(p, pkt->roll_amplitude);   p += 4;
+    wire_put_f32(p, pkt->pitch_period_s);   p += 4;
+    wire_put_f32(p, pkt->pitch_amplitude);  p += 4;
+    wire_put_f32(p, pkt->mag_anomaly);      p += 4;
+    wire_put_f32(p, pkt->mag_residual);     p += 4;
+
+    wire_put_f32(p, pkt->innov_weight);     p += 4;
+    wire_put_f32(p, pkt->innov_reject);     p += 4;
+    wire_put_f32(p, pkt->nis_accel);        p += 4;
+    wire_put_f32(p, pkt->nis_mag);          p += 4;
+
+    uint32_t crc = crc32_ieee(out, offsetof(imu_packet_t, crc32));
+    wire_put_u32(p, crc);
+
+    return crc;
+}
+
+void packet_decode(imu_packet_t *pkt, const uint8_t in[IMUD_PACKET_BYTES])
+{
+    const uint8_t *p = in;
+
+    pkt->magic            = wire_get_u32(p); p += 4;
+    pkt->version          = wire_get_u16(p); p += 2;
+    pkt->flags            = wire_get_u16(p); p += 2;
+    pkt->ts_wall_ns       = wire_get_u64(p); p += 8;
+    pkt->ts_tai_ns        = wire_get_u64(p); p += 8;
+    pkt->ts_chip_ticks    = wire_get_u32(p); p += 4;
+    pkt->anchor_gen       = wire_get_u32(p); p += 4;
+
+    pkt->accel_x          = wire_get_f32(p); p += 4;
+    pkt->accel_y          = wire_get_f32(p); p += 4;
+    pkt->accel_z          = wire_get_f32(p); p += 4;
+    pkt->accel_raw_x      = wire_get_f32(p); p += 4;
+    pkt->accel_raw_y      = wire_get_f32(p); p += 4;
+    pkt->accel_raw_z      = wire_get_f32(p); p += 4;
+
+    pkt->gyro_x           = wire_get_f32(p); p += 4;
+    pkt->gyro_y           = wire_get_f32(p); p += 4;
+    pkt->gyro_z           = wire_get_f32(p); p += 4;
+    pkt->gyro_raw_x       = wire_get_f32(p); p += 4;
+    pkt->gyro_raw_y       = wire_get_f32(p); p += 4;
+    pkt->gyro_raw_z       = wire_get_f32(p); p += 4;
+
+    pkt->mag_x            = wire_get_f32(p); p += 4;
+    pkt->mag_y            = wire_get_f32(p); p += 4;
+    pkt->mag_z            = wire_get_f32(p); p += 4;
+    pkt->mag_raw_x        = wire_get_f32(p); p += 4;
+    pkt->mag_raw_y        = wire_get_f32(p); p += 4;
+    pkt->mag_raw_z        = wire_get_f32(p); p += 4;
+
+    pkt->quat_w           = wire_get_f32(p); p += 4;
+    pkt->quat_x           = wire_get_f32(p); p += 4;
+    pkt->quat_y           = wire_get_f32(p); p += 4;
+    pkt->quat_z           = wire_get_f32(p); p += 4;
+
+    pkt->pitch            = wire_get_f32(p); p += 4;
+    pkt->roll             = wire_get_f32(p); p += 4;
+    pkt->yaw              = wire_get_f32(p); p += 4;
+    pkt->heading_deg      = wire_get_f32(p); p += 4;
+    pkt->rate_of_turn     = wire_get_f32(p); p += 4;
+    pkt->temp_c           = wire_get_f32(p); p += 4;
+
+    for (int i = 0; i < 9; i++) { pkt->cov[i] = wire_get_f32(p); p += 4; }
+
+    pkt->imu_seq          = wire_get_u32(p); p += 4;
+    pkt->declination_deg  = wire_get_f32(p); p += 4;
+    pkt->heave_m          = wire_get_f32(p); p += 4;
+
+    pkt->gyro_bias_x      = wire_get_f32(p); p += 4;
+    pkt->gyro_bias_y      = wire_get_f32(p); p += 4;
+    pkt->gyro_bias_z      = wire_get_f32(p); p += 4;
+    pkt->gyro_bias_var_x  = wire_get_f32(p); p += 4;
+    pkt->gyro_bias_var_y  = wire_get_f32(p); p += 4;
+    pkt->gyro_bias_var_z  = wire_get_f32(p); p += 4;
+    pkt->heave_rate       = wire_get_f32(p); p += 4;
+    pkt->accel_quiescence = wire_get_f32(p); p += 4;
+
+    pkt->wave_height_m    = wire_get_f32(p); p += 4;
+    pkt->wave_period_s    = wire_get_f32(p); p += 4;
+    pkt->roll_period_s    = wire_get_f32(p); p += 4;
+    pkt->roll_amplitude   = wire_get_f32(p); p += 4;
+    pkt->pitch_period_s   = wire_get_f32(p); p += 4;
+    pkt->pitch_amplitude  = wire_get_f32(p); p += 4;
+    pkt->mag_anomaly      = wire_get_f32(p); p += 4;
+    pkt->mag_residual     = wire_get_f32(p); p += 4;
+
+    pkt->innov_weight     = wire_get_f32(p); p += 4;
+    pkt->innov_reject     = wire_get_f32(p); p += 4;
+    pkt->nis_accel        = wire_get_f32(p); p += 4;
+    pkt->nis_mag          = wire_get_f32(p); p += 4;
+
+    pkt->crc32            = wire_get_u32(p);
 }

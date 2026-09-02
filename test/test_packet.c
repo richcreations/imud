@@ -49,6 +49,21 @@ static void end(int fb) { puts(g_fail == fb ? "OK" : "FAIL"); }
 
 /* ── Reference CRC32 (IEEE 802.3 polynomial 0xEDB88320) ─────────────────── */
 
+/* ── Reference little-endian readers ─────────────────────────────────────── */
+
+/* Independent of include/wire.h on purpose: the encoder is checked against
+ * these, not against itself. */
+static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t rd32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint64_t rd64(const uint8_t *p)
+{
+    return (uint64_t)rd32(p) | ((uint64_t)rd32(p + 4) << 32);
+}
+
 static uint32_t ref_crc32(const uint8_t *data, size_t len)
 {
     uint32_t crc = 0xFFFFFFFFu;
@@ -170,10 +185,15 @@ static void test_crc_correct(void)
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "NED");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    uint32_t crc = packet_encode(wire, &pkt);
 
-    uint32_t expected = ref_crc32((const uint8_t *)&pkt, offsetof(imu_packet_t, crc32));
-    EXPECT(pkt.crc32 == expected, "CRC32 over bytes 0-271 matches packet.crc32");
-    EXPECT(pkt.crc32 != 0u,      "CRC32 is non-zero");
+    uint32_t expected = ref_crc32(wire, offsetof(imu_packet_t, crc32));
+    EXPECT(crc == expected, "CRC32 over wire bytes 0-271 matches the return value");
+    EXPECT(rd32(wire + offsetof(imu_packet_t, crc32)) == expected,
+           "the same CRC is written at offset 272");
+    EXPECT(crc != 0u, "CRC32 is non-zero");
+    EXPECT(pkt.crc32 == 0u, "packet_build leaves .crc32 zero — the CRC is the wire's");
     end(fb);
 }
 
@@ -387,8 +407,10 @@ static void test_enu_crc_valid(void)
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
     packet_build(&pkt, &s, &m, &i, &i, "ENU");
-    uint32_t expected = ref_crc32((const uint8_t *)&pkt, offsetof(imu_packet_t, crc32));
-    EXPECT(pkt.crc32 == expected, "ENU packet CRC32 is valid");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    uint32_t crc = packet_encode(wire, &pkt);
+    uint32_t expected = ref_crc32(wire, offsetof(imu_packet_t, crc32));
+    EXPECT(crc == expected, "ENU packet CRC32 is valid");
     end(fb);
 }
 
@@ -403,7 +425,9 @@ static void test_ned_enu_crc_differ(void)
     imu_sample_t  i = make_imu();
     packet_build(&ned_pkt, &s, &m, &i, &i, "NED");
     packet_build(&enu_pkt, &s, &m, &i, &i, "ENU");
-    EXPECT(ned_pkt.crc32 != enu_pkt.crc32, "NED and ENU packets have different CRCs");
+    uint8_t ned_wire[IMUD_PACKET_BYTES], enu_wire[IMUD_PACKET_BYTES];
+    EXPECT(packet_encode(ned_wire, &ned_pkt) != packet_encode(enu_wire, &enu_pkt),
+           "NED and ENU packets have different CRCs");
     end(fb);
 }
 
@@ -552,7 +576,7 @@ static void test_fuzz_seed_matches_wire(void)
     if (n != sizeof(imu_packet_t)) { end(fb); return; }
 
     imu_packet_t pkt;
-    memcpy(&pkt, buf, sizeof pkt);
+    packet_decode(&pkt, buf);
     EXPECT(pkt.magic   == IMUD_MAGIC,   "fuzz seed carries the current magic");
     EXPECT(pkt.version == IMUD_VERSION, "fuzz seed carries the current version");
     EXPECT(ref_crc32(buf, offsetof(imu_packet_t, crc32)) == pkt.crc32,
@@ -560,9 +584,117 @@ static void test_fuzz_seed_matches_wire(void)
     end(fb);
 }
 
+/* ── Wire byte order ─────────────────────────────────────────────────────── */
+
+/*
+ * The encoder must emit little-endian regardless of the host's byte order, so
+ * these read the buffer with the reference readers above rather than casting.
+ */
+static void test_wire_is_little_endian(void)
+{
+    begin("test_wire_is_little_endian");
+    int fb = g_fail;
+    imu_packet_t pkt;
+    fused_state_t s = make_state();
+    mag_sample_t  m = make_mag();
+    imu_sample_t  i = make_imu();
+    packet_build(&pkt, &s, &m, &i, &i, "NED");
+
+    /* Pin values whose encodings are known by hand. */
+    pkt.ts_wall_ns = 0x0102030405060708ull;
+    pkt.imu_seq    = 0xDEADBEEFu;
+    pkt.accel_x    = 1.0f;                 /* IEEE-754: 0x3F800000 */
+
+    uint8_t w[IMUD_PACKET_BYTES];
+    packet_encode(w, &pkt);
+
+    const uint8_t magic_le[4] = { 0x44, 0x55, 0x4D, 0x49 };   /* "IMUD" LSB-first */
+    EXPECT(memcmp(w, magic_le, 4) == 0, "magic 0x494D5544 emits 44 55 4D 49");
+    EXPECT(w[4] == (IMUD_VERSION & 0xFF) && w[5] == 0,
+           "version is LSB-first at offset 4");
+
+    const uint8_t ts_le[8] = { 8, 7, 6, 5, 4, 3, 2, 1 };
+    EXPECT(memcmp(w + 8, ts_le, 8) == 0, "uint64 timestamp is LSB-first");
+
+    const uint8_t one_le[4] = { 0x00, 0x00, 0x80, 0x3F };
+    EXPECT(memcmp(w + 32, one_le, 4) == 0, "float 1.0f emits 00 00 80 3F");
+
+    EXPECT(rd32(w + 180) == 0xDEADBEEFu, "uint32 imu_seq reads back at offset 180");
+    EXPECT(rd16(w + 6) == pkt.flags,     "flags read back at offset 6");
+    EXPECT(rd64(w + 8) == pkt.ts_wall_ns, "timestamp reads back at offset 8");
+    end(fb);
+}
+
+/*
+ * Every field must survive wire → struct → wire.  A field missing from
+ * packet_encode leaves the 0xAA pre-fill; one missing from packet_decode
+ * encodes back as zero.  Either way this fails, which is what keeps the two
+ * hand-written lists honest as the packet grows.
+ */
+static void test_wire_roundtrip_covers_every_field(void)
+{
+    begin("test_wire_roundtrip_covers_every_field");
+    int fb = g_fail;
+
+    /* Distinct byte per position.  Every field from offset 32 on is a 4-byte
+     * scalar, so index%4==3 is its high byte on the wire — pinned to 0x3E so
+     * no float decodes to NaN or Inf and bit-exact comparison is meaningful. */
+    uint8_t in[IMUD_PACKET_BYTES];
+    for (size_t k = 0; k < sizeof in; k++)
+        in[k] = (k >= 32 && k % 4 == 3) ? 0x3Eu : (uint8_t)(k * 7u + 1u);
+
+    imu_packet_t pkt;
+    memset(&pkt, 0, sizeof pkt);
+    packet_decode(&pkt, in);
+
+    uint8_t out[IMUD_PACKET_BYTES];
+    memset(out, 0xAA, sizeof out);
+    uint32_t crc = packet_encode(out, &pkt);
+
+    /* Bytes 0-271 must come back identical; 272-275 are the recomputed CRC. */
+    EXPECT(memcmp(in, out, offsetof(imu_packet_t, crc32)) == 0,
+           "every wire byte before the CRC survives decode then encode");
+    EXPECT(crc == ref_crc32(in, offsetof(imu_packet_t, crc32)),
+           "the re-encoded CRC matches the reference over the same bytes");
+    EXPECT(pkt.crc32 == rd32(in + offsetof(imu_packet_t, crc32)),
+           "packet_decode reads the CRC field too");
+    end(fb);
+}
+
+/*
+ * On a little-endian host the encoded bytes are still the packed struct's own
+ * image, so this change is byte-compatible with every deployed consumer and
+ * needs no wire-version bump.  Vacuous elsewhere, which is the point: there is
+ * nothing to compare against on a big-endian host.
+ */
+static void test_wire_matches_struct_image_on_le(void)
+{
+    begin("test_wire_matches_struct_image_on_le");
+    int fb = g_fail;
+#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    imu_packet_t pkt;
+    fused_state_t s = make_state();
+    mag_sample_t  m = make_mag();
+    imu_sample_t  i = make_imu();
+    packet_build(&pkt, &s, &m, &i, &i, "ENU");
+
+    uint8_t w[IMUD_PACKET_BYTES];
+    uint32_t crc = packet_encode(w, &pkt);
+    pkt.crc32 = crc;                        /* the one field build leaves zero */
+    EXPECT(memcmp(w, &pkt, sizeof pkt) == 0,
+           "wire bytes are the struct image on a little-endian host");
+#else
+    EXPECT(1, "little-endian only");
+#endif
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud packet tests ===");
+    test_wire_is_little_endian();
+    test_wire_roundtrip_covers_every_field();
+    test_wire_matches_struct_image_on_le();
 
     test_crc32_ieee_vector();
     test_packet_size();

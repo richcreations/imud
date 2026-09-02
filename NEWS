@@ -24,6 +24,13 @@ Added:
   from a dead one: at rest both read about zero and pass every other check.
   Implemented for ism330dhcx; other drivers structurally skip it and stay
   clearable.
+* imud builds and runs on big-endian hosts. The binary packet and the .imucap
+  file are converted field by field instead of memcpy'd in host order, so they
+  stay little-endian whatever the machine, and the Debian packages are now
+  Architecture: linux-any.
+  No wire-format change: the bytes a little-endian host emits are identical to
+  before, so existing consumers need no update and the packet version stays
+  17.
 
 Fixed:
 

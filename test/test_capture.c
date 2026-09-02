@@ -100,6 +100,73 @@ static void test_sizes(void)
     end(fb);
 }
 
+/*
+ * The file is little-endian on every host, so these read the bytes on disk
+ * with reference shifts rather than casting them back to the structs.
+ */
+static void test_wire_is_little_endian(void)
+{
+    begin("test_wire_is_little_endian");
+    int fb = g_fail;
+    const char *path = path_in_dir("endian.imucap");
+
+    cap_writer_t w;
+    EXPECT(cap_writer_open(&w, path, 104, 104000, "ism330dhcx", "mmc5983ma",
+                           "1.10.0", 0x0102030405060708ull, 0x1122334455667788ull) == 0,
+           "writer opened");
+
+    imu_sample_t s;
+    memset(&s, 0, sizeof s);
+    s.accel[0] = 1.0f;               /* IEEE-754: 0x3F800000 */
+    s.seq      = 0xDEADBEEFu;
+    EXPECT(cap_writer_imu(&w, &s, 0x0807060504030201ull) == 0, "imu record written");
+    cap_writer_close(&w);
+
+    unsigned char b[104 + 12 + 36];
+    FILE *f = fopen(path, "rb");
+    EXPECT(f != NULL, "capture file opened for byte inspection");
+    if (!f) { end(fb); return; }
+    size_t n = fread(b, 1, sizeof b, f);
+    fclose(f);
+    EXPECT(n == sizeof b, "header + one frame + one payload on disk");
+    if (n != sizeof b) { end(fb); return; }
+
+    EXPECT(memcmp(b, "IMUCAP1", 7) == 0, "magic is the literal 8 bytes");
+    EXPECT(b[8] == 1 && b[9] == 0,       "version LSB-first at offset 8");
+    EXPECT(b[10] == 104 && b[11] == 0,   "hdr_len LSB-first at offset 10");
+    const unsigned char t0_le[8] = { 8, 7, 6, 5, 4, 3, 2, 1 };
+    EXPECT(memcmp(b + 64, t0_le, 8) == 0, "t0_wall_ns is LSB-first at offset 64");
+    EXPECT(b[80] == 0x40 && b[81] == 0x96 && b[82] == 0x01 && b[83] == 0x00,
+           "imu_odr_mhz 104000 LSB-first at offset 80");
+
+    /* Frame at 104: type, flags, len (LE u16), mono_ns (LE u64). */
+    EXPECT(b[104] == CAP_REC_IMU,          "frame type");
+    EXPECT(b[106] == 36 && b[107] == 0,    "frame len LSB-first");
+    const unsigned char mono_le[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    EXPECT(memcmp(b + 108, mono_le, 8) == 0, "frame mono_ns LSB-first");
+
+    /* Payload at 116: accel[0] then, 32 bytes in, seq. */
+    const unsigned char one_le[4] = { 0x00, 0x00, 0x80, 0x3F };
+    EXPECT(memcmp(b + 116, one_le, 4) == 0, "float 1.0f emits 00 00 80 3F");
+    const unsigned char seq_le[4] = { 0xEF, 0xBE, 0xAD, 0xDE };
+    EXPECT(memcmp(b + 116 + 32, seq_le, 4) == 0, "uint32 seq LSB-first");
+
+    /* And the reader gets the same values back off those bytes. */
+    cap_reader_t r;
+    EXPECT(cap_reader_open(&r, path) == 0, "reader opened");
+    EXPECT(r.hdr.t0_wall_ns == 0x0102030405060708ull, "t0_wall_ns decoded");
+    EXPECT(r.hdr.t0_mono_ns == 0x1122334455667788ull, "t0_mono_ns decoded");
+    EXPECT(r.hdr.imu_odr_mhz == 104000u,              "imu_odr_mhz decoded");
+    cap_record_t rec;
+    EXPECT(cap_reader_next(&r, &rec) == 1,            "record read back");
+    EXPECT(rec.mono_ns == 0x0807060504030201ull,      "mono_ns decoded");
+    EXPECT(rec.imu.accel[0] == 1.0f,                  "accel[0] decoded");
+    EXPECT(rec.imu.seq == 0xDEADBEEFu,                "seq decoded");
+    cap_reader_close(&r);
+    unlink(path);
+    end(fb);
+}
+
 static void test_roundtrip(void)
 {
     begin("test_roundtrip");
@@ -724,6 +791,7 @@ int main(void)
     }
 
     test_sizes();
+    test_wire_is_little_endian();
     test_roundtrip();
     test_file_mode();
     test_open_rejects();

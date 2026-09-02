@@ -120,10 +120,11 @@ make distclean               # remove config.mk
 ```
 
 It fails only on the daemon's own dependencies: a C11 compiler, pthreads,
-libm, the Linux `i2c-dev` and `spidev` headers, and a little-endian host (the
-binary packet is written in host order). Everything else — libmosquitto for
-the MQTT bridge, and the tools that regenerate documentation — is reported
-with what its absence costs, and never fails the run.
+libm, and the Linux `i2c-dev` and `spidev` headers. Host byte order is
+reported, not required — the binary packet and `.imucap` are little-endian on
+either endianness. Everything else — libmosquitto for the MQTT bridge, and the
+tools that regenerate documentation — is reported with what its absence costs,
+and never fails the run.
 
 `make test` must be run from the repository root — one test loads
 `data/WMM.COF` by relative path.

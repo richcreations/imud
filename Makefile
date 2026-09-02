@@ -234,7 +234,7 @@ imud-status: src/cli.o src/status_main.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(ATOMIC_LIB)
 
 # imud-mon is a plain UDP consumer: needs config parsing and math
-imud-mon: src/cli.o src/config.o src/log.o src/mon_parse.o src/mon_main.o
+imud-mon: src/cli.o src/config.o src/log.o src/mon_parse.o src/packet.o src/mon_main.o
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.

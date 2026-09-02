@@ -99,11 +99,13 @@ static void test_client_accepts_daemon_packet(void)
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
 
     EXPECT(sizeof(pkt) == 276, "daemon packet is 276 bytes (v17)");
-    EXPECT(client_packet_valid(&pkt, sizeof pkt),
-           "client accepts daemon-built packet (magic+version+CRC)");
-    EXPECT(!client_packet_valid(&pkt, sizeof pkt - 1),
+    EXPECT(client_packet_valid(wire, sizeof wire),
+           "client accepts daemon-encoded packet (magic+version+CRC)");
+    EXPECT(!client_packet_valid(wire, sizeof wire - 1),
            "client rejects short packet");
     end(fb);
 }
@@ -119,12 +121,12 @@ static void test_client_rejects_corruption(void)
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
 
     unsigned char bytes[276];
-    memcpy(bytes, &pkt, sizeof bytes);
+    packet_encode(bytes, &pkt);
     bytes[100] ^= 0x01;   /* flip one payload bit */
     EXPECT(!client_packet_valid(bytes, sizeof bytes),
            "client rejects corrupted payload (CRC)");
 
-    memcpy(bytes, &pkt, sizeof bytes);
+    packet_encode(bytes, &pkt);
     bytes[4] ^= 0xFF;     /* mangle version */
     EXPECT(!client_packet_valid(bytes, sizeof bytes),
            "client rejects wrong version");
@@ -266,26 +268,30 @@ static void test_client_socket_roundtrip(void)
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    pkt.crc32 = packet_encode(wire, &pkt);   /* what a decode will read back */
 
     /* Three datagrams the client must discard, then the real one.  Each
      * exercises a different rejection: wrong size, bad magic, bad CRC. */
     send_to_port(port, "short", 5);
 
-    imu_packet_t bad_magic = pkt;
-    ((uint8_t *)&bad_magic)[0] ^= 0xFF;
-    send_to_port(port, &bad_magic, sizeof bad_magic);
+    uint8_t bad_magic[IMUD_PACKET_BYTES];
+    memcpy(bad_magic, wire, sizeof bad_magic);
+    bad_magic[0] ^= 0xFF;
+    send_to_port(port, bad_magic, sizeof bad_magic);
 
-    imu_packet_t bad_crc = pkt;
-    bad_crc.crc32 ^= 0xDEADBEEFu;
-    send_to_port(port, &bad_crc, sizeof bad_crc);
+    uint8_t bad_crc[IMUD_PACKET_BYTES];
+    memcpy(bad_crc, wire, sizeof bad_crc);
+    bad_crc[offsetof(imu_packet_t, crc32)] ^= 0xFFu;
+    send_to_port(port, bad_crc, sizeof bad_crc);
 
-    send_to_port(port, &pkt, sizeof pkt);
+    send_to_port(port, wire, sizeof wire);
 
     imu_packet_t got;
     memset(&got, 0, sizeof got);
     EXPECT(client_recv_raw(fd, &got) == 0, "imud_recv returns the valid packet");
     EXPECT(memcmp(&got, &pkt, sizeof pkt) == 0,
-           "and it is byte-identical to the one sent");
+           "and it decodes field-for-field to the one sent");
     EXPECT(client_recv_raw(fd, &got) == -1,
            "imud_recv reports failure once the queue is empty (timeout)");
 

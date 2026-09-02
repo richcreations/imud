@@ -37,6 +37,7 @@
 #include "cloexec.h"
 #include "config.h"
 #include "mon_parse.h"
+#include "packet.h"
 #include "types.h"
 
 #ifndef M_PI
@@ -254,11 +255,13 @@ int main(int argc, char **argv)
         }
         if (bin_fd >= 0 && FD_ISSET(bin_fd, &rfds)) {
             while ((n = recv(bin_fd, dgram, sizeof dgram, MSG_DONTWAIT)) > 0) {
-                if (!st.have_binary && (size_t)n == sizeof(imu_packet_t)) {
-                    imu_packet_t *p = (imu_packet_t *)(void *)dgram;
-                    if (p->magic == IMUD_MAGIC &&
-                        mon_crc32_ieee((const uint8_t *)p, offsetof(imu_packet_t, crc32)) == p->crc32) {
-                        st.bin_pkt     = *p;
+                if (!st.have_binary && (size_t)n == IMUD_PACKET_BYTES) {
+                    imu_packet_t p;
+                    packet_decode(&p, (const uint8_t *)dgram);
+                    if (p.magic == IMUD_MAGIC &&
+                        mon_crc32_ieee((const uint8_t *)dgram,
+                                       offsetof(imu_packet_t, crc32)) == p.crc32) {
+                        st.bin_pkt     = p;
                         st.have_binary = true;
                     }
                 }

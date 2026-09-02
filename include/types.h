@@ -19,16 +19,15 @@
 #include <stddef.h>
 #include <pthread.h>
 
-/* The wire packet below is transmitted as an in-memory packed struct with no
- * byte-order conversion, so the host must be little-endian (true of every
- * platform imud targets: amd64, arm64, armhf). */
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
-# error "imud's binary wire format requires a little-endian host"
-#endif
+/* The wire packet below is a HOST-ORDER struct.  It reaches a socket only
+ * through packet_encode()/packet_decode() (src/packet.c), which convert to and
+ * from the little-endian wire layout with shifts, so the host may be either
+ * endianness and the bytes on the wire are the same on both. */
 
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
+#define IMUD_PACKET_BYTES 276u      /* encoded wire size, fixed */
 /* Wire-layout revision, NOT the release version (that is IMUD_VERSION_STR in
  * version.h).  Encoded as major*10 + minor of the release that last CHANGED the
  * packet layout — 17 = the layout introduced in 1.7 (update-gate health fields);
@@ -271,6 +270,8 @@ typedef struct __attribute__((packed)) {
 
 _Static_assert(sizeof(imu_packet_t) == 276,
                "imu_packet_t must be exactly 276 bytes");
+_Static_assert(sizeof(imu_packet_t) == IMUD_PACKET_BYTES,
+               "IMUD_PACKET_BYTES must match the struct the encoder walks");
 _Static_assert(offsetof(imu_packet_t, crc32) == 272,
                "crc32 must be at offset 272");
 

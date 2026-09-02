@@ -290,10 +290,12 @@ static void test_mon_renders_both_streams(void)
     im.temp_c = 31.4f;
     imu_packet_t pkt;
     packet_build(&pkt, &s, &mg, &im, &im, "NED");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
 
     for (int i = 0; i < 12; i++) {
         udp_send_to(nmea_port, hdt, strlen(hdt));
-        udp_send_to(bin_port, &pkt, sizeof pkt);
+        udp_send_to(bin_port, wire, sizeof wire);
         struct timespec t = { 0, 120 * 1000 * 1000 };
         nanosleep(&t, NULL);          /* spans at least one 1 Hz render tick */
     }

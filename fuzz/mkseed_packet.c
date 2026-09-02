@@ -68,11 +68,13 @@ int main(int argc, char **argv)
 
     imu_packet_t pkt;
     packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
 
     FILE *f = fopen(argv[1], "wb");
     if (!f) { perror("fopen"); return 1; }
-    fwrite(&pkt, 1, sizeof pkt, f);
+    fwrite(wire, 1, sizeof wire, f);
     fclose(f);
-    fprintf(stderr, "wrote %zu bytes, version %u\n", sizeof pkt, pkt.version);
+    fprintf(stderr, "wrote %zu bytes, version %u\n", sizeof wire, pkt.version);
     return 0;
 }

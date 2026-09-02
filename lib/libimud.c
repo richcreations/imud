@@ -69,16 +69,11 @@ static int packet_ok(const uint8_t *buf, size_t len)
 {
     if (len != IMUD_PACKET_SIZE)
         return 0;
-    uint32_t magic;
-    memcpy(&magic, buf, 4);
-    if (magic != IMUD_MAGIC)
+    if (imud__ld32(buf) != IMUD_MAGIC)
         return 0;
-    uint16_t version;
-    memcpy(&version, buf + 4, 2);
-    if (version != IMUD_VERSION)
+    if (imud__ld16(buf + 4) != IMUD_VERSION)
         return 0;
-    uint32_t crc;
-    memcpy(&crc, buf + offsetof(imud_packet_t, crc32), 4);
+    uint32_t crc = imud__ld32(buf + offsetof(imud_packet_t, crc32));
     return crc32_ieee(buf, offsetof(imud_packet_t, crc32)) == crc;
 }
 
@@ -362,7 +357,7 @@ int imud_read(imud_t *h, int timeout_ms)
             }
             if (!packet_ok(buf, (size_t)n))
                 continue;                   /* silently discard */
-            memcpy(&h->wire, buf, IMUD_PACKET_SIZE);
+            imud_packet_decode(&h->wire, buf);
         } else {
             ssize_t n = read(h->fd, h->rx + h->rx_got,
                              IMUD_PACKET_SIZE - h->rx_got);
@@ -379,7 +374,7 @@ int imud_read(imud_t *h, int timeout_ms)
             h->rx_got = 0;
             if (!packet_ok(h->rx, IMUD_PACKET_SIZE))
                 continue;                   /* corrupt frame: drop, stay framed */
-            memcpy(&h->wire, h->rx, IMUD_PACKET_SIZE);
+            imud_packet_decode(&h->wire, h->rx);
         }
 
         fill_data(&h->data, &h->wire);

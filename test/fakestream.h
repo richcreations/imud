@@ -114,12 +114,14 @@ static inline void *fs_thread(void *arg)
             if (drop >= 0 && on_this_conn >= drop) break;   /* look like a restart */
 
             imu_packet_t pkt = fs_packet(atomic_fetch_add(&fs->seq, 1), 90.0f);
+            uint8_t wire[IMUD_PACKET_BYTES];
+            packet_encode(wire, &pkt);
 
-            size_t n = sizeof pkt;
+            size_t n = sizeof wire;
             int trunc = atomic_load(&fs->truncate_after);
-            if (trunc >= 0 && on_this_conn == trunc) n = sizeof pkt / 2;
+            if (trunc >= 0 && on_this_conn == trunc) n = sizeof wire / 2;
 
-            ssize_t w = send(c, &pkt, n, 0);
+            ssize_t w = send(c, wire, n, 0);
             if (w < 0) break;                                /* peer went away */
             on_this_conn++;
             atomic_fetch_add(&fs->served, 1);

@@ -35,6 +35,12 @@ it — the first passive check that proves the sensing elements are live."""
   impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx; other drivers structurally skip it and stay clearable."
 
   [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "libimud", "imud-utils"]
+  text     = "imud builds and runs on big-endian hosts. The binary packet and the .imucap file are converted field by field instead of memcpy'd in host order, so they stay little-endian whatever the machine, and the Debian packages are now Architecture: linux-any."
+  impact   = "No wire-format change: the bytes a little-endian host emits are identical to before, so existing consumers need no update and the packet version stays 17."
+
+  [[release.change]]
   kind     = "fix"
   packages = ["imud", "libimud", "imud-utils", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
   text     = "The armhf packages are now built on Raspbian at the ARMv6 baseline, so they run on every Raspberry Pi that boots a 32-bit userland. Previously they were built to Debian's ARMv7 baseline."

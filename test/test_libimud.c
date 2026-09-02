@@ -120,6 +120,9 @@ static imu_packet_t make_pkt(void)
 
     imu_packet_t pkt;
     packet_build(&pkt, &s, &m, &i, &i, "NED");
+    /* Carry the wire CRC so this matches what the library decodes. */
+    uint8_t w[IMUD_PACKET_BYTES];
+    pkt.crc32 = packet_encode(w, &pkt);
     return pkt;
 }
 
@@ -153,7 +156,9 @@ static void test_stream_roundtrip(void)
     EXPECT(imud_wire_version(h) == 0, "wire_version 0 before first packet");
 
     imu_packet_t pkt = make_pkt();
-    put(conn, &pkt, sizeof pkt);
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
+    put(conn, wire, sizeof wire);
     EXPECT(imud_read(h, 1000) == 0, "read returns 0 on a full frame");
 
     const imud_data_t *d = imud_data(h);
@@ -173,18 +178,20 @@ static void test_stream_roundtrip(void)
     EXPECT(imud_wire_version(h) == IMUD_VERSION, "wire_version matches after read");
 
     const imud_packet_t *w = imud_wire(h);
-    EXPECT(w && memcmp(w, &pkt, sizeof pkt) == 0, "imud_wire is the byte-exact packet");
+    EXPECT(w && memcmp(w, &pkt, sizeof pkt) == 0, "imud_wire decodes to the packet sent");
 
     /* Partial frame: half now, timeout, rest later — reassembled correctly. */
-    put(conn, &pkt, 100);
+    put(conn, wire, 100);
     EXPECT(imud_read(h, 50) == 1, "mid-frame wait returns timeout");
-    put(conn, (const unsigned char *)&pkt + 100, sizeof pkt - 100);
+    put(conn, wire + 100, sizeof wire - 100);
     EXPECT(imud_read(h, 1000) == 0, "split frame reassembled");
 
-    /* Corrupt frame: dropped silently, then timeout. */
-    imu_packet_t bad = pkt;
-    bad.heading_deg = 180.0f;               /* CRC now wrong */
-    put(conn, &bad, sizeof bad);
+    /* Corrupt frame: dropped silently, then timeout.  Flip a payload byte
+     * after encoding — re-encoding a changed field would fix the CRC up. */
+    uint8_t bad[IMUD_PACKET_BYTES];
+    memcpy(bad, wire, sizeof bad);
+    bad[132] ^= 0x01u;                      /* heading_deg */
+    put(conn, bad, sizeof bad);
     EXPECT(imud_read(h, 100) == 1, "corrupt frame discarded (timeout follows)");
 
     /* EOF → -1; reconnect to the still-listening server works. */
@@ -192,7 +199,7 @@ static void test_stream_roundtrip(void)
     EXPECT(imud_read(h, 1000) == -1, "EOF reported as connection lost");
     EXPECT(imud_reconnect(h) == 0, "reconnect succeeds");
     conn = accept(srv, NULL, NULL);
-    put(conn, &pkt, sizeof pkt);
+    put(conn, wire, sizeof wire);
     EXPECT(imud_read(h, 1000) == 0, "read works after reconnect");
 
     close(conn);
@@ -222,7 +229,9 @@ static void test_udp_roundtrip(void)
     EXPECT(imud_read(h, 100) == 1, "short datagram discarded");
 
     imu_packet_t pkt = make_pkt();
-    sendto(tx, &pkt, sizeof pkt, 0, (struct sockaddr *)&to, sizeof to);
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
+    sendto(tx, wire, sizeof wire, 0, (struct sockaddr *)&to, sizeof to);
     EXPECT(imud_read(h, 1000) == 0, "valid datagram received");
     EXPECT(fabsf(imud_data(h)->heading_deg - 90.0f) < 1e-3f, "payload decoded");
 
@@ -260,14 +269,16 @@ static void test_tcp_roundtrip(void)
     EXPECT(conn >= 0, "server accepted the TCP client");
 
     imu_packet_t pkt = make_pkt();
-    put(conn, &pkt, sizeof pkt);
+    uint8_t wire[IMUD_PACKET_BYTES];
+    packet_encode(wire, &pkt);
+    put(conn, wire, sizeof wire);
     EXPECT(imud_read(h, 1000) == 0, "read returns 0 on a full TCP frame");
     EXPECT(fabsf(imud_data(h)->heading_deg - 90.0f) < 1e-3f, "payload decoded");
 
     /* Split frame reassembly works over TCP exactly as over AF_UNIX. */
-    put(conn, &pkt, 100);
+    put(conn, wire, 100);
     EXPECT(imud_read(h, 50) == 1, "mid-frame wait returns timeout");
-    put(conn, (const unsigned char *)&pkt + 100, sizeof pkt - 100);
+    put(conn, wire + 100, sizeof wire - 100);
     EXPECT(imud_read(h, 1000) == 0, "split TCP frame reassembled");
 
     /* EOF → -1; reconnect re-dials host:port. */
@@ -275,7 +286,7 @@ static void test_tcp_roundtrip(void)
     EXPECT(imud_read(h, 1000) == -1, "EOF reported as connection lost");
     EXPECT(imud_reconnect(h) == 0, "TCP reconnect succeeds");
     conn = accept(srv, NULL, NULL);
-    put(conn, &pkt, sizeof pkt);
+    put(conn, wire, sizeof wire);
     EXPECT(imud_read(h, 1000) == 0, "read works after TCP reconnect");
 
     close(conn);

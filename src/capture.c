@@ -21,6 +21,92 @@
 
 #include "capture.h"
 #include "fileio.h"
+#include "wire.h"
+
+/* ── Wire serialisation ──────────────────────────────────────────────────── */
+
+/*
+ * The file is little-endian on every host, so each struct is converted through
+ * a byte buffer rather than written as its in-memory image.  Sizes come from
+ * the _Static_asserts in capture.h; the char arrays are copied verbatim.
+ */
+
+static void hdr_encode(uint8_t b[104], const cap_header_t *h)
+{
+    memset(b, 0, 104);
+    memcpy(b + 0, h->magic, 8);
+    wire_put_u16(b +  8, h->version);
+    wire_put_u16(b + 10, h->hdr_len);
+    wire_put_u32(b + 12, h->imu_odr_hz);
+    memcpy(b + 16, h->imu_driver,   16);
+    memcpy(b + 32, h->mag_driver,   16);
+    memcpy(b + 48, h->imud_version, 16);
+    wire_put_u64(b + 64, h->t0_wall_ns);
+    wire_put_u64(b + 72, h->t0_mono_ns);
+    wire_put_u32(b + 80, h->imu_odr_mhz);
+    /* b[84..103] stays the zeroed `reserved` tail. */
+}
+
+static void hdr_decode(cap_header_t *h, const uint8_t b[104])
+{
+    memset(h, 0, sizeof(*h));
+    memcpy(h->magic, b + 0, 8);
+    h->version      = wire_get_u16(b +  8);
+    h->hdr_len      = wire_get_u16(b + 10);
+    h->imu_odr_hz   = wire_get_u32(b + 12);
+    memcpy(h->imu_driver,   b + 16, 16);
+    memcpy(h->mag_driver,   b + 32, 16);
+    memcpy(h->imud_version, b + 48, 16);
+    h->t0_wall_ns   = wire_get_u64(b + 64);
+    h->t0_mono_ns   = wire_get_u64(b + 72);
+    h->imu_odr_mhz  = wire_get_u32(b + 80);
+}
+
+static void frame_encode(uint8_t b[12], const cap_frame_t *f)
+{
+    wire_put_u8 (b + 0, f->type);
+    wire_put_u8 (b + 1, f->flags);
+    wire_put_u16(b + 2, f->len);
+    wire_put_u64(b + 4, f->mono_ns);
+}
+
+static void frame_decode(cap_frame_t *f, const uint8_t b[12])
+{
+    f->type    = wire_get_u8 (b + 0);
+    f->flags   = wire_get_u8 (b + 1);
+    f->len     = wire_get_u16(b + 2);
+    f->mono_ns = wire_get_u64(b + 4);
+}
+
+static void imu_rec_encode(uint8_t b[36], const cap_imu_rec_t *r)
+{
+    for (int i = 0; i < 3; i++) wire_put_f32(b +  0 + 4 * i, r->accel[i]);
+    for (int i = 0; i < 3; i++) wire_put_f32(b + 12 + 4 * i, r->gyro[i]);
+    wire_put_f32(b + 24, r->temp_c);
+    wire_put_u32(b + 28, r->chip_ts);
+    wire_put_u32(b + 32, r->seq);
+}
+
+static void imu_rec_decode(cap_imu_rec_t *r, const uint8_t b[36])
+{
+    for (int i = 0; i < 3; i++) r->accel[i] = wire_get_f32(b +  0 + 4 * i);
+    for (int i = 0; i < 3; i++) r->gyro[i]  = wire_get_f32(b + 12 + 4 * i);
+    r->temp_c  = wire_get_f32(b + 24);
+    r->chip_ts = wire_get_u32(b + 28);
+    r->seq     = wire_get_u32(b + 32);
+}
+
+static void mag_rec_encode(uint8_t b[20], const cap_mag_rec_t *r)
+{
+    for (int i = 0; i < 3; i++) wire_put_f32(b + 4 * i, r->field[i]);
+    wire_put_u64(b + 12, r->wall_ns);
+}
+
+static void mag_rec_decode(cap_mag_rec_t *r, const uint8_t b[20])
+{
+    for (int i = 0; i < 3; i++) r->field[i] = wire_get_f32(b + 4 * i);
+    r->wall_ns = wire_get_u64(b + 12);
+}
 
 /* ── Writer ──────────────────────────────────────────────────────────────── */
 
@@ -52,7 +138,9 @@ int cap_writer_open(cap_writer_t *w, const char *path,
     hdr.t0_wall_ns = t0_wall_ns;
     hdr.t0_mono_ns = t0_mono_ns;
 
-    if (fwrite(&hdr, sizeof(hdr), 1, w->f) != 1) {
+    uint8_t hb[sizeof(cap_header_t)];
+    hdr_encode(hb, &hdr);
+    if (fwrite(hb, sizeof(hb), 1, w->f) != 1) {
         fclose(w->f);
         w->f = NULL;
         return -1;
@@ -61,14 +149,17 @@ int cap_writer_open(cap_writer_t *w, const char *path,
     return 0;
 }
 
+/* payload is already in wire order. */
 static int cap_write_rec(cap_writer_t *w, uint8_t type, uint8_t flags,
-                         const void *payload, uint16_t len, uint64_t mono_ns)
+                         const uint8_t *payload, uint16_t len, uint64_t mono_ns)
 {
     if (!w->f) return -1;
 
     cap_frame_t fr = { .type = type, .flags = flags,
                        .len = len, .mono_ns = mono_ns };
-    if (fwrite(&fr, sizeof(fr), 1, w->f) != 1)      return -1;
+    uint8_t fb[sizeof(cap_frame_t)];
+    frame_encode(fb, &fr);
+    if (fwrite(fb, sizeof(fb), 1, w->f) != 1)       return -1;
     if (len && fwrite(payload, len, 1, w->f) != 1)  return -1;
     w->bytes += sizeof(fr) + len;
     return 0;
@@ -83,7 +174,9 @@ int cap_writer_imu(cap_writer_t *w, const imu_sample_t *s, uint64_t mono_ns)
         .chip_ts = s->chip_ts,
         .seq     = s->seq,
     };
-    if (cap_write_rec(w, CAP_REC_IMU, 0, &rec, sizeof(rec), mono_ns) != 0)
+    uint8_t rb[sizeof(cap_imu_rec_t)];
+    imu_rec_encode(rb, &rec);
+    if (cap_write_rec(w, CAP_REC_IMU, 0, rb, sizeof(rb), mono_ns) != 0)
         return -1;
     w->n_imu++;
     return 0;
@@ -95,8 +188,10 @@ int cap_writer_mag(cap_writer_t *w, const mag_sample_t *m, uint64_t mono_ns)
         .field   = { m->field[0], m->field[1], m->field[2] },
         .wall_ns = m->wall_ns,
     };
+    uint8_t rb[sizeof(cap_mag_rec_t)];
+    mag_rec_encode(rb, &rec);
     uint8_t flags = m->valid ? CAP_MAGF_VALID : 0;
-    if (cap_write_rec(w, CAP_REC_MAG, flags, &rec, sizeof(rec), mono_ns) != 0)
+    if (cap_write_rec(w, CAP_REC_MAG, flags, rb, sizeof(rb), mono_ns) != 0)
         return -1;
     w->n_mag++;
     return 0;
@@ -104,8 +199,9 @@ int cap_writer_mag(cap_writer_t *w, const mag_sample_t *m, uint64_t mono_ns)
 
 int cap_writer_mark(cap_writer_t *w, uint32_t code, uint64_t mono_ns)
 {
-    cap_mark_rec_t rec = { .code = code };
-    return cap_write_rec(w, CAP_REC_MARK, 0, &rec, sizeof(rec), mono_ns);
+    uint8_t rb[sizeof(cap_mark_rec_t)];
+    wire_put_u32(rb, code);
+    return cap_write_rec(w, CAP_REC_MARK, 0, rb, sizeof(rb), mono_ns);
 }
 
 int cap_writer_flush(cap_writer_t *w)
@@ -131,10 +227,12 @@ int cap_reader_open(cap_reader_t *r, const char *path)
     r->f = fopen(path, "rb");
     if (!r->f) return CAP_ERR_IO;
 
-    if (fread(&r->hdr, sizeof(r->hdr), 1, r->f) != 1) {
+    uint8_t hb[sizeof(cap_header_t)];
+    if (fread(hb, sizeof(hb), 1, r->f) != 1) {
         fclose(r->f); r->f = NULL;
         return CAP_ERR_FORMAT;                 /* shorter than a header */
     }
+    hdr_decode(&r->hdr, hb);
     if (memcmp(r->hdr.magic, CAP_MAGIC, sizeof(r->hdr.magic)) != 0 ||
         r->hdr.version != CAP_FMT_VERSION ||
         r->hdr.hdr_len < sizeof(cap_header_t)) {
@@ -151,8 +249,9 @@ int cap_reader_open(cap_reader_t *r, const char *path)
 
 /*
  * Read exactly len payload bytes into dst (dst_sz max), skipping any excess
- * — a future writer may have appended payload fields.  Returns 1 ok,
- * 0 truncated (treat as EOF), -1 on read error.
+ * — a future writer may have appended payload fields.  dst receives raw wire
+ * bytes; the caller decodes.  Returns 1 ok, 0 truncated (treat as EOF),
+ * -1 on read error.
  */
 static int read_payload(FILE *f, void *dst, size_t dst_sz, uint16_t len)
 {
@@ -170,8 +269,10 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
 
     for (;;) {
         cap_frame_t fr;
-        if (fread(&fr, sizeof(fr), 1, r->f) != 1)
+        uint8_t     fb[sizeof(cap_frame_t)];
+        if (fread(fb, sizeof(fb), 1, r->f) != 1)
             return ferror(r->f) ? CAP_ERR_IO : 0;      /* clean EOF */
+        frame_decode(&fr, fb);
 
         memset(out, 0, sizeof(*out));
         out->type    = fr.type;
@@ -180,10 +281,12 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
         switch (fr.type) {
         case CAP_REC_IMU: {
             cap_imu_rec_t rec;
-            memset(&rec, 0, sizeof(rec));
-            if (fr.len < sizeof(rec)) return 0;        /* corrupt tail */
-            int rc = read_payload(r->f, &rec, sizeof(rec), fr.len);
+            uint8_t       rb[sizeof(cap_imu_rec_t)];
+            memset(rb, 0, sizeof(rb));
+            if (fr.len < sizeof(rb)) return 0;         /* corrupt tail */
+            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
             if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
+            imu_rec_decode(&rec, rb);
             out->imu.accel[0] = rec.accel[0];
             out->imu.accel[1] = rec.accel[1];
             out->imu.accel[2] = rec.accel[2];
@@ -197,10 +300,12 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
         }
         case CAP_REC_MAG: {
             cap_mag_rec_t rec;
-            memset(&rec, 0, sizeof(rec));
-            if (fr.len < sizeof(rec)) return 0;
-            int rc = read_payload(r->f, &rec, sizeof(rec), fr.len);
+            uint8_t       rb[sizeof(cap_mag_rec_t)];
+            memset(rb, 0, sizeof(rb));
+            if (fr.len < sizeof(rb)) return 0;
+            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
             if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
+            mag_rec_decode(&rec, rb);
             out->mag.field[0] = rec.field[0];
             out->mag.field[1] = rec.field[1];
             out->mag.field[2] = rec.field[2];
@@ -212,12 +317,12 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
             return 1;
         }
         case CAP_REC_MARK: {
-            cap_mark_rec_t rec;
-            memset(&rec, 0, sizeof(rec));
-            if (fr.len < sizeof(rec)) return 0;
-            int rc = read_payload(r->f, &rec, sizeof(rec), fr.len);
+            uint8_t rb[sizeof(cap_mark_rec_t)];
+            memset(rb, 0, sizeof(rb));
+            if (fr.len < sizeof(rb)) return 0;
+            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
             if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
-            out->mark = rec.code;
+            out->mark = wire_get_u32(rb);
             return 1;
         }
         default:

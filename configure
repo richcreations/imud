@@ -207,11 +207,10 @@ int main(void){return I2C_RDWR==0;}' | try_link; then
         have_linux_bus=0
     fi
 
-    # Little-endian host.  The wire packet and .imucap are packed structs
-    # memcpy'd in host order, so a big-endian build emits packets no consumer
-    # can read and CRCs the wrong bytes.  include/types.h refuses to compile
-    # there; naming it here turns a #error deep in a header into an answer
-    # (issue #46 does the byte-swapping that would lift this).
+    # Host byte order.  Reported, not required: the wire packet and .imucap
+    # are little-endian on every host, converted field by field by
+    # packet_encode/packet_decode and capture.c, so a big-endian build emits
+    # the same bytes as this one.
     if echo '#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #error big-endian
 #endif
@@ -219,8 +218,6 @@ int main(void){return 0;}' | try_link; then
         endian=little
     else
         endian=big
-        require "a little-endian host" \
-                "the binary wire format is little-endian; imud does not byte-swap yet"
     fi
 fi
 
@@ -448,7 +445,7 @@ else
     printf '    %-18s %s\n' "bus backend" \
            "null -- no I2C or SPI; only driver = sim will run"
 fi
-printf '    %-18s %s\n' "byte order" "$endian-endian"
+printf '    %-18s %s\n' "byte order" "$endian-endian (wire stays little-endian)"
 if [ "$no_gpiod" = 0 ]; then
     printf '    %-18s %s\n' "GPIO backend" "libgpiod $gpiod_ver (v$gpiod_maj API)"
 else

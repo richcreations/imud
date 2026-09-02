@@ -254,6 +254,7 @@ void *hirate_out_thread(void *arg)
 {
     out_ctx_t *ctx = arg;
     imu_packet_t pkt;
+    uint8_t       wire[IMUD_PACKET_BYTES];
     fused_state_t state;
     mag_sample_t  mag;
     imu_sample_t  imu;
@@ -280,8 +281,9 @@ void *hirate_out_thread(void *arg)
 
         packet_build(&pkt, &state, &mag, &imu, &raw_imu,
                      ctx->cfg->highrate_coord_frame);
+        packet_encode(wire, &pkt);
 
-        ssize_t sent = sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
+        ssize_t sent = sendto(ctx->hirate_fd, wire, sizeof(wire), 0,
                               (struct sockaddr *)&ctx->hirate_dest,
                               sizeof(ctx->hirate_dest));
         if (sent < 0) {
@@ -315,6 +317,7 @@ void *stream_out_thread(void *arg)
 {
     out_ctx_t *ctx = arg;
     imu_packet_t  pkt;
+    uint8_t       wire[IMUD_PACKET_BYTES];
     fused_state_t state;
     mag_sample_t  mag;
     imu_sample_t  imu;
@@ -360,11 +363,12 @@ void *stream_out_thread(void *arg)
         imu_get_state(ctx->imu, &state, &mag, &imu, &raw_imu);
         packet_build(&pkt, &state, &mag, &imu, &raw_imu,
                      ctx->cfg->highrate_coord_frame);
+        packet_encode(wire, &pkt);
 
         for (int i = 0; i < ctx->stream_nclients; ) {
-            ssize_t s = send(ctx->stream_clients[i], &pkt, sizeof(pkt),
+            ssize_t s = send(ctx->stream_clients[i], wire, sizeof(wire),
                              MSG_NOSIGNAL);
-            if (s == (ssize_t)sizeof(pkt)) { i++; continue; }
+            if (s == (ssize_t)sizeof(wire)) { i++; continue; }
             if (s < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 i++;            /* buffer full: drop this packet, keep client */
                 continue;
@@ -378,7 +382,7 @@ void *stream_out_thread(void *arg)
         }
 
         /* Same framed packet to TCP subscribers (same slow-client policy). */
-        netserv_broadcast(&ctx->bin_tcp, &pkt, sizeof(pkt));
+        netserv_broadcast(&ctx->bin_tcp, wire, sizeof(wire));
     }
 
     /* Final shutdown packet to subscribers is sent HERE, by the thread that
@@ -395,11 +399,13 @@ void *stream_out_thread(void *arg)
         imu_get_state(ctx->imu, &state, &mag, &imu_s, &raw_imu_s);
         state.flags |= FLAG_SHUTDOWN;
         imu_packet_t pkt;
+        uint8_t      wire[IMUD_PACKET_BYTES];
         packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s,
                      ctx->cfg->highrate_coord_frame);
+        packet_encode(wire, &pkt);
         for (int i = 0; i < ctx->stream_nclients; i++)
-            send(ctx->stream_clients[i], &pkt, sizeof(pkt), MSG_NOSIGNAL);
-        netserv_broadcast(&ctx->bin_tcp, &pkt, sizeof(pkt));
+            send(ctx->stream_clients[i], wire, sizeof(wire), MSG_NOSIGNAL);
+        netserv_broadcast(&ctx->bin_tcp, wire, sizeof(wire));
     }
 
     for (int i = 0; i < ctx->stream_nclients; i++)
@@ -557,8 +563,10 @@ void out_ctx_send_shutdown(out_ctx_t *ctx)
     state.flags |= FLAG_SHUTDOWN;
 
     imu_packet_t pkt;
+    uint8_t      wire[IMUD_PACKET_BYTES];
     packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s, ctx->cfg->highrate_coord_frame);
-    sendto(ctx->hirate_fd, &pkt, sizeof(pkt), 0,
+    packet_encode(wire, &pkt);
+    sendto(ctx->hirate_fd, wire, sizeof(wire), 0,
            (struct sockaddr *)&ctx->hirate_dest,
            sizeof(ctx->hirate_dest));
 }

@@ -47,13 +47,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>   /* memcpy — imud_packet_decode's float loads */
 
-/* Packets are decoded as an in-memory packed struct with no byte-order
- * conversion; the wire format is little-endian, so a little-endian host is
- * required (true of every platform imud targets). */
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
-# error "imud's binary wire format requires a little-endian host"
-#endif
+/* imud_packet_t is the HOST-ORDER form.  The wire is little-endian on every
+ * host; imud_packet_decode() below converts, so either endianness works.
+ * Never cast a received buffer to imud_packet_t — decode it. */
 
 /* ── Protocol constants ──────────────────────────────────────────────────── */
 
@@ -185,6 +183,122 @@ typedef struct IMUD__PACKED {
 /* Compile-time size guard — will error if the struct is mis-packed. */
 typedef char imud__size_check[sizeof(imud_packet_t) == IMUD_PACKET_SIZE ? 1 : -1];
 
+/* ── Wire → host ─────────────────────────────────────────────────────────── */
+
+/*
+ * Little-endian scalar loads, by shifts on the value rather than by casting
+ * the buffer, so one compiled path is right on either endianness.  Duplicated
+ * from include/wire.h on purpose: this header must compile standalone against
+ * libc, the same reason the CLOEXEC helpers below are duplicated.
+ */
+static inline uint16_t imud__ld16(const uint8_t *p)
+{
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+static inline uint32_t imud__ld32(const uint8_t *p)
+{
+    return (uint32_t)p[0]         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static inline uint64_t imud__ld64(const uint8_t *p)
+{
+    return (uint64_t)p[0]         | ((uint64_t)p[1] << 8)
+         | ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24)
+         | ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40)
+         | ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56);
+}
+static inline float imud__ldf(const uint8_t *p)
+{
+    uint32_t u = imud__ld32(p);
+    float    v;
+    memcpy(&v, &u, 4);
+    return v;
+}
+
+/*
+ * imud_packet_decode — IMUD_PACKET_SIZE wire bytes → a host-order packet.
+ *
+ * The supported way to turn a received buffer into a struct: a cast is only
+ * correct on a little-endian host.  Validate with imud_packet_valid() first —
+ * this does no checking.
+ */
+static inline void imud_packet_decode(imud_packet_t *pkt, const void *buf)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+
+    pkt->magic            = imud__ld32(p); p += 4;
+    pkt->version          = imud__ld16(p); p += 2;
+    pkt->flags            = imud__ld16(p); p += 2;
+    pkt->ts_wall_ns       = imud__ld64(p); p += 8;
+    pkt->ts_tai_ns        = imud__ld64(p); p += 8;
+    pkt->ts_chip_ticks    = imud__ld32(p); p += 4;
+    pkt->anchor_gen       = imud__ld32(p); p += 4;
+
+    pkt->accel_x          = imud__ldf(p); p += 4;
+    pkt->accel_y          = imud__ldf(p); p += 4;
+    pkt->accel_z          = imud__ldf(p); p += 4;
+    pkt->accel_raw_x      = imud__ldf(p); p += 4;
+    pkt->accel_raw_y      = imud__ldf(p); p += 4;
+    pkt->accel_raw_z      = imud__ldf(p); p += 4;
+
+    pkt->gyro_x           = imud__ldf(p); p += 4;
+    pkt->gyro_y           = imud__ldf(p); p += 4;
+    pkt->gyro_z           = imud__ldf(p); p += 4;
+    pkt->gyro_raw_x       = imud__ldf(p); p += 4;
+    pkt->gyro_raw_y       = imud__ldf(p); p += 4;
+    pkt->gyro_raw_z       = imud__ldf(p); p += 4;
+
+    pkt->mag_x            = imud__ldf(p); p += 4;
+    pkt->mag_y            = imud__ldf(p); p += 4;
+    pkt->mag_z            = imud__ldf(p); p += 4;
+    pkt->mag_raw_x        = imud__ldf(p); p += 4;
+    pkt->mag_raw_y        = imud__ldf(p); p += 4;
+    pkt->mag_raw_z        = imud__ldf(p); p += 4;
+
+    pkt->quat_w           = imud__ldf(p); p += 4;
+    pkt->quat_x           = imud__ldf(p); p += 4;
+    pkt->quat_y           = imud__ldf(p); p += 4;
+    pkt->quat_z           = imud__ldf(p); p += 4;
+
+    pkt->pitch            = imud__ldf(p); p += 4;
+    pkt->roll             = imud__ldf(p); p += 4;
+    pkt->yaw              = imud__ldf(p); p += 4;
+    pkt->heading_deg      = imud__ldf(p); p += 4;
+    pkt->rate_of_turn     = imud__ldf(p); p += 4;
+    pkt->temp_c           = imud__ldf(p); p += 4;
+
+    for (int i = 0; i < 9; i++) { pkt->cov[i] = imud__ldf(p); p += 4; }
+
+    pkt->imu_seq          = imud__ld32(p); p += 4;
+    pkt->declination_deg  = imud__ldf(p); p += 4;
+    pkt->heave_m          = imud__ldf(p); p += 4;
+
+    pkt->gyro_bias_x      = imud__ldf(p); p += 4;
+    pkt->gyro_bias_y      = imud__ldf(p); p += 4;
+    pkt->gyro_bias_z      = imud__ldf(p); p += 4;
+    pkt->gyro_bias_var_x  = imud__ldf(p); p += 4;
+    pkt->gyro_bias_var_y  = imud__ldf(p); p += 4;
+    pkt->gyro_bias_var_z  = imud__ldf(p); p += 4;
+    pkt->heave_rate       = imud__ldf(p); p += 4;
+    pkt->accel_quiescence = imud__ldf(p); p += 4;
+
+    pkt->wave_height_m    = imud__ldf(p); p += 4;
+    pkt->wave_period_s    = imud__ldf(p); p += 4;
+    pkt->roll_period_s    = imud__ldf(p); p += 4;
+    pkt->roll_amplitude   = imud__ldf(p); p += 4;
+    pkt->pitch_period_s   = imud__ldf(p); p += 4;
+    pkt->pitch_amplitude  = imud__ldf(p); p += 4;
+    pkt->mag_anomaly      = imud__ldf(p); p += 4;
+    pkt->mag_residual     = imud__ldf(p); p += 4;
+
+    pkt->innov_weight     = imud__ldf(p); p += 4;
+    pkt->innov_reject     = imud__ldf(p); p += 4;
+    pkt->nis_accel        = imud__ldf(p); p += 4;
+    pkt->nis_mag          = imud__ldf(p); p += 4;
+
+    pkt->crc32            = imud__ld32(p);
+}
+
 /* ── Inline helpers ──────────────────────────────────────────────────────── */
 
 /*
@@ -304,30 +418,17 @@ bool imud_packet_valid(const void *buf, size_t len)
     if (len != IMUD_PACKET_SIZE)
         return false;
 
-    const imud_packet_t *p = (const imud_packet_t *)buf;
+    const uint8_t *b = (const uint8_t *)buf;
 
     /* Check magic and version before touching the rest of the packet. */
-    uint32_t magic;
-    memcpy(&magic, buf, 4);
-    /* On big-endian hosts, byte-swap; on little-endian (Pi, x86) it's native. */
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    magic = __builtin_bswap32(magic);
-#endif
-    if (magic != IMUD_MAGIC)
+    if (imud__ld32(b) != IMUD_MAGIC)
         return false;
-
-    uint16_t version;
-    memcpy(&version, (const uint8_t *)buf + 4, 2);
-#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    version = __builtin_bswap16(version);
-#endif
-    if (version != IMUD_VERSION)
+    if (imud__ld16(b + 4) != IMUD_VERSION)
         return false;
 
     /* CRC covers bytes 0..(IMUD_PACKET_SIZE - 5), i.e. everything before crc32. */
-    uint32_t computed = imud__crc32((const uint8_t *)buf,
-                                     offsetof(imud_packet_t, crc32));
-    return computed == p->crc32;
+    uint32_t computed = imud__crc32(b, offsetof(imud_packet_t, crc32));
+    return computed == imud__ld32(b + offsetof(imud_packet_t, crc32));
 }
 
 /* ── Socket helpers ──────────────────────────────────────────────────────── */
@@ -382,7 +483,7 @@ int imud_recv(int fd, imud_packet_t *pkt)
         if (n < 0)
             return -1;
         if (imud_packet_valid(buf, (size_t)n)) {
-            memcpy(pkt, buf, IMUD_PACKET_SIZE);
+            imud_packet_decode(pkt, buf);
             return 0;
         }
         /* Invalid packet: silently discard and wait for the next one. */

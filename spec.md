@@ -773,6 +773,9 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 **Format:** Binary, little-endian, 276 bytes fixed  
 **Wire load:** ~120 KB/s
 
+Little-endian on the wire whatever the daemon's host byte order: `packet_encode`
+converts field by field, so a consumer parses the same bytes either way.
+
 ### Packet Layout
 
 <!-- BEGIN GENERATED: packet-layout -->

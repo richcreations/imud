@@ -380,6 +380,29 @@ static void test_bus_absent(void)
     EXPECT(cfg_is("NO_LINUX_BUS", "0"), "with the Linux backend");
 }
 
+/*
+ * Byte order is reported, never required.  The wire packet and .imucap are
+ * converted field by field, so a big-endian host builds and emits the same
+ * little-endian bytes — configure must say which host it found and carry on.
+ */
+static void test_endianness_is_reported(void)
+{
+    printf("test_endianness_is_reported\n");
+
+    fixture_reset();
+    setenv("STUB_ENDIAN", "big", 1);
+    EXPECT(run("") == 0, "a big-endian host configures");
+    EXPECT(cfg_is("HOST_ENDIAN", "big"), "HOST_ENDIAN = big in config.mk");
+    EXPECT(strstr(out("stdout"), "big-endian") != NULL,
+           "and the summary names the host byte order");
+    EXPECT(strstr(out("stderr"), "little-endian") == NULL,
+           "with nothing on stderr demanding little-endian");
+
+    fixture_reset();
+    EXPECT(run("") == 0, "a little-endian host configures");
+    EXPECT(cfg_is("HOST_ENDIAN", "little"), "HOST_ENDIAN = little in config.mk");
+}
+
 static void test_bus_forced(void)
 {
     printf("test_bus_forced\n");
@@ -430,13 +453,6 @@ static void test_required_failures(void)
 
     /* NOT here any more: i2c-dev and spidev are a backend CHOICE, not a
      * requirement — see test_bus_absent below. */
-
-    /* include/types.h refuses to compile on a big-endian host.  Answering it
-     * here turns a #error deep in a header into a named configure result. */
-    fixture_reset();
-    setenv("STUB_ENDIAN", "big", 1);
-    EXPECT(run("") == 1, "a big-endian host fails");
-    EXPECT(strstr(out("stderr"), "little-endian") != NULL, "naming byte order");
 
     /* Several at once must all be reported, not just the first: a porter who
      * has to re-run configure once per missing header learns nothing. */
@@ -670,6 +686,7 @@ int main(void)
     test_gpiod_absent();
     test_gpiod_forced();
     test_bus_absent();
+    test_endianness_is_reported();
     test_bus_forced();
     test_required_failures();
     test_atomics();

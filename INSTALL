@@ -47,9 +47,10 @@ building, and to record the answers:
     make distclean               # remove config.mk and start over
 
 It fails only on what the daemon itself needs — a C11 compiler, pthreads,
-libm, the Linux i2c-dev and spidev headers, a little-endian host. Everything
-else is reported, not required: a missing libmosquitto costs the MQTT bridge
-and a missing pandoc costs `make docs-texi`.
+libm, the Linux i2c-dev and spidev headers. Everything else is reported, not
+required: host byte order (the wire format is little-endian either way), a
+missing libmosquitto costs the MQTT bridge, a missing pandoc costs
+`make docs-texi`.
 
 Installs to /usr/local by default. Override the prefix, or stage into a
 packaging root, with the standard variables — or with the matching configure
