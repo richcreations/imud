@@ -21,7 +21,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -71,6 +73,49 @@ static int connect_client(int port)
         return -1;
     }
     return fd;
+}
+
+/*
+ * Accepting, without racing the kernel.
+ *
+ * netserv's listener is non-blocking (netserv_open sets O_NONBLOCK), so
+ * netserv_accept() is one drain pass: it takes whatever is queued and returns.
+ * A completed connect() on the client side does not guarantee the connection
+ * has reached the listener's accept queue, so a single pass can find nothing
+ * and the count assertion under it then reads as a server bug.
+ *
+ * Every connect-then-accept here had that race.  A macos-latest runner lost it
+ * in test_cloexec on 2026-09-02, the first time the suite ran on macOS; Linux
+ * and an Intel Mac won it every time, which is what kept it hidden.
+ *
+ * select() on the listener is the wait: readable means accept() will not
+ * return EWOULDBLOCK.
+ */
+static void wait_readable(int fd, long ms)
+{
+    fd_set r;
+    FD_ZERO(&r);
+    FD_SET(fd, &r);
+    struct timeval tv = { .tv_sec = ms / 1000, .tv_usec = (ms % 1000) * 1000 };
+    select(fd + 1, &r, NULL, NULL, &tv);
+}
+
+/* Accept until the server holds `want` clients, or ~2 s. */
+static void accept_n(netserv_t *s, int want)
+{
+    for (int i = 0; i < 200 && netserv_nclients(s) < want; i++) {
+        wait_readable(s->listen_fd, 10);
+        netserv_accept(s);
+    }
+}
+
+/* One pending connection the server is NOT expected to keep — past
+ * NETSRV_MAX_CLIENTS it is accepted and closed, so the client count cannot be
+ * the thing waited on. */
+static void accept_pending(netserv_t *s)
+{
+    wait_readable(s->listen_fd, 2000);
+    netserv_accept(s);
 }
 
 /* Read exactly len bytes; returns 0 on success, -1 on EOF/timeout/error. */
@@ -123,7 +168,7 @@ static void test_cloexec(void)
 
     int c = connect_client(s.port);
     EXPECT(c >= 0, "client connects");
-    netserv_accept(&s);
+    accept_n(&s, 1);
     EXPECT(netserv_nclients(&s) == 1, "client accepted");
     EXPECT(fdsweep_leaks(&sw) == 0, "accepted client fd is close-on-exec too");
 
@@ -165,7 +210,7 @@ static void test_broadcast_to_all(void)
     }
     EXPECT(ok == N, "three clients connect");
 
-    netserv_accept(&s);
+    accept_n(&s, N);
     EXPECT(netserv_nclients(&s) == N, "all three accepted");
 
     const char payload[] = "$HCHDT,123.4,T*1F\r\n";
@@ -196,7 +241,7 @@ static void test_client_limit(void)
     int cli[NETSRV_MAX_CLIENTS];
     for (int i = 0; i < NETSRV_MAX_CLIENTS; i++) {
         cli[i] = connect_client(s.port);
-        netserv_accept(&s);
+        accept_n(&s, i + 1);
     }
     EXPECT(netserv_nclients(&s) == NETSRV_MAX_CLIENTS,
            "server holds NETSRV_MAX_CLIENTS clients");
@@ -204,7 +249,7 @@ static void test_client_limit(void)
     /* One more: accepted then immediately closed — the client sees EOF. */
     int extra = connect_client(s.port);
     EXPECT(extra >= 0, "extra client connects at TCP level");
-    netserv_accept(&s);
+    accept_pending(&s);
     EXPECT(netserv_nclients(&s) == NETSRV_MAX_CLIENTS,
            "client beyond the limit is not kept");
     char b;
@@ -227,7 +272,7 @@ static void test_dead_client_pruned(void)
 
     int keep = connect_client(s.port);
     int dead = connect_client(s.port);
-    netserv_accept(&s);
+    accept_n(&s, 2);
     EXPECT(netserv_nclients(&s) == 2, "two clients accepted");
 
     close(dead);          /* peer goes away */
