@@ -816,6 +816,76 @@ jobs:
           grep -qE '^(<[0-9]>)?\[stats\]' /tmp/imud.log || { echo "fusion never ran" >&2; exit 1; }
           echo "OK: imud fused samples with no libgpiod"
 
+  # macOS, which is what the three portability seams were built for: it has no
+  # i2c-dev or spidev, no libgpiod, and no _POSIX_CLOCK_SELECTION.  So this is
+  # the only runner where all three fall to their null/fallback rung at once,
+  # and the only one that can tell whether ./configure gets there unaided.
+  #
+  # Every other job in this file has all three, so without this the port rots
+  # the moment nobody is looking: `sigtimedwait` sat in src/main.c behind a
+  # comment claiming the file was Linux-only long after that stopped being true.
+  #
+  # BOTH architectures.  The bench Mac the port was brought up on is Intel, so
+  # arm64 macOS is otherwise unexercised — a different word size for long
+  # double, different atomics lowering, and the only Apple hardware still being
+  # sold.  macos-15-intel is the LAST x86_64 image GitHub will offer (retiring
+  # Fall 2027); when it goes, drop that leg rather than pinning an older image.
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The one external library any bridge needs; the other four are pure C.
+      - name: libmosquitto, for imud-mqtt
+        run: brew install mosquitto
+
+      - name: configure reaches the null and fallback rungs on its own
+        run: |
+          ./configure
+          for want in 'NO_LINUX_BUS = 1' \
+                      'NO_GPIOD = 1' \
+                      'HOST_TIME_SRC = src/host_time_fallback.c'; do
+            grep -qF "$want" config.mk || {
+              echo "FAIL: config.mk lacks '$want'" >&2; cat config.mk >&2; exit 1; }
+          done
+          echo "OK: bus_null + imu_gpio_null + host_time_fallback, unaided"
+
+      - name: Build
+        run: make && make bridges
+
+      # The clock seam's own conformance suite, held against the rung macOS
+      # actually gets — including that the cond's deadline and its timeout come
+      # from one clock, which is the trap include/host_time.h exists to name.
+      - name: The host_time contracts, against the fallback rung
+        run: make test_host_time && ./test_host_time
+
+      # The claim that matters: not that it links, but that it runs.  macOS has
+      # no `timeout`, so the daemon is backgrounded and signalled by hand — and
+      # asserting on the shutdown line makes this cover the signal path too.
+      - name: Run the daemon against the sim driver
+        run: |
+          cp config/sim.conf /tmp/sim.conf
+          printf '\n[stream]\nenabled = true\nsocket  = "/tmp/imud-macos.sock"\n' \
+            >> /tmp/sim.conf
+          ./imud --config /tmp/sim.conf > /tmp/imud.log 2>&1 &
+          pid=$!
+          sleep 12
+          kill -TERM "$pid"
+          rc=0; wait "$pid" || rc=$?
+          cat /tmp/imud.log
+          [ "$rc" = 0 ] || { echo "daemon exited $rc, not 0" >&2; exit 1; }
+          grep -q 'running' /tmp/imud.log || { echo "daemon never started" >&2; exit 1; }
+          grep -qE '^(<[0-9]>)?\[stats\]' /tmp/imud.log || { echo "fusion never ran" >&2; exit 1; }
+          grep -q 'caught signal' /tmp/imud.log || { echo "SIGTERM not serviced" >&2; exit 1; }
+          echo "OK: imud fused samples on macOS and shut down on SIGTERM"
+
   # The suite on 32-bit ARM.  armhf .debs are built and published, but until
   # now nothing ever RAN the tests there: build-and-test covers amd64 and
   # arm64 only.  32-bit is where the packed wire struct, time_t width and

@@ -54,9 +54,9 @@
 #include "config.h"
 #include "drivers.h"     /* sim_playback_state — the --replay end-of-file watch */
 #include "fileio.h"
-#include "host_time.h"   /* host_tai_offset — the clock health check */
+#include "host_time.h"   /* the clock health check, and the signal loop's wait */
 #include "imu.h"
-#include "imu_math.h"    /* ts_add_ns */
+#include "imu_math.h"    /* ts_add_ns, ts_ns */
 #include "log.h"
 #include "output.h"
 #include "position.h"
@@ -97,6 +97,11 @@
  * on the drain.  The ordinary daemon never polls — see the signal loop. */
 #define REPLAY_POLL_MS      200
 #define REPLAY_DRAIN_MAX_MS 5000
+
+/* How long that wait sleeps between looks at the pending set, and so how late
+ * a SIGTERM during a replay can be noticed.  The last tick is clamped to the
+ * caller's deadline, so this need not divide REPLAY_POLL_MS. */
+#define SIGNAL_TICK_MS      20
 
 /* ── Global state ────────────────────────────────────────────────────────── */
 
@@ -404,6 +409,56 @@ typedef struct {
     bool draining;      /* end of capture seen; waiting for the ring */
     int  drain_ms;      /* how long we have waited for it */
 } replay_watch_t;
+
+/*
+ * Wait up to `ms` for one of the signals in `set`, which the caller has already
+ * blocked.  Returns the signal number, or 0 when nothing arrived in time.
+ *
+ * sigtimedwait(2) is one call for exactly this and is what stood here until
+ * macOS, which does not implement it, became a build target.  Polling replaces
+ * it and loses nothing: a BLOCKED signal stays pending until something consumes
+ * it, so sigpending(2) cannot miss one — it can only notice it up to
+ * SIGNAL_TICK_MS late.  sigpending() reports the calling thread's pending set
+ * unioned with the process's, so a pthread_kill and a kill both land here.
+ *
+ * The sigwait() below cannot block: it runs only once a member of `set` is
+ * known pending, and consuming it is what clears it.
+ *
+ * The wait is built on the include/host_time.h pair rather than on a bare
+ * nanosleep, so the deadline and the sleep come from one clock on every host —
+ * the rule that header exists to enforce.  It also makes the tick absolute:
+ * scanning the pending set costs time, and a relative sleep would add that
+ * cost to every iteration until the 200 ms poll had drifted into something
+ * else.  replay_poll()'s drain accounting counts one poll as REPLAY_POLL_MS,
+ * so that drift would be silent.
+ */
+static int wait_signal_timed(const sigset_t *set, long ms)
+{
+    struct timespec deadline;
+    host_monotonic_now(&deadline);
+    ts_add_ns(&deadline, ms * 1000000L);
+
+    for (;;) {
+        sigset_t pending;
+        if (sigpending(&pending) == 0) {
+            for (int s = 1; s < NSIG; s++) {
+                if (sigismember(set, s) > 0 && sigismember(&pending, s) > 0) {
+                    int sig = 0;
+                    sigwait(set, &sig);
+                    return sig;
+                }
+            }
+        }
+
+        struct timespec now;
+        host_monotonic_now(&now);
+        if (ts_ns(&now) >= ts_ns(&deadline)) return 0;
+
+        struct timespec tick = now;
+        ts_add_ns(&tick, SIGNAL_TICK_MS * 1000000L);
+        host_sleep_until(ts_ns(&tick) < ts_ns(&deadline) ? &tick : &deadline);
+    }
+}
 
 /*
  * One poll of a --replay run.  Returns true when the daemon should shut down,
@@ -850,11 +905,8 @@ int main(int argc, char **argv)
     /*
      * A replay has a natural end, so in that mode the wait has to be able to
      * look up and notice it.  Everywhere else the loop keeps the plain,
-     * timeout-free sigwait: an idle daemon should not wake five times a second
+     * timeout-free sigwait: an idle daemon should not wake fifty times a second
      * for the benefit of a debugging flag it is not using.
-     *
-     * sigtimedwait is POSIX and absent on macOS, which does not matter — this
-     * file is only ever compiled for Linux (imu.c needs libgpiod).
      */
     const bool     replay_mode = args.replay_path[0] != '\0';
     replay_watch_t replay      = {0};
@@ -862,11 +914,9 @@ int main(int argc, char **argv)
     int sig;
     for (;;) {
         if (replay_mode) {
-            struct timespec tmo = { 0, REPLAY_POLL_MS * 1000000L };
-            sig = sigtimedwait(&sigset, NULL, &tmo);
-            if (sig < 0) {
-                if (errno == EINTR) continue;
-                /* EAGAIN: nothing pending, so this is our poll tick. */
+            sig = wait_signal_timed(&sigset, REPLAY_POLL_MS);
+            if (sig == 0) {
+                /* Nothing pending, so this is our poll tick. */
                 if (replay_poll(imu, cfg.sim_file, &replay, &exit_rc)) break;
                 continue;
             }

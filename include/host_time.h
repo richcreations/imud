@@ -63,10 +63,12 @@
  * instantly or waits five decades.  No caller is handed the clockid to get
  * wrong.  test_host_time pins the agreement.
  *
- * WHAT A macOS RUNG WOULD PUT HERE.  Recorded rather than written: there is no
- * Mac on the bench and no macOS runner in CI, so it would be code that compiles
- * nowhere and is verified nowhere.  It is here because the answers are the
- * awkward part of that port and finding them twice is waste:
+ * WHAT A macOS RUNG WOULD PUT HERE.  Recorded rather than written, and still
+ * unwritten now that macOS builds and runs: the fallback rung passes this
+ * header's whole conformance suite there, so a mach rung would buy accuracy
+ * rather than function, and the daemon does not need it to run.  What it would
+ * buy is below — the answers are the awkward part of that port and finding
+ * them twice is waste:
  *
  *   host_sleep_until      mach_wait_until(), <mach/mach_time.h>.  An absolute
  *                         deadline the kernel compares against, so it needs

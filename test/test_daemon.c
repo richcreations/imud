@@ -109,6 +109,7 @@ int __wrap_pthread_create(pthread_t *restrict tid,
 /* A path that must not exist, for the case that proves --config gets no
  * fallback. */
 #define T_MISSING_CONF "/tmp/imud_e2e_no_such.conf"
+#define T_REPLAY_LOG   "/tmp/imud_e2e_daemon_replay.log"
 
 /* Ports the thread-failure cases need a listener or a receiver on, in the same 27xxx block
  * as the NMEA dest_port the lifecycle test already uses. */
@@ -160,6 +161,19 @@ typedef struct {
      * drain these cases exist to prove would then hold vacuously.
      */
     bool replay;
+    /*
+     * Replay at sim_speed = 1.0 instead of 0.0, so a 3 s capture takes 3 s of
+     * wall clock and a signal sent one second in lands mid-replay.  The signal
+     * case needs that: sim_loop would be the obvious way to keep a replay
+     * running, but --replay deliberately ignores it (src/main.c), so pacing is
+     * the only lever left.  Slower is the safe direction — under a sanitizer
+     * the replay takes longer and the margin only grows.
+     */
+    bool replay_realtime;
+    /* Send the daemon's log to this file at level info, rather than dropping
+     * everything below error.  For a case that has to tell WHY the daemon
+     * stopped: the two shutdown paths are one LOG_I line each. */
+    const char *log_file;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
@@ -203,18 +217,22 @@ static void write_conf_opt(conf_opt_t o)
         "socket = \"%s\"\n"
         "rate_hz = 50\n"
         "[logging]\n"
-        "level = \"error\"\n",
+        "level = \"%s\"\n"
+        "file = \"%s\"\n",
         o.imu_odr_mhz, nmea_rate,
         o.nmea_tcp ? "true" : "false", T_NMEA_TCP_PORT,
         o.hirate   ? "true" : "false", T_HIRATE_PORT,
-        T_STREAM_SOCK);
+        T_STREAM_SOCK,
+        o.log_file ? "info" : "error",
+        o.log_file ? o.log_file : "");
     if (o.replay)
         fprintf(f,
             "[device]\n"
-            "sim_speed = 0.0\n"
+            "sim_speed = %s\n"
             "[fusion]\n"
             "startup_settle_sec = 0.0\n"
-            "align_window_sec = 0.5\n");
+            "align_window_sec = 0.5\n",
+            o.replay_realtime ? "1.0" : "0.0");
     fclose(f);
 }
 
@@ -271,6 +289,40 @@ static bool status_line_has(const char *rep, const char *label, const char *want
     const char *eol = strchr(p, '\n');
     const char *hit = strstr(p, want);
     return hit && (!eol || hit < eol);
+}
+
+/*
+ * Consume a SIGTERM still pending on this process.
+ *
+ * The daemon under test is supposed to have taken it.  When a regression means
+ * it did not, the signal stays pending — blocked, so harmless — until the case
+ * restores the caller's mask, and is then delivered to the suite and kills it.
+ * That turns a reportable failure into a dead test run with no verdict, which
+ * is how the mutation check for this case first presented.
+ */
+static void drain_pending_sigterm(void)
+{
+    sigset_t pend;
+    if (sigpending(&pend) == 0 && sigismember(&pend, SIGTERM) > 0) {
+        sigset_t one;
+        sigemptyset(&one);
+        sigaddset(&one, SIGTERM);
+        int s;
+        sigwait(&one, &s);      /* cannot block: it is already pending */
+    }
+}
+
+/* True when the daemon's log file contains `want`.  A missing file is false,
+ * not an error: that is itself a legitimate answer about what was logged. */
+static bool log_has(const char *path, const char *want)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char buf[16384];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return strstr(buf, want) != NULL;
 }
 
 /*
@@ -795,6 +847,102 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
 }
 
 /*
+ * A signal still has to reach a --replay run.
+ *
+ * That loop is the one place main() cannot sit in sigwait: it must look up
+ * periodically to notice the file has run out, so it polls the pending set
+ * instead (wait_signal_timed in src/main.c).  Every other case here exercises
+ * the sigwait branch, which would stay green while SIGTERM did nothing at all
+ * during a replay — a daemon that ignores systemctl stop for as long as the
+ * capture lasts.
+ *
+ * Replayed at real time so the 3 s capture is still playing a second in, which
+ * is what makes the signal — and not the end of the file — the thing that
+ * stops it.  Process-directed, the form an operator and systemd actually send:
+ * sigpending() must report it from the process's pending set, not just the
+ * calling thread's.
+ */
+static void test_daemon_replay_stops_on_signal(void)
+{
+    begin("test_daemon_replay_stops_on_signal");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    unlink(T_PID_FILE);
+    unlink(T_REPLAY_LOG);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 100,
+                                 .replay = true, .replay_realtime = true,
+                                 .log_file = T_REPLAY_LOG });
+    const char *cap = make_replay_capture();
+
+    char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
+                     (char *)"--replay", (char *)cap,
+                     (char *)"--skip-bias-cal", NULL };
+    /*
+     * [logging] file makes main() dup2() the log over STDERR_FILENO, which is
+     * process-wide — and main_entry() runs on a thread of THIS process, so
+     * without saving and restoring fd 2 the case would silently swallow every
+     * later case's FAIL line along with the daemon's output.
+     */
+    int saved_stderr = dup(STDERR_FILENO);
+    EXPECT(saved_stderr >= 0, "stderr saved");
+
+    sigset_t old;
+    daemon_run_t d = { .argv = argv, .argc = 6 };
+    daemon_start(&d, &old);
+
+    EXPECT(wait_for_status("IMU ODR:", "100", 15000), "replay is up");
+
+    /* The premise: the replay is still running.  Without this the case would
+     * pass on a daemon that ignored the signal and merely reached EOF. */
+    msleep(1000);
+    EXPECT(!atomic_load(&d.done), "the replay is still playing");
+
+    EXPECT(kill(getpid(), SIGTERM) == 0, "process-directed SIGTERM sent");
+
+    bool exited = false;
+    for (int waited = 0; waited < 15000; waited += 50) {
+        if (atomic_load(&d.done)) { exited = true; break; }
+        msleep(50);
+    }
+    EXPECT(exited, "SIGTERM reaches the replay loop's signal poll");
+    if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
+    pthread_join(d.tid, NULL);
+
+    if (saved_stderr >= 0) {                     /* before the first FAIL below */
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    EXPECT(d.rc == 0, "exits 0");
+
+    /*
+     * WHY it stopped, not just that it did.  A poll that never noticed the
+     * signal would let the replay run on to the end of the file and exit 0
+     * there — passing every check above.  The two paths log one line each, so
+     * the log is what separates them.
+     */
+    EXPECT(log_has(T_REPLAY_LOG, "caught signal"),
+           "stopped because of the signal");
+    EXPECT(!log_has(T_REPLAY_LOG, "replay complete"),
+           "and not because the capture ran out");
+
+    /* Exiting is not enough: it has to leave through the normal unwind. */
+    struct stat st;
+    EXPECT(stat(T_PID_FILE, &st) != 0, "pid file removed");
+    EXPECT(stat(T_STATUS_SOCK, &st) != 0, "status socket unlinked");
+    EXPECT(stat(T_STREAM_SOCK, &st) != 0, "stream socket unlinked");
+
+    drain_pending_sigterm();
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_REPLAY_CAP);
+    unlink(T_REPLAY_LOG);
+    end(fb);
+}
+
+/*
  * A capture that cannot be opened is not a completed one.  Both playback
  * streams mark themselves done on a failed open, so anything keying off that
  * alone would report success; `imud --replay /typo` would exit 0 having
@@ -1160,6 +1308,7 @@ int main(void)
     test_daemon_stream_thread_failure_is_fatal();
     test_daemon_worker_can_signal_shutdown();
     test_daemon_replay_exits_at_end_of_capture();
+    test_daemon_replay_stops_on_signal();
     test_daemon_replay_missing_capture_exits_1();
     test_daemon_nmea_thread_failure_closes_listener();
     test_daemon_hirate_thread_failure_sends_nothing();

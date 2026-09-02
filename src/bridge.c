@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 
 #include "bridge.h"
+#include "cloexec.h"                 /* SOCK_CLOEXEC — 0 where the host has none */
 #include "sdnotify.h"
 #include "log.h"
 #include "version.h"                 /* IMUD_VERSION_STR — canonical version */
@@ -242,6 +243,7 @@ int bridge_open_udp(const char *host, int port, const char *tag,
     }
     int fd = socket(res->ai_family, res->ai_socktype | SOCK_CLOEXEC, 0);
     if (fd < 0) { freeaddrinfo(res); return -1; }
+    APPLY_CLOEXEC(fd);   /* no-op on Linux; the real fcntl where the flag is 0 */
     memcpy(dst, res->ai_addr, res->ai_addrlen);
     *dlen = (socklen_t)res->ai_addrlen;
     int yes = 1;
