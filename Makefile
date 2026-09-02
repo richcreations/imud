@@ -81,6 +81,21 @@ else
     override CPPFLAGS += -DIMUD_NO_LINUX_BUS
 endif
 
+# The host clock backend behind include/host_time.h — the absolute-deadline
+# sleep the output threads pace on, the monotonic condition variable src/ring.c
+# waits on, and the TAI offset src/main.c checks.  Three rungs, each the one
+# above minus a capability: src/host_time_linux.c has clock selection and
+# CLOCK_TAI; src/host_time_posix.c has clock selection only (the BSDs);
+# src/host_time_fallback.c has neither and loops nanosleep instead (macOS).
+#
+# The list is open.  A host that fits none of them writes one file against
+# include/host_time.h and names it here — `make HOST_TIME_SRC=src/host_time_x.c`
+# or `./configure --with-host-time=src/host_time_x.c` — with nothing else in
+# the build to edit.  ./configure picks a rung from what it probes; the default
+# below is Linux, so a plain `make` on the target platform needs no configure
+# step.
+HOST_TIME_SRC ?= src/host_time_linux.c
+
 # Auto-detect whether 64-bit atomics need libatomic.
 #
 # The cross-thread counters and timestamps are _Atomic on 64-bit types. Those
@@ -146,6 +161,7 @@ IMUD_SRCS   = src/cal.c \
               src/fusion.c \
               src/imu.c \
               $(GPIO_SRC) \
+              $(HOST_TIME_SRC) \
               src/imu_math.c \
               src/nmea.c \
               src/netserv.c \
@@ -189,6 +205,7 @@ IMUTEST_SRCS = src/cli.c \
                src/capture.c \
                src/imu.c \
                $(GPIO_SRC) \
+               $(HOST_TIME_SRC) \
                src/ring.c \
                src/fusion.c \
                src/cal_math.c \
@@ -380,7 +397,23 @@ test_imu_gpio_null: src/imu_gpio_null.c test/test_imu_gpio_null.c
 test_bus_null: src/bus_null.c test/test_bus_null.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
-test_ring: src/ring.c test/test_ring.c
+# The conformance suite for include/host_time.h.  It asserts the contract, not
+# one rung's implementation, so it holds for any backend — which is what lets a
+# port check its own before it has anything else running:
+#
+#     make test_host_time HOST_TIME_TEST_SRC=src/host_time_myos.c && ./test_host_time
+#
+# The default is the fallback rung rather than $(HOST_TIME_SRC), on the same
+# terms as test_bus_null above: that is the rung with the substitutes in it —
+# a looping sleep and a default-clock condvar — so it is the one whose contract
+# is worth pinning, and pinning it here runs it on every host including this
+# one, where it is not what the tree links.
+HOST_TIME_TEST_SRC ?= src/host_time_fallback.c
+
+test_host_time: $(HOST_TIME_TEST_SRC) test/test_host_time.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+
+test_ring: src/ring.c $(HOST_TIME_SRC) test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_mount: src/config.c src/log.c test/test_mount.c
@@ -409,7 +442,7 @@ test_client: src/packet.c test/test_client.c test/test_client_impl.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # End-to-end AF_UNIX + TCP subscription stream: real output.c, stubbed imu accessors
-test_stream: src/output.c src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
+test_stream: src/output.c $(HOST_TIME_SRC) src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # netserv TCP broadcast server (pure sockets; macOS-buildable)
@@ -628,7 +661,7 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_drivers test_imutest test_hwtools_e2e \
+      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest test_hwtools_e2e \
       test_configure
 
 # Every test binary depends on every project header.
@@ -686,6 +719,7 @@ test: $(TEST_BINS)
 	./test_imu_math
 	./test_imu_gpio_null
 	./test_bus_null
+	./test_host_time
 	./test_drivers
 	./test_imutest
 	./test_hwtools_e2e
@@ -1471,7 +1505,7 @@ clean:
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
-	      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_drivers test_imutest \
+	      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest \
       test_hwtools_e2e test_configure \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      fuzz_argv \

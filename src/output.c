@@ -18,9 +18,9 @@
  *   - Fixed stack buffers only; no malloc in the hot path
  */
 
-/* Linux enables SOCK_CLOEXEC and clock_nanosleep via _GNU_SOURCE.
- * The Makefile also passes -D_GNU_SOURCE; guard so a standalone compile
- * still works without redefining it. */
+/* Linux enables SOCK_CLOEXEC via _GNU_SOURCE.  The Makefile also passes
+ * -D_GNU_SOURCE; guard so a standalone compile still works without
+ * redefining it. */
 #ifdef __linux__
 # ifndef _GNU_SOURCE
 #  define _GNU_SOURCE
@@ -47,36 +47,13 @@
 
 #include "output.h"
 #include "fileio.h"      /* bind_unix_mode */
+#include "host_time.h"   /* the output cadence — see the pairing note there */
 #include "imu_math.h"    /* ts_add_ns */
 #include "nmea.h"
 #include "packet.h"
 #include "netserv.h"
 #include "log.h"
 #include "cloexec.h"
-
-/* ── Portability stubs (Linux-only features used at runtime on Pi) ───────── */
-
-#ifndef TIMER_ABSTIME
-# define TIMER_ABSTIME 1
-/* Best-effort on non-Linux dev machines (the Pi uses the real syscall):
- * TIMER_ABSTIME deadlines must be converted to a relative sleep, otherwise
- * nanosleep() would treat the absolute timestamp as a duration. */
-static int clock_nanosleep(clockid_t clk, int flags,
-                           const struct timespec *req, struct timespec *rem)
-{
-    (void)rem;
-    if (flags & TIMER_ABSTIME) {
-        struct timespec now, d;
-        clock_gettime(clk, &now);
-        d.tv_sec  = req->tv_sec  - now.tv_sec;
-        d.tv_nsec = req->tv_nsec - now.tv_nsec;
-        if (d.tv_nsec < 0) { d.tv_sec--; d.tv_nsec += 1000000000L; }
-        if (d.tv_sec < 0) return 0;       /* deadline already passed */
-        return nanosleep(&d, NULL);
-    }
-    return nanosleep(req, NULL);
-}
-#endif
 
 /* ── Context ─────────────────────────────────────────────────────────────── */
 
@@ -187,7 +164,7 @@ static int open_udp_out(const char *dest_ip, int port,
  * (ts_add_ns comes from imu_math.h.) */
 static void align_next(struct timespec *next, long period_ns)
 {
-    clock_gettime(CLOCK_MONOTONIC, next);
+    host_monotonic_now(next);
     next->tv_nsec = (next->tv_nsec / period_ns + 1) * period_ns;
     while (next->tv_nsec >= 1000000000L) {
         next->tv_sec++;
@@ -211,7 +188,7 @@ void *nmea_out_thread(void *arg)
     align_next(&next, period_ns);
 
     while (!ctx->stop) {
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        host_sleep_until(&next);
         /* Re-derive each tick so a SIGHUP rate_hz change takes effect
          * immediately ([hot] in imud.conf(5)); single-word load, same
          * lockless pattern as the fusion params. */
@@ -267,7 +244,7 @@ void *hirate_out_thread(void *arg)
     align_next(&next, period_ns);
 
     while (!ctx->stop) {
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        host_sleep_until(&next);
         /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
         period_ns = (ctx->highrate_rate_hz > 0)
             ? 1000000000L / ctx->highrate_rate_hz
@@ -330,7 +307,7 @@ void *stream_out_thread(void *arg)
     align_next(&next, period_ns);
 
     while (!ctx->stop) {
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        host_sleep_until(&next);
         /* Re-derive each tick — SIGHUP rate_hz is [hot]. */
         period_ns = (ctx->stream_rate_hz > 0)
             ? 1000000000L / ctx->stream_rate_hz

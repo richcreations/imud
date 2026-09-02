@@ -566,6 +566,8 @@ static void test_host_runtime(void)
     EXPECT(cfg_is("HAVE_ADJTIMEX", "1"), "adjtimex found");
     EXPECT(cfg_is("HAVE_ACCEPT4", "1"), "accept4 found");
     EXPECT(cfg_is("HOST_ENDIAN", "little"), "HOST_ENDIAN = little");
+    EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_linux.c"),
+           "the top rung on a host with both");
 
     fixture_reset();
     setenv("STUB_CLOCKNS", "0", 1);
@@ -575,12 +577,41 @@ static void test_host_runtime(void)
     EXPECT(cfg_is("HAVE_CLOCK_NANOSLEEP", "0"), "clock_nanosleep reported absent");
     EXPECT(cfg_is("HAVE_ADJTIMEX", "0"), "adjtimex reported absent");
     EXPECT(cfg_is("HAVE_ACCEPT4", "0"), "accept4 reported absent");
+    EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_fallback.c"),
+           "the bottom rung with no clock selection");
 
     /* accept4 is the one with teeth: POSIX accept() does not carry
      * FD_CLOEXEC, so a host without it leaks every accepted fd across an
-     * exec.  The summary must say so rather than printing a bare 0. */
+     * exec.  The summary must say so rather than printing a bare 0.
+     * Read here, against the run that has all three missing. */
     EXPECT(strstr(out("stdout"), "close-on-exec") != NULL,
            "the summary says what accept4 buys");
+
+    /* The middle rung — clock selection but no TAI, which is every BSD. It is
+     * reachable only from this combination, so a script that collapsed the two
+     * probes into one would pass everything above and still never build it. */
+    fixture_reset();
+    setenv("STUB_ADJTIMEX", "0", 1);
+    EXPECT(run("") == 0, "a BSD-shaped host configures");
+    EXPECT(cfg_is("HAVE_CLOCK_NANOSLEEP", "1"), "clock_nanosleep found");
+    EXPECT(cfg_is("HAVE_ADJTIMEX", "0"), "adjtimex absent");
+    EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_posix.c"),
+           "the middle rung with clock selection but no TAI");
+
+    /* --with-host-time is the affordance for a host none of the three fits:
+     * one file against include/host_time.h, named here, nothing in the script
+     * to patch first. It must not have to be a rung this script knows. */
+    fixture_reset();
+    EXPECT(run("--with-host-time=src/host_time_fallback.c") == 0,
+           "--with-host-time configures");
+    EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_fallback.c"),
+           "and overrides what the probes chose");
+
+    fixture_reset();
+    EXPECT(run("--with-host-time=src/host_time_nonexistent.c") != 0,
+           "--with-host-time refuses a file that is not there");
+    EXPECT(strstr(out("stderr"), "no such file") != NULL,
+           "saying so, rather than failing later at the link");
 }
 
 /* Install paths: the Makefile's own ?= defaults must lose to config.mk, and a

@@ -116,6 +116,17 @@ unavailable and the reader threads use their rate-sized timer, so set
 @code{int_gpio = 0} under @code{[imu]} and @code{[mag]} --- a line the
 config asks for is a startup failure.
 
+@strong{What is Linux-specific, and where.} Three things, each behind a
+header with a selectable backend, so a port is a new file rather than a
+patch through the tree: the I²C and SPI transfers
+(@code{include/bus_backend.h}), the interrupt line
+(@code{include/imu_gpio.h}), and the clock (@code{include/host_time.h})
+--- the absolute-deadline sleep the output threads pace on, the
+monotonic condition variable the IMU ring waits on, and the TAI offset.
+@code{./configure} picks a backend for each from what it finds.
+Everything else, the thread model included, is POSIX. See §11 for
+writing one.
+
 @strong{Binaries.}
 
 @multitable @columnfractions 0.23 0.77 
@@ -237,17 +248,24 @@ Makefile then includes ahead of its own defaults:
 
 @verbatim
 ./configure                  # prints what this host can and cannot build
-./configure --help           # options, including --prefix and --without-gpiod
+./configure --help           # options, incl. --prefix, --without-gpiod,
+                             # --without-linux-bus, --with-host-time
 make distclean               # remove config.mk
 @end verbatim
 
-It fails only on the daemon's own dependencies: a C11 compiler,
-pthreads, libm, and the Linux @code{i2c-dev} and @code{spidev} headers.
-Host byte order is reported, not required --- the binary packet and
-@code{.imucap} are little-endian on either endianness. Everything else
---- libmosquitto for the MQTT bridge, and the tools that regenerate
-documentation --- is reported with what its absence costs, and never
-fails the run.
+It fails only on the daemon's own dependencies: a C11 compiler, pthreads
+and libm. The @code{i2c-dev} and @code{spidev} headers are not among
+them --- without them the build takes the null bus backend, which still
+runs @code{driver = sim} end to end, and @code{--with-linux-bus} is how
+you demand them instead. Host byte order is reported, not required ---
+the binary packet and @code{.imucap} are little-endian on either
+endianness. Everything else --- libmosquitto for the MQTT bridge, and
+the tools that regenerate documentation --- is reported with what its
+absence costs, and never fails the run.
+
+The clock backend it selects is printed as @code{host clock}.
+@code{--with-host-time=FILE} overrides it with a backend of your own,
+for a host none of the three shipped ones fits.
 
 @code{make test} must be run from the repository root --- one test loads
 @code{data/WMM.COF} by relative path.

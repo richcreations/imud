@@ -38,6 +38,7 @@ docdir=
 infodir=
 want_gpiod=auto
 want_linux_bus=auto
+want_host_time=auto
 out=config.mk
 
 self=$0
@@ -88,6 +89,8 @@ Options take their value with an =, as shown.
   --without-gpiod           build the null GPIO backend even where it is present
   --with-linux-bus          require i2c-dev and spidev; fail if absent
   --without-linux-bus       build the null bus backend even where they are present
+  --with-host-time=FILE     the include/host_time.h backend to build, for a
+                            host none of the shipped rungs fits
 
 Environment: CC, CFLAGS.
 
@@ -114,6 +117,7 @@ for arg do
         --without-gpiod)  want_gpiod=no ;;
         --with-linux-bus)    want_linux_bus=yes ;;
         --without-linux-bus) want_linux_bus=no ;;
+        --with-host-time=*)  want_host_time=${arg#*=} ;;
         *) die "unrecognized option: $arg (see --help)" ;;
     esac
 done
@@ -283,18 +287,19 @@ case $want_linux_bus in
         if [ "$have_linux_bus" = 1 ]; then no_linux_bus=0; else no_linux_bus=1; fi ;;
 esac
 
-# ── Reported: the host runtime the threads sit on ────────────────────────────
+# ── Probed: the host runtime the threads sit on ──────────────────────────────
 #
-# None of these is fatal — the tree already carries a fallback for each, and
-# the fallback is the degraded path, not the broken one.  They are here so a
-# port has the answers before it starts guessing: this is the checklist issue
-# #45 works through, and a 0 says which piece that host still owes.
+# None of these is fatal.  The first two choose the include/host_time.h rung
+# below; the third is reported only, because include/cloexec.h already answers
+# it at compile time.
 #
-#   clock_nanosleep   src/output.c's absolute-deadline output cadence.  The
-#                     relative-sleep stub re-derives the delay from the current
-#                     time each cycle, so it drifts where the syscall does not.
-#   adjtimex          src/main.c reads the TAI offset with it.  Without it the
-#                     packet timestamp loses its leap-second correction.
+#   clock_nanosleep   src/output.c's absolute-deadline output cadence, and with
+#                     it pthread_condattr_setclock for src/ring.c's condition
+#                     variable -- both are _POSIX_CLOCK_SELECTION, so one probe
+#                     settles both.  Without it the fallback rung loops
+#                     nanosleep, which converges but costs a syscall a signal.
+#   adjtimex          src/main.c reads the TAI offset with it.  Without it
+#                     ts_tai_ns carries UTC and is short by the leap seconds.
 #   accept4           SOCK_CLOEXEC on an accepted fd.  POSIX accept() does not
 #                     carry FD_CLOEXEC, so without accept4 every accepted
 #                     connection leaks across an exec.
@@ -315,6 +320,24 @@ int main(void){struct timex t={0};return adjtimex(&t);}' \
     echo '#include <sys/socket.h>
 int main(void){return accept4(0,0,0,SOCK_CLOEXEC);}' \
         | try_link && have_accept4=1
+fi
+
+# ── Selected: the host clock backend ─────────────────────────────────────────
+#
+# Three rungs, each the one above minus a capability -- see include/host_time.h.
+# The two probes above pick one; --with-host-time=FILE overrides with a rung
+# this script has never heard of, which is the whole affordance: a port writes
+# one file against the header and builds, with nothing here to patch first.
+if [ "$want_host_time" != auto ]; then
+    host_time_src=$want_host_time
+    [ -f "$srcdir/$host_time_src" ] ||
+        die "--with-host-time: no such file: $host_time_src"
+elif [ "$have_clock_nanosleep" = 0 ]; then
+    host_time_src=src/host_time_fallback.c
+elif [ "$have_adjtimex" = 0 ]; then
+    host_time_src=src/host_time_posix.c
+else
+    host_time_src=src/host_time_linux.c
 fi
 
 # ── Reported: optional targets and maintainer tools ──────────────────────────
@@ -403,8 +426,14 @@ MANDIR = $mandir
 DOCDIR = $docdir
 INFODIR = $infodir
 
-# Reported, not consumed by the build: the host runtime the threads sit on.
-# Each has a fallback in the tree, and a 0 names the degraded path.
+# The include/host_time.h backend: the absolute-deadline sleep the output
+# threads pace on, the monotonic condvar src/ring.c waits on, and the TAI
+# offset src/main.c checks.  Override with --with-host-time=FILE for a host
+# none of the shipped rungs fits.
+HOST_TIME_SRC = $host_time_src
+
+# Reported, not consumed by the build.  The first two are what chose
+# HOST_TIME_SRC above; accept4 is answered in include/cloexec.h instead.
 HAVE_CLOCK_NANOSLEEP = $have_clock_nanosleep
 HAVE_ADJTIMEX = $have_adjtimex
 HAVE_ACCEPT4 = $have_accept4
@@ -452,6 +481,8 @@ else
     printf '    %-18s %s\n' "GPIO backend" \
            "null — no interrupts, set int_gpio = 0 in imud.conf"
 fi
+echo
+printf '    %-18s %s\n' "host clock" "${host_time_src#src/host_time_}"
 echo
 echo "  host runtime:"
 report "$have_clock_nanosleep" clock_nanosleep "absolute output deadlines"

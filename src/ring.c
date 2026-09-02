@@ -21,6 +21,7 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
+#include "host_time.h"
 #include "ring.h"
 
 /* ── IMU ring ────────────────────────────────────────────────────────────── */
@@ -29,11 +30,10 @@ void imu_ring_init(imu_ring_t *r)
 {
     memset(r, 0, sizeof(*r));
     pthread_mutex_init(&r->lock, NULL);
-    pthread_condattr_t attr;
-    pthread_condattr_init(&attr);
-    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
-    pthread_cond_init(&r->ready, &attr);
-    pthread_condattr_destroy(&attr);
+    /* Monotonic where the host has clock selection, libc's default where it
+     * does not; imu_ring_pop's deadline comes from the matching call.  See
+     * include/host_time.h on why the two are a pair. */
+    host_cond_init_monotonic(&r->ready);
 }
 
 int imu_ring_push(imu_ring_t *r, const imu_sample_t *s, int n)
@@ -59,13 +59,11 @@ int imu_ring_push(imu_ring_t *r, const imu_sample_t *s, int n)
 int imu_ring_pop(imu_ring_t *r, imu_sample_t *out, _Atomic int *stop)
 {
     struct timespec abs;
-    clock_gettime(CLOCK_MONOTONIC, &abs);
-    abs.tv_nsec += 100 * 1000000L;
-    if (abs.tv_nsec >= 1000000000L) { abs.tv_sec++; abs.tv_nsec -= 1000000000L; }
+    host_cond_deadline(&abs, 100);
 
     pthread_mutex_lock(&r->lock);
     while (r->count == 0 && !*stop) {
-        if (pthread_cond_timedwait(&r->ready, &r->lock, &abs) == ETIMEDOUT) {
+        if (host_cond_timedwait(&r->ready, &r->lock, &abs) == ETIMEDOUT) {
             pthread_mutex_unlock(&r->lock);
             return -1;
         }

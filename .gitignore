@@ -62,6 +62,7 @@ src/drivers/*.d
 /test_imu_math
 /test_imu_gpio_null
 /test_bus_null
+/test_host_time
 /test_drivers
 /test_imutest
 /test_bridge_e2e

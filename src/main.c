@@ -48,16 +48,13 @@
 #include <sys/stat.h>
 #include <sys/select.h>
 
-#ifdef __linux__
-# include <sys/timex.h>   /* adjtimex — TAI offset check */
-#endif
-
 #include "cal.h"
 #include "cli.h"
 #include "cloexec.h"
 #include "config.h"
 #include "drivers.h"     /* sim_playback_state — the --replay end-of-file watch */
 #include "fileio.h"
+#include "host_time.h"   /* host_tai_offset — the clock health check */
 #include "imu.h"
 #include "imu_math.h"    /* ts_add_ns */
 #include "log.h"
@@ -147,36 +144,30 @@ static void clock_health_check(void)
                 "(before 2024-01-01) — timestamps unreliable\n");
     }
 
-#ifdef __linux__
-    /* adjtimex(2) is in systemd's @clock set, hence in @privileged, and
-     * ProtectClock= blocks it outright — even this read-only modes = 0 call.
-     * imud.service therefore sets no ProtectClock= and re-allows adjtimex
-     * after its ~@privileged line.  Test the return anyway: without it a
-     * blocked call lands in the tx.tai == 0 branch below and blames chrony
-     * for a filter the operator installed.
-     *
-     * Note what this call compiles to, because it is not one syscall: glibc
-     * issues adjtimex on x86-64, clock_adjtime on arm64 (which has no
-     * adjtimex at all), and clock_adjtime64 on armhf.  A SystemCallFilter=
-     * naming only "adjtimex" therefore allows nothing on ARM and the process
-     * dies of SIGSYS here rather than reaching the branches below — which is
-     * exactly what shipped in the 1.9.0 RC.  See the comment on
-     * SystemCallFilter= in etc/imud.service.in. */
-    struct timex tx;
-    memset(&tx, 0, sizeof(tx));
-    if (adjtimex(&tx) < 0) {
-        LOG_W("[clock] WARNING: cannot query the TAI offset (%s) — "
-                "ts_tai_ns cannot be checked. A unit override dropping "
-                "adjtimex from SystemCallFilter= will do this.\n",
-                strerror(errno));
-    } else if (tx.tai == 0) {
+    /* Three outcomes, three diagnoses — see include/host_time.h.  ENOSYS is
+     * this build having no TAI to offer, so ts_tai_ns carries UTC and every
+     * consumer is out by the leap seconds; the other two are a host that has
+     * one and cannot or did not answer. */
+    int tai_secs = 0;
+    if (host_tai_offset(&tai_secs) < 0) {
+        if (errno == ENOSYS) {
+            LOG_W("[clock] WARNING: this build has no TAI clock — "
+                    "ts_tai_ns carries UTC, short by the leap seconds "
+                    "(37 s today). Consumers reading it as TAI will be "
+                    "wrong by that much.\n");
+        } else {
+            LOG_W("[clock] WARNING: cannot query the TAI offset (%s) — "
+                    "ts_tai_ns cannot be checked. A unit override dropping "
+                    "adjtimex from SystemCallFilter= will do this.\n",
+                    strerror(errno));
+        }
+    } else if (tai_secs == 0) {
         LOG_W("[clock] WARNING: CLOCK_TAI offset is 0 — "
                 "chrony has not set tai_offset (leapsectz right/UTC?). "
                 "ts_tai_ns will be unreliable.\n");
     } else {
-        LOG_I("[clock] CLOCK_TAI offset: %d s  OK\n", tx.tai);
+        LOG_I("[clock] CLOCK_TAI offset: %d s  OK\n", tai_secs);
     }
-#endif
 }
 
 /* ── Status socket + health thread ──────────────────────────────────────── */
@@ -193,10 +184,21 @@ static int status_sock_open(const char *path)
 {
     unlink(path);   /* remove stale socket from a previous run */
 
-    int fd = socket(AF_UNIX,
-                    SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
         LOG_E("[health] socket(%s): %s\n", path, strerror(errno));
+        return -1;
+    }
+    APPLY_CLOEXEC(fd);
+
+    /* Non-blocking by fcntl rather than SOCK_NONBLOCK: that flag is a Linux
+     * extension, and a host without it would get a BLOCKING listener here.
+     * health_thread selects before accepting, so the hang needs a client that
+     * disconnects in between — rare, silent, and a stalled daemon when it
+     * happens. */
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        LOG_E("[health] O_NONBLOCK(%s): %s\n", path, strerror(errno));
+        close(fd);
         return -1;
     }
 

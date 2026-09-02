@@ -53,6 +53,15 @@ NO_GPIOD=1` builds without it, and the Makefile drops it automatically when
 reader threads use their rate-sized timer, so set `int_gpio = 0` under `[imu]`
 and `[mag]` — a line the config asks for is a startup failure.
 
+**What is Linux-specific, and where.** Three things, each behind a header with
+a selectable backend, so a port is a new file rather than a patch through the
+tree: the I²C and SPI transfers (`include/bus_backend.h`), the interrupt line
+(`include/imu_gpio.h`), and the clock (`include/host_time.h`) — the
+absolute-deadline sleep the output threads pace on, the monotonic condition
+variable the IMU ring waits on, and the TAI offset. `./configure` picks a
+backend for each from what it finds. Everything else, the thread model
+included, is POSIX. See §11 for writing one.
+
 **Binaries.**
 
 | Binary | Purpose |
@@ -115,16 +124,23 @@ defaults:
 
 ```sh
 ./configure                  # prints what this host can and cannot build
-./configure --help           # options, including --prefix and --without-gpiod
+./configure --help           # options, incl. --prefix, --without-gpiod,
+                             # --without-linux-bus, --with-host-time
 make distclean               # remove config.mk
 ```
 
-It fails only on the daemon's own dependencies: a C11 compiler, pthreads,
-libm, and the Linux `i2c-dev` and `spidev` headers. Host byte order is
+It fails only on the daemon's own dependencies: a C11 compiler, pthreads and
+libm. The `i2c-dev` and `spidev` headers are not among them — without them the
+build takes the null bus backend, which still runs `driver = sim` end to end,
+and `--with-linux-bus` is how you demand them instead. Host byte order is
 reported, not required — the binary packet and `.imucap` are little-endian on
 either endianness. Everything else — libmosquitto for the MQTT bridge, and the
 tools that regenerate documentation — is reported with what its absence costs,
 and never fails the run.
+
+The clock backend it selects is printed as `host clock`. `--with-host-time=FILE`
+overrides it with a backend of your own, for a host none of the three shipped
+ones fits.
 
 `make test` must be run from the repository root — one test loads
 `data/WMM.COF` by relative path.

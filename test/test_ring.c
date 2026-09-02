@@ -20,6 +20,7 @@
  *     - Overflow at exactly capacity boundary
  *     - Circular wraparound (head/tail cross the array boundary)
  *     - pop from empty (stop=1) returns -1 immediately
+ *     - pop from empty (stop=0) waits its 100 ms timeout, then returns -1
  *     - pop returns -1 when stop is set even if data arrives
  *
  *   Mag ring
@@ -32,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 #include "ring.h"
 #include "types.h"
 
@@ -140,6 +142,46 @@ static void test_imu_ring_pop_empty_with_stop(void)
     _Atomic int stop = 1;  /* already stopped — should return immediately */
     imu_sample_t out;
     EXPECT(imu_ring_pop(&r, &out, &stop) == -1, "pop from empty with stop=1 returns -1");
+    end(fb);
+}
+
+/*
+ * The blocking pop's 100 ms timeout, which every other case here skips past by
+ * setting stop or pushing first.
+ *
+ * It is the ring's only use of the condition variable's timeout, and so the
+ * only place the two halves of the include/host_time.h cond pair have to
+ * agree: imu_ring_init() creates the cond on one clock and imu_ring_pop()
+ * builds its deadline on another. Disagreement is not a slightly-wrong wait —
+ * a monotonic deadline on a realtime cond is decades past, so the fusion
+ * thread would spin at full tilt on an idle ring; the other way round it never
+ * returns and the daemon hangs at shutdown.
+ *
+ * Bounds are wide because the upper one is scheduler luck. The lower one is
+ * the real assertion: it must actually wait.
+ */
+static void test_imu_ring_pop_empty_blocks_then_times_out(void)
+{
+    begin("test_imu_ring_pop_empty_blocks_then_times_out");
+    int fb = g_fail;
+
+    imu_ring_t r;
+    imu_ring_init(&r);
+
+    _Atomic int stop = 0;   /* not stopped — the pop must wait for its timeout */
+    imu_sample_t out;
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int rc = imu_ring_pop(&r, &out, &stop);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    double ms = (double)(t1.tv_sec - t0.tv_sec) * 1000.0
+              + (double)(t1.tv_nsec - t0.tv_nsec) / 1000000.0;
+
+    EXPECT(rc == -1, "pop from an empty ring times out and returns -1");
+    EXPECT(ms >= 90.0,  "after waiting its 100 ms, not returning at once");
+    EXPECT(ms < 1000.0, "and not waiting far longer than the deadline");
     end(fb);
 }
 
@@ -397,6 +439,7 @@ int main(void)
     test_imu_ring_fifo_order();
     test_imu_ring_count_accurate();
     test_imu_ring_pop_empty_with_stop();
+    test_imu_ring_pop_empty_blocks_then_times_out();
     test_imu_ring_overflow_drops_oldest();
     test_imu_ring_overflow_returns_drop_count();
     test_imu_ring_exactly_full_no_overflow();

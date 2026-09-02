@@ -29,12 +29,8 @@
 #include <math.h>
 #include <pthread.h>
 
-/* CLOCK_TAI is Linux ≥ 3.10; fall back to CLOCK_REALTIME on other platforms. */
-#ifndef CLOCK_TAI
-#define CLOCK_TAI CLOCK_REALTIME
-#endif
-
 #include "capture.h"
+#include "host_time.h"  /* host_clock_tai — TAI where the host has one */
 #include "imu.h"
 #include "imu_gpio.h"
 #include "imu_math.h"   /* ts_anchor_t + pure helpers factored out of this file */
@@ -281,7 +277,10 @@ void *ism_reader_thread(void *arg)
         int rc = ctx->imu_ops->read(&ctx->imu_bus, buf, IMU_DRAIN_MAX, &n);
 
         clock_gettime(CLOCK_REALTIME, &t_after);
-        clock_gettime(CLOCK_TAI,      &t_tai);
+        /* UTC, not TAI, on a host with no TAI clock — main.c's clock health
+         * check warns at startup.  Deliberately unchecked here: the fallback
+         * is the value the caller gets either way, and this is the hot path. */
+        (void)host_clock_tai(&t_tai);
 
         if (rc < 0) {
             ctx->imu_error_count++;

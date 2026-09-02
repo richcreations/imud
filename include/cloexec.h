@@ -74,12 +74,11 @@ static inline int imud_accept_cloexec(int lfd)
 # define ACCEPT_CLOEXEC(lfd) imud_accept_cloexec(lfd)
 #endif
 
-/* Compile-only fallback, carried over from src/main.c — its status socket is
- * the tree's one SOCK_NONBLOCK user and does not link on macOS (src/ring.c
- * needs pthread_condattr_setclock), so the 0 here never runs. Give any new
- * portable user an explicit fcntl(F_SETFL, O_NONBLOCK) instead of trusting it. */
-#ifndef SOCK_NONBLOCK
-# define SOCK_NONBLOCK 0
-#endif
+/* There is deliberately no SOCK_NONBLOCK fallback here. A `#define
+ * SOCK_NONBLOCK 0` compiles everywhere and silently yields a BLOCKING socket
+ * off Linux, which is worse than not building: src/main.c's status listener
+ * had one, and a blocking listener hangs the health thread on any client that
+ * disconnects between its select() and its accept(). Use an explicit
+ * fcntl(fd, F_SETFL, O_NONBLOCK) after socket(), as status_sock_open() does. */
 
 #endif /* IMUD_CLOEXEC_H */
