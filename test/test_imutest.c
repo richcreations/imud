@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <sys/socket.h>
@@ -441,19 +442,80 @@ static void base_config(imud_config_t *cfg)
     cfg->mag_odr_mhz   = 100000;
 }
 
+/*
+ * How much bigger the windows below have to be on this host.
+ *
+ * Every collection loop in the core advances one staged sample per sleep --
+ * drain_pace() sleeps IMU_DRAIN_WAIT_MS, collect_stats() sleeps 2 ms -- and
+ * s_progress() below stages exactly one sample per iteration.  So a window is
+ * a wall-clock budget and the samples it buys are window / actual-sleep-cost.
+ * A host that bills a short nanosleep() at several times what it asks for
+ * therefore collects several times fewer samples from the same window, and the
+ * checks' ten-sample floors (src/imutest.c:1753, :2308) turn PASS and FAIL
+ * verdicts into SKIPs.
+ *
+ * Scale by the worse of the two ratios so every host collects what the numbers
+ * below were chosen to collect.  Capped, because the windows are what this
+ * suite's runtime is made of and an unbounded factor is an unbounded run.
+ */
+#define SLEEP_COST_CAP 10.0
+
+static double scale_from_cost(double ms2, double ms10)
+{
+    double k = ms2 / 2.0;
+    if (ms10 / 10.0 > k) k = ms10 / 10.0;
+    if (k < 1.0)            k = 1.0;
+    if (k > SLEEP_COST_CAP) k = SLEEP_COST_CAP;
+    return k;
+}
+
+static double timed_sleep_ms(double want_s, int reps)
+{
+    struct timespec t0, t1;
+    struct timespec req = { (time_t)want_s,
+                            (long)((want_s - (double)(time_t)want_s) * 1e9) };
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (int i = 0; i < reps; i++) nanosleep(&req, NULL);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    double el = (double)(t1.tv_sec - t0.tv_sec) +
+                (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
+    return el * 1e3 / (double)reps;
+}
+
+/* Measured once: the probe costs ~250 ms on an accurate host and the answer
+ * cannot change under us. */
+static double sleep_cost_factor(void)
+{
+    static double k = -1.0;
+    if (k < 0.0) k = scale_from_cost(timed_sleep_ms(0.002, 20),
+                                     timed_sleep_ms(0.010, 20));
+    return k;
+}
+
 /* Short windows: the core measures real elapsed time, so the whole suite has
- * to stay quick.  These are the smallest values the checks still work at. */
+ * to stay quick.  These are the smallest values the checks still work at on a
+ * host whose sleeps are accurate; sleep_cost_factor() grows them on one whose
+ * are not. */
 static void fast_opts(imt_opts_t *o)
 {
+    const double k = sleep_cost_factor();
+
     imt_opts_defaults(o);
-    o->odr_window_s    = 0.30;
-    o->noise_window_s  = 0.30;
+    o->odr_window_s    = 0.30 * k;
+    o->noise_window_s  = 0.30 * k;
+    o->mag_window_s    = 0.20 * k;
+    o->face_collect_s  = 0.10 * k;
+    o->turn_timeout_s  = 1.0  * k;
+    o->spin_timeout_s  = 2.0  * k;
+    /* Not scaled, and not an oversight.  drdy_window_s buys edges from the
+     * imt_gpio_count_edges() stub, which computes them from the window rather
+     * than collecting them over one -- so it is not sleep-bound, and stretching
+     * it only moves the exact counts test_drdy_two_pass pins.  face_settle_s is
+     * one sleep before a face, not a loop, so scaling it buys no samples. */
     o->drdy_window_s   = 0.05;
-    o->mag_window_s    = 0.20;
     o->face_settle_s   = 0.02;
-    o->face_collect_s  = 0.10;
-    o->turn_timeout_s  = 1.0;
-    o->spin_timeout_s  = 2.0;
     o->fs_sweep        = false;   /* enabled explicitly in its own test */
     o->induce_overflow = false;
     o->regdiff         = true;
@@ -1720,8 +1782,15 @@ static void test_rate_above_configured_odr_fails(void)
      * The configured rate is chosen FROM the measured one rather than fixed,
      * so a slow or contended host cannot drift the case across the boundary
      * and fail a precondition instead of the behaviour.
+     *
+     * The margin is the one the ladder needs and no more.  Halving the measured
+     * rate asked the grid for an entry that need not exist: the loop is paced
+     * at IMU_DRAIN_WAIT_MS, so a host billing that 10 ms sleep at 40 ms measures
+     * ~24 Hz, and half of that is under the ISM330's 12.5 Hz floor.  Backing off
+     * by twice odr_tol_fail instead guarantees only what the case is about —
+     * an overshoot past the fail tolerance — and reaches down to a 16 Hz loop.
      */
-    int slow = grid_below(r, r->raw.odr_measured_hz / 2.0);
+    int slow = grid_below(r, r->raw.odr_measured_hz / (1.0 + 2.0 * o.odr_tol_fail));
     free(r);
     EXPECT(slow > 0, "the ISM330 grid has an entry well under the loop rate");
     if (slow <= 0) { end(fb); return; }
@@ -4679,9 +4748,51 @@ static void test_abort_stops_the_run(void)
     end(fb);
 }
 
+/*
+ * The window scaling, against measured sleep costs rather than a live host.
+ *
+ * Pinned as a pure function because the thing it defends against cannot be
+ * staged here: GitHub's macOS 15 runners bill a 2 ms sleep at ~12.5 ms and a
+ * 10 ms sleep at ~40 ms, and this box bills them at 2.06 and 10.06.  Feeding
+ * both sets of numbers in is what proves the windows would grow there and stay
+ * put here — issue #56.
+ */
+static void test_window_scaling_tracks_sleep_cost(void)
+{
+    begin("test_window_scaling_tracks_sleep_cost");
+    int fb = g_fail;
+
+    /* An accurate host: the windows keep the values they were chosen at. */
+    EXPECT(fabs(scale_from_cost(2.06, 10.06) - 1.03) < 0.01,
+           "an accurate host scales by its own small overshoot");
+    EXPECT(scale_from_cost(2.0, 10.0) == 1.0, "an exact host does not scale");
+    EXPECT(scale_from_cost(1.0, 5.0) == 1.0,
+           "a host that undersleeps never scales below 1");
+
+    /*
+     * The macOS 15 runner.  The binding ratio is the 2 ms one, and the factor
+     * has to carry face_collect_s past the ten samples the sign check needs:
+     * 0.10 s of 12.5 ms iterations is 8, and k must recover the ~48 the same
+     * window buys here.
+     */
+    double k = scale_from_cost(12.5, 40.0);
+    EXPECT(fabs(k - 6.25) < 0.01, "the worse of the two ratios is the factor");
+    EXPECT(0.10 * k / 12.5e-3 >= 10.0,
+           "the scaled face window still clears the ten-sample floor");
+    EXPECT(0.30 * k / 40.0e-3 >= 10.0,
+           "the scaled rest window clears it on the 10 ms pace too");
+
+    EXPECT(scale_from_cost(2.0, 400.0) == SLEEP_COST_CAP,
+           "a pathological host is capped, not unbounded");
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud-imutest checker tests (mock I2C) ===");
+
+    test_window_scaling_tracks_sleep_cost();
 
     test_mock_models_the_whole_fifo_window();
     test_bringup_good();

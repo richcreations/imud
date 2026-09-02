@@ -8,9 +8,9 @@ it is a contributor convenience, not part of the product.
 Two audiences:
 
 - **Developing on macOS (or any non-Linux host).** `make test-portable` runs
-  nearly every suite there; this box is for what it cannot reach — the
-  sanitizers, coverage, the packaging. See "Why" below: a host build can
-  actively prove the wrong thing.
+  every suite there; this box is for what it cannot reach — the sanitizers,
+  coverage, the packaging. See "Why" below: a host build can actively prove the
+  wrong thing.
 - **Developing on Linux.** You do not need it for `make test`, but it is the
   quick way to check the *other* Debian release (`--dist bookworm` builds
   against libgpiod v1, which Raspberry Pi OS still ships), to build the `.deb`s
@@ -19,11 +19,11 @@ Two audiences:
 
 ## Why
 
-`make test` runs 39 suites, and `make test-portable` runs the 38 portable suites
-on macOS. So the gap this box fills is mostly no longer coverage. It is these,
-which macOS cannot do at all: the sanitizers, `make coverage`, the `.deb`
-builds, the systemd unit checks, and the libgpiod **v1** path that Raspberry Pi
-OS still ships.
+`make test` runs 39 suites, and `make test-portable` runs the 39 portable suites
+— every one of them, on macOS included. So the gap this box fills is no longer
+coverage. It is these, which macOS cannot do at all: the sanitizers, `make
+coverage`, the `.deb` builds, the systemd unit checks, and the libgpiod **v1**
+path that Raspberry Pi OS still ships.
 
 And it can prove the wrong thing. `APPLY_CLOEXEC` is a real `fcntl()` on macOS
 and `((void)0)` on Linux, so `39df6b4` passed the local gate and turned every

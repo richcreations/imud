@@ -672,9 +672,8 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest test_hwtools_e2e \
       test_configure
 
-# Suites the macos CI job does not run, and why.  Every suite in TEST_BINS
-# BUILDS off Linux and 38 of them pass -- measured on 2026-09-02 against
-# macOS 14.8.9, Apple clang 16 and GNU make 3.81.
+# Suites the macos CI job does not run, and why.  Empty: every suite in
+# TEST_BINS builds off Linux and every one of them passes there.
 #
 # It exists so the exclusion is a decision.  PORTABLE_TEST_BINS below is a
 # filter-out, so a suite added to TEST_BINS is portable by DEFAULT and reaches
@@ -684,11 +683,9 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
 # GNU ld's --wrap, a <linux/*> header, /proc, libgpiod -- or a filed issue.
 # "Needs a seam nobody has written yet" is not one: test_daemon and
 # test_hwtools_e2e were both here until the seams turned out to be a -D and a
-# filter-out.
-#
-#   test_imutest — fails 26 assertions on GitHub's macOS 15 runners and none
-#   on a macOS 14 Mac, under load or otherwise; issue #56.
-NONPORTABLE_TEST_BINS = test_imutest
+# filter-out, and test_imutest was until its windows learned to measure the
+# host's sleep cost instead of assuming it.
+NONPORTABLE_TEST_BINS =
 
 PORTABLE_TEST_BINS = $(filter-out $(NONPORTABLE_TEST_BINS),$(TEST_BINS))
 

@@ -590,16 +590,14 @@ CASES = [
     # An exclusion with no reason beside it.  The list is where a suite goes to
     # stop being tested off Linux, so "why" is the whole of its content.
     ("check-portable-tests", "Makefile",
-     sub(r'^NONPORTABLE_TEST_BINS = test_imutest$',
-         'NONPORTABLE_TEST_BINS = test_imutest test_nmea'),
+     sub(r'^NONPORTABLE_TEST_BINS =$', 'NONPORTABLE_TEST_BINS = test_nmea'),
      "NONPORTABLE_TEST_BINS with no"),
 
     # An exclusion naming a suite that does not exist. $(filter-out) takes a
     # typo without a word, so the suite it was meant to exclude still runs --
     # or, read the other way, the list stops meaning anything.
     ("check-portable-tests", "Makefile",
-     sub(r'^NONPORTABLE_TEST_BINS = test_imutest$',
-         'NONPORTABLE_TEST_BINS = test_zzzzz'),
+     sub(r'^NONPORTABLE_TEST_BINS =$', 'NONPORTABLE_TEST_BINS = test_zzzzz'),
      "test_zzzzz"),
 
     # PORTABLE_TEST_BINS spelled out by hand. That is the drift itself: the
@@ -620,7 +618,7 @@ CASES = [
     # A stated count going stale -- both spellings, since the two are checked
     # against different lists.
     ("check-portable-tests", "CONTRIBUTING.md",
-     sub(r'the 38 portable suites', 'the 3 portable suites'),
+     sub(r'the 39 portable suites', 'the 3 portable suites'),
      "3 portable suites"),
 
     ("check-portable-tests", "devbox/README.md",
