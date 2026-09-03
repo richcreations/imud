@@ -81,7 +81,10 @@ _Static_assert(OFF(innov_weight)     == 256, "ABI: innov_weight moved");
 _Static_assert(OFF(innov_reject)     == 260, "ABI: innov_reject moved");
 _Static_assert(OFF(nis_accel)        == 264, "ABI: nis_accel moved");
 _Static_assert(OFF(nis_mag)          == 268, "ABI: nis_mag moved");
-/* New members append AFTER nis_mag; update the assert list when
+/* Appended for wire v18.  imud_data_t is append-only, so this offset is now
+ * part of the contract exactly as the ones above it are. */
+_Static_assert(OFF(flags_ext)        == 272, "ABI: flags_ext moved");
+/* New members append AFTER flags_ext; update the assert list when
  * they do (their offsets then become part of the contract too). */
 
 static int g_pass, g_fail;
@@ -111,6 +114,7 @@ static imu_packet_t make_pkt(void)
     s.bias_gyro_var[0] = 1e-6f; s.bias_gyro_var[1] = 2e-6f; s.bias_gyro_var[2] = 3e-6f;
     s.quiescence = 0.01f;
     s.flags = FLAG_DECLINATION_VALID | FLAG_HEAVE_VALID;
+    s.flags_ext = FLAG_EXT_MAG_ABSENT;
     s.imu_seq = 7;
     s.ts_wall_ns = 1620307999123000000ULL;
 
@@ -175,6 +179,11 @@ static void test_stream_roundtrip(void)
     EXPECT(fabsf(d->temp_c - 31.4f) < 1e-2f, "temp copied");
     EXPECT(d->imu_seq == 7, "imu_seq copied");
     EXPECT((d->flags & IMUD_FLAG_HEAVE_VALID) != 0, "flags carried over");
+    /* flags_ext is a separate word and a separate copy in libimud.c: the
+     * line that carries it could be deleted and every other assertion here
+     * would still pass. */
+    EXPECT((d->flags_ext & IMUD_FLAG_EXT_MAG_ABSENT) != 0,
+           "flags_ext carried over");
     EXPECT(imud_wire_version(h) == IMUD_VERSION, "wire_version matches after read");
 
     const imud_packet_t *w = imud_wire(h);

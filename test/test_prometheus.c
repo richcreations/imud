@@ -169,6 +169,31 @@ static void test_flags_and_gating(void)
     EXPECT(metric(buf, "imud_heave_valid", &v) && v == 1.0, "heave_valid 1");
     EXPECT(metric(buf, "imud_mag_valid", &v)   && v == 1.0, "mag_valid 1");
     EXPECT(metric(buf, "imud_converged", &v)   && v == 1.0, "converged 1");
+    EXPECT(metric(buf, "imud_mag_uncal", &v)   && v == 0.0, "mag_uncal 0");
+    EXPECT(metric(buf, "imud_mag_absent", &v)  && v == 0.0, "mag_absent 0");
+
+    /*
+     * No magnetometer configured.  imud_heading_degrees must STILL be
+     * exported: Prometheus alerting is written against series that exist, and
+     * imud_mag_absent is what says the number is a relative angle rather than
+     * a magnetic heading.  A series that comes and goes is far harder to
+     * alert on than a boolean to join against.
+     */
+    d.flags = IMUD_FLAG_FUSION_CONVERGED;
+    d.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    prom_build_metrics(buf, sizeof buf, &d, 1);
+    EXPECT(metric(buf, "imud_mag_absent", &v) && v == 1.0, "mag_absent 1");
+    EXPECT(metric(buf, "imud_mag_valid", &v)  && v == 0.0, "mag_valid 0 with no mag");
+    EXPECT(metric(buf, "imud_heading_degrees", &v),
+           "heading gauge still exported with no magnetometer");
+
+    /* An uncalibrated fuse: heading is magnetic but offset, and says so. */
+    d.flags = IMUD_FLAG_MAG_UNCAL;
+    d.flags_ext = 0;
+    prom_build_metrics(buf, sizeof buf, &d, 1);
+    EXPECT(metric(buf, "imud_mag_uncal", &v)  && v == 1.0, "mag_uncal 1");
+    EXPECT(metric(buf, "imud_mag_valid", &v)  && v == 0.0, "mag_valid 0 when uncal");
+    EXPECT(metric(buf, "imud_mag_absent", &v) && v == 0.0, "mag_absent 0 when fitted");
     end(fb);
 }
 
