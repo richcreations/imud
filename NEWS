@@ -46,6 +46,14 @@ Added:
 
 Changed:
 
+* Wire format v18: the packet grows 276 to 288 bytes with flags_ext, a second
+  32-bit flag word, and eight reserved bytes. Every existing field keeps its
+  offset. Its first bit says no magnetometer is configured.
+  Breaking: consumers reject a wire version they do not know, so deploy the
+  daemon and its consumers together. flags had assigned all sixteen bits,
+  which is what forced the new word — a consumer must ignore bits it does not
+  recognise, and a later flag then needs no further bump. The imud-arduino
+  client needs its own update.
 * NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading field
   null, while no magnetometer is being fused. An uncalibrated magnetometer
   still publishes all of them.

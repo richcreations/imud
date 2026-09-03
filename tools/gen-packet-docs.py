@@ -110,16 +110,33 @@ def struct_layout(rep):
     return fields, offset
 
 
-def flag_bits(rep):
-    """[(bit, name)] from the FLAG_* defines, in bit order."""
-    src = must_read(HDR)
-    bits = [(int(b), n.lower()) for n, b in
-            re.findall(r"^#define\s+FLAG_(\w+)\s+\(1u\s*<<\s*(\d+)\)", src, re.M)]
-    rep.expect(bits, "FLAG_* defines")
+def _bits(src, pattern, rep, what, where):
+    bits = [(int(b), n.lower()) for n, b in re.findall(pattern, src, re.M)]
+    rep.expect(bits, what)
     dupes = {b for b, _ in bits if [x for x, _ in bits].count(b) > 1}
     for b in sorted(dupes):
-        rep.fail(f"{HDR}: bit {b} is defined more than once")
+        rep.fail(f"{HDR}: {where} bit {b} is defined more than once")
     return sorted(bits)
+
+
+def flag_bits(rep):
+    """[(bit, name)] from the FLAG_* defines of the 16-bit `flags` word.
+
+    FLAG_EXT_ is excluded rather than merged: flags_ext is a SEPARATE word,
+    so its bit 0 and this word's bit 0 are different flags.  Matching both
+    with one pattern reported "bit 0 is defined more than once" and would
+    have documented one of them under the other's offset.
+    """
+    return _bits(must_read(HDR),
+                 r"^#define\s+FLAG_(?!EXT_)(\w+)\s+\(1u\s*<<\s*(\d+)\)",
+                 rep, "FLAG_* defines", "flags")
+
+
+def flag_ext_bits(rep):
+    """[(bit, name)] from the FLAG_EXT_* defines of the 32-bit flags_ext."""
+    return _bits(must_read(HDR),
+                 r"^#define\s+FLAG_EXT_(\w+)\s+\(1u\s*<<\s*(\d+)\)",
+                 rep, "FLAG_EXT_* defines", "flags_ext")
 
 
 def declared_size(rep):
@@ -177,22 +194,22 @@ def layout_block(fields, total, notes, version, rep):
     return "\n".join(lines)
 
 
-def flags_block(bits, notes, rep):
+def flags_block(bits, notes, rep, trailer="trailer", label="flags"):
     lines = ["```text"]
     for bit, name in bits:
         note = notes.get(name)
         if note is None:
-            rep.fail(f"{NOTES}: no note for flag '{name}'")
+            rep.fail(f"{NOTES}: no note for {label} flag '{name}'")
             note = ""
         lines.append(row((f"bit {bit}", name), FLAG_COLS, note, rep,
-                         f"{SPEC} flags table"))
-    lines.append(notes["trailer"])
+                         f"{SPEC} {label} table"))
+    lines.append(notes[trailer])
     lines.append("```")
 
-    known = {n for _, n in bits} | {"trailer"}
+    known = {n for _, n in bits} | {trailer}
     for key in sorted(set(notes) - known):
-        rep.fail(f"{NOTES}: has a note for flag '{key}', which {HDR} does not "
-                 f"define")
+        rep.fail(f"{NOTES}: has a note for {label} flag '{key}', which {HDR} "
+                 f"does not define")
     return "\n".join(lines)
 
 
@@ -212,12 +229,17 @@ def main():
                   f"{pinned} — this tool is mis-sizing something")
 
     bits = flag_bits(rep)
+    ext_bits = flag_ext_bits(rep)
 
     text = must_read(SPEC)
     for tag, body in (("packet-layout",
                        layout_block(fields, total, notes["fields"], version, rep)),
                       ("packet-flags",
-                       flags_block(bits, notes["flags"], rep))):
+                       flags_block(bits, notes["flags"], rep)),
+                      ("packet-flags-ext",
+                       flags_block(ext_bits, notes["flags_ext"], rep,
+                                   trailer="ext_trailer",
+                                   label="flags_ext"))):
         text = splice(text, BEGIN % tag, END % tag, body,
                       f"{SPEC} ({tag})", rep)
 

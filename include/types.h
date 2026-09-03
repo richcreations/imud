@@ -7,7 +7,7 @@
 /*
  * types.h — core data structures shared across all imud threads
  *
- * Wire packet is little-endian, 276 bytes. All angle units are radians
+ * Wire packet is little-endian, 288 bytes. All angle units are radians
  * unless the field name ends in _deg. Magnetic field in µT. Accel in m/s².
  * Gyro in rad/s.
  */
@@ -27,13 +27,13 @@
 /* ── Packet constants ──────────────────────────────────────────────────────── */
 
 #define IMUD_MAGIC    0x494D5544u   /* "IMUD" */
-#define IMUD_PACKET_BYTES 276u      /* encoded wire size, fixed */
+#define IMUD_PACKET_BYTES 288u      /* encoded wire size, fixed */
 /* Wire-layout revision, NOT the release version (that is IMUD_VERSION_STR in
  * version.h).  Encoded as major*10 + minor of the release that last CHANGED the
- * packet layout — 17 = the layout introduced in 1.7 (update-gate health fields);
- * 14 was the 1.4 layout, which 1.5 and 1.6 shipped unchanged.
+ * packet layout — 18 = the layout introduced in 1.10 (flags_ext + reserved);
+ * 17 was the 1.7 layout, which 1.8 and 1.9 shipped unchanged.
  * Bump only when the layout changes; see docs/RELEASING.md. */
-#define IMUD_VERSION  17
+#define IMUD_VERSION  18
 
 /* ── Packet flags (§8) — bitmask in imu_packet_t.flags and fused_state_t.flags */
 
@@ -49,7 +49,13 @@
  * FLAG_ENGINE_ON (bit 13) — so a boolean restatement would only lose
  * resolution.  The define stays so existing consumers still compile; the bit
  * will never be set.  Do not reuse it for something else: a stale consumer
- * would read the new meaning through the old name. */
+ * would read the new meaning through the old name.
+ *
+ * v18 settles that permanently.  A wire bump is the one moment reuse would
+ * have been safe, since a v17 consumer rejects a v18 packet before reading a
+ * bit — and it was declined, because 1.8 published "the bit will not be
+ * reused" and flags_ext arrives with 32 free bits, so there is nothing to
+ * gain by going back on it. */
 #define FLAG_MOTION           (1u <<  6)  /* retired — never set, never will be */
 #define FLAG_FIFO_OVERFLOW    (1u <<  7)  /* ISM330 FIFO overflowed (gap!) */
 #define FLAG_STARTUP          (1u <<  8)  /* gyro bias estimation in progress */
@@ -74,6 +80,23 @@
  * gyro and drifts without bound.  A consumer that only ever tested
  * FLAG_MAG_VALID therefore behaves exactly as before. */
 #define FLAG_MAG_UNCAL         (1u << 15) /* fused from an uncalibrated field */
+
+/* ── Extended packet flags (§8) — imu_packet_t.flags_ext, wire v18 ───────────
+ *
+ * `flags` filled up: bit 15 was the last of its sixteen, which is what forced
+ * this word.  32 bits, and the contract that makes them cheap to spend is
+ * that a consumer MUST ignore bits it does not know.  A flag added here
+ * therefore needs no further wire bump — only a bit that changes an existing
+ * field's meaning does.
+ */
+
+/* No magnetometer is configured ([mag] driver = "none"), so heading is
+ * gravity-referenced only: it starts at zero in the orientation imud booted
+ * in and dead-reckons from the gyro for the life of the run.  Distinct from
+ * FLAG_MAG_VALID and FLAG_MAG_UNCAL both being clear, which is the same
+ * output from a magnetometer that IS fitted and has gone stale or failed —
+ * that one may come back, this one cannot. */
+#define FLAG_EXT_MAG_ABSENT   (1u <<  0)
 
 /* ── IMU sample — one calibrated sample from the configured IMU ────────────── */
 
@@ -153,6 +176,7 @@ typedef struct {
     float    nis_accel;      /* EMA of accel d²/2; 1 = covariance consistent, >1 over-confident */
     float    nis_mag;        /* EMA of mag d²/dof; 1 = covariance consistent */
     uint16_t flags;          /* FLAG_* bitmask */
+    uint32_t flags_ext;      /* FLAG_EXT_* bitmask (wire v18) */
     uint32_t imu_seq;        /* IMU sample counter of last prediction step */
     /*
      * WHEN THE SAMPLE WAS TAKEN — not when this state was computed or sent.
@@ -180,7 +204,7 @@ typedef struct {
     uint32_t anchor_gen;     /* increments each time wall-clock anchor is reset */
 } fused_state_t;
 
-/* ── Wire packet — §8, 276 bytes fixed, little-endian ─────────────────────── */
+/* ── Wire packet — §8, 288 bytes fixed, little-endian ─────────────────────── */
 
 typedef struct __attribute__((packed)) {
     /* Header — 32 bytes */
@@ -265,15 +289,26 @@ typedef struct __attribute__((packed)) {
      * model itself is right. See docs/math.md §4.7. */
     float    nis_accel;      /* accel gravity update, d²/2 */
     float    nis_mag;        /* mag update, d²/2 (3-D) or d²/1 (yaw-only) */
-    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–271 */
+    /* v18 additions */
+    uint32_t flags_ext;      /* FLAG_EXT_* bitmask; ignore bits you do not know */
+    /*
+     * Zero on the wire, and zero is the only value a v18 encoder sends.
+     * Deliberately small: reserved bytes are transmit cost on every packet of
+     * every stream forever, so this is enough for a scalar or two that turns
+     * up between bumps, not a bank against a feature.  A field big enough to
+     * plan for — the directional sea state, say — gets its own bump.
+     * Take from the FRONT and shrink the array; appending would move crc32.
+     */
+    uint8_t  reserved[8];
+    uint32_t crc32;          /* IEEE 802.3 CRC32 of bytes 0–283 */
 } imu_packet_t;
 
-_Static_assert(sizeof(imu_packet_t) == 276,
-               "imu_packet_t must be exactly 276 bytes");
+_Static_assert(sizeof(imu_packet_t) == 288,
+               "imu_packet_t must be exactly 288 bytes");
 _Static_assert(sizeof(imu_packet_t) == IMUD_PACKET_BYTES,
                "IMUD_PACKET_BYTES must match the struct the encoder walks");
-_Static_assert(offsetof(imu_packet_t, crc32) == 272,
-               "crc32 must be at offset 272");
+_Static_assert(offsetof(imu_packet_t, crc32) == 284,
+               "crc32 must be at offset 284");
 
 /* ── IMU ring buffer — ism_reader → fusion ─────────────────────────────────── */
 

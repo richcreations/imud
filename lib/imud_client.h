@@ -57,11 +57,11 @@
 
 #define IMUD_MAGIC        0x494D5544u   /* "IMUD" */
 /* Wire-layout revision, NOT the release version.  Encoded as major*10 + minor
- * of the release that last CHANGED the packet layout — 17 = the layout
- * introduced in 1.7; 14 was the 1.4 layout that 1.5 and 1.6 shipped unchanged.
+ * of the release that last CHANGED the packet layout — 18 = the layout
+ * introduced in 1.10; 17 was the 1.7 layout that 1.8 and 1.9 shipped unchanged.
  * Bump only on layout change. */
-#define IMUD_VERSION      17
-#define IMUD_PACKET_SIZE  276           /* bytes, fixed */
+#define IMUD_VERSION      18
+#define IMUD_PACKET_SIZE  288           /* bytes, fixed */
 
 /* ── Packet flags (bitmask in imud_packet_t.flags) ──────────────────────── */
 
@@ -88,7 +88,18 @@
 #define IMUD_FLAG_STATE_RESET          (1u << 14) /* MEKF reset itself after non-finite state */
 #define IMUD_FLAG_MAG_UNCAL            (1u << 15) /* fused from an uncalibrated field */
 
-/* ── Wire packet — 276 bytes, little-endian ─────────────────────────────── */
+/* ── Extended flags (bitmask in imud_packet_t.flags_ext, wire v18) ───────────
+ * `flags` filled up at bit 15.  A consumer MUST ignore bits it does not know:
+ * that is what lets imud add a flag here without another version bump. */
+
+/* No magnetometer is configured, so heading is gravity-referenced only — it
+ * starts at zero in the orientation imud booted in and dead-reckons from the
+ * gyro for the whole run.  Not the same as both mag flags being clear, which
+ * is what a FITTED magnetometer looks like while stale: that one can recover,
+ * this one cannot. */
+#define IMUD_FLAG_EXT_MAG_ABSENT       (1u << 0)
+
+/* ── Wire packet — 288 bytes, little-endian ─────────────────────────────── */
 
 #if defined(_MSC_VER)
 #  pragma pack(push, 1)
@@ -173,7 +184,10 @@ typedef struct IMUD__PACKED {
      * the observed innovations; > 1.0 = filter over-confident. */
     float    nis_accel;       /* accel gravity update, d²/2 */
     float    nis_mag;         /* mag update, d²/2 (3-D) or d²/1 (yaw-only) */
-    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–271 */
+    /* v18 addition */
+    uint32_t flags_ext;       /* IMUD_FLAG_EXT_* — ignore bits you do not know */
+    uint8_t  reserved[8];     /* zero on the wire; carve from the front */
+    uint32_t crc32;           /* IEEE 802.3 CRC32 of bytes 0–283 */
 } imud_packet_t;
 
 #if defined(_MSC_VER)
@@ -295,6 +309,9 @@ static inline void imud_packet_decode(imud_packet_t *pkt, const void *buf)
     pkt->innov_reject     = imud__ldf(p); p += 4;
     pkt->nis_accel        = imud__ldf(p); p += 4;
     pkt->nis_mag          = imud__ldf(p); p += 4;
+    pkt->flags_ext        = imud__ld32(p); p += 4;
+    for (int i = 0; i < 8; i++) pkt->reserved[i] = p[i];
+    p += 8;
 
     pkt->crc32            = imud__ld32(p);
 }

@@ -71,6 +71,16 @@ extern "C" {
 #ifndef IMUD_FLAG_MAG_UNCAL
 #define IMUD_FLAG_MAG_UNCAL            (1u << 15) /* fused from an uncalibrated field */
 #endif
+
+/* ── Extended flags (bitmask in imud_data_t.flags_ext, wire v18) ──────────
+ * A consumer MUST ignore bits it does not know — that is what lets imud add
+ * one here without another wire bump. */
+#ifndef IMUD_FLAG_EXT_MAG_ABSENT
+/* No magnetometer configured: heading is gravity-referenced only and dead
+ * reckons from the gyro for the whole run.  Distinct from both mag flags
+ * being clear, which a FITTED but stale magnetometer also produces. */
+#define IMUD_FLAG_EXT_MAG_ABSENT       (1u << 0)
+#endif
 #ifndef IMUD_FLAG_STATE_RESET
 /* MEKF found a non-finite value in its own state and reset itself; latched
  * until it re-converges, during which IMUD_FLAG_FUSION_CONVERGED is clear. */
@@ -133,6 +143,8 @@ typedef struct imud_data {
     float innov_reject;        /* EMA of the gate-reject indicator */
     float nis_accel;           /* EMA of accel d²/2; 1.0 = covariance consistent */
     float nis_mag;             /* EMA of mag d²/dof; 1.0 = covariance consistent */
+    /* Extended flags (wire v18) — IMUD_FLAG_EXT_*; ignore bits you do not know */
+    uint32_t flags_ext;
     /* ── new members are appended here; never reorder the above ── */
 } imud_data_t;
 

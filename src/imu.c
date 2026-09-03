@@ -1300,6 +1300,11 @@ void *fusion_thread(void *arg)
         fused_state_t state;
         mekf_get_state(&f, &state, cal_flags);
 
+        /* Permanent for the run: no magnetometer is configured at all, which
+         * a consumer cannot infer from the two mag flags being clear — that
+         * is also what a fitted magnetometer looks like while it is stale. */
+        if (!ctx->mag_ops) state.flags_ext |= FLAG_EXT_MAG_ABSENT;
+
         state.heave_m    = heave_update(&heave, f.q, s.accel);
         /* heave.vel is double (see heave_t); the wire field is float. */
         state.heave_rate = (float)(-heave.vel);  /* NED down → up, m/s */

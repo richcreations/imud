@@ -506,7 +506,7 @@ details.
 
 High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`, `coord_frame`. **[hot]**: `rate_hz`.
 
-The 276-byte binary packet format is documented in [spec.md §8](../spec.md).
+The 288-byte binary packet format is documented in [spec.md §8](../spec.md).
 Consumer libraries are in `lib/`.
 
 | Key | Type | Default | Description |
@@ -521,7 +521,7 @@ Consumer libraries are in `lib/`.
 
 ### `[stream]`
 
-Local AF_UNIX subscription stream — the same 276-byte binary packets as
+Local AF_UNIX subscription stream — the same 288-byte binary packets as
 `[highrate]`, but over a `SOCK_STREAM` socket. Same-host consumers get a
 loss-free stream and subscribe by connecting (up to 8 at once). Slow
 consumers get dropped packets (visible as `imu_seq` gaps), never a stalled
@@ -1106,13 +1106,25 @@ by the uncorrected hard iron but still magnetic and still bounded.
 
 ### High-rate binary — UDP port 10111 (default off)
 
-A fixed 276-byte little-endian packet (wire v17) at up to 500 Hz:
+A fixed 288-byte little-endian packet (wire v18) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance, timestamps
 (wall + TAI + chip), declination, and an IEEE-802.3 CRC32. Every packet is
 self-describing (magic + version + CRC), so consumers can validate each one
 independently. See [spec.md §8](../spec.md) for the exact layout and the
 consumer libraries in [§9](#9-consumer-libraries).
+
+**Wire v18 is a breaking change.** Consumers reject a packet whose version
+they do not know, so a v17 consumer stops reading the moment the daemon is
+upgraded — deploy the daemon and its consumers together. What changed: a
+second 32-bit flag word, `flags_ext`, because `flags` had assigned all
+sixteen of its bits, plus eight reserved bytes. Every pre-existing field kept
+its offset. `flags_ext`'s first bit is `FLAG_EXT_MAG_ABSENT`, which says no
+magnetometer is configured at all — a state a consumer could not previously
+tell from a fitted magnetometer that has gone stale.
+
+**A consumer must ignore `flags_ext` bits it does not recognise.** That is
+what allows a later flag to be added there without another version bump.
 
 **Near-vertical pitch — read the quaternion.** The Euler fields (`pitch`,
 `roll`, `yaw`, `heading_deg`, `rate_of_turn`) are derived from the quaternion
@@ -1130,7 +1142,7 @@ by definition.
 > This is the one output a stock daemon enables — the bridges and libimud
 > consumers read it.
 
-The same 276-byte binary packets over a `SOCK_STREAM` socket at
+The same 288-byte binary packets over a `SOCK_STREAM` socket at
 `/run/imud/imud-stream.sock`. Same-host consumers connect and receive a
 loss-free stream (no datagram drops). Ideal for co-located machine-vision or
 gimbal processes. Up to 8 subscribers; a consumer that can't keep up gets

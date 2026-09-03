@@ -804,7 +804,7 @@ converts field by field, so a consumer parses the same bytes either way.
 Offset  Bytes  Type      Field             Notes
 ──────────────────────────────────────────────────────────────────
  0      4      uint32    magic             0x494D5544 (“IMUD”)
- 4      2      uint16    version           = 17  (IMUD_VERSION; wire revision,
+ 4      2      uint16    version           = 18  (IMUD_VERSION; wire revision,
                                               not the release version)
  6      2      uint16    flags             see below
  8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns, SAMPLE-TAKEN
@@ -879,9 +879,13 @@ Offset  Bytes  Type      Field             Notes
                                           (v17)
 268     4      float32   nis_mag           Same for the mag update: d²/2 in
                                           3-D mode, d²/1 in yaw-only (v17)
-272     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–271
+272     4      uint32    flags_ext         see below; ignore unknown bits (v18)
+276     8×1    uint8     reserved[8]       zero on the wire.  A future scalar is
+                                          carved from the FRONT of this, so
+                                          no existing offset moves (v18)
+284     4      uint32    crc32             IEEE 802.3 CRC of bytes 0–283
 ────────────────────────────────────────────────────────────────────
-Total: 276 bytes
+Total: 288 bytes
 ```
 <!-- END GENERATED: packet-layout -->
 
@@ -943,9 +947,33 @@ bit 15  mag_uncal          Heading is being corrected by a magnetometer with
                            is dead-reckoned from the gyro and drifts without
                            bound. Withdrawn automatically under gross iron
                            (mag_uncal_reject_frac).
-        all 16 bits are assigned; a further flag needs a flags_ext field
+        all 16 bits are assigned; further flags go in flags_ext
 ```
 <!-- END GENERATED: packet-flags -->
+
+### Extended Flags Bitmask
+
+A second, 32-bit flag word at offset 272, added in wire v18 because `flags`
+had assigned all sixteen of its bits. It is a **separate** word: bit 0 here
+and bit 0 of `flags` are different flags.
+
+A consumer **must ignore bits it does not recognise**. That is the contract
+that lets imud define a new flag here without another wire version bump — only
+a change to an existing field's meaning or position needs one.
+
+<!-- BEGIN GENERATED: packet-flags-ext -->
+```text
+bit 0   mag_absent         No magnetometer is configured, so
+                           heading is gravity-referenced only: it starts at
+                           zero in the orientation imud booted in and dead
+                           reckons from the gyro for the life of the run.
+                           Distinct from bits 0 and 15 both being clear,
+                           which is the same output from a magnetometer that
+                           IS fitted and has gone stale or failed — that one
+                           can recover, this one cannot.
+        a consumer MUST ignore bits it does not know; adding one needs no bump
+```
+<!-- END GENERATED: packet-flags-ext -->
 
 ### Coordinate Frame
 

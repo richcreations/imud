@@ -37,13 +37,13 @@ from typing import Iterator, Optional, Tuple
 
 IMUD_MAGIC       = 0x494D5544   # "IMUD"
 # Wire-layout revision, NOT the release version.  Encoded as major*10 + minor
-# of the release that last CHANGED the packet layout — 17 = the layout
-# introduced in 1.7 (update-gate health fields); 14 was the 1.4 layout, which
-# 1.5 and 1.6 shipped unchanged.  A 1.8 daemon still speaks 17.
+# of the release that last CHANGED the packet layout — 18 = the layout
+# introduced in 1.10 (flags_ext + reserved); 17 was the 1.7 layout, which 1.8
+# and 1.9 shipped unchanged.
 # Must equal IMUD_VERSION in include/types.h and lib/imud_client.h; CI's
 # version-consistency job checks all three agree.
-IMUD_VERSION     = 17
-IMUD_PACKET_SIZE = 276
+IMUD_VERSION     = 18
+IMUD_PACKET_SIZE = 288
 
 # ── Flags ─────────────────────────────────────────────────────────────────────
 
@@ -88,9 +88,19 @@ class Flags:
         return ''.join(c for f, c in chars.items() if flags & f)
 
 
+class FlagsExt:
+    """imu_packet_t.flags_ext, wire v18.  Ignore bits you do not know: that
+    is what lets imud add one here without another version bump."""
+
+    # No magnetometer configured, so heading is gravity-referenced only and
+    # dead-reckons from the gyro for the whole run.  Not the same as both mag
+    # flags being clear, which a FITTED but stale magnetometer also produces.
+    MAG_ABSENT       = 1 << 0
+
+
 # ── Packet struct ─────────────────────────────────────────────────────────────
 #
-# Wire layout (little-endian, 276 bytes):
+# Wire layout (little-endian, 288 bytes):
 #   Offset  Field
 #    0      magic          uint32
 #    4      version        uint16
@@ -132,9 +142,11 @@ class Flags:
 #  260      innov_reject     float32     EMA of gate-reject indicator (v17)
 #  264      nis_accel        float32     EMA of accel d^2/2; 1.0 = consistent (v17)
 #  268      nis_mag          float32     EMA of mag d^2/dof; 1.0 = consistent (v17)
-#  272      crc32          uint32
+#  272      flags_ext        uint32      FlagsExt bitmask (v18)
+#  276      reserved         8 bytes     zero on the wire (v18)
+#  284      crc32          uint32
 
-_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 22 + 'I')
+_STRUCT = struct.Struct('<IHHQQII' + 'f' * 37 + 'I' + 'f' * 22 + 'I8sI')
 
 assert _STRUCT.size == IMUD_PACKET_SIZE, \
     f"struct size mismatch: {_STRUCT.size} != {IMUD_PACKET_SIZE}"
@@ -231,6 +243,9 @@ class ImudPacket:
     nis_accel:        float   # accel gravity update, d^2/2
     nis_mag:          float   # mag update, d^2/2 (3-D) or d^2/1 (yaw-only)
 
+    flags_ext:        int     # FlagsExt bitmask (v18)
+    reserved:         bytes   # 8 zero bytes (v18)
+
     crc32:            int
 
     # ── Convenience properties ────────────────────────────────────────────
@@ -312,7 +327,7 @@ def _parse(buf: bytes) -> Optional[ImudPacket]:
     if len(buf) != IMUD_PACKET_SIZE:
         return None
 
-    # Validate CRC before full unpack (covers bytes 0..271)
+    # Validate CRC before full unpack (covers bytes 0..283)
     crc_offset = IMUD_PACKET_SIZE - 4
     computed = zlib.crc32(buf[:crc_offset]) & 0xFFFFFFFF
     stored   = struct.unpack_from('<I', buf, crc_offset)[0]

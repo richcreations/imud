@@ -1217,7 +1217,7 @@ High-rate binary UDP stream (500 Hz by default). @strong{[restart]}:
 @code{enabled}, @code{dest_addr}, @code{dest_port}, @code{coord_frame}.
 @strong{[hot]}: @code{rate_hz}.
 
-The 276-byte binary packet format is documented in
+The 288-byte binary packet format is documented in
 @uref{https://github.com/richcreations/imud/blob/main/spec.md,spec.md
 §8}. Consumer libraries are in @code{lib/}.
 
@@ -1264,7 +1264,7 @@ mag vector fields in the binary packet.
 @node [stream]
 @section [stream]
 @anchor{#stream}
-Local AF_UNIX subscription stream --- the same 276-byte binary packets
+Local AF_UNIX subscription stream --- the same 288-byte binary packets
 as @code{[highrate]}, but over a @code{SOCK_STREAM} socket. Same-host
 consumers get a loss-free stream and subscribe by connecting (up to 8 at
 once). Slow consumers get dropped packets (visible as @code{imu_seq}
@@ -2542,7 +2542,7 @@ magnetic and still bounded.
 @node High-rate binary --- UDP port 10111 default off
 @section High-rate binary --- UDP port 10111 (default off)
 @anchor{#high-rate-binary--udp-port-10111-default-off}
-A fixed 276-byte little-endian packet (wire v17) at up to 500 Hz:
+A fixed 288-byte little-endian packet (wire v18) at up to 500 Hz:
 calibrated and raw accel/gyro/mag, quaternion, Euler angles, heading,
 rate-of-turn, heave, temperature, the 3×3 attitude covariance,
 timestamps (wall + TAI + chip), declination, and an IEEE-802.3 CRC32.
@@ -2551,6 +2551,20 @@ can validate each one independently. See
 @uref{https://github.com/richcreations/imud/blob/main/spec.md,spec.md
 §8} for the exact layout and the consumer libraries in
 @ref{9 Consumer libraries,,§9}.
+
+@strong{Wire v18 is a breaking change.} Consumers reject a packet whose
+version they do not know, so a v17 consumer stops reading the moment the
+daemon is upgraded --- deploy the daemon and its consumers together.
+What changed: a second 32-bit flag word, @code{flags_ext}, because
+@code{flags} had assigned all sixteen of its bits, plus eight reserved
+bytes. Every pre-existing field kept its offset. @code{flags_ext}'s
+first bit is @code{FLAG_EXT_MAG_ABSENT}, which says no magnetometer is
+configured at all --- a state a consumer could not previously tell from
+a fitted magnetometer that has gone stale.
+
+@strong{A consumer must ignore @code{flags_ext} bits it does not
+recognise.} That is what allows a later flag to be added there without
+another version bump.
 
 @strong{Near-vertical pitch --- read the quaternion.} The Euler fields
 (@code{pitch}, @code{roll}, @code{yaw}, @code{heading_deg},
@@ -2571,7 +2585,7 @@ sentences above, which are Euler by definition.
 This is the one output a stock daemon enables --- the bridges and
 libimud consumers read it.
 @end quotation
-The same 276-byte binary packets over a @code{SOCK_STREAM} socket at
+The same 288-byte binary packets over a @code{SOCK_STREAM} socket at
 @code{/run/imud/imud-stream.sock}. Same-host consumers connect and
 receive a loss-free stream (no datagram drops). Ideal for co-located
 machine-vision or gimbal processes. Up to 8 subscribers; a consumer that

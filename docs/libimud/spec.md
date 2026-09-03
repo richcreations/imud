@@ -93,7 +93,7 @@ Values are fixed by the wire protocol.
 | `IMUD_FLAG_ACCEL_CAL` | 3 | accel calibration applied |
 | `IMUD_FLAG_GYRO_CAL` | 4 | gyro bias applied |
 | `IMUD_FLAG_MAG_CAL` | 5 | mag hard/soft-iron cal applied |
-| `IMUD_FLAG_MOTION` | 6 | **retired** — never set, and never will be. Use `accel_quiescence` (continuous) or `IMUD_FLAG_ENGINE_ON`. The define is kept so existing code compiles; the bit will not be reused. |
+| `IMUD_FLAG_MOTION` | 6 | **retired** — never set, and never will be. Use `accel_quiescence` (continuous) or `IMUD_FLAG_ENGINE_ON`. The define is kept so existing code compiles; the bit will not be reused. Wire v18 could have reused it safely, since a v17 consumer rejects a v18 packet before reading a bit, and deliberately did not: `flags_ext` arrived with 32 free bits, so the guarantee stands. |
 | `IMUD_FLAG_FIFO_OVERFLOW` | 7 | sample gap (FIFO overflow) |
 | `IMUD_FLAG_STARTUP` | 8 | gyro bias estimation in progress |
 | `IMUD_FLAG_SHUTDOWN` | 9 | final packet before clean exit |
@@ -102,6 +102,20 @@ Values are fixed by the wire protocol.
 | `IMUD_FLAG_WAVE_VALID` | 12 | sea-state stats settled |
 | `IMUD_FLAG_ENGINE_ON` | 13 | engine-vibration detector asserting |
 | `IMUD_FLAG_STATE_RESET` | 14 | MEKF found a non-finite value in its own state and reset itself. Latched until it re-converges, so a consumer polling below the packet rate still sees it; `IMUD_FLAG_FUSION_CONVERGED` is clear for the same span. Attitude stays readable — unconverged, not invalid. |
+| `IMUD_FLAG_MAG_UNCAL` | 15 | heading is fused from a magnetometer with **no** calibration: offset by the uncorrected hard iron, but bounded and repeatable. Mutually exclusive with `IMUD_FLAG_MAG_VALID`. Both clear means heading is dead-reckoned from the gyro. |
+
+## Extended flags (`imud_data_t.flags_ext`)
+
+A second flag word, added in wire v18 because `flags` had assigned all
+sixteen of its bits. It is separate: bit 0 here is not bit 0 of `flags`.
+
+**Ignore bits you do not recognise.** That contract is what lets imud define a
+new flag here without a wire version bump, so a consumer that tests only the
+bits it knows keeps working against a newer daemon.
+
+| Flag | Bit | Meaning |
+| --- | --- | --- |
+| `IMUD_FLAG_EXT_MAG_ABSENT` | 0 | no magnetometer is configured, so heading is gravity-referenced only: it starts at zero in the orientation imud booted in and dead-reckons from the gyro for the life of the run. Distinct from bits 0 and 15 of `flags` both being clear, which is what a **fitted** magnetometer looks like while stale or failed — that one can recover, this one cannot. |
 
 ## ABI contract
 

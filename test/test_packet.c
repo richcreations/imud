@@ -141,8 +141,13 @@ static void test_packet_size(void)
 {
     begin("test_packet_size");
     int fb = g_fail;
-    EXPECT(sizeof(imu_packet_t) == 276, "imu_packet_t is exactly 276 bytes");
-    EXPECT(offsetof(imu_packet_t, crc32) == 272, "crc32 field at offset 272");
+    EXPECT(sizeof(imu_packet_t) == 288, "imu_packet_t is exactly 288 bytes");
+    EXPECT(offsetof(imu_packet_t, crc32) == 284, "crc32 field at offset 284");
+    /* v18: the two new fields sit between nis_mag and the CRC, so every
+     * offset asserted below is unmoved — that is the point of appending. */
+    EXPECT(offsetof(imu_packet_t, flags_ext)        == 272, "flags_ext at offset 272");
+    EXPECT(offsetof(imu_packet_t, reserved)         == 276, "reserved at offset 276");
+    EXPECT(sizeof(((imu_packet_t *)0)->reserved)    == 8,   "reserved is 8 bytes");
     EXPECT(offsetof(imu_packet_t, gyro_bias_x)      == 192, "gyro_bias_x at offset 192");
     EXPECT(offsetof(imu_packet_t, gyro_bias_var_x)  == 204, "gyro_bias_var_x at offset 204");
     EXPECT(offsetof(imu_packet_t, heave_rate)       == 216, "heave_rate at offset 216");

@@ -202,6 +202,29 @@ CASES = [
      sub(r'"\$?PASHR', '"$ZZZZZ'),
      "ZZZZZ"),
 
+    # Wire v18 added flags_ext, so there are two independent flag words and
+    # bit 0 of each is a different flag.  A client header that drifts on an
+    # EXT bit has to fail as loudly as one that drifts on a base bit.
+    ("check-flags", "lib/imud.h",
+     sub(r"#define IMUD_FLAG_EXT_MAG_ABSENT       \(1u << 0\)",
+         "#define IMUD_FLAG_EXT_MAG_ABSENT       (1u << 3)"),
+     "[flags_ext]"),
+
+    # …and the namespaces must not be folded together to get that: a real
+    # duplicate INSIDE either word still has to be caught.
+    ("gen-packet-docs", "include/types.h",
+     sub(r"^#define FLAG_EXT_MAG_ABSENT   \(1u <<  0\)",
+         "#define FLAG_EXT_MAG_ABSENT   (1u <<  0)\n"
+         "#define FLAG_EXT_ZZZ_DUPE     (1u <<  0)"),
+     "flags_ext bit 0 is defined more than once"),
+
+    # A flags_ext bit defined in the header and left undocumented.
+    ("gen-packet-docs", "include/types.h",
+     sub(r"^#define FLAG_EXT_MAG_ABSENT   \(1u <<  0\)",
+         "#define FLAG_EXT_MAG_ABSENT   (1u <<  0)\n"
+         "#define FLAG_EXT_ZZZ_NEW      (1u <<  1)"),
+     "no note for flags_ext flag 'zzz_new'"),
+
     # A count claim left standing after a sentence became conditional.  This
     # is what a gate change costs: the emit sequence moves, the prose one line
     # above the sentence list does not, and both still read as correct.

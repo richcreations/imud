@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* packet.h — 276-byte binary packet encoder for imud Stream B (§8) */
+/* packet.h — 288-byte binary packet encoder for imud Stream B (§8) */
 
 #ifndef IMUD_PACKET_H
 #define IMUD_PACKET_H
@@ -30,14 +30,14 @@ void packet_build(imu_packet_t       *pkt,
                   const char          *coord_frame);
 
 /*
- * Serialise pkt into the 276 little-endian wire bytes, computing the CRC over
+ * Serialise pkt into the 288 little-endian wire bytes, computing the CRC over
  * bytes 0–271 and writing it at 272.  Returns that CRC.  The struct's own
  * .crc32 is ignored.
  */
 uint32_t packet_encode(uint8_t out[IMUD_PACKET_BYTES], const imu_packet_t *pkt);
 
 /*
- * Deserialise 276 wire bytes into a host-order struct, .crc32 included.  Does
+ * Deserialise 288 wire bytes into a host-order struct, .crc32 included.  Does
  * not validate magic, version or CRC — the caller checks those on the bytes.
  */
 void packet_decode(imu_packet_t *pkt, const uint8_t in[IMUD_PACKET_BYTES]);

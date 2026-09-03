@@ -107,7 +107,13 @@ EMA of the normalised innovation
 nis_mag = '''
 Same for the mag update: d²/2 in
                                           3-D mode, d²/1 in yaw-only (v17)'''
-crc32 = 'IEEE 802.3 CRC of bytes 0–271'
+flags_ext = '''
+see below; ignore unknown bits (v18)'''
+reserved_8 = '''
+zero on the wire.  A future scalar is
+                                          carved from the FRONT of this, so
+                                          no existing offset moves (v18)'''
+crc32 = 'IEEE 802.3 CRC of bytes 0–283'
 
 [flags]
 mag_valid = '1 = mag calibrated and sensor healthy'
@@ -155,4 +161,18 @@ Heading is being corrected by a magnetometer with
                            (mag_uncal_reject_frac).'''
 
 # A closing note, not a FLAG_* define.
-trailer = '        all 16 bits are assigned; a further flag needs a flags_ext field'
+trailer = '        all 16 bits are assigned; further flags go in flags_ext'
+
+# Extended flags — imu_packet_t.flags_ext (wire v18).
+[flags_ext]
+mag_absent = '''
+No magnetometer is configured, so
+                           heading is gravity-referenced only: it starts at
+                           zero in the orientation imud booted in and dead
+                           reckons from the gyro for the life of the run.
+                           Distinct from bits 0 and 15 both being clear,
+                           which is the same output from a magnetometer that
+                           IS fitted and has gone stale or failed — that one
+                           can recover, this one cannot.'''
+
+ext_trailer = '        a consumer MUST ignore bits it does not know; adding one needs no bump'

@@ -5,9 +5,9 @@
  */
 
 /*
- * packet.c — 276-byte binary packet encoder for imud Stream B (§8)
+ * packet.c — 288-byte binary packet encoder for imud Stream B (§8)
  *
- * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–271.  packet_build
+ * Wire layout: little-endian, IEEE 802.3 CRC32 over bytes 0–283.  packet_build
  * fills a host-order struct; packet_encode/packet_decode convert it to and from
  * the wire bytes with shifts, so both endiannesses run one code path.
  * Coordinate frame: NED by default; "ENU" rotates vectors and quaternion.
@@ -73,9 +73,10 @@ void packet_build(imu_packet_t       *pkt,
 {
     memset(pkt, 0, sizeof(*pkt));
 
-    pkt->magic   = IMUD_MAGIC;
-    pkt->version = IMUD_VERSION;
-    pkt->flags   = state->flags;
+    pkt->magic     = IMUD_MAGIC;
+    pkt->version   = IMUD_VERSION;
+    pkt->flags     = state->flags;
+    pkt->flags_ext = state->flags_ext;
 
     /* Timestamps */
     pkt->ts_wall_ns    = state->ts_wall_ns;
@@ -260,6 +261,13 @@ uint32_t packet_encode(uint8_t out[IMUD_PACKET_BYTES], const imu_packet_t *pkt)
     wire_put_f32(p, pkt->nis_accel);        p += 4;
     wire_put_f32(p, pkt->nis_mag);          p += 4;
 
+    wire_put_u32(p, pkt->flags_ext);        p += 4;
+    /* Echoed, not forced to zero: encode/decode stays a bijection, which is
+     * what test_wire_roundtrip_covers_every_field pins.  packet_build memsets
+     * the whole struct, so what the daemon actually sends is still zeros. */
+    memcpy(p, pkt->reserved, sizeof pkt->reserved);
+                                            p += sizeof pkt->reserved;
+
     uint32_t crc = crc32_ieee(out, offsetof(imu_packet_t, crc32));
     wire_put_u32(p, crc);
 
@@ -339,6 +347,10 @@ void packet_decode(imu_packet_t *pkt, const uint8_t in[IMUD_PACKET_BYTES])
     pkt->innov_reject     = wire_get_f32(p); p += 4;
     pkt->nis_accel        = wire_get_f32(p); p += 4;
     pkt->nis_mag          = wire_get_f32(p); p += 4;
+
+    pkt->flags_ext        = wire_get_u32(p); p += 4;
+    memcpy(pkt->reserved, p, sizeof pkt->reserved);
+                                             p += sizeof pkt->reserved;
 
     pkt->crc32            = wire_get_u32(p);
 }

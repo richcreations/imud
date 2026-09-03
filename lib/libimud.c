@@ -86,6 +86,7 @@ static void fill_data(imud_data_t *d, const imud_packet_t *p)
     d->ts_chip_ticks = p->ts_chip_ticks;
     d->anchor_gen    = p->anchor_gen;
     d->flags         = p->flags;
+    d->flags_ext     = p->flags_ext;
     d->imu_seq       = p->imu_seq;
 
     d->accel[0] = p->accel_x;         d->accel[1] = p->accel_y;         d->accel[2] = p->accel_z;
