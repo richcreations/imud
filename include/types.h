@@ -292,13 +292,17 @@ typedef struct {
 
 #define MAG_RING_LEN  32    /* ~0.3 s at 100 Hz */
 
+/*
+ * The mutex is the only primitive here.  Unlike imu_ring_t there is no cond:
+ * fusion drains this ring with non-blocking try-pops between predict steps, so
+ * a push has nobody to wake.
+ */
 typedef struct {
     mag_sample_t    buf[MAG_RING_LEN];
     unsigned        head;
     unsigned        tail;
     unsigned        count;
     pthread_mutex_t lock;
-    pthread_cond_t  ready;
 } mag_ring_t;
 
 /* ── Shared fused state — fusion → output threads ──────────────────────────── */

@@ -28,6 +28,7 @@
  *     - try_pop from empty returns -1
  *     - Overflow: oldest dropped, newest retained
  *     - Push exactly to capacity then drain
+ *     - Teardown: the mutex is the only primitive, and every path unlocks it
  */
 
 #include <stdio.h>
@@ -430,6 +431,35 @@ static void test_mag_ring_circular_wraparound(void)
     end(fb);
 }
 
+/*
+ * The mutex is the only primitive in a mag_ring_t, and every operation returns
+ * with it unlocked.  Tears the ring down exactly as imu_ctx does — one
+ * pthread_mutex_destroy and nothing else — after a cycle that has taken the
+ * lock on every path, including try_pop's empty-ring early return.  A destroy
+ * of a still-held mutex is refused, so a missing unlock fails here.
+ */
+static void test_mag_ring_teardown_leaves_no_primitive(void)
+{
+    begin("test_mag_ring_teardown_leaves_no_primitive");
+    int fb = g_fail;
+
+    mag_ring_t r;
+    mag_ring_init(&r);
+    mag_sample_t out;
+
+    for (int i = 0; i < MAG_RING_LEN + 2; i++) {   /* fills, then overflows */
+        mag_sample_t m = make_mag((float)i);
+        mag_ring_push(&r, &m);
+    }
+    /* Drains, and ends on the empty-ring early return — so that path's unlock
+     * is the last one taken before the destroy below. */
+    while (mag_ring_try_pop(&r, &out) == 0) { }
+
+    EXPECT(pthread_mutex_destroy(&r.lock) == 0,
+           "mutex destroys cleanly after fill, overflow and drain");
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -450,6 +480,7 @@ int main(void)
     test_mag_ring_overflow_drops_oldest();
     test_mag_ring_fill_and_drain();
     test_mag_ring_circular_wraparound();
+    test_mag_ring_teardown_leaves_no_primitive();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

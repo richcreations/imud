@@ -90,7 +90,6 @@ void mag_ring_init(mag_ring_t *r)
 {
     memset(r, 0, sizeof(*r));
     pthread_mutex_init(&r->lock, NULL);
-    pthread_cond_init(&r->ready, NULL);
 }
 
 void mag_ring_push(mag_ring_t *r, const mag_sample_t *s)

@@ -1673,7 +1673,6 @@ fail:
     pthread_mutex_destroy(&ctx->imu_ring.lock);
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);
-    pthread_cond_destroy(&ctx->mag_ring.ready);
     cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
     return -1;
@@ -1789,7 +1788,6 @@ void imu_ctx_free(imu_ctx_t *ctx)
     pthread_mutex_destroy(&ctx->imu_ring.lock);
     pthread_cond_destroy(&ctx->imu_ring.ready);
     pthread_mutex_destroy(&ctx->mag_ring.lock);
-    pthread_cond_destroy(&ctx->mag_ring.ready);
     cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
 }
