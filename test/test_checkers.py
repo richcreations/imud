@@ -651,6 +651,13 @@ CASES = [
      sub(r'Twelve of the fourteen', 'Twelve of the thirteen'),
      "thirteen"),
 
+    # The same figure restated where a would-be tester reads it. It said ten
+    # while twelve were unproven, in the file whose whole subject is running
+    # the tool that clears the flag.
+    ("check-web-drivers", "docs/imud-utils/README.md",
+     sub(r'drivers for twelve parts', 'drivers for ten parts'),
+     "ten parts have never run"),
+
     ("check-portable-tests", "devbox/README.md",
      sub(r'runs 39 suites', 'runs 99 suites'),
      "99 suites"),

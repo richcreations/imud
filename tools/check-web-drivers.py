@@ -41,6 +41,14 @@ alphanumeric or a hyphen.
 
 THE COUNT SENTENCE is prose, and prose is where the claim a reader believes
 lives.  It carries both numbers, so both are checked against the registry.
+
+AND THE SAME NUMBER IS RESTATED ELSEWHERE.  docs/imud-utils/README.md tells a
+would-be tester how many parts are still unproven, which is the whole reason
+imud-imutest exists; it said ten while twelve were.  So COUNTED lists the
+files whose prose repeats a figure this checker can derive, the way
+check-fuzz-targets.py and check-portable-tests.py already do for theirs.  A
+count in prose has no generator behind it and drifts silently, which is the
+only reason a checker has to read English at all.
 """
 
 import os
@@ -74,6 +82,14 @@ NUMBER = {
 COUNT_RE = re.compile(
     r"\b(\d+|" + "|".join(NUMBER) + r")\s+of\s+the\s+"
     r"(\d+|" + "|".join(NUMBER) + r")\s+sensor drivers\b", re.I)
+
+# Files whose prose restates the experimental count on its own. "... drivers
+# for twelve parts that have never run on physical hardware."
+COUNTED = ["docs/imud-utils/README.md"]
+
+NEVER_RE = re.compile(
+    r"\b(\d+|" + "|".join(NUMBER) + r")\s+parts?\s+that\s+have\s+never\s+run",
+    re.I)
 
 
 def number(tok):
@@ -152,8 +168,21 @@ def main():
                   f"has {len(parts)} with a part behind them "
                   f"({', '.join(sorted(NO_SILICON))} excluded)")
 
+    for rel in COUNTED:
+        prose = must_read(rel, "a restatement of the experimental count")
+        m = NEVER_RE.search(prose)
+        if not m:
+            rep.fail(f"{rel}: no \"N parts that have never run\" sentence — it "
+                     f"is what tells a would-be tester how much is unproven, "
+                     f"and nothing else in that file carries the figure")
+        else:
+            rep.check(number(m.group(1)) == n_exp,
+                      f"{rel}: says {m.group(1)} parts have never run; "
+                      f"{n_exp} ops structs set experimental = true")
+
     return rep.finish(f"{len(parts)} parts across 2 lists in {WEB}, "
-                      f"{n_exp} experimental")
+                      f"{n_exp} experimental, and the count restated in "
+                      f"{len(COUNTED)} file(s)")
 
 
 if __name__ == "__main__":
