@@ -72,6 +72,12 @@ it — the first passive check that proves the sensing elements are live."""
 
   [[release.change]]
   kind     = "behaviour"
+  packages = ["imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "The bridges say when a heading is not referenced to north, each in its protocol's own terms rather than by all withholding it."
+  impact   = "imud-signalk drops navigation.headingMagnetic/True/magneticVariation; imud-mqtt drops the matching topics, which are retained, and adds navigation/headingReferenced. imud-influxdb keeps publishing heading with heading_ref and mag_absent fields, and imud-prometheus keeps its gauge and adds imud_mag_uncal and imud_mag_absent. imud-mavlink gains SYS_STATUS, whose 3D_MAG present and health bits separate a board with no magnetometer from one that has stopped answering."
+
+  [[release.change]]
+  kind     = "behaviour"
   packages = ["imud", "imud-utils"]
   text     = "NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading field null, while no magnetometer is being fused. An uncalibrated magnetometer still publishes all of them."
   impact   = "A rig with no magnetometer, or one that has stopped delivering, used to publish a dead-reckoned heading as magnetic heading; no heading sentence has a field that could qualify it. Consumers now get no heading rather than a wrong one. $TIROT and $IIXDR are unaffected, and imud-mon shows heading as --."

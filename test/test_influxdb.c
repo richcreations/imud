@@ -235,6 +235,44 @@ static void test_buffer_too_small(void)
     end(fb);
 }
 
+/*
+ * The diagnostics sink keeps emitting heading with no magnetometer, because
+ * the drift of an unreferenced heading is a thing you would come here to
+ * measure.  Two booleans say what the number means, the way heave_valid does
+ * for heave: heading_ref (the mag is being fused) and mag_absent (none is
+ * fitted at all).
+ */
+static void test_heading_always_emitted_with_validity(void)
+{
+    begin("test_heading_always_emitted_with_validity");
+    int fb = g_fail;
+
+    char buf[2048];
+    imud_packet_t p = make_pkt();
+
+    p.flags = 0;                                /* dead reckoned */
+    p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+           "line builds with no magnetometer");
+    EXPECT(strstr(buf, ",heading=") != NULL, "heading still emitted");
+    EXPECT(strstr(buf, "heading_ref=f") != NULL, "heading_ref=f when unreferenced");
+    EXPECT(strstr(buf, "mag_absent=t") != NULL, "mag_absent=t with no mag fitted");
+
+    p.flags = IMUD_FLAG_MAG_VALID;
+    p.flags_ext = 0;
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+           "line builds with a fused magnetometer");
+    EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t when fused");
+    EXPECT(strstr(buf, "mag_absent=f") != NULL, "mag_absent=f when one is fitted");
+
+    /* Uncalibrated still counts as referenced — bounded, not drifting. */
+    p.flags = IMUD_FLAG_MAG_UNCAL;
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+           "line builds on an uncalibrated fuse");
+    EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t on an uncal fuse");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud influxdb line tests ===");
@@ -244,6 +282,7 @@ int main(void)
     test_heave_gated_and_tags();
     test_v12_diagnostics();
     test_v14_seastate();
+    test_heading_always_emitted_with_validity();
     test_buffer_too_small();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

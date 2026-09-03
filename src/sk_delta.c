@@ -74,22 +74,40 @@ int sk_build_delta(char *buf, size_t sz, const imud_packet_t *p,
     APPEND("{\"updates\":[{\"source\":{\"label\":\"%s\"},"
            "\"timestamp\":\"%s\",\"values\":[", source_label, ts);
 
-    /* navigation.headingMagnetic (always) */
-    APPEND("{\"path\":\"navigation.headingMagnetic\",\"value\":%.5f}",
-           p->heading_deg * DEG2RAD);
+    /*
+     * navigation.headingMagnetic, and headingTrue below it, are emitted only
+     * while the magnetometer is being fused — calibrated (MAG_VALID) or not
+     * (MAG_UNCAL, which is still a magnetic heading, just offset).
+     *
+     * Both paths NAME what they carry, and a Signal K delta has no per-value
+     * status field: a subscriber sees a number or sees nothing. So with the
+     * magnetometer absent or dead the heading is a relative angle drifting on
+     * the gyro, and there is no way to say so under a path called Magnetic.
+     * Silence is the only honest option. navigation.attitude still carries the
+     * full triple below — that path is vessel attitude, not a heading claim.
+     */
+    bool hdg_ref = (p->flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL)) != 0;
+    bool first = true;
 
-    /* True heading + variation only when declination is known. */
-    if (p->flags & IMUD_FLAG_DECLINATION_VALID) {
-        float th = imud_true_heading(p);   /* degrees, or -1 (guarded above) */
-        APPEND(",{\"path\":\"navigation.headingTrue\",\"value\":%.5f}",
-               th * DEG2RAD);
-        APPEND(",{\"path\":\"navigation.magneticVariation\",\"value\":%.5f}",
-               p->declination_deg * DEG2RAD);
+    if (hdg_ref) {
+        APPEND("{\"path\":\"navigation.headingMagnetic\",\"value\":%.5f}",
+               p->heading_deg * DEG2RAD);
+        first = false;
+
+        /* True heading + variation only when declination is known. */
+        if (p->flags & IMUD_FLAG_DECLINATION_VALID) {
+            float th = imud_true_heading(p);   /* degrees, or -1 (guarded above) */
+            APPEND(",{\"path\":\"navigation.headingTrue\",\"value\":%.5f}",
+                   th * DEG2RAD);
+            APPEND(",{\"path\":\"navigation.magneticVariation\",\"value\":%.5f}",
+                   p->declination_deg * DEG2RAD);
+        }
     }
 
-    /* navigation.rateOfTurn: deg/min → rad/s (both +ve = starboard). */
-    APPEND(",{\"path\":\"navigation.rateOfTurn\",\"value\":%.6f}",
-           p->rate_of_turn * (DEG2RAD / 60.0));
+    /* navigation.rateOfTurn: deg/min → rad/s (both +ve = starboard).
+     * Valid with no magnetometer at all — it is a gyro rate, not a heading. */
+    APPEND("%s{\"path\":\"navigation.rateOfTurn\",\"value\":%.6f}",
+           first ? "" : ",", p->rate_of_turn * (DEG2RAD / 60.0));
 
     /* navigation.attitude: roll/pitch/yaw already radians; roll negated to the
      * Signal K convention (starboard-down positive). */

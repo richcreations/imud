@@ -18,7 +18,9 @@ NED convention (no sign flip).
 |---|---|---|---|
 | `qw` `qx` `qy` `qz` | orientation quaternion | unitless | always |
 | `roll` `pitch` `yaw` | Euler attitude | ° / rad | always |
-| `heading` | magnetic heading | ° / rad | always |
+| `heading` | magnetic heading — see `heading_ref` | ° / rad | always |
+| `heading_ref` | the magnetometer is being fused, so `heading` really is magnetic | boolean (`t`/`f`) | always |
+| `mag_absent` | no magnetometer is configured at all | boolean (`t`/`f`) | always |
 | `heading_true` | true heading | ° / rad | declination known |
 | `variation` | magnetic declination | ° / rad | declination known |
 | `rate_of_turn` | rate of turn | °/min / rad·s⁻¹ | always |

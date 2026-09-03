@@ -57,6 +57,9 @@ SURFACES = [
 EXTRA = {
     "engine/running":  "binary ON/OFF from FLAG_ENGINE_ON, not a scalar",
     "status/online":   "retained availability topic (LWT)",
+    "navigation/headingReferenced":
+        "binary ON/OFF saying whether the heading topics are being published, "
+        "not a scalar",
 }
 
 
@@ -84,6 +87,7 @@ GATE_PHRASE = {
     "GATE_DECL":   "declination known",
     "GATE_HEAVE":  "settled",
     "GATE_WAVE":   "sea state settled",
+    "GATE_MAG":    "magnetometer fused",
 }
 
 

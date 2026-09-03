@@ -41,6 +41,109 @@ static void check_golden(const char *name, int n, const uint8_t *b, const char *
     if (!ok) fprintf(stderr, "    got:  %s\n    want: %s\n", hex, golden);
 }
 
+/* ── SYS_STATUS (#1) ──────────────────────────────────────────────────────
+ *
+ * Golden frames, cross-checked against pymavlink 2.4.49 the same way the
+ * messages above were: sysid=1, compid=1, seq=0, a magnetometer fitted
+ * (3D_MAG in present/enabled) but not being fused (3D_MAG clear in health).
+ * The structural assertions below are kept alongside them because a golden
+ * frame says only "these bytes differ", not which field moved.
+ */
+
+static void crc_acc(uint8_t data, uint16_t *crc)
+{
+    uint8_t tmp = data ^ (uint8_t)(*crc & 0xff);
+    tmp ^= (uint8_t)(tmp << 4);
+    *crc = (uint16_t)((*crc >> 8) ^ ((uint16_t)tmp << 8)
+                      ^ ((uint16_t)tmp << 3) ^ ((uint16_t)tmp >> 4));
+}
+
+static void crc_acc_str(const char *s, uint16_t *crc)
+{
+    while (*s) crc_acc((uint8_t)*s++, crc);
+}
+
+/*
+ * Recompute MAVLink's CRC_EXTRA from the message definition, the way mavgen
+ * does: the message name then each field's type and name, in WIRE order.  A
+ * wrong CRC_EXTRA yields frames every receiver silently drops, and it is a
+ * bare constant in the encoder with nothing else to check it against.  Two
+ * independent derivations agreeing on 124 is the check.
+ */
+static uint8_t sys_status_crc_extra(void)
+{
+    static const char *fields[][2] = {
+        { "uint32_t", "onboard_control_sensors_present" },
+        { "uint32_t", "onboard_control_sensors_enabled" },
+        { "uint32_t", "onboard_control_sensors_health"  },
+        { "uint16_t", "load"                            },
+        { "uint16_t", "voltage_battery"                 },
+        { "int16_t",  "current_battery"                 },
+        { "uint16_t", "drop_rate_comm"                  },
+        { "uint16_t", "errors_comm"                     },
+        { "uint16_t", "errors_count1"                   },
+        { "uint16_t", "errors_count2"                   },
+        { "uint16_t", "errors_count3"                   },
+        { "uint16_t", "errors_count4"                   },
+        { "int8_t",   "battery_remaining"               },
+    };
+    uint16_t crc = 0xFFFF;
+    crc_acc_str("SYS_STATUS ", &crc);
+    for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
+        crc_acc_str(fields[i][0], &crc); crc_acc(' ', &crc);
+        crc_acc_str(fields[i][1], &crc); crc_acc(' ', &crc);
+    }
+    return (uint8_t)((crc & 0xFF) ^ (crc >> 8));
+}
+
+static uint32_t rd_u32le(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void test_sys_status(void)
+{
+    EXPECT(sys_status_crc_extra() == 124,
+           "SYS_STATUS CRC_EXTRA derives to 124, the value the encoder uses");
+
+    const uint32_t present = MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL |
+                             MAV_SENSOR_AHRS | MAV_SENSOR_3D_MAG;
+    const uint32_t health  = MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL |
+                             MAV_SENSOR_AHRS;   /* mag fitted but not fused */
+
+    uint8_t b[MAV_MAX_FRAME];
+    int n = mav_pack_sys_status(b, 1, 1, 1, 0, present, present, health);
+    check_golden("v1 SYS_STATUS matches pymavlink", n, b,
+                 "fe1f000101010700200007002000030020000000ffffffff"
+                 "000000000000000000000000fffe76");
+    EXPECT(n == 6 + 31 + 2, "v1 SYS_STATUS frame is 39 bytes");
+    EXPECT(b[0] == MAV_STX_V1, "v1 STX");
+    EXPECT(b[1] == 31, "payload length 31");
+    EXPECT(b[5] == MAVMSG_SYS_STATUS, "msgid 1");
+
+    const uint8_t *pl = b + 6;
+    EXPECT(rd_u32le(pl + 0) == present, "present bitmask at payload offset 0");
+    EXPECT(rd_u32le(pl + 4) == present, "enabled bitmask at offset 4");
+    EXPECT(rd_u32le(pl + 8) == health,  "health bitmask at offset 8");
+    EXPECT((pl[8] & 0x04) == 0,
+           "3D_MAG clear in health when the magnetometer is not fused");
+    EXPECT((pl[0] & 0x04) != 0,
+           "3D_MAG set in present when a magnetometer is fitted");
+    /* Battery/current are "unknown" sentinels, not zeros a receiver would
+     * display as a flat battery. */
+    EXPECT(pl[12] == 0 && pl[13] == 0, "load = 0 at offset 12");
+    EXPECT(pl[14] == 0xFF && pl[15] == 0xFF, "voltage_battery = UINT16_MAX at 14");
+    EXPECT(pl[30] == 0xFF, "battery_remaining = -1");
+
+    n = mav_pack_sys_status(b, 2, 1, 1, 0, present, present, health);
+    check_golden("v2 SYS_STATUS matches pymavlink", n, b,
+                 "fd1f00000001010100000700200007002000030020000000ffffffff"
+                 "000000000000000000000000ff2edb");
+    EXPECT(n == 10 + 31 + 2, "v2 SYS_STATUS frame is 43 bytes");
+    EXPECT(b[0] == MAV_STX_V2, "v2 STX");
+}
+
 int main(void)
 {
     puts("=== imud mavlink encoder tests ===");
@@ -82,6 +185,8 @@ int main(void)
     n = mav_pack_attitude(b, 2, 7, 42, 5, 0, 0, 0, 0, 0, 0, 0);
     EXPECT(b[5] == 7 && b[6] == 42,      "v2 sysid/compid placed correctly");
     EXPECT(b[4] == 5,                    "v2 seq placed correctly");
+
+    test_sys_status();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

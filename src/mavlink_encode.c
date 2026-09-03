@@ -22,6 +22,11 @@ static void crc_accumulate(uint8_t data, uint16_t *crc)
 
 /* Little-endian payload writers. */
 static void put_u8 (uint8_t **p, uint8_t v)  { *(*p)++ = v; }
+static void put_u16(uint8_t **p, uint16_t v)
+{
+    (*p)[0] = (uint8_t)v; (*p)[1] = (uint8_t)(v >> 8);
+    *p += 2;
+}
 static void put_u32(uint8_t **p, uint32_t v)
 {
     (*p)[0] = (uint8_t)v;         (*p)[1] = (uint8_t)(v >> 8);
@@ -72,6 +77,33 @@ int mav_pack_heartbeat(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uin
     put_u8(&p, 4);    /* system_status = MAV_STATE_ACTIVE  */
     put_u8(&p, 3);    /* mavlink_version                   */
     return mav_frame(out, ver, sysid, compid, seq, MAVMSG_HEARTBEAT, pl, 9, 50);
+}
+
+/*
+ * Fields are in MAVLink wire order, which is the struct reordered by
+ * descending type size, NOT the order the XML declares them: three uint32
+ * bitmasks, nine uint16, one int8 = 31 bytes.  Getting that order wrong
+ * produces a frame with a valid CRC that every receiver misreads.
+ */
+int mav_pack_sys_status(uint8_t *out, int ver, uint8_t sysid, uint8_t compid,
+                        uint8_t seq, uint32_t present, uint32_t enabled,
+                        uint32_t health)
+{
+    uint8_t pl[31], *p = pl;
+    put_u32(&p, present);
+    put_u32(&p, enabled);
+    put_u32(&p, health);
+    put_u16(&p, 0);        /* load, permille — imud does not measure it   */
+    put_u16(&p, UINT16_MAX); /* voltage_battery: UINT16_MAX = unknown     */
+    put_u16(&p, 0xFFFF);   /* current_battery, int16 -1 = unknown         */
+    put_u16(&p, 0);        /* drop_rate_comm                              */
+    put_u16(&p, 0);        /* errors_comm                                 */
+    put_u16(&p, 0);        /* errors_count1                               */
+    put_u16(&p, 0);        /* errors_count2                               */
+    put_u16(&p, 0);        /* errors_count3                               */
+    put_u16(&p, 0);        /* errors_count4                               */
+    put_u8 (&p, 0xFF);     /* battery_remaining, int8 -1 = unknown        */
+    return mav_frame(out, ver, sysid, compid, seq, MAVMSG_SYS_STATUS, pl, 31, 124);
 }
 
 int mav_pack_attitude(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uint8_t seq,

@@ -30,8 +30,15 @@
 
 /* Message ids and their CRC_EXTRA (from the common dialect). */
 #define MAVMSG_HEARTBEAT             0
+#define MAVMSG_SYS_STATUS            1
 #define MAVMSG_ATTITUDE              30
 #define MAVMSG_ATTITUDE_QUATERNION   31
+
+/* MAV_SYS_STATUS_SENSOR bits used by SYS_STATUS below. */
+#define MAV_SENSOR_3D_GYRO      (1u <<  0)
+#define MAV_SENSOR_3D_ACCEL     (1u <<  1)
+#define MAV_SENSOR_3D_MAG       (1u <<  2)
+#define MAV_SENSOR_AHRS         (1u << 21)
 
 /* Low-level framer (exposed for testing): frames one message. */
 int mav_frame(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uint8_t seq,
@@ -39,6 +46,21 @@ int mav_frame(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uint8_t seq,
 
 /* HEARTBEAT (#0): type=GENERIC, autopilot=INVALID, status=ACTIVE. */
 int mav_pack_heartbeat(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uint8_t seq);
+
+/*
+ * SYS_STATUS (#1): the sensor present/enabled/health bitmasks, MAV_SENSOR_*.
+ * Battery and comm-error fields are sent as "unknown" — imud measures none of
+ * them.
+ *
+ * This is how MAVLink says a heading is not referenced to north. ATTITUDE.yaw
+ * cannot: it is the estimator's own yaw, and a compass-less autopilot reports
+ * exactly that, relative to where it started, which is both correct and
+ * useful. What distinguishes the two cases is whether 3D_MAG is present (a
+ * magnetometer is fitted at all) and healthy (it is actually being fused).
+ */
+int mav_pack_sys_status(uint8_t *out, int ver, uint8_t sysid, uint8_t compid,
+                        uint8_t seq, uint32_t present, uint32_t enabled,
+                        uint32_t health);
 
 /* ATTITUDE (#30): angles rad, rates rad/s. */
 int mav_pack_attitude(uint8_t *out, int ver, uint8_t sysid, uint8_t compid, uint8_t seq,

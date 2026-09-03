@@ -67,6 +67,9 @@ static imud_packet_t make_pkt(void)
     p.roll  = 0.10f;            /* rad */
     p.pitch = -0.05f;           /* rad */
     p.yaw   = 1.23f;            /* rad */
+    /* A fused, calibrated magnetometer is the baseline: without it the
+     * heading paths are withheld, which is its own set of cases below. */
+    p.flags = IMUD_FLAG_MAG_VALID;
     p.heave_m = 0.42f;
     return p;
 }
@@ -129,7 +132,7 @@ static void test_declination_gated(void)
     double v;
 
     /* Without the flag: no true heading, no variation. */
-    p.flags = 0;
+    p.flags = IMUD_FLAG_MAG_VALID;
     p.declination_deg = 13.2f;
     sk_build_delta(buf, sizeof buf, &p, "imud", false);
     EXPECT(!find_value(buf, "navigation.headingTrue", &v),
@@ -138,7 +141,7 @@ static void test_declination_gated(void)
            "magneticVariation absent without DECLINATION_VALID");
 
     /* With the flag: both present, variation in radians (E+). */
-    p.flags = IMUD_FLAG_DECLINATION_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID;
     sk_build_delta(buf, sizeof buf, &p, "imud", false);
     EXPECT(find_value(buf, "navigation.magneticVariation", &v), "variation present");
     EXPECT(fabs(v - 13.2*(M_PI/180.0)) < 1e-4, "variation 13.2°E → rad (E positive)");
@@ -158,17 +161,17 @@ static void test_heave_gated(void)
     double v;
 
     /* emit_heave=false → never emitted, even once settled. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
     sk_build_delta(buf, sizeof buf, &p, "imud", false);
     EXPECT(!find_value(buf, "environment.heave", &v), "heave absent when emit_heave=false");
 
     /* emit_heave=true but estimator not yet settled → suppressed (no transient). */
-    p.flags = 0;
+    p.flags = IMUD_FLAG_MAG_VALID;
     sk_build_delta(buf, sizeof buf, &p, "imud", true);
     EXPECT(!find_value(buf, "environment.heave", &v), "heave suppressed until HEAVE_VALID");
 
     /* emit_heave=true and settled → present, in metres. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
     sk_build_delta(buf, sizeof buf, &p, "imud", true);
     EXPECT(find_value(buf, "environment.heave", &v), "heave present when settled");
     EXPECT(fabs(v - 0.42) < 1e-3, "heave passed through in metres");
@@ -211,6 +214,51 @@ static void test_buffer_too_small(void)
     end(fb);
 }
 
+/*
+ * With the magnetometer absent or dead, heading is a relative angle drifting
+ * on the gyro.  Signal K deltas carry no per-value status, and the path is
+ * named headingMagnetic, so the only honest option is not to send it.  What
+ * stays is everything that is still true: attitude and rate of turn.
+ */
+static void test_heading_withheld_without_mag(void)
+{
+    begin("test_heading_withheld_without_mag");
+    int fb = g_fail;
+
+    char buf[1024];
+    imud_packet_t p = make_pkt();
+    p.flags = IMUD_FLAG_DECLINATION_VALID;     /* no MAG_VALID, no MAG_UNCAL */
+    p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    p.declination_deg = 13.2f;
+    int n = sk_build_delta(buf, sizeof buf, &p, "imud", true);
+
+    EXPECT(n > 0, "delta still builds");
+    EXPECT(!strstr(buf, "headingMagnetic"), "headingMagnetic withheld");
+    EXPECT(!strstr(buf, "headingTrue"),
+           "headingTrue withheld even with declination");
+    EXPECT(!strstr(buf, "magneticVariation"), "magneticVariation withheld");
+    EXPECT(strstr(buf, "navigation.rateOfTurn") != NULL, "rateOfTurn still sent");
+    EXPECT(strstr(buf, "navigation.attitude") != NULL, "attitude still sent");
+    /* The delta must stay valid JSON with its first value elided. */
+    EXPECT(!strstr(buf, "[,"), "no dangling comma where heading would have been");
+    end(fb);
+}
+
+/* An uncalibrated fuse is still a magnetic heading, so it publishes. */
+static void test_heading_published_when_uncal(void)
+{
+    begin("test_heading_published_when_uncal");
+    int fb = g_fail;
+
+    char buf[1024];
+    imud_packet_t p = make_pkt();
+    p.flags = IMUD_FLAG_MAG_UNCAL;
+    EXPECT(sk_build_delta(buf, sizeof buf, &p, "imud", true) > 0, "delta builds");
+    EXPECT(strstr(buf, "headingMagnetic") != NULL,
+           "headingMagnetic sent on an uncalibrated fuse");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud signalk delta tests ===");
@@ -219,6 +267,8 @@ int main(void)
     test_declination_gated();
     test_heave_gated();
     test_timestamp_format();
+    test_heading_withheld_without_mag();
+    test_heading_published_when_uncal();
     test_buffer_too_small();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

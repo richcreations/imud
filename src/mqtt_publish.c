@@ -22,7 +22,13 @@
 #define RAD2DEG  57.29577951308232
 #define DEG2RAD  0.017453292519943295
 
-typedef enum { GATE_ALWAYS, GATE_DECL, GATE_HEAVE, GATE_WAVE } gate_t;
+/* GATE_MAG: the magnetometer is being fused, calibrated or not, so heading
+ * really is magnetic.  MQTT topics are RETAINED — a subscriber connecting
+ * later is handed the last value published — so a heading left on
+ * navigation/headingMagnetic after the magnetometer died would sit there
+ * indefinitely, presented as current.  Withholding is the only safe option
+ * for a topic whose name states what it carries. */
+typedef enum { GATE_ALWAYS, GATE_DECL, GATE_HEAVE, GATE_WAVE, GATE_MAG } gate_t;
 typedef enum { U_ANGLE, U_ROT, U_HEAVE, U_VELOCITY, U_TEMP, U_SECONDS } unit_t;
 
 /* The published fields, in a fixed order. field_value() below switches on the
@@ -34,7 +40,7 @@ static const struct field {
     unit_t      unit;
     gate_t      gate;
 } FIELDS[] = {
-    { "navigation/headingMagnetic",   "heading_magnetic",   "Heading (magnetic)", U_ANGLE, GATE_ALWAYS },
+    { "navigation/headingMagnetic",   "heading_magnetic",   "Heading (magnetic)", U_ANGLE, GATE_MAG    },
     { "navigation/headingTrue",       "heading_true",       "Heading (true)",     U_ANGLE, GATE_DECL   },
     { "navigation/magneticVariation", "magnetic_variation", "Magnetic variation", U_ANGLE, GATE_DECL   },
     { "navigation/rateOfTurn",        "rate_of_turn",       "Rate of turn",       U_ROT,   GATE_ALWAYS },
@@ -83,7 +89,14 @@ static double field_value(int i, const imud_packet_t *p, bool deg, int *prec)
 static bool field_on(gate_t g, const imud_packet_t *p, bool emit_heave)
 {
     switch (g) {
-    case GATE_DECL:  return (p->flags & IMUD_FLAG_DECLINATION_VALID) != 0;
+    /* Declination is only reachable through a magnetic heading, so GATE_DECL
+     * carries the mag condition too: a true heading computed from a
+     * dead-reckoned one is not a true heading. */
+    case GATE_DECL:  return (p->flags & IMUD_FLAG_DECLINATION_VALID) != 0 &&
+                            (p->flags & (IMUD_FLAG_MAG_VALID |
+                                         IMUD_FLAG_MAG_UNCAL)) != 0;
+    case GATE_MAG:   return (p->flags & (IMUD_FLAG_MAG_VALID |
+                                         IMUD_FLAG_MAG_UNCAL)) != 0;
     /* Withhold heave/heave-rate state until the estimator has settled (~10·τ);
      * discovery is still advertised on config alone (see mqtt_build_discovery). */
     case GATE_HEAVE: return emit_heave && (p->flags & IMUD_FLAG_HEAVE_VALID) != 0;
@@ -131,6 +144,17 @@ int mqtt_build_state(mqtt_msg_t *out, int max, const imud_packet_t *p,
         snprintf(out[n].topic, sizeof out[n].topic, "%s/engine/running", prefix);
         snprintf(out[n].payload, sizeof out[n].payload, "%s",
                  (p->flags & IMUD_FLAG_ENGINE_ON) ? "ON" : "OFF");
+        n++;
+    }
+
+    /* Why the heading topics may be missing.  Without this a subscriber sees
+     * navigation/headingMagnetic simply stop, which is indistinguishable from
+     * the bridge dying; published always, so the answer is always retained. */
+    if (n < max) {
+        snprintf(out[n].topic, sizeof out[n].topic,
+                 "%s/navigation/headingReferenced", prefix);
+        snprintf(out[n].payload, sizeof out[n].payload, "%s",
+                 field_on(GATE_MAG, p, emit_heave) ? "ON" : "OFF");
         n++;
     }
     return n;

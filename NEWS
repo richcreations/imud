@@ -54,6 +54,15 @@ Changed:
   which is what forced the new word — a consumer must ignore bits it does not
   recognise, and a later flag then needs no further bump. The imud-arduino
   client needs its own update.
+* The bridges say when a heading is not referenced to north, each in its
+  protocol's own terms rather than by all withholding it.
+  imud-signalk drops navigation.headingMagnetic/True/magneticVariation; imud-
+  mqtt drops the matching topics, which are retained, and adds
+  navigation/headingReferenced. imud-influxdb keeps publishing heading with
+  heading_ref and mag_absent fields, and imud-prometheus keeps its gauge and
+  adds imud_mag_uncal and imud_mag_absent. imud-mavlink gains SYS_STATUS,
+  whose 3D_MAG present and health bits separate a board with no magnetometer
+  from one that has stopped answering.
 * NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading field
   null, while no magnetometer is being fused. An uncalibrated magnetometer
   still publishes all of them.

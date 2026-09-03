@@ -8,7 +8,7 @@
  * mavlink_main.c — imud-mavlink: MAVLink bridge daemon
  *
  * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 276-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
+ * reads the 288-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
  * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP, serial, and/or a TCP
  * listener (GCS clients connect, e.g. QGroundControl tcp:host:5760)
  * simultaneously.
@@ -283,8 +283,34 @@ int main(int argc, char **argv)
 
         /* HEARTBEAT at 1 Hz (independent of data, and of having a packet). */
         if (bridge_due(&now, &next_hb)) {
+            /*
+             * SYS_STATUS rides with it, and it is how a receiver learns that
+             * ATTITUDE.yaw is not referenced to north.  3D_MAG present means a
+             * magnetometer is fitted; healthy means it is actually being
+             * fused.  Absent and unhealthy are different faults — a board with
+             * no magnetometer at all versus one that has stopped answering —
+             * and only the first is permanent.  Gyro, accel and AHRS are
+             * healthy whenever a packet is flowing; before the first one,
+             * nothing is claimed.
+             */
+            uint32_t present = MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL |
+                               MAV_SENSOR_AHRS;
+            if (have_pkt && !(latest.flags_ext & IMUD_FLAG_EXT_MAG_ABSENT))
+                present |= MAV_SENSOR_3D_MAG;
+
+            uint32_t health = 0;
+            if (have_pkt) {
+                health = MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL |
+                         MAV_SENSOR_AHRS;
+                if (latest.flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL))
+                    health |= MAV_SENSOR_3D_MAG;
+            }
+
             for (int k = 0; k < nsinks; k++) {
                 n = mav_pack_heartbeat(buf, ver, sid, cid, sinks[k].seq++);
+                sink_write(&sinks[k], buf, n);
+                n = mav_pack_sys_status(buf, ver, sid, cid, sinks[k].seq++,
+                                        present, present, health);
                 sink_write(&sinks[k], buf, n);
             }
             do { next_hb.tv_sec += 1; } while (next_hb.tv_sec <= now.tv_sec);

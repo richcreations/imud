@@ -128,6 +128,22 @@ int prom_build_metrics(char *buf, size_t sz, const imud_data_t *d,
     /* Flag bits as 0/1 gauges */
     FLAG_GAUGE("imud_mag_valid",   "Magnetometer calibrated and healthy.",
                IMUD_FLAG_MAG_VALID);
+    FLAG_GAUGE("imud_mag_uncal",   "Heading fused from an uncalibrated field: "
+                                   "bounded and repeatable, but offset.",
+               IMUD_FLAG_MAG_UNCAL);
+    /*
+     * imud_heading_degrees keeps being exported when this is 1 — deliberately.
+     * Prometheus alerting is written against series that exist: a PromQL
+     * absent or rate over a series that comes and goes is far harder to
+     * reason about than a boolean to join on, and the relative heading is
+     * still worth graphing (its drift rate is a real diagnostic). The flag is
+     * what says the number is not referenced to north.
+     */
+    GAUGE("imud_mag_absent",
+          "No magnetometer is configured; heading is gravity-referenced only, "
+          "starts at zero and dead-reckons. imud_heading_degrees is then a "
+          "relative angle, not a magnetic heading.",
+          "%d", (d->flags_ext & IMUD_FLAG_EXT_MAG_ABSENT) ? 1 : 0);
     FLAG_GAUGE("imud_converged",   "MEKF covariance below the converged threshold.",
                IMUD_FLAG_FUSION_CONVERGED);
     FLAG_GAUGE("imud_heave_valid", "Heave estimator settled.",

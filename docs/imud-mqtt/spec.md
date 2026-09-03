@@ -10,7 +10,7 @@ radians / rad/s (`units = rad`).
 
 | Topic | Value | When |
 |---|---|---|
-| `imud/navigation/headingMagnetic` | magnetic heading | always |
+| `imud/navigation/headingMagnetic` | magnetic heading | magnetometer fused |
 | `imud/navigation/headingTrue` | true heading | declination known |
 | `imud/navigation/magneticVariation` | declination | declination known |
 | `imud/navigation/rateOfTurn` | rate of turn | always |
@@ -25,6 +25,7 @@ radians / rad/s (`units = rad`).
 | `imud/environment/pitchAmplitude` | significant single pitch amplitude (deg/rad per `units`) | `publish_heave` **and** sea state settled |
 | `imud/imu/temperature` | die temperature (°C) | always |
 | `imud/engine/running` | `ON`/`OFF` from the engine-vibration detector | always (HA binary_sensor, device_class `running`) |
+| `imud/navigation/headingReferenced` | `ON`/`OFF` — whether the heading topics above are being published | always |
 | `imud/status/online` | `online` / `offline` (retained) | availability |
 
 `heave` and `heaveRate` are withheld until the heave estimator has settled

@@ -74,7 +74,11 @@ static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg)
     s.heave_m         = 0.42f;
     s.heave_rate      = 0.25f;
     s.quiescence      = 0.01f;
-    s.flags           = FLAG_DECLINATION_VALID | FLAG_HEAVE_VALID;
+    /* FLAG_MAG_VALID is part of the baseline because the bridges withhold
+     * their heading outputs without it, and the e2e cases key on the heading
+     * path to prove the packet reached the encoder and the encoder reached
+     * the socket.  Withholding is covered by each bridge's own unit tests. */
+    s.flags           = FLAG_MAG_VALID | FLAG_DECLINATION_VALID | FLAG_HEAVE_VALID;
     s.imu_seq         = seq;
     s.ts_wall_ns      = 1620307999123000000ULL;
 

@@ -45,8 +45,19 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
     APPEND(",roll=%.5f,pitch=%.5f,yaw=%.5f",
            p->roll * a, p->pitch * a, p->yaw * a);
 
-    /* heading (magnetic); degrees native or → radians */
+    /* heading (magnetic); degrees native or → radians.
+     *
+     * Emitted unconditionally, unlike the user-facing bridges: this is the
+     * diagnostics sink, and the drift of an unreferenced heading is itself
+     * something you would come here to measure. The two booleans below say
+     * what the number means, the same way heave_valid does for heave —
+     * mag_absent means no magnetometer is fitted at all, heading_ref means
+     * the magnetometer is being fused and the number really is magnetic. */
     APPEND(",heading=%.5f", deg ? p->heading_deg : p->heading_deg * DEG2RAD);
+    APPEND(",heading_ref=%s",
+           (p->flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL)) ? "t" : "f");
+    APPEND(",mag_absent=%s",
+           (p->flags_ext & IMUD_FLAG_EXT_MAG_ABSENT) ? "t" : "f");
 
     /* true heading + variation only when declination is known */
     if (p->flags & IMUD_FLAG_DECLINATION_VALID) {

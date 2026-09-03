@@ -51,6 +51,9 @@ static imud_packet_t make_pkt(void)
     p.yaw   = 1.23f;
     p.heave_m = 0.42f;
     p.heave_rate = 0.25f;
+    /* A fused, calibrated magnetometer is the baseline: without it the
+     * heading paths are withheld, which is its own set of cases below. */
+    p.flags = IMUD_FLAG_MAG_VALID;
     p.temp_c  = 31.4f;
     return p;
 }
@@ -63,8 +66,9 @@ static void test_state_deg(void)
     imud_packet_t p = make_pkt();
     mqtt_msg_t m[24];
     int n = mqtt_build_state(m, 24, &p, "imud", false, true);
-    /* always-on set, no declination, no heave = 6 */
-    EXPECT(n == 7, "7 state msgs (no declination, no heave; engine always)");
+    /* always-on set, no declination, no heave = 6; engine/running and
+     * navigation/headingReferenced are both published unconditionally. */
+    EXPECT(n == 8, "8 state msgs (no declination, no heave; 2 status topics)");
 
     const mqtt_msg_t *h = find_topic(m, n, "imud/navigation/headingMagnetic");
     EXPECT(h != NULL, "headingMagnetic topic present");
@@ -113,13 +117,13 @@ static void test_declination_gated(void)
     imud_packet_t p = make_pkt();
     mqtt_msg_t m[24];
 
-    p.flags = 0;
+    p.flags = IMUD_FLAG_MAG_VALID;
     p.declination_deg = 13.2f;
     int n = mqtt_build_state(m, 24, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/navigation/headingTrue") == NULL, "headingTrue absent without flag");
     EXPECT(find_topic(m, n, "imud/navigation/magneticVariation") == NULL, "variation absent without flag");
 
-    p.flags = IMUD_FLAG_DECLINATION_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID;
     n = mqtt_build_state(m, 24, &p, "imud", false, true);
     const mqtt_msg_t *var = find_topic(m, n, "imud/navigation/magneticVariation");
     EXPECT(var && fabs(strtod(var->payload, NULL) - 13.2) < 1e-2, "variation 13.2° present with flag");
@@ -137,19 +141,19 @@ static void test_heave_gated(void)
     mqtt_msg_t m[24];
 
     /* Off when emit_heave=false, even if the estimator has settled. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
     int n = mqtt_build_state(m, 24, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave absent when emit_heave=false");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate absent when emit_heave=false");
 
     /* Config on but not settled (flag clear) → still suppressed. */
-    p.flags = 0;
+    p.flags = IMUD_FLAG_MAG_VALID;
     n = mqtt_build_state(m, 24, &p, "imud", true, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave suppressed until HEAVE_VALID");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate suppressed until HEAVE_VALID");
 
     /* Config on AND settled → both published. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
     n = mqtt_build_state(m, 24, &p, "imud", true, true);
     const mqtt_msg_t *hv = find_topic(m, n, "imud/environment/heave");
     EXPECT(hv && fabs(strtod(hv->payload, NULL) - 0.42) < 1e-3, "heave 0.42 m when settled");
@@ -173,13 +177,13 @@ static void test_wave_gated(void)
     mqtt_msg_t m[24];
 
     /* Suppressed until WAVE_VALID even with heave settled and publishing. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
     int n = mqtt_build_state(m, 24, &p, "imud", true, true);
     EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
            "waveHeight suppressed until WAVE_VALID");
 
     /* Off when emit_heave=false even if valid (rides publish_heave). */
-    p.flags = IMUD_FLAG_HEAVE_VALID | IMUD_FLAG_WAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID | IMUD_FLAG_WAVE_VALID;
     n = mqtt_build_state(m, 24, &p, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
            "waveHeight absent when emit_heave=false");
@@ -197,7 +201,7 @@ static void test_wave_gated(void)
     EXPECT(ra && fabs(strtod(ra->payload, NULL) - 5.73) < 1e-2, "rollAmplitude 0.1 rad -> 5.73 deg");
     const mqtt_msg_t *pp = find_topic(m, n, "imud/environment/pitchPeriod");
     EXPECT(pp && fabs(strtod(pp->payload, NULL) - 5.0) < 1e-2, "pitchPeriod 5.0 s");
-    EXPECT(n == 15, "15 state msgs with heave family (6 wave), no declination");
+    EXPECT(n == 16, "16 state msgs with heave family (6 wave), no declination");
     end(fb);
 }
 
@@ -214,7 +218,7 @@ static void test_engine_binary(void)
     const mqtt_msg_t *e = find_topic(m, n, "imud/engine/running");
     EXPECT(e && strcmp(e->payload, "OFF") == 0, "engine OFF without flag");
 
-    p.flags = IMUD_FLAG_ENGINE_ON;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_ENGINE_ON;
     n = mqtt_build_state(m, 24, &p, "imud", false, true);
     e = find_topic(m, n, "imud/engine/running");
     EXPECT(e && strcmp(e->payload, "ON") == 0, "engine ON with flag");
@@ -235,11 +239,11 @@ static void test_prefix_and_count_cap(void)
     int fb = g_fail;
 
     imud_packet_t p = make_pkt();
-    p.flags = IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
+    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
     mqtt_msg_t m[24];
 
     int n = mqtt_build_state(m, 24, &p, "boat", true, true);
-    EXPECT(n == 11, "11 state msgs with declination + heave family (no WAVE_VALID)");
+    EXPECT(n == 12, "12 state msgs with declination + heave family (no WAVE_VALID)");
     EXPECT(find_topic(m, n, "boat/attitude/yaw") != NULL, "custom prefix applied");
 
     /* max caps the count, no overflow */
@@ -286,6 +290,58 @@ static void test_discovery(void)
     end(fb);
 }
 
+/*
+ * MQTT topics are retained, so a heading published once and then withheld
+ * would be handed to every later subscriber as if current.  The heading
+ * topics stop, and navigation/headingReferenced — published always — is what
+ * distinguishes "withheld" from "the bridge died".
+ */
+static void test_heading_withheld_without_mag(void)
+{
+    begin("test_heading_withheld_without_mag");
+    int fb = g_fail;
+
+    mqtt_msg_t m[24];
+    imud_packet_t p = make_pkt();
+    p.flags = IMUD_FLAG_DECLINATION_VALID;     /* no MAG_VALID, no MAG_UNCAL */
+    p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    p.declination_deg = 13.2f;
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+
+    EXPECT(find_topic(m, n, "imud/navigation/headingMagnetic") == NULL,
+           "headingMagnetic withheld");
+    EXPECT(find_topic(m, n, "imud/navigation/headingTrue") == NULL,
+           "headingTrue withheld even with declination");
+    EXPECT(find_topic(m, n, "imud/navigation/magneticVariation") == NULL,
+           "magneticVariation withheld");
+
+    const mqtt_msg_t *r = find_topic(m, n, "imud/navigation/headingReferenced");
+    EXPECT(r != NULL, "headingReferenced published");
+    EXPECT(r && strcmp(r->payload, "OFF") == 0, "headingReferenced = OFF");
+    EXPECT(find_topic(m, n, "imud/attitude/yaw") != NULL, "attitude/yaw still sent");
+    EXPECT(find_topic(m, n, "imud/navigation/rateOfTurn") != NULL,
+           "rateOfTurn still sent");
+    end(fb);
+}
+
+/* An uncalibrated fuse still publishes, and says so. */
+static void test_heading_published_when_uncal(void)
+{
+    begin("test_heading_published_when_uncal");
+    int fb = g_fail;
+
+    mqtt_msg_t m[24];
+    imud_packet_t p = make_pkt();
+    p.flags = IMUD_FLAG_MAG_UNCAL;
+    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+
+    EXPECT(find_topic(m, n, "imud/navigation/headingMagnetic") != NULL,
+           "headingMagnetic sent on an uncalibrated fuse");
+    const mqtt_msg_t *r = find_topic(m, n, "imud/navigation/headingReferenced");
+    EXPECT(r && strcmp(r->payload, "ON") == 0, "headingReferenced = ON");
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud mqtt builder tests ===");
@@ -296,6 +352,8 @@ int main(void)
     test_wave_gated();
     test_engine_binary();
     test_prefix_and_count_cap();
+    test_heading_withheld_without_mag();
+    test_heading_published_when_uncal();
     test_discovery();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
