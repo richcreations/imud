@@ -668,6 +668,64 @@ static imt_status_t status_of(const imt_report_t *r, const char *id)
     return c ? c->status : (imt_status_t)-1;
 }
 
+static const char *status_name(imt_status_t s)
+{
+    switch (s) {
+    case IMT_SKIP: return "SKIP";
+    case IMT_INFO: return "INFO";
+    case IMT_PASS: return "PASS";
+    case IMT_WARN: return "WARN";
+    case IMT_FAIL: return "FAIL";
+    }
+    return "absent";
+}
+
+/*
+ * Assert a check's status, and print what it actually reported when it does
+ * not match.  `EXPECT(status_of(r, id) == IMT_PASS, ...)` says only "not
+ * PASS", and the two ways to get there want opposite fixes: FAIL means the
+ * value was graded and rejected, SKIP means the window collected too little
+ * to grade at all.  Telling them apart from a CI log is otherwise a push and
+ * a fourteen-minute wait.
+ */
+static void expect_status_(const imt_report_t *r, const char *id,
+                           imt_status_t want, const char *msg,
+                           const char *file, int line)
+{
+    const imt_check_t *c = imt_find(r, id);
+    imt_status_t got = c ? c->status : (imt_status_t)-1;
+
+    if (got == want) { g_pass++; return; }
+    g_fail++;
+    fprintf(stderr, "  FAIL %s:%d  %s\n"
+                    "         %s: got %s, wanted %s; measured \"%s\"; %s\n",
+            file, line, msg, id, status_name(got), status_name(want),
+            c ? c->measured : "", c ? c->note : "no such check in the report");
+}
+
+#define EXPECT_STATUS(r, id, want, msg) \
+    expect_status_((r), (id), (want), (msg), __FILE__, __LINE__)
+
+/*
+ * True when a check did not run because the window collected too little.
+ * check_rest() skips all six of its checks below ten samples, which is the
+ * host being busy, not the code being wrong -- asserting through it reports a
+ * decode bug that is not there.
+ *
+ * The margin is thinner than it looks.  noise_window_s is 0.30 * k against a
+ * 10 ms drain pace, so the scaling cancels and the loop gets ~31 iterations on
+ * this Linux box and 34-37 on macOS 14.8.9, both idle: about 3x the floor.
+ * But sleep_cost_factor() is measured ONCE and then used for a four-minute
+ * suite, so a host that is quiet at second 0 and busy at minute 4 runs this
+ * window against a factor sized for a machine it no longer is.
+ */
+static bool starved(const imt_report_t *r, const char *id)
+{
+    const imt_check_t *c = imt_find(r, id);
+    return c && c->status == IMT_SKIP &&
+           strstr(c->note, "no samples collected") != NULL;
+}
+
 /*
  * Nearest supported IMU ODR at or below / at or above `hz`; 0 if the grid has
  * none.  The rate checks pick their configured ODR FROM what the host actually
@@ -2370,21 +2428,26 @@ static void test_temperature_placeholder(void)
     script_reset(&o);
 
     imt_report_t *r = run(&cfg, &o);
-    EXPECT(status_of(r, "imu.temp.plausible") == IMT_FAIL,
-           "pinned 25.000 C is caught");
+    EXPECT_STATUS(r, "imu.temp.plausible", IMT_FAIL, "pinned 25.000 C is caught");
     EXPECT(note_contains(r, "imu.temp.plausible", "placeholder"),
            "diagnosis names the placeholder");
     free(r);
 
-    /* A varying, plausible temperature must pass. */
-    mock_base();
-    i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
-    i2cmock_set_reg(ISM_ADDR, 0x21, 0x05);      /* raw 1280 -> 30 C */
-    script_reset(&o);
+    /* A varying, plausible temperature must pass.  Re-primed and re-run while
+     * the window keeps coming up starved: a grading result, pass or fail, is
+     * taken on the first try. */
+    r = NULL;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        free(r);
+        mock_base();
+        i2cmock_set_reg(ISM_ADDR, 0x20, 0x00);
+        i2cmock_set_reg(ISM_ADDR, 0x21, 0x05);      /* raw 1280 -> 30 C */
+        script_reset(&o);
 
-    r = run(&cfg, &o);
-    EXPECT(status_of(r, "imu.temp.plausible") == IMT_PASS,
-           "a real temperature passes");
+        r = run(&cfg, &o);
+        if (!starved(r, "imu.temp.plausible")) break;
+    }
+    EXPECT_STATUS(r, "imu.temp.plausible", IMT_PASS, "a real temperature passes");
     free(r);
 
     end(fb);
