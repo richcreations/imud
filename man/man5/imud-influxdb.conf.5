@@ -82,6 +82,32 @@ tag.
 .B rad
 (SI: radians, rad/s).
 .TP
+.B detail
+.RI ( string ,\ default:\ \(dqhealth\(dq )\ [hot]
+How much of the packet to write, as one of five CUMULATIVE levels \(em each
+emits everything the level below it does and adds its own.
+.PP
+.B attitude
+quaternion, roll/pitch/yaw, heading, rate of turn, temperature, sequence.
+.B navigation
+adds true heading, variation and heave.
+.B seastate
+adds the wave, roll and pitch period and amplitude suite.
+.B health
+adds gyro bias and its variance, quiescence, compass health, and the MEKF
+update-gate and NIS diagnostics.
+.B full
+adds the calibrated and raw accelerometer, gyroscope and magnetometer vectors,
+and the TAI and chip timestamps.
+.PP
+.B health
+is the default, and is what this bridge wrote before the levels existed, so an
+upgrade changes no existing series.
+.B full
+is roughly half again the point size.  An unrecognised value logs a warning and
+falls back to
+.BR health .
+.TP
 .B publish_heave
 .RI ( bool ,\ default:\ true )\ [hot]
 Include the

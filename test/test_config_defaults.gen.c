@@ -175,6 +175,7 @@ CK_INT (c.influx_rate_hz,      10,                            "[imud-influxdb] r
 CK_STR (c.influx_measurement,  "imud",                        "[imud-influxdb] measurement");
 CK_STR (c.influx_source_label, "imud",                        "[imud-influxdb] source_label");
 CK_STR (c.influx_units,        "deg",                         "[imud-influxdb] units");
+CK_STR (c.influx_detail,       "health",                      "[imud-influxdb] detail");
 CK_BOOL(c.publish_heave,       true,                          "[imud-influxdb] publish_heave");
 CK_BOOL(c.influx_udp_enabled,  false,                         "[imud-influxdb] udp_enabled");
 CK_STR (c.influx_udp_addr,     "127.0.0.1",                   "[imud-influxdb] udp_addr");

@@ -43,6 +43,12 @@ Added:
   Heading starts at zero and is relative to the orientation imud booted in,
   not to earth north, and drifts at the gyro's bias-instability rate.
   FLAG_MAG_VALID stays clear for the whole run and no declination is applied.
+* New imud-influxdb key detail chooses how much of the packet to write, as
+  five cumulative levels: attitude, navigation, seastate, health, full. full
+  adds the calibrated and raw accel, gyro and mag vectors, which the bridge
+  never published.
+  The default, health, is exactly what the bridge wrote before, so no existing
+  series or dashboard changes. full is 59 fields against health's 38.
 
 Changed:
 

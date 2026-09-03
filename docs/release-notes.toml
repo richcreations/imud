@@ -71,6 +71,12 @@ it — the first passive check that proves the sensing elements are live."""
   impact   = "Breaking: consumers reject a wire version they do not know, so deploy the daemon and its consumers together. flags had assigned all sixteen bits, which is what forced the new word — a consumer must ignore bits it does not recognise, and a later flag then needs no further bump. The imud-arduino client needs its own update."
 
   [[release.change]]
+  kind     = "feature"
+  packages = ["imud-influxdb"]
+  text     = "New imud-influxdb key detail chooses how much of the packet to write, as five cumulative levels: attitude, navigation, seastate, health, full. full adds the calibrated and raw accel, gyro and mag vectors, which the bridge never published."
+  impact   = "The default, health, is exactly what the bridge wrote before, so no existing series or dashboard changes. full is 59 fields against health's 38."
+
+  [[release.change]]
   kind     = "behaviour"
   packages = ["imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
   text     = "The bridges say when a heading is not referenced to north, each in its protocol's own terms rather than by all withholding it."

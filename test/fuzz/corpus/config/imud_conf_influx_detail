@@ -1,0 +1,11 @@
+[imud-influxdb]
+enabled = true
+socket = "/run/imud/imud.sock"
+detail = "full"
+units = "rad"
+measurement = "imud"
+udp_enabled = true
+udp_port = 8089
+
+[imud-mqtt]
+detail = "attitude"

@@ -52,6 +52,7 @@ HTTP target need a restart.
 | `measurement` | string | `"imud"` | Line-protocol measurement name. |
 | `source_label` | string | `"imud"` | Value of the `source=` tag. |
 | `units` | string | `"deg"` | `"deg"` (degrees, °/min) or `"rad"` (SI). |
+| `detail` | string | `"health"` | How much of the packet to write, as one of five **cumulative** levels — each emits everything the level below it does and adds its own. `"attitude"` (quaternion, roll/pitch/yaw, heading, rate of turn, temperature, sequence), `"navigation"` (+ true heading, variation, heave), `"seastate"` (+ the wave/roll/pitch period and amplitude suite), `"health"` (+ gyro bias and variance, quiescence, compass health, MEKF gate and NIS diagnostics), `"full"` (+ the calibrated and raw accel/gyro/mag vectors and the TAI and chip timestamps). `"health"` is the default and is what the bridge wrote before the levels existed, so an upgrade changes no existing series; `"full"` is roughly half again the point size. An unrecognised value logs a warning and falls back to `"health"`. |
 | `publish_heave` | bool | `true` | Include the `heave` field. |
 | `udp_enabled` | bool | `false` | Write line-protocol points over UDP. |
 | `udp_addr` | string | `"127.0.0.1"` | UDP destination host (InfluxDB 1.x / Telegraf). |

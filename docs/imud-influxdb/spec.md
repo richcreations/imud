@@ -14,37 +14,53 @@ NED convention (no sign flip).
 
 ## Fields
 
-| Field | Meaning | Units (deg / rad) | When |
+The **Level** column is the lowest `detail` setting that emits the field.
+Levels are cumulative, so `detail = "health"` — the default — emits every
+row up to and including `health`, and `"full"` emits the table. The sensor
+vectors are never unit-converted: `units` governs the angle fields, and
+reporting a gyro rate in °/s here would make `gyro_x` disagree with the
+`gbias_x` you compare it against.
+
+| Field | Meaning | Units (deg / rad) | Level |
 |---|---|---|---|
-| `qw` `qx` `qy` `qz` | orientation quaternion | unitless | always |
-| `roll` `pitch` `yaw` | Euler attitude | ° / rad | always |
-| `heading` | magnetic heading — see `heading_ref` | ° / rad | always |
-| `heading_ref` | the magnetometer is being fused, so `heading` really is magnetic | boolean (`t`/`f`) | always |
-| `mag_absent` | no magnetometer is configured at all | boolean (`t`/`f`) | always |
-| `heading_true` | true heading | ° / rad | declination known |
-| `variation` | magnetic declination | ° / rad | declination known |
-| `rate_of_turn` | rate of turn | °/min / rad·s⁻¹ | always |
-| `heave` | heave | m | `publish_heave` |
-| `heave_rate` | vertical velocity, +up | m·s⁻¹ | `publish_heave` |
-| `heave_valid` | heave estimator settled (~10·τ) | boolean (`t`/`f`) | `publish_heave` |
-| `gbias_x` `gbias_y` `gbias_z` | gyro-bias estimate (MEKF) | rad·s⁻¹ | always |
-| `gbias_var_x` `gbias_var_y` `gbias_var_z` | gyro-bias variance (MEKF `P` diagonal) | (rad·s⁻¹)² | always |
-| `quiescence` | accel-quiescence / platform-disturbance metric | unitless | always |
-| `wave_height` | significant wave height Hs = 4σ(heave) | m | always |
-| `wave_period` | mean zero-crossing wave period Tz | s | always |
-| `roll_period` | vessel roll period | s | always |
-| `roll_amplitude` | significant single roll amplitude | rad | always |
-| `pitch_period` | vessel pitch period | s | always |
-| `pitch_amplitude` | significant single pitch amplitude | rad | always |
-| `nis_accel` | EMA of normalised innovation squared, accel update (d²/2); 1 = covariance matches innovations, higher = over-confident | unitless | always |
-| `nis_mag` | EMA of normalised innovation squared, mag update (d²/dof); 1 = consistent, higher = over-confident | unitless | always |
-| `innov_weight` | EMA of the Huber weight applied to MEKF updates; 1 = no capping, lower = the filter is persistently distrusting its sensors | unitless | always |
-| `innov_reject` | EMA of the fraction of MEKF updates rejected by the innovation gate | unitless | always |
-| `mag_anomaly` | EMA of \|\|B\|−\|B_ref\|\|/\|B_ref\| — interference / iron-cal drift | unitless | always |
-| `mag_residual` | EMA of \|heading innovation\| — compass cal health | rad | always |
-| `wave_valid` | sea-state statistics settled | boolean (`t`/`f`) | always |
-| `temp` | die temperature | °C | always |
-| `seq` | imu sample counter | integer (`i` suffix) | always |
+| `qw` `qx` `qy` `qz` | orientation quaternion | unitless | attitude |
+| `roll` `pitch` `yaw` | Euler attitude | ° / rad | attitude |
+| `heading` | magnetic heading — see `heading_ref` | ° / rad | attitude |
+| `heading_ref` | the magnetometer is being fused, so `heading` really is magnetic | boolean (`t`/`f`) | attitude |
+| `mag_absent` | no magnetometer is configured at all | boolean (`t`/`f`) | navigation |
+| `heading_true` | true heading | ° / rad | navigation, declination known |
+| `variation` | magnetic declination | ° / rad | navigation, declination known |
+| `rate_of_turn` | rate of turn | °/min / rad·s⁻¹ | attitude |
+| `heave` | heave | m | navigation, `publish_heave` |
+| `heave_rate` | vertical velocity, +up | m·s⁻¹ | navigation, `publish_heave` |
+| `heave_valid` | heave estimator settled (~10·τ) | boolean (`t`/`f`) | navigation, `publish_heave` |
+| `gbias_x` `gbias_y` `gbias_z` | gyro-bias estimate (MEKF) | rad·s⁻¹ | health |
+| `gbias_var_x` `gbias_var_y` `gbias_var_z` | gyro-bias variance (MEKF `P` diagonal) | (rad·s⁻¹)² | health |
+| `quiescence` | accel-quiescence / platform-disturbance metric | unitless | health |
+| `wave_height` | significant wave height Hs = 4σ(heave) | m | seastate |
+| `wave_period` | mean zero-crossing wave period Tz | s | seastate |
+| `roll_period` | vessel roll period | s | seastate |
+| `roll_amplitude` | significant single roll amplitude | rad | seastate |
+| `pitch_period` | vessel pitch period | s | seastate |
+| `pitch_amplitude` | significant single pitch amplitude | rad | seastate |
+| `nis_accel` | EMA of normalised innovation squared, accel update (d²/2); 1 = covariance matches innovations, higher = over-confident | unitless | health |
+| `nis_mag` | EMA of normalised innovation squared, mag update (d²/dof); 1 = consistent, higher = over-confident | unitless | health |
+| `innov_weight` | EMA of the Huber weight applied to MEKF updates; 1 = no capping, lower = the filter is persistently distrusting its sensors | unitless | health |
+| `innov_reject` | EMA of the fraction of MEKF updates rejected by the innovation gate | unitless | health |
+| `mag_anomaly` | EMA of \|\|B\|−\|B_ref\|\|/\|B_ref\| — interference / iron-cal drift | unitless | health |
+| `mag_residual` | EMA of \|heading innovation\| — compass cal health | rad | health |
+| `wave_valid` | sea-state statistics settled | boolean (`t`/`f`) | seastate |
+| `temp` | die temperature | °C | attitude |
+| `seq` | imu sample counter | integer (`i` suffix) | attitude |
+| `accel_x` `accel_y` `accel_z` | calibrated acceleration, body frame | m·s⁻² | full |
+| `accel_raw_x` `accel_raw_y` `accel_raw_z` | acceleration before calibration, after mount rotation | m·s⁻² | full |
+| `gyro_x` `gyro_y` `gyro_z` | bias-corrected angular rate, body frame | rad·s⁻¹ | full |
+| `gyro_raw_x` `gyro_raw_y` `gyro_raw_z` | angular rate before bias correction | rad·s⁻¹ | full |
+| `mag_x` `mag_y` `mag_z` | calibrated magnetic field, body frame | µT | full |
+| `mag_raw_x` `mag_raw_y` `mag_raw_z` | magnetic field before hard/soft-iron correction | µT | full |
+| `ts_tai_ns` | sample instant on CLOCK_TAI | integer ns (`i` suffix) | full |
+| `ts_chip_ticks` | the IMU counter the instant came from | integer (`i` suffix) | full |
+| `anchor_gen` | increments on each wall-clock re-anchor | integer (`i` suffix) | full |
 
 Being the diagnostics sink, `imud-influxdb` emits `heave`/`heave_rate` from t=0
 (unlike the user-facing bridges, which withhold heave until settled) and exposes

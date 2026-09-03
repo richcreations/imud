@@ -352,6 +352,7 @@ void config_defaults(imud_config_t *cfg)
     snprintf(cfg->influx_measurement,  sizeof(cfg->influx_measurement),  "imud");
     snprintf(cfg->influx_source_label, sizeof(cfg->influx_source_label), "imud");
     snprintf(cfg->influx_units,        sizeof(cfg->influx_units),        "deg");
+    snprintf(cfg->influx_detail,       sizeof(cfg->influx_detail),       "health");
     cfg->influx_udp_enabled = false;
     snprintf(cfg->influx_udp_addr,     sizeof(cfg->influx_udp_addr),     "127.0.0.1");
     cfg->influx_udp_port = 8089;
@@ -1229,6 +1230,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "measurement")   == 0) NEED_STR(cfg->influx_measurement);
         else if (strcmp(key, "source_label")  == 0) NEED_STR(cfg->influx_source_label);
         else if (strcmp(key, "units")         == 0) NEED_STR(cfg->influx_units);
+        else if (strcmp(key, "detail")        == 0) NEED_STR(cfg->influx_detail);
         else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
         else if (strcmp(key, "udp_enabled")   == 0) NEED_BOOL(cfg->influx_udp_enabled);
         else if (strcmp(key, "udp_addr")      == 0) NEED_STR(cfg->influx_udp_addr);

@@ -42,7 +42,7 @@ jobs:
       - name: Build harness
         run: |
           case "${{ matrix.target }}" in
-            config)  DEPS="src/config.c src/log.c" ;;
+            config)  DEPS="src/config.c src/log.c src/influx_line.c" ;;
             json)    DEPS="src/position.c src/wmm.c src/log.c" ;;
             packet)  DEPS="" ;;
             capture) DEPS="src/capture.c" ;;

@@ -80,7 +80,7 @@ static void test_structure_and_deg(void)
 
     imud_packet_t p = make_pkt();
     char buf[1024];
-    int n = influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    int n = influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(n > 0, "encode succeeds");
     EXPECT(strncmp(buf, "imud,source=imud ", 17) == 0, "measurement + source tag prefix");
     /* exactly two spaces: tags|fields and fields|timestamp */
@@ -104,7 +104,7 @@ static void test_rad_units(void)
 
     imud_packet_t p = make_pkt();
     char buf[1024];
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, false);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, false, INFLUX_DETAIL_HEALTH);
 
     double v;
     EXPECT(field(buf, "heading", &v) && fabs(v - M_PI/2.0) < 1e-4, "heading 90° → π/2 rad");
@@ -124,12 +124,12 @@ static void test_declination_gated(void)
     double v;
 
     p.flags = 0; p.declination_deg = 13.2f;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(!field(buf, "heading_true", &v), "heading_true absent without flag");
     EXPECT(!field(buf, "variation", &v),    "variation absent without flag");
 
     p.flags = IMUD_FLAG_DECLINATION_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "variation", &v)    && fabs(v - 13.2) < 1e-2, "variation 13.2°");
     EXPECT(field(buf, "heading_true", &v) && fabs(v - 103.2) < 1e-2, "heading_true = 90 + 13.2");
     end(fb);
@@ -144,10 +144,10 @@ static void test_heave_gated_and_tags(void)
     char buf[1024];
     double v;
 
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(!field(buf, "heave", &v), "heave absent when emit_heave=false");
 
-    influx_build_line(buf, sizeof buf, &p, "boat", "vessel1", true, true);
+    influx_build_line(buf, sizeof buf, &p, "boat", "vessel1", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "heave", &v) && fabs(v - 0.42) < 1e-3, "heave present when emit_heave=true");
     EXPECT(strncmp(buf, "boat,source=vessel1 ", 20) == 0, "custom measurement + source tag");
     end(fb);
@@ -165,7 +165,7 @@ static void test_v12_diagnostics(void)
     /* Gyro-bias / variance / quiescence are always emitted, never unit-converted
      * (raw SI even in deg mode), and independent of the heave gate. */
     p.flags = 0;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "gbias_x", &v) && fabs(v - 0.001) < 1e-6, "gbias_x raw rad/s");
     EXPECT(field(buf, "gbias_y", &v) && fabs(v + 0.002) < 1e-6, "gbias_y raw rad/s");
     EXPECT(field(buf, "gbias_z", &v) && fabs(v - 0.003) < 1e-6, "gbias_z raw rad/s");
@@ -179,14 +179,14 @@ static void test_v12_diagnostics(void)
 
     /* emit_heave with the valid flag clear → heave still emitted (diagnostics sink),
      * heave_valid=f so the transient can be filtered downstream. */
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "heave_rate", &v) && fabs(v - 0.25) < 1e-3, "heave_rate present + value");
     EXPECT(field(buf, "heave", &v) && fabs(v - 0.42) < 1e-3, "heave emitted from t=0 regardless of validity");
     EXPECT(strstr(buf, "heave_valid=f") != NULL, "heave_valid=f when flag clear");
 
     /* Valid flag set → heave_valid=t. */
     p.flags = IMUD_FLAG_HEAVE_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(strstr(buf, "heave_valid=t") != NULL, "heave_valid=t when flag set");
     end(fb);
 }
@@ -203,7 +203,7 @@ static void test_v14_seastate(void)
     /* Sea state is always emitted (diagnostics sink), raw SI even in deg
      * mode, independent of the heave gate, with wave_valid as the filter. */
     p.flags = 0;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "wave_height", &v) && fabs(v - 1.6) < 1e-3, "wave_height m, always on");
     EXPECT(field(buf, "wave_period", &v) && fabs(v - 6.2) < 1e-2, "wave_period s");
     EXPECT(field(buf, "roll_period", &v) && fabs(v - 4.4) < 1e-2, "roll_period s");
@@ -219,7 +219,7 @@ static void test_v14_seastate(void)
     EXPECT(strstr(buf, "wave_valid=f") != NULL, "wave_valid=f when flag clear");
 
     p.flags = IMUD_FLAG_WAVE_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(strstr(buf, "wave_valid=t") != NULL, "wave_valid=t when flag set");
     end(fb);
 }
@@ -230,7 +230,7 @@ static void test_buffer_too_small(void)
     int fb = g_fail;
     imud_packet_t p = make_pkt();
     char small[32];
-    EXPECT(influx_build_line(small, sizeof small, &p, "imud", "imud", true, true) == -1,
+    EXPECT(influx_build_line(small, sizeof small, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH) == -1,
            "returns -1 when buffer too small");
     end(fb);
 }
@@ -252,7 +252,7 @@ static void test_heading_always_emitted_with_validity(void)
 
     p.flags = 0;                                /* dead reckoned */
     p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds with no magnetometer");
     EXPECT(strstr(buf, ",heading=") != NULL, "heading still emitted");
     EXPECT(strstr(buf, "heading_ref=f") != NULL, "heading_ref=f when unreferenced");
@@ -260,16 +260,160 @@ static void test_heading_always_emitted_with_validity(void)
 
     p.flags = IMUD_FLAG_MAG_VALID;
     p.flags_ext = 0;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds with a fused magnetometer");
     EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t when fused");
     EXPECT(strstr(buf, "mag_absent=f") != NULL, "mag_absent=f when one is fitted");
 
     /* Uncalibrated still counts as referenced — bounded, not drifting. */
     p.flags = IMUD_FLAG_MAG_UNCAL;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true) > 0,
+    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds on an uncalibrated fuse");
     EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t on an uncal fuse");
+    end(fb);
+}
+
+/* Count field assignments between the tag set and the trailing timestamp.
+ * Line protocol is "<measurement>,<tags> <fields> <ts>", so the field set is
+ * bounded by the first space and the last one. */
+static int nfields(const char *line)
+{
+    const char *start = strchr(line, ' ');
+    const char *end   = strrchr(line, ' ');
+    int n = 0;
+    if (!start || !end || end <= start) return 0;
+    for (const char *q = start; q < end; q++)
+        if (*q == '=') n++;
+    return n;
+}
+
+/*
+ * The five levels are CUMULATIVE, and that is the property worth pinning:
+ * every field at level N must still be there at N+1, so a dashboard built at
+ * one level keeps working when someone raises it.  Checking a field list per
+ * level would pass just as well if the levels were disjoint sets.
+ */
+static void test_detail_levels_are_cumulative(void)
+{
+    begin("test_detail_levels_are_cumulative");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    p.flags |= IMUD_FLAG_DECLINATION_VALID;
+
+    char prev[4096] = "", cur[4096];
+    int  prev_n = 0;
+
+    for (int d = INFLUX_DETAIL_ATTITUDE; d <= INFLUX_DETAIL_FULL; d++) {
+        int n = influx_build_line(cur, sizeof cur, &p, "imud", "imud", true, true, d);
+        EXPECT(n > 0, "line builds at every level");
+
+        int nf = nfields(cur);
+        EXPECT(nf > prev_n, "each level adds fields");
+
+        /* Every field name the previous level emitted must still appear. */
+        if (prev[0]) {
+            char work[4096];
+            snprintf(work, sizeof work, "%s", prev);
+            char *ts = strrchr(work, ' ');
+            if (ts) *ts = '\0';           /* drop the trailing timestamp */
+            char *sp = strchr(work, ' ');
+            EXPECT(sp != NULL, "previous line has a field set");
+            if (sp) {
+                int missing = 0;
+                for (char *tok = strtok(sp + 1, ","); tok; tok = strtok(NULL, ",")) {
+                    char *eq = strchr(tok, '=');
+                    if (!eq) continue;
+                    *eq = '\0';
+                    char needle[64];
+                    snprintf(needle, sizeof needle, ",%s=", tok);
+                    /* the first field follows the space, not a comma */
+                    char first[64];
+                    snprintf(first, sizeof first, " %s=", tok);
+                    if (!strstr(cur, needle) && !strstr(cur, first)) missing++;
+                }
+                EXPECT(missing == 0, "no field from the level below went missing");
+            }
+        }
+        snprintf(prev, sizeof prev, "%s", cur);
+        prev_n = nf;
+    }
+    end(fb);
+}
+
+/* health is the default, and must be byte-identical to what an unset config
+ * produced before the levels existed. */
+static void test_detail_boundaries(void)
+{
+    begin("test_detail_boundaries");
+    int fb = g_fail;
+
+    imud_packet_t p = make_pkt();
+    char buf[4096];
+
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+                      INFLUX_DETAIL_ATTITUDE);
+    EXPECT(strstr(buf, "qw=") && strstr(buf, ",heading=") && strstr(buf, ",seq="),
+           "attitude carries quaternion, heading and seq");
+    EXPECT(!strstr(buf, "wave_height="), "attitude has no sea state");
+    EXPECT(!strstr(buf, "gbias_x="),     "attitude has no filter health");
+    EXPECT(!strstr(buf, ",accel_x="),    "attitude has no sensor vectors");
+
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+                      INFLUX_DETAIL_HEALTH);
+    EXPECT(strstr(buf, "gbias_x=") && strstr(buf, "nis_accel="),
+           "health carries the filter diagnostics");
+    EXPECT(!strstr(buf, ",accel_x="), "health stops short of the sensor vectors");
+
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+                      INFLUX_DETAIL_FULL);
+    static const char *const full_only[] = {
+        ",accel_x=", ",accel_y=", ",accel_z=",
+        ",accel_raw_x=", ",accel_raw_y=", ",accel_raw_z=",
+        ",gyro_x=", ",gyro_y=", ",gyro_z=",
+        ",gyro_raw_x=", ",gyro_raw_y=", ",gyro_raw_z=",
+        ",mag_x=", ",mag_y=", ",mag_z=",
+        ",mag_raw_x=", ",mag_raw_y=", ",mag_raw_z=",
+        ",ts_tai_ns=", ",ts_chip_ticks=", ",anchor_gen=",
+    };
+    for (size_t i = 0; i < sizeof full_only / sizeof *full_only; i++) {
+        char msg[64];
+        snprintf(msg, sizeof msg, "full carries %s", full_only[i]);
+        EXPECT(strstr(buf, full_only[i]) != NULL, msg);
+    }
+
+    /*
+     * Field counts per level, declination known and heave on.  This is what
+     * catches a field quietly dropped from a level: the cumulative test only
+     * proves each level is bigger than the one below, which stays true when
+     * three of full's twenty-one go missing.
+     */
+    static const int want[] = { 0, 12, 18, 25, 38, 59 };
+    for (int d = INFLUX_DETAIL_ATTITUDE; d <= INFLUX_DETAIL_FULL; d++) {
+        imud_packet_t q = make_pkt();
+        q.flags |= IMUD_FLAG_DECLINATION_VALID;
+        influx_build_line(buf, sizeof buf, &q, "imud", "imud", true, true, d);
+        char msg[64];
+        snprintf(msg, sizeof msg, "level %d emits %d fields", d, want[d]);
+        EXPECT(nfields(buf) == want[d], msg);
+    }
+
+    /* An out-of-range level is a config this build does not know: fall back to
+     * the default rather than emit an empty field set, which is not valid line
+     * protocol and would be rejected point by point. */
+    char fallback[4096];
+    influx_build_line(fallback, sizeof fallback, &p, "imud", "imud", true, true, 99);
+    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+                      INFLUX_DETAIL_HEALTH);
+    EXPECT(strcmp(fallback, buf) == 0, "an unknown level falls back to health");
+
+    /* Name mapping, which is what the config string goes through. */
+    EXPECT(influx_detail_from_name("attitude") == INFLUX_DETAIL_ATTITUDE, "name: attitude");
+    EXPECT(influx_detail_from_name("full")     == INFLUX_DETAIL_FULL,     "name: full");
+    EXPECT(influx_detail_from_name("HEALTH")   == -1,  "names are case-sensitive");
+    EXPECT(influx_detail_from_name("")         == -1,  "empty name rejected");
+    EXPECT(influx_detail_from_name(NULL)       == -1,  "NULL name rejected");
+    EXPECT(strcmp(influx_detail_name(-1), "health") == 0, "unknown level names health");
     end(fb);
 }
 
@@ -283,6 +427,8 @@ int main(void)
     test_v12_diagnostics();
     test_v14_seastate();
     test_heading_always_emitted_with_validity();
+    test_detail_levels_are_cumulative();
+    test_detail_boundaries();
     test_buffer_too_small();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

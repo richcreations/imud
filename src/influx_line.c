@@ -15,6 +15,7 @@
 #include "influx_line.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define RAD2DEG  57.29577951308232
 #define DEG2RAD  0.017453292519943295
@@ -27,14 +28,40 @@
         pos += _r;                                                    \
     } while (0)
 
+/* The five names, indexed by level; NAMES[0] is unused so NAMES[n] is level n. */
+static const char *const NAMES[] = {
+    "", "attitude", "navigation", "seastate", "health", "full"
+};
+
+int influx_detail_from_name(const char *name)
+{
+    if (!name) return -1;
+    for (int i = INFLUX_DETAIL_ATTITUDE; i <= INFLUX_DETAIL_FULL; i++)
+        if (strcmp(name, NAMES[i]) == 0) return i;
+    return -1;
+}
+
+const char *influx_detail_name(int detail)
+{
+    if (detail < INFLUX_DETAIL_ATTITUDE || detail > INFLUX_DETAIL_FULL)
+        return NAMES[INFLUX_DETAIL_HEALTH];
+    return NAMES[detail];
+}
+
 int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
                       const char *measurement, const char *source_label,
-                      bool emit_heave, bool deg)
+                      bool emit_heave, bool deg, int detail)
 {
     if (!buf || sz == 0 || !p) return -1;
 
     int    pos = 0;
     double a   = deg ? RAD2DEG : 1.0;   /* roll/pitch/yaw are radians in the packet */
+
+    /* A level outside the five means a config this build does not understand.
+     * Fall back to the default rather than emitting an empty field set, which
+     * is not valid line protocol and would be rejected point by point. */
+    if (detail < INFLUX_DETAIL_ATTITUDE || detail > INFLUX_DETAIL_FULL)
+        detail = INFLUX_DETAIL_HEALTH;
 
     /* measurement + tag set, then a space before the field set */
     APPEND("%s,source=%s ", measurement, source_label);
@@ -56,20 +83,25 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
     APPEND(",heading=%.5f", deg ? p->heading_deg : p->heading_deg * DEG2RAD);
     APPEND(",heading_ref=%s",
            (p->flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL)) ? "t" : "f");
-    APPEND(",mag_absent=%s",
-           (p->flags_ext & IMUD_FLAG_EXT_MAG_ABSENT) ? "t" : "f");
-
-    /* true heading + variation only when declination is known */
-    if (p->flags & IMUD_FLAG_DECLINATION_VALID) {
-        double ht  = imud_true_heading(p);   /* degrees */
-        double var = p->declination_deg;     /* degrees, E+ */
-        if (!deg) { ht *= DEG2RAD; var *= DEG2RAD; }
-        APPEND(",heading_true=%.5f,variation=%.5f", ht, var);
-    }
 
     /* rate of turn: °/min native, or → rad/s */
     APPEND(",rate_of_turn=%.6f",
            deg ? p->rate_of_turn : p->rate_of_turn * DEG2RAD / 60.0);
+
+    APPEND(",temp=%.2f,seq=%ui", p->temp_c, p->imu_seq);
+
+    /* ── navigation ──────────────────────────────────────────────────────── */
+    if (detail >= INFLUX_DETAIL_NAVIGATION) {
+        APPEND(",mag_absent=%s",
+               (p->flags_ext & IMUD_FLAG_EXT_MAG_ABSENT) ? "t" : "f");
+
+        /* true heading + variation only when declination is known */
+        if (p->flags & IMUD_FLAG_DECLINATION_VALID) {
+            double ht  = imud_true_heading(p);   /* degrees */
+            double var = p->declination_deg;     /* degrees, E+ */
+            if (!deg) { ht *= DEG2RAD; var *= DEG2RAD; }
+            APPEND(",heading_true=%.5f,variation=%.5f", ht, var);
+    }
 
     /* heave: this is the diagnostics sink, so — unlike the user-facing bridges —
      * emit from t=0 regardless of settle, and expose the validity flag as a
@@ -79,37 +111,68 @@ int influx_build_line(char *buf, size_t sz, const imud_packet_t *p,
         APPEND(",heave_valid=%s",
                (p->flags & IMUD_FLAG_HEAVE_VALID) ? "t" : "f");
     }
+    }
 
-    /* Gyro-bias estimate, its variance (MEKF P diagonal), and the accel-quiescence
-     * metric: frame-neutral SI diagnostics, never unit-converted, always emitted. */
-    APPEND(",gbias_x=%.6f,gbias_y=%.6f,gbias_z=%.6f",
-           p->gyro_bias_x, p->gyro_bias_y, p->gyro_bias_z);
-    APPEND(",gbias_var_x=%.3e,gbias_var_y=%.3e,gbias_var_z=%.3e",
-           p->gyro_bias_var_x, p->gyro_bias_var_y, p->gyro_bias_var_z);
-    APPEND(",quiescence=%.6f", p->accel_quiescence);
+    /* ── seastate ────────────────────────────────────────────────────────── */
+    if (detail >= INFLUX_DETAIL_SEASTATE) {
+        /* Sea state (v14): same diagnostics-sink policy as heave — always emitted
+         * (values are 0.0 until the estimator settles) with the validity flag as
+         * a boolean field. Frame-neutral SI (m, s, rad), never unit-converted. */
+        APPEND(",wave_height=%.3f,wave_period=%.2f,roll_period=%.2f",
+               p->wave_height_m, p->wave_period_s, p->roll_period_s);
+        APPEND(",roll_amplitude=%.4f,pitch_period=%.2f,pitch_amplitude=%.4f",
+               p->roll_amplitude, p->pitch_period_s, p->pitch_amplitude);
+        APPEND(",wave_valid=%s", (p->flags & IMUD_FLAG_WAVE_VALID) ? "t" : "f");
+    }
 
-    /* Compass health (v14): always-on diagnostics, unitless / rad. */
-    APPEND(",mag_anomaly=%.5f,mag_residual=%.5f",
-           p->mag_anomaly, p->mag_residual);
+    /* ── health ──────────────────────────────────────────────────────────── */
+    if (detail >= INFLUX_DETAIL_HEALTH) {
+        /* Gyro-bias estimate, its variance (MEKF P diagonal), and the accel-quiescence
+         * metric: frame-neutral SI diagnostics, never unit-converted, always emitted. */
+        APPEND(",gbias_x=%.6f,gbias_y=%.6f,gbias_z=%.6f",
+               p->gyro_bias_x, p->gyro_bias_y, p->gyro_bias_z);
+        APPEND(",gbias_var_x=%.3e,gbias_var_y=%.3e,gbias_var_z=%.3e",
+               p->gyro_bias_var_x, p->gyro_bias_var_y, p->gyro_bias_var_z);
+        APPEND(",quiescence=%.6f", p->accel_quiescence);
 
-    /* MEKF update-gate health (v17): same always-on diagnostics policy. */
-    APPEND(",innov_weight=%.5f,innov_reject=%.5f",
-           p->innov_weight, p->innov_reject);
+        /* Compass health (v14): always-on diagnostics, unitless / rad. */
+        APPEND(",mag_anomaly=%.5f,mag_residual=%.5f",
+               p->mag_anomaly, p->mag_residual);
 
-    /* MEKF measurement-model consistency (v17): rolling NIS, 1.0 = the
-     * covariance is consistent with the innovations actually seen. */
-    APPEND(",nis_accel=%.5f,nis_mag=%.5f", p->nis_accel, p->nis_mag);
+        /* MEKF update-gate health (v17): same always-on diagnostics policy. */
+        APPEND(",innov_weight=%.5f,innov_reject=%.5f",
+               p->innov_weight, p->innov_reject);
 
-    /* Sea state (v14): same diagnostics-sink policy as heave — always emitted
-     * (values are 0.0 until the estimator settles) with the validity flag as
-     * a boolean field. Frame-neutral SI (m, s, rad), never unit-converted. */
-    APPEND(",wave_height=%.3f,wave_period=%.2f,roll_period=%.2f",
-           p->wave_height_m, p->wave_period_s, p->roll_period_s);
-    APPEND(",roll_amplitude=%.4f,pitch_period=%.2f,pitch_amplitude=%.4f",
-           p->roll_amplitude, p->pitch_period_s, p->pitch_amplitude);
-    APPEND(",wave_valid=%s", (p->flags & IMUD_FLAG_WAVE_VALID) ? "t" : "f");
+        /* MEKF measurement-model consistency (v17): rolling NIS, 1.0 = the
+         * covariance is consistent with the innovations actually seen. */
+        APPEND(",nis_accel=%.5f,nis_mag=%.5f", p->nis_accel, p->nis_mag);
+    }
 
-    APPEND(",temp=%.2f,seq=%ui", p->temp_c, p->imu_seq);
+    /* ── full ────────────────────────────────────────────────────────────── */
+    if (detail >= INFLUX_DETAIL_FULL) {
+        /* The sensor vectors, calibrated then raw, in the packet's own SI units:
+         * accel m/s², gyro rad/s, mag µT. Never unit-converted — `deg` governs the
+         * angle fields, and turning a gyro rate into °/s here would make gyro_x
+         * disagree with gbias_x above, which is the number you compare it to. */
+        APPEND(",accel_x=%.5f,accel_y=%.5f,accel_z=%.5f",
+               p->accel_x, p->accel_y, p->accel_z);
+        APPEND(",accel_raw_x=%.5f,accel_raw_y=%.5f,accel_raw_z=%.5f",
+               p->accel_raw_x, p->accel_raw_y, p->accel_raw_z);
+        APPEND(",gyro_x=%.6f,gyro_y=%.6f,gyro_z=%.6f",
+               p->gyro_x, p->gyro_y, p->gyro_z);
+        APPEND(",gyro_raw_x=%.6f,gyro_raw_y=%.6f,gyro_raw_z=%.6f",
+               p->gyro_raw_x, p->gyro_raw_y, p->gyro_raw_z);
+        APPEND(",mag_x=%.4f,mag_y=%.4f,mag_z=%.4f",
+               p->mag_x, p->mag_y, p->mag_z);
+        APPEND(",mag_raw_x=%.4f,mag_raw_y=%.4f,mag_raw_z=%.4f",
+               p->mag_raw_x, p->mag_raw_y, p->mag_raw_z);
+
+        /* Timestamps other than ts_wall_ns, which is the point's own time below.
+         * Integer fields (the i suffix) so Influx does not store them as doubles
+         * and lose nanoseconds to the 53-bit mantissa. */
+        APPEND(",ts_tai_ns=%llui,ts_chip_ticks=%ui,anchor_gen=%ui",
+               (unsigned long long)p->ts_tai_ns, p->ts_chip_ticks, p->anchor_gen);
+    }
 
     /* space, then the nanosecond timestamp */
     APPEND(" %llu", (unsigned long long)p->ts_wall_ns);

@@ -162,6 +162,12 @@ int main(int argc, char **argv)
     bridge_install_signals();
 
     bool deg        = (strcmp(cfg.influx_units, "rad") != 0);
+    int  detail     = influx_detail_from_name(cfg.influx_detail);
+    if (detail < 0) {
+        LOG_W("[influxdb] unknown detail \"%s\"; using \"%s\"\n",
+              cfg.influx_detail, influx_detail_name(INFLUX_DETAIL_HEALTH));
+        detail = INFLUX_DETAIL_HEALTH;
+    }
     bool emit_heave = cfg.publish_heave;
     long period_ns  = bridge_period_ns(cfg.influx_rate_hz, 100000000L);
 
@@ -203,6 +209,13 @@ int main(int argc, char **argv)
         imud_config_t nc;
         if (bridge_reload_begin(&BI, config_path, &nc)) {
             deg        = (strcmp(nc.influx_units, "rad") != 0);
+            {   /* keep the running level on an unparseable reload */
+                int d = influx_detail_from_name(nc.influx_detail);
+                if (d < 0) LOG_W("[influxdb] unknown detail \"%s\"; keeping "
+                                 "\"%s\"\n", nc.influx_detail,
+                                 influx_detail_name(detail));
+                else detail = d;
+            }
             emit_heave = nc.publish_heave;
             period_ns  = bridge_period_ns(nc.influx_rate_hz, 100000000L);
             config_apply_influx_transport_compat(&nc);
@@ -269,7 +282,8 @@ int main(int argc, char **argv)
                 char line[1024];
                 int n = influx_build_line(line, sizeof line, &latest,
                                           cfg.influx_measurement,
-                                          cfg.influx_source_label, emit_heave, deg);
+                                          cfg.influx_source_label, emit_heave,
+                                          deg, detail);
                 if (n > 0) {
                     if (cfg.influx_http_enabled) {
                         int st = http_post(&cfg, line, n);

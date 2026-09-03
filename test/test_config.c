@@ -1719,6 +1719,7 @@ static void fill_distinct(imud_config_t *c)
     SET_STR(c->influx_measurement, "distinct-89");
     SET_STR(c->influx_source_label, "distinct-90");
     SET_STR(c->influx_units, "d91");
+    SET_STR(c->influx_detail, "distinct-91b");
     c->influx_udp_enabled = !c->influx_udp_enabled;
     SET_STR(c->influx_udp_addr, "distinct-93");
     c->influx_udp_port = 101;

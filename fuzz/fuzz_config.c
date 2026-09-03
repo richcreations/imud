@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "influx_line.h"
 
 /*
  * The oracle: a config the parser ACCEPTED must not contain an out-of-range
@@ -68,6 +69,17 @@ static void check_ranges(const imud_config_t *c)
      * configuration rather than something that has to round. */
     assert(c->imu_odr_mhz > 0);
     assert(c->mag_odr_mhz > 0);
+
+    /*
+     * Past the parse, the way fuzz_cal and fuzz_wmm go past theirs: an
+     * arbitrary string reaches influx_detail_from_name, whose return value
+     * INDEXES a six-entry table in influx_detail_name.  Anything other than a
+     * real level or -1 is an out-of-bounds read there, and the config file is
+     * the untrusted input that decides it.
+     */
+    int d = influx_detail_from_name(c->influx_detail);
+    assert(d == -1 || (d >= INFLUX_DETAIL_ATTITUDE && d <= INFLUX_DETAIL_FULL));
+    assert(influx_detail_name(d) != NULL);   /* -1 must fall back, not index */
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

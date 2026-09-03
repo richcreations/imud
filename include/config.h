@@ -215,6 +215,9 @@ typedef struct {
     char  influx_measurement[32];  /* [hot] line-protocol measurement name */
     char  influx_source_label[32]; /* [hot] value of the source= tag */
     char  influx_units[8];         /* [hot] "deg" | "rad" */
+    /* [hot] cumulative field set: each level adds to the one before it.
+     * "attitude" | "navigation" | "seastate" | "health" | "full" */
+    char  influx_detail[16];
     /* UDP transport */
     bool  influx_udp_enabled;      /* [restart] UDP line-protocol output */
     char  influx_udp_addr[64];     /* [hot] InfluxDB/Telegraf UDP host */
