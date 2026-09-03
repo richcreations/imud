@@ -1281,9 +1281,12 @@ static void test_daemon_hirate_thread_failure_sends_nothing(void)
     pthread_join(d.tid, NULL);
     EXPECT(d.rc == 0, "shuts down clean");
 
-    /* Everything the daemon could ever have sent is queued by now. */
+    /* Wait for the absence rather than poll for it.  The join proves the
+     * daemon sends nothing more, not that a datagram already sent has reached
+     * the receive queue, so MSG_DONTWAIT here could miss one and pass.  The
+     * socket carries a 1 s SO_RCVTIMEO, which bounds the wait. */
     char buf[512];
-    ssize_t n = recv(rx, buf, sizeof buf, MSG_DONTWAIT);
+    ssize_t n = recv(rx, buf, sizeof buf, 0);
     EXPECT(n < 0, "no packet on a stream whose thread never started");
     close(rx);
 

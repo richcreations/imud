@@ -286,11 +286,11 @@ static void test_reload_and_shutdown(void)
     pthread_join(ht, NULL);
 
     /*
-     * Drain first.  The thread was streaming at 100 Hz into a kernel receive
-     * buffer, so several datagrams are already queued; without this the next
-     * recv() returns a stale streaming packet and the FLAG_SHUTDOWN assertion
-     * below fails for the wrong reason.  Safe to drain only now that the
-     * thread has joined and nothing further can be queued.
+     * Clear what is already queued, so the scan below stays short.  Best
+     * effort, and nothing rests on it: pthread_join proves the thread issues
+     * no further sendto(), not that every datagram it already sent has reached
+     * the receive queue.  A streaming datagram arriving after this loop saw an
+     * empty queue is what failed on the macos-latest runner.
      */
     {
         int fl = fcntl(hi_rx, F_GETFL, 0);
@@ -302,18 +302,44 @@ static void test_reload_and_shutdown(void)
         EXPECT(drained >= 0, "receive queue drained before the shutdown check");
     }
 
+    /*
+     * Queue a stale streaming packet ahead of the shutdown one deliberately —
+     * pkt still holds a real one from the recv above.  The reader has to walk
+     * past such a packet whenever the drain missed one, so injecting it makes
+     * every host exercise that, rather than only one that loses the race.
+     */
+    {
+        int decoy = socket(AF_INET, SOCK_DGRAM, 0);
+        struct sockaddr_in da;
+        memset(&da, 0, sizeof da);
+        da.sin_family      = AF_INET;
+        da.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        da.sin_port        = htons((uint16_t)hi_port);
+        EXPECT(decoy >= 0 &&
+               sendto(decoy, pkt, sizeof(imu_packet_t), 0,
+                      (struct sockaddr *)&da, sizeof da)
+                   == (ssize_t)sizeof(imu_packet_t),
+               "a stale streaming packet is queued ahead of the shutdown one");
+        if (decoy >= 0) close(decoy);
+    }
+
     /* The shutdown packet is sent after the thread has stopped, by the
      * daemon's exit path — consumers use it to distinguish a clean stop
-     * from a crash. */
+     * from a crash.  Read forward to it instead of assuming it is next;
+     * anything ahead of it is a streaming packet that had not landed yet.
+     * The receiver's SO_RCVTIMEO ends the scan if it never comes. */
     out_ctx_send_shutdown(out);
-    ssize_t sn = recv(hi_rx, pkt, sizeof pkt, 0);
-    EXPECT(sn == (ssize_t)sizeof(imu_packet_t), "a final packet was sent");
-    if (sn == (ssize_t)sizeof(imu_packet_t)) {
+    bool got_pkt = false, saw_shutdown = false;
+    for (;;) {
+        ssize_t sn = recv(hi_rx, pkt, sizeof pkt, 0);
+        if (sn != (ssize_t)sizeof(imu_packet_t)) break;
+        got_pkt = true;
         imu_packet_t p;
         memcpy(&p, pkt, sizeof p);
-        EXPECT((p.flags & FLAG_SHUTDOWN) != 0,
-               "final packet carries FLAG_SHUTDOWN");
+        if (p.flags & FLAG_SHUTDOWN) { saw_shutdown = true; break; }
     }
+    EXPECT(got_pkt, "a final packet was sent");
+    EXPECT(saw_shutdown, "final packet carries FLAG_SHUTDOWN");
 
     out_ctx_free(out);
     close(hi_rx);
