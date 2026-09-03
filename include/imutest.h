@@ -105,6 +105,15 @@ typedef struct {
 
 typedef struct { uint8_t reg, before, after; } imt_regdiff_t;
 
+/* One sample as the driver handed it over, for the appendix dump. Eight rows
+ * is enough to see a stuck value or a repeating pattern and short enough that
+ * two windows stay readable. */
+#define IMT_MAX_SAMPLE_ROWS 8
+typedef struct {
+    uint32_t seq;
+    float    accel[3], gyro[3], temp_c;
+} imt_sample_row_t;
+
 typedef struct {              /* Welford accumulation, finalised */
     uint64_t n;
     double   mean[3], sigma[3], min[3], max[3];
@@ -183,6 +192,26 @@ typedef struct {
      * moves these and not the integral. Zero when phase C did not run.
      */
     double        direct_gyro_peak[3];
+
+    /*
+     * A few consecutive samples exactly as the driver delivered them, from the
+     * rest window and from the first commanded turn.
+     *
+     * Every other number in this struct is a statistic, and a statistic cannot
+     * distinguish the ways a sample stream goes wrong: zeros, a stuck value, a
+     * plausible value in the wrong slot and a real measurement all reduce to a
+     * mean and a sigma.  Reading eight of them side by side does, in one look,
+     * what an issue thread has otherwise spent days inferring.
+     *
+     * Two windows because the interesting failures are transitions: the part
+     * measuring correctly at rest and not once it is being driven is a
+     * different defect from one that never measured, and only a before and an
+     * after tell them apart.
+     */
+    imt_sample_row_t rest_rows[IMT_MAX_SAMPLE_ROWS];
+    imt_sample_row_t turn_rows[IMT_MAX_SAMPLE_ROWS];
+    int           n_rest_rows, n_turn_rows;
+
     uint32_t      ts_first, ts_last;
     double        ts_median_delta, ts_implied_tick_ns, ts_wall_ratio;
     /* Reversals and repeats are separate faults: a repeat is one reading

@@ -56,6 +56,7 @@
 
 static volatile sig_atomic_t g_abort;
 
+
 void imt_request_abort(void) { g_abort = 1; }
 
 /* ── Small helpers ─────────────────────────────────────────────────────────── */
@@ -482,6 +483,23 @@ typedef struct {
     struct { uint8_t lo, hi; } vol_reg[4];
     int         nvol_reg;
 } imt_regmap_t;
+
+/*
+ * The control-register image init() left behind, held for imu.regs.after_run.
+ *
+ * Everything else compares registers around init(): imu.init.regdiff before
+ * against after, imu.init.idempotent one init against the next.  Nothing looks
+ * at them once the part has been driven, which is where a configuration that
+ * does not survive the run would show — and that is a question three open
+ * reports have needed and none could answer, because a report only ever
+ * carried the state the part was in before any of the phases ran.
+ *
+ * Handles rather than copies: the buffers they point at are already static in
+ * the function that fills them.
+ */
+static const uint8_t     *g_post_init_img;
+static const bool        *g_post_init_vol;
+static const imt_regmap_t *g_post_init_rm;
 
 static const imt_regmap_t imt_regmaps[] = {
     /* ST: FIFO_DATA_OUT is 0x78 (tag) through 0x7E (Z high). */
@@ -1360,6 +1378,13 @@ static int check_bringup(imt_report_t *r, const imt_opts_t *o,
             int nvol = reg_volatile_scan(ibus, rm, after, volatile_imu);
             const bool *vol = nvol >= 0 ? volatile_imu : NULL;
             r->raw.n_volatile_imu = nvol > 0 ? nvol : 0;
+
+            /* Kept for imu.regs.after_run, which re-reads the same window once
+             * the guided phases are over.  These buffers are already static;
+             * the handles are what carry them out of this function. */
+            g_post_init_img = after;
+            g_post_init_vol = vol;
+            g_post_init_rm  = rm;
 
             /* How many registers the idempotency compare actually covers. */
             int nscan = 0;
@@ -2267,6 +2292,16 @@ static void check_fifo(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                       : "reads did not return to rc 0 after draining.");
 }
 
+/* Copy one sample into a bounded appendix row set. */
+static void sample_row_add(imt_sample_row_t *rows, int *n, const imu_sample_t *s)
+{
+    if (*n >= IMT_MAX_SAMPLE_ROWS) return;
+    imt_sample_row_t *o = &rows[(*n)++];
+    o->seq = s->seq;
+    for (int k = 0; k < 3; k++) { o->accel[k] = s->accel[k]; o->gyro[k] = s->gyro[k]; }
+    o->temp_c = s->temp_c;
+}
+
 /* ── Phase A: noise floor, gravity, temperature ───────────────────────────── */
 
 static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
@@ -2291,6 +2326,7 @@ static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     while (now_s() < deadline && !g_abort) {
         if (drain_once(d, buf, 128, &n) < 0) { drain_pace(d); continue; }
         for (int i = 0; i < n; i++) {
+            sample_row_add(r->raw.rest_rows, &r->raw.n_rest_rows, &buf[i]);
             w3_add(&wa, buf[i].accel);
             w3_add(&wg, buf[i].gyro);
             double mag = sqrt((double)buf[i].accel[0] * buf[i].accel[0] +
@@ -4318,6 +4354,28 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     regmap_dir_safe(gm) && dir_bank_ok(d->bus, gm);
     double gpeak[3] = { 0, 0, 0 };
 
+    /*
+     * |a| from the FIFO across the whole phase, against |a| from the direct
+     * registers read beside it.
+     *
+     * Nothing else checks the FIFO's ACCELEROMETER half while the board is
+     * turning: imu.direct.accel runs at rest and the six faces are over before
+     * the first turn.  So two faults that need opposite fixes have looked
+     * identical in every report -- gyro words specifically wrong, or the whole
+     * FIFO delivering nothing while still counting sample-sets at the right
+     * rate.  Only the gyro phase is positioned to notice the second, and it
+     * reports it as theta ~ 0, which reads like the first.
+     *
+     * Magnitude rather than direction, unlike imu.direct.accel: the board is
+     * MOVING here, and the FIFO sample is up to a batch older than the direct
+     * read, so their directions legitimately differ.  |a| is invariant to
+     * orientation and nearly so to a slow hand turn, and g is a reference the
+     * tool already trusts -- which is what lets this be graded without the
+     * accelerometer sensitivity the direct window has no table for.
+     */
+    double fifo_a_sum = 0, dir_a_sum = 0;
+    uint64_t fifo_a_n = 0, dir_a_n = 0;
+
     for (int t = 0; t < 3 && !g_abort; t++) {
         int axis = imt_turns[t].axis;
         snprintf(body, sizeof body,
@@ -4360,6 +4418,13 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                 }
                 for (int k = 0; k < 3; k++)
                     theta[k] += (double)buf[i].gyro[k] * dt * 180.0 / M_PI;
+                if (t == 0)
+                    sample_row_add(r->raw.turn_rows, &r->raw.n_turn_rows, &buf[i]);
+                double a2 = 0;
+                for (int k = 0; k < 3; k++)
+                    a2 += (double)buf[i].accel[k] * (double)buf[i].accel[k];
+                fifo_a_sum += sqrt(a2);
+                fifo_a_n++;
                 count++;
             }
             /* Sampled per poll, not per FIFO sample: this is a peak detector
@@ -4373,6 +4438,13 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     dir_triple(gm, w, gm->dir.g_off, gv);
                     for (int k = 0; k < 3; k++)
                         if (fabs(gv[k]) > gpeak[k]) gpeak[k] = fabs(gv[k]);
+                    if (gm->dir.a_off >= 0) {
+                        double av[3];
+                        dir_triple(gm, w, gm->dir.a_off, av);
+                        dir_a_sum += sqrt(av[0] * av[0] + av[1] * av[1] +
+                                          av[2] * av[2]);
+                        dir_a_n++;
+                    }
                 }
             }
 
@@ -4492,6 +4564,37 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     if (r->raw.n_turns == 0) return;
 
     for (int k = 0; k < 3; k++) r->raw.direct_gyro_peak[k] = gpeak[k];
+
+    /*
+     * Wide band on purpose.  This is not imu.rest.gravity repeated under
+     * motion — a hand turn adds real linear acceleration, so a tight bound
+     * would fail on a good part and get read as noise.  What it must catch is
+     * a FIFO that has stopped carrying measurements at all, which reads 0, and
+     * one carrying something that is not an acceleration, which reads nothing
+     * like g.  The direct |a| beside it is reported in counts and NOT graded:
+     * the tool has no sensitivity table for the direct window, so it is there
+     * to say whether the part was still measuring while the FIFO was not.
+     */
+    if (fifo_a_n) {
+        double fa = fifo_a_sum / (double)fifo_a_n;
+        bool ok = fabs(fa - IMT_G_MS2) < 2.0;
+        char m3[96], e3[64];
+        if (dir_a_n)
+            fmtbuf(m3, sizeof m3, "FIFO %.2f m/s^2, direct %.0f counts",
+                   fa, dir_a_sum / (double)dir_a_n);
+        else
+            fmtbuf(m3, sizeof m3, "FIFO %.2f m/s^2", fa);
+        add_check(r, "imu.fifo.gravity", "FIFO still carries gravity while turning",
+                  ok ? IMT_PASS : IMT_FAIL, m3,
+                  fmtbuf(e3, sizeof e3, "%.2f +/- 2.00 m/s^2", IMT_G_MS2),
+                  ok ? "the FIFO was delivering real accelerometer data "
+                       "throughout the rotation phase, so a gyro that "
+                       "integrates to nothing is the gyro half specifically."
+                     : "the FIFO kept returning sample-sets at the configured "
+                       "rate, but their accelerometer half is not an "
+                       "acceleration. The gyro reading is not the defect here "
+                       "— the whole FIFO payload is wrong.");
+    }
 
     if (!have_dir) {
         skip_check_structural(r, "imu.direct.gyro", "Direct gyro registers respond",
@@ -5446,6 +5549,49 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
                            "Mag frame agrees with the gyro",
                            "no working magnetometer in this run");
             }
+        }
+    }
+
+    /*
+     * The part's configuration, re-read now the phases are over.
+     *
+     * A driver that leaves the part correctly configured at init() and not at
+     * the end of a run looks identical in every report written so far, because
+     * the only register images taken are from before the first phase.  Volatile
+     * registers are excluded by the same mask the idempotency compare uses, so
+     * what remains is control state that changed with nothing writing it.
+     */
+    if (r->is_sim) {
+        skip_check(r, "imu.regs.after_run", "Control registers survived the run",
+                   "the sim driver has no registers to compare");
+    } else if (g_post_init_rm && g_post_init_img) {
+        static uint8_t post_run[256];
+        memset(post_run, 0, sizeof post_run);
+        if (reg_snapshot(ibus, g_post_init_rm, post_run) < 0) {
+            skip_check(r, "imu.regs.after_run", "Control registers survived the run",
+                       "the post-run snapshot could not be read");
+        } else {
+            imt_regdiff_t diff[IMT_MAX_REGDIFF];
+            int n = reg_diff(g_post_init_img, post_run, g_post_init_rm,
+                             g_post_init_vol, diff, IMT_MAX_REGDIFF);
+            char m4[128], e4[32];
+            int used = snprintf(m4, sizeof m4, "%d register%s differ",
+                                n, n == 1 ? "" : "s");
+            for (int i = 0; i < n && used > 0 && used < (int)sizeof m4 - 12; i++)
+                used += snprintf(m4 + used, sizeof m4 - (size_t)used,
+                                 "%s0x%02X %02X->%02X", i ? ", " : ": ",
+                                 diff[i].reg, diff[i].before, diff[i].after);
+            add_check(r, "imu.regs.after_run",
+                      "Control registers survived the run",
+                      n == 0 ? IMT_PASS : IMT_FAIL, m4,
+                      fmtbuf(e4, sizeof e4, "0"),
+                      n == 0
+                      ? "the configuration init() wrote is still in the part, "
+                        "so nothing the run did disturbed it."
+                      : "the part is not configured the way init() left it, and "
+                        "nothing in this run wrote these registers. Anything "
+                        "measured after the change was measured on a "
+                        "differently configured part.");
         }
     }
 

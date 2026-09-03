@@ -30,10 +30,11 @@ imud-mon binary          # binary stream only
 ## `imud-imutest` — validate a driver on real hardware
 
 Drives a registered IMU and magnetometer driver through the whole driver
-contract on real silicon and writes a Markdown report you can paste into a
-bug report.
+contract on real silicon and writes a Markdown report to attach to a bug
+report — attach the file rather than pasting it, so several runs can be
+compared and nothing is lost to an email round trip.
 
-imud ships drivers for ten parts that have never run on physical hardware.
+imud ships drivers for twelve parts that have never run on physical hardware.
 They are marked `experimental`, and the daemon warns at startup when one is
 selected. Their register maps are verified against the datasheet and their
 encoding and decoding are unit-tested against a mock I²C bus — but none of
