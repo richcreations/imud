@@ -749,6 +749,7 @@ Links to the manufacturers' datasheets are collected in
 | `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below. |
 | `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
 | `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
+| `mpu6500` | TDK MPU-6500 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — the shared MPU-925x code path is I²C-only | *Experimental.* Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
 | `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 0, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_speed_hz below 2.5 MHz while this part shares the controller — it stops measuring. |
@@ -862,8 +863,12 @@ IMU driver opens during init, so the IMU must be configured too — imud always
 brings the IMU up first.
 
 Boards sold as MPU-9250 are very often relabelled **MPU-6500s**, which have no
-magnetometer at all. `probe()` rejects those by name rather than letting the
-failure surface later as an unexplained I²C error from the mag driver.
+magnetometer at all. That is a supported part, not a dead end: select
+`mpu6500` and the board runs as the six-axis IMU it is, with a separate
+magnetometer in `[mag]` if you need heading. The `mpu9250` and `mpu9255`
+probes identify such a board by name and point at that driver, rather than
+letting the failure surface later as an unexplained I²C error from the mag
+driver.
 
 ### Running a sensor on SPI
 

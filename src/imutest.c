@@ -625,6 +625,19 @@ static const imt_regmap_t imt_regmaps[] = {
                .a_off = 0, .t_off = 6, .g_off = 8, .sign = { 1, -1, -1 },
                .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
       .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
+    /* Same die and same register file as the 925x pair, so the same gaps,
+     * windows and scaling; only WHO_AM_I differs.  Declared rather than
+     * aliased because imt_regmaps[] is keyed by driver name. */
+    { .driver = "mpu6500",    .lo = 0x00, .hi = 0x7E,
+      .resv = { {0x03,0x0C}, {0x10,0x12}, {0x20,0x22}, {0x39,0x39},
+                {0x61,0x62}, {0x6D,0x71}, {0x76,0x76}, {0x79,0x79},
+                {0x7C,0x7C} }, .nresv = 9,
+      .vol_reg = { {0x3A,0x3A}, {0x3B,0x48}, {0x72,0x73} }, .nvol_reg = 3,
+      .whoami_reg = 0x75, .whoami_val = 0x70,
+      .dir = { .base = 0x3B, .len = 14, .be = true,
+               .a_off = 0, .t_off = 6, .g_off = 8, .sign = { 1, -1, -1 },
+               .fifo_temp = false, .t_zero_c = 21.0f, .t_lsb_per_c = 333.87f },
+      .skip = { 0x74 }, .nskip = 1, .nrd_lo = 1, .nrd_hi = 0 },
     { .driver = "mpu9255",    .lo = 0x00, .hi = 0x7E,
       /* Same register file, and so the same gaps, as the MPU-9250. */
       .resv = { {0x03,0x0C}, {0x10,0x12}, {0x20,0x22}, {0x39,0x39},

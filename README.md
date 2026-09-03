@@ -61,8 +61,12 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
   sensors.
 - **Pluggable hardware.** A thin driver layer hides chip differences behind
   one interface. Reference support for the SparkFun 9DoF (ISM330DHCX +
-  MMC5983MA); experimental drivers for several other ST/TDK/AKM parts; and a
-  `sim` driver that runs the whole pipeline with no hardware.
+  MMC5983MA); experimental drivers for ST LSM6DSO, LSM6DSOX, LIS2MDL and
+  LIS3MDL, TDK InvenSense ICM-20948, ICM-42688-P, MPU-6500, MPU-9250 and
+  MPU-9255, AKM AK8963 and AK09916, and PNI RM3100; and a `sim` driver that
+  runs the whole pipeline with no hardware. Addresses, interrupt pins and
+  per-part notes are in the
+  [driver table](docs/manual.md#5-supported-drivers).
 - **A flight recorder built in.** The `[capture]` black box records every raw
   sensor sample to rotating files; `imud --replay` plays a capture back
   through the full pipeline, and `imud-cal` measures your unit's actual noise

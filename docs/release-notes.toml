@@ -36,6 +36,18 @@ it — the first passive check that proves the sensing elements are live."""
 
   [[release.change]]
   kind     = "feature"
+  packages = ["imud"]
+  text     = "New driver mpu6500 for the TDK MPU-6500, the six-axis part inside the MPU-925x. Boards sold as MPU-9250 are frequently relabelled MPU-6500s; those now run as the six-axis IMU they are, with a separate magnetometer in [mag] for heading."
+  impact   = "The mpu9250 and mpu9255 probes already refused such a board; they now name mpu6500 as the driver to use. Experimental, like the rest of the MPU family."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "mpu925x reset() now waits the MPU-925x product spec's register start-up time before reading the part back, and resets the gyro, accel and temperature signal paths as TDK's own Linux driver does for this generation."
+  impact   = "The previous settle was the accelerometer's cold-start figure, which is shorter than the interval before a register access is guaranteed to answer at all."
+
+  [[release.change]]
+  kind     = "feature"
   packages = ["imud", "libimud", "imud-utils"]
   text     = "imud builds and runs on big-endian hosts. The binary packet and the .imucap file are converted field by field instead of memcpy'd in host order, so they stay little-endian whatever the machine, and the Debian packages are now Architecture: linux-any."
   impact   = "No wire-format change: the bytes a little-endian host emits are identical to before, so existing consumers need no update and the packet version stays 17."

@@ -5,14 +5,17 @@
  */
 
 /*
- * mpu925x.c — InvenSense/TDK MPU-9250 and MPU-9255 driver
+ * mpu925x.c — InvenSense/TDK MPU-9250, MPU-9255 and MPU-6500 driver
  *
- * One driver, two part numbers: the register maps are identical and only
- * WHO_AM_I differs (0x71 vs 0x73), so mpu9250_ops and mpu9255_ops share every
- * function.  Same arrangement as lsm6dso / lsm6dsox.
+ * One driver, three part numbers.  The MPU-9250 and MPU-9255 differ only in
+ * WHO_AM_I (0x71 vs 0x73); the MPU-6500 (0x70) is the gyro+accel die those
+ * two package with an AK8963, so it answers the same register map with the
+ * compass simply absent.  All three ops structs therefore share reset(),
+ * init() and read(), and differ only in probe().  Same arrangement as
+ * lsm6dso / lsm6dsox, one part number further.
  *
- * The package contains an MPU-6500 (gyro + accel) and an AK8963 magnetometer
- * on the MPU's auxiliary bus.  The mag is reached via I2C bypass mode
+ * The 9250/9255 package contains an MPU-6500 (gyro + accel) and an AK8963
+ * magnetometer on the MPU's auxiliary bus.  The mag is reached via I2C bypass mode
  * (BYPASS_EN=1 in INT_PIN_CFG, I2C_MST_EN clear in USER_CTRL), which exposes
  * the AK8963 to the host bus at 0x0C.  Configure it separately with the
  * ak8963 mag driver — imu_ctx_open() always brings the IMU up first, which is
@@ -28,10 +31,14 @@
  * ODR:  1000 Hz / (1 + SMPLRT_DIV) with the DLPF enabled.
  *
  * Counterfeit parts: the MPU-9250 breakout market is full of relabelled
- * MPU-6500s, which have no magnetometer at all.  probe() rejects WHO_AM_I
- * 0x70 by name and then verifies the AK8963 answers through the bypass, so
- * the most common failure mode becomes a self-explaining startup message
- * rather than a bare I2C error from the mag driver.
+ * MPU-6500s, which have no magnetometer at all.  The 925x probes reject
+ * WHO_AM_I 0x70 by name and then verify the AK8963 answers through the
+ * bypass, so the most common failure mode becomes a self-explaining startup
+ * message rather than a bare I2C error from the mag driver — and it now names
+ * the mpu6500 driver, which runs such a board as the six-axis part it is.
+ * That is also why mpu6500 is a registered driver rather than a debugging
+ * aid: the MPU-9250 is discontinued, so a board bought as one today is more
+ * likely to be a 6500 than not.
  *
  * Register references: MPU-9250 Register Map RM-MPU-9250A-00 Rev 1.4 and
  * MPU-9255 Register Map RM-000008 Rev 1.0 (identical register tables).
@@ -64,6 +71,7 @@
 #define REG_INT_ENABLE     0x38   /* FIFO_OVERFLOW_EN | RAW_RDY_EN            */
 #define REG_INT_STATUS     0x3A   /* FIFO_OFLOW_INT | RAW_DATA_RDY_INT        */
 #define REG_TEMP_OUT_H     0x41
+#define REG_SIGPATH_RESET  0x68   /* GYRO_RST | ACCEL_RST | TEMP_RST          */
 #define REG_USER_CTRL      0x6A   /* FIFO_EN | I2C_MST_EN | FIFO_RST          */
 #define REG_PWR_MGMT_1     0x6B   /* H_RESET | SLEEP | CYCLE | CLKSEL         */
 #define REG_PWR_MGMT_2     0x6C   /* DIS_XA..DIS_ZG; 0x00 = everything on     */
@@ -73,7 +81,7 @@
 
 #define WHO_AM_I_MPU9250   0x71
 #define WHO_AM_I_MPU9255   0x73
-#define WHO_AM_I_MPU6500   0x70   /* the usual relabelled counterfeit         */
+#define WHO_AM_I_MPU6500   0x70   /* six-axis die; also the usual counterfeit */
 
 /* CONFIG: bit 6 clear = overwrite oldest when full (stream behaviour). */
 #define CONFIG_FIFO_STREAM 0x00
@@ -92,9 +100,21 @@
 /* INT_ENABLE: RAW_RDY_EN (bit 0) — data-ready on the INT pin. */
 #define INT_ENABLE_RAW_RDY 0x01
 
+/* SIGNAL_PATH_RESET (Register 104): gyro, accel and temp digital signal
+ * paths.  Sensor registers are not cleared — that is SIG_COND_RST's job. */
+#define SIGPATH_RST_ALL    0x07
+
 /* PWR_MGMT_1 */
 #define PWR1_H_RESET       0x80
 #define PWR1_CLKSEL_AUTO   0x01   /* PLL when ready, else internal oscillator */
+
+/* PS §6.3 "start-up time for register read/write", from power-up: 11 ms
+ * typical, 100 ms MAX.  The max is what a driver has to honour — it is the
+ * point before which the part is not obliged to answer a register access at
+ * all, and §7.1's note puts configuration writes "immediately after waiting
+ * for" it.  Linux's inv_mpu6050 uses the same figure as
+ * INV_MPU6050_POWER_UP_TIME. */
+#define REG_STARTUP_US     100000
 
 /* AK8963, seen through the bypass — probe() only. The full driver is
  * src/drivers/ak8963.c. */
@@ -109,8 +129,9 @@
 #define TEMP_SENSITIVITY   333.87f  /* LSB/°C, untrimmed (PS Table 4)         */
 #define TEMP_OFFSET_C      21.0f    /* TEMP_degC = TEMP_OUT/Sens + 21         */
 
-/* Gyro start-up, 35 ms typical from sleep (PS Table 1 — the 30 ms in reset()
- * is Table 2's ACCELEROMETER figure).  Doubled, as Linux's inv_mpu6050 does
+/* Gyro start-up, 35 ms typical from sleep (PS Table 1 — Table 2's 20/30 ms is
+ * the ACCELEROMETER, and reset() waits on §6.3's register-interface figure,
+ * which is a third question again).  Doubled, as Linux's inv_mpu6050 does
  * for this family: the datasheet gives a typical, and FIFO_EN (Register 35)
  * says the FIFO buffers gyro data "even though that data path is not enabled",
  * so a FIFO started early batches samples nothing downstream can tell are
@@ -184,14 +205,30 @@ static uint8_t accel_fs_encode(int g, float *scale)
 
 /* ── Driver operations ─────────────────────────────────────────────────────── */
 
+/* The driver that does answer for a WHO_AM_I this family recognises, so a
+ * mis-selected driver can name its replacement rather than just refusing. */
+static const char *driver_for_whoami(uint8_t who)
+{
+    switch (who) {
+    case WHO_AM_I_MPU6500: return "mpu6500";
+    case WHO_AM_I_MPU9250: return "mpu9250";
+    case WHO_AM_I_MPU9255: return "mpu9255";
+    default:               return NULL;
+    }
+}
+
 /*
- * mpu_probe — identify the part, then prove the magnetometer is really there.
+ * mpu_probe — identify the part, and on the nine-axis parts prove the
+ * magnetometer is really there.
  *
- * `expect` is the caller's WHO_AM_I; probe_common accepts it and diagnoses the
- * two interesting wrong answers by name.  Enabling bypass here is safe and
- * idempotent: init() sets it again as its last step.
+ * `expect` is the caller's WHO_AM_I; probe_common accepts it and diagnoses
+ * every wrong answer this family can give by name.  `want_mag` is what
+ * separates the three drivers: only the 925x pair has a compass to find, and
+ * the MPU-6500 must not be failed for lacking one.  Enabling bypass here is
+ * safe and idempotent: init() sets it again as its last step.
  */
-static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part)
+static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part,
+                        bool want_mag)
 {
     uint8_t who;
     if (bus_reg_read(bus, REG_WHO_AM_I, &who) < 0) {
@@ -199,18 +236,23 @@ static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part)
         return -1;
     }
     if (who != expect) {
+        const char *other = driver_for_whoami(who);
         if (who == WHO_AM_I_MPU6500)
-            LOG_E("%s: WHO_AM_I = 0x%02X — this is an MPU-6500, not an %s. "
-                  "It has no magnetometer; boards sold as MPU-9250 are often "
-                  "relabelled MPU-6500s.\n", part, who, part);
-        else if (who == WHO_AM_I_MPU9250 || who == WHO_AM_I_MPU9255)
-            LOG_E("%s: WHO_AM_I = 0x%02X, expected 0x%02X — this is the other "
-                  "part; select driver '%s' instead.\n", part, who, expect,
-                  who == WHO_AM_I_MPU9250 ? "mpu9250" : "mpu9255");
+            LOG_E("%s: WHO_AM_I = 0x%02X — this is an MPU-6500, not an %s. It "
+                  "has no magnetometer; boards sold as MPU-9250 are often "
+                  "relabelled MPU-6500s. Select driver 'mpu6500' to run it as "
+                  "the six-axis part it is.\n", part, who, part);
+        else if (other)
+            LOG_E("%s: WHO_AM_I = 0x%02X, expected 0x%02X — this is another "
+                  "part in the family; select driver '%s' instead.\n",
+                  part, who, expect, other);
         else
             LOG_E("%s: WHO_AM_I = 0x%02X, expected 0x%02X\n", part, who, expect);
         return -1;
     }
+
+    /* Nothing on the auxiliary bus to find, and no bypass worth opening. */
+    if (!want_mag) return 0;
 
     /*
      * Open the bypass and check the AK8963 answers.  A genuine part always
@@ -234,7 +276,8 @@ static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part)
         wia != AK8963_WIA_VALUE) {
         LOG_E("%s: no AK8963 magnetometer found at 0x%02X through the I2C "
               "bypass — this is probably a relabelled MPU-6500 (6-axis only). "
-              "WHO_AM_I said 0x%02X but the compass did not answer.\n",
+              "WHO_AM_I said 0x%02X but the compass did not answer. Select "
+              "driver 'mpu6500' to run it as a six-axis part.\n",
               part, AK8963_I2C_ADDR, who);
         return -1;
     }
@@ -243,12 +286,17 @@ static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part)
 
 static int mpu9250_probe(const imud_bus_t *bus)
 {
-    return probe_common(bus, WHO_AM_I_MPU9250, "mpu9250");
+    return probe_common(bus, WHO_AM_I_MPU9250, "mpu9250", true);
+}
+
+static int mpu6500_probe(const imud_bus_t *bus)
+{
+    return probe_common(bus, WHO_AM_I_MPU6500, "mpu6500", false);
 }
 
 static int mpu9255_probe(const imud_bus_t *bus)
 {
-    return probe_common(bus, WHO_AM_I_MPU9255, "mpu9255");
+    return probe_common(bus, WHO_AM_I_MPU9255, "mpu9255", true);
 }
 
 /*
@@ -282,17 +330,42 @@ static int mpu_reset(const imud_bus_t *bus)
     /* H_RESET (bit 7) restores defaults and self-clears. */
     if (bus_reg_write(bus, REG_PWR_MGMT_1, PWR1_H_RESET) < 0) return -1;
 
+    /*
+     * Wait the register interface out BEFORE reading it back.  A poll that
+     * starts 1 ms in is questioning a part that PS §6.3 does not require to
+     * answer for another 99, and the failure is silent in the worst
+     * direction: a read that comes back 0x00 looks exactly like H_RESET
+     * having cleared, so the loop exits early and every later write lands on
+     * a part still resetting.
+     */
+    usleep(REG_STARTUP_US);
+
     for (int i = 0; i < 100; i++) {
-        usleep(1000);
         uint8_t val;
         if (bus_reg_read(bus, REG_PWR_MGMT_1, &val) < 0) return -1;
         if (!(val & PWR1_H_RESET)) goto reset_done;
+        usleep(1000);
     }
     LOG_W("mpu925x: H_RESET did not clear after 100 ms\n");
     return -1;
 
 reset_done:
-    usleep(30000);   /* PS Table 2: 30 ms accelerometer start-up from cold */
+    /*
+     * Reset the three digital signal paths, then wait the interface out
+     * again.  Linux's inv_mpu6050 does exactly this and applies it to
+     * MPU-6000/6500/6515/6880/9250/9255 by name — the MPU-6050 it skips — so
+     * it is a requirement of this generation rather than of the family.
+     *
+     * It matters most for the gyro.  Register 35's note is that an enabled
+     * FIFO_EN bit buffers its slots "even though that data path is not
+     * enabled", so a signal path left unreset does not produce an empty FIFO
+     * or a short frame that a reader could notice: it produces full-width
+     * sample-sets at the right rate whose gyro words are whatever a stopped
+     * path emits.  Framing stays valid, accel stays correct, and only the
+     * numbers are wrong.
+     */
+    if (bus_reg_write(bus, REG_SIGPATH_RESET, SIGPATH_RST_ALL) < 0) return -1;
+    usleep(REG_STARTUP_US);
     return 0;
 }
 
@@ -521,6 +594,31 @@ const imu_ops_t mpu9255_ops = {
     .name             = "mpu9255",
     .experimental     = true,
     .probe            = mpu9255_probe,
+    .reset            = mpu_reset,
+    .init             = mpu_init,
+    .read             = mpu_read,
+    .has_fifo         = true,
+    .has_hw_timestamp = false,
+    .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
+                            500000, 1000000, 0 },
+    .supported_accel_g  = { 2, 4, 8, 16, 0 },
+    .supported_gyro_dps = { 250, 500, 1000, 2000, 0 },
+    .actual_odr_mhz      = mpu_actual_odr_mhz,
+};
+
+/*
+ * Six-axis only.  Everything below the compass is the same silicon, so the
+ * rates, ranges and hooks are the 9255's — pair it with a separate mag driver
+ * in [mag], or run it with none.
+ *
+ * init() still writes INT_PIN_CFG's BYPASS_EN as its last step.  On this part
+ * that connects auxiliary pins with nothing behind them to the host bus,
+ * which is harmless and keeps one init() serving all three ops structs.
+ */
+const imu_ops_t mpu6500_ops = {
+    .name             = "mpu6500",
+    .experimental     = true,
+    .probe            = mpu6500_probe,
     .reset            = mpu_reset,
     .init             = mpu_init,
     .read             = mpu_read,

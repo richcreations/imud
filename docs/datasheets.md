@@ -17,6 +17,7 @@ search the part number on the linked page if a deep link has rotted.
 | ST LSM6DSO / LSM6DSOX | IMU, experimental | `lsm6dso` | I²C + SPI | <https://www.st.com/en/mems-and-sensors/lsm6dso.html> |
 | TDK MPU-9250 / MPU-9255 | 9-axis IMU, experimental (NRND) | `mpu9250`, `mpu9255` | I²C | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
 | AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | I²C only | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
+| TDK MPU-6500 | 6-axis IMU, experimental | `mpu6500` | I²C | the gyro/accel die inside the MPU-925x; its register tables are the MPU-9250/9255 register maps above, minus §5 |
 | ST LIS2MDL | magnetometer, experimental | `lis2mdl` | I²C only | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |
 | ST LIS3MDL | magnetometer, experimental | `lis3mdl` | I²C + SPI | <https://www.st.com/en/mems-and-sensors/lis3mdl.html> |
 | PNI RM3100 | magnetometer, experimental | `rm3100` | I²C + SPI | <https://www.pnicorp.com/rm3100/> (the *RM3100 & RM2100 Sensor Suite User Manual* is the register reference; the RM3100-CB manual covers the module) |

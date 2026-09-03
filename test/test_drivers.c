@@ -80,6 +80,7 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * objects, not the whole registry).  test_drivers_registry covers the lookup. */
 extern const imu_ops_t ism330dhcx_ops;
 extern const mag_ops_t mmc5983ma_ops;
+extern const imu_ops_t mpu6500_ops;
 extern const imu_ops_t mpu9250_ops;
 extern const imu_ops_t mpu9255_ops;
 extern const mag_ops_t ak8963_ops;
@@ -844,9 +845,21 @@ static void test_mpu_probe(void)
     EXPECT(mpu9255_ops.probe(I2CBUS(MPU_ADDR)) == 0, "mpu9255 probe accepts 0x73");
     EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "mpu9250 probe rejects 0x73");
 
-    /* The counterfeit that matters: a relabelled MPU-6500 (no magnetometer). */
+    /* The relabelled MPU-6500 (no magnetometer): the 925x drivers must refuse
+     * it, and mpu6500 must accept it — including with nothing answering at
+     * the AK8963 address, which is the whole point of the part. */
     mpu_stage_genuine(0x70);
     EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe rejects MPU-6500 id 0x70");
+    EXPECT(mpu6500_ops.probe(I2CBUS(MPU_ADDR)) == 0, "mpu6500 probe accepts 0x70");
+    i2cmock_set_reg(AK_ADDR, 0x00, 0x00);
+    EXPECT(mpu6500_ops.probe(I2CBUS(MPU_ADDR)) == 0,
+           "mpu6500 probe does not require an AK8963");
+
+    /* ...and must not answer for either nine-axis part. */
+    mpu_stage_genuine(0x71);
+    EXPECT(mpu6500_ops.probe(I2CBUS(MPU_ADDR)) != 0, "mpu6500 probe rejects 0x71");
+    mpu_stage_genuine(0x73);
+    EXPECT(mpu6500_ops.probe(I2CBUS(MPU_ADDR)) != 0, "mpu6500 probe rejects 0x73");
 
     /* Right WHO_AM_I, but no compass answering through the bypass — the other
      * common clone.  Must fail rather than leave it to the mag driver. */
@@ -902,6 +915,119 @@ static void test_mpu_init_registers(void)
     for (int r = 0; r < 0x80; r++)
         if (r != 0x74 && before[r] != i2cmock_get_reg(MPU_ADDR, (uint8_t)r)) same = 0;
     EXPECT(same, "init is idempotent in the register image");
+
+    end(fb);
+}
+
+/*
+ * reset() + init(), run twice — the sequence the daemon actually uses.
+ *
+ * test_mpu_init_registers above calls init() on its own, so nothing in the
+ * tree exercises the pair.  The daemon runs reset() then init() once at
+ * startup and never again; imud-imutest's full-scale sweep runs it nine times,
+ * once per range plus the restore.  Issue #57 has USER_CTRL (0x6A) reading
+ * 0x00 after the first init and 0x40 after the second on real silicon, and a
+ * state dependency across this pair is where that lives.
+ *
+ * H_RESET is modelled as Register 107 describes it — "reset the internal
+ * registers and restores the default settings" — by wiping the file on the
+ * write that sets the bit.  The mock does not do that on its own:
+ * test_driver_resets models the bit self-clearing and nothing else, so a
+ * driver that assumed a register survived a reset passes there and fails on a
+ * part.  WHO_AM_I is read-only silicon and stays.
+ */
+static void mpu_hreset_cb(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    if (addr != MPU_ADDR || reg != 0x6B || !(val & 0x80)) return;
+    for (int r = 0; r < 0x80; r++)
+        if (r != 0x75) i2cmock_set_reg(MPU_ADDR, (uint8_t)r, 0x00);
+}
+
+static void test_mpu_reset_init_pair(void)
+{
+    begin("test_mpu_reset_init_pair");
+    int fb = g_fail;
+    char msg[112];
+
+    imu_cfg_t cfg = { .odr_mhz = 200000, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 32 };
+    uint8_t  img[2][0x80];
+    uint32_t w0[2], wn[2];
+
+    mpu_stage_genuine(0x71);
+    i2cmock_on_write(mpu_hreset_cb);
+
+    for (int p = 0; p < 2; p++) {
+        w0[p] = i2cmock_writes(MPU_ADDR);
+        snprintf(msg, sizeof msg, "%s reset succeeds", p ? "second" : "first");
+        EXPECT(mpu->reset(I2CBUS(MPU_ADDR)) == 0, msg);
+        snprintf(msg, sizeof msg, "%s init succeeds", p ? "second" : "first");
+        EXPECT(mpu->init(I2CBUS(MPU_ADDR), &cfg) == 0, msg);
+        wn[p] = i2cmock_writes(MPU_ADDR) - w0[p];
+        for (int r = 0; r < 0x80; r++)
+            img[p][r] = i2cmock_get_reg(MPU_ADDR, (uint8_t)r);
+    }
+    i2cmock_on_write(NULL);
+
+    /*
+     * The register #57 names, asserted after EACH pass.  "0x00 after the first
+     * init and 0x40 after the second" is invisible to a check that reads the
+     * file once at the end.
+     */
+    for (int p = 0; p < 2; p++) {
+        snprintf(msg, sizeof msg,
+                 "USER_CTRL = FIFO_EN after reset + %s init (got 0x%02X)",
+                 p ? "2nd" : "1st", img[p][0x6A]);
+        EXPECT(img[p][0x6A] == 0x40, msg);
+    }
+
+    /* 0x74 is the FIFO port: reading it pops, so it is never part of an image
+     * comparison (test_mpu_init_registers excludes it for the same reason). */
+    int first = -1;
+    for (int r = 0; r < 0x80; r++)
+        if (r != 0x74 && img[0][r] != img[1][r] && first < 0) first = r;
+    if (first < 0)
+        snprintf(msg, sizeof msg, "reset + init leaves the same image both times");
+    else
+        snprintf(msg, sizeof msg,
+                 "reset + init leaves the same image both times "
+                 "(0x%02X: 0x%02X then 0x%02X)",
+                 first, img[0][first], img[1][first]);
+    EXPECT(first < 0, msg);
+
+    /*
+     * The signal-path reset Linux's inv_mpu6050 applies to this generation by
+     * name.  Asserted on the write log first: Register 104 is not documented
+     * as self-clearing the way USER_CTRL's reset bits are ("auto clears after
+     * one clock cycle"), and it is not documented as latching either, so what
+     * a real part leaves behind is unknown and the log is the only witness
+     * that survives either answer.  The value check below is against the
+     * mock, which holds what it is given.  inv_mpu6050 writes these bits and
+     * never clears them, so leaving them set is what known-good silicon
+     * handling looks like.
+     */
+    int sigpath = 0;
+    for (uint32_t i = 0; i < wn[0]; i++)
+        if (i2cmock_write_at(MPU_ADDR, w0[0] + i) == 0x68) sigpath = 1;
+    EXPECT(sigpath, "reset() writes SIGNAL_PATH_RESET");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x68) == 0x07,
+           "SIGNAL_PATH_RESET = gyro | accel | temp");
+
+    /*
+     * A differing write ORDER is a state dependency even when the settled
+     * bytes agree: init() taking a different path through fifo_restart() is
+     * what a second call "repairing" a register looks like from the bus.
+     */
+    snprintf(msg, sizeof msg, "both passes issue the same write count (%u, %u)",
+             wn[0], wn[1]);
+    EXPECT(wn[0] == wn[1], msg);
+    if (wn[0] == wn[1]) {
+        int order = 1;
+        for (uint32_t i = 0; i < wn[0] && order; i++)
+            if (i2cmock_write_at(MPU_ADDR, w0[0] + i) !=
+                i2cmock_write_at(MPU_ADDR, w0[1] + i)) order = 0;
+        EXPECT(order, "both passes write the same registers in the same order");
+    }
 
     end(fb);
 }
@@ -4081,6 +4207,7 @@ int main(void)
 
     test_mpu_probe();
     test_mpu_init_registers();
+    test_mpu_reset_init_pair();
     test_mpu_fifo_restart_order();
     test_mpu_read_decode();
     test_mpu_read_overflow_and_errors();

@@ -21,6 +21,7 @@ extern const imu_ops_t icm20948_ops;
 extern const imu_ops_t icm42688p_ops;
 extern const imu_ops_t lsm6dso_ops;
 extern const imu_ops_t lsm6dsox_ops;
+extern const imu_ops_t mpu6500_ops;
 extern const imu_ops_t mpu9250_ops;
 extern const imu_ops_t mpu9255_ops;
 extern const imu_ops_t sim_imu_ops;
@@ -39,6 +40,7 @@ static const imu_ops_t *imu_registry[] = {
     &icm42688p_ops,
     &lsm6dso_ops,
     &lsm6dsox_ops,
+    &mpu6500_ops,
     &mpu9250_ops,
     &mpu9255_ops,
     &sim_imu_ops,

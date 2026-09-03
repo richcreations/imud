@@ -366,6 +366,7 @@ Driver name:
 .BR icm42688p ,
 .BR lsm6dso ,
 .BR lsm6dsox ,
+.BR mpu6500 ,
 .BR mpu9250 ,
 .BR mpu9255 ,
 or

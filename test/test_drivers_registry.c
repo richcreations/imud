@@ -48,7 +48,7 @@ static void end(int fb)             { puts(g_fail == fb ? "OK" : "FAIL"); }
  * untested, but the count assertions catch a removed one). */
 static const char *imu_names[] = {
     "ism330dhcx", "lsm6dso", "lsm6dsox", "icm42688p", "icm20948",
-    "mpu9250", "mpu9255", "sim", NULL
+    "mpu6500", "mpu9250", "mpu9255", "sim", NULL
 };
 static const char *mag_names[] = {
     "mmc5983ma", "ak09916", "ak8963", "lis3mdl", "lis2mdl", "rm3100",
@@ -162,7 +162,7 @@ static void test_imu_lookups(void)
     int n = 0;
     for (const char **p = imu_names; *p; p++, n++)
         check_imu_ops(imu_driver_find(*p), *p);
-    EXPECT(n == 8, "8 IMU drivers registered");
+    EXPECT(n == 9, "9 IMU drivers registered");
     end(fb);
 }
 
@@ -302,6 +302,8 @@ static void test_spi_capability_declarations(void)
         { "icm20948",   false, 0x00 },   /* AKM compass sits behind the I2C bypass */
         { "mpu9250",    false, 0x00 },   /* ditto */
         { "mpu9255",    false, 0x00 },
+        /* Same die and same bypass, minus the compass behind it. */
+        { "mpu6500",    false, 0x00 },
         { "sim",        true,  0x00 },   /* never touches the handle */
     };
     static const struct { const char *name; bool spi; uint8_t inc; } mag_spi[] = {

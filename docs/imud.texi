@@ -1789,6 +1789,26 @@ not run on a Pi}, see below.
 @strong{Notes}: @emph{Experimental.} LSM6DSO with ML core; same driver.
 @end itemize
 
+@item @code{mpu6500}
+
+@itemize
+@item
+@strong{Chip}: TDK MPU-6500
+@item
+@strong{Type}: IMU
+@item
+@strong{I²C address}: 0x68--0x69
+@item
+@strong{GPIO interrupt}: BCM 17 · pin 11
+@item
+@strong{SPI}: no --- the shared MPU-925x code path is I²C-only
+@item
+@strong{Notes}: @emph{Experimental.} Six-axis. The gyro/accel die the
+MPU-925x packages with an AK8963, and what a board sold as an MPU-9250
+usually turns out to be. No magnetometer: pair it with one in
+@code{[mag]} for heading. Same driver, FIFO and rates as @code{mpu9250}.
+@end itemize
+
 @item @code{mpu9250}
 
 @itemize
@@ -2102,9 +2122,12 @@ bypass, which the IMU driver opens during init, so the IMU must be
 configured too --- imud always brings the IMU up first.
 
 Boards sold as MPU-9250 are very often relabelled @strong{MPU-6500s},
-which have no magnetometer at all. @code{probe()} rejects those by name
-rather than letting the failure surface later as an unexplained I²C
-error from the mag driver.
+which have no magnetometer at all. That is a supported part, not a dead
+end: select @code{mpu6500} and the board runs as the six-axis IMU it is,
+with a separate magnetometer in @code{[mag]} if you need heading. The
+@code{mpu9250} and @code{mpu9255} probes identify such a board by name
+and point at that driver, rather than letting the failure surface later
+as an unexplained I²C error from the mag driver.
 
 @node Running a sensor on SPI
 @section Running a sensor on SPI

@@ -57,6 +57,13 @@ gpio = 'BCM 17 · pin 11'
 spi_override = ''
 notes = 'LSM6DSO with ML core; same driver.'
 
+[drivers.mpu6500]
+chip = 'TDK MPU-6500'
+i2c_addr = '0x68–0x69'
+gpio = 'BCM 17 · pin 11'
+spi_override = 'no — the shared MPU-925x code path is I²C-only'
+notes = 'Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`.'
+
 [drivers.mpu9250]
 chip = 'TDK MPU-9250'
 i2c_addr = '0x68–0x69'
