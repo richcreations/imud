@@ -367,6 +367,15 @@ Drivers other than
 and
 .B sim
 are experimental.
+.PP
+Set
+.B none
+for a board with no magnetometer.
+imud then runs 6-DoF: roll, pitch, heave, sea state and rate of turn are
+unaffected, and heading starts at zero, is relative to the orientation imud
+started in rather than to earth north, and drifts without bound.
+.B FLAG_MAG_VALID
+stays clear.
 .TP
 .B bus
 .RI (string,\ default:\ "i2c")

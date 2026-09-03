@@ -67,6 +67,11 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
   runs the whole pipeline with no hardware. Addresses, interrupt pins and
   per-part notes are in the
   [driver table](docs/manual.md#5-supported-drivers).
+- **6-DoF or 9-DoF.** With `mag.driver = "none"` imud runs a gyro+accelerometer
+  board and everything that does not need a compass keeps working: roll, pitch,
+  heave, sea state and rate of turn are all gravity- or gyro-referenced. Only
+  heading changes — it starts at zero, is relative to the orientation imud
+  started in rather than to earth north, and drifts.
 - **A flight recorder built in.** The `[capture]` black box records every raw
   sensor sample to rotating files; `imud --replay` plays a capture back
   through the full pipeline, and `imud-cal` measures your unit's actual noise

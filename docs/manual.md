@@ -419,7 +419,7 @@ Magnetometer driver settings. **[restart]**
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys mag.1 -->
-| `driver` | string | `"mmc5983ma"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
+| `driver` | string | `"mmc5983ma"` | Driver to load, or `"none"` for a board with no magnetometer. See [Supported drivers](#5-supported-drivers). With `"none"` imud runs 6-DoF: roll, pitch, heave, sea state and rate of turn are unaffected; heading starts at zero, is relative to the orientation imud started in rather than to earth north, and drifts without bound, with `FLAG_MAG_VALID` clear. |
 | `bus` | string | `"i2c"` | Transport: `"i2c"` or `"spi"`, as for `[imu]` above. The AKM compasses (`ak09916`, `ak8963`) are I²C-only — they have no SPI port and are reached through the host IMU's bypass. |
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`. |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`. Note that a magnetometer's *own* clock is not what starves it on a shared controller — a slow `[imu] spi_speed_hz` is. This key can be lowered safely. |
@@ -781,6 +781,31 @@ work:
   interrupt and data-ready signalling. imud drives this part from its
   data-ready line, so 4-wire would cost the interrupt and 3-wire needs
   half-duplex support the bus layer does not have.
+
+### Running without a magnetometer (6-DoF)
+
+Set `[mag] driver = "none"` for a gyro+accelerometer board. imud starts
+normally, opens no magnetometer bus, requests no `[mag] int_gpio`, and runs
+its whole pipeline on the IMU alone; the rest of the `[mag]` section is
+ignored.
+
+Almost nothing is lost, because almost nothing imud produces needs a compass.
+Roll and pitch are gravity-referenced and unaffected. Heave, the sea-state
+statistics, and rate of turn are unaffected. What changes is heading, and only
+heading:
+
+- It starts at **zero**, taking the orientation imud booted in as its
+  reference — forward is treated as north.
+- It is therefore **relative to that orientation, not to earth north**, and
+  nothing in the data will later relate it to north.
+- It **drifts without bound**, at the gyro's bias-instability rate. Measured on
+  an ISM330DHCX at 833 Hz with a startup bias estimate: 0.1° over 25 s.
+- `FLAG_MAG_VALID` stays clear for the life of the run, and no declination is
+  applied.
+
+Consumers that read the flags see this correctly. **NMEA does not** — `$HCHDM`
+and `$HCHDG` have no way to say "relative", so treat the heading sentences from
+a 6-DoF install as unusable and take `$TIROT` and `$IIXDR`, which stay valid.
 
 ### Sample rates, and which ones your host can actually run
 

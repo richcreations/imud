@@ -642,10 +642,19 @@ Drivers other than
 .B mmc5983ma
 and
 .B sim
-are experimental.'''
+are experimental.
+.PP
+Set
+.B none
+for a board with no magnetometer.
+imud then runs 6-DoF: roll, pitch, heave, sea state and rate of turn are
+unaffected, and heading starts at zero, is relative to the orientation imud
+started in rather than to earth north, and drifts without bound.
+.B FLAG_MAG_VALID
+stays clear.'''
   md_type = 'string'
   md_default = '`"mmc5983ma"`'
-  desc = 'Driver to load. See [Supported drivers](#5-supported-drivers).'
+  desc = '''Driver to load, or `"none"` for a board with no magnetometer. See [Supported drivers](#5-supported-drivers). With `"none"` imud runs 6-DoF: roll, pitch, heave, sea state and rate of turn are unaffected; heading starts at zero, is relative to the orientation imud started in rather than to earth north, and drifts without bound, with `FLAG_MAG_VALID` clear.'''
 
   [[section.key]]
   names = ["bus"]

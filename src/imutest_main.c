@@ -258,7 +258,7 @@ int main(int argc, char **argv)
                                 "%s%s", i ? " " : "", argv[i]);
 
     printf("imud-imutest %s — %s", IMUD_VERSION_STR, cfg.imu_driver);
-    if (cfg.mag_driver[0] && strcmp(cfg.mag_driver, "none") != 0)
+    if (mag_configured(cfg.mag_driver))
         printf(" + %s", cfg.mag_driver);
     /* Name the transport and the node actually opened, per sensor: printing
      * [device] i2c_bus unconditionally told a SPI operator about a bus the
@@ -267,7 +267,7 @@ int main(int argc, char **argv)
     config_imu_bus_spec(&cfg, &ibs);
     config_mag_bus_spec(&cfg, &mbs);
     printf(" on %s %s", ibs.kind == BUS_SPI ? "SPI" : "I2C", ibs.node);
-    if (cfg.mag_driver[0] && strcmp(cfg.mag_driver, "none") != 0 &&
+    if (mag_configured(cfg.mag_driver) &&
         (mbs.kind != ibs.kind || strcmp(mbs.node, ibs.node) != 0))
         printf(" + %s %s", mbs.kind == BUS_SPI ? "SPI" : "I2C", mbs.node);
     printf("\n");

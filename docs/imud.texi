@@ -833,7 +833,12 @@ Key
 @code{driver}
  @tab string
  @tab @code{"mmc5983ma"}
- @tab Driver to load. See @ref{5 Supported drivers,,Supported drivers}.
+ @tab Driver to load, or @code{"none"} for a board with no magnetometer.
+See @ref{5 Supported drivers,,Supported drivers}. With @code{"none"}
+imud runs 6-DoF: roll, pitch, heave, sea state and rate of turn are
+unaffected; heading starts at zero, is relative to the orientation imud
+started in rather than to earth north, and drifts without bound, with
+@code{FLAG_MAG_VALID} clear.
 @item 
 @code{bus}
  @tab string
@@ -2010,10 +2015,45 @@ have.
 @end itemize
 
 @menu
+* Running without a magnetometer 6-DoF::
 * Sample rates and which ones your host can actually run::
 * Fitting an MPU-9250 or MPU-9255::
 * Running a sensor on SPI::
 @end menu
+
+@node Running without a magnetometer 6-DoF
+@section Running without a magnetometer (6-DoF)
+@anchor{#running-without-a-magnetometer-6-dof}
+Set @code{[mag] driver = "none"} for a gyro+accelerometer board. imud
+starts normally, opens no magnetometer bus, requests no
+@code{[mag] int_gpio}, and runs its whole pipeline on the IMU alone; the
+rest of the @code{[mag]} section is ignored.
+
+Almost nothing is lost, because almost nothing imud produces needs a
+compass. Roll and pitch are gravity-referenced and unaffected. Heave,
+the sea-state statistics, and rate of turn are unaffected. What changes
+is heading, and only heading:
+
+@itemize
+@item
+It starts at @strong{zero}, taking the orientation imud booted in as its
+reference --- forward is treated as north.
+@item
+It is therefore @strong{relative to that orientation, not to earth
+north}, and nothing in the data will later relate it to north.
+@item
+It @strong{drifts without bound}, at the gyro's bias-instability rate.
+Measured on an ISM330DHCX at 833 Hz with a startup bias estimate: 0.1°
+over 25 s.
+@item
+@code{FLAG_MAG_VALID} stays clear for the life of the run, and no
+declination is applied.
+@end itemize
+
+Consumers that read the flags see this correctly. @strong{NMEA does not}
+--- @code{$HCHDM} and @code{$HCHDG} have no way to say "relative", so
+treat the heading sentences from a 6-DoF install as unusable and take
+@code{$TIROT} and @code{$IIXDR}, which stay valid.
 
 @node Sample rates and which ones your host can actually run
 @section Sample rates, and which ones your host can actually run

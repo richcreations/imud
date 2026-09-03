@@ -799,6 +799,9 @@ int main(int argc, char **argv)
     bool stream_started = false, pos_started = false;
     pthread_t capture_tid;
     bool capture_started = false;
+    /* A 6-DoF board has no mag_ops, and mag_reader_thread dereferences it
+     * on every pass.  Not starting it is what makes the NULL safe. */
+    bool mag_started = false;
 
     int prc;
     prc = pthread_create(&ism_tid, NULL, ism_reader_thread, imu);
@@ -808,18 +811,23 @@ int main(int argc, char **argv)
         if (status_fd >= 0) { close(status_fd); unlink(status_path); }
         pid_remove(pid_path); return 1;
     }
-    prc = pthread_create(&mag_tid, NULL, mag_reader_thread, imu);
+    if (mag_configured(cfg.mag_driver)) {
+        prc = pthread_create(&mag_tid, NULL, mag_reader_thread, imu);
         if (prc != 0) {
-        LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(prc));
-        imu_ctx_stop(imu); join_thread(ism_tid, "ism_reader");
-        out_ctx_free(out); imu_ctx_free(imu);
-        if (status_fd >= 0) { close(status_fd); unlink(status_path); }
-        pid_remove(pid_path); return 1;
+            LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(prc));
+            imu_ctx_stop(imu); join_thread(ism_tid, "ism_reader");
+            out_ctx_free(out); imu_ctx_free(imu);
+            if (status_fd >= 0) { close(status_fd); unlink(status_path); }
+            pid_remove(pid_path); return 1;
+        }
+        mag_started = true;
     }
     prc = pthread_create(&fusion_tid, NULL, fusion_thread, imu);
         if (prc != 0) {
         LOG_E("[main] fatal: cannot create fusion thread: %s\n", strerror(prc));
-        imu_ctx_stop(imu); join_thread(mag_tid, "mag_reader"); join_thread(ism_tid, "ism_reader");
+        imu_ctx_stop(imu);
+        if (mag_started) join_thread(mag_tid, "mag_reader");
+        join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(status_path); }
         pid_remove(pid_path); return 1;
@@ -844,7 +852,8 @@ int main(int argc, char **argv)
         if (prc != 0) {
         LOG_E("[main] fatal: cannot create health thread: %s\n", strerror(prc));
         imu_ctx_stop(imu);
-        join_thread(fusion_tid, "fusion"); join_thread(mag_tid, "mag_reader");
+        join_thread(fusion_tid, "fusion");
+        if (mag_started) join_thread(mag_tid, "mag_reader");
         join_thread(ism_tid, "ism_reader");
         out_ctx_free(out); imu_ctx_free(imu);
         if (status_fd >= 0) { close(status_fd); unlink(status_path); }
@@ -1045,7 +1054,7 @@ teardown:
     imu_ctx_stop(imu);
     join_thread(health_tid, "health");
     join_thread(fusion_tid, "fusion");
-    join_thread(mag_tid,    "mag_reader");
+    if (mag_started) join_thread(mag_tid, "mag_reader");
     join_thread(ism_tid,    "ism_reader");
     if (capture_started) join_thread(capture_tid, "capture");
 

@@ -18,6 +18,7 @@
 #define IMUD_CONFIG_H
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "bus.h"
 
@@ -77,7 +78,7 @@ typedef struct {
     int   imu_poll_ms;
 
     /* [mag]  [restart] */
-    char  mag_driver[32];       /* "mmc5983ma" */
+    char  mag_driver[32];       /* "mmc5983ma", or "none" for a 6-DoF board */
     bus_kind_t mag_bus_kind;    /* BUS_I2C default; see imu_bus_kind */
     char  mag_spi_dev[64];      /* "/dev/spidev0.1"; required when bus = "spi" */
     int   mag_spi_speed_hz;     /* 0 = the driver's datasheet maximum */
@@ -383,5 +384,20 @@ bool config_apply_influx_transport_compat(imud_config_t *cfg);
  * cannot honour it.  Adding a config key means choosing a side.
  */
 void config_apply_hot(imud_config_t *dst, const imud_config_t *src);
+
+/*
+ * Does this [mag] driver name mean there is a magnetometer?
+ *
+ * "none" is a board with six degrees of freedom, not an unset key, and the
+ * distinction has to be made identically in three places — imu_ctx_open, which
+ * skips every mag stage; main(), which then must not start mag_reader; and
+ * imud-imutest, which has accepted --mag-driver none since before the daemon
+ * did.  Header-only so a caller needs no new object, the same reasoning as
+ * include/fileio.h.
+ */
+static inline bool mag_configured(const char *name)
+{
+    return name && name[0] && strcmp(name, "none") != 0;
+}
 
 #endif /* IMUD_CONFIG_H */

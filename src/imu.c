@@ -709,7 +709,8 @@ void *capture_thread(void *arg)
                      (uint32_t)(cfg.capture_max_files > 0 ? cfg.capture_max_files : 0),
                      (uint32_t)((ctx->actual_odr_mhz + 500) / 1000),
                      (uint32_t)ctx->actual_odr_mhz,
-                     ctx->imu_ops->name, ctx->mag_ops->name,
+                     ctx->imu_ops->name,
+                     ctx->mag_ops ? ctx->mag_ops->name : "none",
                      IMUD_VERSION_STR) != 0) {
         LOG_E("[capture] cannot open capture file in %s: %s\n",
               cfg.capture_dir, strerror(errno));
@@ -1035,8 +1036,12 @@ void *fusion_thread(void *arg)
         /* Keep waiting (up to mag_wait_s total) for at least one mag sample.
          * Drain the IMU ring while waiting: it holds only ~0.3 s at 833 Hz,
          * and an undrained wait counts thousands of ring drops as FIFO
-         * overflows. */
-        while (mag_n == 0 && !ctx->stop) {
+         * overflows.
+         *
+         * Not entered at all on a 6-DoF board: there is no mag_reader to fill
+         * the ring, so the whole window would be spent proving that nothing
+         * arrives, and every startup would carry mag_wait_s of dead time. */
+        while (ctx->mag_ops && mag_n == 0 && !ctx->stop) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
@@ -1063,9 +1068,21 @@ void *fusion_thread(void *arg)
                 for (int k = 0; k < 3; k++)
                     mag_avg[k] = (float)(mag_sum[k] / mag_n);
             } else {
-                /* Timeout: align without heading (assume forward = North). */
-                LOG_W("[fusion] no mag sample after %.0f s; "
-                        "aligning without heading\n", mag_wait_s);
+                /*
+                 * Align without heading: forward IS the reference, so yaw
+                 * starts at zero and every later heading is relative to the
+                 * orientation the daemon booted in.  On a 6-DoF board that is
+                 * the permanent arrangement rather than a timeout, and saying
+                 * so matters — the operator chose it, and the two cases want
+                 * different responses.
+                 */
+                if (!ctx->mag_ops)
+                    LOG_I("[fusion] 6-DoF: aligned on gravity alone. Heading "
+                          "starts at zero and is relative to this orientation, "
+                          "not to earth north.\n");
+                else
+                    LOG_W("[fusion] no mag sample after %.0f s; "
+                            "aligning without heading\n", mag_wait_s);
                 mag_avg[0] = 1.0f; mag_avg[1] = 0.0f; mag_avg[2] = 0.0f;
             }
             mekf_align(&f, acc_avg, mag_avg);
@@ -1471,14 +1488,32 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
         LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
                 "hardware timestamps will not advance\n", cfg->imu_driver);
 
-    ctx->mag_ops = mag_driver_find(cfg->mag_driver);
-    if (!ctx->mag_ops) {
-        LOG_E("[imu] unknown mag driver '%s'\n", cfg->mag_driver);
-        goto fail;
+    /*
+     * "none" is a 6-DoF board, not a missing setting.  ctx->mag_ops then stays
+     * NULL and every mag stage below is skipped — the bus is never opened, the
+     * interrupt line never requested, and main() does not start mag_reader.
+     * The fusion already copes: it consumes the mag ring with try_pop, so a
+     * ring nothing ever fills is the path it takes between samples anyway, and
+     * heading dead-reckons from the gyro exactly as it does for a part whose
+     * yaw update is disabled.
+     */
+    if (!mag_configured(cfg->mag_driver)) {
+        ctx->mag_ops = NULL;
+        LOG_I("[mag] no magnetometer configured — 6-DoF. Roll and pitch are "
+              "gravity-referenced as usual; heading is dead-reckoned from the "
+              "gyro and drifts without bound, and FLAG_MAG_VALID stays "
+              "clear.\n");
+    } else {
+        ctx->mag_ops = mag_driver_find(cfg->mag_driver);
+        if (!ctx->mag_ops) {
+            LOG_E("[imu] unknown mag driver '%s' — name a driver, or \"none\" "
+                  "for a board with no magnetometer\n", cfg->mag_driver);
+            goto fail;
+        }
+        if (ctx->mag_ops->experimental)
+            LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
+                    "not yet validated on hardware\n", cfg->mag_driver);
     }
-    if (ctx->mag_ops->experimental)
-        LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
-                "not yet validated on hardware\n", cfg->mag_driver);
 
     /*
      * Resolve both requested rates to what the drivers will really program,
@@ -1489,7 +1524,9 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * (mpu925x, icm20948) answer for their own grid.
      */
     ctx->actual_odr_mhz     = odr_actual_imu(ctx->imu_ops, cfg->imu_odr_mhz);
-    ctx->actual_mag_odr_mhz = odr_actual_mag(ctx->mag_ops, cfg->mag_odr_mhz);
+    ctx->actual_mag_odr_mhz = ctx->mag_ops
+                            ? odr_actual_mag(ctx->mag_ops, cfg->mag_odr_mhz)
+                            : 0;
 
     /* ── Open the sensor buses ───────────────────────────────────────────── */
 
@@ -1513,7 +1550,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * question, not an operator mistake, so the message names both parts and
      * the modes they want rather than blaming the config.
      */
-    if (cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
+    if (ctx->mag_ops &&
+        cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
         ctx->imu_ops->bus_caps.spi_mode != ctx->mag_ops->bus_caps.spi_mode &&
         bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev)) {
         LOG_E("[imu] %s wants SPI mode %u and %s wants mode %u, but %s and %s "
@@ -1529,9 +1567,11 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (bus_open(&ctx->imu_bus, &spec, &ctx->imu_ops->bus_caps, "imu") < 0)
         goto fail;
 
-    config_mag_bus_spec(cfg, &spec);
-    if (bus_open(&ctx->mag_bus, &spec, &ctx->mag_ops->bus_caps, "mag") < 0)
-        goto fail;
+    if (ctx->mag_ops) {
+        config_mag_bus_spec(cfg, &spec);
+        if (bus_open(&ctx->mag_bus, &spec, &ctx->mag_ops->bus_caps, "mag") < 0)
+            goto fail;
+    }
 
     /* ── Build hw config structs ─────────────────────────────────────────── */
 
@@ -1551,7 +1591,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * mutually exclusive that disagreement is not cosmetic — it is the
      * difference between every sample and one in three.  See mag_cfg_t.
      */
-    ctx->mag_hw_cfg.int_driven   = ctx->mag_ops->has_interrupt
+    ctx->mag_hw_cfg.int_driven   = ctx->mag_ops
+                                && ctx->mag_ops->has_interrupt
                                 && cfg->mag_int_gpio > 0;
 
     char hb1[16], hb2[16];   /* MHZ_STR scratch for the startup lines */
@@ -1605,6 +1646,8 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* ── Probe + reset + init mag ────────────────────────────────────────── */
 
+    if (!ctx->mag_ops) goto mag_done;
+
     if (ctx->mag_ops->probe(&ctx->mag_bus) < 0) {
         LOG_E("[imu] %s probe failed at 0x%02X\n",
                 ctx->mag_ops->name, cfg->mag_addr);
@@ -1628,6 +1671,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
                 ctx->mag_ops->name, cfg->mag_addr,
                 MHZ_STR(hb1, ctx->actual_mag_odr_mhz));
 
+mag_done:
     /* ── Configure GPIO lines ────────────────────────────────────────────── */
 
     /* Each line owns its chip handle — see include/imu_gpio.h.  Sim mode sets
@@ -1649,7 +1693,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     }
 
     /* Mag interrupt line — only requested when the driver has an external pin. */
-    if (ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
+    if (ctx->mag_ops && ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
         ctx->mag_line = imu_gpio_open(cfg->gpio_chip,
                                       (unsigned)cfg->mag_int_gpio, "imud");
         if (!ctx->mag_line) {

@@ -1455,6 +1455,37 @@ static void test_runtime_status_socket_too_long(void)
 }
 
 /* config/sim.conf must load cleanly and select the sim driver. */
+/*
+ * "none" in [mag] driver is a 6-DoF board, not an unset key.
+ *
+ * The distinction is made in three places -- imu_ctx_open skips every mag
+ * stage, main() then must not start mag_reader, and imud-imutest has taken
+ * --mag-driver none for longer than the daemon has -- so the predicate they
+ * share is worth pinning here rather than in any one of them.
+ */
+static void test_mag_none_is_a_board(void)
+{
+    begin_test("test_mag_none_is_a_board");
+    int fb = g_fail;
+
+    EXPECT(!mag_configured("none"),      "\"none\" means no magnetometer");
+    EXPECT(!mag_configured(""),          "empty means no magnetometer");
+    EXPECT(!mag_configured(NULL),        "NULL means no magnetometer");
+    EXPECT(mag_configured("mmc5983ma"),  "a driver name means there is one");
+    EXPECT(mag_configured("sim"),        "sim is a magnetometer");
+    /* Not a prefix test: a driver whose name merely starts with "none" would
+     * be a real driver, and refusing it would be a silent misconfiguration. */
+    EXPECT(mag_configured("none9"),      "only exactly \"none\" is the sentinel");
+
+    /* And the parser must carry it through untouched rather than rejecting it
+     * as an unknown driver -- resolution happens in imu_ctx_open, not here. */
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(mag_configured(cfg.mag_driver), "the default config has a mag");
+
+    end_test(fb);
+}
+
 static void test_sim_conf_loads(void)
 {
     begin_test("test_sim_conf_loads");
@@ -2004,6 +2035,7 @@ int main(void)
     test_position_keys_load();
     test_runtime_paths_load();
     test_runtime_status_socket_too_long();
+    test_mag_none_is_a_board();
     test_sim_conf_loads();
     test_mount_preset();
     test_apply_hot_partition();
