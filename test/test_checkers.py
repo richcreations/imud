@@ -621,6 +621,36 @@ CASES = [
      sub(r'the 39 portable suites', 'the 3 portable suites'),
      "3 portable suites"),
 
+    # ── check-web-drivers ────────────────────────────────────────────────────
+    # The reported defect: a driver added to the tree and not to the page.
+    # LSM6DSOX specifically, because LSM6DSO is a prefix of it -- a substring
+    # test passes on this mutation and the checker must not.
+    ("check-web-drivers", "web/index.html",
+     sub(r'ST LSM6DSO and LSM6DSOX,', 'ST LSM6DSO,'),
+     "LSM6DSOX"),
+
+    # A validated part dropped from the Reference entry. The page then makes
+    # no claim about the one combination that has actually been run.
+    ("check-web-drivers", "web/index.html",
+     sub(r'<strong>ISM330DHCX</strong>', '<strong>ISM330DHCZ</strong>'),
+     "ISM330DHCX"),
+
+    # The other direction, and the one that comes next: an imutest report
+    # clears a flag in the ops struct and the page keeps selling the part as
+    # unproven.
+    ("check-web-drivers", "src/drivers/lis3mdl.c",
+     sub(r'\.experimental     = true,', '.experimental     = false,'),
+     "LIS3MDL"),
+
+    # Both halves of the count sentence, checked against different lists.
+    ("check-web-drivers", "web/index.html",
+     sub(r'Twelve of the fourteen', 'Eleven of the fourteen'),
+     "Eleven"),
+
+    ("check-web-drivers", "web/index.html",
+     sub(r'Twelve of the fourteen', 'Twelve of the thirteen'),
+     "thirteen"),
+
     ("check-portable-tests", "devbox/README.md",
      sub(r'runs 39 suites', 'runs 99 suites'),
      "99 suites"),

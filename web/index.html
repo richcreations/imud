@@ -393,10 +393,11 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     is the best-tested combination.</dd>
 
     <dt>Experimental drivers</dt>
-    <dd>ST LSM6DSO, TDK InvenSense ICM-20948, ICM-42688-P, MPU-9250 and
-    MPU-9255; magnetometers ST LIS2MDL and LIS3MDL, and AKM AK09916 and
-    AK8963. <code>imud-imutest</code> is how one of these gets promoted:
-    run it against the part and attach the report.</dd>
+    <dd>ST LSM6DSO and LSM6DSOX, TDK InvenSense ICM-20948, ICM-42688-P,
+    MPU-6500, MPU-9250 and MPU-9255; magnetometers ST LIS2MDL and LIS3MDL,
+    AKM AK09916 and AK8963, and PNI RM3100. <code>imud-imutest</code> is how
+    one of these gets promoted: run it against the part and attach the
+    report.</dd>
 
     <dt>No hardware</dt>
     <dd>The <code>sim</code> driver runs the full pipeline from a synthetic
@@ -469,7 +470,7 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     fuzzers.</dd>
 
     <dt>Clearing an <em>experimental</em> driver flag</dt>
-    <dd>Ten of the twelve sensor drivers have never run on physical silicon.
+    <dd>Twelve of the fourteen sensor drivers have never run on physical silicon.
     If you have one of those parts, an <code>imud-imutest</code> report
     attached to an issue is what clears its flag — see
     <a href="https://github.com/richcreations/imud/blob/main/docs/ROADMAP.md">the roadmap</a>.</dd>
