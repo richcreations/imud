@@ -686,15 +686,31 @@ receive a partial burst is disconnected.
 
 ### Sentence Set
 
-Five sentences are emitted per update cycle (six when magnetic declination is known):
+Three sentences are emitted per update cycle unconditionally — `$PASHR`,
+`$TIROT`, `$IIXDR`. The heading sentences are conditional:
+
+| Sentence | Emitted when |
+|---|---|
+| `$HCHDM`, `$HCHDG` | `FLAG_MAG_VALID` **or** `FLAG_MAG_UNCAL` — the magnetometer is being fused |
+| `$HCHDT` | the above **and** `FLAG_DECLINATION_VALID` |
+
+With both mag flags clear no magnetometer is fitted, or it has stopped
+delivering, and heading is dead-reckoned from the gyro: a relative angle that
+drifts without bound. `$HCHDM` has no status field and `$HCHDG`'s is
+deviation, not validity, so a consumer could not tell — they are withheld
+instead, and `$PASHR` sends a null heading field. An *uncalibrated* fuse is
+still a magnetic heading, offset by the uncorrected hard iron but bounded, so
+it is published normally.
 
 **`$PASHR` — Attitude (primary)**
+
+Always emitted: roll, pitch and heave stay valid with no magnetometer at all.
 
 ```text
 $PASHR,HHH.H,M,RRR.R,PPP.P,0.0,ra.r,pa.p,0,A,,*hh<CR><LF>
 
 Fields:
-  HHH.H   Magnetic heading (0–360°)
+  HHH.H   Magnetic heading (0–360°); null when the magnetometer is not fused
   M       Always magnetic (PASHR carries magnetic heading regardless of declination)
   RRR.R   Roll, degrees (+ = starboard up)
   PPP.P   Pitch, degrees (+ = bow up)
@@ -707,16 +723,20 @@ Fields:
 
 Example:
   $PASHR,214.7,M,-9.5,+3.1,0.0,0.3,0.3,0,A,,*hh<CR><LF>
+  $PASHR,,M,-9.5,+3.1,0.0,0.3,0.3,0,A,,*hh<CR><LF>       (heading not fused)
 ```
 
-**`$HCHDM` — Magnetic Heading**
+The `A` in the status field stays `A`: the IMU is healthy and roll and pitch
+are valid. It says nothing about heading.
+
+**`$HCHDM` — Magnetic Heading** *(emitted only when the magnetometer is fused)*
 
 ```text
 $HCHDM,HHH.H,M*hh<CR><LF>
 Example: $HCHDM,214.7,M*3C<CR><LF>
 ```
 
-**`$HCHDG` — Heading, Deviation, Variation**
+**`$HCHDG` — Heading, Deviation, Variation** *(gated like `$HCHDM`)*
 
 Deviation fields are always empty (hard/soft-iron calibration is applied
 upstream). Variation fields carry the WMM/static declination when known
@@ -730,7 +750,7 @@ Example: $HCHDG,214.7,,,13.2,E*hh<CR><LF>   (declination known)
          $HCHDG,214.7,,,,*hh<CR><LF>        (declination unknown)
 ```
 
-**`$HCHDT` — True Heading** *(emitted only when `FLAG_DECLINATION_VALID` is set)*
+**`$HCHDT` — True Heading** *(gated like `$HCHDM`, plus `FLAG_DECLINATION_VALID`)*
 
 Requires `[position]` declination to be configured (WMM auto-compute or static override).
 

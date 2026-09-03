@@ -202,6 +202,13 @@ CASES = [
      sub(r'"\$?PASHR', '"$ZZZZZ'),
      "ZZZZZ"),
 
+    # A count claim left standing after a sentence became conditional.  This
+    # is what a gate change costs: the emit sequence moves, the prose one line
+    # above the sentence list does not, and both still read as correct.
+    ("check-nmea", "spec.md",
+     sub(r"^Three sentences are emitted", "Nine sentences are emitted"),
+     "unconditionally"),
+
     # A rate list that grew in the driver.  This is the drift that shipped:
     # the man page stopped at 1660 while ism330dhcx.c offered 3332 and 6664.
     ("gen-config-docs", "src/drivers/ism330dhcx.c",

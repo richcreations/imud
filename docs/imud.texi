@@ -2050,10 +2050,12 @@ over 25 s.
 declination is applied.
 @end itemize
 
-Consumers that read the flags see this correctly. @strong{NMEA does not}
---- @code{$HCHDM} and @code{$HCHDG} have no way to say "relative", so
-treat the heading sentences from a 6-DoF install as unusable and take
-@code{$TIROT} and @code{$IIXDR}, which stay valid.
+Consumers that read the flags see this correctly, and NMEA says it by
+staying quiet: @code{$HCHDM}, @code{$HCHDG} and @code{$HCHDT} are not
+emitted at all, and @code{$PASHR} carries a null heading field. Nothing
+publishes the relative angle as a heading, because no heading sentence
+has a field that could mark it as one. @code{$PASHR}'s roll, pitch and
+heave, @code{$TIROT} and @code{$IIXDR} are unaffected.
 
 @node Sample rates and which ones your host can actually run
 @section Sample rates, and which ones your host can actually run
@@ -2511,23 +2513,31 @@ Sentence
 @code{$PASHR}
  @tab Roll, pitch, heading, @strong{heave}, accuracy flags.
 @item 
-@code{$HCHDM}
- @tab Magnetic heading.
-@item 
-@code{$HCHDG}
- @tab Heading with magnetic variation (variation fields filled when
-declination is known).
-@item 
 @code{$TIROT}
  @tab Rate of turn (deg/min).
 @item 
 @code{$IIXDR}
  @tab Pitch and roll as transducer measurements.
 @item 
+@code{$HCHDM}
+ @tab Magnetic heading --- @strong{only} while the magnetometer is
+fused.
+@item 
+@code{$HCHDG}
+ @tab Heading with magnetic variation (variation fields filled when
+declination is known) --- same condition as @code{$HCHDM}.
+@item 
 @code{$HCHDT}
- @tab True heading --- @strong{only} emitted when declination is
+ @tab True heading --- that condition @strong{and} declination
 configured.
 @end multitable
+
+The three heading sentences stop when the magnetometer is absent or has
+stopped delivering, because heading is then dead-reckoned from the gyro
+and none of them can say so; @code{$PASHR} keeps going out with a null
+heading field. An uncalibrated magnetometer does @strong{not} stop them
+--- that heading is offset by the uncorrected hard iron but still
+magnetic and still bounded.
 
 @node High-rate binary --- UDP port 10111 default off
 @section High-rate binary --- UDP port 10111 (default off)

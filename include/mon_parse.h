@@ -36,6 +36,7 @@ typedef struct {
     float nmea_true_hdg;
     bool  have_nmea;
     bool  nmea_has_true_hdg;
+    bool  nmea_has_hdg;      /* $PASHR carried a heading, not a null field */
 
     /* Binary — most recent valid packet */
     imu_packet_t bin_pkt;
@@ -56,8 +57,10 @@ bool mon_nmea_get_field(const char *sentence, int field, float *out);
  *
  * nmea_has_true_hdg is cleared on every call and set only if this burst
  * carried $HCHDT, so a declination that stops being available stops being
- * displayed.  The other fields persist across bursts by design — a sentence
- * absent from one datagram keeps its last value rather than blanking.
+ * displayed.  nmea_has_hdg tracks $PASHR's heading field the same way, since
+ * imud nulls it when no magnetometer is being fused.  The other fields persist
+ * across bursts by design — a sentence absent from one datagram keeps its last
+ * value rather than blanking.
  */
 void mon_parse_nmea(mon_state_t *st, const char *buf, size_t len);
 

@@ -790,17 +790,23 @@ to keep the listener host-local.
 .RI (int,\ default:\ 10110)
 Listener TCP port (the de-facto NMEA-over-TCP port).
 .PP
-Sentences emitted:
+Always emitted:
 .BR $PASHR ,
-.BR $HCHDM ,
-.BR $HCHDG ,
 .BR $TIROT ,
 .BR $IIXDR .
-When declination is configured,
-.B $HCHDT
-(true heading) is added and
+While the magnetometer is being fused, calibrated or not,
+.B $HCHDM
+and
 .B $HCHDG
-carries the variation fields.
+are added, and
+.B $HCHDT
+(true heading) too when declination is configured.
+.PP
+With no magnetometer fitted, or one that has stopped delivering, heading is
+dead-reckoned from the gyro and drifts without bound.  No heading sentence can
+report that, so the three are withheld and
+.B $PASHR
+sends a null heading field.
 .\" END GENERATED: config-keys nmea
 .SS [highrate]
 High-rate binary UDP stream.

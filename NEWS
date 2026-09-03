@@ -37,6 +37,23 @@ Added:
   No wire-format change: the bytes a little-endian host emits are identical to
   before, so existing consumers need no update and the packet version stays
   17.
+* A gyro+accelerometer board with no magnetometer runs, with [mag] driver =
+  "none". imud opens no magnetometer bus and claims no [mag] int_gpio; roll,
+  pitch, heave, the sea-state statistics and rate of turn are unaffected.
+  Heading starts at zero and is relative to the orientation imud booted in,
+  not to earth north, and drifts at the gyro's bias-instability rate.
+  FLAG_MAG_VALID stays clear for the whole run and no declination is applied.
+
+Changed:
+
+* NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading field
+  null, while no magnetometer is being fused. An uncalibrated magnetometer
+  still publishes all of them.
+  A rig with no magnetometer, or one that has stopped delivering, used to
+  publish a dead-reckoned heading as magnetic heading; no heading sentence has
+  a field that could qualify it. Consumers now get no heading rather than a
+  wrong one. $TIROT and $IIXDR are unaffected, and imud-mon shows heading as
+  --.
 
 Fixed:
 

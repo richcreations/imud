@@ -115,9 +115,16 @@ static void print_snapshot(const mon_state_t *st,
 
     if (want_nmea) {
         if (st->have_nmea) {
-            printf("NMEA    hdg=%6.1f°  pitch=%+6.1f°  roll=%+6.1f°"
+            /* A null $PASHR heading means imud is not fusing a magnetometer;
+             * pitch, roll and rate of turn are still good. */
+            char hdg[16];
+            if (st->nmea_has_hdg)
+                snprintf(hdg, sizeof hdg, "%6.1f°", st->nmea_hdg);
+            else
+                snprintf(hdg, sizeof hdg, "%6s ", "--");
+            printf("NMEA    hdg=%s  pitch=%+6.1f°  roll=%+6.1f°"
                    "  rot=%+7.1f dpm\n",
-                   st->nmea_hdg, st->nmea_pitch, st->nmea_roll, st->nmea_rot);
+                   hdg, st->nmea_pitch, st->nmea_roll, st->nmea_rot);
             if (st->nmea_has_true_hdg)
                 printf("        true_hdg=%6.1f°  ($HCHDT)\n", st->nmea_true_hdg);
         } else {

@@ -58,6 +58,18 @@ it — the first passive check that proves the sensing elements are live."""
   text     = "The armhf packages are now built on Raspbian at the ARMv6 baseline, so they run on every Raspberry Pi that boots a 32-bit userland. Previously they were built to Debian's ARMv7 baseline."
   impact   = "On a Pi 1 or Pi Zero/Zero W the previous packages installed without complaint and then died on an illegal instruction, because both ports report the same \"armhf\" architecture. Those boards can now install from the apt repository. The arm64 packages are unchanged."
 
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
+  text     = "A gyro+accelerometer board with no magnetometer runs, with [mag] driver = \"none\". imud opens no magnetometer bus and claims no [mag] int_gpio; roll, pitch, heave, the sea-state statistics and rate of turn are unaffected."
+  impact   = "Heading starts at zero and is relative to the orientation imud booted in, not to earth north, and drifts at the gyro's bias-instability rate. FLAG_MAG_VALID stays clear for the whole run and no declination is applied."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-utils"]
+  text     = "NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading field null, while no magnetometer is being fused. An uncalibrated magnetometer still publishes all of them."
+  impact   = "A rig with no magnetometer, or one that has stopped delivering, used to publish a dead-reckoned heading as magnetic heading; no heading sentence has a field that could qualify it. Consumers now get no heading rather than a wrong one. $TIROT and $IIXDR are unaffected, and imud-mon shows heading as --."
+
 [[release]]
 version = "1.9.1"
 date    = "2026-08-31"

@@ -14,11 +14,17 @@
  *   - Exactly 6 sentences per burst when FLAG_DECLINATION_VALID is set
  *   - $HCHDT not emitted without FLAG_DECLINATION_VALID
  *   - $HCHDT emitted with correct true heading when FLAG_DECLINATION_VALID set
- *   - $HCHDG always emitted; variation fields carry declination (E/W) when
- *     FLAG_DECLINATION_VALID is set, empty otherwise
+ *   - $HCHDG emitted whenever the mag is fused; variation fields carry
+ *     declination (E/W) when FLAG_DECLINATION_VALID is set, empty otherwise
  *   - PASHR T/M flag is always 'M' (magnetic heading)
  *   - Rate-of-turn sign preserved in $TIROT
  *   - Buffer-too-small returns -1
+ *
+ * Heading validity (the gate is FLAG_MAG_VALID | FLAG_MAG_UNCAL):
+ *   - Both clear: no $HCHDM, $HCHDG or $HCHDT even with a known declination,
+ *     and $PASHR's heading field is null while roll/pitch/heave stay
+ *   - FLAG_MAG_UNCAL alone still publishes them — an uncalibrated fuse is a
+ *     magnetic heading, offset but bounded
  */
 
 #include <stdio.h>
@@ -112,7 +118,10 @@ static fused_state_t make_state(float pitch_deg, float roll_deg,
     /* cov[0] = roll error var, cov[4] = pitch error var (rad²) */
     s.cov[0] = 0.0001f;   /* sqrt → 0.01 rad → 0.57° */
     s.cov[4] = 0.0001f;
-    s.flags = FLAG_FUSION_CONVERGED;
+    /* FLAG_MAG_VALID is part of the baseline: it is what makes the heading
+     * earth-referenced, and without it the encoder withholds every heading
+     * sentence.  The tests that want the dead-reckoned case clear it. */
+    s.flags = FLAG_FUSION_CONVERGED | FLAG_MAG_VALID;
     return s;
 }
 
@@ -430,6 +439,101 @@ static void test_nmea_heading_359_9(void)
     end(fb);
 }
 
+/*
+ * Dead reckoning — neither mag flag set.  Heading is a relative angle drifting
+ * on the gyro, so no heading sentence is emitted, not even $HCHDT with a
+ * perfectly good declination: the declination is real, the heading it would be
+ * applied to is not.
+ */
+static void test_dead_reckoned_no_heading_sentences(void)
+{
+    begin("test_dead_reckoned_no_heading_sentences");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(3.1f, -9.5f, 214.7f, -6.2f);
+    s.flags = FLAG_FUSION_CONVERGED | FLAG_DECLINATION_VALID;
+    s.declination_deg = 14.5f;
+    int n = nmea_encode(buf, sizeof(buf), &s);
+
+    EXPECT(n > 0, "encode succeeded");
+    EXPECT(!has_sentence(buf, "HCHDM"), "$HCHDM withheld when mag not fused");
+    EXPECT(!has_sentence(buf, "HCHDG"), "$HCHDG withheld when mag not fused");
+    EXPECT(!has_sentence(buf, "HCHDT"),
+           "$HCHDT withheld when mag not fused, declination notwithstanding");
+    EXPECT(has_sentence(buf, "PASHR"), "$PASHR still emitted");
+    EXPECT(has_sentence(buf, "TIROT"), "$TIROT still emitted");
+    EXPECT(has_sentence(buf, "IIXDR"), "$IIXDR still emitted");
+    EXPECT(count_sentences(buf) == 3, "exactly 3 sentences when dead reckoned");
+
+    /* A null field must not break the checksum. */
+    const char *p = buf;
+    while ((p = strchr(p, '$')) != NULL) {
+        EXPECT(verify_checksum(p), "sentence has valid checksum");
+        p++;
+    }
+    end(fb);
+}
+
+/* $PASHR keeps carrying roll, pitch and heave; only its heading field goes. */
+static void test_dead_reckoned_pashr_null_heading(void)
+{
+    begin("test_dead_reckoned_pashr_null_heading");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(3.1f, -9.5f, 214.7f, 0);
+    s.flags   = FLAG_FUSION_CONVERGED;
+    s.heave_m = 1.23f;
+    nmea_encode(buf, sizeof(buf), &s);
+
+    EXPECT(strstr(buf, "$PASHR,,M,") != NULL, "$PASHR heading field is null");
+
+    const char *roll  = sentence_field(buf, "PASHR", 2);
+    const char *pitch = sentence_field(buf, "PASHR", 3);
+    const char *heave = sentence_field(buf, "PASHR", 4);
+    EXPECT(roll && pitch && heave, "$PASHR fields still addressable");
+    if (roll && pitch && heave) {
+        EXPECT_NEAR(strtof(roll,  NULL), -9.5f, 0.05, "roll survives null heading");
+        EXPECT_NEAR(strtof(pitch, NULL),  3.1f, 0.05, "pitch survives null heading");
+        EXPECT_NEAR(strtof(heave, NULL), 1.23f, 0.005, "heave survives null heading");
+    }
+    end(fb);
+}
+
+/*
+ * An uncalibrated fuse is still a magnetic heading — offset by the
+ * uncorrected hard iron, but bounded and earth-referenced — so it publishes
+ * exactly as a calibrated one does.
+ */
+static void test_uncal_mag_publishes_heading(void)
+{
+    begin("test_uncal_mag_publishes_heading");
+    int fb = g_fail;
+
+    char buf[NMEA_BUF_MIN];
+    fused_state_t s = make_state(0, 0, 214.7f, 0);
+    s.flags = FLAG_FUSION_CONVERGED | FLAG_MAG_UNCAL;
+    nmea_encode(buf, sizeof(buf), &s);
+
+    EXPECT(has_sentence(buf, "HCHDM"), "$HCHDM emitted on an uncalibrated fuse");
+    EXPECT(has_sentence(buf, "HCHDG"), "$HCHDG emitted on an uncalibrated fuse");
+    EXPECT(count_sentences(buf) == 5, "5 sentences on an uncalibrated fuse");
+    EXPECT(strstr(buf, "$PASHR,,M,") == NULL, "$PASHR heading field is not null");
+
+    const char *h = sentence_field(buf, "PASHR", 0);
+    EXPECT(h != NULL, "$PASHR heading field present");
+    if (h) EXPECT_NEAR(strtof(h, NULL), 214.7f, 0.05, "$PASHR heading value");
+
+    /* And $HCHDT still follows the declination on top of that. */
+    s.flags |= FLAG_DECLINATION_VALID;
+    s.declination_deg = 14.5f;
+    nmea_encode(buf, sizeof(buf), &s);
+    EXPECT(has_sentence(buf, "HCHDT"), "$HCHDT emitted on uncal fuse + declination");
+    EXPECT(count_sentences(buf) == 6, "6 sentences on uncal fuse + declination");
+    end(fb);
+}
+
 static void test_buffer_too_small(void)
 {
     begin("test_buffer_too_small");
@@ -466,6 +570,9 @@ int main(void)
     test_iixdr_signs();
     test_nmea_heading_zero();
     test_nmea_heading_359_9();
+    test_dead_reckoned_no_heading_sentences();
+    test_dead_reckoned_pashr_null_heading();
+    test_uncal_mag_publishes_heading();
     test_buffer_too_small();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

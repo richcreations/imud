@@ -803,9 +803,11 @@ heading:
 - `FLAG_MAG_VALID` stays clear for the life of the run, and no declination is
   applied.
 
-Consumers that read the flags see this correctly. **NMEA does not** — `$HCHDM`
-and `$HCHDG` have no way to say "relative", so treat the heading sentences from
-a 6-DoF install as unusable and take `$TIROT` and `$IIXDR`, which stay valid.
+Consumers that read the flags see this correctly, and NMEA says it by staying
+quiet: `$HCHDM`, `$HCHDG` and `$HCHDT` are not emitted at all, and `$PASHR`
+carries a null heading field. Nothing publishes the relative angle as a
+heading, because no heading sentence has a field that could mark it as one.
+`$PASHR`'s roll, pitch and heave, `$TIROT` and `$IIXDR` are unaffected.
 
 ### Sample rates, and which ones your host can actually run
 
@@ -1090,11 +1092,17 @@ Per burst at `nmea.rate_hz`:
 | Sentence | Contents |
 |---|---|
 | `$PASHR` | Roll, pitch, heading, **heave**, accuracy flags. |
-| `$HCHDM` | Magnetic heading. |
-| `$HCHDG` | Heading with magnetic variation (variation fields filled when declination is known). |
 | `$TIROT` | Rate of turn (deg/min). |
 | `$IIXDR` | Pitch and roll as transducer measurements. |
-| `$HCHDT` | True heading — **only** emitted when declination is configured. |
+| `$HCHDM` | Magnetic heading — **only** while the magnetometer is fused. |
+| `$HCHDG` | Heading with magnetic variation (variation fields filled when declination is known) — same condition as `$HCHDM`. |
+| `$HCHDT` | True heading — that condition **and** declination configured. |
+
+The three heading sentences stop when the magnetometer is absent or has
+stopped delivering, because heading is then dead-reckoned from the gyro and
+none of them can say so; `$PASHR` keeps going out with a null heading field.
+An uncalibrated magnetometer does **not** stop them — that heading is offset
+by the uncorrected hard iron but still magnetic and still bounded.
 
 ### High-rate binary — UDP port 10111 (default off)
 

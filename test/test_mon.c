@@ -153,6 +153,21 @@ static void test_parse_nmea(void)
     const char *bad = "$PASHR,junk\r\n";
     mon_parse_nmea(&st, bad, strlen(bad));
     EXPECT_NEAR(st.nmea_hdg, 200.0f, 1e-3, "malformed PASHR keeps last heading");
+    EXPECT(st.nmea_has_hdg, "malformed PASHR does not clear the heading flag");
+
+    /* imud nulls the $PASHR heading field when no magnetometer is being fused.
+     * Roll and pitch are still good and must survive it; the heading must be
+     * marked absent rather than read as 0.0 or frozen at its last value. */
+    const char *nulled = "$PASHR,,M,-7.50,2.25,0.00,,,,,0*00\r\n";
+    mon_parse_nmea(&st, nulled, strlen(nulled));
+    EXPECT(!st.nmea_has_hdg, "null PASHR heading → nmea_has_hdg clear");
+    EXPECT_NEAR(st.nmea_roll,  -7.50f, 1e-3, "null heading: roll still parsed");
+    EXPECT_NEAR(st.nmea_pitch,  2.25f, 1e-3, "null heading: pitch still parsed");
+
+    /* …and it comes back when the magnetometer does. */
+    mon_parse_nmea(&st, no_hdt, strlen(no_hdt));
+    EXPECT(st.nmea_has_hdg, "heading returns → nmea_has_hdg set again");
+    EXPECT_NEAR(st.nmea_hdg, 200.0f, 1e-3, "heading value restored");
 
     /* Sentence order must not matter. */
     const char *reordered =

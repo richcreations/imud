@@ -55,25 +55,34 @@ static int append_sentence(char *buf, size_t bufsz, int *pos, const char *conten
 /*
  * $PASHR — proprietary attitude sentence (magnetic heading, always 'M').
  * roll_acc / pitch_acc from MEKF attitude covariance (cov[0], cov[4]).
+ *
+ * The sentence is always emitted, because roll, pitch and heave stay valid
+ * with no magnetometer at all.  The heading field is left null when heading
+ * is not earth-referenced: there is no status field that could say so, and a
+ * null field is how NMEA spells "no data".
  */
 static int build_pashr(char *buf, size_t bufsz, int *pos,
-                       const fused_state_t *s)
+                       const fused_state_t *s, int hdg_referenced)
 {
     float pitch_deg     = s->pitch * (float)(180.0 / M_PI);
     float roll_deg      = s->roll  * (float)(180.0 / M_PI);
     float roll_acc_deg  = sqrtf(s->cov[0]) * (float)(180.0 / M_PI);
     float pitch_acc_deg = sqrtf(s->cov[4]) * (float)(180.0 / M_PI);
 
+    char hdg[16];
+    if (hdg_referenced) snprintf(hdg, sizeof(hdg), "%05.1f", s->heading_deg);
+    else                hdg[0] = '\0';
+
     char content[128];
     snprintf(content, sizeof(content),
-             "PASHR,%05.1f,M,%+06.1f,%+06.1f,%+.2f,%04.1f,%04.1f,0,A,,",
-             s->heading_deg, roll_deg, pitch_deg, s->heave_m,
+             "PASHR,%s,M,%+06.1f,%+06.1f,%+.2f,%04.1f,%04.1f,0,A,,",
+             hdg, roll_deg, pitch_deg, s->heave_m,
              roll_acc_deg, pitch_acc_deg);
 
     return append_sentence(buf, bufsz, pos, content);
 }
 
-/* $HCHDM — magnetic heading */
+/* $HCHDM — magnetic heading; only emitted when the heading is magnetic */
 static int build_hchdm(char *buf, size_t bufsz, int *pos, float heading_deg)
 {
     char content[64];
@@ -82,7 +91,7 @@ static int build_hchdm(char *buf, size_t bufsz, int *pos, float heading_deg)
 }
 
 /*
- * $HCHDG — heading, deviation, variation.
+ * $HCHDG — heading, deviation, variation; gated like $HCHDM.
  * Deviation fields are empty: hard/soft-iron calibration is applied upstream,
  * so there is no residual deviation estimate to report.
  * Variation fields carry the WMM/static declination when known (E = east/+,
@@ -102,7 +111,7 @@ static int build_hchdg(char *buf, size_t bufsz, int *pos,
     return append_sentence(buf, bufsz, pos, content);
 }
 
-/* $HCHDT — true heading; only emitted when FLAG_DECLINATION_VALID is set */
+/* $HCHDT — true heading; adds FLAG_DECLINATION_VALID to $HCHDM's condition */
 static int build_hchdt(char *buf, size_t bufsz, int *pos,
                        float heading_deg, float decl_deg)
 {
@@ -147,13 +156,28 @@ int nmea_encode(char *buf, size_t bufsz, const fused_state_t *state)
 
     int decl_valid = (state->flags & FLAG_DECLINATION_VALID) != 0;
 
-    if (build_pashr(buf, bufsz, &pos, state)               < 0) return -1;
-    if (build_hchdm(buf, bufsz, &pos, state->heading_deg)  < 0) return -1;
-    if (build_hchdg(buf, bufsz, &pos, state->heading_deg,
-                    state->declination_deg, decl_valid)    < 0) return -1;
-    if (state->flags & FLAG_DECLINATION_VALID) {
-        if (build_hchdt(buf, bufsz, &pos,
-                        state->heading_deg, state->declination_deg) < 0) return -1;
+    /*
+     * Heading is earth-referenced only while the magnetometer is being fused,
+     * calibrated (FLAG_MAG_VALID) or not (FLAG_MAG_UNCAL).  An uncalibrated
+     * fuse still yields a magnetic heading — offset by the uncorrected hard
+     * iron, but bounded — so it is published.  Both flags clear means no
+     * magnetometer is fitted or it has stopped delivering, and heading is a
+     * relative angle dead-reckoned from the gyro.  $HCHDM has no status field
+     * and $HCHDG's is deviation, not validity, so neither can say that: the
+     * only honest output is none.
+     */
+    int hdg_referenced =
+        (state->flags & (FLAG_MAG_VALID | FLAG_MAG_UNCAL)) != 0;
+
+    if (build_pashr(buf, bufsz, &pos, state, hdg_referenced) < 0) return -1;
+    if (hdg_referenced) {
+        if (build_hchdm(buf, bufsz, &pos, state->heading_deg) < 0) return -1;
+        if (build_hchdg(buf, bufsz, &pos, state->heading_deg,
+                        state->declination_deg, decl_valid)  < 0) return -1;
+        if (state->flags & FLAG_DECLINATION_VALID) {
+            if (build_hchdt(buf, bufsz, &pos,
+                            state->heading_deg, state->declination_deg) < 0) return -1;
+        }
     }
     if (build_tirot(buf, bufsz, &pos, state->rate_of_turn) < 0) return -1;
     if (build_iixdr(buf, bufsz, &pos, pitch_deg, roll_deg) < 0) return -1;
