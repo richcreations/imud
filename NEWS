@@ -30,7 +30,7 @@ Added:
   now run as the six-axis IMU they are, with a separate magnetometer in [mag]
   for heading.
   The mpu9250 and mpu9255 probes already refused such a board; they now name
-  mpu6500 as the driver to use. Experimental, like the rest of the MPU family.
+  mpu6500 as the driver to use.
 * imud builds and runs on big-endian hosts. The binary packet and the .imucap
   file are converted field by field instead of memcpy'd in host order, so they
   stay little-endian whatever the machine, and the Debian packages are now
@@ -53,6 +53,9 @@ Added:
 
 Changed:
 
+* mpu6500 is no longer experimental. It is validated on real silicon by an
+  imud-imutest --all report: 61 checks passed, none failed. The daemon no
+  longer warns at startup when it is selected.
 * Wire format v18: the packet grows 276 to 288 bytes with flags_ext, a second
   32-bit flag word, and eight reserved bytes. Every existing field keeps its
   offset. Its first bit says no magnetometer is configured.
@@ -81,6 +84,15 @@ Changed:
 
 Fixed:
 
+* imud-imutest's guided gyro and spin phases integrated every angle 1000x low.
+  A commanded 90 degree turn reported 0.1 degrees, and the tool blamed the
+  driver's FIFO for it.
+  Affects 1.9.0 and 1.9.1. Reports from those versions show gyro.*.sign,
+  gyro.*.scale, imu.direct.gyro and spin.frame_agreement failing or skipping
+  on hardware that was working correctly; re-run to grade the part.
+* imud-imutest now shows 'Enter when done' while a guided turn is collecting.
+  The hint only appeared when there was nothing else on the line, so operators
+  let every turn run to its timeout.
 * mpu925x reset() now waits the MPU-925x product spec's register start-up time
   before reading the part back, and resets the gyro, accel and temperature
   signal paths as TDK's own Linux driver does for this generation.

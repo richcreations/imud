@@ -3148,6 +3148,32 @@ static void test_gyro_sign(void)
      */
     EXPECT(r->raw.n_turns == 3, "every turn recorded a row");
     EXPECT(r->raw.turn[2].axis == 2, "the third row is the Z turn");
+
+    /*
+     * The integration constant itself, not just which side of a threshold it
+     * landed on.  A constant rate integrated over n sample-sets is
+     * n * rate / odr, so theta/n pins the dt phase_gyro used — and pins it
+     * against the ODR rather than against the wall clock, which is what makes
+     * the assertion meaningful over a mock that hands out samples as fast as
+     * it is polled.  The thresholds above cannot see this: they are 22.5 deg
+     * wide, and on the mock a wrong dt is absorbed by the sample count.
+     *
+     * phase_gyro was handed r->eff_odr_mhz where it wanted Hz, so dt was 5 us
+     * instead of 5 ms and every angle came out 1000x low: a real 90 deg turn
+     * on an MPU-6500 at 200 Hz integrated to 0.1 deg, and the tool blamed the
+     * driver's FIFO for it.
+     */
+    const double eff_hz = (double)r->eff_odr_mhz * 1e-3;
+    EXPECT(eff_hz > 0, "the report carries an effective ODR");
+    for (int k = 0; k < 3; k++) {
+        const imt_turn_row_t *row = &r->raw.turn[k];
+        double want = (double)row->n * 400.0 / eff_hz;
+        char m[128];
+        snprintf(m, sizeof m,
+                 "turn %c integrated %.2f deg over %d sets at %.3f Hz "
+                 "(want %.2f)", "XYZ"[k], row->theta[k], row->n, eff_hz, want);
+        EXPECT(row->n > 0 && fabs(row->theta[k] - want) < 0.02 * want, m);
+    }
     EXPECT(r->raw.turn[2].theta[2] > 0.0, "the Z row carries its integral");
     free(r);
 

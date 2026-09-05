@@ -35,10 +35,26 @@ it — the first passive check that proves the sensing elements are live."""
   impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx, and for mpu9250/mpu9255/mpu6500 where the response is recorded rather than graded because TDK publishes no window for it. Other drivers structurally skip it and stay clearable."
 
   [[release.change]]
+  kind     = "fix"
+  packages = ["imud-utils"]
+  text     = "imud-imutest's guided gyro and spin phases integrated every angle 1000x low. A commanded 90 degree turn reported 0.1 degrees, and the tool blamed the driver's FIFO for it."
+  impact   = "Affects 1.9.0 and 1.9.1. Reports from those versions show gyro.*.sign, gyro.*.scale, imu.direct.gyro and spin.frame_agreement failing or skipping on hardware that was working correctly; re-run to grade the part."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-utils"]
+  text     = "imud-imutest now shows 'Enter when done' while a guided turn is collecting. The hint only appeared when there was nothing else on the line, so operators let every turn run to its timeout."
+
+  [[release.change]]
   kind     = "feature"
   packages = ["imud"]
   text     = "New driver mpu6500 for the TDK MPU-6500, the six-axis part inside the MPU-925x. Boards sold as MPU-9250 are frequently relabelled MPU-6500s; those now run as the six-axis IMU they are, with a separate magnetometer in [mag] for heading."
-  impact   = "The mpu9250 and mpu9255 probes already refused such a board; they now name mpu6500 as the driver to use. Experimental, like the rest of the MPU family."
+  impact   = "The mpu9250 and mpu9255 probes already refused such a board; they now name mpu6500 as the driver to use."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "mpu6500 is no longer experimental. It is validated on real silicon by an imud-imutest --all report: 61 checks passed, none failed. The daemon no longer warns at startup when it is selected."
 
   [[release.change]]
   kind     = "fix"

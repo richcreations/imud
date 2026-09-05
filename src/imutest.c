@@ -4333,7 +4333,7 @@ static const struct {
 };
 
 static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
-                       const imu_ops_t *imu, int eff_odr)
+                       const imu_ops_t *imu, double eff_hz)
 {
     char mb[64], eb[64], id[32], nm[64], body[512];
     static const char axis_name[3] = { 'X', 'Y', 'Z' };
@@ -4341,7 +4341,7 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     int n = 0;
 
     bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
-    double dt_nominal = 1.0 / (double)eff_odr;
+    double dt_nominal = eff_hz > 0 ? 1.0 / eff_hz : 0.01;
 
     /*
      * The direct gyro registers, sampled alongside the FIFO for the whole
@@ -4658,7 +4658,7 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
 static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                        const mag_ops_t *mag, const imud_bus_t *bus,
                        const imud_config_t *cfg, const imu_ops_t *imu,
-                       int eff_odr)
+                       double eff_hz)
 {
     char mb[64], eb[64], body[320];
     imu_sample_t ibuf[128];
@@ -4686,7 +4686,7 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     double gyro_z_at_start = 0;
     bool have_heading = false;
     bool use_ts = imu->has_hw_timestamp && d->tick_ns != 0;
-    double dt_nominal = 1.0 / (double)eff_odr;
+    double dt_nominal = eff_hz > 0 ? 1.0 / eff_hz : 0.01;
     bool have_prev_ts = false;
     uint32_t prev_ts = 0;
 
@@ -5479,10 +5479,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
      * actually graded against rather than the descriptor's typical. */
     r->imu_ts_tick_actual_ns = d.tick_ns;
 
+    /* The phases take Hz as a double; the report field is milli-Hz.  Converted
+     * once, here, rather than at every use inside — and OUTSIDE the passive
+     * block, because the two guided phases integrate against it too and a
+     * conversion they could not reach is what made them read 1000x low. */
+    const double eff_hz = (double)r->eff_odr_mhz * 1e-3;
+
     if (opts->phases & IMT_PHASE_PASSIVE) {
-        /* The check functions take Hz as a double; the report field is
-         * milli-Hz.  Convert once, here, rather than at every use inside. */
-        const double eff_hz = (double)r->eff_odr_mhz * 1e-3;
         check_odr_seq_ts(r, opts, &d, imu, eff_hz);
         check_error_contract(r, &d);
         /* seq before the deliberate overflow: an overflow is a legitimate gap */
@@ -5536,13 +5539,13 @@ int imt_run_ops(const imud_bus_t *ibus, const imud_bus_t *mbus,
             r->phases_run |= IMT_PHASE_FACES;
         }
         if ((opts->phases & IMT_PHASE_GYRO) && !g_abort && !r->aborted) {
-            phase_gyro(r, opts, &d, imu, r->eff_odr_mhz);
+            phase_gyro(r, opts, &d, imu, eff_hz);
             r->phases_run |= IMT_PHASE_GYRO;
         }
         if ((opts->phases & IMT_PHASE_SPIN) && !g_abort && !r->aborted) {
             if (mag_ok) {
                 phase_spin(r, opts, &d, mag, mbus,
-                           cfg, imu, r->eff_odr_mhz);
+                           cfg, imu, eff_hz);
                 r->phases_run |= IMT_PHASE_SPIN;
             } else {
                 skip_check(r, "spin.frame_agreement",

@@ -1808,10 +1808,10 @@ not run on a Pi}, see below.
 @item
 @strong{SPI}: no --- the shared MPU-925x code path is I²C-only
 @item
-@strong{Notes}: @emph{Experimental.} Six-axis. The gyro/accel die the
-MPU-925x packages with an AK8963, and what a board sold as an MPU-9250
-usually turns out to be. No magnetometer: pair it with one in
-@code{[mag]} for heading. Same driver, FIFO and rates as @code{mpu9250}.
+@strong{Notes}: Six-axis. The gyro/accel die the MPU-925x packages with
+an AK8963, and what a board sold as an MPU-9250 usually turns out to be.
+No magnetometer: pair it with one in @code{[mag]} for heading. Same
+driver, FIFO and rates as @code{mpu9250}.
 @end itemize
 
 @item @code{mpu9250}

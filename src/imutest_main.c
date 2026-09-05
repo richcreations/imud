@@ -108,8 +108,18 @@ static void term_progress(void *user, const char *id, double frac,
         n = snprintf(line, sizeof line, "  %-22s %3.0f%%%s%s",
                      id, frac * 100.0, detail ? "  " : "", detail ? detail : "");
     else
-        n = snprintf(line, sizeof line, "  %-22s %s", id,
-                     detail ? detail : "collecting... (Enter when done)");
+        /*
+         * The hint rides ALONGSIDE the detail rather than standing in for it.
+         * The guided phases always pass one — the running integral — so a
+         * fallback-only hint was invisible in exactly the phases that wait for
+         * the operator, who then had only the prompt's "Enter when ready, 's'
+         * to skip" to go on and reasonably let every turn run to its timeout.
+         * A turn held to the timeout integrates the gyro bias for the whole
+         * window, which is what makes this worth a line of screen width.
+         */
+        n = snprintf(line, sizeof line, "  %-22s %s%s", id,
+                     detail ? detail : "collecting...",
+                     t->interactive ? "   (Enter when done)" : "");
 
     printf("\r%s\033[K", line);
     fflush(stdout);

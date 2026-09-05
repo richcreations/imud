@@ -674,18 +674,18 @@ CASES = [
 
     # Both halves of the count sentence, checked against different lists.
     ("check-web-drivers", "web/index.html",
-     sub(r'Twelve of the fourteen', 'Eleven of the fourteen'),
-     "Eleven"),
+     sub(r'Eleven of the fourteen', 'Ten of the fourteen'),
+     "Ten"),
 
     ("check-web-drivers", "web/index.html",
-     sub(r'Twelve of the fourteen', 'Twelve of the thirteen'),
+     sub(r'Eleven of the fourteen', 'Eleven of the thirteen'),
      "thirteen"),
 
     # The same figure restated where a would-be tester reads it. It said ten
     # while twelve were unproven, in the file whose whole subject is running
     # the tool that clears the flag.
     ("check-web-drivers", "docs/imud-utils/README.md",
-     sub(r'drivers for twelve parts', 'drivers for ten parts'),
+     sub(r'drivers for eleven parts', 'drivers for ten parts'),
      "ten parts have never run"),
 
     ("check-portable-tests", "devbox/README.md",

@@ -34,7 +34,7 @@ contract on real silicon and writes a Markdown report to attach to a bug
 report — attach the file rather than pasting it, so several runs can be
 compared and nothing is lost to an email round trip.
 
-imud ships drivers for twelve parts that have never run on physical hardware.
+imud ships drivers for eleven parts that have never run on physical hardware.
 They are marked `experimental`, and the daemon warns at startup when one is
 selected. Their register maps are verified against the datasheet and their
 encoding and decoding are unit-tested against a mock I²C bus — but none of

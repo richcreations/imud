@@ -390,11 +390,13 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     <dt>Reference</dt>
     <dd>SparkFun 9DoF IMU Breakout — ST <strong>ISM330DHCX</strong> (gyro +
     accelerometer) with a MEMSIC <strong>MMC5983MA</strong> magnetometer. This
-    is the best-tested combination.</dd>
+    is the best-tested combination. The TDK InvenSense
+    <strong>MPU-6500</strong> is validated on hardware too, as a six-axis
+    part.</dd>
 
     <dt>Experimental drivers</dt>
     <dd>ST LSM6DSO and LSM6DSOX, TDK InvenSense ICM-20948, ICM-42688-P,
-    MPU-6500, MPU-9250 and MPU-9255; magnetometers ST LIS2MDL and LIS3MDL,
+    MPU-9250 and MPU-9255; magnetometers ST LIS2MDL and LIS3MDL,
     AKM AK09916 and AK8963, and PNI RM3100. <code>imud-imutest</code> is how
     one of these gets promoted: run it against the part and attach the
     report.</dd>
@@ -470,7 +472,7 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
     fuzzers.</dd>
 
     <dt>Clearing an <em>experimental</em> driver flag</dt>
-    <dd>Twelve of the fourteen sensor drivers have never run on physical silicon.
+    <dd>Eleven of the fourteen sensor drivers have never run on physical silicon.
     If you have one of those parts, an <code>imud-imutest</code> report
     attached to an issue is what clears its flag — see
     <a href="https://github.com/richcreations/imud/blob/main/docs/ROADMAP.md">the roadmap</a>.</dd>
