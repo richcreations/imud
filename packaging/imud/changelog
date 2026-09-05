@@ -1,3 +1,59 @@
+imud (1.10.0) unstable; urgency=medium
+
+  * New driver mpu6500 for the TDK MPU-6500, the six-axis part inside the
+    MPU-925x. Boards sold as MPU-9250 are frequently relabelled MPU-6500s;
+    those now run as the six-axis IMU they are, with a separate
+    magnetometer in [mag] for heading.  The mpu9250 and mpu9255 probes
+    already refused such a board; they now name mpu6500 as the driver to
+    use.
+  * imud builds and runs on big-endian hosts. The binary packet and the
+    .imucap file are converted field by field instead of memcpy'd in host
+    order, so they stay little-endian whatever the machine, and the Debian
+    packages are now Architecture: linux-any.  No wire-format change of
+    its own: the bytes a little-endian host emits are identical to before.
+    The packet does move to v18 in this release, for a separate change.
+  * A gyro+accelerometer board with no magnetometer runs, with [mag]
+    driver = "none". imud opens no magnetometer bus and claims no [mag]
+    int_gpio; roll, pitch, heave, the sea-state statistics and rate of
+    turn are unaffected.  Heading starts at zero and is relative to the
+    orientation imud booted in, not to earth north, and drifts at the
+    gyro's bias-instability rate. FLAG_MAG_VALID stays clear for the whole
+    run and no declination is applied.
+  * mpu6500 is no longer experimental. It is validated on real silicon by
+    an imud-imutest --all report: 61 checks passed, none failed. The
+    daemon no longer warns at startup when it is selected.
+  * Wire format v18: the packet grows 276 to 288 bytes with flags_ext, a
+    second 32-bit flag word, and eight reserved bytes. Every existing
+    field keeps its offset. Its first bit says no magnetometer is
+    configured.  Breaking: consumers reject a wire version they do not
+    know, so deploy the daemon and its consumers together. flags had
+    assigned all sixteen bits, which is what forced the new word — a
+    consumer must ignore bits it does not recognise, and a later flag then
+    needs no further bump. The imud-arduino client needs its own update.
+  * NMEA withholds $HCHDM, $HCHDG and $HCHDT, and leaves $PASHR's heading
+    field null, while no magnetometer is being fused. An uncalibrated
+    magnetometer still publishes all of them.  A rig with no magnetometer,
+    or one that has stopped delivering, used to publish a dead-reckoned
+    heading as magnetic heading; no heading sentence has a field that
+    could qualify it. Consumers now get no heading rather than a wrong
+    one. $TIROT and $IIXDR are unaffected, and imud-mon shows heading as
+    --.
+  * mpu925x reset() now waits the MPU-925x product spec's register start-
+    up time before reading the part back, and resets the gyro, accel and
+    temperature signal paths as TDK's own Linux driver does for this
+    generation.  The previous settle was the accelerometer's cold-start
+    figure, which is shorter than the interval before a register access is
+    guaranteed to answer at all.
+  * The armhf packages are now built on Raspbian at the ARMv6 baseline, so
+    they run on every Raspberry Pi that boots a 32-bit userland.
+    Previously they were built to Debian's ARMv7 baseline.  On a Pi 1 or
+    Pi Zero/Zero W the previous packages installed without complaint and
+    then died on an illegal instruction, because both ports report the
+    same "armhf" architecture. Those boards can now install from the apt
+    repository. The arm64 packages are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 05 Sep 2026 09:31:46 -0700
+
 imud (1.9.1) unstable; urgency=medium
 
   * An uncalibrated magnetometer is now fused for heading instead of

@@ -1,3 +1,29 @@
+libimud (1.10.0) unstable; urgency=medium
+
+  * imud builds and runs on big-endian hosts. The binary packet and the
+    .imucap file are converted field by field instead of memcpy'd in host
+    order, so they stay little-endian whatever the machine, and the Debian
+    packages are now Architecture: linux-any.  No wire-format change of
+    its own: the bytes a little-endian host emits are identical to before.
+    The packet does move to v18 in this release, for a separate change.
+  * Wire format v18: the packet grows 276 to 288 bytes with flags_ext, a
+    second 32-bit flag word, and eight reserved bytes. Every existing
+    field keeps its offset. Its first bit says no magnetometer is
+    configured.  Breaking: consumers reject a wire version they do not
+    know, so deploy the daemon and its consumers together. flags had
+    assigned all sixteen bits, which is what forced the new word — a
+    consumer must ignore bits it does not recognise, and a later flag then
+    needs no further bump. The imud-arduino client needs its own update.
+  * The armhf packages are now built on Raspbian at the ARMv6 baseline, so
+    they run on every Raspberry Pi that boots a 32-bit userland.
+    Previously they were built to Debian's ARMv7 baseline.  On a Pi 1 or
+    Pi Zero/Zero W the previous packages installed without complaint and
+    then died on an illegal instruction, because both ports report the
+    same "armhf" architecture. Those boards can now install from the apt
+    repository. The arm64 packages are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 05 Sep 2026 09:31:46 -0700
+
 libimud (1.9.1) unstable; urgency=medium
 
   * An uncalibrated magnetometer is now fused for heading instead of

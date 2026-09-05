@@ -1,3 +1,30 @@
+imud-influxdb (1.10.0) unstable; urgency=medium
+
+  * New imud-influxdb key detail chooses how much of the packet to write,
+    as five cumulative levels: attitude, navigation, seastate, health,
+    full. full adds the calibrated and raw accel, gyro and mag vectors,
+    which the bridge never published.  The default, health, is exactly
+    what the bridge wrote before, so no existing series or dashboard
+    changes. full is 59 fields against health's 38.
+  * The bridges say when a heading is not referenced to north, each in its
+    protocol's own terms rather than by all withholding it.  imud-signalk
+    drops navigation.headingMagnetic/True/magneticVariation; imud-mqtt
+    drops the matching topics, which are retained, and adds
+    navigation/headingReferenced. imud-influxdb keeps publishing heading
+    with heading_ref and mag_absent fields, and imud-prometheus keeps its
+    gauge and adds imud_mag_uncal and imud_mag_absent. imud-mavlink gains
+    SYS_STATUS, whose 3D_MAG present and health bits separate a board with
+    no magnetometer from one that has stopped answering.
+  * The armhf packages are now built on Raspbian at the ARMv6 baseline, so
+    they run on every Raspberry Pi that boots a 32-bit userland.
+    Previously they were built to Debian's ARMv7 baseline.  On a Pi 1 or
+    Pi Zero/Zero W the previous packages installed without complaint and
+    then died on an illegal instruction, because both ports report the
+    same "armhf" architecture. Those boards can now install from the apt
+    repository. The arm64 packages are unchanged.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sat, 05 Sep 2026 09:31:46 -0700
+
 imud-influxdb (1.9.0) unstable; urgency=medium
 
   * imud-influxdb half-applied its output enables on SIGHUP, so a reload

@@ -35,9 +35,9 @@ Added:
   file are converted field by field instead of memcpy'd in host order, so they
   stay little-endian whatever the machine, and the Debian packages are now
   Architecture: linux-any.
-  No wire-format change: the bytes a little-endian host emits are identical to
-  before, so existing consumers need no update and the packet version stays
-  17.
+  No wire-format change of its own: the bytes a little-endian host emits are
+  identical to before. The packet does move to v18 in this release, for a
+  separate change.
 * A gyro+accelerometer board with no magnetometer runs, with [mag] driver =
   "none". imud opens no magnetometer bus and claims no [mag] int_gpio; roll,
   pitch, heave, the sea-state statistics and rate of turn are unaffected.
