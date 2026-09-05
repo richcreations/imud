@@ -47,6 +47,7 @@
  */
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -104,6 +105,13 @@
  * paths.  Sensor registers are not cleared — that is SIG_COND_RST's job. */
 #define SIGPATH_RST_ALL    0x07
 
+/* Self-test actuation bits: GYRO_CONFIG[7:5] XGYRO_Cten/YGYRO_Cten/ZGYRO_Cten
+ * (register map §4.6) and ACCEL_CONFIG[7:5] ax_st_en/ay_st_en/az_st_en
+ * (§4.7).  Both sit above the full-scale field, so a range is selected by
+ * writing the encoded value and the enables are OR'd on top. */
+#define GYRO_ST_ALL        0xE0
+#define ACCEL_ST_ALL       0xE0
+
 /* PWR_MGMT_1 */
 #define PWR1_H_RESET       0x80
 #define PWR1_CLKSEL_AUTO   0x01   /* PLL when ready, else internal oscillator */
@@ -137,6 +145,28 @@
  * so a FIFO started early batches samples nothing downstream can tell are
  * bad. */
 #define GYRO_STARTUP_US    70000
+
+/*
+ * Self-test measurement setup.  The response is a fixed deflection, so it is
+ * taken on the most sensitive ranges — ±250 dps and ±2 g — at the 1 kHz
+ * internal rate with DLPF_CFG 2, which Table 3 gives as 92 Hz: more bandwidth
+ * than a DC deflection needs, and quieter than the settings above it.
+ *
+ * ST_SETTLE_US is the wait after the actuation is switched, and 25 ms is a
+ * chosen figure rather than a datasheet one — the deflection has to travel the
+ * 92 Hz filter's 3.9 ms group delay, and the FIFO is restarted after the wait
+ * rather than drained, so nothing spanning the transition reaches an average.
+ *
+ * ST_SAMPLES is 0.2 s of sample-sets at that rate, which averages this part's
+ * ~1 LSB noise floor down by an order of magnitude.
+ */
+#define ST_SMPLRT_DIV      0x00
+#define ST_DLPF_CFG        0x02
+#define ST_ACCEL_DLPF_CFG  0x02
+#define ST_SETTLE_US       25000
+#define ST_SAMPLES         192
+#define ST_BURST           64
+#define ST_TRIES           2000
 
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
@@ -565,6 +595,121 @@ static int mpu_read(const imud_bus_t *bus,
     return overflow;
 }
 
+/* ── Built-in self-test ────────────────────────────────────────────────────── */
+
+/*
+ * st_average — mean of ST_SAMPLES consecutive sample-sets, taken out of the
+ * FIFO through read().
+ *
+ * Through read() rather than the output registers, because on this part they
+ * are two different paths and a part can drive one and not the other: the FIFO
+ * is the one the daemon consumes, so it is the one worth proving.  It also
+ * satisfies the contract's "wait for fresh samples rather than sleeping" with
+ * no data-ready poll — the FIFO hands out each sample-set exactly once, so an
+ * average here can never be one register image counted 192 times.
+ *
+ * An overflow has destroyed the framing (see mpu_read), so the partial sum is
+ * dropped and the count restarts rather than mixing two framings.
+ */
+static int st_average(const imud_bus_t *bus, double acc[3], double gyr[3])
+{
+    imu_sample_t buf[ST_BURST];
+    double sa[3] = { 0, 0, 0 }, sg[3] = { 0, 0, 0 };
+    int got = 0;
+
+    for (int t = 0; t < ST_TRIES && got < ST_SAMPLES; t++) {
+        int n = 0;
+        int rc = mpu_read(bus, buf, ST_BURST, &n);
+        if (rc < 0) return -1;
+        if (rc == 1) {
+            got = 0;
+            for (int k = 0; k < 3; k++) { sa[k] = 0.0; sg[k] = 0.0; }
+            continue;
+        }
+        if (n == 0) { usleep(500); continue; }
+        for (int i = 0; i < n && got < ST_SAMPLES; i++, got++)
+            for (int k = 0; k < 3; k++) {
+                sa[k] += (double)buf[i].accel[k];
+                sg[k] += (double)buf[i].gyro[k];
+            }
+    }
+
+    if (got < ST_SAMPLES) {
+        LOG_E("mpu925x: self-test averaged %d of %d sample-sets — the part is "
+              "producing no data\n", got, ST_SAMPLES);
+        return -1;
+    }
+    for (int k = 0; k < 3; k++) { acc[k] = sa[k] / got; gyr[k] = sg[k] / got; }
+    return 0;
+}
+
+/*
+ * mpu_self_test — actuate the proof masses and report how far the output moved.
+ *
+ * PS Rev 1.0 §6.5 defines the figure as the difference between the output with
+ * self-test enabled and without it, so the part is averaged twice with only
+ * ACCEL_CONFIG and GYRO_CONFIG's top three bits changing between the passes.
+ * Axes are the board frame read() returns, but that remap is sign-only on this
+ * part, so a per-axis magnitude is the chip's own either way.
+ *
+ * The window is left 0/0 — ungraded, and imutest says so on the row.  §6.5
+ * gives the limits only in AN-MPU-9250A-03, which this tree does not carry,
+ * and the factory values in SELF_TEST_[XYZ]_GYRO / _ACCEL (§4.1, §4.2) are
+ * per axis where imu_selftest_t's window is per sensor.  The response alone
+ * still separates a live sensing element from a quiet one, which is the whole
+ * job of the hook.
+ */
+static int mpu_self_test(const imud_bus_t *bus, imu_selftest_t *out)
+{
+    memset(out, 0, sizeof *out);
+
+    if (mpu_reset(bus) < 0) return -1;
+
+    if (bus_reg_write(bus, REG_PWR_MGMT_1, PWR1_CLKSEL_AUTO) < 0) return -1;
+    usleep(5000);
+    if (bus_reg_write(bus, REG_PWR_MGMT_2, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_CONFIG,
+                      CONFIG_FIFO_STREAM | ST_DLPF_CFG) < 0) return -1;
+    if (bus_reg_write(bus, REG_SMPLRT_DIV, ST_SMPLRT_DIV) < 0) return -1;
+    if (bus_reg_write(bus, REG_GYRO_CONFIG,  0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG, 0x00) < 0) return -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG2, ST_ACCEL_DLPF_CFG) < 0) return -1;
+
+    /* read() scales with whatever init() last left in s, so the two ranges
+     * selected above have to be published to it here too. */
+    (void)gyro_fs_encode(250, &s.gyro_scale);
+    (void)accel_fs_encode(2,  &s.accel_scale);
+
+    usleep(GYRO_STARTUP_US);
+    if (fifo_restart(bus) < 0) return -1;
+
+    int rc = -1;
+    double a_off[3], g_off[3], a_on[3], g_on[3];
+
+    if (st_average(bus, a_off, g_off) < 0) goto done;
+
+    if (bus_reg_write(bus, REG_GYRO_CONFIG,  GYRO_ST_ALL)  < 0) goto done;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG, ACCEL_ST_ALL) < 0) goto done;
+    usleep(ST_SETTLE_US);
+    if (fifo_restart(bus) < 0) goto done;
+
+    if (st_average(bus, a_on, g_on) < 0) goto done;
+
+    for (int k = 0; k < 3; k++) {
+        out->accel_mg[k] = fabs(a_on[k] - a_off[k]) / 9.80665 * 1000.0;
+        out->gyro_dps[k] = fabs(g_on[k] - g_off[k]) * 180.0 / M_PI;
+    }
+    rc = 0;
+
+done:
+    /* Self-test off on every path, including the failures: the contract
+     * promises the caller a part that is merely misconfigured, never one still
+     * driving its proof masses. */
+    if (bus_reg_write(bus, REG_GYRO_CONFIG,  0x00) < 0) rc = -1;
+    if (bus_reg_write(bus, REG_ACCEL_CONFIG, 0x00) < 0) rc = -1;
+    return rc;
+}
+
 /* ── Driver descriptors ────────────────────────────────────────────────────── */
 
 /*
@@ -583,6 +728,7 @@ const imu_ops_t mpu9250_ops = {
     .read             = mpu_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,   /* no chip timer — wall-clock timestamps only */
+    .self_test        = mpu_self_test,
     .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
                             500000, 1000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
@@ -599,6 +745,7 @@ const imu_ops_t mpu9255_ops = {
     .read             = mpu_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,
+    .self_test        = mpu_self_test,
     .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
                             500000, 1000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },
@@ -624,6 +771,7 @@ const imu_ops_t mpu6500_ops = {
     .read             = mpu_read,
     .has_fifo         = true,
     .has_hw_timestamp = false,
+    .self_test        = mpu_self_test,
     .supported_odr_mhz  = { 100000, 125000, 200000, 250000, 333333,
                             500000, 1000000, 0 },
     .supported_accel_g  = { 2, 4, 8, 16, 0 },

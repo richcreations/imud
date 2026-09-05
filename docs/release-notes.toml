@@ -32,7 +32,7 @@ it — the first passive check that proves the sensing elements are live."""
   kind     = "feature"
   packages = ["imud-utils"]
   text     = "imud-imutest runs the IMU's built-in self-test and grades the per-axis response against the datasheet window. It needs no motion and no operator, so it runs under --passive."
-  impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx; other drivers structurally skip it and stay clearable."
+  impact   = "This is the only passive check that distinguishes a live sensing element from a dead one: at rest both read about zero and pass every other check. Implemented for ism330dhcx, and for mpu9250/mpu9255/mpu6500 where the response is recorded rather than graded because TDK publishes no window for it. Other drivers structurally skip it and stay clearable."
 
   [[release.change]]
   kind     = "feature"

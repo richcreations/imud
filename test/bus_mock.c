@@ -223,6 +223,12 @@ void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len)
     }
 }
 
+void i2cmock_fifo_clear(uint8_t addr)
+{
+    int a = addr & (NADDR - 1);
+    g_fifo_head[a] = g_fifo_tail[a] = 0;
+}
+
 uint32_t i2cmock_fifo_drops(uint8_t addr)
 {
     return g_fifo_drops[addr & (NADDR - 1)];

@@ -96,6 +96,14 @@ void i2cmock_set_fifo_range(uint8_t addr, uint8_t lo, uint8_t hi);
 void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
 
 /*
+ * Drop whatever is still queued.  A test that stages one window of samples per
+ * stage of a measurement needs this: without it the leftovers from the stage
+ * before are what the next one reads, so the test has to consume exactly as
+ * many sets as the driver does and breaks when a driver constant moves.
+ */
+void i2cmock_fifo_clear(uint8_t addr);
+
+/*
  * Bytes discarded because the queue was full, since i2cmock_reset().
  *
  * The queue reclaims itself whenever it drains, so FIFOSZ bounds DEPTH and not
@@ -150,8 +158,9 @@ void i2cmock_set_write_alias(uint8_t addr, uint8_t reg, uint8_t also);
  * behaviour in here.
  *
  * The callback runs INSIDE the driver's ioctl, so it may call
- * i2cmock_set_reg() and i2cmock_set_regs() (that is the point) but must not
- * call anything that re-enters the driver.
+ * i2cmock_set_reg(), i2cmock_set_regs(), i2cmock_fifo_push() and
+ * i2cmock_fifo_clear() (that is the point) but must not call anything that
+ * re-enters the driver.
  */
 typedef void (*i2cmock_write_cb)(uint8_t addr, uint8_t reg, uint8_t val);
 void i2cmock_on_write(i2cmock_write_cb cb);

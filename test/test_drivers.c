@@ -1210,6 +1210,145 @@ static void test_mpu_overflow_discards_and_restarts(void)
     end(fb);
 }
 
+/*
+ * Built-in self-test.
+ *
+ * The register file is passive, so the actuation has to be modelled: the hook
+ * below watches for fifo_restart()'s last write, sees whether GYRO_CONFIG's
+ * self-test bits are set, and stages a window of sample-sets carrying the
+ * matching output.  A deflection is staged per axis so an axis mix-up fails
+ * rather than averaging out, and the queue is cleared each time so the test
+ * does not have to consume exactly as many sets as the driver does.
+ *
+ * ±2 g is 16384 LSB/g and ±250 dps is 131 LSB/dps, which is what makes the
+ * deflections below whole numbers of mg and dps.
+ */
+#define ST_STAGE_SETS  256    /* > any plausible average, and 3072 B < FIFOSZ */
+
+static const int16_t g_st_off[6] = { 100, -50, 8192, 5, -7, 3 };
+static const int16_t g_st_delta[6] = { 3686, 4915, 2458,   /* 225/300/150 mg */
+                                       2620, 3930, 1310 }; /* 20/30/10 dps   */
+static uint8_t g_st_gyro_cfg;   /* last GYRO_CONFIG the driver wrote */
+static int     g_st_starve_on;  /* stage nothing for the actuated pass */
+
+static void mpu_st_stage(int on)
+{
+    uint8_t w[12];
+    for (int k = 0; k < 6; k++) {
+        int16_t v = (int16_t)(g_st_off[k] + (on ? g_st_delta[k] : 0));
+        w[2 * k]     = (uint8_t)(v >> 8);
+        w[2 * k + 1] = (uint8_t)v;
+    }
+    i2cmock_fifo_clear(MPU_ADDR);
+    if (on && g_st_starve_on) {
+        /* No samples at all: the "produced nothing to average" failure the
+         * contract requires the driver to report rather than paper over. */
+        i2cmock_set_reg(MPU_ADDR, 0x72, 0x00);
+        i2cmock_set_reg(MPU_ADDR, 0x73, 0x00);
+        return;
+    }
+    for (int i = 0; i < ST_STAGE_SETS; i++) i2cmock_fifo_push(MPU_ADDR, w, 12);
+    i2cmock_set_reg(MPU_ADDR, 0x72, 0x03);   /* 768 B = 64 sample-sets */
+    i2cmock_set_reg(MPU_ADDR, 0x73, 0x00);
+}
+
+static void mpu_st_cb(uint8_t addr, uint8_t reg, uint8_t val)
+{
+    if (addr != MPU_ADDR) return;
+    /* self_test() opens with reset(), so H_RESET has to be modelled here as
+     * well — same wipe as test_mpu_reset_init_pair, and the staged window goes
+     * with the register file it belonged to. */
+    if (reg == 0x6B && (val & 0x80)) {
+        mpu_hreset_cb(addr, reg, val);
+        g_st_gyro_cfg = 0;
+        i2cmock_fifo_clear(MPU_ADDR);
+        return;
+    }
+    if (reg == 0x1B) g_st_gyro_cfg = val;
+    /* fifo_restart() reopens the port last, so this is the moment the driver
+     * starts a fresh window — and the only one where a restage is invisible to
+     * it. */
+    if (reg == 0x6A && val == 0x40) mpu_st_stage((g_st_gyro_cfg & 0xE0) != 0);
+}
+
+static void mpu_st_begin(void)
+{
+    mpu_stage_genuine(0x71);
+    i2cmock_set_fifo_reg(MPU_ADDR, 0x74);
+    g_st_gyro_cfg = 0;
+    i2cmock_on_write(mpu_st_cb);
+}
+
+static void test_mpu_self_test(void)
+{
+    begin("test_mpu_self_test");
+    int fb = g_fail;
+    char msg[128];
+
+    EXPECT(mpu9250_ops.self_test != NULL, "mpu9250 exposes self_test");
+    EXPECT(mpu9255_ops.self_test != NULL, "mpu9255 exposes self_test");
+    EXPECT(mpu6500_ops.self_test != NULL, "mpu6500 exposes self_test");
+
+    g_st_starve_on = 0;
+    mpu_st_begin();
+
+    imu_selftest_t st;
+    memset(&st, 0xA5, sizeof st);
+    EXPECT(mpu->self_test(I2CBUS(MPU_ADDR), &st) == 0, "self_test succeeds");
+    i2cmock_on_write(NULL);
+
+    const char *ax = "XYZ";
+    const double want_mg[3]  = { 225.0, 300.0, 150.0 };
+    const double want_dps[3] = {  20.0,  30.0,  10.0 };
+    for (int k = 0; k < 3; k++) {
+        snprintf(msg, sizeof msg, "accel %c response %.1f mg (want %.1f)",
+                 ax[k], st.accel_mg[k], want_mg[k]);
+        EXPECT(fabs(st.accel_mg[k] - want_mg[k]) < 0.5, msg);
+        snprintf(msg, sizeof msg, "gyro %c response %.2f dps (want %.1f)",
+                 ax[k], st.gyro_dps[k], want_dps[k]);
+        EXPECT(fabs(st.gyro_dps[k] - want_dps[k]) < 0.05, msg);
+    }
+
+    /*
+     * Ungraded on purpose: the product specification defines the response but
+     * gives its limits only in an application note this tree does not carry.
+     * Asserted so that publishing a window is a deliberate change and not a
+     * struct that was left half-filled.
+     */
+    EXPECT(st.accel_lo_mg == 0 && st.accel_hi_mg == 0 &&
+           st.gyro_lo_dps == 0 && st.gyro_hi_dps == 0,
+           "no datasheet window is claimed, so the check records but does not grade");
+
+    /* The measurement's own ranges: ±2 g, ±250 dps, 1 kHz, DLPF 92 Hz. */
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x19) == 0x00, "SMPLRT_DIV = 0 (1 kHz)");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x1A) == 0x02, "CONFIG = DLPF_CFG 2");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x1D) == 0x02, "ACCEL_CONFIG2 = A_DLPFCFG 2");
+
+    EXPECT((i2cmock_get_reg(MPU_ADDR, 0x1B) & 0xE0) == 0,
+           "gyro self-test off on the success path");
+    EXPECT((i2cmock_get_reg(MPU_ADDR, 0x1C) & 0xE0) == 0,
+           "accel self-test off on the success path");
+
+    /*
+     * A part that stops producing WHILE actuated.  -1 rather than a confident
+     * number from a stale register image, and the proof masses still released.
+     */
+    g_st_starve_on = 1;
+    mpu_st_begin();
+    EXPECT(mpu->self_test(I2CBUS(MPU_ADDR), &st) == -1,
+           "self_test fails when the actuated pass produces no samples");
+    i2cmock_on_write(NULL);
+    EXPECT((i2cmock_get_reg(MPU_ADDR, 0x1B) & 0xE0) == 0,
+           "gyro self-test off on the failure path");
+    EXPECT((i2cmock_get_reg(MPU_ADDR, 0x1C) & 0xE0) == 0,
+           "accel self-test off on the failure path");
+    g_st_starve_on = 0;
+
+    EXPECT(i2cmock_fifo_drops(MPU_ADDR) == 0, "no staged sample-sets were dropped");
+
+    end(fb);
+}
+
 /* ── AK8963 ──────────────────────────────────────────────────────────────── */
 
 static void test_ak_probe(void)
@@ -4212,6 +4351,7 @@ int main(void)
     test_mpu_read_decode();
     test_mpu_read_overflow_and_errors();
     test_mpu_overflow_discards_and_restarts();
+    test_mpu_self_test();
 
     test_ak_probe();
     test_ak_init_and_fuse_rom();
