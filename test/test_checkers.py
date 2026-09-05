@@ -53,6 +53,20 @@ def sub(pattern, repl, count=1):
     return apply
 
 
+def sub_all_optional(pattern, repl):
+    """Substitution over every match, where matching nothing is a valid state.
+
+    sub() asserts it changed something, which is right for a fixture that
+    breaks a fact.  This one normalises the tree BEFORE the break, so the
+    fixture reaches the same starting state whether or not the pattern is
+    there — used to stamp any accumulating release-notes stanza, which a
+    release commit does not have.
+    """
+    def apply(text):
+        return re.sub(pattern, repl, text, flags=re.M)
+    return apply
+
+
 def chain(*fns):
     """Apply several substitutions in order, as one fixture."""
     def apply(text):
@@ -497,12 +511,14 @@ CASES = [
     # claiming to be the one still accumulating. The older then keeps taking
     # entries that render into the wrong NEWS section. 1.9.0 shipped this way.
     #
-    # Both fixtures below are written against a tree that DOES carry an
-    # unreleased stanza, because between releases it does -- that is the state
-    # the marker exists for. Unstamping a second date is therefore enough to
-    # reach two, and reaching "is newer" needs the real one stamped first.
+    # Both fixtures below stamp any accumulating stanza first, so they reach
+    # their state from either tree: between releases one stanza is unreleased,
+    # and on the release commit itself none is. Depending on the first of
+    # those failed every release commit, which is the one tree that must pass.
     ("gen-release-notes", "docs/release-notes.toml",
-     sub(r'^date    = "2026-08-31"', 'date    = "unreleased"'),
+     chain(sub_all_optional(r'^date    = "unreleased"', 'date    = "2026-09-01"'),
+           sub(r'^date    = "2026-08-31"', 'date    = "unreleased"'),
+           sub(r'^date    = "2026-08-28"', 'date    = "unreleased"')),
      "2 releases"),
 
     # The date in a form nothing downstream can order or parse.
@@ -516,7 +532,7 @@ CASES = [
     # newest, which would only trip the separate check that include/version.h
     # has a stanza at all.
     ("gen-release-notes", "docs/release-notes.toml",
-     chain(sub(r'^date    = "unreleased"', 'date    = "2026-09-01"'),
+     chain(sub_all_optional(r'^date    = "unreleased"', 'date    = "2026-09-01"'),
            sub(r'^date    = "2026-08-28"', 'date    = "unreleased"')),
      "is newer"),
 
