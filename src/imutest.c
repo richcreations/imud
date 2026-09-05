@@ -120,6 +120,7 @@ void imt_opts_defaults(imt_opts_t *o)
     o->face_collect_s  = 2.0;
     o->turn_deg        = 90.0;
     o->turn_timeout_s  = 30.0;
+    o->turn_bias_s     = 2.0;
     o->spin_timeout_s  = 180.0;
     /*
      * Gravity tolerance, from the PART's spec rather than from what a good
@@ -2304,6 +2305,13 @@ static void sample_row_add(imt_sample_row_t *rows, int *n, const imu_sample_t *s
 
 /* ── Phase A: noise floor, gravity, temperature ───────────────────────────── */
 
+/*
+ * Per-axis gyro sigma, in rad/s, above which a collection window was not taken
+ * on a still platform.  Shared with the rest-bias window in phase C, so the
+ * two cannot drift apart.
+ */
+#define IMT_STILL_SIGMA 0.1
+
 static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
 {
     char mb[56], eb[56];
@@ -2367,7 +2375,7 @@ static void check_rest(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d)
     /* Was the board actually still?  Everything below is graded on that. */
     double gmax = fmax(fmax(r->raw.gyro.sigma[0], r->raw.gyro.sigma[1]),
                        r->raw.gyro.sigma[2]);
-    bool moved = gmax > 0.1;
+    bool moved = gmax > IMT_STILL_SIGMA;
     add_check(r, "imu.rest.still", "Platform was still", moved ? IMT_WARN : IMT_PASS,
               fmtbuf(mb, sizeof mb, "gyro sigma %.4f rad/s", gmax),
               "< 0.1 rad/s",
@@ -4332,6 +4340,76 @@ static const struct {
                 "the bow to starboard", 2 },
 };
 
+/*
+ * The gyro rest bias, rad/s, for the two phases that integrate.  Established
+ * once per run and cached in the report: the rest window's mean when the
+ * passive phase measured one, otherwise a short window collected here.
+ *
+ * Both integrating windows stay open until the operator signals, and are
+ * mostly not turning, so an uncorrected integral is the turn plus the bias for
+ * the whole window — enough to move a good gyro outside the +/-20% band
+ * gyro.*.scale grades.
+ *
+ * Collected BEFORE the phase's first prompt, which is when the board is most
+ * likely still: the operator is reading.  A window that was not still carries
+ * no bias worth trusting, so nothing is subtracted and the check says so.
+ */
+static void gyro_bias(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
+                      double bias[3])
+{
+    const char *const name = "Gyro rest bias removed";
+    char mb[64];
+
+    if (!imt_find(r, "gyro.bias")) {
+        imt_stats3_t own;
+        const imt_stats3_t *src = NULL;
+        const char *from = NULL;
+
+        if (r->raw.gyro.n >= 10) {
+            src  = &r->raw.gyro;
+            from = "the rest window";
+        } else if (collect_stats(o, d, o->turn_bias_s, "gyro.bias",
+                                 NULL, &own, NULL) >= 10) {
+            src  = &own;
+            from = "a still window before the first prompt";
+        }
+
+        double sigma = 0;
+        if (src)
+            for (int k = 0; k < 3; k++)
+                if (src->sigma[k] > sigma) sigma = src->sigma[k];
+
+        if (src && sigma <= IMT_STILL_SIGMA) {
+            for (int k = 0; k < 3; k++)
+                r->raw.gyro_bias_dps[k] = src->mean[k] * 180.0 / M_PI;
+            r->raw.gyro_bias_src = from;
+            add_check(r, "gyro.bias", name, IMT_INFO,
+                      fmtbuf(mb, sizeof mb, "%+.3f / %+.3f / %+.3f deg/s",
+                             r->raw.gyro_bias_dps[0], r->raw.gyro_bias_dps[1],
+                             r->raw.gyro_bias_dps[2]),
+                      "subtracted",
+                      "measured over %s and removed from every sample the "
+                      "rotation and spin phases integrate.", from);
+        } else if (src) {
+            add_check(r, "gyro.bias", name, IMT_WARN,
+                      fmtbuf(mb, sizeof mb, "gyro sigma %.4f rad/s", sigma),
+                      "< 0.1 rad/s",
+                      "the board was moving while the bias window ran, so "
+                      "nothing was subtracted: the angles below carry the "
+                      "gyro's rest bias for the length of each window.");
+        } else {
+            add_check(r, "gyro.bias", name, IMT_WARN,
+                      "no samples", "< 0.1 rad/s",
+                      "the bias window collected nothing, so nothing was "
+                      "subtracted: the angles below carry the gyro's rest "
+                      "bias for the length of each window.");
+        }
+    }
+
+    for (int k = 0; k < 3; k++)
+        bias[k] = r->raw.gyro_bias_dps[k] * M_PI / 180.0;
+}
+
 static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                        const imu_ops_t *imu, double eff_hz)
 {
@@ -4376,6 +4454,9 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     double fifo_a_sum = 0, dir_a_sum = 0;
     uint64_t fifo_a_n = 0, dir_a_n = 0;
 
+    double bias[3];
+    gyro_bias(r, o, d, bias);
+
     for (int t = 0; t < 3 && !g_abort; t++) {
         int axis = imt_turns[t].axis;
         snprintf(body, sizeof body,
@@ -4417,7 +4498,8 @@ static void phase_gyro(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     have_prev_ts = true;
                 }
                 for (int k = 0; k < 3; k++)
-                    theta[k] += (double)buf[i].gyro[k] * dt * 180.0 / M_PI;
+                    theta[k] += ((double)buf[i].gyro[k] - bias[k])
+                              * dt * 180.0 / M_PI;
                 if (t == 0)
                     sample_row_add(r->raw.turn_rows, &r->raw.n_turn_rows, &buf[i]);
                 double a2 = 0;
@@ -4664,6 +4746,9 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
     imu_sample_t ibuf[128];
     int in = 0;
 
+    double bias[3];
+    gyro_bias(r, o, d, bias);
+
     int pr = ui_prompt(o, "spin", "Magnetometer spin",
                        "Hold the board LEVEL and turn it slowly through at "
                        "least two full circles, clockwise seen from above.\n"
@@ -4708,7 +4793,8 @@ static void phase_spin(imt_report_t *r, const imt_opts_t *o, drain_ctx_t *d,
                     prev_ts = ibuf[i].chip_ts;
                     have_prev_ts = true;
                 }
-                gyro_z_deg += (double)ibuf[i].gyro[2] * dt * 180.0 / M_PI;
+                gyro_z_deg += ((double)ibuf[i].gyro[2] - bias[2])
+                            * dt * 180.0 / M_PI;
             }
         }
 

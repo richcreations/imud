@@ -104,6 +104,16 @@ void i2cmock_fifo_push(uint8_t addr, const uint8_t *buf, int len);
 void i2cmock_fifo_clear(uint8_t addr);
 
 /*
+ * Bytes still queued.  A part's FIFO-level register is a DEPTH, so a test that
+ * stages samples must recompute it from this rather than adding to whatever it
+ * held: an accumulating count is a lifetime total that wraps its register
+ * (8 bits on the ST parts, so at 128 sample-sets) and hands the driver a level
+ * of zero while data is queued.  That drops one drain, and the sample the next
+ * drain returns carries two ticks of chip time instead of one.
+ */
+int i2cmock_fifo_len(uint8_t addr);
+
+/*
  * Bytes discarded because the queue was full, since i2cmock_reset().
  *
  * The queue reclaims itself whenever it drains, so FIFOSZ bounds DEPTH and not

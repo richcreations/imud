@@ -221,6 +221,20 @@ static void ism_push(uint8_t tag, int16_t x, int16_t y, int16_t z)
 #define ISM_TICKS_PER_SAMPLE 192
 static uint32_t g_chip_ts;
 
+/* DIFF_FIFO, from what is actually queued.  Adding to the register instead
+ * makes it a lifetime total, and the 8-bit field wraps to zero every 128
+ * sample-sets: the driver then reads an empty FIFO with data in it, skips a
+ * drain, and the next sample carries two ticks of chip time. */
+static void ism_set_fifo_level(void)
+{
+    int words = i2cmock_fifo_len(ISM_ADDR) / 7;
+    if (words > 0x3FF) words = 0x3FF;
+    i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)words);
+    uint8_t hi = i2cmock_get_reg(ISM_ADDR, 0x3B);
+    i2cmock_set_reg(ISM_ADDR, 0x3B,
+                    (uint8_t)((hi & 0xFC) | ((words >> 8) & 0x03)));
+}
+
 static void ism_advance_ts(void)
 {
     g_chip_ts += ISM_TICKS_PER_SAMPLE;
@@ -294,9 +308,7 @@ static void stage_sample(const double accel_ms2[3], const double gyro_rads[3])
      * call that a fault in every test in this file.
      */
     if (!g_stage_skew_direct) ism_set_direct(ax, ay, az, gx, gy, gz);
-    /* Two more FIFO words are now pending. */
-    uint8_t cur = i2cmock_get_reg(ISM_ADDR, 0x3A);
-    i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(cur + 2));
+    ism_set_fifo_level();
     ism_advance_ts();
 }
 
@@ -508,6 +520,7 @@ static void fast_opts(imt_opts_t *o)
     o->mag_window_s    = 0.20 * k;
     o->face_collect_s  = 0.10 * k;
     o->turn_timeout_s  = 1.0  * k;
+    o->turn_bias_s     = 0.10 * k;
     o->spin_timeout_s  = 2.0  * k;
     /* Not scaled, and not an oversight.  drdy_window_s buys edges from the
      * imt_gpio_count_edges() stub, which computes them from the window rather
@@ -542,10 +555,17 @@ typedef struct {
     /* Stage nothing while this check id is collecting, so the phase reaches
      * its too-few-samples path.  NULL feeds every face. */
     const char *starve_id;
-    /* Phase C: per-axis rate, deg/s, for the gyro turns. */
+    /* Phase C: per-axis rate, deg/s, for the gyro turns.  Added to the
+     * standing gyro[] rather than replacing it, so a rest bias can be present
+     * through a commanded turn the way a real part's is. */
     double turn_rate_dps[3];
     int    cur_turn;
-    /* Phase D: spin. */
+    /* Rad/s, alternating sign each tick during the pre-phase bias window, so
+     * the window's sigma clears the stillness gate. */
+    double bias_jitter;
+    /* Phase D: spin.  Z rate fed only while spinning, again on top of the
+     * standing bias. */
+    double spin_gyro_z;
     bool   spinning;
     double spin_deg;
     double spin_dir;         /* +1 normal, -1 to invert the mag sweep */
@@ -617,17 +637,18 @@ static void s_progress(void *user, const char *id, double frac,
 
     if (s->feed_imu && !(s->starve_id && strcmp(id, s->starve_id) == 0)) {
         double g[3] = { s->gyro[0], s->gyro[1], s->gyro[2] };
-        /* During a gyro turn, spin the commanded axis. */
-        if (strncmp(id, "gyro.", 5) == 0 && s->cur_turn >= 0) {
-            g[0] = g[1] = g[2] = 0.0;
-            g[s->cur_turn] = s->turn_rate_dps[s->cur_turn] * M_PI / 180.0;
-        }
+        /* During a gyro turn, spin the commanded axis on top of the bias. */
+        if (strncmp(id, "gyro.", 5) == 0 && s->cur_turn >= 0)
+            g[s->cur_turn] += s->turn_rate_dps[s->cur_turn] * M_PI / 180.0;
+        if (s->spinning) g[2] += s->spin_gyro_z;
+        if (s->bias_jitter != 0.0 && strcmp(id, "gyro.bias") == 0)
+            for (int k = 0; k < 3; k++)
+                g[k] += (s->ticks & 1) ? s->bias_jitter : -s->bias_jitter;
         stage_sample(s->accel, g);
         if (s->push_fifo_temp) {
             /* ST temperature word: 256 LSB/degC with 0 = 25 degC. */
             ism_push(0x03, (int16_t)lrint((s->fifo_temp_c - 25.0) * 256.0), 0, 0);
-            uint8_t cur = i2cmock_get_reg(ISM_ADDR, 0x3A);
-            i2cmock_set_reg(ISM_ADDR, 0x3A, (uint8_t)(cur + 1));
+            ism_set_fifo_level();
         }
     }
     if (s->feed_mag && s->spinning) {
@@ -3279,6 +3300,185 @@ static void test_gyro_sign(void)
     end(fb);
 }
 
+/*
+ * The rest bias comes off before the turn is integrated.
+ *
+ * A turn window stays open until the operator signals, and is mostly not
+ * turning, so integrating raw gyro adds the bias for the whole window: the
+ * reference bench's 1.58 deg/s of Z read +127 deg against a commanded 90.
+ * Every assertion here pins the angle against the commanded rate ALONE, so a
+ * run that integrates bias + rate misses by the bias fraction — 25% at the
+ * 100 dps used, well outside the 2% band.
+ */
+static void test_gyro_bias_removed(void)
+{
+    begin("test_gyro_bias_removed");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases   = IMT_PHASE_GYRO;
+    o.turn_deg = 90.0;
+
+    const double bias_dps = 100.0;   /* a quarter of the commanded 400 dps */
+    const double turn_dps = 400.0;
+
+    mock_base(); script_reset(&o);
+    g_s.done_after = 40;
+    for (int k = 0; k < 3; k++) {
+        g_s.gyro[k]          = bias_dps * M_PI / 180.0;
+        g_s.turn_rate_dps[k] = turn_dps;
+    }
+
+    imt_report_t *r = run(&cfg, &o);
+    EXPECT_STATUS(r, "gyro.bias", IMT_INFO, "a still bias window grades INFO");
+    EXPECT(r->raw.gyro_bias_src != NULL, "and records where it came from");
+    for (int k = 0; k < 3; k++) {
+        char m[128];
+        snprintf(m, sizeof m, "axis %c bias measured %.2f deg/s (want %.0f)",
+                 "XYZ"[k], r->raw.gyro_bias_dps[k], bias_dps);
+        EXPECT(fabs(r->raw.gyro_bias_dps[k] - bias_dps) < 1.0, m);
+    }
+
+    const double eff_hz = (double)r->eff_odr_mhz * 1e-3;
+    EXPECT(eff_hz > 0, "the report carries an effective ODR");
+    for (int k = 0; k < 3; k++) {
+        const imt_turn_row_t *row = &r->raw.turn[k];
+        double want = (double)row->n * turn_dps / eff_hz;
+        char m[192];
+        snprintf(m, sizeof m,
+                 "turn %c integrated %.2f deg over %d sets (want %.2f; "
+                 "%.2f if the bias rides along)", "XYZ"[k], row->theta[k],
+                 row->n, want, (double)row->n * (turn_dps + bias_dps) / eff_hz);
+        EXPECT(row->n > 0 && fabs(row->theta[k] - want) < 0.02 * want, m);
+        /* The two idle axes see the bias and nothing else, so they are the
+         * whole input to the cross-axis check. */
+        for (int j = 0; j < 3; j++) {
+            if (j == k) continue;
+            snprintf(m, sizeof m, "turn %c left axis %c at %+.2f deg",
+                     "XYZ"[k], "XYZ"[j], row->theta[j]);
+            EXPECT(fabs(row->theta[j]) < 0.02 * want, m);
+        }
+    }
+    /* The appendix has to say what was taken off, or its theta column cannot
+     * be read against the rest gyro mean in 5.2. */
+    {
+        const char *path = "test_imutest_bias.md";
+        char err[256] = "";
+        static char buf[262144];
+        EXPECT(imt_write_md(r, path, err, sizeof err) == 0, "the report writes");
+        FILE *f = fopen(path, "r");
+        EXPECT(f != NULL, "the report file exists");
+        if (f) {
+            buf[fread(buf, 1, sizeof buf - 1, f)] = '\0';
+            fclose(f);
+            const char *sec = strstr(buf, "### 5.9 Gyro rotation");
+            EXPECT(sec != NULL, "the rotation appendix is present");
+            if (sec) {
+                char want[96];
+                snprintf(want, sizeof want,
+                         "Gyro rest bias removed before integrating: "
+                         "%+.3f / %+.3f / %+.3f deg/s",
+                         r->raw.gyro_bias_dps[0], r->raw.gyro_bias_dps[1],
+                         r->raw.gyro_bias_dps[2]);
+                EXPECT(strstr(sec, want) != NULL,
+                       "5.9 names the bias it subtracted");
+            }
+        }
+        remove(path);
+    }
+    free(r);
+
+    /*
+     * A bias window taken while the board is moving measures no bias worth
+     * trusting.  Nothing is subtracted and the report says so — silently
+     * removing a hand turn's mean would corrupt all three angles.
+     */
+    mock_base(); script_reset(&o);
+    g_s.done_after  = 40;
+    g_s.bias_jitter = 0.5;           /* rad/s, five times the stillness gate */
+    for (int k = 0; k < 3; k++) {
+        g_s.gyro[k]          = bias_dps * M_PI / 180.0;
+        g_s.turn_rate_dps[k] = turn_dps;
+    }
+
+    r = run(&cfg, &o);
+    EXPECT_STATUS(r, "gyro.bias", IMT_WARN, "a moving bias window warns");
+    EXPECT(r->raw.gyro_bias_src == NULL, "and subtracts nothing");
+    {
+        const imt_turn_row_t *row = &r->raw.turn[0];
+        double raw_deg = (double)row->n * (turn_dps + bias_dps) / eff_hz;
+        EXPECT(row->n > 0 && fabs(row->theta[0] - raw_deg) < 0.02 * raw_deg,
+               "so the X turn still carries the bias, as before the fix");
+    }
+    free(r);
+
+    end(fb);
+}
+
+/*
+ * Phase D integrates the same gyro over a window of its own, and grades the
+ * mag heading against it at +/-25%.  A bias left in inflates the gyro half and
+ * fails a correct magnetometer driver for it.
+ *
+ * Stated as the same spin run twice, with the standing bias and without: the
+ * two gyro integrals must agree.  That is the property under test, and it does
+ * not depend on how much of the circle the mock's heading unwrapping keeps —
+ * which is only about 81% of the gyro's angle either way.  150 dps under a 400
+ * dps spin takes that to 59% uncorrected, past the +/-25% band, and their sum
+ * stays under the 573 dps the staging guard allows at +/-500.
+ */
+static void test_spin_bias_removed(void)
+{
+    begin("test_spin_bias_removed");
+    int fb = g_fail;
+
+    imud_config_t cfg; base_config(&cfg);
+    imt_opts_t o;      fast_opts(&o);
+    o.phases = IMT_PHASE_SPIN;
+
+    const double rate_dps     = 400.0;
+    const double bias_dps     = 150.0;
+    const double deg_per_tick = rate_dps / 208.0;
+    double quiet_gyro_deg = 0;
+
+    for (int pass = 0; pass < 2; pass++) {
+        mock_base();
+        mmc_set_field(45.0, 0.0, 40.0);
+        script_reset(&o);
+        g_s.feed_mag      = true;
+        g_s.spin_dir      = +1.0;
+        g_s.done_after    = 220;
+        g_s.gyro[2]       = pass ? bias_dps * M_PI / 180.0 : 0.0;
+        g_s.spin_gyro_z   = rate_dps * M_PI / 180.0;
+        g_s.spin_step_deg = deg_per_tick;
+
+        imt_report_t *r = run(&cfg, &o);
+        EXPECT_STATUS(r, "gyro.bias", IMT_INFO,
+                      "the spin phase establishes a bias of its own");
+        EXPECT(fabs(r->raw.gyro_bias_dps[2] - (pass ? bias_dps : 0.0)) < 2.0,
+               "and measures the Z bias it was fed");
+        EXPECT_STATUS(r, "spin.frame_agreement", IMT_PASS,
+                      "a correct driver agrees under a standing gyro bias");
+        if (!pass) {
+            quiet_gyro_deg = r->raw.spin_gyro_z_deg;
+            EXPECT(quiet_gyro_deg > 45.0, "the quiet spin turned far enough");
+        } else {
+            char m[160];
+            snprintf(m, sizeof m,
+                     "the biased spin integrated %+.1f deg against %+.1f "
+                     "unbiased (%+.1f if the bias rides along)",
+                     r->raw.spin_gyro_z_deg, quiet_gyro_deg,
+                     quiet_gyro_deg * (rate_dps + bias_dps) / rate_dps);
+            EXPECT(fabs(r->raw.spin_gyro_z_deg - quiet_gyro_deg)
+                   < 0.02 * quiet_gyro_deg, m);
+        }
+        free(r);
+    }
+
+    end(fb);
+}
+
 static void test_spin_frame_agreement(void)
 {
     begin("test_spin_frame_agreement");
@@ -3303,7 +3503,7 @@ static void test_spin_frame_agreement(void)
     g_s.feed_mag   = true;
     g_s.spin_dir   = +1.0;
     g_s.done_after    = 220;
-    g_s.gyro[2]       = gyro_z;
+    g_s.spin_gyro_z   = gyro_z;
     g_s.spin_step_deg = deg_per_tick;
 
     imt_report_t *r = run(&cfg, &o);
@@ -3325,7 +3525,7 @@ static void test_spin_frame_agreement(void)
     g_s.feed_mag   = true;
     g_s.spin_dir   = -1.0;
     g_s.done_after    = 220;
-    g_s.gyro[2]       = gyro_z;
+    g_s.spin_gyro_z   = gyro_z;
     g_s.spin_step_deg = deg_per_tick;
 
     r = run(&cfg, &o);
@@ -3371,7 +3571,7 @@ static void test_spin_hard_iron_still_tracks(void)
     g_s.feed_mag      = true;
     g_s.spin_dir      = +1.0;
     g_s.done_after    = 220;
-    g_s.gyro[2]       = gyro_z;
+    g_s.spin_gyro_z   = gyro_z;
     g_s.spin_step_deg = deg_per_tick;
     g_s.spin_off[0]   = 80.0;      /* offset > radius: origin is outside */
 
@@ -3392,7 +3592,7 @@ static void test_spin_hard_iron_still_tracks(void)
     g_s.feed_mag      = true;
     g_s.spin_dir      = -1.0;
     g_s.done_after    = 220;
-    g_s.gyro[2]       = gyro_z;
+    g_s.spin_gyro_z   = gyro_z;
     g_s.spin_step_deg = deg_per_tick;
     g_s.spin_off[0]   = 80.0;
 
@@ -3415,7 +3615,7 @@ static void test_spin_hard_iron_still_tracks(void)
     g_s.feed_mag      = true;
     g_s.spin_dir      = +1.0;
     g_s.done_after    = 220;
-    g_s.gyro[2]       = gyro_z;
+    g_s.spin_gyro_z   = gyro_z;
     g_s.spin_step_deg = 0.05;      /* mag creeps; the gyro turns a long way */
     g_s.spin_off[0]   = 0.0;
 
@@ -4919,7 +5119,9 @@ int main(void)
     test_faces_skipped_not_absent();
     test_faces_thin_face();
     test_gyro_sign();
+    test_gyro_bias_removed();
     test_direct_gyro_vs_fifo();
+    test_spin_bias_removed();
     test_spin_frame_agreement();
     test_spin_hard_iron_still_tracks();
     test_report_and_exit_codes();

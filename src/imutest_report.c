@@ -658,6 +658,17 @@ int imt_write_md(const imt_report_t *r, const char *path,
                     tr->used_chip_ts ? "chip_ts" : "nominal ODR",
                     imt_status_str(tr->status));
         }
+        /* Without this the theta column cannot be read against the rest gyro
+         * mean in 5.2: the two are the same quantity only once the reader
+         * knows which of them was subtracted from the other. */
+        if (w->gyro_bias_src)
+            fprintf(f, "\nGyro rest bias removed before integrating: "
+                       "%+.3f / %+.3f / %+.3f deg/s, from %s.\n",
+                    w->gyro_bias_dps[0], w->gyro_bias_dps[1],
+                    w->gyro_bias_dps[2], w->gyro_bias_src);
+        else
+            fprintf(f, "\nNo gyro rest bias was removed: the angles above "
+                       "include it, for the whole of each window.\n");
         fprintf(f, "\n");
     }
 

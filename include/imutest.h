@@ -311,6 +311,14 @@ typedef struct {
     double         face_offset[3], face_scale[3];  /* the cal model, INFO only */
     int            n_turns;
     imt_turn_row_t turn[3];
+    /*
+     * The gyro rest bias the rotation and spin phases removed before
+     * integrating, deg/s, and where it was measured.  NULL when none was
+     * established, which means the angles below carry the bias times the
+     * length of each window.
+     */
+    double         gyro_bias_dps[3];
+    const char    *gyro_bias_src;
     int            spin_sectors[IMT_MAG_SECTORS], spin_covered;
     double         spin_heading_delta_deg, spin_gyro_z_deg;
     double         spin_bz_mean, spin_range[3], spin_norm_mean;
@@ -433,6 +441,7 @@ typedef struct {
     double face_collect_s;   /* 2.0 */
     double turn_deg;         /* 90.0 */
     double turn_timeout_s;   /* 30.0 */
+    double turn_bias_s;      /* 2.0 — rest gyro bias, when no rest window ran */
     double spin_timeout_s;   /* 180.0 */
     double grav_tol_warn;    /* 0.85 m/s²: LA_So ±2% + LA_TyOff ±65 mg */
     double grav_tol_fail;    /* 0.60 m/s² */
