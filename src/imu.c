@@ -203,6 +203,10 @@ void *ism_reader_thread(void *arg)
     /* Latches once ts_anchor_t has a real tick period.  Drives the re-anchor
      * interval below and gates the one-shot log of what was measured. */
     bool tick_measured = false;
+    /* Sample gaps awaiting their next log line, and when that last fired.
+     * Thread-locals rather than ctx fields: this thread is the only writer and
+     * the only reader, and the totals a consumer sees are the atomics below. */
+    uint64_t pend_hw = 0, pend_drop = 0, last_gap_log = 0;
     imud_config_t cfg;
     /*
      * Wait sized to what the line is waiting FOR: fifo_wm sample-sets plus a
@@ -499,10 +503,40 @@ void *ism_reader_thread(void *arg)
         }
 
         /* Track hardware FIFO overflow (rc == 1) and software ring overflow. */
-        if (rc == 1) ctx->fifo_overflow_count++;
+        if (rc == 1) { ctx->fifo_overflow_count++; pend_hw++; }
         int dropped = imu_ring_push(&ctx->imu_ring, buf, n);
         ctx->fifo_overflow_count += (uint64_t)dropped;
         ctx->imu_sample_count    += (uint64_t)n;
+        pend_drop += (uint64_t)dropped;
+
+        /*
+         * Say a gap happened, at 1 Hz (spec §13).  Rate-limited because an
+         * overflowing FIFO overflows on every drain, ~100 times a second.
+         *
+         * The two counts are reported apart even though the wire flag and
+         * imud-status fold them: they have different fixes.  A hardware
+         * overflow is the reader not draining the part often enough — rate,
+         * watermark, or a missed interrupt line.  A ring drop is fusion not
+         * keeping up with the reader, and no amount of read tuning helps.
+         *
+         * `now` is the drain's CLOCK_MONOTONIC reading from above, so this
+         * costs no clock call of its own; under --replay it is capture time,
+         * which is the right clock to rate-limit against there.
+         */
+        if (pend_hw || pend_drop) {
+            uint64_t tnow = ts_ns(&now);
+            /* last_gap_log == 0 is "never logged", so a lone transient gap is
+             * reported at once rather than waiting out an interval that may
+             * never come. */
+            if (last_gap_log == 0 || tnow - last_gap_log >= 1000000000ULL) {
+                LOG_W("[ism_reader] sample gap: %llu FIFO overflow(s), "
+                      "%llu ring drop(s)\n",
+                      (unsigned long long)pend_hw,
+                      (unsigned long long)pend_drop);
+                pend_hw = pend_drop = 0;
+                last_gap_log = tnow;
+            }
+        }
     }
 
     return NULL;
@@ -1140,6 +1174,8 @@ void *fusion_thread(void *arg)
     bool prev_uncal_withdrawn = false;  /* for logging the transition */
     uint64_t prev_wall_ns = 0;  /* previous sample time for per-sample dt */
     uint32_t prev_gen     = 0;
+    /* Holds FLAG_FIFO_OVERFLOW up for a window after a gap; see imu_math.h. */
+    ovf_latch_t ovf = OVF_LATCH_INIT;
 
     while (!ctx->stop) {
         if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
@@ -1337,6 +1373,13 @@ void *fusion_thread(void *arg)
         state.pitch_amplitude = seastate_pitch_amplitude(&wave);
         if (wave.enabled && wave.settled)
             state.flags |= FLAG_WAVE_VALID;
+
+        /* Samples were lost upstream — the hardware FIFO overflowed, or the
+         * ring dropped because this thread could not keep up.  Latched for a
+         * window rather than pulsed for one packet: this loop runs per sample,
+         * so at 833 Hz a single-packet bit is invisible to every consumer. */
+        if (ovf_latch_step(&ovf, atomic_load(&ctx->fifo_overflow_count), dt))
+            state.flags |= FLAG_FIFO_OVERFLOW;
 
         if (ctx->engine_on)
             state.flags |= FLAG_ENGINE_ON;

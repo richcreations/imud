@@ -918,7 +918,15 @@ bit 6   motion             RETIRED — never set. Use accel_quiescence (a
                            continuous disturbance metric) or bit 13. The bit
                            is not reused: a stale consumer would read a new
                            meaning through the old name.
-bit 7   fifo_overflow      ISM330 FIFO overflowed since last packet (gap!)
+bit 7   fifo_overflow      Samples were lost upstream (gap!) — the IMU's
+                           hardware FIFO overflowed, or the daemon's own ring
+                           dropped because fusion could not keep up. Both are
+                           missing samples, which is all this bit claims;
+                           imud-status counts them and the daemon logs which
+                           kind at 1 Hz. LATCHED for about two seconds after
+                           the gap, not a single-packet pulse — the fusion
+                           loop runs per sample, so at 833 Hz a momentary bit
+                           is invisible to every consumer.
 bit 8   startup            Gyro bias estimation still in progress
 bit 9   shutdown           Final packet before clean exit
 bit 10  declination_valid  Declination known; true heading = heading_deg + declination_deg

@@ -225,6 +225,49 @@ void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
               uint64_t wall_ns, uint64_t fifo_end_ns, uint64_t pipe_start_ns,
               uint64_t now_ns, lat_pub_t *out_fifo, lat_pub_t *out_pipe);
 
+/* ── Sample-gap latch (FLAG_FIFO_OVERFLOW) ───────────────────────────────── */
+
+/*
+ * How long the gap flag stays raised after the last gap, in seconds.
+ *
+ * Two periods of the slowest consumer imud can be configured to serve: the
+ * output rate_hz keys are NEED_POS_INT, so 1 Hz is the floor.  One period is
+ * the obvious choice and is too tight — the latch is stepped by accumulated
+ * sample dt while the consumer reads on its own wall clock, and the two
+ * drift, so an exactly-one-period window can fall between two packets.  The
+ * two errors are not symmetric: over-latching shows one gap on a second
+ * packet, under-latching loses it altogether, which is the defect this
+ * exists to fix.
+ */
+#define OVF_LATCH_S 2.0f
+
+/*
+ * Latch state.  `prev_count` is the gap counter as of the last new gap;
+ * `age_s` is sample time accumulated since then.
+ */
+typedef struct {
+    uint64_t prev_count;
+    float    age_s;
+} ovf_latch_t;
+
+/* Starts un-latched, and adopts no history: a counter that is already
+ * non-zero on the first step really did gap, so the first step raises it. */
+#define OVF_LATCH_INIT { 0, OVF_LATCH_S }
+
+/*
+ * Step the latch by one fused sample and say whether the flag is up.
+ *
+ * `count` is the monotonic gap counter (hardware FIFO overflows plus software
+ * ring drops — both are missing samples, which is all the flag claims).  Any
+ * change re-arms the whole window, so a burst of drops latches once rather
+ * than once per drop.
+ *
+ * Stepped by dt rather than by a clock read because the fusion loop runs per
+ * SAMPLE, up to 6664 times a second, and deliberately carries no
+ * clock_gettime — the same reasoning as mag_accept_age_s in fusion_thread.
+ */
+bool ovf_latch_step(ovf_latch_t *l, uint64_t count, float dt);
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 /*

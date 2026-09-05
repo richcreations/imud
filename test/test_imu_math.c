@@ -992,6 +992,85 @@ static void test_lat_step_ends_are_on_independent_clocks(void)
     end(fb);
 }
 
+/* ── ovf_latch_step (FLAG_FIFO_OVERFLOW) ─────────────────────────────────── */
+
+/* Step the latch n times at `dt` with a static counter; return the last
+ * verdict, and how many of those steps were latched. */
+static bool ovf_coast(ovf_latch_t *l, uint64_t count, float dt, int n,
+                      int *n_latched)
+{
+    bool up = false;
+    if (n_latched) *n_latched = 0;
+    for (int i = 0; i < n; i++) {
+        up = ovf_latch_step(l, count, dt);
+        if (up && n_latched) (*n_latched)++;
+    }
+    return up;
+}
+
+static void test_ovf_latch(void)
+{
+    begin("test_ovf_latch");
+    int fb = g_fail;
+
+    const float dt = 1.0f / 833.0f;   /* the default IMU rate */
+
+    /* A sensor that never gaps never raises the flag, however long it runs. */
+    ovf_latch_t quiet = OVF_LATCH_INIT;
+    int nl;
+    ovf_coast(&quiet, 0, dt, 10000, &nl);
+    EXPECT(nl == 0, "a counter that never advances never raises the flag");
+
+    /* First gap raises it, and it holds for the whole window. */
+    ovf_latch_t l = OVF_LATCH_INIT;
+    EXPECT(ovf_latch_step(&l, 1, dt), "a new gap raises the flag");
+
+    /* Just under the window: still up.  ovf_latch_step consumed no dt on the
+     * raising step, so the window has the full OVF_LATCH_S left to run. */
+    int steps_in = (int)(OVF_LATCH_S / dt) - 2;
+    EXPECT(ovf_coast(&l, 1, dt, steps_in, &nl) && nl == steps_in,
+           "the flag holds for every step inside the window");
+
+    /* Past it: down, and it stays down. */
+    ovf_coast(&l, 1, dt, 4, NULL);
+    EXPECT(!ovf_coast(&l, 1, dt, 100, &nl) && nl == 0,
+           "the flag clears once the window elapses, and stays clear");
+
+    /* A second gap mid-window re-arms the FULL window rather than riding out
+     * the first one — otherwise a sensor gapping steadily would flicker. */
+    ovf_latch_t r = OVF_LATCH_INIT;
+    ovf_latch_step(&r, 1, dt);
+    ovf_coast(&r, 1, dt, (int)(OVF_LATCH_S / dt) - 2, NULL);  /* nearly expired */
+    EXPECT(ovf_latch_step(&r, 2, dt), "a second gap raises it again");
+    EXPECT(ovf_coast(&r, 2, dt, steps_in, &nl) && nl == steps_in,
+           "the second gap re-arms the full window, not the remainder");
+
+    /* A burst of drops arrives as one big jump in the counter, and must latch
+     * once — the flag says "there was a gap", it is not a count. */
+    ovf_latch_t b = OVF_LATCH_INIT;
+    EXPECT(ovf_latch_step(&b, 4096, dt), "a large jump latches");
+    EXPECT(ovf_coast(&b, 4096, dt, (int)(OVF_LATCH_S / dt) + 8, &nl)
+           == false && nl > 0,
+           "a large jump latches once, for one window, not once per sample");
+
+    /* The window is real time, not a step count: at a much slower rate the
+     * same number of SECONDS elapses in far fewer steps. */
+    ovf_latch_t s = OVF_LATCH_INIT;
+    ovf_latch_step(&s, 1, 0.1f);                      /* 10 Hz */
+    EXPECT(ovf_coast(&s, 1, 0.1f, 19, &nl) && nl == 19,
+           "at 10 Hz the window is still 2 s, so 19 more steps stay latched");
+    EXPECT(!ovf_coast(&s, 1, 0.1f, 2, NULL),
+           "and the 21st clears it");
+
+    /* A counter already non-zero at the first step really did gap: adopting it
+     * silently would hide an overflow that happened during alignment. */
+    ovf_latch_t warm = OVF_LATCH_INIT;
+    EXPECT(ovf_latch_step(&warm, 7, dt),
+           "a counter already non-zero on the first step raises the flag");
+
+    end(fb);
+}
+
 static void test_lat_step_clamps_rather_than_wraps(void)
 {
     begin("test_lat_step_clamps_rather_than_wraps");
@@ -1230,6 +1309,7 @@ int main(void)
     test_lat_step_windows_are_independent();
     test_lat_step_clamps_rather_than_wraps();
     test_lat_step_ends_are_on_independent_clocks();
+    test_ovf_latch();
     test_anchor_interval_bounds();
     test_ts_ns();
     test_mount_rotation();

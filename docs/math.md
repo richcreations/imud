@@ -179,7 +179,7 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu_math.c:393`) applies a fixed 3×3 board→body
+`apply_mount_rot_if_set()` (`imu_math.c:408`) applies a fixed 3×3 board→body
 matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
@@ -1403,7 +1403,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:809`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:843`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$

@@ -282,6 +282,21 @@ void lat_step(lat_hist_t *fifo, lat_hist_t *pipe, uint64_t need,
     lat_pub_if_ready(pipe, need, out_pipe);
 }
 
+/* ── Sample-gap latch ────────────────────────────────────────────────────── */
+
+bool ovf_latch_step(ovf_latch_t *l, uint64_t count, float dt)
+{
+    if (count != l->prev_count) {
+        l->prev_count = count;
+        l->age_s      = 0.0f;
+    } else if (l->age_s < OVF_LATCH_S) {
+        /* Stops accumulating at the window: the answer cannot change after
+         * that, and an unbounded float sum eventually stops advancing at all. */
+        l->age_s += dt;
+    }
+    return l->age_s < OVF_LATCH_S;
+}
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 int nearest_odr(const int supported[], int requested)

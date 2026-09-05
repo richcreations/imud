@@ -14,6 +14,13 @@ libimud (1.10.0) unstable; urgency=medium
     assigned all sixteen bits, which is what forced the new word — a
     consumer must ignore bits it does not recognise, and a later flag then
     needs no further bump. The imud-arduino client needs its own update.
+  * The packet's fifo_overflow flag (bit 7) is now actually set when
+    samples are lost, and the daemon logs the gap at 1 Hz saying whether
+    the hardware FIFO overflowed or the internal ring dropped.  The bit
+    has been documented since the format was first published and was never
+    raised, so no consumer could detect a sample gap; only imud-status's
+    counter showed one, and not when it happened. It is latched for about
+    two seconds so a slow consumer still sees it.
   * The armhf packages are now built on Raspbian at the ARMv6 baseline, so
     they run on every Raspberry Pi that boots a 32-bit userland.
     Previously they were built to Debian's ARMv7 baseline.  On a Pi 1 or

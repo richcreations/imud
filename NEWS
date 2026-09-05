@@ -93,6 +93,13 @@ Fixed:
 * imud-imutest now shows 'Enter when done' while a guided turn is collecting.
   The hint only appeared when there was nothing else on the line, so operators
   let every turn run to its timeout.
+* The packet's fifo_overflow flag (bit 7) is now actually set when samples are
+  lost, and the daemon logs the gap at 1 Hz saying whether the hardware FIFO
+  overflowed or the internal ring dropped.
+  The bit has been documented since the format was first published and was
+  never raised, so no consumer could detect a sample gap; only imud-status's
+  counter showed one, and not when it happened. It is latched for about two
+  seconds so a slow consumer still sees it.
 * mpu925x reset() now waits the MPU-925x product spec's register start-up time
   before reading the part back, and resets the gyro, accel and temperature
   signal paths as TDK's own Linux driver does for this generation.

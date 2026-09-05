@@ -46,6 +46,12 @@ it — the first passive check that proves the sensing elements are live."""
   text     = "imud-imutest now shows 'Enter when done' while a guided turn is collecting. The hint only appeared when there was nothing else on the line, so operators let every turn run to its timeout."
 
   [[release.change]]
+  kind     = "fix"
+  packages = ["imud", "libimud"]
+  text     = "The packet's fifo_overflow flag (bit 7) is now actually set when samples are lost, and the daemon logs the gap at 1 Hz saying whether the hardware FIFO overflowed or the internal ring dropped."
+  impact   = "The bit has been documented since the format was first published and was never raised, so no consumer could detect a sample gap; only imud-status's counter showed one, and not when it happened. It is latched for about two seconds so a slow consumer still sees it."
+
+  [[release.change]]
   kind     = "feature"
   packages = ["imud"]
   text     = "New driver mpu6500 for the TDK MPU-6500, the six-axis part inside the MPU-925x. Boards sold as MPU-9250 are frequently relabelled MPU-6500s; those now run as the six-axis IMU they are, with a separate magnetometer in [mag] for heading."
