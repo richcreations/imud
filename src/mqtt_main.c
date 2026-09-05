@@ -7,14 +7,14 @@
 /*
  * mqtt_main.c — imud-mqtt: MQTT bridge daemon
  *
- * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 288-byte packets, and publishes scalar telemetry topics to an MQTT
+ * Connects to imud's AF_UNIX binary subscription stream ([stream] socket) via
+ * libimud, and publishes scalar telemetry topics to an MQTT
  * broker (via libmosquitto) at the configured rate — one value per topic under
  * a prefix — plus Home Assistant MQTT-discovery configs so the sensors self-
  * register. See mqtt_publish.c for the topic/unit mapping.
  *
- * Like imud-signalk it holds no hardware, reuses the public client header
- * (lib/imud_client.h) for packet validation, reconnects to the stream if imud
+ * Like imud-signalk it holds no hardware, takes libimud's ABI-stable
+ * imud_data_t view, reconnects to the stream if imud
  * restarts, and reads its own config file (/etc/imud/imud-mqtt.conf).
  * libmosquitto's background loop owns the broker connection (auto-reconnect,
  * keepalive), so a broker outage never stalls the stream reader.
@@ -36,7 +36,7 @@
 #include <unistd.h>
 #include <time.h>
 
-#include "mqtt_publish.h"        /* pulls in ../lib/imud_client.h (types only) */
+#include "mqtt_publish.h"        /* the builders; pull in ../lib/imud.h */
 #include "../lib/imud.h"         /* libimud: stream connect/read/validate */
 #include "bridge.h"              /* shared bridge scaffolding */
 #include "sdnotify.h"
@@ -177,8 +177,8 @@ int main(int argc, char **argv)
     }
     sd_notify_msg("READY=1");
 
-    imud_t       *stream = NULL;
-    imud_packet_t latest;
+    imud_t      *stream = NULL;
+    imud_data_t  latest;
     bool have_pkt = false;
 
     struct timespec next;
@@ -219,7 +219,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (r == 0) {
-            latest   = *imud_wire(stream);
+            latest   = *imud_data(stream);
             have_pkt = true;
         }
         /* r == 1: tick deadline (or a signal) — fall through to the publisher. */

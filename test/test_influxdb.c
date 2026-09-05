@@ -49,28 +49,30 @@ static int count_spaces(const char *s)
 }
 
 /* heading 90°, RoT 60 dpm, roll 0.10 rad, pitch -0.05, yaw 1.23, heave 0.42,
- * temp 31.4, seq 7, quat identity, known ts. */
-static imud_packet_t make_pkt(void)
+ * temp 31.4, seq 7, known ts.  The quaternion carries four distinct components
+ * so a mis-indexed quat[] shows up as a swapped qw/qx/qy/qz pair, and
+ * heading_true_deg starts at libimud's "declination not known" sentinel. */
+static imud_data_t make_data(void)
 {
-    imud_packet_t p;
-    memset(&p, 0, sizeof p);
-    p.magic = IMUD_MAGIC; p.version = IMUD_VERSION;
-    p.ts_wall_ns = 1620307999123000000ULL;
-    p.quat_w = 1.0f;
-    p.heading_deg = 90.0f;
-    p.rate_of_turn = 60.0f;
-    p.roll = 0.10f; p.pitch = -0.05f; p.yaw = 1.23f;
-    p.heave_m = 0.42f; p.temp_c = 31.4f; p.imu_seq = 7;
-    p.heave_rate = 0.25f;
-    p.gyro_bias_x = 0.001f; p.gyro_bias_y = -0.002f; p.gyro_bias_z = 0.003f;
-    p.gyro_bias_var_x = 1e-6f; p.gyro_bias_var_y = 2e-6f; p.gyro_bias_var_z = 3e-6f;
-    p.accel_quiescence = 0.01f;
-    p.wave_height_m = 1.6f; p.wave_period_s = 6.2f; p.roll_period_s = 4.4f;
-    p.roll_amplitude = 0.12f; p.pitch_period_s = 5.1f; p.pitch_amplitude = 0.06f;
-    p.mag_anomaly = 0.03f; p.mag_residual = 0.02f;
-    p.innov_weight = 0.87f; p.innov_reject = 0.06f;
-    p.nis_accel = 7.25f;    p.nis_mag = 1.10f;
-    return p;
+    imud_data_t d;
+    memset(&d, 0, sizeof d);
+    d.ts_wall_ns = 1620307999123000000ULL;
+    d.quat[0] = 0.9f; d.quat[1] = 0.3f; d.quat[2] = 0.2f; d.quat[3] = 0.1f;
+    d.heading_deg = 90.0f;
+    d.heading_true_deg = -1.0f;
+    d.rate_of_turn = 60.0f;
+    d.roll = 0.10f; d.pitch = -0.05f; d.yaw = 1.23f;
+    d.heave_m = 0.42f; d.temp_c = 31.4f; d.imu_seq = 7;
+    d.heave_rate = 0.25f;
+    d.gyro_bias[0] = 0.001f; d.gyro_bias[1] = -0.002f; d.gyro_bias[2] = 0.003f;
+    d.gyro_bias_var[0] = 1e-6f; d.gyro_bias_var[1] = 2e-6f; d.gyro_bias_var[2] = 3e-6f;
+    d.accel_quiescence = 0.01f;
+    d.wave_height_m = 1.6f; d.wave_period_s = 6.2f; d.roll_period_s = 4.4f;
+    d.roll_amplitude = 0.12f; d.pitch_period_s = 5.1f; d.pitch_amplitude = 0.06f;
+    d.mag_anomaly = 0.03f; d.mag_residual = 0.02f;
+    d.innov_weight = 0.87f; d.innov_reject = 0.06f;
+    d.nis_accel = 7.25f;    d.nis_mag = 1.10f;
+    return d;
 }
 
 static void test_structure_and_deg(void)
@@ -78,9 +80,9 @@ static void test_structure_and_deg(void)
     begin("test_structure_and_deg");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
-    int n = influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    int n = influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(n > 0, "encode succeeds");
     EXPECT(strncmp(buf, "imud,source=imud ", 17) == 0, "measurement + source tag prefix");
     /* exactly two spaces: tags|fields and fields|timestamp */
@@ -91,7 +93,11 @@ static void test_structure_and_deg(void)
     EXPECT(field(buf, "roll", &v)    && fabs(v - 5.7296) < 1e-2, "roll 0.10 rad → 5.73° (native)");
     EXPECT(field(buf, "rate_of_turn", &v) && fabs(v - 60.0) < 1e-2, "rate_of_turn 60 °/min");
     EXPECT(field(buf, "temp", &v)    && fabs(v - 31.4) < 1e-2, "temp 31.4");
-    EXPECT(field(buf, "qw", &v)      && fabs(v - 1.0) < 1e-4, "quaternion qw=1");
+    /* All four components, so an off-by-one into quat[] is visible. */
+    EXPECT(field(buf, "qw", &v) && fabs(v - 0.9) < 1e-4, "quaternion qw = quat[0]");
+    EXPECT(field(buf, "qx", &v) && fabs(v - 0.3) < 1e-4, "quaternion qx = quat[1]");
+    EXPECT(field(buf, "qy", &v) && fabs(v - 0.2) < 1e-4, "quaternion qy = quat[2]");
+    EXPECT(field(buf, "qz", &v) && fabs(v - 0.1) < 1e-4, "quaternion qz = quat[3]");
     EXPECT(strstr(buf, ",seq=7i") != NULL, "seq is an integer field (7i)");
     EXPECT(strstr(buf, " 1620307999123000000") != NULL, "nanosecond timestamp appended");
     end(fb);
@@ -102,9 +108,9 @@ static void test_rad_units(void)
     begin("test_rad_units");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, false, INFLUX_DETAIL_HEALTH);
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, false, INFLUX_DETAIL_HEALTH);
 
     double v;
     EXPECT(field(buf, "heading", &v) && fabs(v - M_PI/2.0) < 1e-4, "heading 90° → π/2 rad");
@@ -119,19 +125,32 @@ static void test_declination_gated(void)
     begin("test_declination_gated");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
     double v;
 
-    p.flags = 0; p.declination_deg = 13.2f;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    d.flags = 0; d.declination_deg = 13.2f;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(!field(buf, "heading_true", &v), "heading_true absent without flag");
     EXPECT(!field(buf, "variation", &v),    "variation absent without flag");
 
-    p.flags = IMUD_FLAG_DECLINATION_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    d.flags = IMUD_FLAG_DECLINATION_VALID;
+    d.heading_true_deg = 103.2f;               /* 90 mag + 13.2 E, per libimud */
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "variation", &v)    && fabs(v - 13.2) < 1e-2, "variation 13.2°");
     EXPECT(field(buf, "heading_true", &v) && fabs(v - 103.2) < 1e-2, "heading_true = 90 + 13.2");
+
+    /*
+     * True heading is libimud's member, not something the encoder recomputes.
+     * The two are indistinguishable until the sum wraps: 350 + 20 E is 10°,
+     * and an encoder adding the fields itself would write 370° here.
+     */
+    d.heading_deg      = 350.0f;
+    d.declination_deg  = 20.0f;
+    d.heading_true_deg = 10.0f;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    EXPECT(field(buf, "heading_true", &v) && fabs(v - 10.0) < 1e-2,
+           "heading_true is the library's wrapped value, not heading + declination");
     end(fb);
 }
 
@@ -140,14 +159,14 @@ static void test_heave_gated_and_tags(void)
     begin("test_heave_gated_and_tags");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
     double v;
 
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(!field(buf, "heave", &v), "heave absent when emit_heave=false");
 
-    influx_build_line(buf, sizeof buf, &p, "boat", "vessel1", true, true, INFLUX_DETAIL_HEALTH);
+    influx_build_line(buf, sizeof buf, &d, "boat", "vessel1", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "heave", &v) && fabs(v - 0.42) < 1e-3, "heave present when emit_heave=true");
     EXPECT(strncmp(buf, "boat,source=vessel1 ", 20) == 0, "custom measurement + source tag");
     end(fb);
@@ -158,14 +177,14 @@ static void test_v12_diagnostics(void)
     begin("test_v12_diagnostics");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
     double v;
 
     /* Gyro-bias / variance / quiescence are always emitted, never unit-converted
      * (raw SI even in deg mode), and independent of the heave gate. */
-    p.flags = 0;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    d.flags = 0;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "gbias_x", &v) && fabs(v - 0.001) < 1e-6, "gbias_x raw rad/s");
     EXPECT(field(buf, "gbias_y", &v) && fabs(v + 0.002) < 1e-6, "gbias_y raw rad/s");
     EXPECT(field(buf, "gbias_z", &v) && fabs(v - 0.003) < 1e-6, "gbias_z raw rad/s");
@@ -179,14 +198,14 @@ static void test_v12_diagnostics(void)
 
     /* emit_heave with the valid flag clear → heave still emitted (diagnostics sink),
      * heave_valid=f so the transient can be filtered downstream. */
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "heave_rate", &v) && fabs(v - 0.25) < 1e-3, "heave_rate present + value");
     EXPECT(field(buf, "heave", &v) && fabs(v - 0.42) < 1e-3, "heave emitted from t=0 regardless of validity");
     EXPECT(strstr(buf, "heave_valid=f") != NULL, "heave_valid=f when flag clear");
 
     /* Valid flag set → heave_valid=t. */
-    p.flags = IMUD_FLAG_HEAVE_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
+    d.flags = IMUD_FLAG_HEAVE_VALID;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH);
     EXPECT(strstr(buf, "heave_valid=t") != NULL, "heave_valid=t when flag set");
     end(fb);
 }
@@ -196,14 +215,14 @@ static void test_v14_seastate(void)
     begin("test_v14_seastate");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[1024];
     double v;
 
     /* Sea state is always emitted (diagnostics sink), raw SI even in deg
      * mode, independent of the heave gate, with wave_valid as the filter. */
-    p.flags = 0;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    d.flags = 0;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(field(buf, "wave_height", &v) && fabs(v - 1.6) < 1e-3, "wave_height m, always on");
     EXPECT(field(buf, "wave_period", &v) && fabs(v - 6.2) < 1e-2, "wave_period s");
     EXPECT(field(buf, "roll_period", &v) && fabs(v - 4.4) < 1e-2, "roll_period s");
@@ -218,8 +237,8 @@ static void test_v14_seastate(void)
     EXPECT(field(buf, "nis_mag", &v) && fabs(v - 1.10) < 1e-4, "nis_mag always on");
     EXPECT(strstr(buf, "wave_valid=f") != NULL, "wave_valid=f when flag clear");
 
-    p.flags = IMUD_FLAG_WAVE_VALID;
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    d.flags = IMUD_FLAG_WAVE_VALID;
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
     EXPECT(strstr(buf, "wave_valid=t") != NULL, "wave_valid=t when flag set");
     end(fb);
 }
@@ -228,9 +247,9 @@ static void test_buffer_too_small(void)
 {
     begin("test_buffer_too_small");
     int fb = g_fail;
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char small[32];
-    EXPECT(influx_build_line(small, sizeof small, &p, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH) == -1,
+    EXPECT(influx_build_line(small, sizeof small, &d, "imud", "imud", true, true, INFLUX_DETAIL_HEALTH) == -1,
            "returns -1 when buffer too small");
     end(fb);
 }
@@ -248,26 +267,26 @@ static void test_heading_always_emitted_with_validity(void)
     int fb = g_fail;
 
     char buf[2048];
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
 
-    p.flags = 0;                                /* dead reckoned */
-    p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
+    d.flags = 0;                                /* dead reckoned */
+    d.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    EXPECT(influx_build_line(buf, sizeof buf, &d, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds with no magnetometer");
     EXPECT(strstr(buf, ",heading=") != NULL, "heading still emitted");
     EXPECT(strstr(buf, "heading_ref=f") != NULL, "heading_ref=f when unreferenced");
     EXPECT(strstr(buf, "mag_absent=t") != NULL, "mag_absent=t with no mag fitted");
 
-    p.flags = IMUD_FLAG_MAG_VALID;
-    p.flags_ext = 0;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
+    d.flags = IMUD_FLAG_MAG_VALID;
+    d.flags_ext = 0;
+    EXPECT(influx_build_line(buf, sizeof buf, &d, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds with a fused magnetometer");
     EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t when fused");
     EXPECT(strstr(buf, "mag_absent=f") != NULL, "mag_absent=f when one is fitted");
 
     /* Uncalibrated still counts as referenced — bounded, not drifting. */
-    p.flags = IMUD_FLAG_MAG_UNCAL;
-    EXPECT(influx_build_line(buf, sizeof buf, &p, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
+    d.flags = IMUD_FLAG_MAG_UNCAL;
+    EXPECT(influx_build_line(buf, sizeof buf, &d, "imu", NULL, true, true, INFLUX_DETAIL_HEALTH) > 0,
            "line builds on an uncalibrated fuse");
     EXPECT(strstr(buf, "heading_ref=t") != NULL, "heading_ref=t on an uncal fuse");
     end(fb);
@@ -298,14 +317,14 @@ static void test_detail_levels_are_cumulative(void)
     begin("test_detail_levels_are_cumulative");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
-    p.flags |= IMUD_FLAG_DECLINATION_VALID;
+    imud_data_t d = make_data();
+    d.flags |= IMUD_FLAG_DECLINATION_VALID;
 
     char prev[4096] = "", cur[4096];
     int  prev_n = 0;
 
-    for (int d = INFLUX_DETAIL_ATTITUDE; d <= INFLUX_DETAIL_FULL; d++) {
-        int n = influx_build_line(cur, sizeof cur, &p, "imud", "imud", true, true, d);
+    for (int lvl = INFLUX_DETAIL_ATTITUDE; lvl <= INFLUX_DETAIL_FULL; lvl++) {
+        int n = influx_build_line(cur, sizeof cur, &d, "imud", "imud", true, true, lvl);
         EXPECT(n > 0, "line builds at every level");
 
         int nf = nfields(cur);
@@ -348,10 +367,10 @@ static void test_detail_boundaries(void)
     begin("test_detail_boundaries");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     char buf[4096];
 
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true,
                       INFLUX_DETAIL_ATTITUDE);
     EXPECT(strstr(buf, "qw=") && strstr(buf, ",heading=") && strstr(buf, ",seq="),
            "attitude carries quaternion, heading and seq");
@@ -359,13 +378,13 @@ static void test_detail_boundaries(void)
     EXPECT(!strstr(buf, "gbias_x="),     "attitude has no filter health");
     EXPECT(!strstr(buf, ",accel_x="),    "attitude has no sensor vectors");
 
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true,
                       INFLUX_DETAIL_HEALTH);
     EXPECT(strstr(buf, "gbias_x=") && strstr(buf, "nis_accel="),
            "health carries the filter diagnostics");
     EXPECT(!strstr(buf, ",accel_x="), "health stops short of the sensor vectors");
 
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true,
                       INFLUX_DETAIL_FULL);
     static const char *const full_only[] = {
         ",accel_x=", ",accel_y=", ",accel_z=",
@@ -389,21 +408,21 @@ static void test_detail_boundaries(void)
      * three of full's twenty-one go missing.
      */
     static const int want[] = { 0, 12, 18, 25, 38, 59 };
-    for (int d = INFLUX_DETAIL_ATTITUDE; d <= INFLUX_DETAIL_FULL; d++) {
-        imud_packet_t q = make_pkt();
+    for (int lvl = INFLUX_DETAIL_ATTITUDE; lvl <= INFLUX_DETAIL_FULL; lvl++) {
+        imud_data_t q = make_data();
         q.flags |= IMUD_FLAG_DECLINATION_VALID;
-        influx_build_line(buf, sizeof buf, &q, "imud", "imud", true, true, d);
+        influx_build_line(buf, sizeof buf, &q, "imud", "imud", true, true, lvl);
         char msg[64];
-        snprintf(msg, sizeof msg, "level %d emits %d fields", d, want[d]);
-        EXPECT(nfields(buf) == want[d], msg);
+        snprintf(msg, sizeof msg, "level %d emits %d fields", lvl, want[lvl]);
+        EXPECT(nfields(buf) == want[lvl], msg);
     }
 
     /* An out-of-range level is a config this build does not know: fall back to
      * the default rather than emit an empty field set, which is not valid line
      * protocol and would be rejected point by point. */
     char fallback[4096];
-    influx_build_line(fallback, sizeof fallback, &p, "imud", "imud", true, true, 99);
-    influx_build_line(buf, sizeof buf, &p, "imud", "imud", true, true,
+    influx_build_line(fallback, sizeof fallback, &d, "imud", "imud", true, true, 99);
+    influx_build_line(buf, sizeof buf, &d, "imud", "imud", true, true,
                       INFLUX_DETAIL_HEALTH);
     EXPECT(strcmp(fallback, buf) == 0, "an unknown level falls back to health");
 

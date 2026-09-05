@@ -7,8 +7,8 @@
 /*
  * influx_main.c — imud-influxdb: InfluxDB bridge daemon
  *
- * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 288-byte packets, and writes one InfluxDB line-protocol point per
+ * Connects to imud's AF_UNIX binary subscription stream ([stream] socket) via
+ * libimud, and writes one InfluxDB line-protocol point per
  * tick — over UDP (default) or HTTP. Pure C, no external dependencies.
  *
  *   UDP : fire-and-forget datagram to InfluxDB 1.x's UDP listener or Telegraf's
@@ -40,7 +40,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 
-#include "influx_line.h"        /* pulls in ../lib/imud_client.h (types only) */
+#include "influx_line.h"        /* the encoder; pulls in ../lib/imud.h */
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "bridge.h"             /* shared bridge scaffolding */
 #include "sdnotify.h"
@@ -195,8 +195,8 @@ int main(int argc, char **argv)
               deg ? "deg" : "rad", cfg.stream_socket);
     sd_notify_msg("READY=1");
 
-    imud_t       *stream = NULL;
-    imud_packet_t latest;
+    imud_t      *stream = NULL;
+    imud_data_t  latest;
     bool have_pkt = false;
     bool http_ok  = true;   /* rate-limits the HTTP failure log */
 
@@ -266,7 +266,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (r == 0) {
-            latest   = *imud_wire(stream);
+            latest   = *imud_data(stream);
             have_pkt = true;
         }
         /* r == 1: tick deadline (or a signal) — fall through to the emitter. */

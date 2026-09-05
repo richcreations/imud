@@ -19,7 +19,7 @@ Also: `man 3 libimud`, and `spec.md §8` in the source root for the wire format.
 | `imud.h` | Public API of libimud — **ABI-stable**; the header you install and include |
 | `libimud.c` | Library implementation |
 | `libimud.map` | Exported symbol list (version nodes `IMUD_0`, `IMUD_1`) |
-| `imud_client.h` | Single-header wire-pinned client — **DEPRECATED**, kept for imud's own bridges and existing vendored copies |
+| `imud_client.h` | Single-header wire-pinned client — **DEPRECATED**, kept for `imud-mon` and existing vendored copies |
 | `imud_client.py` | Python client (3.8+, standard library only) |
 
 The Arduino/ESP32 client,

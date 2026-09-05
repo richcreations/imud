@@ -31,7 +31,7 @@ contract below is that consumers do not track them.
 | --- | --- |
 | `const char *imud_lib_version(void)` | Library release string, e.g. `"1.5"`. |
 | `unsigned imud_wire_version(const imud_t *h)` | Wire version of the most recent packet; 0 before the first. The library accepts exactly the wire version it was built with. |
-| `const imud_packet_t *imud_wire(const imud_t *h)` | **Co-versioned tools only** (imud's own bridges). `imud_packet_t` is pinned to the wire version, so this is **not** ABI-stable. Declared only when `imud_client.h` is included *before* `imud.h` — that include is the explicit opt-in to a wire-pinned build. |
+| `const imud_packet_t *imud_wire(const imud_t *h)` | **Co-versioned tools only** (in imud's tree, `imud-mon`; the bridges take `imud_data_t`). `imud_packet_t` is pinned to the wire version, so this is **not** ABI-stable. Declared only when `imud_client.h` is included *before* `imud.h` — that include is the explicit opt-in to a wire-pinned build. |
 
 ## `imud_data_t`
 

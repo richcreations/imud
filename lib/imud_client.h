@@ -7,8 +7,8 @@
  * header pins the wire format and forces a recompile on every wire revision.
  *
  * The header remains in the imud source tree — it is the deliberate
- * wire-pinning mechanism behind libimud's imud_wire() opt-in and the bridge
- * daemons, and existing vendored copies keep working — but it is no longer
+ * wire-pinning mechanism behind libimud's imud_wire() opt-in and imud-mon,
+ * and existing vendored copies keep working — but it is no longer
  * installed by `make install`, and it gains no new API; only wire-format
  * sync. Define IMUD_CLIENT_ALLOW_DEPRECATED before including to silence the
  * compile-time notice.

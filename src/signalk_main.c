@@ -7,15 +7,15 @@
 /*
  * signalk_main.c — imud-signalk: Signal K bridge daemon
  *
- * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 288-byte packets, and emits a Signal K delta (JSON) over UDP at
+ * Connects to imud's AF_UNIX binary subscription stream ([stream] socket) via
+ * libimud, and emits a Signal K delta (JSON) over UDP at
  * the configured rate for every imud field that has a standard Signal K path.
  * An optional TCP listener (tcp_enabled) serves the same deltas newline-
  * framed to connected clients — the Signal K server consumes it as a TCP
  * data connection.  See sk_delta.c for the field/unit mapping.
  *
- * It is an ordinary stream consumer: it holds no hardware, reuses the public
- * client header (lib/imud_client.h) for packet validation, and reconnects
+ * It is an ordinary stream consumer: it holds no hardware, takes libimud's
+ * ABI-stable imud_data_t view, and reconnects
  * automatically whenever imud restarts.  Requires [stream] enabled = true.
  */
 
@@ -36,7 +36,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "sk_delta.h"          /* pulls in ../lib/imud_client.h (types only) */
+#include "sk_delta.h"          /* the encoder; pulls in ../lib/imud.h */
 #include "../lib/imud.h"       /* libimud: stream connect/read/validate */
 #include "bridge.h"            /* shared bridge scaffolding */
 #include "sdnotify.h"
@@ -106,8 +106,8 @@ int main(int argc, char **argv)
     long period_ns = bridge_period_ns(cfg.sk_rate_hz, 100000000L);
     bool emit_heave = cfg.publish_heave;
 
-    imud_t       *stream = NULL;
-    imud_packet_t latest;
+    imud_t      *stream = NULL;
+    imud_data_t  latest;
     bool have_pkt = false;
 
     struct timespec next;
@@ -156,7 +156,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (r == 0) {
-            latest   = *imud_wire(stream);
+            latest   = *imud_data(stream);
             have_pkt = true;
         }
         /* r == 1: tick deadline (or a signal) — fall through to the emitter. */

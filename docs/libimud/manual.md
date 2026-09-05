@@ -140,7 +140,7 @@ revision. Its field names are listed in [spec.md](spec.md).
 **Deprecated since the libimud release — use libimud for all new C code.**
 
 The header stays in the source tree because it is the deliberate wire-pinning
-mechanism behind libimud's `imud_wire()` opt-in and imud's own bridges, and
+mechanism behind libimud's `imud_wire()` opt-in and `imud-mon`, and
 existing vendored copies keep working (it still tracks every wire revision).
 It is no longer installed by `make install` and gains no new API. Including it
 prints a compile-time notice; define `IMUD_CLIENT_ALLOW_DEPRECATED` before the

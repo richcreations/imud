@@ -8,7 +8,7 @@
  * prom_metrics.h — Prometheus text-exposition builder for imud-prometheus
  *
  * Pure function over libimud's ABI-stable imud_data_t view (NOT the wire
- * packet — this is the first bridge with no wire pinning at all). Emits
+ * packet — no bridge pins the wire format). Emits
  * gauges in Prometheus base units: radians, metres, seconds, celsius;
  * heading is the one conventional exception (degrees, and named so).
  */

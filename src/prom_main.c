@@ -20,7 +20,7 @@
  * poll(), a client that goes quiet is dropped at its deadline, and the
  * response is written once with a short send timeout before the close.
  *
- * This is the first bridge built purely on libimud's ABI-stable imud_data_t
+ * Like every bridge it is built purely on libimud's ABI-stable imud_data_t
  * (no imud_client.h, no wire pinning): it needs no rebuild across wire
  * revisions, only across imud_data_t appends it wants to surface.
  */

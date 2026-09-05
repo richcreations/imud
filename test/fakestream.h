@@ -63,12 +63,23 @@ typedef struct {
 
 /* One packet with known, checkable values, from the daemon's real encoder.
  * heading_deg is the field the tests key on: it survives every bridge's
- * encoding, so "what came out" can be matched back to "what went in". */
+ * encoding, so "what came out" can be matched back to "what went in".
+ *
+ * Attitude, body rates and the quaternion are four distinct nonzero values
+ * apiece rather than a tidy zero/identity: a bridge that reads the right
+ * struct member but the wrong INDEX of it emits a plausible frame otherwise,
+ * and every assertion still passes. */
 static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg)
 {
     fused_state_t s;
     memset(&s, 0, sizeof s);
-    s.q[0]            = 1.0f;
+    s.q[0]            = 0.9f;
+    s.q[1]            = 0.3f;
+    s.q[2]            = 0.2f;
+    s.q[3]            = 0.1f;
+    s.roll            = 0.10f;
+    s.pitch           = -0.05f;
+    s.yaw             = 1.23f;
     s.heading_deg     = heading_deg;
     s.declination_deg = 13.2f;
     s.heave_m         = 0.42f;
@@ -88,6 +99,9 @@ static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg)
     memset(&i, 0, sizeof i);
     i.temp_c   = 31.4f;
     i.accel[2] = -9.81f;
+    i.gyro[0]  = 0.011f;
+    i.gyro[1]  = -0.022f;
+    i.gyro[2]  = 0.033f;
 
     imu_packet_t pkt;
     packet_build(&pkt, &s, &m, &i, &i, "NED");

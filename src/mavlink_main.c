@@ -7,8 +7,8 @@
 /*
  * mavlink_main.c — imud-mavlink: MAVLink bridge daemon
  *
- * Connects to imud's AF_UNIX binary subscription stream ([stream] socket),
- * reads the 288-byte packets, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
+ * Connects to imud's AF_UNIX binary subscription stream ([stream] socket) via
+ * libimud, and emits MAVLink (v1 or v2) HEARTBEAT (1 Hz) +
  * ATTITUDE/ATTITUDE_QUATERNION (rate_hz) to UDP, serial, and/or a TCP
  * listener (GCS clients connect, e.g. QGroundControl tcp:host:5760)
  * simultaneously.
@@ -40,7 +40,6 @@
 #include <netdb.h>
 #include <netinet/in.h>
 
-#include "../lib/imud_client.h"
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "mavlink_encode.h"
 #include "bridge.h"             /* shared bridge scaffolding */
@@ -212,8 +211,8 @@ int main(int argc, char **argv)
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    imud_t       *stream = NULL;
-    imud_packet_t latest;
+    imud_t      *stream = NULL;
+    imud_data_t  latest;
     bool have_pkt = false;
 
     struct timespec now, next_hb, next_data;
@@ -269,7 +268,7 @@ int main(int argc, char **argv)
             continue;
         }
         if (r == 0) {
-            latest   = *imud_wire(stream);
+            latest   = *imud_data(stream);
             have_pkt = true;
         }
         /* r == 1: deadline reached (or a signal) — fall through to senders. */
@@ -324,14 +323,16 @@ int main(int argc, char **argv)
                     if (cfg.mav_send_attitude) {
                         n = mav_pack_attitude(buf, ver, sid, cid, sinks[k].seq++, t,
                                               latest.roll, latest.pitch, latest.yaw,
-                                              latest.gyro_x, latest.gyro_y, latest.gyro_z);
+                                              latest.gyro[0], latest.gyro[1],
+                                              latest.gyro[2]);
                         sink_write(&sinks[k], buf, n);
                     }
                     if (cfg.mav_send_attitude_quaternion) {
                         n = mav_pack_attitude_quaternion(buf, ver, sid, cid, sinks[k].seq++, t,
-                                              latest.quat_w, latest.quat_x, latest.quat_y,
-                                              latest.quat_z,
-                                              latest.gyro_x, latest.gyro_y, latest.gyro_z);
+                                              latest.quat[0], latest.quat[1],
+                                              latest.quat[2], latest.quat[3],
+                                              latest.gyro[0], latest.gyro[1],
+                                              latest.gyro[2]);
                         sink_write(&sinks[k], buf, n);
                     }
                 }

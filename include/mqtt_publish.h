@@ -7,7 +7,7 @@
 /*
  * mqtt_publish.h — MQTT message builders for the imud-mqtt bridge
  *
- * Turns an imud binary packet into a set of scalar "one value per topic"
+ * Turns libimud's decoded view into a set of scalar "one value per topic"
  * MQTT messages, plus the matching Home Assistant MQTT-discovery config
  * messages. Pure and self-contained (no libmosquitto, no sockets, no globals)
  * so it can be unit-tested directly; the daemon (mqtt_main.c) owns the broker
@@ -22,7 +22,7 @@
 #define IMUD_MQTT_PUBLISH_H
 
 #include <stdbool.h>
-#include "../lib/imud_client.h"  /* imud_packet_t + IMUD_FLAG_* + imud_true_heading */
+#include "../lib/imud.h"  /* imud_data_t + IMUD_FLAG_* */
 
 /* One MQTT message. payload is sized for the largest case (a discovery config). */
 typedef struct {
@@ -31,12 +31,12 @@ typedef struct {
 } mqtt_msg_t;
 
 /*
- * mqtt_build_state — scalar value topics for one packet, under `prefix`
+ * mqtt_build_state — scalar value topics for one sample, under `prefix`
  * (e.g. "imud/attitude/roll"). headingTrue and magneticVariation are emitted
  * only when IMUD_FLAG_DECLINATION_VALID is set; environment/heave only when
  * `emit_heave`. Returns the number of messages written (<= max).
  */
-int mqtt_build_state(mqtt_msg_t *out, int max, const imud_packet_t *p,
+int mqtt_build_state(mqtt_msg_t *out, int max, const imud_data_t *d,
                      const char *prefix, bool emit_heave, bool deg);
 
 /*

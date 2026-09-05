@@ -7,9 +7,10 @@
 /*
  * test_mqtt.c — unit tests for the MQTT builders (src/mqtt_publish.c)
  *
- * Drives mqtt_build_state() and mqtt_build_discovery() with crafted packets and
- * asserts on topic names, value formatting (deg vs rad), declination/heave
- * gating, and Home Assistant discovery payload shape. Pure functions — no broker.
+ * Drives mqtt_build_state() and mqtt_build_discovery() with crafted imud_data_t
+ * samples and asserts on topic names, value formatting (deg vs rad),
+ * declination/heave gating, and Home Assistant discovery payload shape. Pure
+ * functions — no broker.
  */
 
 #include <stdio.h>
@@ -36,26 +37,26 @@ static const mqtt_msg_t *find_topic(const mqtt_msg_t *m, int n, const char *topi
     return NULL;
 }
 
-/* Known packet: heading 90°, RoT 60 dpm, roll 0.10 rad, pitch -0.05, yaw 1.23,
- * heave 0.42 m, temp 31.4 °C. */
-static imud_packet_t make_pkt(void)
+/* Known sample: heading 90°, RoT 60 dpm, roll 0.10 rad, pitch -0.05, yaw 1.23,
+ * heave 0.42 m, temp 31.4 °C.  heading_true_deg is a member libimud has already
+ * computed, so it starts at the "declination not known" sentinel. */
+static imud_data_t make_data(void)
 {
-    imud_packet_t p;
-    memset(&p, 0, sizeof p);
-    p.magic        = IMUD_MAGIC;
-    p.version      = IMUD_VERSION;
-    p.heading_deg  = 90.0f;
-    p.rate_of_turn = 60.0f;
-    p.roll  = 0.10f;
-    p.pitch = -0.05f;
-    p.yaw   = 1.23f;
-    p.heave_m = 0.42f;
-    p.heave_rate = 0.25f;
+    imud_data_t d;
+    memset(&d, 0, sizeof d);
+    d.heading_true_deg = -1.0f;
+    d.heading_deg  = 90.0f;
+    d.rate_of_turn = 60.0f;
+    d.roll  = 0.10f;
+    d.pitch = -0.05f;
+    d.yaw   = 1.23f;
+    d.heave_m = 0.42f;
+    d.heave_rate = 0.25f;
     /* A fused, calibrated magnetometer is the baseline: without it the
      * heading paths are withheld, which is its own set of cases below. */
-    p.flags = IMUD_FLAG_MAG_VALID;
-    p.temp_c  = 31.4f;
-    return p;
+    d.flags = IMUD_FLAG_MAG_VALID;
+    d.temp_c  = 31.4f;
+    return d;
 }
 
 static void test_state_deg(void)
@@ -63,9 +64,9 @@ static void test_state_deg(void)
     begin("test_state_deg");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     mqtt_msg_t m[24];
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
     /* always-on set, no declination, no heave = 6; engine/running and
      * navigation/headingReferenced are both published unconditionally. */
     EXPECT(n == 8, "8 state msgs (no declination, no heave; 2 status topics)");
@@ -94,9 +95,9 @@ static void test_state_rad(void)
     begin("test_state_rad");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     mqtt_msg_t m[24];
-    int n = mqtt_build_state(m, 24, &p, "imud", false, false);   /* deg=false → SI */
+    int n = mqtt_build_state(m, 24, &d, "imud", false, false);   /* deg=false → SI */
 
     const mqtt_msg_t *h = find_topic(m, n, "imud/navigation/headingMagnetic");
     EXPECT(h && fabs(strtod(h->payload, NULL) - M_PI/2.0) < 1e-3, "heading 90° → π/2 rad");
@@ -114,21 +115,35 @@ static void test_declination_gated(void)
     begin("test_declination_gated");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     mqtt_msg_t m[24];
 
-    p.flags = IMUD_FLAG_MAG_VALID;
-    p.declination_deg = 13.2f;
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    d.flags = IMUD_FLAG_MAG_VALID;
+    d.declination_deg = 13.2f;
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/navigation/headingTrue") == NULL, "headingTrue absent without flag");
     EXPECT(find_topic(m, n, "imud/navigation/magneticVariation") == NULL, "variation absent without flag");
 
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID;
-    n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID;
+    d.heading_true_deg = 103.2f;               /* 90 mag + 13.2 E, per libimud */
+    n = mqtt_build_state(m, 24, &d, "imud", false, true);
     const mqtt_msg_t *var = find_topic(m, n, "imud/navigation/magneticVariation");
     EXPECT(var && fabs(strtod(var->payload, NULL) - 13.2) < 1e-2, "variation 13.2° present with flag");
     const mqtt_msg_t *ht = find_topic(m, n, "imud/navigation/headingTrue");
     EXPECT(ht && fabs(strtod(ht->payload, NULL) - 103.2) < 1e-2, "headingTrue = 90 + 13.2 = 103.2°");
+
+    /*
+     * True heading is libimud's member, not something the builder recomputes.
+     * The two are indistinguishable until the sum wraps: 350 + 20 E is 10°,
+     * and a builder adding the fields itself would publish 370° here.
+     */
+    d.heading_deg      = 350.0f;
+    d.declination_deg  = 20.0f;
+    d.heading_true_deg = 10.0f;
+    n = mqtt_build_state(m, 24, &d, "imud", false, true);
+    ht = find_topic(m, n, "imud/navigation/headingTrue");
+    EXPECT(ht && fabs(strtod(ht->payload, NULL) - 10.0) < 1e-2,
+           "headingTrue is the library's wrapped value, not heading + declination");
     end(fb);
 }
 
@@ -137,24 +152,24 @@ static void test_heave_gated(void)
     begin("test_heave_gated");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     mqtt_msg_t m[24];
 
     /* Off when emit_heave=false, even if the estimator has settled. */
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave absent when emit_heave=false");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate absent when emit_heave=false");
 
     /* Config on but not settled (flag clear) → still suppressed. */
-    p.flags = IMUD_FLAG_MAG_VALID;
-    n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    d.flags = IMUD_FLAG_MAG_VALID;
+    n = mqtt_build_state(m, 24, &d, "imud", true, true);
     EXPECT(find_topic(m, n, "imud/environment/heave") == NULL, "heave suppressed until HEAVE_VALID");
     EXPECT(find_topic(m, n, "imud/environment/heaveRate") == NULL, "heaveRate suppressed until HEAVE_VALID");
 
     /* Config on AND settled → both published. */
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
-    n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
+    n = mqtt_build_state(m, 24, &d, "imud", true, true);
     const mqtt_msg_t *hv = find_topic(m, n, "imud/environment/heave");
     EXPECT(hv && fabs(strtod(hv->payload, NULL) - 0.42) < 1e-3, "heave 0.42 m when settled");
     const mqtt_msg_t *hr = find_topic(m, n, "imud/environment/heaveRate");
@@ -167,29 +182,29 @@ static void test_wave_gated(void)
     begin("test_wave_gated");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
-    p.wave_height_m = 1.2f;
-    p.wave_period_s = 5.5f;
-    p.roll_period_s = 4.0f;
-    p.roll_amplitude = 0.1f;
-    p.pitch_period_s = 5.0f;
-    p.pitch_amplitude = 0.05f;
+    imud_data_t d = make_data();
+    d.wave_height_m = 1.2f;
+    d.wave_period_s = 5.5f;
+    d.roll_period_s = 4.0f;
+    d.roll_amplitude = 0.1f;
+    d.pitch_period_s = 5.0f;
+    d.pitch_amplitude = 0.05f;
     mqtt_msg_t m[24];
 
     /* Suppressed until WAVE_VALID even with heave settled and publishing. */
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
-    int n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID;
+    int n = mqtt_build_state(m, 24, &d, "imud", true, true);
     EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
            "waveHeight suppressed until WAVE_VALID");
 
     /* Off when emit_heave=false even if valid (rides publish_heave). */
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID | IMUD_FLAG_WAVE_VALID;
-    n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_HEAVE_VALID | IMUD_FLAG_WAVE_VALID;
+    n = mqtt_build_state(m, 24, &d, "imud", false, true);
     EXPECT(find_topic(m, n, "imud/environment/waveHeight") == NULL,
            "waveHeight absent when emit_heave=false");
 
     /* On when valid: values in SI, period precision 0.1 s. */
-    n = mqtt_build_state(m, 24, &p, "imud", true, true);
+    n = mqtt_build_state(m, 24, &d, "imud", true, true);
     const mqtt_msg_t *wh = find_topic(m, n, "imud/environment/waveHeight");
     EXPECT(wh && fabs(strtod(wh->payload, NULL) - 1.2) < 1e-2, "waveHeight 1.2 m");
     const mqtt_msg_t *wp = find_topic(m, n, "imud/environment/wavePeriod");
@@ -210,26 +225,26 @@ static void test_engine_binary(void)
     begin("test_engine_binary");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
+    imud_data_t d = make_data();
     mqtt_msg_t m[24];
 
     /* Always published; OFF without the flag, ON with it. */
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
     const mqtt_msg_t *e = find_topic(m, n, "imud/engine/running");
     EXPECT(e && strcmp(e->payload, "OFF") == 0, "engine OFF without flag");
 
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_ENGINE_ON;
-    n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_ENGINE_ON;
+    n = mqtt_build_state(m, 24, &d, "imud", false, true);
     e = find_topic(m, n, "imud/engine/running");
     EXPECT(e && strcmp(e->payload, "ON") == 0, "engine ON with flag");
 
     /* Discovery: binary_sensor config with payload map + device class. */
     n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true);
-    const mqtt_msg_t *d = find_topic(m, n, "homeassistant/binary_sensor/imud_engine/config");
-    EXPECT(d != NULL, "engine binary_sensor discovery present");
-    EXPECT(d && strstr(d->payload, "\"pl_on\":\"ON\"") != NULL, "pl_on present");
-    EXPECT(d && strstr(d->payload, "\"dev_cla\":\"running\"") != NULL, "device_class running");
-    EXPECT(d && strstr(d->payload, "\"stat_t\":\"imud/engine/running\"") != NULL, "state topic wired");
+    const mqtt_msg_t *cfg = find_topic(m, n, "homeassistant/binary_sensor/imud_engine/config");
+    EXPECT(cfg != NULL, "engine binary_sensor discovery present");
+    EXPECT(cfg && strstr(cfg->payload, "\"pl_on\":\"ON\"") != NULL, "pl_on present");
+    EXPECT(cfg && strstr(cfg->payload, "\"dev_cla\":\"running\"") != NULL, "device_class running");
+    EXPECT(cfg && strstr(cfg->payload, "\"stat_t\":\"imud/engine/running\"") != NULL, "state topic wired");
     end(fb);
 }
 
@@ -238,16 +253,16 @@ static void test_prefix_and_count_cap(void)
     begin("test_prefix_and_count_cap");
     int fb = g_fail;
 
-    imud_packet_t p = make_pkt();
-    p.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
+    imud_data_t d = make_data();
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID | IMUD_FLAG_HEAVE_VALID;
     mqtt_msg_t m[24];
 
-    int n = mqtt_build_state(m, 24, &p, "boat", true, true);
+    int n = mqtt_build_state(m, 24, &d, "boat", true, true);
     EXPECT(n == 12, "12 state msgs with declination + heave family (no WAVE_VALID)");
     EXPECT(find_topic(m, n, "boat/attitude/yaw") != NULL, "custom prefix applied");
 
     /* max caps the count, no overflow */
-    int c = mqtt_build_state(m, 3, &p, "imud", true, true);
+    int c = mqtt_build_state(m, 3, &d, "imud", true, true);
     EXPECT(c == 3, "count capped at max");
     end(fb);
 }
@@ -302,11 +317,11 @@ static void test_heading_withheld_without_mag(void)
     int fb = g_fail;
 
     mqtt_msg_t m[24];
-    imud_packet_t p = make_pkt();
-    p.flags = IMUD_FLAG_DECLINATION_VALID;     /* no MAG_VALID, no MAG_UNCAL */
-    p.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
-    p.declination_deg = 13.2f;
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    imud_data_t d = make_data();
+    d.flags = IMUD_FLAG_DECLINATION_VALID;     /* no MAG_VALID, no MAG_UNCAL */
+    d.flags_ext = IMUD_FLAG_EXT_MAG_ABSENT;
+    d.declination_deg = 13.2f;
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
 
     EXPECT(find_topic(m, n, "imud/navigation/headingMagnetic") == NULL,
            "headingMagnetic withheld");
@@ -331,9 +346,9 @@ static void test_heading_published_when_uncal(void)
     int fb = g_fail;
 
     mqtt_msg_t m[24];
-    imud_packet_t p = make_pkt();
-    p.flags = IMUD_FLAG_MAG_UNCAL;
-    int n = mqtt_build_state(m, 24, &p, "imud", false, true);
+    imud_data_t d = make_data();
+    d.flags = IMUD_FLAG_MAG_UNCAL;
+    int n = mqtt_build_state(m, 24, &d, "imud", false, true);
 
     EXPECT(find_topic(m, n, "imud/navigation/headingMagnetic") != NULL,
            "headingMagnetic sent on an uncalibrated fuse");

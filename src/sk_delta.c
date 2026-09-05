@@ -61,13 +61,13 @@ static void iso8601_ms(uint64_t wall_ns, char *out, size_t sz)
         pos += _r;                                                    \
     } while (0)
 
-int sk_build_delta(char *buf, size_t sz, const imud_packet_t *p,
+int sk_build_delta(char *buf, size_t sz, const imud_data_t *d,
                    const char *source_label, bool emit_heave)
 {
-    if (!buf || sz == 0 || !p) return -1;
+    if (!buf || sz == 0 || !d) return -1;
 
     char ts[28];
-    iso8601_ms(p->ts_wall_ns, ts, sizeof ts);
+    iso8601_ms(d->ts_wall_ns, ts, sizeof ts);
 
     int pos = 0;
 
@@ -86,39 +86,39 @@ int sk_build_delta(char *buf, size_t sz, const imud_packet_t *p,
      * Silence is the only honest option. navigation.attitude still carries the
      * full triple below — that path is vessel attitude, not a heading claim.
      */
-    bool hdg_ref = (p->flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL)) != 0;
+    bool hdg_ref = (d->flags & (IMUD_FLAG_MAG_VALID | IMUD_FLAG_MAG_UNCAL)) != 0;
     bool first = true;
 
     if (hdg_ref) {
         APPEND("{\"path\":\"navigation.headingMagnetic\",\"value\":%.5f}",
-               p->heading_deg * DEG2RAD);
+               d->heading_deg * DEG2RAD);
         first = false;
 
-        /* True heading + variation only when declination is known. */
-        if (p->flags & IMUD_FLAG_DECLINATION_VALID) {
-            float th = imud_true_heading(p);   /* degrees, or -1 (guarded above) */
+        /* True heading + variation only when declination is known.  libimud
+         * has already added the variation and wrapped into [0, 360). */
+        if (d->flags & IMUD_FLAG_DECLINATION_VALID) {
             APPEND(",{\"path\":\"navigation.headingTrue\",\"value\":%.5f}",
-                   th * DEG2RAD);
+                   d->heading_true_deg * DEG2RAD);
             APPEND(",{\"path\":\"navigation.magneticVariation\",\"value\":%.5f}",
-                   p->declination_deg * DEG2RAD);
+                   d->declination_deg * DEG2RAD);
         }
     }
 
     /* navigation.rateOfTurn: deg/min → rad/s (both +ve = starboard).
      * Valid with no magnetometer at all — it is a gyro rate, not a heading. */
     APPEND("%s{\"path\":\"navigation.rateOfTurn\",\"value\":%.6f}",
-           first ? "" : ",", p->rate_of_turn * (DEG2RAD / 60.0));
+           first ? "" : ",", d->rate_of_turn * (DEG2RAD / 60.0));
 
     /* navigation.attitude: roll/pitch/yaw already radians; roll negated to the
      * Signal K convention (starboard-down positive). */
     APPEND(",{\"path\":\"navigation.attitude\",\"value\":"
            "{\"roll\":%.5f,\"pitch\":%.5f,\"yaw\":%.5f}}",
-           -p->roll, p->pitch, p->yaw);
+           -d->roll, d->pitch, d->yaw);
 
     /* environment.heave (metres, +up) — only once the estimator has settled
      * (~10·τ), so subscribers never see the startup transient. */
-    if (emit_heave && (p->flags & IMUD_FLAG_HEAVE_VALID))
-        APPEND(",{\"path\":\"environment.heave\",\"value\":%.3f}", p->heave_m);
+    if (emit_heave && (d->flags & IMUD_FLAG_HEAVE_VALID))
+        APPEND(",{\"path\":\"environment.heave\",\"value\":%.3f}", d->heave_m);
 
     APPEND("]}]}");
 

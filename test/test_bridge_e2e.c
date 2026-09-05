@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -61,6 +62,7 @@
 #include <sys/time.h>
 
 #include "bridge.h"
+#include "mavlink_encode.h"   /* MAV_SENSOR_* bits the SYS_STATUS check reads */
 #include "fakebroker.h"
 #include "fakestream.h"
 
@@ -596,6 +598,132 @@ static void test_mavlink_udp_frames(void)
     end(fb);
 }
 
+/* MAVLink v2 header: STX, len, incompat, compat, seq, sysid, compid, msgid[3];
+ * the payload starts at byte 10. */
+#define MV2_PAYLOAD 10
+
+static uint32_t mv2_msgid(const unsigned char *f)
+{
+    return (uint32_t)f[7] | ((uint32_t)f[8] << 8) | ((uint32_t)f[9] << 16);
+}
+
+static float mv_f32(const unsigned char *f, int off)
+{
+    uint32_t u = (uint32_t)f[MV2_PAYLOAD + off]
+               | ((uint32_t)f[MV2_PAYLOAD + off + 1] << 8)
+               | ((uint32_t)f[MV2_PAYLOAD + off + 2] << 16)
+               | ((uint32_t)f[MV2_PAYLOAD + off + 3] << 24);
+    float v;
+    memcpy(&v, &u, sizeof v);
+    return v;
+}
+
+static uint32_t mv_u32(const unsigned char *f, int off)
+{
+    return (uint32_t)f[MV2_PAYLOAD + off]
+         | ((uint32_t)f[MV2_PAYLOAD + off + 1] << 8)
+         | ((uint32_t)f[MV2_PAYLOAD + off + 2] << 16)
+         | ((uint32_t)f[MV2_PAYLOAD + off + 3] << 24);
+}
+
+/*
+ * What main() puts IN the frames, not merely that frames appear.
+ *
+ * The encoder takes primitive floats and the start-byte case above covers the
+ * config wiring, so nothing until now read a payload back — which leaves the
+ * one step in between untested: main() picking fields out of the sample it
+ * holds.  Every value here is distinct in fakestream's packet, so a member
+ * read at the wrong index produces a well-formed frame with the wrong numbers
+ * and fails.
+ */
+static void test_mavlink_payload_fields(void)
+{
+    begin("test_mavlink_payload_fields");
+    int fb = g_fail;
+
+    fakestream_t fs;
+    EXPECT(fs_start(&fs, MV_SOCK, 200) == 0, "fake stream started");
+
+    int port = 0;
+    int sink = udp_bind_ephemeral(&port);
+    mavlink_conf(2, MV_SOCK, port);
+
+    bridge_run_t r;
+    bridge_start(&r, mavlink_main_entry, MV_CONF);
+
+    /*
+     * Collect one of each message; SYS_STATUS rides the 1 Hz heartbeat, the two
+     * attitude messages come at rate_hz.
+     *
+     * SYS_STATUS is taken only after an ATTITUDE frame has been seen, because
+     * the first heartbeat tick fires before the first packet does — the loop's
+     * initial deadline is `now`, so imud_read times out at 0 ms and the daemon
+     * claims nothing.  That startup frame is correct and is not what this case
+     * is about: what it wants is a tick with a sample in hand.
+     */
+    unsigned char att[64], quat[64], sys[64];
+    bool have_att = false, have_quat = false, have_sys = false;
+    for (int i = 0; i < 600 && !(have_att && have_quat && have_sys); i++) {
+        char raw[512];
+        ssize_t n = udp_recv(sink, raw, sizeof raw);
+        if (n < 12) continue;
+        const unsigned char *f = (const unsigned char *)raw;
+        if (f[0] != 0xFD) continue;
+        switch (mv2_msgid(f)) {
+        case 30: if (n >= 38) { memcpy(att,  f, 38); have_att  = true; } break;
+        case 31: if (n >= 42) { memcpy(quat, f, 42); have_quat = true; } break;
+        case 1:  if (n >= 41 && have_att) { memcpy(sys, f, 41); have_sys = true; } break;
+        default: break;
+        }
+    }
+
+    EXPECT(have_att,  "an ATTITUDE frame arrived");
+    EXPECT(have_quat, "an ATTITUDE_QUATERNION frame arrived");
+    EXPECT(have_sys,  "a SYS_STATUS frame arrived");
+
+    /* ATTITUDE: time_boot_ms, then roll/pitch/yaw and the three body rates. */
+    if (have_att) {
+        EXPECT(fabsf(mv_f32(att, 4)  - 0.10f)   < 1e-5f, "ATTITUDE roll");
+        EXPECT(fabsf(mv_f32(att, 8)  + 0.05f)   < 1e-5f, "ATTITUDE pitch");
+        EXPECT(fabsf(mv_f32(att, 12) - 1.23f)   < 1e-5f, "ATTITUDE yaw");
+        EXPECT(fabsf(mv_f32(att, 16) - 0.011f)  < 1e-5f, "ATTITUDE rollspeed = gyro[0]");
+        EXPECT(fabsf(mv_f32(att, 20) + 0.022f)  < 1e-5f, "ATTITUDE pitchspeed = gyro[1]");
+        EXPECT(fabsf(mv_f32(att, 24) - 0.033f)  < 1e-5f, "ATTITUDE yawspeed = gyro[2]");
+    }
+
+    /* ATTITUDE_QUATERNION: time_boot_ms, then q1..q4 in w,x,y,z order. */
+    if (have_quat) {
+        EXPECT(fabsf(mv_f32(quat, 4)  - 0.9f) < 1e-5f, "q1 = quat[0] (w)");
+        EXPECT(fabsf(mv_f32(quat, 8)  - 0.3f) < 1e-5f, "q2 = quat[1] (x)");
+        EXPECT(fabsf(mv_f32(quat, 12) - 0.2f) < 1e-5f, "q3 = quat[2] (y)");
+        EXPECT(fabsf(mv_f32(quat, 16) - 0.1f) < 1e-5f, "q4 = quat[3] (z)");
+    }
+
+    /*
+     * SYS_STATUS present/enabled/health.  fakestream sets FLAG_MAG_VALID and
+     * leaves FLAG_EXT_MAG_ABSENT clear, so the magnetometer is both fitted and
+     * being fused — the one combination in which 3D_MAG appears in all three
+     * masks, and the only reading of flags/flags_ext this bridge does.
+     */
+    if (have_sys) {
+        uint32_t present = mv_u32(sys, 0), enabled = mv_u32(sys, 4),
+                 health  = mv_u32(sys, 8);
+        EXPECT((present & MAV_SENSOR_3D_MAG) != 0, "3D_MAG present (mag fitted)");
+        EXPECT((enabled & MAV_SENSOR_3D_MAG) != 0, "3D_MAG enabled");
+        EXPECT((health  & MAV_SENSOR_3D_MAG) != 0, "3D_MAG healthy (mag fused)");
+        EXPECT((health & (MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL |
+                          MAV_SENSOR_AHRS)) ==
+               (MAV_SENSOR_3D_GYRO | MAV_SENSOR_3D_ACCEL | MAV_SENSOR_AHRS),
+               "gyro/accel/AHRS healthy with a packet in hand");
+    }
+
+    bridge_finish(&r);
+    close(sink);
+    fs_stop(&fs);
+    unlink(MV_CONF);
+    end(fb);
+}
+
 /* mavlink's third sink: a TCP listener GCS clients connect to (QGroundControl
  * tcp:host:5760). netserv is tested on its own; that main() hands it the
  * encoded frames is not. */
@@ -850,6 +978,7 @@ int main(void)
     test_influx_enables_are_restart_scoped();
     test_influx_http_post();
     test_mavlink_udp_frames();
+    test_mavlink_payload_fields();
     test_mavlink_tcp_listener();
     test_prometheus_scrape();
     test_prometheus_up_zero_without_daemon();

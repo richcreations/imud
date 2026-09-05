@@ -225,11 +225,12 @@ unsigned imud_wire_version(const imud_t *h);
 /*
  * imud_wire — the latest raw wire packet.
  *
- * FOR CO-VERSIONED TOOLS ONLY (imud's own bridges): the layout of
+ * FOR CO-VERSIONED TOOLS ONLY (in this tree, imud-mon): the layout of
  * imud_packet_t is pinned to the wire version, so this accessor is NOT
  * ABI-stable across imud releases. It is declared only when the wire header
  * (imud_client.h) is included before this one — including it is the explicit
- * opt-in to a wire-version-pinned build.
+ * opt-in to a wire-version-pinned build. The bridges do not: they take the
+ * ABI-stable imud_data_t above.
  */
 #ifdef IMUD_CLIENT_H
 const imud_packet_t *imud_wire(const imud_t *h);
