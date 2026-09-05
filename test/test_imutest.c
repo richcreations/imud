@@ -583,6 +583,15 @@ typedef struct {
      */
     bool   push_fifo_temp;
     double fifo_temp_c;
+    /*
+     * Sample-pairs staged per progress() call; 0 means one.  The core's drain
+     * loop is paced by a 10 ms sleep, so at one pair a tick the rate it
+     * measures is the host's loop rate and nothing else.  Staging N pairs
+     * multiplies the measurement by N, which is how a case about the ratio
+     * between the measured and the configured rate stops depending on how
+     * fast the host runs.
+     */
+    int    imu_per_tick;
 } script_t;
 
 static script_t g_s;
@@ -644,7 +653,8 @@ static void s_progress(void *user, const char *id, double frac,
         if (s->bias_jitter != 0.0 && strcmp(id, "gyro.bias") == 0)
             for (int k = 0; k < 3; k++)
                 g[k] += (s->ticks & 1) ? s->bias_jitter : -s->bias_jitter;
-        stage_sample(s->accel, g);
+        for (int i = 0; i < (s->imu_per_tick > 0 ? s->imu_per_tick : 1); i++)
+            stage_sample(s->accel, g);
         if (s->push_fifo_temp) {
             /* ST temperature word: 256 LSB/degC with 0 = 25 degC. */
             ism_push(0x03, (int16_t)lrint((s->fifo_temp_c - 25.0) * 256.0), 0, 0);
@@ -748,26 +758,14 @@ static bool starved(const imt_report_t *r, const char *id)
 }
 
 /*
- * Nearest supported IMU ODR at or below / at or above `hz`; 0 if the grid has
- * none.  The rate checks pick their configured ODR FROM what the host actually
- * measured, so a slow or contended box cannot drift a case across the
- * tolerance band and fail a precondition instead of the behaviour under test.
- * A fixed 208 Hz against a ~400 Hz loop looks like plenty of margin until the
- * dev box — a dual-core 1.6 GHz i5 running a 4 GB VM — has something else on it
- * the loop halves.  The multipliers below are deliberately generous for the
- * same reason: the grid is coarse enough that a 3x ask costs nothing.
+ * Nearest supported IMU ODR at or above `hz`; 0 if the grid has none.  Called
+ * with 0.0 for the grid's slowest entry.  A shortfall case picks its
+ * configured ODR FROM what the host measured, because the loop cannot be made
+ * to fall short of a fixed rate on a fast box; an overshoot case does not,
+ * because the staging can outrun any rate the grid offers.
+ *
+ * `hz` is Hz; the table and the result are MILLI-Hz.
  */
-/* `hz` is Hz; the table and the result are MILLI-Hz. */
-static int grid_below(const imt_report_t *r, double hz)
-{
-    int best = 0;
-    for (int i = 0; i < 16 && r->imu_odr_tab[i]; i++)
-        if ((double)r->imu_odr_tab[i] * 1e-3 <= hz && r->imu_odr_tab[i] > best)
-            best = r->imu_odr_tab[i];
-    return best;
-}
-
-/* `hz` is Hz; the table and the result are MILLI-Hz. */
 static int grid_above(const imt_report_t *r, double hz)
 {
     int best = 0;
@@ -1858,35 +1856,29 @@ static void test_rate_above_configured_odr_fails(void)
      * over-rate reading is graded on the same ladder and only FAILs past
      * odr_tol_fail. Both sides of that are pinned below.
      *
-     * The configured rate is chosen FROM the measured one rather than fixed,
-     * so a slow or contended host cannot drift the case across the boundary
-     * and fail a precondition instead of the behaviour.
-     *
-     * The margin is the one the ladder needs and no more.  Halving the measured
-     * rate asked the grid for an entry that need not exist: the loop is paced
-     * at IMU_DRAIN_WAIT_MS, so a host billing that 10 ms sleep at 40 ms measures
-     * ~24 Hz, and half of that is under the ISM330's 12.5 Hz floor.  Backing off
-     * by twice odr_tol_fail instead guarantees only what the case is about —
-     * an overshoot past the fail tolerance — and reaches down to a 16 Hz loop.
+     * The overshoot is bought from the staging, not from the host: the grid's
+     * slowest entry against 32 sample-pairs a tick measures ~32x the loop
+     * rate, so a host billing the 10 ms drain at 100 ms still reads 320 Hz
+     * against a configured 12.5.  Deriving the configured rate from a probe
+     * run instead is what fails on GitHub's macOS runners — a loop under
+     * 16 Hz leaves the grid no entry to pick, and a second run that measures
+     * slower than the probe puts the error back inside the fail tolerance.
      */
-    int slow = grid_below(r, r->raw.odr_measured_hz / (1.0 + 2.0 * o.odr_tol_fail));
+    int slow = grid_above(r, 0.0);          /* the grid's slowest entry */
     free(r);
-    EXPECT(slow > 0, "the ISM330 grid has an entry well under the loop rate");
+    EXPECT(slow > 0, "the ISM330 grid has a slowest entry");
     if (slow <= 0) { end(fb); return; }
 
+    /* Far above the configured rate: past odr_tol_fail, so a FAIL. */
     cfg.imu_odr_mhz = slow;
     mock_base();
     script_reset(&o);
+    g_s.imu_per_tick = 32;
     r = run(&cfg, &o);
 
     double imu_err = fabs(r->raw.odr_measured_hz - r->eff_odr_mhz * 1e-3)
                    / (r->eff_odr_mhz * 1e-3);
-    free(r);
 
-    /* Far above the configured rate: past odr_tol_fail, so a FAIL. */
-    mock_base();
-    script_reset(&o);
-    r = run(&cfg, &o);
     EXPECT(r->raw.odr_measured_hz > r->eff_odr_mhz * 1e-3 * (1.0 + o.odr_tol_warn),
            "the IMU loop overshoots the rate picked for it");
     EXPECT(imu_err > o.odr_tol_fail, "and by more than the fail tolerance");
@@ -1905,6 +1897,7 @@ static void test_rate_above_configured_odr_fails(void)
      */
     mock_base();
     script_reset(&o);
+    g_s.imu_per_tick = 32;
     o.odr_tol_fail = imu_err * 4.0;
     r = run(&cfg, &o);
 
