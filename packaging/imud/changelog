@@ -38,6 +38,14 @@ imud (1.10.0) unstable; urgency=medium
     could qualify it. Consumers now get no heading rather than a wrong
     one. $TIROT and $IIXDR are unaffected, and imud-mon shows heading as
     --.
+  * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
+    configuration through a run. A driver's probe() now leaves an already-
+    configured part alone, which is what the tool's repeated probes had
+    been disturbing.  The finding was the tool's, not the driver's:
+    reports show a FAIL on imu.regs.after_run and a WARN on
+    imu.init.idempotent, both naming USER_CTRL. The daemon probes once,
+    before it configures anything, and was never affected. rm3100's probe
+    had the same fault and is fixed with it.
   * The packet's fifo_overflow flag (bit 7) is now actually set when
     samples are lost, and the daemon logs the gap at 1 Hz saying whether
     the hardware FIFO overflowed or the internal ring dropped.  The bit

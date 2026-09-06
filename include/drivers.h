@@ -132,7 +132,15 @@ typedef struct {
      */
     bus_caps_t bus_caps;
 
-    /* Return 0 on success, -1 on failure. */
+    /*
+     * Return 0 on success, -1 on failure.
+     *
+     * probe() must leave the part configured as it found it.  The daemon
+     * calls it once, before reset(), where that costs nothing — but
+     * imud-imutest repeats it on a part init() has already brought up
+     * (imu.bus.integrity), so a probe that writes control registers has to
+     * read-modify-write or put back what it borrowed.
+     */
     int (*probe)  (const imud_bus_t *bus);
     int (*reset)  (const imud_bus_t *bus);
     int (*init)   (const imud_bus_t *bus, const imu_cfg_t *cfg);
@@ -238,7 +246,8 @@ typedef struct {
 
     bus_caps_t bus_caps;   /* as for imu_ops_t above */
 
-    /* Return 0 on success, -1 on failure — as for imu_ops_t above. */
+    /* Return 0 on success, -1 on failure, and probe() leaves the part as it
+     * found it — as for imu_ops_t above. */
     int (*probe)    (const imud_bus_t *bus);
     int (*reset)    (const imud_bus_t *bus);
     int (*init)     (const imud_bus_t *bus, const mag_cfg_t *cfg);

@@ -179,7 +179,9 @@ static int write_cc_all(const imud_bus_t *bus, uint16_t cc)
  * What actually establishes presence is the write/read-back below.  No
  * floating bus returns what was just written to a 16-bit register pair.  The
  * value used is the part's own power-on cycle count, so probe() leaves no
- * configuration behind and can be repeated safely.
+ * configuration behind at startup — and CCX is put back as it was found, so a
+ * probe of a part init() has already configured does not overwrite the cycle
+ * count it chose while the driver goes on using the gain that went with it.
  */
 static int rm_probe(const imud_bus_t *bus)
 {
@@ -190,6 +192,12 @@ static int rm_probe(const imud_bus_t *bus)
     }
     if (rev == 0x00 || rev == 0xFF) {
         LOG_E("rm3100: REVID = 0x%02X — no device responding\n", rev);
+        return -1;
+    }
+
+    uint8_t was[2];
+    if (bus_burst_read(bus, REG_CCX, was, 2) < 0) {
+        LOG_E("rm3100: cycle-count read failed: %s\n", strerror(errno));
         return -1;
     }
 
@@ -207,6 +215,12 @@ static int rm_probe(const imud_bus_t *bus)
     if (got != CC_DEFAULT) {
         LOG_E("rm3100: cycle-count read-back = %u, expected %u\n",
                 got, (unsigned)CC_DEFAULT);
+        return -1;
+    }
+
+    uint16_t prev = (uint16_t)(((uint16_t)was[0] << 8) | was[1]);
+    if (prev != CC_DEFAULT && write_cc(bus, REG_CCX, prev) < 0) {
+        LOG_E("rm3100: cycle-count restore failed: %s\n", strerror(errno));
         return -1;
     }
 

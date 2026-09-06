@@ -871,6 +871,33 @@ static void test_mpu_probe(void)
     i2cmock_fail_next_xfer();
     EXPECT(mpu->probe(I2CBUS(MPU_ADDR)) != 0, "probe fails on I2C error");
 
+    /*
+     * A probe of a part init() has already configured must leave it that way.
+     * imud-imutest repeats probe() 2000 times after init() to count bus
+     * corruption, and a blanket USER_CTRL = 0x00 there cleared FIFO_EN under a
+     * running FIFO — which then read back as a driver defect against the
+     * post-init register image.
+     */
+    mpu_stage_genuine(0x73);
+    imu_cfg_t cfg = { .odr_mhz = 200000, .accel_g = 8,
+                      .gyro_dps = 2000, .fifo_wm = 16 };
+    EXPECT(mpu9255_ops.init(I2CBUS(MPU_ADDR), &cfg) == 0, "init succeeds");
+    EXPECT(mpu9255_ops.probe(I2CBUS(MPU_ADDR)) == 0,
+           "probe accepts the configured part");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6A) == 0x40,
+           "probe leaves USER_CTRL = FIFO_EN");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x37) == 0x02,
+           "probe leaves INT_PIN_CFG = BYPASS_EN");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x23) == 0x78,
+           "probe leaves FIFO_EN untouched");
+
+    /* The one bit it must still take down: bypass cannot work with the
+     * auxiliary I2C master enabled. */
+    i2cmock_set_reg(MPU_ADDR, 0x6A, 0x60);       /* FIFO_EN | I2C_MST_EN */
+    EXPECT(mpu9255_ops.probe(I2CBUS(MPU_ADDR)) == 0, "probe accepts it again");
+    EXPECT(i2cmock_get_reg(MPU_ADDR, 0x6A) == 0x40,
+           "probe clears I2C_MST_EN and keeps FIFO_EN");
+
     end(fb);
 }
 
@@ -2461,6 +2488,19 @@ static uint16_t rm_get_cc(uint8_t reg)
                       i2cmock_get_reg(RM_ADDR, (uint8_t)(reg + 1)));
 }
 
+/* Power-on state: REVID answers, and all three cycle counts hold 200.  The
+ * mock starts zeroed, and probe() now puts back what it finds, so a test that
+ * skips this is asking the driver to restore a value no RM3100 ever holds. */
+static void rm_stage_poweron(void)
+{
+    i2cmock_reset();
+    i2cmock_set_reg(RM_ADDR, 0x36, 0x22);
+    for (uint8_t axis = 0; axis < 3; axis++) {
+        i2cmock_set_reg(RM_ADDR, (uint8_t)(0x04 + axis * 2), 0x00);
+        i2cmock_set_reg(RM_ADDR, (uint8_t)(0x05 + axis * 2), 0xC8);
+    }
+}
+
 static void test_rm3100_probe(void)
 {
     begin("test_rm3100_probe");
@@ -2473,14 +2513,26 @@ static void test_rm3100_probe(void)
      * device produces, and proves presence by writing the cycle count and
      * reading it back.
      */
-    i2cmock_reset();
-    i2cmock_set_reg(RM_ADDR, 0x36, 0x22);
+    rm_stage_poweron();
     EXPECT(d->probe(I2CBUS(RM_ADDR)) == 0, "probe accepts a plausible REVID");
     EXPECT(rm_get_cc(0x04) == 200, "probe leaves the power-on cycle count");
 
     /* Idempotent: probing twice must not accumulate state. */
     EXPECT(d->probe(I2CBUS(RM_ADDR)) == 0, "probe is repeatable");
     EXPECT(rm_get_cc(0x04) == 200, "second probe leaves CC unchanged");
+
+    /*
+     * And on a part init() has already configured: the presence test writes
+     * the power-on cycle count, so without a restore it would overwrite the
+     * one init() chose for the requested ODR while read() went on scaling by
+     * that count's gain.
+     */
+    rm_stage_poweron();
+    mag_cfg_t fast = { .odr_mhz = 300000, .set_period_s = 0.0f };
+    EXPECT(d->init(I2CBUS(RM_ADDR), &fast) == 0, "init succeeds at 300 Hz");
+    EXPECT(rm_get_cc(0x04) == 100, "300 Hz configures CC 100");
+    EXPECT(d->probe(I2CBUS(RM_ADDR)) == 0, "probe accepts the configured part");
+    EXPECT(rm_get_cc(0x04) == 100, "probe puts the configured CC back");
 
     i2cmock_reset();
     i2cmock_set_reg(RM_ADDR, 0x36, 0xFF);        /* floating SDA */

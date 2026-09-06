@@ -3300,6 +3300,12 @@ Read the WHO_AM_I (or equivalent) register and verify it against the
 datasheet value. Log a clear error with the received and expected values
 on mismatch.
 
+Leave the part as you found it. If @code{probe()} has to write --- to
+open a bypass, or to prove a device answers by reading back what it
+wrote --- read-modify-write the one bit you need, or put the old value
+back. @code{imud-imutest} repeats @code{probe()} on a part @code{init()}
+has already configured.
+
 @verbatim
 static int myimu_probe(const imud_bus_t *bus)
 {
@@ -3848,7 +3854,8 @@ heading      increases ~6°/s from a 60° start
 @anchor{#pre-submission-checklist}
 @itemize
 @item
-☐ @code{probe()} reads and validates the chip identity register.
+☐ @code{probe()} reads and validates the chip identity register, and
+leaves any register it writes as it found it.
 @item
 ☐ @code{reset()} waits for the reset bit to self-clear @strong{and} adds
 the datasheet startup time afterward --- or, on a part with no reset

@@ -91,9 +91,10 @@
  * off — see the FIFO note in the file header. */
 #define FIFO_EN_ACCEL_GYRO 0x78
 
-/* USER_CTRL bits. I2C_MST_EN (0x20) stays clear so bypass can work. */
-#define USER_CTRL_FIFO_EN  0x40
-#define USER_CTRL_FIFO_RST 0x04
+/* USER_CTRL bits. I2C_MST_EN stays clear so bypass can work. */
+#define USER_CTRL_FIFO_EN    0x40
+#define USER_CTRL_I2C_MST_EN 0x20
+#define USER_CTRL_FIFO_RST   0x04
 
 /* INT_PIN_CFG: BYPASS_EN (bit 1) — exposes the AK8963 on the host bus. */
 #define INT_PIN_BYPASS_EN  0x02
@@ -290,9 +291,20 @@ static int probe_common(const imud_bus_t *bus, uint8_t expect, const char *part,
      * the most common failure mode into one clear message instead of an
      * unexplained I2C error later, from the mag driver, about a different
      * address.
+     *
+     * Read-modify-write, because probe() must leave a configured part alone:
+     * clear I2C_MST_EN, which is the one bit bypass needs down, and set
+     * BYPASS_EN.  A blanket USER_CTRL = 0x00 also clears FIFO_EN, which is
+     * invisible at startup — the daemon probes before init() — and wrong for
+     * any caller that probes a running part.
      */
-    if (bus_reg_write(bus, REG_USER_CTRL, 0x00) < 0) return -1;
-    if (bus_reg_write(bus, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
+    uint8_t uc, pin;
+    if (bus_reg_read(bus, REG_USER_CTRL, &uc) < 0) return -1;
+    if (bus_reg_read(bus, REG_INT_PIN_CFG, &pin) < 0) return -1;
+    if (bus_reg_write(bus, REG_USER_CTRL,
+                      (uint8_t)(uc & ~USER_CTRL_I2C_MST_EN)) < 0) return -1;
+    if (bus_reg_write(bus, REG_INT_PIN_CFG,
+                      (uint8_t)(pin | INT_PIN_BYPASS_EN)) < 0) return -1;
     usleep(1000);
 
     /* The compass answers at its own address on the same wires, so borrow the

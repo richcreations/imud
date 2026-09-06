@@ -1576,6 +1576,11 @@ to detect dropped samples.
 Read the WHO_AM_I (or equivalent) register and verify it against the datasheet
 value. Log a clear error with the received and expected values on mismatch.
 
+Leave the part as you found it. If `probe()` has to write — to open a bypass,
+or to prove a device answers by reading back what it wrote — read-modify-write
+the one bit you need, or put the old value back. `imud-imutest` repeats
+`probe()` on a part `init()` has already configured.
+
 ```c
 static int myimu_probe(const imud_bus_t *bus)
 {
@@ -2010,7 +2015,8 @@ heading      increases ~6°/s from a 60° start
 
 ### Pre-submission checklist
 
-- [ ] `probe()` reads and validates the chip identity register.
+- [ ] `probe()` reads and validates the chip identity register, and leaves
+      any register it writes as it found it.
 - [ ] `reset()` waits for the reset bit to self-clear **and** adds the
       datasheet startup time afterward — or, on a part with no reset bit,
       restores the power-on register values and says so in a comment.

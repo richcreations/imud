@@ -39,6 +39,14 @@ imud-utils (1.10.0) unstable; urgency=medium
   * imud-imutest now shows 'Enter when done' while a guided turn is
     collecting. The hint only appeared when there was nothing else on the
     line, so operators let every turn run to its timeout.
+  * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
+    configuration through a run. A driver's probe() now leaves an already-
+    configured part alone, which is what the tool's repeated probes had
+    been disturbing.  The finding was the tool's, not the driver's:
+    reports show a FAIL on imu.regs.after_run and a WARN on
+    imu.init.idempotent, both naming USER_CTRL. The daemon probes once,
+    before it configures anything, and was never affected. rm3100's probe
+    had the same fault and is fixed with it.
   * The armhf packages are now built on Raspbian at the ARMv6 baseline, so
     they run on every Raspberry Pi that boots a 32-bit userland.
     Previously they were built to Debian's ARMv7 baseline.  On a Pi 1 or
