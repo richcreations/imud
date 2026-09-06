@@ -15,7 +15,7 @@
 #ifndef IMUD_VERSION_H
 #define IMUD_VERSION_H
 
-#define IMUD_VERSION_STR "1.10.0"
+#define IMUD_VERSION_STR "1.10.1"
 
 /*
  * Release date, ISO 8601, stamped into every generated man page's .TH line.
@@ -29,6 +29,6 @@
  *
  * tools/bump-version.sh writes both macros.
  */
-#define IMUD_RELEASE_DATE "2026-09-05"
+#define IMUD_RELEASE_DATE "2026-09-06"
 
 #endif /* IMUD_VERSION_H */

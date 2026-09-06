@@ -2,8 +2,8 @@
 @c GENERATED from docs/manual.md by tools/gen-texi.py — do not edit.
 @c Edit the manual, then run `make docs-texi`.
 @setfilename imud.info
-@set VERSION 1.10.0
-@set RELEASEDATE 2026-09-05
+@set VERSION 1.10.1
+@set RELEASEDATE 2026-09-06
 
 @dircategory System administration
 @direntry

@@ -22,6 +22,20 @@
 #             it is rendered prominently.
 
 [[release]]
+version = "1.10.1"
+date    = "2026-09-06"
+summary = """
+A driver's probe() no longer disturbs a part that init() has already
+configured, which was making imud-imutest report the MPU-925x pair as failing
+to hold its setup through a run."""
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud", "imud-utils"]
+  text     = "imud-imutest reported the mpu9250/mpu9255 pair as not holding its configuration through a run. A driver's probe() now leaves an already-configured part alone, which is what the tool's repeated probes had been disturbing."
+  impact   = "The finding was the tool's, not the driver's: reports show a FAIL on imu.regs.after_run and a WARN on imu.init.idempotent, both naming USER_CTRL. The daemon probes once, before it configures anything, and was never affected. rm3100's probe had the same fault and is fixed with it."
+
+[[release]]
 version = "1.10.0"
 date    = "2026-09-05"
 summary = """
@@ -44,12 +58,6 @@ it — the first passive check that proves the sensing elements are live."""
   kind     = "fix"
   packages = ["imud-utils"]
   text     = "imud-imutest now shows 'Enter when done' while a guided turn is collecting. The hint only appeared when there was nothing else on the line, so operators let every turn run to its timeout."
-
-  [[release.change]]
-  kind     = "fix"
-  packages = ["imud", "imud-utils"]
-  text     = "imud-imutest reported the mpu9250/mpu9255 pair as not holding its configuration through a run. A driver's probe() now leaves an already-configured part alone, which is what the tool's repeated probes had been disturbing."
-  impact   = "The finding was the tool's, not the driver's: reports show a FAIL on imu.regs.after_run and a WARN on imu.init.idempotent, both naming USER_CTRL. The daemon probes once, before it configures anything, and was never affected. rm3100's probe had the same fault and is fixed with it."
 
   [[release.change]]
   kind     = "fix"

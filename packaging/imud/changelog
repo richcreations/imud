@@ -1,3 +1,16 @@
+imud (1.10.1) unstable; urgency=medium
+
+  * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
+    configuration through a run. A driver's probe() now leaves an already-
+    configured part alone, which is what the tool's repeated probes had
+    been disturbing.  The finding was the tool's, not the driver's:
+    reports show a FAIL on imu.regs.after_run and a WARN on
+    imu.init.idempotent, both naming USER_CTRL. The daemon probes once,
+    before it configures anything, and was never affected. rm3100's probe
+    had the same fault and is fixed with it.
+
+ -- Richard Simpson <richcreations@gmail.com>  Sun, 06 Sep 2026 10:56:59 -0700
+
 imud (1.10.0) unstable; urgency=medium
 
   * New driver mpu6500 for the TDK MPU-6500, the six-axis part inside the
