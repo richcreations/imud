@@ -718,8 +718,8 @@ static void test_cal_fit_ra(void)
            "prints the residual report");
     EXPECT(strstr(g_out, "mean NIS") != NULL, "prints innovation consistency");
 
-    /* fit-ra adds no section of its own; the file is only rewritten because
-     * the mag section it was handed is still set. */
+    /* fit-ra adds no section of its own, and writes nothing: the file it was
+     * handed comes back byte for byte. */
     bool have_after = stat(out2, &after) == 0;
     imud_cal_t cal;
     EXPECT(cal_load(out2, &cal) == 0, "cal.json still loads");
@@ -757,6 +757,77 @@ static void test_cal_motion_gate(void)
            "and reports the settle window it dropped");
 
     remove(out);
+    end(fb);
+}
+
+/* ── imud-cal: an unwritable calibration target ──────────────────────────── */
+
+/*
+ * The permission check runs before the capture, not at the save prompt.  Both
+ * halves are asserted here: that a target it cannot write is refused, and that
+ * the refusal lands in under the 5 s the gyro window would have taken — a mag
+ * swing is two circles under way, and that is what used to be thrown away.
+ */
+static void test_cal_unwritable_target(void)
+{
+    begin("test_cal_unwritable_target");
+    int fb = g_fail;
+
+    /* A directory that does not exist: unwritable for root as well. */
+    char target[128];
+    snprintf(target, sizeof target, "/tmp/imud_hwtools_%d_nodir/cal.json",
+             (int)getpid());
+
+    struct timespec t0, t1;
+    char *av[] = { (char *)"imud-cal", (char *)"--config", g_conf,
+                   (char *)"--output", target, (char *)"gyro", NULL };
+    cap_t c; cap_begin(&c, CAPFILE);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int rc = cal_main_entry(6, av);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    cap_end(&c, g_out, sizeof g_out);
+
+    double secs = (double)(t1.tv_sec - t0.tv_sec) +
+                  1e-9 * (double)(t1.tv_nsec - t0.tv_nsec);
+    EXPECT(rc == 1, "gyro against an unwritable target exits 1");
+    EXPECT(strstr(g_out, target) != NULL, "names the path");
+    EXPECT(strstr(g_out, "--output") != NULL, "and names a way past it");
+    EXPECT(secs < 2.0, "and refuses before the 5 s capture, not after it");
+
+    /* The mode the report came from.  Playback is armed so that a regression
+     * fails rather than swings for MAX_MAG_SAMPLES. */
+    sim_set_playback(g_cap_swing, true, 0.0f);
+    stdin_from("y\n");
+    av[5] = (char *)"mag";
+    cap_begin(&c, CAPFILE);
+    rc = cal_main_entry(6, av);
+    cap_end(&c, g_out, sizeof g_out);
+    sim_set_playback(NULL, false, 1.0f);
+
+    EXPECT(rc == 1, "mag against an unwritable target exits 1");
+    EXPECT(strstr(g_out, "Hard iron") == NULL, "before the swing, not after");
+
+    /* fit-ra is exempt, because it writes nothing: a read-only cal.json still
+     * gets its report.  (Root writes it regardless, and still gets one.) */
+    char robuf[128];
+    const char *ro = calpath(robuf, sizeof robuf, 12);
+    write_mag_cal(ro);
+    chmod(ro, 0444);
+
+    char *av_ra[] = { (char *)"imud-cal", (char *)"--config", g_conf,
+                      (char *)"--output", (char *)ro,
+                      (char *)"--from", g_cap_wave,
+                      (char *)"fit-ra", NULL };
+    cap_begin(&c, CAPFILE);
+    int rc_ra = cal_main_entry(8, av_ra);
+    cap_end(&c, g_out, sizeof g_out);
+
+    EXPECT(rc_ra == 0, "fit-ra runs against a read-only cal.json");
+    EXPECT(strstr(g_out, "mean NIS") != NULL, "and prints its report");
+    EXPECT(strstr(g_out, "Saved to") == NULL, "and writes nothing");
+
+    chmod(ro, 0644);
+    remove(ro);
     end(fb);
 }
 
@@ -1506,8 +1577,9 @@ static void test_imutest_default_report_name(void)
 /* An unwritable report path is reported, and the run's own verdict survives. */
 static void test_imutest_report_write_failure(void)
 {
-    begin("test_imutest_report_write_failure (~6 s)");
+    begin("test_imutest_report_write_failure");
     int fb = g_fail;
+    struct timespec t0, t1;
 
     char *av[] = { (char *)"imud-imutest", (char *)"--config", g_conf,
                    (char *)"--imu-driver", (char *)"sim",
@@ -1523,11 +1595,18 @@ static void test_imutest_report_write_failure(void)
     int ac = 0; while (av[ac]) ac++;
 
     cap_t c; cap_begin(&c, CAPFILE);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     int rc = imutest_main_entry(ac, av);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
     cap_end(&c, g_out, sizeof g_out);
 
     EXPECT(rc != 0, "an unwritable report is a non-zero exit");
     EXPECT(strstr(g_out, "imud-imutest: ") != NULL, "the failure is attributed");
+    /* And it is raised before the run, which used to be ~6 s here and is
+     * minutes of an operator's time at the bench with the guided phases. */
+    EXPECT((double)(t1.tv_sec - t0.tv_sec) +
+           1e-9 * (double)(t1.tv_nsec - t0.tv_nsec) < 2.0,
+           "and refused before the run, not after it");
 
     end(fb);
 }
@@ -1706,6 +1785,7 @@ int main(void)
     test_cal_offline_bad_capture();
     test_cal_fit_ra();
     test_cal_motion_gate();
+    test_cal_unwritable_target();
     test_cal_unknown_driver();
     test_cal_bus_open_failure();
     test_cal_sensor_bringup_failure();

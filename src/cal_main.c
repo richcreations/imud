@@ -45,6 +45,7 @@
 #include "capture.h"
 #include "cli.h"
 #include "config.h"
+#include "fileio.h"
 #include "imu.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag */
 #include "drivers.h"
@@ -895,6 +896,20 @@ int main(int argc, char **argv)
     if (args.output_path)
         snprintf(cfg.cal_file, sizeof(cfg.cal_file), "%s", args.output_path);
 
+    /*
+     * Asked here rather than at the save prompt, which is where cal_write's
+     * own open used to raise it: every mode but fit-ra ends in a write, and a
+     * mag swing is two circles under way — an hour of the operator's day is
+     * not the right place to discover that /etc/imud is root-only.
+     */
+    if (strcmp(mode, "fit-ra") != 0 && path_writable(cfg.cal_file) != 0) {
+        fprintf(stderr, "cal: cannot write %s: %s\n"
+                        "cal: run under sudo, or send the result elsewhere "
+                        "with --output PATH\n",
+                cfg.cal_file, strerror(errno));
+        return 1;
+    }
+
     /* Load existing cal.json so we preserve sections we're not updating */
     imud_cal_t cal;
     if (cal_load(cfg.cal_file, &cal) < 0) return 1;
@@ -910,9 +925,12 @@ int main(int argc, char **argv)
 
     if (rc < 0) return 1;
 
-    /* Write if any section was updated */
-    if (cal.has_mag || cal.has_gyro || cal.has_accel ||
-        cal.has_noise || cal.has_gyro_temp) {
+    /* Write if any section was updated.  fit-ra updates none — it reports on
+     * [fusion] tuning — but it loads a mag section to replay with, which used
+     * to be enough to rewrite the file the mode is documented not to touch. */
+    if (strcmp(mode, "fit-ra") != 0 &&
+        (cal.has_mag || cal.has_gyro || cal.has_accel ||
+         cal.has_noise || cal.has_gyro_temp)) {
         if (cal_write(cfg.cal_file, &cal) < 0) return 1;
         printf("Saved to %s\n", cfg.cal_file);
     }

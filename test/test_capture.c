@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <math.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -31,6 +32,7 @@
 #include "capture.h"
 #include "config.h"
 #include "drivers.h"
+#include "fileio.h"
 #include "fusion.h"
 
 #ifndef M_PI
@@ -255,6 +257,48 @@ static void test_file_mode(void)
     struct stat st;
     EXPECT(stat(path, &st) == 0, "capture file exists");
     EXPECT((st.st_mode & 07777) == 0644, "capture file is 0644, not 0666");
+    end(fb);
+}
+
+/* fileio.h's other policy, and the one imud-cal and imud-imutest ask before
+ * they start: can this path be written at all?  Both spend an operator's time
+ * on work whose only artifact is a file. */
+static void test_path_writable(void)
+{
+    begin("test_path_writable");
+    int fb = g_fail;
+
+    const char *path = path_in_dir("writable.txt");
+    FILE *f = fopen(path, "w");
+    if (f) fclose(f);
+    EXPECT(path_writable(path) == 0, "an existing writable file: yes");
+
+    remove(path);
+    EXPECT(path_writable(path) == 0, "still yes once it is missing");
+    EXPECT(access(path, F_OK) != 0,  "and asking did not create it");
+
+    EXPECT(path_writable("/tmp/imud_no_such_dir_xyz/cal.json") != 0,
+           "a directory that does not exist: no");
+    EXPECT(path_writable("imud_no_such_file.txt") == access(".", W_OK | X_OK),
+           "a bare name asks about the working directory");
+
+    /* Root is exempt from the mode bits, so the two refusals below are not
+     * refusals for it. */
+    if (geteuid() != 0) {
+        EXPECT(path_writable("/imud_no_such_root_file") != 0,
+               "a name directly under / asks about /");
+
+        char dir[288], file[320];
+        snprintf(dir, sizeof dir, "%s/ro", g_dir);
+        snprintf(file, sizeof file, "%s/cal.json", dir);
+        if (mkdir(dir, 0500) == 0) {
+            EXPECT(path_writable(file) != 0, "a read-only directory: no");
+            EXPECT(errno == EACCES,          "and says why");
+            chmod(dir, 0700);
+            remove(dir);
+        }
+    }
+
     end(fb);
 }
 
@@ -794,6 +838,7 @@ int main(void)
     test_wire_is_little_endian();
     test_roundtrip();
     test_file_mode();
+    test_path_writable();
     test_open_rejects();
     test_truncated_tail();
     test_forward_compat();

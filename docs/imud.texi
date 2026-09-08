@@ -2247,6 +2247,11 @@ path set by @code{calibration.file} (default @code{/etc/imud/cal.json}),
 or to @code{--output PATH}. A partial run updates only the section it
 calibrated, preserving the others.
 
+@code{/etc/imud} belongs to root, so run it under @code{sudo} --- or
+send the result somewhere you can write with @code{--output PATH}. Every
+mode that saves checks this before it starts, so a swing is never
+collected against a file it cannot write.
+
 @multitable @columnfractions 0.19 0.81 
 @headitem 
 Mode

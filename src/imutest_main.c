@@ -31,6 +31,7 @@
 #include "cli.h"
 #include "cloexec.h"
 #include "config.h"
+#include "fileio.h"
 #include "imutest.h"
 #include "version.h"
 
@@ -253,6 +254,17 @@ int main(int argc, char **argv)
     opts.ui.user      = &term;
 
     signal(SIGINT, on_sigint);
+
+    /* Asked before the run rather than after it: a guided pass is minutes with
+     * an operator at the bench, and the report file is what clears a driver's
+     * experimental flag.  Without --report the name is stamped once the run
+     * ends, so what is checked then is the directory it will land in. */
+    if (path_writable(report_path[0] ? report_path : "./") != 0) {
+        fprintf(stderr, "imud-imutest: cannot write %s: %s\n",
+                report_path[0] ? report_path : "the current directory",
+                strerror(errno));
+        return 1;
+    }
 
     /* ── Run ─────────────────────────────────────────────────────────────── */
     imt_report_t *rep = calloc(1, sizeof *rep);

@@ -954,6 +954,11 @@ sudo systemctl stop imud
 `calibration.file` (default `/etc/imud/cal.json`), or to `--output PATH`. A
 partial run updates only the section it calibrated, preserving the others.
 
+`/etc/imud` belongs to root, so run it under `sudo` — or send the result
+somewhere you can write with `--output PATH`. Every mode that saves checks
+this before it starts, so a swing is never collected against a file it cannot
+write.
+
 | Mode | Procedure |
 |---|---|
 | `gyro` | Hold the board completely still. Captures gyro bias over a short window. |

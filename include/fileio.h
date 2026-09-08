@@ -29,7 +29,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -57,6 +59,32 @@ static inline FILE *fcreate(const char *path, const char *stdio_mode,
         errno = saved;
     }
     return f;
+}
+
+/*
+ * Would fcreate(path, …) be permitted?  0 if so, -1 with errno set as access(2)
+ * set it.  An existing file is asked about directly, a missing one through the
+ * directory that would have to hold it.
+ *
+ * access() rather than a trial open, so asking neither creates the file nor
+ * truncates one that is already there.  Advisory and racy by nature: it exists
+ * so a tool can refuse before doing work it would have to throw away — an
+ * hour's mag swing, a guided imutest run — and the real open stays the
+ * authority.
+ */
+static inline int path_writable(const char *path)
+{
+    if (access(path, F_OK) == 0) return access(path, W_OK);
+
+    const char *slash = strrchr(path, '/');
+    if (!slash) return access(".", W_OK | X_OK);
+
+    size_t len = (slash == path) ? 1 : (size_t)(slash - path);  /* "/x" → "/" */
+    char   dir[PATH_MAX];
+    if (len >= sizeof dir) { errno = ENAMETOOLONG; return -1; }
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+    return access(dir, W_OK | X_OK);
 }
 
 /* The umask that makes a newly created object land at exactly `perm`. */
