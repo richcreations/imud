@@ -296,7 +296,7 @@ static const imu_ops_t *imu_registry[] = {
     &lsm6dsox_ops,     /* LSM6DSOX        [I2C + SPI]      [experimental] */
     &mpu6500_ops,      /* MPU-6500 — 6-axis, same driver   [I2C] */
     &mpu9250_ops,      /* MPU-9250                         [experimental] */
-    &mpu9255_ops,      /* MPU-9255 (same driver)           [experimental] */
+    &mpu9255_ops,      /* MPU-9255 (same driver)           [I2C] */
     &sim_imu_ops,      /* synthetic driver for testing without hardware */
     NULL
 };

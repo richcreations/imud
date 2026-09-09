@@ -246,8 +246,10 @@ static void test_unknown_lookups(void)
     end(fb);
 }
 
-/* The two hardware-validated production drivers must not be flagged
- * experimental (the flag prints a "not validated on hardware" warning). */
+/* The hardware-validated production drivers must not be flagged experimental
+ * (the flag prints a "not validated on hardware" warning), and the parts still
+ * awaiting a bench report must keep it — mpu9250 shares its file with two
+ * cleared parts, so the flag is per-part and not per-driver. */
 static void test_validated_not_experimental(void)
 {
     begin("test_validated_not_experimental");
@@ -256,6 +258,12 @@ static void test_validated_not_experimental(void)
     const mag_ops_t *mmc = mag_driver_find("mmc5983ma");
     EXPECT(ism && !ism->experimental, "ism330dhcx not experimental");
     EXPECT(mmc && !mmc->experimental, "mmc5983ma not experimental");
+    const imu_ops_t *m65 = imu_driver_find("mpu6500");
+    const imu_ops_t *m55 = imu_driver_find("mpu9255");
+    const imu_ops_t *m50 = imu_driver_find("mpu9250");
+    EXPECT(m65 && !m65->experimental, "mpu6500 not experimental");
+    EXPECT(m55 && !m55->experimental, "mpu9255 not experimental");
+    EXPECT(m50 && m50->experimental, "mpu9250 still experimental");
     /* sim is a pure software driver — also never experimental. */
     const imu_ops_t *simi = imu_driver_find("sim");
     const mag_ops_t *simm = mag_driver_find("sim");

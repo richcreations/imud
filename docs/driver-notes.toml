@@ -76,7 +76,7 @@ chip = 'TDK MPU-9255'
 i2c_addr = '0x68–0x69'
 gpio = 'BCM 17 · pin 11'
 spi_override = 'no — as `mpu9250`'
-notes = 'MPU-9250 with a different `WHO_AM_I`; same driver.'
+notes = 'MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the pair validated on hardware. Includes an AK8963 mag via I²C bypass; no hardware timestamp.'
 
 [drivers.sim]
 chip = '—'

@@ -15,7 +15,7 @@ search the part number on the linked page if a deep link has rotted.
 | TDK ICM-20948 | 9-axis IMU, experimental | `icm20948` | I²C | <https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/> |
 | AKM AK09916 | magnetometer (inside ICM-20948), experimental | `ak09916` | I²C only | documented in the TDK ICM-20948 datasheet above |
 | ST LSM6DSO / LSM6DSOX | IMU, experimental | `lsm6dso` | I²C + SPI | <https://www.st.com/en/mems-and-sensors/lsm6dso.html> |
-| TDK MPU-9250 / MPU-9255 | 9-axis IMU, experimental (NRND) | `mpu9250`, `mpu9255` | I²C | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
+| TDK MPU-9250 / MPU-9255 | 9-axis IMU — MPU-9255 validated on hardware, MPU-9250 experimental (NRND) | `mpu9250`, `mpu9255` | I²C | <https://invensense.tdk.com/> (search MPU-9250 / MPU-9255; register maps are separate documents from the product specifications) |
 | AKM AK8963 | magnetometer (inside MPU-9250/9255), experimental | `ak8963` | I²C only | documented in §5 of the MPU-9250 and MPU-9255 register maps above |
 | TDK MPU-6500 | 6-axis IMU, validated on hardware | `mpu6500` | I²C | the gyro/accel die inside the MPU-925x; its register tables are the MPU-9250/9255 register maps above, minus §5 |
 | ST LIS2MDL | magnetometer, experimental | `lis2mdl` | I²C only | <https://www.st.com/en/mems-and-sensors/lis2mdl.html> |

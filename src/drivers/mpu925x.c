@@ -750,7 +750,7 @@ const imu_ops_t mpu9250_ops = {
 
 const imu_ops_t mpu9255_ops = {
     .name             = "mpu9255",
-    .experimental     = true,
+    .experimental     = false,
     .probe            = mpu9255_probe,
     .reset            = mpu_reset,
     .init             = mpu_init,

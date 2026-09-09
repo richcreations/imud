@@ -39,16 +39,16 @@ from the WMM) are examples of what the daemon can carry, not what it is.
 
 ## Hardware support
 
-Three parts are validated on real silicon: the reference pair **ISM330DHCX**
+Four parts are validated on real silicon: the reference pair **ISM330DHCX**
 (IMU) and **MMC5983MA** (magnetometer), over both I²C and SPI, and the
-six-axis **MPU-6500** over I²C.
+nine-axis **MPU-9255** and six-axis **MPU-6500** over I²C.
 
-**Eleven parts that have never run on physical silicon ship marked
-experimental**: `lsm6dso`/`lsm6dsox`, `icm42688p`, `icm20948` and
-`mpu9250`/`mpu9255` on the inertial side, and `lis3mdl`, `lis2mdl`, `rm3100`,
-`ak09916`, `ak8963` on the magnetometer side. Some names share a driver:
-`lsm6dso`/`lsm6dsox` is one, and `mpu9250`/`mpu9255` is the file that also
-drives the validated `mpu6500`.
+**Ten parts that have never run on physical silicon ship marked
+experimental**: `lsm6dso`/`lsm6dsox`, `icm42688p`, `icm20948` and `mpu9250` on
+the inertial side, and `lis3mdl`, `lis2mdl`, `rm3100`, `ak09916`, `ak8963` on
+the magnetometer side. Some names share a driver: `lsm6dso`/`lsm6dsox` is one,
+and `mpu9250` is the file that also drives the validated `mpu9255` and
+`mpu6500`.
 
 Their register maps are checked against the vendor datasheets and their
 encode/decode paths are covered by tests against a mock bus, but they have never

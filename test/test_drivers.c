@@ -8,12 +8,12 @@
  * test_drivers.c — register-level decode/encode tests over the mock bus
  * (test/bus_mock.c, --wrap=ioctl), which serves both I2C and spidev.
  *
- * Covers ALL ELEVEN hardware driver files: the two hardware-validated ones
- * (ism330dhcx, mmc5983ma) and the nine flagged `experimental` — mpu925x (which
- * holds the MPU-9250/9255 pair), lsm6dso (LSM6DSO/LSM6DSOX), icm42688p,
- * icm20948, ak09916, ak8963, lis3mdl, lis2mdl, rm3100.  For those, nothing else
- * has ever executed a line: a transposed register or a sign error would
- * otherwise wait for silicon that may never arrive.
+ * Covers ALL ELEVEN hardware driver files: ism330dhcx, mmc5983ma, mpu925x
+ * (which holds the MPU-6500/9250/9255 trio), lsm6dso (LSM6DSO/LSM6DSOX),
+ * icm42688p, icm20948, ak09916, ak8963, lis3mdl, lis2mdl, rm3100.  For the
+ * parts still flagged `experimental`, nothing else has ever executed a line:
+ * a transposed register or a sign error would otherwise wait for silicon that
+ * may never arrive.
  *
  * Count files, not ops: three of those files register two parts each, so the
  * registry has fifteen *_ops entries (sim is two of them) against twelve files.
@@ -1541,9 +1541,9 @@ static void test_ak_read_decode(void)
  *
  * Covers every registered driver rather than the four originally wired up; the
  * CI coverage job put src/drivers/ at 48% with these six at literally 0.0%.
- * They are also the six still flagged `experimental` and awaiting bench
- * validation, so until now nothing had ever executed a line of them — a
- * transposed register or a sign error would have waited for hardware.
+ * All six were awaiting bench validation at the time, so until then nothing
+ * had ever executed a line of them — a transposed register or a sign error
+ * would have waited for hardware.
  *
  * These do not replace hardware validation: a mock cannot tell
  * you the chip-to-board axis remap matches the physical part. What it does

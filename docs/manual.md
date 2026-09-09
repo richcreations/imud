@@ -787,7 +787,7 @@ Links to the manufacturers' datasheets are collected in
 | `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
 | `mpu6500` | TDK MPU-6500 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — the shared MPU-925x code path is I²C-only | Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`. |
 | `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
-| `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | *Experimental.* MPU-9250 with a different `WHO_AM_I`; same driver. |
+| `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the pair validated on hardware. Includes an AK8963 mag via I²C bypass; no hardware timestamp. |
 | `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 0, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_speed_hz below 2.5 MHz while this part shares the controller — it stops measuring. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
@@ -800,8 +800,9 @@ Links to the manufacturers' datasheets are collected in
 The **SPI** column is what `[imu] bus` / `[mag] bus` will accept. Selecting
 `bus = "spi"` on a driver marked "no" is refused at startup by name, rather
 than tried and mis-framed. Only `ism330dhcx` and `mmc5983ma` have been
-exercised on both transports against a mock device; the rest are
-`experimental` on either bus.
+exercised on both transports against a mock device; the other SPI-capable
+drivers are `experimental` on either bus. `mpu6500` and `mpu9255` are
+validated on hardware but I²C-only, so SPI does not arise for them.
 
 The "no" rows each have a specific cause, and none of them is simply missing
 work:

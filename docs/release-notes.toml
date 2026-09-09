@@ -83,6 +83,11 @@ it — the first passive check that proves the sensing elements are live."""
   text     = "mpu6500 is no longer experimental. It is validated on real silicon by an imud-imutest --all report: 61 checks passed, none failed. The daemon no longer warns at startup when it is selected."
 
   [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "mpu9255 is no longer experimental either, on an imud-imutest report from a real MPU-9255 board. The ak8963 magnetometer on those boards is still experimental and still warns."
+
+  [[release.change]]
   kind     = "fix"
   packages = ["imud"]
   text     = "mpu925x reset() now waits the MPU-925x product spec's register start-up time before reading the part back, and resets the gyro, accel and temperature signal paths as TDK's own Linux driver does for this generation."

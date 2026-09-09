@@ -1880,8 +1880,9 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{SPI}: no --- as @code{mpu9250}
 @item
-@strong{Notes}: @emph{Experimental.} MPU-9250 with a different
-@code{WHO_AM_I}; same driver.
+@strong{Notes}: MPU-9250 with a different @code{WHO_AM_I}; same driver,
+and the one of the pair validated on hardware. Includes an AK8963 mag
+via I²C bypass; no hardware timestamp.
 @end itemize
 
 @item @code{mmc5983ma}
@@ -2022,8 +2023,9 @@ The @strong{SPI} column is what @code{[imu] bus} / @code{[mag] bus} will
 accept. Selecting @code{bus = "spi"} on a driver marked "no" is refused
 at startup by name, rather than tried and mis-framed. Only
 @code{ism330dhcx} and @code{mmc5983ma} have been exercised on both
-transports against a mock device; the rest are @code{experimental} on
-either bus.
+transports against a mock device; the other SPI-capable drivers are
+@code{experimental} on either bus. @code{mpu6500} and @code{mpu9255} are
+validated on hardware but I²C-only, so SPI does not arise for them.
 
 The "no" rows each have a specific cause, and none of them is simply
 missing work:

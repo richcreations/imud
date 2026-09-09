@@ -64,9 +64,9 @@ where an FT232H USB dongle carries the I²C bus. License: MIT — see
   sensors.
 - **Pluggable hardware.** A thin driver layer hides chip differences behind
   one interface. Validated on silicon: the SparkFun 9DoF reference pair
-  (ISM330DHCX + MMC5983MA) and the six-axis TDK InvenSense MPU-6500.
-  Experimental drivers for ST LSM6DSO, LSM6DSOX, LIS2MDL and LIS3MDL, TDK
-  InvenSense ICM-20948, ICM-42688-P, MPU-9250 and MPU-9255, AKM AK8963 and
+  (ISM330DHCX + MMC5983MA), and the TDK InvenSense MPU-9255 and six-axis
+  MPU-6500. Experimental drivers for ST LSM6DSO, LSM6DSOX, LIS2MDL and
+  LIS3MDL, TDK InvenSense ICM-20948, ICM-42688-P and MPU-9250, AKM AK8963 and
   AK09916, and PNI RM3100; and a `sim` driver that runs the whole pipeline
   with no hardware. Addresses, interrupt pins and per-part notes are in the
   [driver table](docs/manual.md#5-supported-drivers).
