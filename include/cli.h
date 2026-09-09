@@ -34,6 +34,8 @@
 
 #include <stdbool.h>
 
+#include "paths.h"
+
 /* ── imud ────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -88,7 +90,7 @@ typedef struct {
     const char *sockpath;      /* default DEFAULT_STATUS_SOCK; points into argv */
 } cli_status_t;
 
-#define CLI_DEFAULT_STATUS_SOCK "/run/imud/imud.sock"
+#define CLI_DEFAULT_STATUS_SOCK IMUD_STATUS_SOCK
 
 int cli_parse_status(int argc, char **argv, cli_status_t *a);
 

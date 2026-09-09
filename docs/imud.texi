@@ -375,9 +375,12 @@ package (@code{imud-wmm-data}) that can be updated independently:
 sudo make install-wmm-data
 @end verbatim
 
-This installs @code{WMM.COF} → @code{/usr/share/imud/WMM.COF}. To use a
-newer model before the package updates, drop it at
-@code{/etc/imud/WMM.COF} --- imud prefers that path when it exists.
+This installs @code{WMM.COF} under the prefix ---
+@code{/usr/share/imud/WMM.COF} for the @code{.deb},
+@code{/usr/local/share/imud/WMM.COF} for a default source build --- and
+the daemon looks where its own build installs. To use a newer model
+before the package updates, drop it at @code{/etc/imud/WMM.COF}; imud
+prefers that path when it exists.
 
 @code{make install} also creates the dedicated system user @code{imud}
 that the service runs as. Its @strong{primary group is @code{imud}},
@@ -512,8 +515,10 @@ socket) are created at mode 0660 rather than chmod'd down after
 @code{make install} on macOS installs
 @code{/Library/LaunchDaemons/io.github.richcreations.imud.plist} instead
 of a systemd unit --- @code{./configure} picks which from @code{uname},
-and @code{--with-service=systemd|launchd} overrides it. Each bridge
-installs its own, labelled the same way.
+and @code{--with-service=systemd|launchd|none} overrides it. Each bridge
+installs its own, labelled the same way. @code{none} installs no unit
+and creates no state directory, for a package manager that defines the
+service itself.
 
 @verbatim
 sudo launchctl bootstrap system \

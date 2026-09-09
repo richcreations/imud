@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include "config.h"
+#include "paths.h"
 
 /* ── Minimal test framework ─────────────────────────────────────────────── */
 
@@ -220,7 +221,7 @@ static void test_defaults_cal_file(void)
     config_defaults(&cfg);
 
     EXPECT(cfg.cal_file[0] == '/',  "cal_file default is an absolute path");
-    EXPECT_STR(cfg.cal_file, "/etc/imud/cal.json", "cal_file default value");
+    EXPECT_STR(cfg.cal_file, IMUD_CAL_FILE, "cal_file default value");
     end_test(fb);
 }
 
@@ -941,12 +942,18 @@ static void test_defaults_position(void)
     EXPECT_STR(cfg.pos_wmm_file, "", "pos_wmm_file default is the auto sentinel");
     EXPECT_NEAR_D(cfg.pos_fix_max_age_h,  24.0, 1e-5, "pos_fix_max_age_h default 24 h");
 
-    /* config_load resolves the auto sentinel: the /etc override when that
-     * file exists on this machine, else the /usr/share package data path. */
+    /* config_load resolves the auto sentinel: the $(ETCDIR) override when
+     * that file exists on this machine, else this build's $(DATADIR)/imud.
+     * Asserted against the macros, not against /usr/share: install-wmm-data
+     * writes under $(PREFIX), so a source install at the default
+     * PREFIX=/usr/local put the file somewhere the resolver never looked. */
     config_load("/tmp/imud_no_such_file_xyz.conf", &cfg);
-    EXPECT(strcmp(cfg.pos_wmm_file, "/etc/imud/WMM.COF") == 0 ||
-           strcmp(cfg.pos_wmm_file, "/usr/share/imud/WMM.COF") == 0,
-           "auto wmm_file resolves to /etc override or /usr/share data");
+    EXPECT(strcmp(cfg.pos_wmm_file, IMUD_WMM_ETC) == 0 ||
+           strcmp(cfg.pos_wmm_file, IMUD_WMM_DATA) == 0,
+           "auto wmm_file resolves to the $(ETCDIR) override or $(DATADIR) data");
+    if (access(IMUD_WMM_ETC, R_OK) != 0)
+        EXPECT_STR(cfg.pos_wmm_file, IMUD_WMM_DATA,
+                   "with no override it is the configured data dir, not /usr/share");
     end_test(fb);
 }
 
@@ -1079,7 +1086,7 @@ static void test_stream_section(void)
     config_defaults(&cfg);
     EXPECT(cfg.stream_enabled,                         "stream enabled by default (1.6: the one stock output)");
     EXPECT(cfg.stream_rate_hz == 100,                  "stream rate_hz default 100");
-    EXPECT_STR(cfg.stream_socket, "/run/imud/imud-stream.sock",
+    EXPECT_STR(cfg.stream_socket, IMUD_STREAM_SOCK,
                "stream socket default path");
     EXPECT(cfg.stream_tcp_enabled == false,            "stream_tcp_enabled default off");
     EXPECT_STR(cfg.stream_tcp_bind_addr, "0.0.0.0",    "stream_tcp_bind_addr default");
@@ -1159,7 +1166,7 @@ static void test_capture_section(void)
     imud_config_t cfg;
     config_defaults(&cfg);
     EXPECT(!cfg.capture_enabled,                       "capture disabled by default");
-    EXPECT_STR(cfg.capture_dir, "/var/lib/imud",       "capture dir default");
+    EXPECT_STR(cfg.capture_dir, IMUD_STATEDIR,         "capture dir default");
     EXPECT(cfg.capture_max_mb == 256,                  "capture max_mb default 256");
     EXPECT(cfg.capture_max_files == 8,                 "capture max_files default 8");
     EXPECT(cfg.capture_flush_s == 5,                   "capture flush_s default 5");

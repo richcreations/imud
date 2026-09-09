@@ -727,6 +727,211 @@ static void test_install_paths(void)
     EXPECT(cfg_is("DOCDIR", "/opt/doc"), "DOCDIR set");
     EXPECT(cfg_is("INFODIR", "/opt/info"), "INFODIR set");
     EXPECT(cfg_is("MANDIR", "/opt/man"), "MANDIR set");
+
+    /* DATADIR is where install-wmm-data writes and where the daemon's WMM
+     * auto-resolver looks, so it has to follow the prefix — it used to be a
+     * literal /usr/share on both sides, which a default source install at
+     * PREFIX=/usr/local never reached. */
+    fixture_reset();
+    EXPECT(run("--prefix=/opt/imud") == 0, "--prefix configures");
+    EXPECT(cfg_is("DATADIR", "/opt/imud/share"), "DATADIR follows the prefix");
+    EXPECT(run("--datadir=/opt/shared") == 0, "--datadir configures");
+    EXPECT(cfg_is("DATADIR", "/opt/shared"), "and beats the derived value");
+
+    /* RUNDIR and STATEDIR are the Makefile's to derive from the init system,
+     * so config.mk names them ONLY when asked: an assignment here would beat
+     * the ?= there for every build that never passed the option. */
+    fixture_reset();
+    EXPECT(run("") == 0, "a default run configures");
+    EXPECT(cfg("RUNDIR") == NULL, "RUNDIR unset unless named");
+    EXPECT(cfg("STATEDIR") == NULL, "STATEDIR unset unless named");
+    EXPECT(run("--rundir=/opt/imud/run --statedir=/opt/imud/var") == 0,
+           "both configure");
+    EXPECT(cfg_is("RUNDIR", "/opt/imud/run"), "RUNDIR set");
+    EXPECT(cfg_is("STATEDIR", "/opt/imud/var"), "STATEDIR set");
+}
+
+/*
+ * The five directories reach the BINARY, not just the install rules.
+ *
+ * Every default path the tree names used to be a literal, so a build under a
+ * prefix that is not /usr looked for its config, calibration, sockets and WMM
+ * data where a Debian package would have put them — issue #78, and #77 for
+ * the WMM half.  include/paths.h derives all of them from the -D block the
+ * Makefile writes.
+ *
+ * Compiled, not preprocessed: adjacent string literals are joined after cpp
+ * has run, so `IMUD_ETCDIR "/imud.conf"` is still two tokens in -E output.
+ * The object's own strings are the constants the daemon would actually use.
+ */
+static void test_prefix_reaches_the_binary(void)
+{
+    printf("test_prefix_reaches_the_binary\n");
+    fixture_reset();
+    setenv("PATH", g_real_path, 1);
+
+    char root[PATH_MAX], cmd[PATH_MAX * 3 + 1024];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+
+    static const char *SRCS[] = { "src/cli.c", "src/config.c", "src/main.c",
+                                  "src/signalk_main.c", "lib/libimud.c" };
+    for (size_t i = 0; i < sizeof SRCS / sizeof SRCS[0]; i++) {
+        const char *base = strrchr(SRCS[i], '/') + 1;
+        snprintf(cmd, sizeof cmd,
+                 "cd '%s' && cc -c -std=c11 -pthread -D_GNU_SOURCE "
+                 "-Iinclude -Ilib "
+                 "-DIMUD_PREFIX='\"/opt/imud\"' -DIMUD_ETCDIR='\"/opt/imud/etc\"' "
+                 "-DIMUD_DATADIR='\"/opt/imud/share\"' "
+                 "-DIMUD_RUNDIR='\"/opt/imud/run\"' "
+                 "-DIMUD_STATEDIR='\"/opt/imud/var\"' "
+                 "-o '%s/%.*so' %s 2>/dev/null",
+                 root, g_work, (int)(strlen(base) - 1), base, SRCS[i]);
+        EXPECT(system(cmd) == 0, "the prefixed object compiles");
+    }
+
+    /* Present in <obj>'s constants. */
+    #define OBJ_HAS(obj, pat)                                                 \
+        (snprintf(cmd, sizeof cmd,                                            \
+                  "strings '%s/%s.o' | grep -qF -- '%s'", g_work, (obj), (pat)), \
+         system(cmd) == 0)
+    /* A stock path that is NOT part of a /opt/imud one — the substring trap:
+     * "/opt/imud/etc/imud.conf" contains "/etc/imud" outright. */
+    #define OBJ_HAS_STOCK(obj, pat)                                           \
+        (snprintf(cmd, sizeof cmd,                                            \
+                  "strings '%s/%s.o' | grep -F -- '%s' | grep -qvF /opt/imud", \
+                  g_work, (obj), (pat)),                                      \
+         system(cmd) == 0)
+
+    EXPECT(OBJ_HAS("cli", "/opt/imud/etc/imud.conf"),
+           "cli.c: the four tools' default config follows ETCDIR");
+    EXPECT(!OBJ_HAS_STOCK("cli", "/etc/imud/imud.conf"),
+           "and no /etc/imud literal survives, in a default or a usage line");
+    EXPECT(OBJ_HAS("cli", "/opt/imud/run/imud.sock"),
+           "imud-status's default socket follows RUNDIR — it and the daemon "
+           "were both literals, so a launchd install's /var/run reached neither");
+
+    EXPECT(OBJ_HAS("config", "/opt/imud/etc/cal.json"),
+           "config.c: cal.json follows ETCDIR");
+    EXPECT(OBJ_HAS("config", "/opt/imud/share/imud/WMM.COF"),
+           "WMM package data follows DATADIR");
+    EXPECT(!OBJ_HAS_STOCK("config", "/usr/share/imud/WMM.COF"),
+           "and the /usr/share literal is gone — that is issue #77");
+    EXPECT(OBJ_HAS("config", "/opt/imud/run/imud-stream.sock"),
+           "the stream socket follows RUNDIR");
+    EXPECT(OBJ_HAS("config", "/opt/imud/var"),
+           "and the capture directory follows STATEDIR");
+
+    EXPECT(OBJ_HAS("main", "/opt/imud/run/imud.pid"),
+           "main.c: the PID file follows RUNDIR");
+    EXPECT(OBJ_HAS("main", "/opt/imud/run/imud.sock"),
+           "and so does the status socket the daemon binds");
+
+    EXPECT(OBJ_HAS("signalk_main", "/opt/imud/etc/imud-signalk.conf"),
+           "each bridge's own config follows ETCDIR");
+    EXPECT(OBJ_HAS("libimud", "/opt/imud/run/imud-stream.sock"),
+           "libimud's default socket follows it too");
+
+    /* Vendored out of the tree there is no -D and no include/paths.h, so the
+     * fallback has to still be the Linux path. */
+    snprintf(cmd, sizeof cmd,
+             "cd '%s' && cc -c -std=c11 -D_GNU_SOURCE -Iinclude -Ilib "
+             "-o '%s/vendored.o' lib/libimud.c 2>/dev/null", root, g_work);
+    EXPECT(system(cmd) == 0, "libimud compiles with no -D at all");
+    EXPECT(OBJ_HAS("vendored", "/run/imud/imud-stream.sock"),
+           "and falls back to the Linux default, as a vendored copy must");
+
+    #undef OBJ_HAS
+    #undef OBJ_HAS_STOCK
+    setenv("PATH", g_stub, 1);
+}
+
+/*
+ * --with-service=none: no unit, no state directory.  Homebrew defines the
+ * service in the formula and refuses writes outside its prefix, so an install
+ * that insists on /Library/LaunchDaemons and /var/db/imud cannot be packaged.
+ */
+static void test_service_none(void)
+{
+    printf("test_service_none\n");
+
+    fixture_reset();
+    EXPECT(run("--with-service=none") == 0, "--with-service=none configures");
+    EXPECT(cfg_is("SVC_KIND", "none"), "and records it");
+    EXPECT(strstr(out("stdout"), "none — no unit, no state directory") != NULL,
+           "with the summary saying what that costs");
+
+    /* Nothing else moves: a prefixed install still needs its own etc. */
+    fixture_reset();
+    EXPECT(run("--prefix=/opt/imud --etcdir=/opt/imud/etc --with-service=none "
+               "--rundir=/opt/imud/run --statedir=/opt/imud/var") == 0,
+           "the whole Homebrew-shaped invocation configures");
+    EXPECT(cfg_is("SVC_KIND", "none"), "SVC_KIND none");
+    EXPECT(cfg_is("PREFIX", "/opt/imud"), "PREFIX set");
+    EXPECT(cfg_is("ETCDIR", "/opt/imud/etc"), "ETCDIR set");
+    EXPECT(cfg_is("DATADIR", "/opt/imud/share"), "DATADIR derived");
+
+    /* ── the Makefile's half ─────────────────────────────────────────────── */
+    setenv("PATH", g_real_path, 1);
+
+    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+
+    snprintf(cmd, sizeof cmd,
+             "cd '%s' && make -n install SVC_KIND=none SVCDIR=/tmp/svc "
+             "DESTDIR=/tmp/imud-nonexistent > '%s/mk.txt' 2>&1",
+             root, g_work);
+    EXPECT(system(cmd) == 0, "make -n install parses under SVC_KIND=none");
+
+    /* grep rather than a fixed buffer: these are absence checks, and a read
+     * that truncated the recipe would pass every one of them for free. */
+    snprintf(path, sizeof path, "%s/mk.txt", g_work);
+    #define MK_HAS(pat)                                                       \
+        (snprintf(cmd, sizeof cmd, "grep -qF -- '%s' '%s'", (pat), path),     \
+         system(cmd) == 0)
+
+    /* On the DIRECTORY, not on a unit filename: with svc-dst empty a partial
+     * regression still emits `install -m 644  /tmp/svc/`, which every check
+     * for "imud.service" passes for the wrong reason. */
+    EXPECT(!MK_HAS("/tmp/svc"), "SVCDIR is not written to at all");
+    EXPECT(!MK_HAS("install -d -m 0750 /tmp/imud-nonexistent/var"),
+           "and no state directory");
+    EXPECT(MK_HAS("No service unit installed"), "the recipe says so");
+    EXPECT(MK_HAS("/tmp/imud-nonexistent/usr/local/bin"),
+           "while the binaries still install");
+
+    /* The five bridges take the same arm — one of them stands for all five,
+     * since install-svc is a single definition. */
+    snprintf(cmd, sizeof cmd,
+             "cd '%s' && make -n install-signalk SVC_KIND=none SVCDIR=/tmp/svc "
+             "DESTDIR=/tmp/imud-nonexistent > '%s/mk.txt' 2>&1",
+             root, g_work);
+    EXPECT(system(cmd) == 0, "make -n install-signalk parses too");
+    EXPECT(!MK_HAS("/tmp/svc"), "and installs no unit either");
+
+    /* install-wmm-data is the other half of #77: it wrote $(PREFIX)/share
+     * while the daemon looked in /usr/share.  DATADIR is passed rather than
+     * derived from PREFIX, for the same reason SVCDIR is above — configure
+     * writes it into config.mk as a plain assignment, which the repo may or
+     * may not have, and that beats the Makefile's ?= for a later command-line
+     * PREFIX.  That DATADIR itself follows the prefix is test_install_paths'. */
+    snprintf(cmd, sizeof cmd,
+             "cd '%s' && make -n install-wmm-data DATADIR=/opt/imud/share "
+             "DESTDIR=/tmp/imud-nonexistent > '%s/mk.txt' 2>&1",
+             root, g_work);
+    EXPECT(system(cmd) == 0, "make -n install-wmm-data parses");
+    /* The whole install command, not the path: the recipe echoes the
+     * destination as well, and matching that passes while the copy itself
+     * still goes to $(PREFIX)/share. */
+    EXPECT(MK_HAS("install -m 644 data/WMM.COF "
+                  "/tmp/imud-nonexistent/opt/imud/share/imud/WMM.COF"),
+           "WMM.COF lands in DATADIR, where the resolver now looks");
+
+    #undef MK_HAS
+    setenv("PATH", g_stub, 1);
 }
 
 /*
@@ -911,7 +1116,9 @@ int main(void)
     test_optional_never_fatal();
     test_host_runtime();
     test_install_paths();
+    test_prefix_reaches_the_binary();
     test_service_unit_follows_the_host();
+    test_service_none();
     test_config_mk_is_valid_make();
 
     printf("\n%d passed, %d failed\n", g_checks - g_fail, g_fail);

@@ -25,6 +25,7 @@
 #endif
 #include "config.h"
 #include "log.h"
+#include "paths.h"
 
 /* ── String helpers ─────────────────────────────────────────────────────── */
 
@@ -212,13 +213,13 @@ void config_defaults(imud_config_t *cfg)
     cfg->sim_loop    = false;
     cfg->sim_speed   = 1.0f;
 
-    /* [runtime] — empty selects main()'s compiled-in /run/imud paths */
+    /* [runtime] — empty selects main()'s compiled-in $(RUNDIR) paths */
     cfg->pid_file[0]      = '\0';
     cfg->status_socket[0] = '\0';
 
     /* [capture] */
     cfg->capture_enabled   = false;
-    snprintf(cfg->capture_dir, sizeof(cfg->capture_dir), "/var/lib/imud");
+    snprintf(cfg->capture_dir, sizeof(cfg->capture_dir), "%s", IMUD_STATEDIR);
     cfg->capture_max_mb    = 256;
     cfg->capture_max_files = 8;
     cfg->capture_flush_s   = 5;
@@ -275,7 +276,7 @@ void config_defaults(imud_config_t *cfg)
     cfg->engine_accel_skip_thresh  = 0.20;
 
     /* [calibration] */
-    snprintf(cfg->cal_file, sizeof(cfg->cal_file), "/etc/imud/cal.json");
+    snprintf(cfg->cal_file, sizeof(cfg->cal_file), "%s", IMUD_CAL_FILE);
     cfg->startup_settle_sec = 5.0;
     cfg->gyro_bias_sec = 2.0;
     /* 5 s. One second is a fifth of a
@@ -306,7 +307,7 @@ void config_defaults(imud_config_t *cfg)
      * one output a stock daemon provides (bridges and libimud read it). */
     cfg->stream_enabled = true;
     snprintf(cfg->stream_socket, sizeof(cfg->stream_socket),
-             "/run/imud/imud-stream.sock");
+             "%s", IMUD_STREAM_SOCK);
     cfg->stream_rate_hz = 100;
     cfg->stream_tcp_enabled = false;
     snprintf(cfg->stream_tcp_bind_addr, sizeof(cfg->stream_tcp_bind_addr), "0.0.0.0");
@@ -1317,21 +1318,24 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 /*
  * WMM coefficient file resolution. An explicit [position] wmm_file is used
  * as-is; the empty default auto-resolves so the packaging split works:
- *   1. /etc/imud/WMM.COF        — operator override (newer model drop-in;
+ *   1. $(ETCDIR)/WMM.COF        — operator override (newer model drop-in;
  *                                 also where ≤1.4 installs put the file)
- *   2. /usr/share/imud/WMM.COF  — package data (imud-wmm-data / the
+ *   2. $(DATADIR)/imud/WMM.COF  — package data (imud-wmm-data / the
  *                                 install-wmm-data target)
+ * Both follow the prefix this was built under, so a source install at the
+ * default PREFIX=/usr/local looks where install-wmm-data actually wrote —
+ * it looked only in /usr/share, where nothing but the .deb puts it.
  * Re-run on every load, so a dropped-in override is picked up by SIGHUP.
  */
 static void resolve_wmm_file(imud_config_t *cfg)
 {
     if (cfg->pos_wmm_file[0] != '\0') return;
-    if (access("/etc/imud/WMM.COF", R_OK) == 0)
+    if (access(IMUD_WMM_ETC, R_OK) == 0)
         snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file),
-                 "/etc/imud/WMM.COF");
+                 "%s", IMUD_WMM_ETC);
     else
         snprintf(cfg->pos_wmm_file, sizeof(cfg->pos_wmm_file),
-                 "/usr/share/imud/WMM.COF");
+                 "%s", IMUD_WMM_DATA);
 }
 
 int config_load(const char *path, imud_config_t *cfg)

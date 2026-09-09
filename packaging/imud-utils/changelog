@@ -8,6 +8,13 @@ imud-utils (1.10.1) unstable; urgency=medium
     [mag] and both readers poll. It needs no library and no privilege on
     either host, and takes the dongle from the kernel FTDI serial driver
     while imud holds it. Leave it out with ./configure --without-ft232h.
+  * imud installs under a prefix that is not /usr. The install directories
+    are compiled in, so the binaries find their own config, calibration,
+    sockets and WMM data rather than a Debian package's.  ./configure
+    gains --datadir, --rundir, --statedir, and --with-service=none for a
+    package manager that defines the service itself: it installs no unit
+    and creates no state directory. A build at PREFIX=/usr is unchanged,
+    so the .deb is byte-identical.
   * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
     configuration through a run. A driver's probe() now leaves an already-
     configured part alone, which is what the tool's repeated probes had

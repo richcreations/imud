@@ -43,6 +43,7 @@
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "mavlink_encode.h"
 #include "bridge.h"             /* shared bridge scaffolding */
+#include "paths.h"              /* IMUD_BRIDGE_CONF */
 #include "sdnotify.h"
 #include "config.h"
 #include "netserv.h"
@@ -52,7 +53,7 @@ static const bridge_info_t BI = {
     .prog         = "imud-mavlink",
     .tag          = "mavlink",
     .section      = "imud-mavlink",
-    .default_conf = "/etc/imud/imud-mavlink.conf",
+    .default_conf = IMUD_BRIDGE_CONF("mavlink"),
     .usage_desc   =
         "  MAVLink bridge: reads imud's stream socket and emits MAVLink\n"
         "  HEARTBEAT/ATTITUDE/ATTITUDE_QUATERNION over UDP and/or serial.\n"

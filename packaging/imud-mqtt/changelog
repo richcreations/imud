@@ -8,6 +8,13 @@ imud-mqtt (1.10.1) unstable; urgency=medium
     user, its device policy or its watchdog. A Mac has no /run either, so
     the installed config's socket paths move to /var/run. Override the
     choice with ./configure --with-service=systemd|launchd.
+  * imud installs under a prefix that is not /usr. The install directories
+    are compiled in, so the binaries find their own config, calibration,
+    sockets and WMM data rather than a Debian package's.  ./configure
+    gains --datadir, --rundir, --statedir, and --with-service=none for a
+    package manager that defines the service itself: it installs no unit
+    and creates no state directory. A build at PREFIX=/usr is unchanged,
+    so the .deb is byte-identical.
 
  -- Richard Simpson <richcreations@gmail.com>  Wed, 09 Sep 2026 12:52:19 -0700
 

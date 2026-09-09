@@ -1197,6 +1197,10 @@ LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc
 INFODIR ?= $(PREFIX)/share/info
+# Architecture-independent data: WMM.COF and imud_client.py, both under
+# $(DATADIR)/imud.  The daemon's WMM auto-resolver looks here, so a prefix
+# that moves this has to move that with it — see the -D block below.
+DATADIR ?= $(PREFIX)/share
 # udev reads rules from /etc/udev/rules.d, /run/udev/rules.d and
 # /usr/lib/udev/rules.d only — never from $(PREFIX) — so a source install must
 # land in /etc or the rule is inert.  Packagers override this to
@@ -1207,8 +1211,11 @@ UDEVDIR ?= /etc/udev/rules.d
 #
 # systemd installs etc/<name>.service under its own name; launchd installs
 # etc/<name>.plist under the reverse-DNS label its flat system namespace
-# wants.  ./configure writes SVC_KIND from uname into config.mk; the probe
-# here is what keeps a plain `make install` right with no configure step.
+# wants.  `none` installs neither and creates no state directory, for a
+# package manager that defines the service itself and refuses writes outside
+# its prefix (Homebrew).  ./configure writes SVC_KIND from uname into
+# config.mk; the probe here is what keeps a plain `make install` right with
+# no configure step.
 # $(origin) rather than ?= for the reason given at UNAME_S above.
 ifeq ($(origin SVC_KIND),undefined)
 ifeq ($(UNAME_S),Darwin)
@@ -1239,12 +1246,55 @@ svc-dst  = $(LAUNCHD_PREFIX).$(1).plist
 SVCDIR   ?= /Library/LaunchDaemons
 RUNDIR   ?= /var/run
 STATEDIR ?= /var/db/imud
+else ifeq ($(SVC_KIND),none)
+# No unit to build or name, so both calls expand to nothing and every recipe
+# that would place one drops out.  No init system chose the runtime paths
+# either, so they follow the host — and a prefixed install overrides them.
+svc-src  =
+svc-dst  =
+SVCDIR   ?=
+ifeq ($(UNAME_S),Darwin)
+RUNDIR   ?= /var/run
+STATEDIR ?= /var/db/imud
+else
+RUNDIR   ?= /run/imud
+STATEDIR ?= /var/lib/imud
+endif
 else
 svc-src  = etc/$(1).service
 svc-dst  = $(1).service
 SVCDIR   ?= /etc/systemd/system
 RUNDIR   ?= /run/imud
 STATEDIR ?= /var/lib/imud
+endif
+
+# ── The same directories, compiled in ────────────────────────────────────────
+#
+# include/paths.h derives every default path from these five, so a build under
+# a prefix that is not /usr finds its own config, calibration, sockets and WMM
+# data instead of the ones a Debian package would have installed.  Each macro
+# is guarded there, and the guarded fallbacks are these values — so PREFIX=/usr
+# (what debian/rules passes) produces byte-identical objects.
+#
+# This is below the definitions above on purpose: `+=` expands its text
+# immediately when CPPFLAGS arrives simply-expanded from a packaging build.
+# Note that make does not treat a flag change as a reason to recompile —
+# `make clean` after editing this block.
+override CPPFLAGS += -DIMUD_PREFIX='"$(PREFIX)"' -DIMUD_ETCDIR='"$(ETCDIR)"' \
+                     -DIMUD_DATADIR='"$(DATADIR)"' -DIMUD_RUNDIR='"$(RUNDIR)"' \
+                     -DIMUD_STATEDIR='"$(STATEDIR)"'
+
+# $(SVCDIR_STAGE) is the directory the install recipes create for units, and
+# $(call install-svc,<name>) the command that places one.  Both are empty work
+# under `none`, so a single arm here covers install and all five bridges
+# rather than an ifeq around each of the twelve lines.
+ifeq ($(SVC_KIND),none)
+SVCDIR_STAGE =
+install-svc  = echo "No service unit installed ($(1): --with-service=none)."
+else
+SVCDIR_STAGE = $(DESTDIR)$(SVCDIR)
+install-svc  = install -m 644 $(call svc-src,$(1)) \
+                       $(DESTDIR)$(SVCDIR)/$(call svc-dst,$(1))
 endif
 
 # The runtime and state directories written into every config that ships.
@@ -1328,7 +1378,7 @@ etc/%.plist: etc/%.plist.in .FORCE
 .FORCE:
 
 install: imud imud-cal imud-status $(call svc-src,imud) $(SHLIB) libimud.pc
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud imud-cal imud-status $(DESTDIR)$(PREFIX)/bin/
 	# ── System user, or the state directory (skipped when DESTDIR is set) ──
 	#
@@ -1351,7 +1401,7 @@ ifeq ($(SVC_KIND),systemd)
 	        usermod -aG "$$grp" imud 2>/dev/null || true; \
 	    done; \
 	fi
-else
+else ifeq ($(SVC_KIND),launchd)
 	# launchd has no RuntimeDirectory=/StateDirectory=.  The runtime paths sit
 	# directly in $(RUNDIR), which the system provides; the state directory has
 	# to survive a boot, so it is made here rather than at start.
@@ -1375,7 +1425,7 @@ endif
 	    echo "No config/cal.json found — run 'imud-cal' after install to calibrate."; \
 	fi
 	# ── Service unit ───────────────────────────────────────────────────────
-	install -m 644 $(call svc-src,imud) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud)
+	$(call install-svc,imud)
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
@@ -1418,9 +1468,9 @@ endif
 	# ── Client libraries ───────────────────────────────────────────────────
 	# imud_client.h is DEPRECATED and no longer installed (vendor from the
 	# source tree if you must); the C client is libimud below.
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/share/imud
-	install -m 644 lib/imud_client.py $(DESTDIR)$(PREFIX)/share/imud/imud_client.py
-	@echo "Installed client libs:  $(DESTDIR)$(PREFIX)/share/imud/imud_client.py"
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(DATADIR)/imud
+	install -m 644 lib/imud_client.py $(DESTDIR)$(DATADIR)/imud/imud_client.py
+	@echo "Installed client libs:  $(DESTDIR)$(DATADIR)/imud/imud_client.py"
 	# ── libimud shared library + public header + pkg-config ────────────────
 	install -d -m 0755 $(DESTDIR)$(LIBDIR)/pkgconfig
 	install -m 644 $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SHLIB)
@@ -1478,6 +1528,8 @@ endif
 	@echo "Next steps:"
 ifeq ($(SVC_KIND),launchd)
 	@echo "  sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud)"
+else ifeq ($(SVC_KIND),none)
+	@echo "  start imud yourself: --with-service=none installed no unit"
 else
 	@echo "  sudo systemctl enable --now imud"
 endif
@@ -1507,18 +1559,18 @@ install-utils: imud-mon imud-imutest
 # (tzdata pattern: imud-wmm-data updates independently of the daemon).
 # imud auto-resolves /etc/imud/WMM.COF (operator override) then this path.
 install-wmm-data:
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/share/imud
-	install -m 644 data/WMM.COF $(DESTDIR)$(PREFIX)/share/imud/WMM.COF
+	install -d -m 0755 $(DESTDIR)$(DATADIR)/imud
+	install -m 644 data/WMM.COF $(DESTDIR)$(DATADIR)/imud/WMM.COF
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-wmm-data
 	install -m 644 packaging/imud-wmm-data/copyright $(DESTDIR)$(DOCDIR)/imud-wmm-data/copyright
 	gzip -9nc packaging/imud-wmm-data/changelog > $(DESTDIR)$(DOCDIR)/imud-wmm-data/changelog.gz
-	@echo "Installed WMM2025 coefficients: $(DESTDIR)$(PREFIX)/share/imud/WMM.COF"
+	@echo "Installed WMM2025 coefficients: $(DESTDIR)$(DATADIR)/imud/WMM.COF"
 	@echo "  (drop a newer model at $(ETCDIR)/WMM.COF to override; imud prefers it)"
 
 install-signalk: imud-signalk $(call svc-src,imud-signalk)
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud-signalk $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 $(call svc-src,imud-signalk) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-signalk)
+	$(call install-svc,imud-signalk)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	$(call install-conf,config/imud-signalk.conf,$(DESTDIR)$(ETCDIR)/imud-signalk.conf,644)
 	$(call install-man,$(MAN_signalk))
@@ -1533,6 +1585,8 @@ install-signalk: imud-signalk $(call svc-src,imud-signalk)
 	fi
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-signalk.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-signalk)"
+else ifeq ($(SVC_KIND),none)
+	@echo "Installed imud-signalk.  No service unit: --with-service=none."
 else
 	@echo "Installed imud-signalk.  Enable with: sudo systemctl enable --now imud-signalk"
 endif
@@ -1542,9 +1596,9 @@ endif
 # Run after `make imud-mqtt` (needs libmosquitto-dev).  Installs the binary,
 # service, man page, and its own config file (non-clobbering).
 install-mqtt: imud-mqtt $(call svc-src,imud-mqtt)
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud-mqtt $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 $(call svc-src,imud-mqtt) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-mqtt)
+	$(call install-svc,imud-mqtt)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	# 0640, not 0644: this file can hold a plaintext broker password.
 	$(call install-conf,config/imud-mqtt.conf,$(DESTDIR)$(ETCDIR)/imud-mqtt.conf,640)
@@ -1577,6 +1631,8 @@ endif
 	fi
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mqtt.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mqtt)"
+else ifeq ($(SVC_KIND),none)
+	@echo "Installed imud-mqtt.  No service unit: --with-service=none."
 else
 	@echo "Installed imud-mqtt.  Enable with: sudo systemctl enable --now imud-mqtt"
 endif
@@ -1586,9 +1642,9 @@ endif
 # Run after `make imud-influxdb`.  Installs the binary, service, man page, and
 # its own config file (non-clobbering).
 install-influxdb: imud-influxdb $(call svc-src,imud-influxdb)
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud-influxdb $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 $(call svc-src,imud-influxdb) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-influxdb)
+	$(call install-svc,imud-influxdb)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	# 0640, not 0644: this file can hold a plaintext InfluxDB API token.
 	$(call install-conf,config/imud-influxdb.conf,$(DESTDIR)$(ETCDIR)/imud-influxdb.conf,640)
@@ -1620,6 +1676,8 @@ endif
 	fi
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-influxdb.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-influxdb)"
+else ifeq ($(SVC_KIND),none)
+	@echo "Installed imud-influxdb.  No service unit: --with-service=none."
 else
 	@echo "Installed imud-influxdb.  Enable with: sudo systemctl enable --now imud-influxdb"
 endif
@@ -1629,9 +1687,9 @@ endif
 # Run after `make imud-prometheus`.  Installs the binary, service, man pages,
 # and its own config file (non-clobbering).
 install-prometheus: imud-prometheus $(call svc-src,imud-prometheus)
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud-prometheus $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 $(call svc-src,imud-prometheus) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-prometheus)
+	$(call install-svc,imud-prometheus)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	$(call install-conf,config/imud-prometheus.conf,$(DESTDIR)$(ETCDIR)/imud-prometheus.conf,644)
 	$(call install-man,$(MAN_prometheus))
@@ -1646,6 +1704,8 @@ install-prometheus: imud-prometheus $(call svc-src,imud-prometheus)
 	fi
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-prometheus.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-prometheus)"
+else ifeq ($(SVC_KIND),none)
+	@echo "Installed imud-prometheus.  No service unit: --with-service=none."
 else
 	@echo "Installed imud-prometheus.  Enable with: sudo systemctl enable --now imud-prometheus"
 endif
@@ -1655,9 +1715,9 @@ endif
 # Run after `make imud-mavlink`.  Installs the binary, service, man page, and its
 # own config file (non-clobbering).
 install-mavlink: imud-mavlink $(call svc-src,imud-mavlink)
-	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
+	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(SVCDIR_STAGE)
 	install -m 755 imud-mavlink $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 $(call svc-src,imud-mavlink) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-mavlink)
+	$(call install-svc,imud-mavlink)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	$(call install-conf,config/imud-mavlink.conf,$(DESTDIR)$(ETCDIR)/imud-mavlink.conf,644)
 ifeq ($(SVC_KIND),systemd)
@@ -1675,6 +1735,8 @@ endif
 	fi
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mavlink.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mavlink)"
+else ifeq ($(SVC_KIND),none)
+	@echo "Installed imud-mavlink.  No service unit: --with-service=none."
 else
 	@echo "Installed imud-mavlink.  Enable with: sudo systemctl enable --now imud-mavlink"
 endif
@@ -1703,8 +1765,8 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/include/imud.h \
 	      $(addprefix $(DESTDIR)$(LIBDIR)/,$(SHLIB_FILES)) \
 	      $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc \
-	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
-	      $(DESTDIR)$(PREFIX)/share/imud/WMM.COF \
+	      $(DESTDIR)$(DATADIR)/imud/imud_client.py \
+	      $(DESTDIR)$(DATADIR)/imud/WMM.COF \
 	      $(DESTDIR)$(UDEVDIR)/60-imud.rules \
 	      $(addprefix $(DESTDIR)$(SVCDIR)/,\
 	                  $(foreach n,$(SVC_NAMES),$(call svc-dst,$(n))))

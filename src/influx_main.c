@@ -43,6 +43,7 @@
 #include "influx_line.h"        /* the encoder; pulls in ../lib/imud.h */
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "bridge.h"             /* shared bridge scaffolding */
+#include "paths.h"              /* IMUD_BRIDGE_CONF */
 #include "sdnotify.h"
 #include "config.h"
 #include "log.h"
@@ -51,7 +52,7 @@ static const bridge_info_t BI = {
     .prog         = "imud-influxdb",
     .tag          = "influx",
     .section      = "imud-influxdb",
-    .default_conf = "/etc/imud/imud-influxdb.conf",
+    .default_conf = IMUD_BRIDGE_CONF("influxdb"),
     .usage_desc   =
         "  InfluxDB bridge: reads imud's stream socket and writes InfluxDB\n"
         "  line-protocol points over UDP (default) or HTTP.\n"

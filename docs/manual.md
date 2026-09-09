@@ -223,9 +223,11 @@ WMM coefficient data is installed separately — it is versioned by model epoch
 sudo make install-wmm-data
 ```
 
-This installs `WMM.COF` → `/usr/share/imud/WMM.COF`. To use a newer model
-before the package updates, drop it at `/etc/imud/WMM.COF` — imud prefers
-that path when it exists.
+This installs `WMM.COF` under the prefix — `/usr/share/imud/WMM.COF` for the
+`.deb`, `/usr/local/share/imud/WMM.COF` for a default source build — and the
+daemon looks where its own build installs. To use a newer model before the
+package updates, drop it at `/etc/imud/WMM.COF`; imud prefers that path when
+it exists.
 
 `make install` also creates the dedicated system user `imud` that the service
 runs as. Its **primary group is `imud`**, which owns `/run/imud/` and both
@@ -326,8 +328,9 @@ than chmod'd down after `bind()`, so they are never momentarily wider — howeve
 `make install` on macOS installs
 `/Library/LaunchDaemons/io.github.richcreations.imud.plist` instead of a
 systemd unit — `./configure` picks which from `uname`, and
-`--with-service=systemd|launchd` overrides it. Each bridge installs its own,
-labelled the same way.
+`--with-service=systemd|launchd|none` overrides it. Each bridge installs its
+own, labelled the same way. `none` installs no unit and creates no state
+directory, for a package manager that defines the service itself.
 
 ```sh
 sudo launchctl bootstrap system \

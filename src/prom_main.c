@@ -49,6 +49,7 @@
 #include "prom_http.h"
 #include "../lib/imud.h"        /* libimud: stream connect/read/validate */
 #include "bridge.h"             /* shared bridge scaffolding */
+#include "paths.h"              /* IMUD_BRIDGE_CONF */
 #include "sdnotify.h"
 #include "config.h"
 #include "log.h"
@@ -59,7 +60,7 @@ static const bridge_info_t BI = {
     .prog         = "imud-prometheus",
     .tag          = "prom",
     .section      = "imud-prometheus",
-    .default_conf = "/etc/imud/imud-prometheus.conf",
+    .default_conf = IMUD_BRIDGE_CONF("prometheus"),
     .usage_desc   =
         "  Prometheus exporter: reads imud's stream socket and serves the\n"
         "  latest fused state as text-format gauges on GET /metrics.\n"

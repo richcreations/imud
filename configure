@@ -46,6 +46,12 @@ libdir=
 mandir=
 docdir=
 infodir=
+datadir=
+# The runtime and state directories.  Empty means "let the Makefile derive
+# it from the init system", which is what every packaged build wants; a
+# prefixed install (Homebrew, pkgsrc) names both and they are written out.
+rundir=
+statedir=
 want_gpiod=auto
 want_linux_bus=auto
 want_ft232h=auto
@@ -91,13 +97,17 @@ Options take their value with an =, as shown.
   --libdir=DIR              libimud + pkg-config metadata [PREFIX/lib]
   --mandir=DIR              man pages [PREFIX/share/man]
   --docdir=DIR              package documentation [PREFIX/share/doc]
+  --datadir=DIR             WMM.COF and imud_client.py [PREFIX/share]
   --infodir=DIR             imud.info [PREFIX/share/info]
   --etcdir=DIR              configuration [$etcdir]
   --svcdir=DIR              service units [$svcdir]
   --udevdir=DIR             udev rules [$udevdir]
+  --rundir=DIR              PID file and sockets [from the init system]
+  --statedir=DIR            captures [from the init system]
 
-  --with-service=NAME       init system to install a unit for: systemd or
-                            launchd [$svc_kind]
+  --with-service=NAME       init system to install a unit for: systemd,
+                            launchd, or none to install no unit and create
+                            no state directory [$svc_kind]
   --with-gpiod              require libgpiod; fail if it is absent
   --without-gpiod           build the null GPIO backend even where it is present
   --with-linux-bus          require i2c-dev and spidev; fail if absent
@@ -124,10 +134,13 @@ for arg do
         --libdir=*)       libdir=${arg#*=} ;;
         --mandir=*)       mandir=${arg#*=} ;;
         --docdir=*)       docdir=${arg#*=} ;;
+        --datadir=*)      datadir=${arg#*=} ;;
         --infodir=*)      infodir=${arg#*=} ;;
         --etcdir=*)       etcdir=${arg#*=} ;;
         --svcdir=*)       svcdir=${arg#*=}; svcdir_given=yes ;;
         --udevdir=*)      udevdir=${arg#*=} ;;
+        --rundir=*)       rundir=${arg#*=} ;;
+        --statedir=*)     statedir=${arg#*=} ;;
         --with-service=*) want_service=${arg#*=} ;;
         --with-gpiod)     want_gpiod=yes ;;
         --without-gpiod)  want_gpiod=no ;;
@@ -153,10 +166,15 @@ case $want_service in
                 svcdir=/etc/systemd/system
             fi
         fi ;;
-    *) die "--with-service: expected systemd or launchd, not \"$want_service\"" ;;
+    none)
+        # No unit to place, so the directory is unused rather than empty:
+        # leaving it set keeps config.mk uniform and costs nothing.
+        svc_kind=none ;;
+    *) die "--with-service: expected systemd, launchd or none, not \"$want_service\"" ;;
 esac
 
 : "${libdir:=$prefix/lib}"
+: "${datadir:=$prefix/share}"
 : "${mandir:=$prefix/share/man}"
 : "${docdir:=$prefix/share/doc}"
 : "${infodir:=$prefix/share/info}"
@@ -503,7 +521,9 @@ ETCDIR = $etcdir
 # The init system install/uninstall write a unit for.  systemd installs
 # etc/<name>.service under its own name; launchd installs etc/<name>.plist
 # under the reverse-DNS label its flat system namespace wants, and skips the
-# udev rule and the imud user, neither of which macOS has.
+# udev rule and the imud user, neither of which macOS has.  `none` installs
+# no unit and creates no state directory, for a package manager that defines
+# the service itself.
 SVC_KIND = $svc_kind
 SVCDIR = $svcdir
 UDEVDIR = $udevdir
@@ -511,6 +531,7 @@ LIBDIR = $libdir
 MANDIR = $mandir
 DOCDIR = $docdir
 INFODIR = $infodir
+DATADIR = $datadir
 
 # The include/host_time.h backend: the absolute-deadline sleep the output
 # threads pace on, the monotonic condvar src/ring.c waits on, and the TAI
@@ -538,6 +559,12 @@ HAVE_CLANG = $have_clang
 HAVE_CPPCHECK = $have_cppcheck
 HAVE_LCOV = $have_lcov
 EOF
+
+# Only when named.  Unset, both are the Makefile's to derive from SVC_KIND —
+# and an assignment here would beat the ?= there even for a `make SVC_KIND=`
+# that means to pick the other init system's paths.
+if [ -n "$rundir" ];   then echo "RUNDIR = $rundir"; fi
+if [ -n "$statedir" ]; then echo "STATEDIR = $statedir"; fi
 } > "$out" || die "cannot write $out"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -595,7 +622,12 @@ report "$have_lcov"      lcov           "make coverage"
 echo
 printf '    %-18s %s\n' "prefix" "$prefix"
 printf '    %-18s %s\n' "config" "$etcdir"
-printf '    %-18s %s\n' "service units" "$svc_kind — $svcdir"
+printf '    %-18s %s\n' "data" "$datadir/imud"
+if [ "$svc_kind" = none ]; then
+    printf '    %-18s %s\n' "service units" "none — no unit, no state directory"
+else
+    printf '    %-18s %s\n' "service units" "$svc_kind — $svcdir"
+fi
 # udev is Linux's; a launchd host has no equivalent and installs no rule.
 if [ "$svc_kind" = systemd ]; then
     printf '    %-18s %s\n' "udev rules" "$udevdir"

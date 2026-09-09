@@ -432,6 +432,15 @@ CASES = [
          "CK_INT (c.imu_odr_mhz,      999000,"),
      "test_config_defaults.gen.c is stale"),
 
+    # A new string default under an install directory.  Those are compiled
+    # from include/paths.h and move with the prefix, so asserting the literal
+    # pins /run and /var/lib on a launchd build whose defaults are /var/run
+    # and /var/db — a failure only a Mac ever sees.
+    ("gen-config-docs", "docs/config-keys.toml",
+     sub(r'^  md_default = \'`"0\.0\.0\.0"`\'',
+         '  md_default = \'`"/run/imud/imud-new.sock"`\''),
+     "add it to COMPILED_PATHS"),
+
     # ── The Info manual ──────────────────────────────────────────────────────
     # docs/imud.texi is committed and NOT diff-gated (two pandocs, two
     # outputs), so these are the whole guarantee that it still is the manual.

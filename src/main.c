@@ -59,6 +59,7 @@
 #include "imu_math.h"    /* ts_add_ns, ts_ns */
 #include "log.h"
 #include "output.h"
+#include "paths.h"
 #include "position.h"
 #include "sdnotify.h"
 #include "status_fmt.h"
@@ -80,10 +81,10 @@
  * Nothing in the shipping build defines them: the .deb, the unit file and
  * RuntimeDirectory=imud all use the values below. */
 #ifndef PID_FILE
-# define PID_FILE     "/run/imud/imud.pid"   /* inside RuntimeDirectory=imud */
+# define PID_FILE     IMUD_PID_FILE    /* inside RuntimeDirectory=imud */
 #endif
 #ifndef STATUS_SOCK
-# define STATUS_SOCK  "/run/imud/imud.sock"
+# define STATUS_SOCK  IMUD_STATUS_SOCK
 #endif
 /* The system config, named here rather than taken from args.config_path: cli.c
  * pre-fills that for all five tools, and imud is the one that also has a $HOME
@@ -92,7 +93,7 @@
  * which is the only route left to the fallback branch now that an explicit
  * --config skips it. */
 #ifndef SYS_CONF
-# define SYS_CONF     "/etc/imud/imud.conf"
+# define SYS_CONF     IMUD_SYS_CONF
 #endif
 #define STATS_BUF     512
 #define STATUS_BUF    4096   /* status text + recent-warnings section */

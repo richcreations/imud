@@ -2,6 +2,13 @@ libimud (1.10.1) unstable; urgency=medium
 
   * libimud is installed as a shared library on macOS, as libimud.0.dylib.
     Applications build against it with pkg-config exactly as on Linux.
+  * imud installs under a prefix that is not /usr. The install directories
+    are compiled in, so the binaries find their own config, calibration,
+    sockets and WMM data rather than a Debian package's.  ./configure
+    gains --datadir, --rundir, --statedir, and --with-service=none for a
+    package manager that defines the service itself: it installs no unit
+    and creates no state directory. A build at PREFIX=/usr is unchanged,
+    so the .deb is byte-identical.
 
  -- Richard Simpson <richcreations@gmail.com>  Wed, 09 Sep 2026 12:52:19 -0700
 

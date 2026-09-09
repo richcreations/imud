@@ -39,6 +39,7 @@
 #include "mqtt_publish.h"        /* the builders; pull in ../lib/imud.h */
 #include "../lib/imud.h"         /* libimud: stream connect/read/validate */
 #include "bridge.h"              /* shared bridge scaffolding */
+#include "paths.h"               /* IMUD_BRIDGE_CONF */
 #include "sdnotify.h"
 #include "config.h"
 #include "log.h"
@@ -51,7 +52,7 @@ static const bridge_info_t BI = {
     .prog         = "imud-mqtt",
     .tag          = "mqtt",
     .section      = "imud-mqtt",
-    .default_conf = "/etc/imud/imud-mqtt.conf",
+    .default_conf = IMUD_BRIDGE_CONF("mqtt"),
     .usage_desc   =
         "  MQTT bridge: reads imud's stream socket and publishes scalar\n"
         "  telemetry topics (+ Home Assistant discovery) to an MQTT broker.\n"

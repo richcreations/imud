@@ -39,6 +39,7 @@
 #include "sk_delta.h"          /* the encoder; pulls in ../lib/imud.h */
 #include "../lib/imud.h"       /* libimud: stream connect/read/validate */
 #include "bridge.h"            /* shared bridge scaffolding */
+#include "paths.h"             /* IMUD_BRIDGE_CONF */
 #include "sdnotify.h"
 #include "config.h"
 #include "netserv.h"
@@ -48,7 +49,7 @@ static const bridge_info_t BI = {
     .prog         = "imud-signalk",
     .tag          = "signalk",
     .section      = "imud-signalk",
-    .default_conf = "/etc/imud/imud-signalk.conf",
+    .default_conf = IMUD_BRIDGE_CONF("signalk"),
     .usage_desc   =
         "  Signal K bridge: reads imud's stream socket and emits Signal K\n"
         "  delta JSON over UDP. Configured by [imud-signalk] in its own file.\n",

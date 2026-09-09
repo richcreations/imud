@@ -34,11 +34,11 @@ CK_STR(c.pid_file,      "", "[runtime] pid_file");
 CK_STR(c.status_socket, "", "[runtime] status_socket");
 
 /* [capture] */
-CK_BOOL(c.capture_enabled,   false,           "[capture] enabled");
-CK_STR (c.capture_dir,       "/var/lib/imud", "[capture] dir");
-CK_INT (c.capture_max_mb,    256,             "[capture] max_mb");
-CK_INT (c.capture_max_files, 8,               "[capture] max_files");
-CK_INT (c.capture_flush_s,   5,               "[capture] flush_s");
+CK_BOOL(c.capture_enabled,   false,         "[capture] enabled");
+CK_STR (c.capture_dir,       IMUD_STATEDIR, "[capture] dir");
+CK_INT (c.capture_max_mb,    256,           "[capture] max_mb");
+CK_INT (c.capture_max_files, 8,             "[capture] max_files");
+CK_INT (c.capture_flush_s,   5,             "[capture] flush_s");
 
 /* [imu] */
 CK_STR (c.imu_driver,       "ism330dhcx", "[imu] driver");
@@ -85,10 +85,10 @@ CK_DBL (c.engine_vibration_g2,      0.0,     "[fusion] engine_vibration_g2");
 CK_DBL (c.engine_accel_skip_thresh, 0.20,    "[fusion] engine_accel_skip_thresh");
 
 /* [calibration] */
-CK_STR(c.cal_file,           "/etc/imud/cal.json", "[calibration] file");
-CK_DBL(c.startup_settle_sec, 5.0,                  "[calibration] startup_settle_sec");
-CK_DBL(c.gyro_bias_sec,      2.0,                  "[calibration] gyro_bias_sec");
-CK_DBL(c.align_window_sec,   5.0,                  "[calibration] align_window_sec");
+CK_STR(c.cal_file,           IMUD_CAL_FILE, "[calibration] file");
+CK_DBL(c.startup_settle_sec, 5.0,           "[calibration] startup_settle_sec");
+CK_DBL(c.gyro_bias_sec,      2.0,           "[calibration] gyro_bias_sec");
+CK_DBL(c.align_window_sec,   5.0,           "[calibration] align_window_sec");
 
 /* [nmea] */
 CK_BOOL(c.nmea_enabled,       false,             "[nmea] enabled");
@@ -107,12 +107,12 @@ CK_INT (c.highrate_dest_port,   10111,         "[highrate] dest_port");
 CK_STR (c.highrate_coord_frame, "NED",         "[highrate] coord_frame");
 
 /* [stream] */
-CK_BOOL(c.stream_enabled,       true,                         "[stream] enabled");
-CK_STR (c.stream_socket,        "/run/imud/imud-stream.sock", "[stream] socket");
-CK_INT (c.stream_rate_hz,       100,                          "[stream] rate_hz");
-CK_BOOL(c.stream_tcp_enabled,   false,                        "[stream] tcp_enabled");
-CK_STR (c.stream_tcp_bind_addr, "0.0.0.0",                    "[stream] tcp_bind_addr");
-CK_INT (c.stream_tcp_port,      10112,                        "[stream] tcp_port");
+CK_BOOL(c.stream_enabled,       true,             "[stream] enabled");
+CK_STR (c.stream_socket,        IMUD_STREAM_SOCK, "[stream] socket");
+CK_INT (c.stream_rate_hz,       100,              "[stream] rate_hz");
+CK_BOOL(c.stream_tcp_enabled,   false,            "[stream] tcp_enabled");
+CK_STR (c.stream_tcp_bind_addr, "0.0.0.0",        "[stream] tcp_bind_addr");
+CK_INT (c.stream_tcp_port,      10112,            "[stream] tcp_port");
 
 /* [logging] */
 CK_STR(c.log_level,    "warn", "[logging] level");
@@ -134,42 +134,42 @@ CK_STR (c.pos_signalk_path,    "/signalk/v1/api/vessels/self/navigation/position
 CK_FLT (c.pos_fix_max_age_h,   24.0,                                               "[position] fix_max_age_h");
 
 /* [imud-signalk] */
-CK_BOOL(c.sk_enabled,       false,                        "[imud-signalk] enabled");
-CK_STR (c.stream_socket,    "/run/imud/imud-stream.sock", "[imud-signalk] socket");
-CK_BOOL(c.sk_udp_enabled,   false,                        "[imud-signalk] udp_enabled");
-CK_STR (c.sk_dest_addr,     "127.0.0.1",                  "[imud-signalk] dest_addr");
-CK_INT (c.sk_dest_port,     10113,                        "[imud-signalk] dest_port");
-CK_INT (c.sk_rate_hz,       10,                           "[imud-signalk] rate_hz");
-CK_STR (c.sk_source_label,  "imud",                       "[imud-signalk] source_label");
-CK_BOOL(c.publish_heave,    true,                         "[imud-signalk] publish_heave");
-CK_BOOL(c.sk_tcp_enabled,   false,                        "[imud-signalk] tcp_enabled");
-CK_STR (c.sk_tcp_bind_addr, "0.0.0.0",                    "[imud-signalk] tcp_bind_addr");
-CK_INT (c.sk_tcp_port,      10113,                        "[imud-signalk] tcp_port");
+CK_BOOL(c.sk_enabled,       false,            "[imud-signalk] enabled");
+CK_STR (c.stream_socket,    IMUD_STREAM_SOCK, "[imud-signalk] socket");
+CK_BOOL(c.sk_udp_enabled,   false,            "[imud-signalk] udp_enabled");
+CK_STR (c.sk_dest_addr,     "127.0.0.1",      "[imud-signalk] dest_addr");
+CK_INT (c.sk_dest_port,     10113,            "[imud-signalk] dest_port");
+CK_INT (c.sk_rate_hz,       10,               "[imud-signalk] rate_hz");
+CK_STR (c.sk_source_label,  "imud",           "[imud-signalk] source_label");
+CK_BOOL(c.publish_heave,    true,             "[imud-signalk] publish_heave");
+CK_BOOL(c.sk_tcp_enabled,   false,            "[imud-signalk] tcp_enabled");
+CK_STR (c.sk_tcp_bind_addr, "0.0.0.0",        "[imud-signalk] tcp_bind_addr");
+CK_INT (c.sk_tcp_port,      10113,            "[imud-signalk] tcp_port");
 
 /* [imud-mqtt] */
-CK_BOOL(c.mqtt_enabled,        false,                        "[imud-mqtt] enabled");
-CK_BOOL(c.mqtt_broker_enabled, false,                        "[imud-mqtt] broker_enabled");
-CK_STR (c.stream_socket,       "/run/imud/imud-stream.sock", "[imud-mqtt] socket");
-CK_STR (c.mqtt_broker_addr,    "127.0.0.1",                  "[imud-mqtt] broker_addr");
-CK_INT (c.mqtt_broker_port,    1883,                         "[imud-mqtt] broker_port");
-CK_STR (c.mqtt_client_id,      "imud",                       "[imud-mqtt] client_id");
-CK_INT (c.mqtt_keepalive_s,    30,                           "[imud-mqtt] keepalive_s");
-CK_STR (c.mqtt_topic_prefix,   "imud",                       "[imud-mqtt] topic_prefix");
-CK_INT (c.mqtt_rate_hz,        5,                            "[imud-mqtt] rate_hz");
-CK_INT (c.mqtt_qos,            0,                            "[imud-mqtt] qos");
-CK_BOOL(c.mqtt_retain,         true,                         "[imud-mqtt] retain");
-CK_STR (c.mqtt_units,          "deg",                        "[imud-mqtt] units");
-CK_BOOL(c.publish_heave,       true,                         "[imud-mqtt] publish_heave");
-CK_BOOL(c.mqtt_ha_discovery,   true,                         "[imud-mqtt] ha_discovery");
-CK_STR (c.mqtt_ha_prefix,      "homeassistant",              "[imud-mqtt] ha_prefix");
-CK_STR (c.mqtt_username,       "",                           "[imud-mqtt] username");
-CK_STR (c.mqtt_password,       "",                           "[imud-mqtt] password");
-CK_BOOL(c.mqtt_tls,            false,                        "[imud-mqtt] tls");
-CK_STR (c.mqtt_tls_cafile,     "",                           "[imud-mqtt] tls_cafile");
+CK_BOOL(c.mqtt_enabled,        false,            "[imud-mqtt] enabled");
+CK_BOOL(c.mqtt_broker_enabled, false,            "[imud-mqtt] broker_enabled");
+CK_STR (c.stream_socket,       IMUD_STREAM_SOCK, "[imud-mqtt] socket");
+CK_STR (c.mqtt_broker_addr,    "127.0.0.1",      "[imud-mqtt] broker_addr");
+CK_INT (c.mqtt_broker_port,    1883,             "[imud-mqtt] broker_port");
+CK_STR (c.mqtt_client_id,      "imud",           "[imud-mqtt] client_id");
+CK_INT (c.mqtt_keepalive_s,    30,               "[imud-mqtt] keepalive_s");
+CK_STR (c.mqtt_topic_prefix,   "imud",           "[imud-mqtt] topic_prefix");
+CK_INT (c.mqtt_rate_hz,        5,                "[imud-mqtt] rate_hz");
+CK_INT (c.mqtt_qos,            0,                "[imud-mqtt] qos");
+CK_BOOL(c.mqtt_retain,         true,             "[imud-mqtt] retain");
+CK_STR (c.mqtt_units,          "deg",            "[imud-mqtt] units");
+CK_BOOL(c.publish_heave,       true,             "[imud-mqtt] publish_heave");
+CK_BOOL(c.mqtt_ha_discovery,   true,             "[imud-mqtt] ha_discovery");
+CK_STR (c.mqtt_ha_prefix,      "homeassistant",  "[imud-mqtt] ha_prefix");
+CK_STR (c.mqtt_username,       "",               "[imud-mqtt] username");
+CK_STR (c.mqtt_password,       "",               "[imud-mqtt] password");
+CK_BOOL(c.mqtt_tls,            false,            "[imud-mqtt] tls");
+CK_STR (c.mqtt_tls_cafile,     "",               "[imud-mqtt] tls_cafile");
 
 /* [imud-influxdb] */
 CK_BOOL(c.influx_enabled,      false,                         "[imud-influxdb] enabled");
-CK_STR (c.stream_socket,       "/run/imud/imud-stream.sock",  "[imud-influxdb] socket");
+CK_STR (c.stream_socket,       IMUD_STREAM_SOCK,              "[imud-influxdb] socket");
 CK_STR (c.influx_transport,    "",                            "[imud-influxdb] transport");
 CK_INT (c.influx_rate_hz,      10,                            "[imud-influxdb] rate_hz");
 CK_STR (c.influx_measurement,  "imud",                        "[imud-influxdb] measurement");
@@ -187,30 +187,30 @@ CK_STR (c.influx_http_path,    "/write?db=imud&precision=ns", "[imud-influxdb] h
 CK_STR (c.influx_http_token,   "",                            "[imud-influxdb] http_token");
 
 /* [imud-prometheus] */
-CK_BOOL(c.prom_enabled,      false,                        "[imud-prometheus] enabled");
-CK_BOOL(c.prom_http_enabled, false,                        "[imud-prometheus] http_enabled");
-CK_STR (c.stream_socket,     "/run/imud/imud-stream.sock", "[imud-prometheus] socket");
-CK_STR (c.prom_listen_addr,  "127.0.0.1",                  "[imud-prometheus] listen_addr");
-CK_INT (c.prom_listen_port,  9815,                         "[imud-prometheus] listen_port");
+CK_BOOL(c.prom_enabled,      false,            "[imud-prometheus] enabled");
+CK_BOOL(c.prom_http_enabled, false,            "[imud-prometheus] http_enabled");
+CK_STR (c.stream_socket,     IMUD_STREAM_SOCK, "[imud-prometheus] socket");
+CK_STR (c.prom_listen_addr,  "127.0.0.1",      "[imud-prometheus] listen_addr");
+CK_INT (c.prom_listen_port,  9815,             "[imud-prometheus] listen_port");
 
 /* [imud-mavlink] */
-CK_BOOL(c.mav_enabled,                  false,                        "[imud-mavlink] enabled");
-CK_STR (c.stream_socket,                "/run/imud/imud-stream.sock", "[imud-mavlink] socket");
-CK_INT (c.mav_version,                  2,                            "[imud-mavlink] version");
-CK_INT (c.mav_system_id,                1,                            "[imud-mavlink] system_id");
-CK_INT (c.mav_component_id,             1,                            "[imud-mavlink] component_id");
-CK_INT (c.mav_rate_hz,                  10,                           "[imud-mavlink] rate_hz");
-CK_BOOL(c.mav_send_attitude,            true,                         "[imud-mavlink] send_attitude");
-CK_BOOL(c.mav_send_attitude_quaternion, true,                         "[imud-mavlink] send_attitude_quaternion");
-CK_BOOL(c.mav_udp_enabled,              false,                        "[imud-mavlink] udp_enabled");
-CK_STR (c.mav_udp_addr,                 "127.0.0.1",                  "[imud-mavlink] udp_addr");
-CK_INT (c.mav_udp_port,                 14550,                        "[imud-mavlink] udp_port");
-CK_BOOL(c.mav_serial_enabled,           false,                        "[imud-mavlink] serial_enabled");
-CK_STR (c.mav_serial_device,            "/dev/serial0",               "[imud-mavlink] serial_device");
-CK_INT (c.mav_serial_baud,              57600,                        "[imud-mavlink] serial_baud");
-CK_BOOL(c.mav_tcp_enabled,              false,                        "[imud-mavlink] tcp_enabled");
-CK_STR (c.mav_tcp_bind_addr,            "0.0.0.0",                    "[imud-mavlink] tcp_bind_addr");
-CK_INT (c.mav_tcp_port,                 5760,                         "[imud-mavlink] tcp_port");
+CK_BOOL(c.mav_enabled,                  false,            "[imud-mavlink] enabled");
+CK_STR (c.stream_socket,                IMUD_STREAM_SOCK, "[imud-mavlink] socket");
+CK_INT (c.mav_version,                  2,                "[imud-mavlink] version");
+CK_INT (c.mav_system_id,                1,                "[imud-mavlink] system_id");
+CK_INT (c.mav_component_id,             1,                "[imud-mavlink] component_id");
+CK_INT (c.mav_rate_hz,                  10,               "[imud-mavlink] rate_hz");
+CK_BOOL(c.mav_send_attitude,            true,             "[imud-mavlink] send_attitude");
+CK_BOOL(c.mav_send_attitude_quaternion, true,             "[imud-mavlink] send_attitude_quaternion");
+CK_BOOL(c.mav_udp_enabled,              false,            "[imud-mavlink] udp_enabled");
+CK_STR (c.mav_udp_addr,                 "127.0.0.1",      "[imud-mavlink] udp_addr");
+CK_INT (c.mav_udp_port,                 14550,            "[imud-mavlink] udp_port");
+CK_BOOL(c.mav_serial_enabled,           false,            "[imud-mavlink] serial_enabled");
+CK_STR (c.mav_serial_device,            "/dev/serial0",   "[imud-mavlink] serial_device");
+CK_INT (c.mav_serial_baud,              57600,            "[imud-mavlink] serial_baud");
+CK_BOOL(c.mav_tcp_enabled,              false,            "[imud-mavlink] tcp_enabled");
+CK_STR (c.mav_tcp_bind_addr,            "0.0.0.0",        "[imud-mavlink] tcp_bind_addr");
+CK_INT (c.mav_tcp_port,                 5760,             "[imud-mavlink] tcp_port");
 
 /* Not assertable, and each one deliberately so:
  *   [mount] rotation_euler_deg

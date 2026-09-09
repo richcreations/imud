@@ -36,7 +36,18 @@
 # define SOCK_CLOEXEC 0    /* macOS: no atomic CLOEXEC; dev/test builds only */
 #endif
 
-#define IMUD_DEFAULT_STREAM_SOCK "/run/imud/imud-stream.sock"
+/* The daemon's stream socket, which follows the runtime directory this tree
+ * was built for — a launchd install puts it in /var/run, not /run/imud.  Not
+ * include/paths.h: this file must still compile standalone against libc when
+ * vendored out of the tree, so it takes the -D if there is one and falls back
+ * to the Linux default if there is not. */
+#ifndef IMUD_DEFAULT_STREAM_SOCK
+# ifdef IMUD_RUNDIR
+#  define IMUD_DEFAULT_STREAM_SOCK IMUD_RUNDIR "/imud-stream.sock"
+# else
+#  define IMUD_DEFAULT_STREAM_SOCK "/run/imud/imud-stream.sock"
+# endif
+#endif
 #define IMUD_DEFAULT_UDP_PORT    10111
 #define IMUD_DEFAULT_TCP_PORT    10112
 #define IMUD_DEFAULT_TCP_HOST    "127.0.0.1"

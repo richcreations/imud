@@ -52,6 +52,18 @@ to hold its setup through a run."""
   text     = "imud can reach an I2C IMU through an FT232H USB bridge on Linux and macOS, for a host with no bus on a header. Set [device] i2c_bus to an \"ftdi:\" node; the drivers, calibration and output streams are unchanged."
   impact   = "I2C only for now — SPI over the bridge is not implemented. The transport has no interrupt line, so set int_gpio = 0 in [imu] and [mag] and both readers poll. It needs no library and no privilege on either host, and takes the dongle from the kernel FTDI serial driver while imud holds it. Leave it out with ./configure --without-ft232h."
 
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-utils", "libimud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "imud installs under a prefix that is not /usr. The install directories are compiled in, so the binaries find their own config, calibration, sockets and WMM data rather than a Debian package's."
+  impact   = "./configure gains --datadir, --rundir, --statedir, and --with-service=none for a package manager that defines the service itself: it installs no unit and creates no state directory. A build at PREFIX=/usr is unchanged, so the .deb is byte-identical."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "make install-wmm-data put WMM.COF under the prefix while the daemon looked only in /usr/share. Declination stayed zero and heading stayed magnetic, with no warning. Both sides now follow the prefix."
+  impact   = "Affects any build not made with PREFIX=/usr, the default source install at /usr/local included; the .deb was never affected. A newer model dropped at /etc/imud/WMM.COF still wins, as before."
+
 [[release]]
 version = "1.10.0"
 date    = "2026-09-05"

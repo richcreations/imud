@@ -36,6 +36,7 @@
 
 #include "cli.h"
 #include "imutest.h"   /* IMT_PHASE_* */
+#include "paths.h"
 #include "version.h"
 
 /* ── Checked numeric conversion for argv ─────────────────────────────────── */
@@ -112,7 +113,7 @@ static void usage_imud(FILE *o, const char *prog)
     fprintf(o, "Usage: %s [OPTIONS]\n"
         "\n"
         "Options:\n"
-        "  --config PATH      Config file (default: /etc/imud/imud.conf)\n"
+        "  --config PATH      Config file (default: " IMUD_SYS_CONF ")\n"
         "  --skip-bias-cal    Skip startup gyro bias estimation\n"
         "  --replay FILE      Replay an .imucap capture through the sim driver\n"
         "  --no-nmea          Disable NMEA output stream\n"
@@ -126,7 +127,7 @@ static void usage_imud(FILE *o, const char *prog)
 int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
 {
     memset(a, 0, sizeof(*a));
-    snprintf(a->config_path, sizeof(a->config_path), "/etc/imud/imud.conf");
+    snprintf(a->config_path, sizeof(a->config_path), "%s", IMUD_SYS_CONF);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
@@ -177,7 +178,7 @@ static void usage_cal(FILE *o, const char *prog)
         "               Reports only; writes nothing.\n"
         "\n"
         "Options:\n"
-        "  --config PATH   Config file (default: /etc/imud/imud.conf)\n"
+        "  --config PATH   Config file (default: " IMUD_SYS_CONF ")\n"
         "  --output PATH   Override cal.json output path from config\n"
         "  --from FILE     .imucap capture to analyze (offline modes)\n"
         "  --version       Print version and exit\n"
@@ -188,7 +189,7 @@ static void usage_cal(FILE *o, const char *prog)
 int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
 {
     memset(a, 0, sizeof(*a));
-    snprintf(a->config_path, sizeof(a->config_path), "/etc/imud/imud.conf");
+    snprintf(a->config_path, sizeof(a->config_path), "%s", IMUD_SYS_CONF);
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
@@ -251,7 +252,7 @@ static void usage_mon(FILE *o, const char *prog)
         "Usage: %s [--config PATH] [nmea] [binary]\n"
         "\n"
         "Options:\n"
-        "  --config PATH  Config file (default: /etc/imud/imud.conf)\n"
+        "  --config PATH  Config file (default: " IMUD_SYS_CONF ")\n"
         "  --version      Print version and exit\n"
         "  -h, --help     Print this help and exit\n"
         "\n"
@@ -266,7 +267,7 @@ static void usage_mon(FILE *o, const char *prog)
 int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
 {
     memset(a, 0, sizeof(*a));
-    snprintf(a->config_path, sizeof a->config_path, "/etc/imud/imud.conf");
+    snprintf(a->config_path, sizeof a->config_path, "%s", IMUD_SYS_CONF);
 
     bool any_stream = false;
 
@@ -345,7 +346,7 @@ static void usage_imutest(FILE *o, const char *prog)
 "and both would drain the same FIFO.\n"
 "\n"
 "Options:\n"
-"  --config PATH        Config file (default: /etc/imud/imud.conf)\n"
+"  --config PATH        Config file (default: " IMUD_SYS_CONF ")\n"
 "  --report PATH        Report output\n"
 "                       (default: ./imud-imutest-<imu>-<YYYYmmdd-HHMMSS>.md)\n"
 "\n"
@@ -401,7 +402,7 @@ static void usage_imutest(FILE *o, const char *prog)
 int cli_parse_imutest(int argc, char **argv, cli_imutest_t *a)
 {
     memset(a, 0, sizeof(*a));
-    snprintf(a->config_path, sizeof a->config_path, "/etc/imud/imud.conf");
+    snprintf(a->config_path, sizeof a->config_path, "%s", IMUD_SYS_CONF);
 
     /* Sentinels: "not given" for every override, so imutest_main can tell an
      * explicit value from an absent flag. */

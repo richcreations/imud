@@ -16,6 +16,13 @@ imud (1.10.1) unstable; urgency=medium
     [mag] and both readers poll. It needs no library and no privilege on
     either host, and takes the dongle from the kernel FTDI serial driver
     while imud holds it. Leave it out with ./configure --without-ft232h.
+  * imud installs under a prefix that is not /usr. The install directories
+    are compiled in, so the binaries find their own config, calibration,
+    sockets and WMM data rather than a Debian package's.  ./configure
+    gains --datadir, --rundir, --statedir, and --with-service=none for a
+    package manager that defines the service itself: it installs no unit
+    and creates no state directory. A build at PREFIX=/usr is unchanged,
+    so the .deb is byte-identical.
   * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
     configuration through a run. A driver's probe() now leaves an already-
     configured part alone, which is what the tool's repeated probes had
@@ -24,6 +31,12 @@ imud (1.10.1) unstable; urgency=medium
     imu.init.idempotent, both naming USER_CTRL. The daemon probes once,
     before it configures anything, and was never affected. rm3100's probe
     had the same fault and is fixed with it.
+  * make install-wmm-data put WMM.COF under the prefix while the daemon
+    looked only in /usr/share. Declination stayed zero and heading stayed
+    magnetic, with no warning. Both sides now follow the prefix.  Affects
+    any build not made with PREFIX=/usr, the default source install at
+    /usr/local included; the .deb was never affected. A newer model
+    dropped at /etc/imud/WMM.COF still wins, as before.
 
  -- Richard Simpson <richcreations@gmail.com>  Sun, 06 Sep 2026 10:56:59 -0700
 

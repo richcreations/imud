@@ -62,6 +62,16 @@ option, which writes them into config.mk instead:
     make install DESTDIR=/tmp/stage PREFIX=/usr        # staged, no root needed
     ./configure --prefix=/usr --libdir=/usr/lib/aarch64-linux-gnu
 
+The prefix reaches the binaries, not just the file copy: PREFIX, ETCDIR,
+DATADIR, RUNDIR and STATEDIR are compiled in, so an imud built for a prefix
+finds its own config, calibration, sockets and WMM data. A package manager
+that defines the service itself, and refuses writes outside its prefix, wants
+--with-service=none — no unit, no state directory:
+
+    ./configure --prefix=$HOME/.local --etcdir=$HOME/.config/imud \
+                --rundir=$HOME/.local/var/run \
+                --statedir=$HOME/.local/var/imud --with-service=none
+
 Users and groups: `make install` creates the system user imud, whose primary
 group imud owns /run/imud and both AF_UNIX sockets. Hardware access is by the
 supplementary groups gpio, i2c and spi, which are CREATED if absent —
@@ -142,7 +152,7 @@ and fails on linux/i2c-dev.h:
         /Library/LaunchDaemons/io.github.richcreations.imud.plist
 
 configure detects launchd from uname and installs a launchd job instead of a
-systemd unit, into /Library/LaunchDaemons; --with-service=systemd|launchd
+systemd unit, into /Library/LaunchDaemons; --with-service=systemd|launchd|none
 overrides the choice and --svcdir the directory. The job runs as root, because
 macOS has no useradd and none of the unit's confinement — see the comment at
 the top of etc/imud.plist.in. There is no udev rule and no imud user here, and

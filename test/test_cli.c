@@ -35,6 +35,7 @@
 
 #include "cli.h"
 #include "imutest.h"   /* IMT_PHASE_* */
+#include "paths.h"
 #include "version.h"
 
 /* ── Test framework (matches the rest of the suite) ──────────────────────── */
@@ -167,7 +168,7 @@ static void test_imud(void)
     {   char *v[] = { "imud", NULL };
         cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); out = cap_end();
         EXPECT(rc == 0, "no args → run");
-        EXPECT(strcmp(a.config_path, "/etc/imud/imud.conf") == 0, "default config");
+        EXPECT(strcmp(a.config_path, IMUD_SYS_CONF) == 0, "default config");
         /* config_path is pre-filled either way, so this flag is the only thing
          * that distinguishes the default from an operator naming that exact
          * path — and imud gives only the latter a $HOME fallback. */
@@ -331,7 +332,7 @@ static void test_mon(void)
         cap_begin(); rc = cli_parse_mon(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && a.want_nmea && a.want_binary,
                "no stream args → both streams");
-        EXPECT(strcmp(a.config_path, "/etc/imud/imud.conf") == 0,
+        EXPECT(strcmp(a.config_path, IMUD_SYS_CONF) == 0,
                "default config");
     }
 
@@ -395,9 +396,11 @@ static void test_status(void)
     }
 
     /* The default must agree with what imud actually binds (main.c
-     * STATUS_SOCK) — a drift here breaks imud-status against a stock daemon. */
-    EXPECT(strcmp(CLI_DEFAULT_STATUS_SOCK, "/run/imud/imud.sock") == 0,
-           "default socket is /run/imud/imud.sock");
+     * STATUS_SOCK) — a drift here breaks imud-status against a stock daemon.
+     * Both now come off IMUD_RUNDIR, so a launchd install's /var/run reaches
+     * the client too; test_configure proves the -D is what they follow. */
+    EXPECT(strcmp(CLI_DEFAULT_STATUS_SOCK, IMUD_RUNDIR "/imud.sock") == 0,
+           "default socket follows the build's runtime dir");
 
     {   char *v[] = { "imud-status", "--socket", "/tmp/s.sock", NULL };
         cap_begin(); rc = cli_parse_status(argc_of(v), v, &a); cap_end();

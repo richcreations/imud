@@ -221,6 +221,23 @@ BUS = {"i2c": "BUS_I2C", "spi": "BUS_SPI"}
 # the DOCUMENTATION rather than a second copy of the code.
 UNSET = "*(unset)*"
 
+# Documented path defaults that config_defaults() builds from include/paths.h
+# rather than writing out.  The manual and the man page keep the literal — it
+# is what a stock Linux build resolves to, and what an operator reading either
+# one has — but the ASSERTION has to be the macro, or the test pins /var/lib
+# and /run on a launchd build whose compiled defaults are /var/db and /var/run.
+#
+# PATH_PREFIXES is the guard rail: a new string default under any of these
+# directories is a compiled-in path too, and is refused until it is mapped
+# here.  Getting that wrong shows up only on macOS, which nothing else here
+# would catch.
+COMPILED_PATHS = {
+    "/etc/imud/cal.json":         "IMUD_CAL_FILE",
+    "/run/imud/imud-stream.sock": "IMUD_STREAM_SOCK",
+    "/var/lib/imud":              "IMUD_STATEDIR",
+}
+PATH_PREFIXES = ("/etc/imud", "/run/imud", "/var/lib/imud", "/usr/share/imud")
+
 
 def c_literal(macro, shown, where):
     """The C literal for a documented default, or None with a reason.
@@ -263,6 +280,13 @@ def c_literal(macro, shown, where):
         # needed, and one appearing unnoticed would be a silently wrong test.
         if '"' in text or "\\" in text:
             return None, "string default needs C escaping: %r" % text
+        if text in COMPILED_PATHS:
+            return COMPILED_PATHS[text], None
+        if text.startswith(PATH_PREFIXES):
+            return None, ("%r is under an install directory, so it is compiled "
+                          "from include/paths.h and moves with the prefix — add "
+                          "it to COMPILED_PATHS with the macro it is built "
+                          "from" % text)
         return '"%s"' % text, None
 
     if macro == "NEED_BUS_KIND":
