@@ -179,6 +179,9 @@ cc_ok=no
 endian=unknown
 have_linux_bus=0
 have_usbfs=0
+ft_usb_src=
+ft_usb_lib=
+ft_usb_how=
 
 if echo 'int main(void){return 0;}' | try_link; then
     cc_ok=yes
@@ -217,13 +220,25 @@ int main(void){return I2C_RDWR==0;}' | try_link; then
         have_linux_bus=0
     fi
 
-    # The FT232H bridge backend, which needs only usbfs -- no libusb and no
-    # libftdi.  Not fatal either: without it a host simply has no "ftdi:" node
-    # to name, and the backends it does have are unaffected.
+    # The FT232H bridge backend.  Two rungs, neither needing a library: usbfs
+    # on Linux, IOKit on macOS.  Not fatal either way -- without one a host
+    # simply has no "ftdi:" node to name, and its other backends are
+    # unaffected.  The probe picks the rung as well as answering yes or no,
+    # because there is nothing else to tell them apart.
     if echo '#include <sys/ioctl.h>
 #include <linux/usbdevice_fs.h>
 int main(void){return USBDEVFS_BULK==0;}' | try_link; then
         have_usbfs=1
+        ft_usb_src=src/ft_usb_linux.c
+        ft_usb_lib=
+        ft_usb_how="usbfs"
+    elif echo '#include <IOKit/usb/IOUSBLib.h>
+int main(void){return kIOUSBFindInterfaceDontCare==0;}' \
+         | try_link -framework IOKit -framework CoreFoundation; then
+        have_usbfs=1
+        ft_usb_src=src/ft_usb_darwin.c
+        ft_usb_lib="-framework IOKit -framework CoreFoundation"
+        ft_usb_how="IOKit"
     else
         have_usbfs=0
     fi
@@ -307,7 +322,7 @@ esac
 case $want_ft232h in
     yes)
         [ "$have_usbfs" = 1 ] ||
-            die "--with-ft232h: no usbfs (<linux/usbdevice_fs.h>) found"
+            die "--with-ft232h: neither usbfs nor IOKit found"
         no_ft232h=0 ;;
     no)
         no_ft232h=1 ;;
@@ -441,11 +456,13 @@ GPIOD_MAJ = $gpiod_maj
 # \`driver = sim\` end to end.
 NO_LINUX_BUS = $no_linux_bus
 
-# The FT232H USB bridge (src/bus_ft232h.c over src/ft_usb_linux.c).  0 links
-# it beside whatever else the build has, and src/bus.c routes an "ftdi:" node
-# to it; 1 leaves it out.  Both may be built at once -- that is what lets one
-# binary serve a header and a dongle.
+# The FT232H USB bridge (src/bus_ft232h.c over the include/ft_usb.h rung
+# named below).  0 links it beside whatever else the build has, and src/bus.c
+# routes an "ftdi:" node to it; 1 leaves it out.  Both may be built at once --
+# that is what lets one binary serve a header and a dongle.
 NO_FT232H = $no_ft232h
+FT_USB_SRC = $ft_usb_src
+FT_USB_LIB = $ft_usb_lib
 
 # Empty unless 64-bit atomics need libatomic (ARMv6).  It must follow the
 # objects on the link line, never sit in LDFLAGS.
@@ -511,7 +528,7 @@ else
            "null -- no I2C or SPI; only driver = sim will run"
 fi
 if [ "$no_ft232h" = 0 ]; then
-    printf '    %-18s %s\n' "USB bridge" "FT232H over usbfs (ftdi: nodes)"
+    printf '    %-18s %s\n' "USB bridge" "FT232H over $ft_usb_how (ftdi: nodes)"
 fi
 printf '    %-18s %s\n' "byte order" "$endian-endian (wire stays little-endian)"
 if [ "$no_gpiod" = 0 ]; then

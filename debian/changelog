@@ -1,13 +1,13 @@
 imud (1.10.1-1) unstable; urgency=medium
 
-  * imud can reach an I2C IMU through an FT232H USB bridge, for a host
-    with no bus on a header. Set [device] i2c_bus to an "ftdi:" node; the
-    drivers, calibration and output streams are unchanged.  I2C only for
-    now — SPI over the bridge is not implemented. The transport has no
-    interrupt line, so set int_gpio = 0 in [imu] and [mag] and both
-    readers poll. On Linux it needs no library and no root, and it
-    detaches the kernel ftdi_sio driver while imud holds the dongle. Leave
-    it out with ./configure --without-ft232h.
+  * imud can reach an I2C IMU through an FT232H USB bridge on Linux and
+    macOS, for a host with no bus on a header. Set [device] i2c_bus to an
+    "ftdi:" node; the drivers, calibration and output streams are
+    unchanged.  I2C only for now — SPI over the bridge is not implemented.
+    The transport has no interrupt line, so set int_gpio = 0 in [imu] and
+    [mag] and both readers poll. It needs no library and no privilege on
+    either host, and takes the dongle from the kernel FTDI serial driver
+    while imud holds it. Leave it out with ./configure --without-ft232h.
   * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
     configuration through a run. A driver's probe() now leaves an already-
     configured part alone, which is what the tool's repeated probes had

@@ -32,6 +32,13 @@ ifeq ($(origin GPIOD_MAJ),undefined)
 GPIOD_MAJ := $(shell pkg-config --modversion libgpiod 2>/dev/null | cut -d. -f1)
 endif
 
+# The host OS, which decides the per-seam defaults below and the libimud
+# link shape further down.  $(origin) rather than ?= because config.mk answers
+# it and an empty answer must not be re-probed.
+ifeq ($(origin UNAME_S),undefined)
+UNAME_S := $(shell uname -s)
+endif
+
 # The GPIO backend behind include/imu_gpio.h.  src/imu_gpio.c is libgpiod;
 # src/imu_gpio_null.c is the same three entry points failing with ENOSYS, which
 # leaves the reader threads on the rate-sized timer they already fall back to
@@ -86,16 +93,29 @@ NO_LINUX_BUS ?= 0
 NO_FT232H    ?= 0
 
 # The USB transport behind include/ft_usb.h, which src/bus_ft232h.c sits on.
-# src/ft_usb_linux.c is usbfs; a Mac or a BSD writes one file against that
-# header and names it here, with nothing else in the build to edit.
-FT_USB_SRC ?= src/ft_usb_linux.c
+# src/ft_usb_linux.c is usbfs and src/ft_usb_darwin.c is IOKit; neither needs a
+# library, which is what keeps the bridge backend dependency-free on both.  A
+# BSD writes one file against that header and names it here, with nothing else
+# in the build to edit.
+#
+# FT_USB_LIB rides with it: empty where the host API is in libc, and the two
+# frameworks on Darwin.  ./configure writes both.
+ifeq ($(UNAME_S),Darwin)
+    FT_USB_SRC ?= src/ft_usb_darwin.c
+    FT_USB_LIB ?= -framework IOKit -framework CoreFoundation
+else
+    FT_USB_SRC ?= src/ft_usb_linux.c
+    FT_USB_LIB ?=
+endif
 
 BUS_SRC      =
 BUS_BACKENDS =
+BUS_LIB      =
 
 ifeq ($(NO_FT232H),0)
     BUS_SRC      += src/bus_ft232h.c $(FT_USB_SRC)
     BUS_BACKENDS += &bus_ft232h_backend,
+    BUS_LIB      += $(FT_USB_LIB)
 endif
 
 ifeq ($(NO_LINUX_BUS),0)
@@ -103,10 +123,13 @@ ifeq ($(NO_LINUX_BUS),0)
     BUS_BACKENDS += &bus_linux_backend,
 endif
 
-ifeq ($(strip $(BUS_SRC)),)
-    BUS_SRC      = src/bus_null.c
-    BUS_BACKENDS = &bus_null_backend
-endif
+# src/bus_null.c is ALWAYS last, not only when nothing else is there.  It is
+# the backend for a plain device path in a build that has no real one -- a Mac
+# carrying only the bridge, where config/sim.conf's "/dev/null" would otherwise
+# route nowhere and take `driver = sim` down with it.  Its open() and close()
+# are real and only the transfers fail, which is exactly what that case wants.
+BUS_SRC      += src/bus_null.c
+BUS_BACKENDS += &bus_null_backend
 
 override CPPFLAGS += -DIMUD_BUS_BACKENDS='$(BUS_BACKENDS)'
 
@@ -159,9 +182,6 @@ endif
 # object directly so the macOS dev/test workflow keeps working. In-tree bridge
 # runs on Linux need LD_LIBRARY_PATH=. (the installed copy is found via
 # ldconfig).
-ifeq ($(origin UNAME_S),undefined)
-UNAME_S := $(shell uname -s)
-endif
 SONAME   = libimud.so.0
 SHLIB    = libimud.so.0.0
 ifeq ($(UNAME_S),Linux)
@@ -264,12 +284,12 @@ all: imud imud-cal imud-imutest imud-status imud-mon
 # ── Binaries ──────────────────────────────────────────────────────────────────
 
 imud: $(IMUD_OBJS) src/main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) $(BUS_LIB) -lm $(ATOMIC_LIB)
 
 # imud-cal requires src/cal_main.c.  No GPIO library: CAL_SRCS has no imu.c and
 # no driver touches a line, so imud-cal takes its samples by polling.
 imud-cal: $(CAL_OBJS) src/cal_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(BUS_LIB) -lm $(ATOMIC_LIB)
 
 # imud-imutest exercises any registered driver against real silicon and writes
 # a Markdown validation report (ROADMAP §1).  Ships in imud-utils alongside
@@ -277,7 +297,7 @@ imud-cal: $(CAL_OBJS) src/cal_main.o
 # It links the GPIO backend for the interrupt edge-count check, so it follows
 # imud's NO_GPIOD switch too.
 imud-imutest: $(IMUTEST_OBJS) src/imutest_main.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(GPIOD_LIB) $(BUS_LIB) -lm $(ATOMIC_LIB)
 
 # imud-status is a plain socket client: no hardware libs.  src/cli.c stays off
 # log.c precisely so this link line does not grow a pthread dependency.
@@ -416,7 +436,7 @@ test_packet: src/packet.c test/test_packet.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_concurrency: $(IMUD_OBJS) test/test_concurrency.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) $(BUS_LIB) -lm $(ATOMIC_LIB)
 
 # ./configure itself.  `configure` is a prerequisite, not a translation unit:
 # the suite runs the script, so an edit to it must rebuild nothing but must
@@ -443,14 +463,14 @@ test_bus_null: src/bus_null.c test/test_bus_null.c
 # asserts is the I2C that reached the wire, not the encoding that produced it.
 # No dongle, no usbfs and no kernel headers, so it runs everywhere.
 #
-# Only this backend is named, which is also the point of two of the cases: a
-# plain device path then has nothing to fall back to, exactly as in a build for
-# a host with no bus of its own.  -Isrc is for the quoted drivers/bus_io.h,
-# whose framing the register cases go through.
-test_bus_ft232h: src/bus_ft232h.c src/bus.c src/log.c \
+# The null backend is linked beside it, which is the shape a real macOS build
+# has: the bridge plus the fallback that takes a plain device path.  -Isrc is
+# for the quoted drivers/bus_io.h, whose framing the register cases go through.
+test_bus_ft232h: src/bus_ft232h.c src/bus.c src/bus_null.c src/log.c \
                  test/ft_usb_fake.c test/test_bus_ft232h.c \
-                 test/ft_usb_fake.h include/ft_usb.h src/drivers/bus_io.h
-	$(CC) $(CPPFLAGS) -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_ft232h_backend,' \
+                 test/ft_usb_fake.h include/ft_usb.h src/drivers/bus_io.h Makefile
+	$(CC) $(CPPFLAGS) -UIMUD_BUS_BACKENDS \
+	    -DIMUD_BUS_BACKENDS='&bus_ft232h_backend,&bus_null_backend,' \
 	    $(CFLAGS) -Isrc $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
 # The conformance suite for include/host_time.h.  It asserts the contract, not
@@ -591,7 +611,7 @@ src/main.entry.o: CPPFLAGS += -Dpthread_create=imud_test_pthread_create
 
 test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
-	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) -lm $(ATOMIC_LIB)
+	    -o $@ $(filter %.c %.o,$^) $(GPIOD_LIB) $(BUS_LIB) -lm $(ATOMIC_LIB)
 
 # imud-status and imud-mon end to end, main() included.  Their pure
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
@@ -659,7 +679,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c \
               src/drivers/rm3100.c src/log.c \
-              src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
+              src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c Makefile \
               src/drivers/bus_io.h src/drivers/chip_ts.h \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
@@ -716,7 +736,7 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 # dependency: Apple ld has no --wrap.  imu_gpio_null.c has its own suite.
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
                   $(filter-out $(BUS_SRC) $(GPIO_SRC),$(HWTOOLS_SRCS)) \
-                  test/bus_mock.c test/test_hwtools_e2e.c
+                  test/bus_mock.c test/test_hwtools_e2e.c Makefile
 	$(CC) $(CPPFLAGS) $(MOCK_BACKEND_DEF) $(CFLAGS) $(LDFLAGS) \
 	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 

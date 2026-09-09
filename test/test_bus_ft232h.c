@@ -272,9 +272,11 @@ static void test_node_speed_suffix(void)
 }
 
 /*
- * Routing.  Only this backend is linked here, so a plain path has nothing to
- * fall back to — which is the case a Mac build is in, and it must say so
- * rather than open() a path that was never one.
+ * Routing, in the shape a macOS build really has: the bridge plus the null
+ * backend.  A plain device path must reach the null one and OPEN — that is
+ * what lets `driver = sim` run the whole pipeline on a host with no bus of its
+ * own, and config/sim.conf's "/dev/null" is exactly this path.  Routing it
+ * nowhere instead took every sim-driver suite down on the Mac.
  */
 static void test_node_routing(void)
 {
@@ -284,15 +286,34 @@ static void test_node_routing(void)
     ftfake_add_device(IMU_ADDR);
 
     imud_bus_t b;
-    bus_spec_t dev = { .kind = BUS_I2C, .node = "/dev/i2c-1", .i2c_addr = IMU_ADDR };
-    EXPECT(bus_open(&b, &dev, NULL, "imu") < 0,
-           "a device path finds no backend in this build");
+    bus_spec_t dev = { .kind = BUS_I2C, .node = "/dev/null", .i2c_addr = IMU_ADDR };
+    int routed = bus_open(&b, &dev, NULL, "imu");
+    EXPECT(routed == 0,
+           "a plain device path falls back rather than failing to route");
 
+    /* Guarded: a regression here must report, not crash.  bus_io.h
+     * dereferences b->be, so a handle whose open failed cannot be handed to
+     * it — see the note on imud_bus_t.be in include/bus.h. */
+    if (routed == 0) {
+        EXPECT(b.be != NULL && strcmp(b.be->name, "null") == 0,
+               "reaching the null backend, not the bridge");
+
+        /* And it is the TRANSFER that fails there, with the errno that names
+         * a missing backend rather than a wiring fault. */
+        uint8_t v = 0;
+        errno = 0;
+        EXPECT_EQ(bus_reg_read(&b, 0x0F, &v), -1, "whose transfers fail");
+        EXPECT_EQ(errno, ENOSYS, "with ENOSYS");
+        bus_close(&b);
+    }
+
+    /* A scheme nobody answers to is still an error at open: it names a
+     * transport this build has not got, which no fallback can serve. */
     bus_spec_t other = { .kind = BUS_I2C, .node = "mystery:0", .i2c_addr = IMU_ADDR };
-    EXPECT(bus_open(&b, &other, NULL, "imu") < 0, "nor does an unknown scheme");
+    EXPECT(bus_open(&b, &other, NULL, "imu") < 0, "an unknown scheme is refused");
 
     bus_spec_t empty = { .kind = BUS_I2C, .node = "", .i2c_addr = IMU_ADDR };
-    EXPECT(bus_open(&b, &empty, NULL, "imu") < 0, "nor an empty node");
+    EXPECT(bus_open(&b, &empty, NULL, "imu") < 0, "and so is an empty node");
 }
 
 /* A dongle that is not there must fail the open, not the first transfer. */

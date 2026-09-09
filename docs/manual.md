@@ -372,7 +372,7 @@ Hardware bus and GPIO controller. **[restart]**
 <!-- BEGIN GENERATED: config-keys device.1 -->
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.
 
-A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several — a USB serial, a `<bus>.<dev>` pair or a sysfs port path such as `1-2` — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. |
+A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller. |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
 | `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits. |
@@ -958,11 +958,12 @@ i2c_addr = 0x6A
 int_gpio = 0                     # no interrupt line on this transport
 ```
 
-The node is `ftdi:[<match>][@<hz>]`. `<match>` picks between several dongles —
-a USB serial, a `<bus>.<dev>` pair, or the sysfs port path (`1-2`), which is
-the one that survives a replug into the same socket. `<hz>` sets the bus clock
-and defaults to 400000; drop it to 100000 if the parts sit on long jumper
-leads.
+The node is `ftdi:[<match>][@<hz>]`. `<match>` picks between several dongles
+by USB serial, or — for a board whose EEPROM carries none — by the identifier
+that follows the physical socket rather than the plug order: the sysfs port
+path on Linux (`1-2`), the location ID on macOS (`14100000`, the number macOS
+also puts in `/dev/cu.usbserial-1410`). `<hz>` sets the bus clock and defaults
+to 400000; drop it to 100000 if the parts sit on long jumper leads.
 
 Four things differ from a header:
 
@@ -979,10 +980,13 @@ Four things differ from a header:
   keep up.
 - **SPI is not implemented** on this backend yet — it fails with `ENOSYS`.
 
-On Linux it needs no library and no root: the backend drives usbfs directly,
-and a dongle plugged into a logged-in seat carries an ACL granting that user
-access. imud detaches the kernel's `ftdi_sio` serial driver while it holds the
-device, so `/dev/ttyUSB*` for that dongle goes away until imud exits.
+It needs no library and no privilege on either host, and `./configure` picks
+the rung: usbfs on Linux, IOKit on macOS. Both take the device from the
+kernel's FTDI serial driver while imud holds it and hand it back on exit, so
+that dongle's `/dev/ttyUSB*` or `/dev/cu.usbserial-*` disappears for the
+duration and returns without a replug. On Linux a dongle plugged into a
+logged-in seat carries an ACL granting that user access; on macOS no seizing
+or kext unloading is needed while nothing else has the serial port open.
 
 Leave it out of a build with `./configure --without-ft232h`.
 

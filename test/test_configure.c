@@ -86,6 +86,7 @@ static const char *STUB_CC =
     "  *math.h*)           [ \"${STUB_LIBM:-1}\" = 1 ] || fail libm ;;\n"
     "  *linux/i2c-dev.h*)  [ \"${STUB_BUS:-1}\" = 1 ] || fail bus ;;\n"
     "  *usbdevice_fs.h*)   [ \"${STUB_USBFS:-1}\" = 1 ] || fail usbfs ;;\n"
+    "  *IOUSBLib.h*)       [ \"${STUB_IOKIT:-0}\" = 1 ] || fail iokit ;;\n"
     "  *__ORDER_BIG_ENDIAN__*)\n"
     "      [ \"${STUB_ENDIAN:-little}\" = little ] || fail bigendian ;;\n"
     "  *stdatomic.h*)\n"
@@ -165,7 +166,7 @@ static void fixture_reset(void)
 {
     static const char *vars[] = {
         "STUB_CC_BROKEN", "STUB_C11", "STUB_PTHREAD", "STUB_LIBM", "STUB_BUS",
-        "STUB_USBFS",
+        "STUB_USBFS", "STUB_IOKIT",
         "STUB_ENDIAN", "STUB_INLINE_ATOMIC", "STUB_LATOMIC", "STUB_MOSQUITTO",
         "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_ACCEPT4", "STUB_GPIOD_VERSION",
     };
@@ -393,6 +394,45 @@ static void test_bus_absent(void)
     EXPECT(run("") == 0, "a host with them configures");
     EXPECT(cfg_is("NO_LINUX_BUS", "0"), "with the Linux backend");
     EXPECT(cfg_is("NO_FT232H", "0"), "and the FT232H beside it");
+}
+
+/*
+ * Which include/ft_usb.h rung the bridge is built on is decided by the same
+ * probe that decides whether to build it at all, because nothing else
+ * distinguishes the two: usbfs where the kernel header is, IOKit where the
+ * framework is.  A macOS host has the second and not the first.
+ */
+static void test_ft232h_rung_follows_the_host(void)
+{
+    printf("test_ft232h_rung_follows_the_host\n");
+
+    fixture_reset();
+    EXPECT(run("") == 0, "a Linux-shaped host configures");
+    EXPECT(cfg_is("FT_USB_SRC", "src/ft_usb_linux.c"), "and takes usbfs");
+    EXPECT(cfg_is("FT_USB_LIB", ""), "which needs no library");
+
+    fixture_reset();
+    setenv("STUB_BUS", "0", 1);
+    setenv("STUB_USBFS", "0", 1);
+    setenv("STUB_IOKIT", "1", 1);
+    EXPECT(run("") == 0, "a macOS-shaped host configures");
+    EXPECT(cfg_is("NO_FT232H", "0"), "with the bridge built");
+    EXPECT(cfg_is("FT_USB_SRC", "src/ft_usb_darwin.c"), "on the IOKit rung");
+    /* The frameworks are not optional there: without them the link fails on
+     * every IOKit symbol, and nothing else in the build would supply them. */
+    EXPECT(cfg_is("FT_USB_LIB", "-framework IOKit -framework CoreFoundation"),
+           "naming the frameworks that rung has to link");
+    EXPECT(strstr(out("stdout"), "IOKit") != NULL, "and the summary says so");
+
+    /* --with-ft232h must accept EITHER rung, not just the Linux one. */
+    fixture_reset();
+    setenv("STUB_USBFS", "0", 1);
+    setenv("STUB_IOKIT", "1", 1);
+    EXPECT(run("--with-ft232h") == 0, "--with-ft232h is satisfied by IOKit");
+
+    fixture_reset();
+    setenv("STUB_USBFS", "0", 1);
+    EXPECT(run("--with-ft232h") == 1, "and fails when neither is there");
 }
 
 /*
@@ -732,6 +772,7 @@ int main(void)
     test_gpiod_absent();
     test_gpiod_forced();
     test_bus_absent();
+    test_ft232h_rung_follows_the_host();
     test_endianness_is_reported();
     test_bus_forced();
     test_required_failures();

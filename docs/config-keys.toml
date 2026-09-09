@@ -136,7 +136,7 @@ node for an FT232H USB bridge.'''
   md_default = '`"/dev/i2c-1"`'
   desc = '''I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.
 
-A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several — a USB serial, a `<bus>.<dev>` pair or a sysfs port path such as `1-2` — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll.'''
+A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll.'''
 
   [[section.key]]
   names = ["gpio_chip"]
