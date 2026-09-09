@@ -1326,7 +1326,7 @@ the failure is logged.
 6. Remove /run/imud/imud.pid
 ```
 
-### systemd Unit
+### Service Unit
 
 ```ini
 [Unit]
@@ -1358,6 +1358,16 @@ Setup: `sudo groupadd -r gpio; sudo groupadd -r i2c;
 sudo useradd -r -s /sbin/nologin -G i2c,gpio imud`, plus the shipped udev rule
 `60-imud.rules` granting those groups the device nodes (Raspberry Pi OS
 provides equivalents in `99-com.rules`).
+
+On macOS the same daemon runs under launchd instead, from
+`/Library/LaunchDaemons/io.github.richcreations.imud.plist`. `./configure`
+chooses which of the two `make install` writes, from `uname`. The job is the
+unit's restart policy and nothing else: `KeepAlive` with `SuccessfulExit`
+false is `Restart=on-failure`, `ThrottleInterval` is `RestartSec`, and there
+is no equivalent of `Type=notify`, `WatchdogSec=`, `MemoryMax=` or any of the
+confinement — so it runs as root, with no `imud` user and no udev rule. There
+is no `/run` either; the AF_UNIX paths move to `/var/run`. See
+`docs/manual.md` § *As a launchd job*.
 
 -----
 

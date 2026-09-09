@@ -20,9 +20,11 @@
  * (a -l after the source, or --as-needed drops it) and its real output
  * writing.  The stub compiler decides only whether a given program links.
  *
- * The two real utilities symlinked onto that PATH — cat and uname — are not
- * under test.  Withholding them would prove nothing about the host and only
- * make the script contort around its own heredocs.
+ * cat is symlinked from the real PATH and is not under test.  uname IS, and
+ * so gets a stub of its own: which init system configure installs a unit for
+ * is the one answer here that comes from the host kernel rather than from a
+ * link probe, and stubbing it is what makes both the systemd and the launchd
+ * branch reachable from one box.
  */
 
 #include <errno.h>
@@ -101,6 +103,22 @@ static const char *STUB_CC =
     "echo \"$args\" >> \"$STUB_CC_LOG\"\n"
     "exit 0\n";
 
+/*
+ * The stub uname.  configure asks it only for -s and -m, both of which it
+ * writes into config.mk and prints in the summary; -s additionally chooses
+ * the init system.  Defaults are a Linux host, so a case sets a variable only
+ * when it is about the other one.
+ */
+static const char *STUB_UNAME =
+    "#!/bin/sh\n"
+    "for a in \"$@\"; do\n"
+    "  case $a in\n"
+    "    -s) echo \"${STUB_UNAME_S:-Linux}\" ;;\n"
+    "    -m) echo \"${STUB_UNAME_M:-x86_64}\" ;;\n"
+    "  esac\n"
+    "done\n"
+    "[ $# -gt 0 ] || echo \"${STUB_UNAME_S:-Linux}\"\n";
+
 /* pkg-config answers for libgpiod only, and only when the case names a
  * version.  An empty STUB_GPIOD_VERSION is the host that does not have it. */
 static const char *STUB_PKGCONFIG =
@@ -149,9 +167,10 @@ static void fixture_init(void)
     write_exec(path, STUB_CC);
     snprintf(path, sizeof path, "%s/pkg-config", g_stub);
     write_exec(path, STUB_PKGCONFIG);
+    snprintf(path, sizeof path, "%s/uname", g_stub);
+    write_exec(path, STUB_UNAME);
 
     link_real("cat");
-    link_real("uname");
 
     snprintf(g_real_path, sizeof g_real_path, "%s", getenv("PATH") ? getenv("PATH") : "");
 
@@ -169,6 +188,7 @@ static void fixture_reset(void)
         "STUB_USBFS", "STUB_IOKIT",
         "STUB_ENDIAN", "STUB_INLINE_ATOMIC", "STUB_LATOMIC", "STUB_MOSQUITTO",
         "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_ACCEPT4", "STUB_GPIOD_VERSION",
+        "STUB_UNAME_S", "STUB_UNAME_M",
     };
     for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++)
         unsetenv(vars[i]);
@@ -710,6 +730,116 @@ static void test_install_paths(void)
 }
 
 /*
+ * Which service unit gets installed is the host's answer, not something the
+ * caller has to remember: a Mac gets a launchd job in /Library/LaunchDaemons,
+ * everything else a systemd unit.  The stub uname above is what makes both
+ * branches reachable from one box.
+ *
+ * The second half asserts the MAKEFILE consumes the answer.  configure
+ * writing SVC_KIND and the install rules reading it are separate facts, and
+ * the failure that matters is a correct config.mk installing the wrong file —
+ * which no assertion about config.mk alone can see.
+ */
+static void test_service_unit_follows_the_host(void)
+{
+    printf("test_service_unit_follows_the_host\n");
+
+    fixture_reset();
+    EXPECT(run("") == 0, "a Linux host configures");
+    EXPECT(cfg_is("SVC_KIND", "systemd"), "and takes systemd");
+    EXPECT(cfg_is("SVCDIR", "/etc/systemd/system"), "into /etc/systemd/system");
+    EXPECT(strstr(out("stdout"), "systemd — /etc/systemd/system") != NULL,
+           "with the summary naming the kind and the directory");
+    EXPECT(strstr(out("stdout"), "udev rules") != NULL,
+           "and offering a udev directory");
+
+    fixture_reset();
+    setenv("STUB_UNAME_S", "Darwin", 1);
+    EXPECT(run("") == 0, "a Darwin host configures");
+    EXPECT(cfg_is("SVC_KIND", "launchd"), "and takes launchd unaided");
+    EXPECT(cfg_is("SVCDIR", "/Library/LaunchDaemons"),
+           "into /Library/LaunchDaemons");
+    EXPECT(strstr(out("stdout"), "launchd — /Library/LaunchDaemons") != NULL,
+           "with the summary saying so");
+    /* udev is Linux's.  A Mac has no equivalent and `make install` writes no
+     * rule there, so naming a directory for one is a promise nothing keeps. */
+    EXPECT(strstr(out("stdout"), "udev rules") == NULL,
+           "and no udev directory at all");
+
+    /* An explicit --with-service moves the default directory with it ... */
+    fixture_reset();
+    EXPECT(run("--with-service=launchd") == 0, "--with-service=launchd configures");
+    EXPECT(cfg_is("SVC_KIND", "launchd"), "overriding the detected systemd");
+    EXPECT(cfg_is("SVCDIR", "/Library/LaunchDaemons"), "and moving SVCDIR with it");
+
+    fixture_reset();
+    setenv("STUB_UNAME_S", "Darwin", 1);
+    EXPECT(run("--with-service=systemd") == 0, "a Mac can be told systemd");
+    EXPECT(cfg_is("SVC_KIND", "systemd"), "and takes it");
+    EXPECT(cfg_is("SVCDIR", "/etc/systemd/system"), "with the systemd directory");
+
+    /* ... but never past an explicit --svcdir.  A packager naming both means
+     * both, and this is the pair debian/rules would pass. */
+    fixture_reset();
+    EXPECT(run("--with-service=launchd --svcdir=/opt/units") == 0,
+           "both options together configure");
+    EXPECT(cfg_is("SVC_KIND", "launchd"), "kind from --with-service");
+    EXPECT(cfg_is("SVCDIR", "/opt/units"), "directory from --svcdir");
+
+    fixture_reset();
+    EXPECT(run("--with-service=upstart") == 1, "an unknown init system fails");
+    EXPECT(strstr(out("stderr"), "upstart") != NULL, "naming it on stderr");
+    EXPECT(!wrote_config_mk(), "and writes no config.mk");
+
+    /* ── the Makefile's half ─────────────────────────────────────────────── */
+    setenv("PATH", g_real_path, 1);
+
+    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX], buf[8192];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+
+    /* -n prints the recipe and builds nothing, so this reads the install
+     * rules without touching a file.  SVCDIR is passed rather than left to
+     * config.mk, which the repo may or may not have. */
+    for (int launchd = 0; launchd < 2; launchd++) {
+        snprintf(cmd, sizeof cmd,
+                 "cd '%s' && make -n install SVC_KIND=%s SVCDIR=/tmp/svc "
+                 "DESTDIR=/tmp/imud-nonexistent > '%s/mk.txt' 2>&1",
+                 root, launchd ? "launchd" : "systemd", g_work);
+        EXPECT(system(cmd) == 0, "make -n install parses");
+
+        snprintf(path, sizeof path, "%s/mk.txt", g_work);
+        FILE *f = fopen(path, "r");
+        buf[0] = '\0';
+        if (f) { size_t n = fread(buf, 1, sizeof buf - 1, f); buf[n] = '\0'; fclose(f); }
+
+        if (launchd) {
+            EXPECT(strstr(buf, "/tmp/svc/io.github.richcreations.imud.plist")
+                   != NULL,
+                   "SVC_KIND=launchd installs the plist under its label");
+            EXPECT(strstr(buf, "/tmp/svc/imud.service") == NULL,
+                   "and not the systemd unit");
+            /* RUNDIR follows the same switch: macOS has no /run, so the
+             * installed config's AF_UNIX paths have to move with it. */
+            EXPECT(strstr(buf, "s|/run/imud|/var/run|g") != NULL,
+                   "and rewrites the config's runtime paths to /var/run");
+        } else {
+            EXPECT(strstr(buf, "/tmp/svc/imud.service") != NULL,
+                   "SVC_KIND=systemd installs the unit");
+            /* Matched on the installed path, not on ".plist": the recipe's
+             * own comments name etc/imud.plist.in, and make -n echoes them. */
+            EXPECT(strstr(buf, "/tmp/svc/io.github") == NULL,
+                   "and no launchd job");
+            EXPECT(strstr(buf, "s|/run/imud|/run/imud|g") != NULL,
+                   "leaving the config's runtime paths alone");
+        }
+    }
+
+    setenv("PATH", g_stub, 1);
+}
+
+/*
  * config.mk has to be a makefile, not just a text file that looks like one.
  * The Makefile -includes it ahead of everything, so a syntax error there
  * breaks every target at once — including the ones that never compile
@@ -781,6 +911,7 @@ int main(void)
     test_optional_never_fatal();
     test_host_runtime();
     test_install_paths();
+    test_service_unit_follows_the_host();
     test_config_mk_is_valid_make();
 
     printf("\n%d passed, %d failed\n", g_checks - g_fail, g_fail);

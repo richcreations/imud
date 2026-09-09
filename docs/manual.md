@@ -63,10 +63,13 @@ backend for each from what it finds. Everything else, the thread model
 included, is POSIX. See §11 for writing one.
 
 **macOS** is the second host those seams reach: the daemon, the tools and the
-bridges build and run there, and CI runs the whole test suite on Intel and
-Apple silicon. A Mac has no I²C or SPI node and no GPIO chip, so the sensor
-comes in over an FT232H USB bridge ([§5.2](#52-i²c-over-an-ft232h-usb-bridge))
-with both readers polling. See [Building on macOS](#building-on-macos) below.
+bridges build and run on macOS 14 Sonoma through macOS 26 Tahoe, and CI runs
+the whole test suite on both ends of that range and on Intel. A Mac has no I²C
+or SPI node and no GPIO chip, so the sensor comes in over an FT232H USB bridge
+([§5.2](#52-i²c-over-an-ft232h-usb-bridge)) with both readers polling. It runs
+under launchd rather than systemd. See
+[Building on macOS](#building-on-macos) and
+[As a launchd job](#as-a-launchd-job-macos) below.
 
 **Binaries.**
 
@@ -157,11 +160,11 @@ ones fits.
 
 ### Building on macOS
 
-The daemon, the tools and the bridges build and run on macOS, and CI runs the
-whole test suite there on both Intel and Apple silicon. `./configure` is
-**required** on this host rather than optional: it is what selects the
-backends a Mac has, where a plain `make` reaches for the Linux ones and fails
-on `linux/i2c-dev.h`.
+The daemon, the tools and the bridges build and run on macOS 14 Sonoma through
+macOS 26 Tahoe, and CI runs the whole test suite on both ends of that range and
+on Intel. `./configure` is **required** on this host rather than optional: it
+is what selects the backends a Mac has, where a plain `make` reaches for the
+Linux ones and fails on `linux/i2c-dev.h`.
 
 ```sh
 brew install mosquitto        # only for the MQTT bridge
@@ -175,9 +178,15 @@ sensor over an FT232H USB bridge
 hardware. Set `int_gpio = 0` under `[imu]` and `[mag]` either way — this host
 has no interrupt line to take.
 
-There is no package and no service unit. A Mac also has no `/run`, so name a
-`pid_file` and `status_socket` the daemon can write; `config/sim.conf` puts
-those and its stream socket under `/tmp`, and runs unpatched.
+There is no `.deb` — build from source. `sudo make install` works here and
+installs a launchd job rather than a systemd unit, which
+[As a launchd job](#as-a-launchd-job-macos) covers.
+
+A Mac has no `/run`, so the AF_UNIX paths in the config `make install` writes
+are rewritten to `/var/run`, which every boot provides. Running from the build
+tree instead, name a `pid_file` and `status_socket` the daemon can write;
+`config/sim.conf` puts those and its stream socket under `/tmp`, and runs
+unpatched.
 
 ### Install
 
@@ -192,7 +201,7 @@ This installs:
 | Binaries | `/usr/local/bin/` |
 | Reference config | `/etc/imud/imud.conf` (skipped if it already exists) |
 | Calibration file | `/etc/imud/cal.json` (if `config/cal.json` is present) |
-| systemd unit | `/etc/systemd/system/imud.service` |
+| Service unit | `/etc/systemd/system/imud.service`, or on macOS `/Library/LaunchDaemons/io.github.richcreations.imud.plist` |
 | Client libraries | `libimud.so` + `/usr/local/include/imud.h` (see `man 3 libimud`), `/usr/local/share/imud/imud_client.py` |
 | Man pages | `imud.8`, `imud-cal.8`, `imud.conf.5`, `imud-status.1`, `libimud.3` |
 
@@ -311,6 +320,52 @@ tightens an inherited umask but never loosens it. Both AF_UNIX sockets
 (`/run/imud/imud.sock` and the stream socket) are created at mode 0660 rather
 than chmod'd down after `bind()`, so they are never momentarily wider — however
 `imud` was launched, systemd or not.
+
+### As a launchd job (macOS)
+
+`make install` on macOS installs
+`/Library/LaunchDaemons/io.github.richcreations.imud.plist` instead of a
+systemd unit — `./configure` picks which from `uname`, and
+`--with-service=systemd|launchd` overrides it. Each bridge installs its own,
+labelled the same way.
+
+```sh
+sudo launchctl bootstrap system \
+    /Library/LaunchDaemons/io.github.richcreations.imud.plist
+sudo launchctl print system/io.github.richcreations.imud    # state, PID, exits
+tail -f /var/log/imud.log                                   # follow the log
+sudo launchctl bootout system/io.github.richcreations.imud  # stop and unload
+```
+
+The plist is the unit's `Restart=on-failure` and `RestartSec=3` in launchd's
+terms — `KeepAlive` with `SuccessfulExit` false, and `ThrottleInterval` 3 —
+plus `ProcessType Interactive`, which keeps the output threads out of the
+background QoS class where their deadlines would be throttled. There is no
+launchd equivalent of the watchdog, the memory ceiling or `Type=notify`, so a
+hung daemon is not restarted here the way it is under systemd.
+
+Three differences from the unit that matter, all of them macOS's rather than
+imud's:
+
+- **The job runs as root.** macOS has no `useradd`, no `RuntimeDirectory=` and
+  none of `DevicePolicy=`, `SystemCallFilter=` or the `Protect*` family, so
+  there is no `imud` user and no confinement to speak of. The daemon needs no
+  privilege of its own — the FT232H bridge opens without one — so a site that
+  wants it unprivileged can create a service account and add `UserName` and
+  `GroupName` to the plist, then move the AF_UNIX paths somewhere that account
+  can write: only root may create files in `/var/run`.
+- **There is no `/run`.** `make install` rewrites the AF_UNIX paths in the
+  config it writes to `/var/run`, and the capture directory to `/var/db/imud`,
+  which it creates. `/var/run` is emptied on every boot, which is why the
+  sockets sit directly in it rather than in a subdirectory nothing would
+  recreate.
+- **macOS can switch it off behind your back.** A LaunchDaemon appears under
+  System Settings → General → Login Items & Extensions and can be disabled
+  there. That is the first thing to check when the daemon stops starting and
+  the log says nothing.
+
+The plist must be owned `root:wheel` and no wider than 0644 or launchd refuses
+to load it, which `sudo make install` satisfies.
 
 ### Command-line options
 

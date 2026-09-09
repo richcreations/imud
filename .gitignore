@@ -81,6 +81,8 @@ src/drivers/*.d
 # libimud build products
 /libimud.so
 /libimud.so.*
+/libimud.dylib
+/libimud.*.dylib
 /libimud.pc
 lib/*.o
 lib/*.d
@@ -89,8 +91,10 @@ lib/*.d
 __pycache__/
 *.pyc
 
-# Generated systemd units (from etc/*.service.in; see Makefile)
+# Generated service units (from etc/*.service.in and etc/*.plist.in; see
+# Makefile).  The .in templates are tracked; these are not.
 /etc/*.service
+/etc/*.plist
 
 # Release tarballs (make dist)
 /imud-*.tar.gz

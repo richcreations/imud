@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  imud-mqtt.plist — the launchd counterpart of etc/imud-mqtt.service.
+  etc/imud-signalk.plist.in is the reference; the notes there apply here.
+
+  libmosquitto is linked by absolute install name, so the job resolves it
+  without the Homebrew environment launchd does not give it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.richcreations.imud-mqtt</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BINDIR@/imud-mqtt</string>
+        <string>--config</string>
+        <string>@ETCDIR@/imud-mqtt.conf</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- 0077, written 63: launchd reads Umask as a DECIMAL integer. -->
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/imud-mqtt.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/imud-mqtt.log</string>
+</dict>
+</plist>

@@ -30,8 +30,18 @@ CC=${CC:-}
 CFLAGS_PROBE=${CFLAGS:-}
 prefix=/usr/local
 etcdir=/etc/imud
-svcdir=/etc/systemd/system
 udevdir=/etc/udev/rules.d
+
+# The init system, which decides which service unit `make install` writes and
+# where.  uname, not a link probe: there is nothing to compile here and the
+# host kernel is the whole of the answer.  --with-service= overrides it, and
+# --svcdir= overrides the directory alone.
+case $(uname -s) in
+    Darwin) svc_kind=launchd; svcdir=/Library/LaunchDaemons ;;
+    *)      svc_kind=systemd; svcdir=/etc/systemd/system ;;
+esac
+svcdir_given=no
+want_service=auto
 libdir=
 mandir=
 docdir=
@@ -83,9 +93,11 @@ Options take their value with an =, as shown.
   --docdir=DIR              package documentation [PREFIX/share/doc]
   --infodir=DIR             imud.info [PREFIX/share/info]
   --etcdir=DIR              configuration [$etcdir]
-  --svcdir=DIR              systemd units [$svcdir]
+  --svcdir=DIR              service units [$svcdir]
   --udevdir=DIR             udev rules [$udevdir]
 
+  --with-service=NAME       init system to install a unit for: systemd or
+                            launchd [$svc_kind]
   --with-gpiod              require libgpiod; fail if it is absent
   --without-gpiod           build the null GPIO backend even where it is present
   --with-linux-bus          require i2c-dev and spidev; fail if absent
@@ -114,8 +126,9 @@ for arg do
         --docdir=*)       docdir=${arg#*=} ;;
         --infodir=*)      infodir=${arg#*=} ;;
         --etcdir=*)       etcdir=${arg#*=} ;;
-        --svcdir=*)       svcdir=${arg#*=} ;;
+        --svcdir=*)       svcdir=${arg#*=}; svcdir_given=yes ;;
         --udevdir=*)      udevdir=${arg#*=} ;;
+        --with-service=*) want_service=${arg#*=} ;;
         --with-gpiod)     want_gpiod=yes ;;
         --without-gpiod)  want_gpiod=no ;;
         --with-linux-bus)    want_linux_bus=yes ;;
@@ -126,6 +139,22 @@ for arg do
         *) die "unrecognized option: $arg (see --help)" ;;
     esac
 done
+
+# An explicit --with-service moves the default directory with it, but never
+# past an explicit --svcdir: a packager naming both means both.
+case $want_service in
+    auto) ;;
+    systemd|launchd)
+        svc_kind=$want_service
+        if [ "$svcdir_given" = no ]; then
+            if [ "$svc_kind" = launchd ]; then
+                svcdir=/Library/LaunchDaemons
+            else
+                svcdir=/etc/systemd/system
+            fi
+        fi ;;
+    *) die "--with-service: expected systemd or launchd, not \"$want_service\"" ;;
+esac
 
 : "${libdir:=$prefix/lib}"
 : "${mandir:=$prefix/share/man}"
@@ -470,6 +499,12 @@ ATOMIC_LIB = $atomic_lib
 
 PREFIX = $prefix
 ETCDIR = $etcdir
+
+# The init system install/uninstall write a unit for.  systemd installs
+# etc/<name>.service under its own name; launchd installs etc/<name>.plist
+# under the reverse-DNS label its flat system namespace wants, and skips the
+# udev rule and the imud user, neither of which macOS has.
+SVC_KIND = $svc_kind
 SVCDIR = $svcdir
 UDEVDIR = $udevdir
 LIBDIR = $libdir
@@ -560,7 +595,10 @@ report "$have_lcov"      lcov           "make coverage"
 echo
 printf '    %-18s %s\n' "prefix" "$prefix"
 printf '    %-18s %s\n' "config" "$etcdir"
-printf '    %-18s %s\n' "systemd units" "$svcdir"
-printf '    %-18s %s\n' "udev rules" "$udevdir"
+printf '    %-18s %s\n' "service units" "$svc_kind — $svcdir"
+# udev is Linux's; a launchd host has no equivalent and installs no rule.
+if [ "$svc_kind" = systemd ]; then
+    printf '    %-18s %s\n' "udev rules" "$udevdir"
+fi
 echo
 echo "Wrote $out.  Now run: make"

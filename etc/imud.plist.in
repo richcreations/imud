@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  imud.plist — the launchd counterpart of etc/imud.service.
+
+  Installed to /Library/LaunchDaemons as io.github.richcreations.imud.plist,
+  which must be owned root:wheel and no wider than 0644 or launchd refuses to
+  load it.  Bootstrap it with:
+
+      sudo launchctl bootstrap system \
+          /Library/LaunchDaemons/io.github.richcreations.imud.plist
+
+  Supported on macOS 14 Sonoma through macOS 26 Tahoe.
+
+  THE JOB RUNS AS ROOT.  macOS has no useradd, no RuntimeDirectory= and none
+  of systemd's per-service confinement, so there is no equivalent here of the
+  unit's imud user, DevicePolicy= or SystemCallFilter=.  The daemon needs no
+  privilege of its own — the FT232H bridge opens without one — so a site that
+  wants it unprivileged can create a service account and add UserName and
+  GroupName below; the AF_UNIX paths in imud.conf must then move somewhere
+  that account can write, since only root may create files in /var/run.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.richcreations.imud</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BINDIR@/imud</string>
+        <string>--config</string>
+        <string>@ETCDIR@/imud.conf</string>
+    </array>
+
+    <!-- Start at boot, and whenever the job is bootstrapped. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on a non-zero exit only, matching the unit's
+         Restart=on-failure: a clean SIGTERM shutdown stays down. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Seconds between respawns — the unit's RestartSec=3.  launchd's own
+         floor is 10 s, which is slower than a boot racing the USB bridge
+         wants to retry. -->
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <!-- Keeps the daemon out of the background QoS class, where the output
+         threads' absolute deadlines would be throttled. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- 0027, written 23: launchd reads Umask as a DECIMAL integer.  Same
+         value as the unit's UMask=0027, and main() only ever tightens it. -->
+    <key>Umask</key>
+    <integer>23</integer>
+
+    <!-- There is no journal here.  [logging] file stays empty in imud.conf so
+         the daemon writes to stderr and launchd captures it; setting both
+         paths in the config as well would put two writers on one file. -->
+    <key>StandardOutPath</key>
+    <string>/var/log/imud.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/imud.log</string>
+</dict>
+</plist>

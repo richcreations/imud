@@ -182,8 +182,26 @@ endif
 # object directly so the macOS dev/test workflow keeps working. In-tree bridge
 # runs on Linux need LD_LIBRARY_PATH=. (the installed copy is found via
 # ldconfig).
-SONAME   = libimud.so.0
-SHLIB    = libimud.so.0.0
+#
+# Darwin still gets a real shared library to install, it is just a different
+# shape: a dylib carrying its version in the install_name, because Mach-O has
+# no SONAME and no symbol versioning at all. SHLIB_FILES is what install and
+# uninstall move; SHLIB_LINK_CMDS is how the names beside $(SHLIB) are made,
+# which is a two-step SONAME chain on Linux and one plain name here.
+ifeq ($(UNAME_S),Darwin)
+    SHLIB           = libimud.0.dylib
+    SHLIB_FILES     = $(SHLIB) libimud.dylib
+    SHLIB_LINK_CMDS = ln -sf $(SHLIB) $(1)/libimud.dylib
+else
+    SONAME          = libimud.so.0
+    SHLIB           = libimud.so.0.0
+    SHLIB_FILES     = $(SHLIB) $(SONAME) libimud.so
+    SHLIB_LINK_CMDS = ln -sf $(SHLIB) $(1)/$(SONAME); ln -sf $(SONAME) $(1)/libimud.so
+endif
+
+# Which of the two the bridges link. Unchanged from before the dylib existed:
+# Linux links the library, and every other host links the object, so a port
+# that has not been run yet cannot be broken by a shared-library detail.
 ifeq ($(UNAME_S),Linux)
     LIBIMUD = $(SHLIB)
 else
@@ -347,12 +365,24 @@ bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
 lib/libimud.o: lib/libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -fPIC -c -o $@ $<
 
+ifeq ($(UNAME_S),Darwin)
+# Darwin: a dylib whose install_name is where it will be installed, so a
+# consumer linked against it resolves the library without DYLD_ paths.  Apple
+# ld has neither -soname nor --version-script, so the export restriction comes
+# from lib/libimud.exp instead of the map's `local: *`.
+$(SHLIB): lib/libimud.o lib/libimud.exp
+	$(CC) $(CFLAGS) $(LDFLAGS) -dynamiclib \
+	      -install_name $(LIBDIR)/$(SHLIB) \
+	      -compatibility_version 1 -current_version 1 \
+	      -Wl,-exported_symbols_list,lib/libimud.exp -o $@ lib/libimud.o
+	$(call SHLIB_LINK_CMDS,.)
+else
 # Versioned shared library (Linux): SONAME libimud.so.0; only imud_* exported.
 $(SHLIB): lib/libimud.o lib/libimud.map
 	$(CC) $(CFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(SONAME) \
 	      -Wl,--version-script=lib/libimud.map -o $@ lib/libimud.o
-	ln -sf $(SHLIB) $(SONAME)
-	ln -sf $(SONAME) libimud.so
+	$(call SHLIB_LINK_CMDS,.)
+endif
 
 libimud: $(LIBIMUD)
 
@@ -932,7 +962,8 @@ CHECK_DOC_TOOLS = check-links check-cli-docs check-nmea \
                   check-libimud-api check-math-citations check-manpages \
                   check-seccomp check-package-descriptions \
                   check-imutest-checks check-comment-refs check-arch-claims \
-                  check-fuzz-targets check-portable-tests check-web-drivers
+                  check-fuzz-targets check-portable-tests check-web-drivers \
+                  check-macos
 
 .PHONY: $(CHECK_DOC_TOOLS) check-generated-text test-tools check-config-docs \
         check-packet-docs check-driver-docs check-texi check-math-pdf-stamp \
@@ -1162,7 +1193,6 @@ coverage:
 
 PREFIX  ?= /usr/local
 ETCDIR  ?= /etc/imud
-SVCDIR  ?= /etc/systemd/system
 LIBDIR  ?= $(PREFIX)/lib
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc
@@ -1172,6 +1202,69 @@ INFODIR ?= $(PREFIX)/share/info
 # land in /etc or the rule is inert.  Packagers override this to
 # /usr/lib/udev/rules.d (/etc is reserved for the admin's own overrides).
 UDEVDIR ?= /etc/udev/rules.d
+
+# ── The init system, and what follows from it ────────────────────────────────
+#
+# systemd installs etc/<name>.service under its own name; launchd installs
+# etc/<name>.plist under the reverse-DNS label its flat system namespace
+# wants.  ./configure writes SVC_KIND from uname into config.mk; the probe
+# here is what keeps a plain `make install` right with no configure step.
+# $(origin) rather than ?= for the reason given at UNAME_S above.
+ifeq ($(origin SVC_KIND),undefined)
+ifeq ($(UNAME_S),Darwin)
+SVC_KIND := launchd
+else
+SVC_KIND := systemd
+endif
+endif
+
+# Reverse-DNS prefix for the launchd labels.  systemd never sees it.
+LAUNCHD_PREFIX = io.github.richcreations
+
+# Every unit the install targets can place.  uninstall reads it, so a unit
+# cannot be installed by one recipe and left behind by the other.
+SVC_NAMES = imud imud-signalk imud-mqtt imud-influxdb imud-prometheus imud-mavlink
+
+# $(call svc-src,<name>) is the unit to build, $(call svc-dst,<name>) the name
+# it installs under.  RUNDIR and STATEDIR are substituted into the installed
+# configs: systemd creates /run/imud through RuntimeDirectory= and
+# /var/lib/imud through StateDirectory=, and launchd has neither.  macOS has
+# no /run at all, so the AF_UNIX paths go straight into /var/run — which does
+# exist on every boot, where a subdirectory made at install time would not —
+# and the state directory is created by `make install` because it has to
+# survive one.
+ifeq ($(SVC_KIND),launchd)
+svc-src  = etc/$(1).plist
+svc-dst  = $(LAUNCHD_PREFIX).$(1).plist
+SVCDIR   ?= /Library/LaunchDaemons
+RUNDIR   ?= /var/run
+STATEDIR ?= /var/db/imud
+else
+svc-src  = etc/$(1).service
+svc-dst  = $(1).service
+SVCDIR   ?= /etc/systemd/system
+RUNDIR   ?= /run/imud
+STATEDIR ?= /var/lib/imud
+endif
+
+# The runtime and state directories written into every config that ships.
+# Both substitutions are the identity under systemd, so the installed file is
+# the source byte for byte there and only a launchd host sees a difference.
+CONF_SUBST = sed -e 's|/run/imud|$(RUNDIR)|g' -e 's|/var/lib/imud|$(STATEDIR)|g'
+
+# $(call install-conf,<source>,<dest>,<mode>) — install a config file with
+# that substitution, never clobbering one the operator already has.
+# Created under `umask 077` and relaxed, rather than created at the umask and
+# tightened, so the file is never briefly wider than its final mode — which is
+# what the `install -m` this replaced did for free.
+define install-conf
+	@if [ ! -f "$(2)" ]; then \
+	    (umask 077; $(CONF_SUBST) $(1) > "$(2)") && chmod $(3) "$(2)"; \
+	    echo "Installed config:       $(2) ($(3))"; \
+	else \
+	    echo "Config already exists, skipping: $(2)"; \
+	fi
+endef
 
 # ── Man pages, one list per installed package ────────────────────────────────
 # These existed three times over — once in each install-* recipe, again in
@@ -1219,17 +1312,31 @@ libimud.pc: lib/libimud.pc.in .FORCE
 	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@LIBDIR@|$(LIBDIR)|g' \
 	    -e 's|@VERSION@|$(VERSION)|g' $< > $@
 
-# systemd units are generated from etc/*.service.in with the real bin dir.
-# .FORCE regenerates on every make so a changed PREFIX can't leave stale units.
+# Service units are generated from etc/*.service.in (systemd) and
+# etc/*.plist.in (launchd) with the real install paths.  .FORCE regenerates on
+# every make so a changed PREFIX can't leave stale units.  One substitution
+# list for both kinds: the .service.in files carry no @ETCDIR@ today, and that
+# is the only reason they read the same either way.
+SVC_SUBST = sed -e 's|@BINDIR@|$(PREFIX)/bin|g' -e 's|@ETCDIR@|$(ETCDIR)|g'
+
 etc/%.service: etc/%.service.in .FORCE
-	sed 's|@BINDIR@|$(PREFIX)/bin|g' $< > $@
+	$(SVC_SUBST) $< > $@
+
+etc/%.plist: etc/%.plist.in .FORCE
+	$(SVC_SUBST) $< > $@
 
 .FORCE:
 
-install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
+install: imud imud-cal imud-status $(call svc-src,imud) $(SHLIB) libimud.pc
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud imud-cal imud-status $(DESTDIR)$(PREFIX)/bin/
-	# ── System user + hardware groups (skipped for staged installs: DESTDIR set) ─
+	# ── System user, or the state directory (skipped when DESTDIR is set) ──
+	#
+	# Which of the two this host needs is the init system's difference.  macOS
+	# has none of useradd, groupadd or getent, and its launchd job runs as
+	# root — see etc/imud.plist.in for why, and for what a site that wants it
+	# unprivileged has to do instead.
+ifeq ($(SVC_KIND),systemd)
 	# The groups are created, not just joined: Raspberry Pi OS ships gpio, i2c
 	# and spi, stock Debian ships none, and imud.service's SupplementaryGroups=
 	# refuses to start without them.  Done on every install, not only when the
@@ -1244,14 +1351,15 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	        usermod -aG "$$grp" imud 2>/dev/null || true; \
 	    done; \
 	fi
+else
+	# launchd has no RuntimeDirectory=/StateDirectory=.  The runtime paths sit
+	# directly in $(RUNDIR), which the system provides; the state directory has
+	# to survive a boot, so it is made here rather than at start.
+	install -d -m 0750 $(DESTDIR)$(STATEDIR)
+endif
 	# ── Config + calibration (all in /etc/imud) ────────────────────────────
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud.conf" ]; then \
-	    install -m 644 config/imud.conf $(DESTDIR)$(ETCDIR)/imud.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud.conf"; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud.conf"; \
-	fi
+	$(call install-conf,config/imud.conf,$(DESTDIR)$(ETCDIR)/imud.conf,644)
 	# Never into a staged (packaging) root: cal.json is one machine's
 	# calibration, and capturing a developer's copy into a .deb would ship it
 	# to every user.  It also breaks the build outright — nothing in
@@ -1266,11 +1374,12 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	else \
 	    echo "No config/cal.json found — run 'imud-cal' after install to calibrate."; \
 	fi
-	# ── Systemd service ────────────────────────────────────────────────────
-	install -m 644 etc/imud.service         $(DESTDIR)$(SVCDIR)/imud.service
+	# ── Service unit ───────────────────────────────────────────────────────
+	install -m 644 $(call svc-src,imud) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud)
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),systemd)
 	# ── udev rule: group access to /dev/i2c-* and /dev/gpiochip* ───────────
 	#
 	# NOTE THE MISSING --subsystem-match=gpio.  It is not an oversight, and
@@ -1305,6 +1414,7 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	        chmod 0660 "$$n" 2>/dev/null || true; \
 	    done; \
 	fi
+endif
 	# ── Client libraries ───────────────────────────────────────────────────
 	# imud_client.h is DEPRECATED and no longer installed (vendor from the
 	# source tree if you must); the C client is libimud below.
@@ -1314,8 +1424,7 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	# ── libimud shared library + public header + pkg-config ────────────────
 	install -d -m 0755 $(DESTDIR)$(LIBDIR)/pkgconfig
 	install -m 644 $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SHLIB)
-	ln -sf $(SHLIB) $(DESTDIR)$(LIBDIR)/$(SONAME)
-	ln -sf $(SONAME) $(DESTDIR)$(LIBDIR)/libimud.so
+	$(call SHLIB_LINK_CMDS,$(DESTDIR)$(LIBDIR))
 	install -m 644 lib/imud.h $(DESTDIR)$(PREFIX)/include/imud.h
 	install -m 644 libimud.pc $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc
 	$(call install-man,$(MAN_libimud))
@@ -1363,11 +1472,15 @@ install: imud imud-cal imud-status etc/imud.service $(SHLIB) libimud.pc
 	install -m 644 devbox/README.md $(DESTDIR)$(DOCDIR)/imud/devbox/
 	install -m 644 packaging/imud/copyright $(DESTDIR)$(DOCDIR)/imud/copyright
 	gzip -9nc packaging/imud/changelog > $(DESTDIR)$(DOCDIR)/imud/changelog.gz
-	install -m 644 config/imud.conf $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf
+	@$(CONF_SUBST) config/imud.conf > $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud/examples/imud.conf
 	@echo "Installed docs to       $(DESTDIR)$(DOCDIR)/imud"
 	@echo ""
 	@echo "Next steps:"
+ifeq ($(SVC_KIND),launchd)
+	@echo "  sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud)"
+else
 	@echo "  sudo systemctl enable --now imud"
+endif
 	@echo "  review $(ETCDIR)/imud.conf  (i2c_bus, gpio_chip, rotation_euler_deg)"
 
 # ── Install the Signal K bridge (optional) ─────────────────────────────────────
@@ -1402,48 +1515,46 @@ install-wmm-data:
 	@echo "Installed WMM2025 coefficients: $(DESTDIR)$(PREFIX)/share/imud/WMM.COF"
 	@echo "  (drop a newer model at $(ETCDIR)/WMM.COF to override; imud prefers it)"
 
-install-signalk: imud-signalk etc/imud-signalk.service
+install-signalk: imud-signalk $(call svc-src,imud-signalk)
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-signalk $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 etc/imud-signalk.service $(DESTDIR)$(SVCDIR)/imud-signalk.service
+	install -m 644 $(call svc-src,imud-signalk) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-signalk)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-signalk.conf" ]; then \
-	    install -m 644 config/imud-signalk.conf $(DESTDIR)$(ETCDIR)/imud-signalk.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-signalk.conf"; \
-	fi
+	$(call install-conf,config/imud-signalk.conf,$(DESTDIR)$(ETCDIR)/imud-signalk.conf,644)
 	$(call install-man,$(MAN_signalk))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-signalk/examples
 	install -m 644 docs/imud-signalk/README.md docs/imud-signalk/manual.md \
 	               docs/imud-signalk/spec.md $(DESTDIR)$(DOCDIR)/imud-signalk/
 	install -m 644 packaging/imud-signalk/copyright $(DESTDIR)$(DOCDIR)/imud-signalk/copyright
 	gzip -9nc packaging/imud-signalk/changelog > $(DESTDIR)$(DOCDIR)/imud-signalk/changelog.gz
-	install -m 644 config/imud-signalk.conf $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf
+	@$(CONF_SUBST) config/imud-signalk.conf > $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),launchd)
+	@echo "Installed imud-signalk.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-signalk)"
+else
 	@echo "Installed imud-signalk.  Enable with: sudo systemctl enable --now imud-signalk"
+endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-signalk.conf)"
 
 # ── Install the MQTT bridge (optional) ─────────────────────────────────────────
 # Run after `make imud-mqtt` (needs libmosquitto-dev).  Installs the binary,
 # service, man page, and its own config file (non-clobbering).
-install-mqtt: imud-mqtt etc/imud-mqtt.service
+install-mqtt: imud-mqtt $(call svc-src,imud-mqtt)
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-mqtt $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 etc/imud-mqtt.service $(DESTDIR)$(SVCDIR)/imud-mqtt.service
+	install -m 644 $(call svc-src,imud-mqtt) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-mqtt)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	# 0640, not 0644: this file can hold a plaintext broker password.
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-mqtt.conf" ]; then \
-	    install -m 640 config/imud-mqtt.conf $(DESTDIR)$(ETCDIR)/imud-mqtt.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mqtt.conf (0640)"; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mqtt.conf"; \
-	fi
+	$(call install-conf,config/imud-mqtt.conf,$(DESTDIR)$(ETCDIR)/imud-mqtt.conf,640)
 	# Outside the block above on purpose: an upgrade over an existing 0644 file
 	# is the common case and must be repaired too.  Never leave the file
 	# unreadable by the daemon — without the group, fall back to 0644 and say so.
+	#
+	# systemd only: there is no imud group under launchd, where the job is
+	# root and 0640 root:wheel is already what the mode above gives.
+ifeq ($(SVC_KIND),systemd)
 	@if [ -z "$(DESTDIR)" ] && [ -f "$(ETCDIR)/imud-mqtt.conf" ]; then \
 	    if getent group imud >/dev/null 2>&1; then \
 	        chgrp imud "$(ETCDIR)/imud-mqtt.conf" && chmod 640 "$(ETCDIR)/imud-mqtt.conf"; \
@@ -1453,37 +1564,40 @@ install-mqtt: imud-mqtt etc/imud-mqtt.service
 	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
 	    fi; \
 	fi
+endif
 	$(call install-man,$(MAN_mqtt))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples
 	install -m 644 docs/imud-mqtt/README.md docs/imud-mqtt/manual.md \
 	               docs/imud-mqtt/spec.md $(DESTDIR)$(DOCDIR)/imud-mqtt/
 	install -m 644 packaging/imud-mqtt/copyright $(DESTDIR)$(DOCDIR)/imud-mqtt/copyright
 	gzip -9nc packaging/imud-mqtt/changelog > $(DESTDIR)$(DOCDIR)/imud-mqtt/changelog.gz
-	install -m 644 config/imud-mqtt.conf $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf
+	@$(CONF_SUBST) config/imud-mqtt.conf > $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),launchd)
+	@echo "Installed imud-mqtt.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mqtt)"
+else
 	@echo "Installed imud-mqtt.  Enable with: sudo systemctl enable --now imud-mqtt"
+endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-mqtt.conf)"
 
 # ── Install the InfluxDB bridge (optional) ─────────────────────────────────────
 # Run after `make imud-influxdb`.  Installs the binary, service, man page, and
 # its own config file (non-clobbering).
-install-influxdb: imud-influxdb etc/imud-influxdb.service
+install-influxdb: imud-influxdb $(call svc-src,imud-influxdb)
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-influxdb $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 etc/imud-influxdb.service $(DESTDIR)$(SVCDIR)/imud-influxdb.service
+	install -m 644 $(call svc-src,imud-influxdb) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-influxdb)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
 	# 0640, not 0644: this file can hold a plaintext InfluxDB API token.
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-influxdb.conf" ]; then \
-	    install -m 640 config/imud-influxdb.conf $(DESTDIR)$(ETCDIR)/imud-influxdb.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-influxdb.conf (0640)"; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-influxdb.conf"; \
-	fi
+	$(call install-conf,config/imud-influxdb.conf,$(DESTDIR)$(ETCDIR)/imud-influxdb.conf,640)
 	# Outside the block above on purpose: an upgrade over an existing 0644 file
 	# is the common case and must be repaired too.  Never leave the file
 	# unreadable by the daemon — without the group, fall back to 0644 and say so.
+	#
+	# systemd only, for the reason given in install-mqtt above.
+ifeq ($(SVC_KIND),systemd)
 	@if [ -z "$(DESTDIR)" ] && [ -f "$(ETCDIR)/imud-influxdb.conf" ]; then \
 	    if getent group imud >/dev/null 2>&1; then \
 	        chgrp imud "$(ETCDIR)/imud-influxdb.conf" && chmod 640 "$(ETCDIR)/imud-influxdb.conf"; \
@@ -1493,72 +1607,77 @@ install-influxdb: imud-influxdb etc/imud-influxdb.service
 	        echo "         Install imud itself first, then re-run, or the bridge cannot read it."; \
 	    fi; \
 	fi
+endif
 	$(call install-man,$(MAN_influxdb))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples
 	install -m 644 docs/imud-influxdb/README.md docs/imud-influxdb/manual.md \
 	               docs/imud-influxdb/spec.md $(DESTDIR)$(DOCDIR)/imud-influxdb/
 	install -m 644 packaging/imud-influxdb/copyright $(DESTDIR)$(DOCDIR)/imud-influxdb/copyright
 	gzip -9nc packaging/imud-influxdb/changelog > $(DESTDIR)$(DOCDIR)/imud-influxdb/changelog.gz
-	install -m 644 config/imud-influxdb.conf $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf
+	@$(CONF_SUBST) config/imud-influxdb.conf > $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),launchd)
+	@echo "Installed imud-influxdb.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-influxdb)"
+else
 	@echo "Installed imud-influxdb.  Enable with: sudo systemctl enable --now imud-influxdb"
+endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-influxdb.conf)"
 
 # ── Install the Prometheus exporter (optional) ─────────────────────────────────
 # Run after `make imud-prometheus`.  Installs the binary, service, man pages,
 # and its own config file (non-clobbering).
-install-prometheus: imud-prometheus etc/imud-prometheus.service
+install-prometheus: imud-prometheus $(call svc-src,imud-prometheus)
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-prometheus $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 etc/imud-prometheus.service $(DESTDIR)$(SVCDIR)/imud-prometheus.service
+	install -m 644 $(call svc-src,imud-prometheus) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-prometheus)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-prometheus.conf" ]; then \
-	    install -m 644 config/imud-prometheus.conf $(DESTDIR)$(ETCDIR)/imud-prometheus.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-prometheus.conf"; \
-	fi
+	$(call install-conf,config/imud-prometheus.conf,$(DESTDIR)$(ETCDIR)/imud-prometheus.conf,644)
 	$(call install-man,$(MAN_prometheus))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples
 	install -m 644 docs/imud-prometheus/README.md docs/imud-prometheus/manual.md \
 	               docs/imud-prometheus/spec.md $(DESTDIR)$(DOCDIR)/imud-prometheus/
 	install -m 644 packaging/imud-prometheus/copyright $(DESTDIR)$(DOCDIR)/imud-prometheus/copyright
 	gzip -9nc packaging/imud-prometheus/changelog > $(DESTDIR)$(DOCDIR)/imud-prometheus/changelog.gz
-	install -m 644 config/imud-prometheus.conf $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf
+	@$(CONF_SUBST) config/imud-prometheus.conf > $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),launchd)
+	@echo "Installed imud-prometheus.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-prometheus)"
+else
 	@echo "Installed imud-prometheus.  Enable with: sudo systemctl enable --now imud-prometheus"
+endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-prometheus.conf)"
 
 # ── Install the MAVLink bridge (optional) ──────────────────────────────────────
 # Run after `make imud-mavlink`.  Installs the binary, service, man page, and its
 # own config file (non-clobbering).
-install-mavlink: imud-mavlink etc/imud-mavlink.service
+install-mavlink: imud-mavlink $(call svc-src,imud-mavlink)
 	install -d -m 0755 $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SVCDIR)
 	install -m 755 imud-mavlink $(DESTDIR)$(PREFIX)/bin/
-	install -m 644 etc/imud-mavlink.service $(DESTDIR)$(SVCDIR)/imud-mavlink.service
+	install -m 644 $(call svc-src,imud-mavlink) $(DESTDIR)$(SVCDIR)/$(call svc-dst,imud-mavlink)
 	install -d -m 0755 $(DESTDIR)$(ETCDIR)
-	@if [ ! -f "$(DESTDIR)$(ETCDIR)/imud-mavlink.conf" ]; then \
-	    install -m 644 config/imud-mavlink.conf $(DESTDIR)$(ETCDIR)/imud-mavlink.conf; \
-	    echo "Installed config:       $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
-	    echo "  NOTE: for serial output, grant the imud user serial access (e.g. dialout group)."; \
-	else \
-	    echo "Config already exists, skipping: $(DESTDIR)$(ETCDIR)/imud-mavlink.conf"; \
-	fi
+	$(call install-conf,config/imud-mavlink.conf,$(DESTDIR)$(ETCDIR)/imud-mavlink.conf,644)
+ifeq ($(SVC_KIND),systemd)
+	@echo "  NOTE: for serial output, grant the imud user serial access (e.g. dialout group)."
+endif
 	$(call install-man,$(MAN_mavlink))
 	install -d -m 0755 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples
 	install -m 644 docs/imud-mavlink/README.md docs/imud-mavlink/manual.md \
 	               docs/imud-mavlink/spec.md $(DESTDIR)$(DOCDIR)/imud-mavlink/
 	install -m 644 packaging/imud-mavlink/copyright $(DESTDIR)$(DOCDIR)/imud-mavlink/copyright
 	gzip -9nc packaging/imud-mavlink/changelog > $(DESTDIR)$(DOCDIR)/imud-mavlink/changelog.gz
-	install -m 644 config/imud-mavlink.conf $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf
+	@$(CONF_SUBST) config/imud-mavlink.conf > $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf
 	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
 	    systemctl daemon-reload; \
 	fi
+ifeq ($(SVC_KIND),launchd)
+	@echo "Installed imud-mavlink.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mavlink)"
+else
 	@echo "Installed imud-mavlink.  Enable with: sudo systemctl enable --now imud-mavlink"
+endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-mavlink.conf)"
 
 uninstall:
@@ -1582,19 +1701,13 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/bin/imud-mavlink \
 	      $(DESTDIR)$(PREFIX)/include/imud_client.h \
 	      $(DESTDIR)$(PREFIX)/include/imud.h \
-	      $(DESTDIR)$(LIBDIR)/$(SHLIB) \
-	      $(DESTDIR)$(LIBDIR)/$(SONAME) \
-	      $(DESTDIR)$(LIBDIR)/libimud.so \
+	      $(addprefix $(DESTDIR)$(LIBDIR)/,$(SHLIB_FILES)) \
 	      $(DESTDIR)$(LIBDIR)/pkgconfig/libimud.pc \
 	      $(DESTDIR)$(PREFIX)/share/imud/imud_client.py \
 	      $(DESTDIR)$(PREFIX)/share/imud/WMM.COF \
 	      $(DESTDIR)$(UDEVDIR)/60-imud.rules \
-	      $(DESTDIR)$(SVCDIR)/imud.service \
-	      $(DESTDIR)$(SVCDIR)/imud-signalk.service \
-	      $(DESTDIR)$(SVCDIR)/imud-mqtt.service \
-	      $(DESTDIR)$(SVCDIR)/imud-influxdb.service \
-	      $(DESTDIR)$(SVCDIR)/imud-prometheus.service \
-	      $(DESTDIR)$(SVCDIR)/imud-mavlink.service
+	      $(addprefix $(DESTDIR)$(SVCDIR)/,\
+	                  $(foreach n,$(SVC_NAMES),$(call svc-dst,$(n))))
 	# Same list the install rules use, so a page cannot be installed and then
 	# left behind by uninstall.
 	@for p in $(MAN_ALL); do \
@@ -1621,7 +1734,7 @@ clean:
 	rm -f src/*.o src/drivers/*.o src/*.d src/drivers/*.d lib/*.o lib/*.d \
 	      imud imud-cal imud-imutest imud-status imud-mon imud-signalk imud-mqtt imud-influxdb imud-mavlink \
       imud-prometheus \
-	      libimud.so libimud.so.* libimud.pc \
+	      libimud.so libimud.so.* libimud.dylib libimud.*.dylib libimud.pc \
 	      test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_ring test_mount \
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
@@ -1633,7 +1746,7 @@ clean:
 	      mkseed_packet imud.info \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
-	      etc/*.service imud-*.tar.gz
+	      etc/*.service etc/*.plist imud-*.tar.gz
 	rm -rf coverage-html *.dSYM
 
 # GNU convention: clean removes what make built, distclean also removes what

@@ -1,3 +1,10 @@
+libimud (1.10.1) unstable; urgency=medium
+
+  * libimud is installed as a shared library on macOS, as libimud.0.dylib.
+    Applications build against it with pkg-config exactly as on Linux.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 09 Sep 2026 12:52:19 -0700
+
 libimud (1.10.0) unstable; urgency=medium
 
   * imud builds and runs on big-endian hosts. The binary packet and the

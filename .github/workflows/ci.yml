@@ -827,11 +827,19 @@ jobs:
   # double, different atomics lowering, and the only Apple hardware still being
   # sold.  macos-15-intel is the LAST x86_64 image GitHub will offer (retiring
   # Fall 2027); when it goes, drop that leg rather than pinning an older image.
+  #
+  # BOTH ENDS of the supported range, and pinned rather than floating: the docs
+  # promise macOS 14 Sonoma through macOS 26 Tahoe, and macos-latest tests
+  # whichever one release GitHub currently points it at — which is neither end
+  # once it moves.  14 is the oldest image GitHub still offers (13 is gone), so
+  # it is the floor because it is the oldest thing that can be tested rather
+  # than by choice.  tools/check-macos.py compares these labels against the
+  # range the documents state, both ways.
   macos:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-latest]
+        runner: [macos-14, macos-15-intel, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:

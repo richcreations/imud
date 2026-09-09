@@ -43,6 +43,8 @@ sudo make install-signalk    # binary + service + /etc/imud/imud-signalk.conf
    sudo systemctl enable --now imud-signalk
    ```
 
+   macOS installs a launchd job instead — see `docs/manual.md` § *As a launchd job*.
+
 Run it in the foreground to check output:
 
 ```sh

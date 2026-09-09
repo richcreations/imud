@@ -126,6 +126,7 @@ Most of that is now machine-enforced. `make check-generated-text` proves:
 | `check-texi` | `docs/imud.texi` is still `docs/manual.md`: every section has an Info node, the version matches `include/version.h`, every cross-reference resolves, and the Info directory entry is intact |
 | `check-math-pdf-stamp` | `docs/math.pdf` is a render of the `docs/math.md` it ships with, by SHA-256 — not by mtime, which git does not preserve |
 | `check-flags`, `check-devices` | the flags word agrees across all four definitions; the config's device nodes are ones the unit permits |
+| `check-macos` | every systemd unit has a launchd job running the same binary on the same config, under the label `make install` gives it; and the macOS range the docs promise is the one the CI matrix actually runs |
 | `check-portable-tests` | every suite in `TEST_BINS` is run by `make test`, removed by `clean` and gitignored, and reaches the macOS CI job — a suite kept out of it has to say what a non-Linux host lacks |
 
 Run it before you commit; CI runs it on every push. `make test-tools` then

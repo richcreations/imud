@@ -128,11 +128,14 @@ Everything else, the thread model included, is POSIX. See §11 for
 writing one.
 
 @strong{macOS} is the second host those seams reach: the daemon, the
-tools and the bridges build and run there, and CI runs the whole test
-suite on Intel and Apple silicon. A Mac has no I²C or SPI node and no
-GPIO chip, so the sensor comes in over an FT232H USB bridge
+tools and the bridges build and run on macOS 14 Sonoma through macOS 26
+Tahoe, and CI runs the whole test suite on both ends of that range and
+on Intel. A Mac has no I²C or SPI node and no GPIO chip, so the sensor
+comes in over an FT232H USB bridge
 (@ref{52 I²C over an FT232H USB bridge,,§5.2}) with both readers
-polling. See @ref{Building on macOS,,Building on macOS} below.
+polling. It runs under launchd rather than systemd. See
+@ref{Building on macOS,,Building on macOS} and
+@ref{As a launchd job macOS,,As a launchd job} below.
 
 @strong{Binaries.}
 
@@ -286,11 +289,11 @@ for a host none of the three shipped ones fits.
 @node Building on macOS
 @section Building on macOS
 @anchor{#building-on-macos}
-The daemon, the tools and the bridges build and run on macOS, and CI
-runs the whole test suite there on both Intel and Apple silicon.
-@code{./configure} is @strong{required} on this host rather than
-optional: it is what selects the backends a Mac has, where a plain
-@code{make} reaches for the Linux ones and fails on
+The daemon, the tools and the bridges build and run on macOS 14 Sonoma
+through macOS 26 Tahoe, and CI runs the whole test suite on both ends of
+that range and on Intel. @code{./configure} is @strong{required} on this
+host rather than optional: it is what selects the backends a Mac has,
+where a plain @code{make} reaches for the Linux ones and fails on
 @code{linux/i2c-dev.h}.
 
 @verbatim
@@ -305,8 +308,14 @@ run: a real sensor over an FT232H USB bridge
 with no hardware. Set @code{int_gpio = 0} under @code{[imu]} and
 @code{[mag]} either way --- this host has no interrupt line to take.
 
-There is no package and no service unit. A Mac also has no @code{/run},
-so name a @code{pid_file} and @code{status_socket} the daemon can write;
+There is no @code{.deb} --- build from source. @code{sudo make install}
+works here and installs a launchd job rather than a systemd unit, which
+@ref{As a launchd job macOS,,As a launchd job} covers.
+
+A Mac has no @code{/run}, so the AF_UNIX paths in the config
+@code{make install} writes are rewritten to @code{/var/run}, which every
+boot provides. Running from the build tree instead, name a
+@code{pid_file} and @code{status_socket} the daemon can write;
 @code{config/sim.conf} puts those and its stream socket under
 @code{/tmp}, and runs unpatched.
 
@@ -334,8 +343,9 @@ Reference config
 Calibration file
  @tab @code{/etc/imud/cal.json} (if @code{config/cal.json} is present)
 @item 
-systemd unit
- @tab @code{/etc/systemd/system/imud.service}
+Service unit
+ @tab @code{/etc/systemd/system/imud.service}, or on macOS
+@code{/Library/LaunchDaemons/io.github.richcreations.imud.plist}
 @item 
 Client libraries
  @tab @code{libimud.so} + @code{/usr/local/include/imud.h} (see
@@ -413,6 +423,7 @@ Packagers also override @code{UDEVDIR} (default
 @menu
 * In the foreground testing::
 * As a systemd service::
+* As a launchd job macOS::
 * Command-line options::
 * Signals::
 @end menu
@@ -494,6 +505,62 @@ it. Both AF_UNIX sockets (@code{/run/imud/imud.sock} and the stream
 socket) are created at mode 0660 rather than chmod'd down after
 @code{bind()}, so they are never momentarily wider --- however
 @code{imud} was launched, systemd or not.
+
+@node As a launchd job macOS
+@section As a launchd job (macOS)
+@anchor{#as-a-launchd-job-macos}
+@code{make install} on macOS installs
+@code{/Library/LaunchDaemons/io.github.richcreations.imud.plist} instead
+of a systemd unit --- @code{./configure} picks which from @code{uname},
+and @code{--with-service=systemd|launchd} overrides it. Each bridge
+installs its own, labelled the same way.
+
+@verbatim
+sudo launchctl bootstrap system \
+    /Library/LaunchDaemons/io.github.richcreations.imud.plist
+sudo launchctl print system/io.github.richcreations.imud    # state, PID, exits
+tail -f /var/log/imud.log                                   # follow the log
+sudo launchctl bootout system/io.github.richcreations.imud  # stop and unload
+@end verbatim
+
+The plist is the unit's @code{Restart=on-failure} and
+@code{RestartSec=3} in launchd's terms --- @code{KeepAlive} with
+@code{SuccessfulExit} false, and @code{ThrottleInterval} 3 --- plus
+@code{ProcessType Interactive}, which keeps the output threads out of
+the background QoS class where their deadlines would be throttled. There
+is no launchd equivalent of the watchdog, the memory ceiling or
+@code{Type=notify}, so a hung daemon is not restarted here the way it is
+under systemd.
+
+Three differences from the unit that matter, all of them macOS's rather
+than imud's:
+
+@itemize
+@item
+@strong{The job runs as root.} macOS has no @code{useradd}, no
+@code{RuntimeDirectory=} and none of @code{DevicePolicy=},
+@code{SystemCallFilter=} or the @code{Protect*} family, so there is no
+@code{imud} user and no confinement to speak of. The daemon needs no
+privilege of its own --- the FT232H bridge opens without one --- so a
+site that wants it unprivileged can create a service account and add
+@code{UserName} and @code{GroupName} to the plist, then move the AF_UNIX
+paths somewhere that account can write: only root may create files in
+@code{/var/run}.
+@item
+@strong{There is no @code{/run}.} @code{make install} rewrites the
+AF_UNIX paths in the config it writes to @code{/var/run}, and the
+capture directory to @code{/var/db/imud}, which it creates.
+@code{/var/run} is emptied on every boot, which is why the sockets sit
+directly in it rather than in a subdirectory nothing would recreate.
+@item
+@strong{macOS can switch it off behind your back.} A LaunchDaemon
+appears under System Settings → General → Login Items & Extensions and
+can be disabled there. That is the first thing to check when the daemon
+stops starting and the log says nothing.
+@end itemize
+
+The plist must be owned @code{root:wheel} and no wider than 0644 or
+launchd refuses to load it, which @code{sudo make install} satisfies.
 
 @node Command-line options
 @section Command-line options

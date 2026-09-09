@@ -33,6 +33,8 @@ sudo make install-mqtt                # binary + service + /etc/imud/imud-mqtt.c
    sudo systemctl enable --now imud-mqtt
    ```
 
+   macOS installs a launchd job instead — see `docs/manual.md` § *As a launchd job*.
+
 Check the topics with any MQTT client:
 
 ```sh

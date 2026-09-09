@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  imud-signalk.plist — the launchd counterpart of etc/imud-signalk.service.
+
+  Installed to /Library/LaunchDaemons as
+  io.github.richcreations.imud-signalk.plist (root:wheel, 0644).  See
+  etc/imud.plist.in for the notes that apply to every job here: it runs as
+  root, and macOS has no equivalent of the unit's confinement.
+
+  launchd has no After=/Wants=, so the bridge is not ordered after imud.  It
+  does not need to be — it reconnects to the stream socket on its own, which
+  is what lets it survive an imud restart under systemd too.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.richcreations.imud-signalk</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BINDIR@/imud-signalk</string>
+        <string>--config</string>
+        <string>@ETCDIR@/imud-signalk.conf</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on a non-zero exit only — the unit's Restart=on-failure. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- The unit's RestartSec=3; launchd's own floor is 10 s. -->
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <!-- Out of the background QoS class: the bridge paces on a real clock. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- 0077, written 63: launchd reads Umask as a DECIMAL integer. -->
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/imud-signalk.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/imud-signalk.log</string>
+</dict>
+</plist>

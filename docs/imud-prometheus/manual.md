@@ -39,6 +39,8 @@ sudo systemctl enable --now imud-prometheus
 curl localhost:9815/metrics
 ```
 
+macOS installs a launchd job instead — see `docs/manual.md` § *As a launchd job*.
+
 Prometheus scrape config:
 
 ```yaml

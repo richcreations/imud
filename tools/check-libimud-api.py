@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from checklib import read, must_read, Report                    # noqa: E402
 
 MAP = "lib/libimud.map"
+EXP = "lib/libimud.exp"
 HDR = "lib/imud.h"
 
 SURFACES = ["man/man3/libimud.3", "docs/libimud/spec.md"]
@@ -60,9 +61,22 @@ def exported(rep):
         if re.match(r"\s*local:", line):
             node = None
             continue
-        m = re.match(r"\s*(imud_\w+)\s*;", line)
+        m = re.match(r"\s*(\w+)\s*;", line)
         if m and node:
-            syms[m.group(1)] = node
+            name = m.group(1)
+            # Any identifier, then the prefix asserted — not a imud_\w+ match
+            # that would skip past a stray name and report nothing. Darwin has
+            # no version script and exports through the lib/libimud.exp
+            # wildcard instead, so the two lists agree only while every
+            # exported name carries the prefix: one that does not is exported
+            # on Linux and silently absent from the dylib, and no build fails.
+            if not name.startswith("imud_"):
+                rep.check(False,
+                          f"{MAP}: exports '{name}', which is not "
+                          f"imud_-prefixed — {EXP} is a wildcard over imud_*, "
+                          f"so this symbol would be missing from the dylib")
+                continue
+            syms[name] = node
     rep.expect(syms, "exported symbols")
     return syms
 
@@ -81,6 +95,13 @@ def main():
 
     syms = exported(rep)
     protos = prototyped(rep)
+
+    # The wildcard is what makes lib/libimud.exp unable to drift from the map.
+    # Replacing it with a symbol list would reintroduce exactly the two-copy
+    # problem this checker exists for.
+    rep.check("_imud_*" in must_read(EXP, "the Darwin export list"),
+              f"{EXP}: does not export _imud_* — the wildcard is what keeps "
+              f"it in step with {MAP} without a second list to maintain")
 
     # ── header and linker script describe the same API ───────────────────────
     for name in sorted(set(syms) - protos):

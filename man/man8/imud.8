@@ -36,10 +36,13 @@ When magnetic declination is configured (via
 .IR imud.conf (5)),
 imud also emits true (geographic) heading in NMEA and the binary packet.
 .PP
-imud is normally run as a systemd service.
+imud is normally run as a service.
 Use
 .BR "systemctl enable --now imud"
-after installation.
+after installation, or on macOS
+.BR "launchctl bootstrap system /Library/LaunchDaemons/io.github.richcreations.imud.plist" ;
+.B make install
+writes whichever unit this host uses.
 .SH OPTIONS
 .TP
 \fB\-\-config\fR PATH

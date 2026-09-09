@@ -1,0 +1,12 @@
+# libimud export list — the Darwin counterpart of lib/libimud.map.
+#
+# Apple's linker has no --version-script and no symbol versioning at all, so
+# the SONAME/version-node half of the map has no equivalent here; what carries
+# over is the `local: *` half, which keeps everything but the public API out of
+# the dynamic symbol table.
+#
+# A wildcard rather than the eleven names, so this file cannot drift out of
+# step with the map.  What holds it together is the rule that every exported
+# symbol is imud_-prefixed, which tools/check-libimud-api.py asserts against
+# the map's global: lists.
+_imud_*

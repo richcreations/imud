@@ -31,6 +31,8 @@ sudo make install-mavlink    # binary + service + /etc/imud/imud-mavlink.conf
    sudo systemctl enable --now imud-mavlink
    ```
 
+   macOS installs a launchd job instead — see `docs/manual.md` § *As a launchd job*.
+
 For **serial** output (e.g. a telemetry radio on `/dev/serial0`), set
 `serial_enabled = true`, `serial_device`, and `serial_baud`. The shipped unit
 grants the service the `dialout` group and tty-device access. On a vehicle bus

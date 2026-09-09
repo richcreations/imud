@@ -708,6 +708,58 @@ CASES = [
      sub(r'runs 40 suites', 'runs 99 suites'),
      "99 suites"),
 
+    # ── check-macos ──────────────────────────────────────────────────────────
+    # launchd keys a job by its Label, and `make install` names the file from
+    # the same string. Drift between them installs a plist that bootstraps
+    # under a name nothing else refers to, and every launchctl line in the
+    # docs then addresses a job that does not exist.
+    ("check-macos", "etc/imud-signalk.plist.in",
+     sub(r"<string>io\.github\.richcreations\.imud-signalk</string>",
+         "<string>io.github.richcreations.imud-sigk</string>"),
+     "Label is"),
+
+    # The same string read from the other end: the prefix lives in the
+    # Makefile because that is what builds the installed filename, so moving
+    # it there and not in the six plists is the drift that follows a rename.
+    ("check-macos", "Makefile",
+     sub(r"^LAUNCHD_PREFIX = io\.github\.richcreations$",
+         "LAUNCHD_PREFIX = org.example"),
+     "org.example"),
+
+    # A binary renamed in the unit and not the job, or the reverse. The plist
+    # stays valid, launchd accepts it, and the job dies at exec with a path
+    # that no longer exists — visible only on the host nobody develops on.
+    ("check-macos", "etc/imud-mqtt.plist.in",
+     sub(r"<string>@BINDIR@/imud-mqtt</string>",
+         "<string>@BINDIR@/imud-mqtt2</string>"),
+     "etc/imud-mqtt.service.in runs"),
+
+    # KeepAlive without SuccessfulExit=false is unconditional: a daemon that
+    # exits 0 on SIGTERM is restarted for ever, so `launchctl bootout` looks
+    # like it does nothing. It is the one plist key whose wrong value is a
+    # working-looking job rather than a failing one.
+    ("check-macos", "etc/imud-prometheus.plist.in",
+     sub(r"(<key>SuccessfulExit</key>\s*\n\s*)<false/>", r"\1<true/>"),
+     "SuccessfulExit=false"),
+
+    # The promised range outliving its runners: GitHub retires macOS images
+    # on its own schedule, and the floor is a promise nothing tests the day
+    # its image goes. 13 is already gone; 14 is next.
+    ("check-macos", ".github/workflows/ci.yml",
+     sub(r"runner: \[macos-14, macos-15-intel, macos-26\]",
+         "runner: [macos-15-intel, macos-26]"),
+     "nothing tests 14"),
+
+    # ── check-libimud-api ────────────────────────────────────────────────────
+    # Darwin exports the API through a wildcard (lib/libimud.exp) because a
+    # second hand-maintained symbol list would drift from the map. The
+    # wildcard is only equivalent while every exported name is imud_-prefixed:
+    # one that is not would be exported on Linux and silently missing from the
+    # dylib, which no build here would fail on.
+    ("check-libimud-api", "lib/libimud.map",
+     sub(r"^        imud_wire_version;$", "        libimud_teardown;"),
+     "libimud_teardown"),
+
 ]
 
 

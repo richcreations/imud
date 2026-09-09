@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  imud-mavlink.plist — the launchd counterpart of etc/imud-mavlink.service.
+  etc/imud-signalk.plist.in is the reference; the notes there apply here.
+
+  The unit joins the dialout group for serial output.  macOS has no such
+  group and the job is already root, so serial ports (/dev/cu.*) open with
+  no extra key.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.github.richcreations.imud-mavlink</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BINDIR@/imud-mavlink</string>
+        <string>--config</string>
+        <string>@ETCDIR@/imud-mavlink.conf</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- 0077, written 63: launchd reads Umask as a DECIMAL integer. -->
+    <key>Umask</key>
+    <integer>63</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/imud-mavlink.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/imud-mavlink.log</string>
+</dict>
+</plist>

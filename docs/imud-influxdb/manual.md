@@ -28,6 +28,8 @@ sudo make install-influxdb    # binary + service + /etc/imud/imud-influxdb.conf
    sudo systemctl enable --now imud-influxdb
    ```
 
+   macOS installs a launchd job instead — see `docs/manual.md` § *As a launchd job*.
+
 For InfluxDB 2.x/3.x, set `http_enabled = true`, point `http_path` at
 `/api/v2/write?org=<org>&bucket=<bucket>&precision=ns`, and set `http_token`.
 UDP and HTTP are independent — enable either or both.

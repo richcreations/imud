@@ -37,6 +37,17 @@ to hold its setup through a run."""
 
   [[release.change]]
   kind     = "feature"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "imud installs and runs as a service on macOS. ./configure detects the host, and make install writes a launchd job into /Library/LaunchDaemons or a systemd unit, for the daemon and each bridge."
+  impact   = "Supported on macOS 14 Sonoma through macOS 26 Tahoe. The launchd job runs as root: macOS has no equivalent of the unit's imud user, its device policy or its watchdog. A Mac has no /run either, so the installed config's socket paths move to /var/run. Override the choice with ./configure --with-service=systemd|launchd."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["libimud"]
+  text     = "libimud is installed as a shared library on macOS, as libimud.0.dylib. Applications build against it with pkg-config exactly as on Linux."
+
+  [[release.change]]
+  kind     = "feature"
   packages = ["imud", "imud-utils"]
   text     = "imud can reach an I2C IMU through an FT232H USB bridge on Linux and macOS, for a host with no bus on a header. Set [device] i2c_bus to an \"ftdi:\" node; the drivers, calibration and output streams are unchanged."
   impact   = "I2C only for now — SPI over the bridge is not implemented. The transport has no interrupt line, so set int_gpio = 0 in [imu] and [mag] and both readers poll. It needs no library and no privilege on either host, and takes the dongle from the kernel FTDI serial driver while imud holds it. Leave it out with ./configure --without-ft232h."

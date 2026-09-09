@@ -183,8 +183,9 @@ sudo systemctl enable --now imud
 since it is what picks the backends a Mac has (add Homebrew's `mosquitto` for
 the MQTT bridge). There is no header bus, so reach the sensor through an
 FT232H dongle (`i2c_bus = "ftdi:"` and `int_gpio = 0`), or run the `sim`
-driver with no hardware at all. There is no package and no service unit; CI
-builds and runs the whole test suite on Intel and Apple silicon.
+driver with no hardware at all. `sudo make install` installs a launchd job
+rather than a systemd unit. There is no package; CI builds and runs the whole
+test suite on macOS 14 and 26 and on Intel.
 
 Check it and watch the streams:
 

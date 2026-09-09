@@ -31,7 +31,7 @@ Prerequisites (Raspberry Pi OS / Debian trixie, Bookworm, or similar):
     sudo apt install build-essential libgpiod-dev
 
 Build and install the core — the imud daemon plus imud-cal, imud-status,
-the client libraries, the config, the systemd unit, and man pages — and the
+the client libraries, the config, the service unit, and man pages — and the
 World Magnetic Model data (needed for true-heading output):
 
     make
@@ -75,8 +75,9 @@ sudo adduser "$USER" imud.
 Packaging notes: when DESTDIR is set the install is a pure file copy — no
 system user is created, no groups are made, and systemctl/udevadm/ldconfig are
 never invoked (those belong to a package's maintainer scripts). Packagers
-should also set SVCDIR=/lib/systemd/system (systemd units are generated from
-etc/*.service.in with the chosen bin dir) and UDEVDIR=/usr/lib/udev/rules.d
+should also set SVCDIR=/lib/systemd/system (service units are generated from
+etc/*.service.in, or etc/*.plist.in on a launchd host, with the chosen bin and
+config dirs) and UDEVDIR=/usr/lib/udev/rules.d
 (the default /etc/udev/rules.d is right for a source install but is reserved
 for the admin in a package; udev never reads rules from PREFIX). CC/CFLAGS/
 CPPFLAGS/LDFLAGS from the environment (e.g. dpkg-buildflags) are respected.
@@ -128,19 +129,35 @@ Other targets:
 On macOS
 --------
 
-The daemon, the tools and the bridges build and run on macOS, and CI runs the
-whole test suite there on Intel and Apple silicon. ./configure is REQUIRED on
-this host, not optional — it is what selects the backends a Mac has, where a
-plain make reaches for the Linux ones and fails on linux/i2c-dev.h:
+The daemon, the tools and the bridges build and run on macOS 14 Sonoma through
+macOS 26 Tahoe, and CI runs the whole test suite on both ends of that range and
+on Intel. ./configure is REQUIRED on this host, not optional — it is what
+selects the backends a Mac has, where a plain make reaches for the Linux ones
+and fails on linux/i2c-dev.h:
 
     brew install mosquitto        # only for the MQTT bridge
     ./configure && make
+    sudo make install
+    sudo launchctl bootstrap system \
+        /Library/LaunchDaemons/io.github.richcreations.imud.plist
+
+configure detects launchd from uname and installs a launchd job instead of a
+systemd unit, into /Library/LaunchDaemons; --with-service=systemd|launchd
+overrides the choice and --svcdir the directory. The job runs as root, because
+macOS has no useradd and none of the unit's confinement — see the comment at
+the top of etc/imud.plist.in. There is no udev rule and no imud user here, and
+no /run either: the AF_UNIX paths in the installed config are rewritten to
+/var/run, which every boot provides.
+
+Stop it with `sudo launchctl bootout system/io.github.richcreations.imud`. A
+LaunchDaemon also appears in System Settings > General > Login Items &
+Extensions, where it can be switched off — the first place to look if the
+daemon stops starting for no reason the log explains.
 
 A Mac has no I2C or SPI node and no GPIO chip, so a real sensor comes in over
 an FT232H USB bridge (i2c_bus = "ftdi:", int_gpio = 0; see docs/manual.md
 §5.2), and driver = sim runs the pipeline with no hardware at all. There is no
-package and no systemd unit, and no /run — name a pid_file and status_socket
-the daemon can write, as config/sim.conf does.
+.deb; build from source.
 
 The full installation, configuration, and calibration guide is docs/manual.md
 (installed to /usr/share/doc/imud/manual.md).
