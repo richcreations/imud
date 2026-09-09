@@ -196,6 +196,11 @@ static int lsm_probe(const imud_bus_t *bus)
 
 static int lsm_reset(const imud_bus_t *bus)
 {
+    /* Empty the FIFO first (Bypass, DS13012 §6.5.2).  On I2C the part stops
+     * acknowledging the transaction that carries SW_RESET while the buffer
+     * holds data, so the write lands and the caller still sees EREMOTEIO. */
+    if (bus_reg_write(bus, REG_FIFO_CTRL4, 0x00) < 0) return -1;
+
     if (bus_reg_write(bus, REG_CTRL3_C, 0x01) < 0) return -1;
 
     for (int i = 0; i < 50; i++) {

@@ -1723,6 +1723,74 @@ static void test_st_init_flushes_fifo(void)
     end(fb);
 }
 
+/*
+ * reset() must park the FIFO in Bypass before it writes SW_RESET.
+ *
+ * On I2C the part stops acknowledging the transaction carrying CTRL3_C = 0x01
+ * while the FIFO holds data: measured on an LSM6DSOX at 0x6A, 104 Hz, 900 ms
+ * of streaming, the write NAKed 6 of 6 times bare and 0 of 6 behind the
+ * Bypass write.  A non-flush control write first does not help, so it is the
+ * flush and not the extra transfer that settles it.
+ *
+ * Same two properties as the init case above, and for the same reason — the
+ * settled image shows neither.  ORDERING, because a Bypass write after the
+ * reset is too late; VALUE, because the reset default of FIFO_CTRL4 is 0x00
+ * and a driver that wrote nothing would land on it by accident.
+ */
+static void test_st_reset_flushes_fifo(void)
+{
+    begin("test_st_reset_flushes_fifo");
+    int fb = g_fail;
+
+    struct { const imu_ops_t *ops; int addr; } parts[] = {
+        { ism,           ISM_ADDR },
+        { &lsm6dso_ops,  LSM_ADDR },
+        { &lsm6dsox_ops, LSM_ADDR },
+    };
+
+    for (unsigned p = 0; p < sizeof parts / sizeof parts[0]; p++) {
+        const imu_ops_t *o = parts[p].ops;
+        int a = parts[p].addr;
+
+        /* ORDERING. */
+        i2cmock_reset();
+        i2cmock_set_selfclear(a, 0x12, 0x01);      /* SW_RESET self-clears */
+        EXPECT(o->reset(I2CBUS(a)) == 0, "reset succeeds");
+
+        int first4 = -1, first3c = -1;
+        uint32_t nw = i2cmock_writes(a);
+        for (uint32_t i = 0; i < nw; i++) {
+            int reg = i2cmock_write_at(a, i);
+            if (reg == 0x0A && first4  < 0) first4  = (int)i;
+            if (reg == 0x12 && first3c < 0) first3c = (int)i;
+        }
+        EXPECT(first4 >= 0, "reset writes FIFO_CTRL4");
+        EXPECT(first3c > first4, "the FIFO is emptied before SW_RESET is written");
+
+        /*
+         * VALUE.  Seed FIFO_CTRL4 as a running init left it, and fail the
+         * CTRL3_C write so reset() aborts with the intermediate image still on
+         * the part.  A driver that skipped the flush leaves 0xE6 here.
+         */
+        i2cmock_reset();
+        i2cmock_set_reg(a, 0x0A, 0xE6);
+        i2cmock_fail_write_to(a, 0x12, 1);
+        EXPECT(o->reset(I2CBUS(a)) < 0, "reset reports the failed SW_RESET write");
+        EXPECT(i2cmock_get_reg(a, 0x0A) == 0x00,
+               "FIFO_CTRL4 was written Bypass (mode 000), not left streaming");
+        i2cmock_fail_write_to(a, -1, 0);           /* disarm */
+
+        /* The flush is checked like every other write, not issued blind. */
+        i2cmock_reset();
+        i2cmock_set_selfclear(a, 0x12, 0x01);
+        i2cmock_fail_write_to(a, 0x0A, 1);
+        EXPECT(o->reset(I2CBUS(a)) < 0, "a failed flush fails the reset");
+        i2cmock_fail_write_to(a, -1, 0);           /* disarm */
+    }
+
+    end(fb);
+}
+
 static void lsm_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
 {
     uint8_t w[7] = {
@@ -3137,6 +3205,7 @@ static void test_driver_resets(void)
     int fb = g_fail;
 
     static const struct reset_case cases[] = {
+        { "ism330dhcx", &ism330dhcx_ops, 1, ISM_ADDR,  0x12, 0x01, -1 },
         { "lsm6dso",   &lsm6dso_ops,   1, LSM_ADDR,    0x12, 0x01, -1 },
         { "icm42688p", &icm42688p_ops, 1, ICM42_ADDR,  0x11, 0x01, -1 },
         { "icm20948",  &icm20948_ops,  1, ICM209_ADDR, 0x06, 0x80, -1 },
@@ -4413,6 +4482,7 @@ int main(void)
 
     test_st_freq_fine_tick();
     test_st_init_flushes_fifo();
+    test_st_reset_flushes_fifo();
     test_st_spi_disables_i2c_block();
     test_lsm_batched_timestamp();
     test_lsm_probe();
