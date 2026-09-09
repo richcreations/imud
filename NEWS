@@ -85,9 +85,9 @@ Changed:
 * mpu6500 is no longer experimental. It is validated on real silicon by an
   imud-imutest --all report: 61 checks passed, none failed. The daemon no
   longer warns at startup when it is selected.
-* mpu9255 is no longer experimental either, on an imud-imutest report from a
-  real MPU-9255 board. The ak8963 magnetometer on those boards is still
-  experimental and still warns.
+* mpu9255 and its ak8963 compass are no longer experimental either, on an
+  imud-imutest --all report from a real MPU-9255 board: 78 checks passed, none
+  failed. A 9-axis MPU-925x board now starts with no warning at all.
 * Wire format v18: the packet grows 276 to 288 bytes with flags_ext, a second
   32-bit flag word, and eight reserved bytes. Every existing field keeps its
   offset. Its first bit says no magnetometer is configured.

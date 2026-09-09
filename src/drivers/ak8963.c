@@ -275,7 +275,7 @@ static int ak_read(const imud_bus_t *bus, mag_sample_t *out)
 
 const mag_ops_t ak8963_ops = {
     .name            = "ak8963",
-    .experimental    = true,
+    .experimental    = false,
     .probe           = ak_probe,
     .reset           = ak_reset,
     .init            = ak_init,

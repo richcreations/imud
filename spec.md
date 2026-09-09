@@ -304,7 +304,7 @@ static const imu_ops_t *imu_registry[] = {
 static const mag_ops_t *mag_registry[] = {
     &mmc5983ma_ops,    /* MMC5983MA — reference hardware   [I2C + SPI] */
     &ak09916_ops,      /* AK09916 — compass on ICM-20948   [experimental] */
-    &ak8963_ops,       /* AK8963 — compass on MPU-925x     [experimental] */
+    &ak8963_ops,       /* AK8963 — compass on MPU-925x     [I2C] */
     &lis3mdl_ops,      /* LIS3MDL         [I2C + SPI]      [experimental] */
     &lis2mdl_ops,      /* LIS2MDL                          [experimental] */
     &rm3100_ops,       /* RM3100          [I2C + SPI]      [experimental] */

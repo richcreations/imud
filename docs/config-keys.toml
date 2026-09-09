@@ -646,7 +646,8 @@ Driver name:
 or
 .BR sim .
 Drivers other than
-.B mmc5983ma
+.BR mmc5983ma ,
+.B ak8963
 and
 .B sim
 are experimental.

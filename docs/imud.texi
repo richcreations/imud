@@ -1936,9 +1936,8 @@ no external INT pin.
 @item
 @strong{SPI}: no --- part has no SPI port
 @item
-@strong{Notes}: @emph{Experimental.} The MPU-9250/9255 compass, via I²C
-bypass. Applies the factory fuse-ROM sensitivity correction. Not the
-same part as AK09916.
+@strong{Notes}: The MPU-9250/9255 compass, via I²C bypass. Applies the
+factory fuse-ROM sensitivity correction. Not the same part as AK09916.
 @end itemize
 
 @item @code{lis3mdl}
