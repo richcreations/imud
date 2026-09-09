@@ -1,7 +1,7 @@
 # imud — IMU Daemon
 
 [![Latest release](https://img.shields.io/github/v/release/richcreations/imud?sort=semver)](https://github.com/richcreations/imud/releases)
-[![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue.svg)](docs/manual.md)
+[![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)](docs/manual.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)  
 [![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
@@ -18,8 +18,8 @@
 [Project site](https://richcreations.github.io/imud/) ·
 [apt repository](https://richcreations.github.io/imud/apt/)
 
-**imud is a general-purpose IMU daemon for Linux — think of it as *gpsd for
-IMUs*.** It owns the inertial sensor, does the hard real-time work once
+**imud is a general-purpose IMU daemon — think of it as *gpsd for IMUs*.**
+It owns the inertial sensor, does the hard real-time work once
 (interrupt-driven sampling, calibration, sensor fusion, precise hardware
 timestamps), and publishes a clean attitude/heading/motion estimate on
 standard interfaces that any number of programs can read at the same time.
@@ -40,7 +40,10 @@ software at the stream.
    └─────────────────┘                 └────────────────────────────┘
 ```
 
-It depends only on `libgpiod` and the C standard library. License: MIT — see
+It depends on the C standard library and, for the interrupt lines, `libgpiod`
+— nothing else, and `./configure` builds without `libgpiod` where it is
+absent. Linux is the packaged target; imud also builds and runs on macOS,
+where an FT232H USB dongle carries the I²C bus. License: MIT — see
 [LICENSE](LICENSE).
 
 ## What it does
@@ -60,13 +63,19 @@ It depends only on `libgpiod` and the C standard library. License: MIT — see
   per-sample hardware timestamps for correlation with cameras and other
   sensors.
 - **Pluggable hardware.** A thin driver layer hides chip differences behind
-  one interface. Reference support for the SparkFun 9DoF (ISM330DHCX +
-  MMC5983MA); experimental drivers for ST LSM6DSO, LSM6DSOX, LIS2MDL and
-  LIS3MDL, TDK InvenSense ICM-20948, ICM-42688-P, MPU-6500, MPU-9250 and
-  MPU-9255, AKM AK8963 and AK09916, and PNI RM3100; and a `sim` driver that
-  runs the whole pipeline with no hardware. Addresses, interrupt pins and
-  per-part notes are in the
+  one interface. Validated on silicon: the SparkFun 9DoF reference pair
+  (ISM330DHCX + MMC5983MA) and the six-axis TDK InvenSense MPU-6500.
+  Experimental drivers for ST LSM6DSO, LSM6DSOX, LIS2MDL and LIS3MDL, TDK
+  InvenSense ICM-20948, ICM-42688-P, MPU-9250 and MPU-9255, AKM AK8963 and
+  AK09916, and PNI RM3100; and a `sim` driver that runs the whole pipeline
+  with no hardware. Addresses, interrupt pins and per-part notes are in the
   [driver table](docs/manual.md#5-supported-drivers).
+- **I²C, SPI, or a USB dongle.** The sensor sits on a header's I²C or SPI bus,
+  or on an FT232H USB bridge (`i2c_bus = "ftdi:"`) for a host that has no bus
+  of its own — a laptop, a Mac, a Pi whose header is already spoken for. Same
+  drivers, same config, no library and no root; the bridge has no interrupt
+  line, so the readers poll. See
+  [§5.2 of the manual](docs/manual.md#52-i²c-over-an-ft232h-usb-bridge).
 - **6-DoF or 9-DoF.** With `mag.driver = "none"` imud runs a gyro+accelerometer
   board and everything that does not need a compass keeps working: roll, pitch,
   heave, sea state and rate of turn are all gravity- or gyro-referenced. Only
@@ -143,10 +152,11 @@ sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud
 ```
 
-The package creates the `imud` user and the `gpio`/`i2c` groups, and installs a
-udev rule granting those groups the I²C, SPI and GPIO device nodes — so this works on
-a stock Debian, not only on Raspberry Pi OS. To read the stream socket or run
-`imud-status` as yourself, join the `imud` group: `sudo adduser "$USER" imud`.
+The package creates the `imud` user and the `gpio`, `i2c` and `spi` groups, and
+installs a udev rule granting those groups the I²C, SPI and GPIO device nodes —
+so this works on a stock Debian, not only on Raspberry Pi OS. To read the
+stream socket or run `imud-status` as yourself, join the `imud` group:
+`sudo adduser "$USER" imud`.
 
 If you added `/etc/apt/sources.list.d/imud.list` under earlier instructions,
 remove it (`sudo rm -f /etc/apt/sources.list.d/imud.list`) so apt does not see
@@ -167,6 +177,13 @@ sudo make install-wmm-data   # World Magnetic Model data (for true heading)
 sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud
 ```
+
+**On macOS** the build is `./configure && make` — configure is required there,
+since it is what picks the backends a Mac has (add Homebrew's `mosquitto` for
+the MQTT bridge). There is no header bus, so reach the sensor through an
+FT232H dongle (`i2c_bus = "ftdi:"` and `int_gpio = 0`), or run the `sim`
+driver with no hardware at all. There is no package and no service unit; CI
+builds and runs the whole test suite on Intel and Apple silicon.
 
 Check it and watch the streams:
 
@@ -211,9 +228,9 @@ in-situ `imud-cal mag`. See the
 - **[Protocol spec](spec.md)** — architecture, the binary packet layout, NMEA
   sentence formats, and the timestamp design.
 - **libimud** — the ABI-stable C client library and the Python client for the
-  binary stream. Shipped separately in the `libimud` package: see
-  `man 3 libimud`, with the README, manual and spec under
-  `/usr/share/doc/libimud/`.
+  binary stream. Its own packages — `libimud0` for the runtime, `libimud-dev`
+  for the header and pkg-config file: see `man 3 libimud`, with the README,
+  manual and spec installed alongside them.
 - **[imud-arduino](https://github.com/richcreations/imud-arduino)** — the
   Arduino/ESP32 client library (`ImudClient`) for the binary stream over TCP
   or UDP, maintained in its own repository.

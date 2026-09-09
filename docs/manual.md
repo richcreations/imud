@@ -1,7 +1,7 @@
 # imud Manual
 
-Complete operator and developer reference for **imud**, the IMU daemon for
-Raspberry Pi. For a one-page introduction and quick start, see the
+Complete operator and developer reference for **imud**, the general-purpose
+IMU daemon. For a one-page introduction and quick start, see the
 [README](../README.md). For the on-the-wire protocol (binary packet layout,
 NMEA sentence formats, timestamp architecture), see [spec.md](../spec.md).
 
@@ -62,6 +62,12 @@ variable the IMU ring waits on, and the TAI offset. `./configure` picks a
 backend for each from what it finds. Everything else, the thread model
 included, is POSIX. See §11 for writing one.
 
+**macOS** is the second host those seams reach: the daemon, the tools and the
+bridges build and run there, and CI runs the whole test suite on Intel and
+Apple silicon. A Mac has no I²C or SPI node and no GPIO chip, so the sensor
+comes in over an FT232H USB bridge ([§5.2](#52-i²c-over-an-ft232h-usb-bridge))
+with both readers polling. See [Building on macOS](#building-on-macos) below.
+
 **Binaries.**
 
 | Binary | Purpose |
@@ -85,7 +91,10 @@ included, is POSIX. See §11 for writing one.
 
 - A Linux system with an I²C **or** SPI bus and a GPIO character device.
   Debian bookworm and trixie are the packaged targets (arm64 and armhf);
-  Raspberry Pi OS is the most exercised host, not a requirement.
+  Raspberry Pi OS is the most exercised host, not a requirement. A host with
+  no bus of its own reaches the parts over an FT232H USB bridge instead
+  ([§5.2](#52-i²c-over-an-ft232h-usb-bridge)), and macOS is supported on those
+  terms — see [Building on macOS](#building-on-macos).
 - **The armhf packages are built for ARMv6**, so they run on every Raspberry
   Pi that boots a 32-bit userland — the Pi 1 and Pi Zero/Zero W included.
   Raspberry Pi OS 32-bit is a separate port built to ARMv6, while Debian's own
@@ -125,7 +134,8 @@ defaults:
 ```sh
 ./configure                  # prints what this host can and cannot build
 ./configure --help           # options, incl. --prefix, --without-gpiod,
-                             # --without-linux-bus, --with-host-time
+                             # --without-linux-bus, --without-ft232h,
+                             # --with-host-time
 make distclean               # remove config.mk
 ```
 
@@ -144,6 +154,30 @@ ones fits.
 
 `make test` must be run from the repository root — one test loads
 `data/WMM.COF` by relative path.
+
+### Building on macOS
+
+The daemon, the tools and the bridges build and run on macOS, and CI runs the
+whole test suite there on both Intel and Apple silicon. `./configure` is
+**required** on this host rather than optional: it is what selects the
+backends a Mac has, where a plain `make` reaches for the Linux ones and fails
+on `linux/i2c-dev.h`.
+
+```sh
+brew install mosquitto        # only for the MQTT bridge
+./configure && make
+```
+
+It reports the bus backend as `FT232H only -- every node is ftdi:`, a null
+GPIO backend and the fallback clock. So there are two ways to run: a real
+sensor over an FT232H USB bridge
+([§5.2](#52-i²c-over-an-ft232h-usb-bridge)), or `driver = "sim"` with no
+hardware. Set `int_gpio = 0` under `[imu]` and `[mag]` either way — this host
+has no interrupt line to take.
+
+There is no package and no service unit. A Mac also has no `/run`, so name a
+`pid_file` and `status_socket` the daemon can write; `config/sim.conf` puts
+those and its stream socket under `/tmp`, and runs unpatched.
 
 ### Install
 
@@ -187,8 +221,8 @@ that path when it exists.
 `make install` also creates the dedicated system user `imud` that the service
 runs as. Its **primary group is `imud`**, which owns `/run/imud/` and both
 AF_UNIX sockets; hardware access comes from the supplementary groups `gpio`
-(for `/dev/gpiochip*`) and `i2c` (for `/dev/i2c-*`). Those two groups are
-**created** if missing — Raspberry Pi OS ships them, stock Debian does not, and
+(for `/dev/gpiochip*`), `i2c` (for `/dev/i2c-*`) and `spi` (for
+`/dev/spidev*`). All three are **created** if missing — Raspberry Pi OS ships them, stock Debian does not, and
 `imud.service` will not start without them. A udev rule
 (`/etc/udev/rules.d/60-imud.rules`, or `/usr/lib/udev/rules.d/` from the `.deb`)
 gives those groups access to the device nodes, which is what Raspberry Pi OS

@@ -85,7 +85,7 @@ COUNT_RE = re.compile(
 
 # Files whose prose restates the experimental count on its own. "... drivers
 # for twelve parts that have never run on physical hardware."
-COUNTED = ["docs/imud-utils/README.md"]
+COUNTED = ["docs/imud-utils/README.md", "docs/ROADMAP.md"]
 
 NEVER_RE = re.compile(
     r"\b(\d+|" + "|".join(NUMBER) + r")\s+parts?\s+that\s+have\s+never\s+run",

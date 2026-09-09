@@ -21,8 +21,8 @@
 @node Top
 @top imud Manual
 
-Complete operator and developer reference for @strong{imud}, the IMU
-daemon for Raspberry Pi. For a one-page introduction and quick start,
+Complete operator and developer reference for @strong{imud}, the
+general-purpose IMU daemon. For a one-page introduction and quick start,
 see the
 @uref{https://github.com/richcreations/imud/blob/main/README.md,README}.
 For the on-the-wire protocol (binary packet layout, NMEA sentence
@@ -127,6 +127,13 @@ monotonic condition variable the IMU ring waits on, and the TAI offset.
 Everything else, the thread model included, is POSIX. See §11 for
 writing one.
 
+@strong{macOS} is the second host those seams reach: the daemon, the
+tools and the bridges build and run there, and CI runs the whole test
+suite on Intel and Apple silicon. A Mac has no I²C or SPI node and no
+GPIO chip, so the sensor comes in over an FT232H USB bridge
+(@ref{52 I²C over an FT232H USB bridge,,§5.2}) with both readers
+polling. See @ref{Building on macOS,,Building on macOS} below.
+
 @strong{Binaries.}
 
 @multitable @columnfractions 0.23 0.77 
@@ -185,6 +192,7 @@ exporter (see @ref{9a Bridges,,§9a Bridges}).
 @menu
 * Prerequisites::
 * Build::
+* Building on macOS::
 * Install::
 @end menu
 
@@ -195,7 +203,11 @@ exporter (see @ref{9a Bridges,,§9a Bridges}).
 @item
 A Linux system with an I²C @strong{or} SPI bus and a GPIO character
 device. Debian bookworm and trixie are the packaged targets (arm64 and
-armhf); Raspberry Pi OS is the most exercised host, not a requirement.
+armhf); Raspberry Pi OS is the most exercised host, not a requirement. A
+host with no bus of its own reaches the parts over an FT232H USB bridge
+instead (@ref{52 I²C over an FT232H USB bridge,,§5.2}), and macOS is
+supported on those terms --- see
+@ref{Building on macOS,,Building on macOS}.
 @item
 @strong{The armhf packages are built for ARMv6}, so they run on every
 Raspberry Pi that boots a 32-bit userland --- the Pi 1 and Pi Zero/Zero
@@ -249,7 +261,8 @@ Makefile then includes ahead of its own defaults:
 @verbatim
 ./configure                  # prints what this host can and cannot build
 ./configure --help           # options, incl. --prefix, --without-gpiod,
-                             # --without-linux-bus, --with-host-time
+                             # --without-linux-bus, --without-ft232h,
+                             # --with-host-time
 make distclean               # remove config.mk
 @end verbatim
 
@@ -269,6 +282,33 @@ for a host none of the three shipped ones fits.
 
 @code{make test} must be run from the repository root --- one test loads
 @code{data/WMM.COF} by relative path.
+
+@node Building on macOS
+@section Building on macOS
+@anchor{#building-on-macos}
+The daemon, the tools and the bridges build and run on macOS, and CI
+runs the whole test suite there on both Intel and Apple silicon.
+@code{./configure} is @strong{required} on this host rather than
+optional: it is what selects the backends a Mac has, where a plain
+@code{make} reaches for the Linux ones and fails on
+@code{linux/i2c-dev.h}.
+
+@verbatim
+brew install mosquitto        # only for the MQTT bridge
+./configure && make
+@end verbatim
+
+It reports the bus backend as @code{FT232H only -- every node is ftdi:},
+a null GPIO backend and the fallback clock. So there are two ways to
+run: a real sensor over an FT232H USB bridge
+(@ref{52 I²C over an FT232H USB bridge,,§5.2}), or @code{driver = "sim"}
+with no hardware. Set @code{int_gpio = 0} under @code{[imu]} and
+@code{[mag]} either way --- this host has no interrupt line to take.
+
+There is no package and no service unit. A Mac also has no @code{/run},
+so name a @code{pid_file} and @code{status_socket} the daemon can write;
+@code{config/sim.conf} puts those and its stream socket under
+@code{/tmp}, and runs unpatched.
 
 @node Install
 @section Install
@@ -333,10 +373,11 @@ newer model before the package updates, drop it at
 that the service runs as. Its @strong{primary group is @code{imud}},
 which owns @code{/run/imud/} and both AF_UNIX sockets; hardware access
 comes from the supplementary groups @code{gpio} (for
-@code{/dev/gpiochip*}) and @code{i2c} (for @code{/dev/i2c-*}). Those two
-groups are @strong{created} if missing --- Raspberry Pi OS ships them,
-stock Debian does not, and @code{imud.service} will not start without
-them. A udev rule (@code{/etc/udev/rules.d/60-imud.rules}, or
+@code{/dev/gpiochip*}), @code{i2c} (for @code{/dev/i2c-*}) and
+@code{spi} (for @code{/dev/spidev*}). All three are @strong{created} if
+missing --- Raspberry Pi OS ships them, stock Debian does not, and
+@code{imud.service} will not start without them. A udev rule
+(@code{/etc/udev/rules.d/60-imud.rules}, or
 @code{/usr/lib/udev/rules.d/} from the @code{.deb}) gives those groups
 access to the device nodes, which is what Raspberry Pi OS provides in
 its own @code{99-com.rules}.

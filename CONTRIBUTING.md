@@ -16,11 +16,14 @@ cd imud
 ## Prerequisites
 
 - A C11 compiler (gcc or clang) and `make`.
-- `libgpiod-dev` — the daemon links libgpiod, and the Makefile auto-detects
-  which API to build against from `pkg-config`: v1 (Debian bookworm ships 1.6)
-  or v2 (trixie ships 2.x). The target is Linux generally — anything with I²C
-  and a GPIO character device. Packages are built for arm64 and armhf on both
-  bookworm and trixie, and Raspberry Pi OS is the most exercised host, not a
+- `libgpiod-dev` — the daemon links libgpiod for the interrupt lines, and the
+  Makefile auto-detects which API to build against from `pkg-config`: v1
+  (Debian bookworm ships 1.6) or v2 (trixie ships 2.x). Omit it and
+  `./configure` takes the null GPIO backend, which polls instead. The target is
+  Linux generally — anything with I²C and a GPIO character device, or an FT232H
+  USB bridge in place of both. macOS builds and runs on those terms, and CI
+  covers it. Packages are built for arm64 and armhf on both bookworm and
+  trixie, and Raspberry Pi OS is the most exercised host, not a
   requirement. The arm64 packages are built on Debian, which is what Raspberry
   Pi OS 64-bit uses as its base; the armhf ones are built on Raspbian, whose
   ARMv6 baseline is what lets a single 32-bit package run on every Pi.

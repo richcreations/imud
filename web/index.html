@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>imud — IMU daemon for Linux | NMEA 0183 + MEKF fusion</title>
-<meta name="description" content="imud is an IMU daemon for Linux — &quot;gpsd for IMUs&quot;. MEKF sensor fusion publishing attitude, heading, heave and sea state over NMEA 0183, UDP, and sockets.">
+<title>imud — IMU daemon for Linux and macOS | NMEA 0183 + MEKF fusion</title>
+<meta name="description" content="imud is an IMU daemon for Linux and macOS — &quot;gpsd for IMUs&quot;. MEKF sensor fusion publishing attitude, heading, heave and sea state over NMEA 0183, UDP, and sockets.">
 <meta name="author" content="Richard Simpson">
 <link rel="canonical" href="https://richcreations.github.io/imud/">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="imud">
-<meta property="og:title" content="imud — an IMU daemon for Linux">
+<meta property="og:title" content="imud — an IMU daemon for Linux and macOS">
 <meta property="og:description" content="One small daemon owns your I²C inertial sensor, fuses it with a quaternion MEKF, and publishes attitude, heading, rate of turn, heave and sea state to NMEA 0183, UDP, and local sockets.">
 <meta property="og:url" content="https://richcreations.github.io/imud/">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="imud — an IMU daemon for Linux">
+<meta name="twitter:title" content="imud — an IMU daemon for Linux and macOS">
 <meta name="twitter:description" content="&quot;gpsd for IMUs&quot; — quaternion MEKF fusion published over NMEA 0183, binary UDP, and local sockets. Debian/Raspberry Pi OS packages.">
 
 <script type="application/ld+json">
@@ -23,10 +23,10 @@
   "@type": "SoftwareApplication",
   "name": "imud",
   "alternateName": "imud — IMU daemon",
-  "description": "A general-purpose IMU daemon for Linux. imud owns an I2C inertial sensor and magnetometer, samples it on a hardware interrupt, applies calibration, fuses it with a quaternion Multiplicative Extended Kalman Filter, and publishes attitude, magnetic and true heading, rate of turn, heave and sea-state statistics over NMEA 0183, binary UDP, and local or TCP stream sockets.",
+  "description": "A general-purpose IMU daemon for Linux and macOS. imud owns an I2C inertial sensor and magnetometer, samples it on a hardware interrupt, applies calibration, fuses it with a quaternion Multiplicative Extended Kalman Filter, and publishes attitude, magnetic and true heading, rate of turn, heave and sea-state statistics over NMEA 0183, binary UDP, and local or TCP stream sockets.",
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "System daemon, sensor fusion, marine navigation, robotics",
-  "operatingSystem": "Linux, Raspberry Pi OS, Debian",
+  "operatingSystem": "Linux, Raspberry Pi OS, Debian, macOS",
   "processorRequirements": "arm64 (ARMv8-A), armhf (ARMv6 and later)",
   "softwareVersion": "1.10.1",
   "license": "https://opensource.org/licenses/MIT",
@@ -167,7 +167,7 @@
 
 <h2>Name</h2>
 <div class="body">
-  <h1>imud — a general-purpose IMU daemon for Linux</h1>
+  <h1>imud — a general-purpose IMU daemon</h1>
   <p>Think of it as <em>gpsd for IMUs</em>.</p>
 </div>
 
@@ -195,7 +195,7 @@ imud [--config PATH] [--replay FILE] [--skip-bias-cal]
   meant to be boring, always-on infrastructure: start it, forget it, and point
   your software at the stream.</p>
 
-  <div class="scroll"><pre class="art">   IMU + magnetometer (I²C)                      consumers
+  <div class="scroll"><pre class="art">   IMU + magnetometer (I²C/SPI)                  consumers
             │                          ┌────────────────────────────┐
             ▼                          │  chartplotter / autopilot   │
    ┌─────────────────┐   NMEA 0183 ───▶│  ROS2 node                  │
@@ -204,8 +204,10 @@ imud [--config PATH] [--replay FILE] [--skip-bias-cal]
    │  timestamps     │                 │  loggers, dashboards, …     │
    └─────────────────┘                 └────────────────────────────┘</pre></div>
 
-  <p>It is written in C and depends only on <code>libgpiod</code> and the C
-  standard library. The license is MIT.</p>
+  <p>It is written in C and depends on the C standard library and, for the
+  interrupt lines, <code>libgpiod</code> — nothing else, and it builds without
+  <code>libgpiod</code> where that is absent. Linux is the packaged target;
+  it also builds and runs on macOS. The license is MIT.</p>
 </div>
 
 <h2>Features</h2>
@@ -327,7 +329,7 @@ sudo systemctl enable --now imud</code></pre></div>
   <code>imud-utils</code>. See the
   <a href="apt/">apt repository page</a> for the full package list.</p>
 
-  <p>On any other Linux host with I²C, build from source:</p>
+  <p>On any other Linux host with I²C or SPI, build from source:</p>
 
   <div class="scroll"><pre><code>sudo apt update &amp;&amp; sudo apt install -y build-essential libgpiod-dev
 make
@@ -335,6 +337,12 @@ sudo make install
 sudo make install-wmm-data   <span class="cmt"># World Magnetic Model (for true heading)</span>
 sudo nano /etc/imud/imud.conf
 sudo systemctl enable --now imud</code></pre></div>
+
+  <p>On macOS the build is <code>./configure &amp;&amp; make</code> — configure
+  is required there, since it is what picks the backends a Mac has. There is no
+  header bus, so the sensor arrives over an FT232H USB dongle, or run the
+  <code>sim</code> driver with no hardware. There is no package and no service
+  unit; CI builds and runs the whole test suite on Intel and Apple silicon.</p>
 
   <p>Once it is running, <code>imud-status</code> reports daemon health,
   attitude, declination, and heave; <code>imud-mon</code> gives a live view of
@@ -403,12 +411,14 @@ imud --replay session.imucap               <span class="cmt"># recorded raw sens
 
     <dt>No hardware</dt>
     <dd>The <code>sim</code> driver runs the full pipeline from a synthetic
-    scenario or a recorded capture file, on any Linux machine.</dd>
+    scenario or a recorded capture file, on any host imud builds on.</dd>
   </dl>
 
   <p>Host side, imud targets the Raspberry Pi — it drives the sensor over I²C
-  and takes the data-ready interrupt on a GPIO line via libgpiod — but nothing
-  in it is Pi-specific beyond that.</p>
+  or SPI and takes the data-ready interrupt on a GPIO line via libgpiod — but
+  nothing in it is Pi-specific beyond that. A host with no bus on a header
+  reaches the parts through an FT232H USB bridge instead, which needs no
+  library and no root and is how a Mac, or a laptop, runs the same drivers.</p>
 </div>
 
 <h2>Bridges and clients</h2>

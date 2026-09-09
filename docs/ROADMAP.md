@@ -15,9 +15,9 @@ work moves when the hardware is available.
 
 ## What imud is for
 
-A general-purpose IMU daemon for Linux: read an inertial sensor and a
-magnetometer, fuse them into an attitude estimate, and publish that estimate to
-any number of consumers over open protocols. "gpsd for IMUs" — a piece of
+A general-purpose IMU daemon: read an inertial sensor and a magnetometer,
+fuse them into an attitude estimate, and publish that estimate to any number
+of consumers over open protocols. "gpsd for IMUs" — a piece of
 infrastructure other software builds on, rather than an application.
 
 Marine navigation is the most developed use case, not the identity. Robotics,
@@ -39,15 +39,16 @@ from the WMM) are examples of what the daemon can carry, not what it is.
 
 ## Hardware support
 
-Two parts are validated on real silicon and are the reference pair:
-**ISM330DHCX** (IMU) and **MMC5983MA** (magnetometer), over both I²C and SPI.
+Three parts are validated on real silicon: the reference pair **ISM330DHCX**
+(IMU) and **MMC5983MA** (magnetometer), over both I²C and SPI, and the
+six-axis **MPU-6500** over I²C.
 
-**Nine further parts ship marked experimental**: `lsm6dso`/`lsm6dsox`,
-`icm42688p`, `icm20948` and `mpu6500`/`mpu9250`/`mpu9255` on the inertial
-side, and `lis3mdl`, `lis2mdl`, `rm3100`, `ak09916`, `ak8963` on the
-magnetometer side. That is twelve configurable driver names over nine drivers,
-because `lsm6dso`/`lsm6dsox` is one driver answering to two part numbers and
-`mpu6500`/`mpu9250`/`mpu9255` is one answering to three.
+**Eleven parts that have never run on physical silicon ship marked
+experimental**: `lsm6dso`/`lsm6dsox`, `icm42688p`, `icm20948` and
+`mpu9250`/`mpu9255` on the inertial side, and `lis3mdl`, `lis2mdl`, `rm3100`,
+`ak09916`, `ak8963` on the magnetometer side. Some names share a driver:
+`lsm6dso`/`lsm6dsox` is one, and `mpu9250`/`mpu9255` is the file that also
+drives the validated `mpu6500`.
 
 Their register maps are checked against the vendor datasheets and their
 encode/decode paths are covered by tests against a mock bus, but they have never
@@ -76,7 +77,10 @@ Two transport limits are known and are properties of the parts, not of imud:
 
 Beyond the sensors, the target platform is a Raspberry Pi class machine running
 Linux, and imud is expected to keep running on the older and smaller ones — a
-Pi Zero 2 W is a supported deployment, not a stretch goal.
+Pi Zero 2 W is a supported deployment, not a stretch goal. macOS is the second
+host: it builds, runs, and is covered by CI on Intel and Apple silicon, with
+the parts reached over an FT232H USB bridge because there is no header bus.
+That bridge is equally the answer on a Linux host whose header is spoken for.
 
 ---
 

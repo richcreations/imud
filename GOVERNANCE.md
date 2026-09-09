@@ -79,8 +79,8 @@ negotiation.
 Some standing decisions govern what is accepted, and a change that violates one
 will be turned down regardless of how good the code is:
 
-- **imud is general-purpose.** It is *gpsd for IMUs*, a Linux daemon that owns
-  an inertial sensor and publishes a fused estimate on standard interfaces.
+- **imud is general-purpose.** It is *gpsd for IMUs*, a daemon that owns an
+  inertial sensor and publishes a fused estimate on standard interfaces.
   Marine navigation is the most exercised use case, not the project's identity;
   robotics, drones, camera stabilization, and pointing rigs are equal citizens.
 - **The core takes no new external dependencies.** It is C11 and POSIX against

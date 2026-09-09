@@ -9,8 +9,10 @@ optional TCP listener, for any number of
 consumers (marine nav, robotics, machine vision, gimbals/pointing).  
 **Reference hardware:** SparkFun Qwiic 9DoF — ISM330DHCX + MMC5983MA
 (SEN-19895); a driver layer supports other parts (see §4).  
-**Platform:** Raspberry Pi / Linux (any host with I2C or SPI)  
-**Language:** C11, POSIX — no external dependencies beyond libc and libgpiod
+**Platform:** Linux (Raspberry Pi is the reference host) or macOS — any host
+with I2C or SPI, or an FT232H USB bridge  
+**Language:** C11, POSIX — no external dependencies beyond libc, and libgpiod
+where the interrupt lines are used
 
 -----
 
@@ -292,7 +294,7 @@ static const imu_ops_t *imu_registry[] = {
     &icm42688p_ops,    /* ICM-42688-P     [I2C + SPI]      [experimental] */
     &lsm6dso_ops,      /* LSM6DSO         [I2C + SPI]      [experimental] */
     &lsm6dsox_ops,     /* LSM6DSOX        [I2C + SPI]      [experimental] */
-    &mpu6500_ops,      /* MPU-6500 — 6-axis, same driver   [experimental] */
+    &mpu6500_ops,      /* MPU-6500 — 6-axis, same driver   [I2C] */
     &mpu9250_ops,      /* MPU-9250                         [experimental] */
     &mpu9255_ops,      /* MPU-9255 (same driver)           [experimental] */
     &sim_imu_ops,      /* synthetic driver for testing without hardware */
@@ -1653,7 +1655,9 @@ because of it.
 
 ```text
 libc        # pthreads, sockets, time, signal
-libgpiod    # GPIO edge detection — only external dependency
+libgpiod    # GPIO edge detection — the only external dependency, and itself
+            # optional: without it the null GPIO backend takes no interrupts
+            # and both readers poll
 ```
 
 The MEKF, NMEA encoder, binary packer, TOML parser, and CRC32 are all
@@ -1694,6 +1698,12 @@ GPIOD_MAJ := $(shell pkg-config --modversion libgpiod 2>/dev/null | cut -d. -f1)
 ifeq ($(GPIOD_MAJ),2)
     CFLAGS += -DGPIOD_V2
 endif
+
+# The three portability seams each select a source file: BUS_SRC (bus_linux.c,
+# bus_ft232h.c and bus_null.c — more than one may be built, and src/bus.c picks
+# per handle), GPIO_SRC (imu_gpio.c, or imu_gpio_null.c which also drops
+# -lgpiod), and HOST_TIME_SRC.  The defaults above are the Linux ones;
+# ./configure writes another host's choices into config.mk.
 
 DRIVER_SRCS = src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c   src/drivers/ak09916.c   \
