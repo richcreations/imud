@@ -1671,13 +1671,16 @@ static inline int i2c_burst_read(const imud_bus_t *b, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
     uint8_t r = reg;
-    return bus_be_i2c_xfer(b, &r, 1, buf, len);
+    return b->be->i2c_xfer(b, &r, 1, buf, len);
 }
 ```
 
 `src/bus_linux.c` turns that into one `ioctl(I2C_RDWR)` of two messages.
+`src/bus_ft232h.c` turns it into an MPSSE command stream for a USB bridge.
 `src/bus_null.c` fails it with `ENOSYS`, which is what lets the tree build on
-a host with no i2c-dev.
+a host with none of them. A build may carry more than one; `src/bus.c` picks
+per handle from the node, sending an `ftdi:` one to the bridge and everything
+else to the host's own bus.
 
 ### Build
 

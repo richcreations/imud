@@ -251,4 +251,9 @@ unsigned spimock_last_nlegs(void);
 uint8_t  spimock_last_bits(unsigned leg);
 uint32_t spimock_last_len(unsigned leg);
 
+/* bus_mock_backend is declared in include/bus_backend.h with the rest.  A
+ * suite that links src/bus.c selects it through IMUD_BUS_BACKENDS, the same
+ * way a real build names its own. */
+#include "bus_backend.h"
+
 #endif /* IMUD_TEST_I2C_MOCK_H */

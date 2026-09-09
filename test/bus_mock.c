@@ -475,25 +475,25 @@ static int fail_armed(void)
  * node it can actually open (/dev/null serves), and spimock_bind keys the SPI
  * register file off that descriptor.
  */
-int bus_be_open(const char *node)
+static int mock_open(const char *node)
 {
     return open(node, O_RDWR | O_CLOEXEC);
 }
 
-void bus_be_close(int h)
+static void mock_close(int h)
 {
     if (h >= 0) close(h);
 }
 
 /* Accepted and ignored, so bus_open() works unchanged against the mock. */
-int bus_be_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
+static int mock_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
 {
     (void)h; (void)mode; (void)bits; (void)hz;
     return 0;
 }
 
-int bus_be_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
-                    uint8_t *rx, uint16_t rxlen)
+static int mock_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
+                         uint8_t *rx, uint16_t rxlen)
 {
     if (fail_armed()) return -1;
     int rc = dispatch_i2c(b, tx, txlen, rx, rxlen);
@@ -501,7 +501,8 @@ int bus_be_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
     return rc;
 }
 
-int bus_be_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs, unsigned n)
+static int mock_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs,
+                        unsigned n)
 {
     if (n < 1 || n > BUS_SPI_MAX_LEGS) { errno = EINVAL; return -1; }
 
@@ -518,3 +519,13 @@ int bus_be_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs, unsigned n)
     if (g_wfail_hit) { g_wfail_hit = 0; errno = EIO; return -1; }
     return rc;
 }
+
+const bus_backend_t bus_mock_backend = {
+    .name      = "mock",
+    .scheme    = NULL,
+    .open      = mock_open,
+    .close     = mock_close,
+    .spi_setup = mock_spi_setup,
+    .i2c_xfer  = mock_i2c_xfer,
+    .spi_msg   = mock_spi_msg,
+};

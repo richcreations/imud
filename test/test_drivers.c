@@ -97,7 +97,7 @@ static const mag_ops_t *ak  = &ak8963_ops;
  * entirely, so FD is arbitrary; the address is what selects which of the 128
  * register files a transfer lands in.
  */
-#define I2CBUS(a) (&(const imud_bus_t){ .kind = BUS_I2C, \
+#define I2CBUS(a) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_I2C, \
                                         .fd = FD, .i2c_addr = (a) })
 
 /* ── ISM330DHCX ──────────────────────────────────────────────────────────── */
@@ -3141,7 +3141,7 @@ static void test_st_spi_disables_i2c_block(void)
         i2cmock_reset();
         const int sfd = 11;                  /* any fd the mock is not using */
         spimock_bind(sfd, (uint8_t)a, 0);
-        const imud_bus_t sbus = { .kind = BUS_SPI, .fd = sfd, .spi_mode = 0,
+        const imud_bus_t sbus = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = sfd, .spi_mode = 0,
                                   .spi_inc_mask = 0, .spi_hz = 10000000 };
         i2cmock_set_reg(a, 0x20, 0x00);
         i2cmock_set_reg(a, 0x21, 0x00);
@@ -3839,10 +3839,10 @@ static void test_dual_transport_ism330dhcx(void)
         i2cmock_set_fifo_range(at, 0x78, 0x7E);
     }
 
-    imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
     /* Framing from the driver's own caps, as bus_open() does — see the
      * mmc5983ma case below for why a literal here is circular. */
-    imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+    imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                       .spi_mode     = ism->bus_caps.spi_mode,
                       .spi_inc_mask = ism->bus_caps.spi_inc_mask,
                       .spi_hz       = 10000000 };
@@ -3968,7 +3968,7 @@ static void test_dual_transport_mmc5983ma(void)
         i2cmock_set_regs(at, 0x00, raw, 7);
     }
 
-    imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
     /*
      * The bus takes its framing FROM the driver's declared caps, exactly as
      * bus_open() does in production.  Writing the mask as a literal here made
@@ -3976,7 +3976,7 @@ static void test_dual_transport_mmc5983ma(void)
      * driver's number against the mock bound with that same number, so a wrong
      * declaration agreed with itself and nothing failed.
      */
-    imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+    imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                       .spi_mode      = mmc->bus_caps.spi_mode,
                       .spi_inc_mask  = mmc->bus_caps.spi_inc_mask,
                       .spi_hz        = 10000000 };
@@ -4112,8 +4112,8 @@ static void test_dual_transport_others(void)
             i2cmock_set_reg(at, c->whoami_reg, c->whoami_val);
             i2cmock_set_selfclear(at, c->rst_reg, c->rst_bit);
         }
-        imud_bus_t ib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = c->i2c_at };
-        imud_bus_t sb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
+        imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = c->i2c_at };
+        imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
                           .spi_inc_mask = c->inc, .spi_hz = 10000000 };
 
         snprintf(msg, sizeof msg, "%s: probe agrees on both transports", c->name);
@@ -4155,8 +4155,8 @@ static void test_dual_transport_others(void)
         i2cmock_set_regs(at, 0xA8, out, 6);     /* where I2C lands */
     }
 
-    imud_bus_t lib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C };
-    imud_bus_t lsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD,
+    imud_bus_t lib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C };
+    imud_bus_t lsb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                        .spi_mode     = lis3mdl_ops.bus_caps.spi_mode,
                        .spi_inc_mask = lis3mdl_ops.bus_caps.spi_inc_mask,
                        .spi_hz       = 10000000 };
@@ -4203,8 +4203,8 @@ static void test_dual_transport_others(void)
         i2cmock_set_regs(at, 0x24, rout, 9);
     }
 
-    imud_bus_t rib = { .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C };
-    imud_bus_t rsb = { .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
+    imud_bus_t rib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C };
+    imud_bus_t rsb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
                        .spi_inc_mask = rm3100_ops.bus_caps.spi_inc_mask,
                        .spi_hz = 1000000 };
     const mag_ops_t *rm = &rm3100_ops;
@@ -4248,7 +4248,7 @@ static imud_bus_t spi_bus(uint8_t inc_mask)
 {
     i2cmock_reset();
     spimock_bind(SPI_FD, SPI_ADDR, inc_mask);
-    return (imud_bus_t){ .kind = BUS_SPI, .fd = SPI_FD,
+    return (imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_SPI, .fd = SPI_FD,
                          .spi_mode = 3, .spi_inc_mask = inc_mask,
                          .spi_hz = 10000000 };
 }

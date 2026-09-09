@@ -179,7 +179,7 @@ extern const mag_ops_t mmc5983ma_ops;
 
 /* Handles on the mock bus; the descriptor is ignored, the address selects
  * which register file a transfer lands in. */
-#define I2CBUS(a) (&(const imud_bus_t){ .kind = BUS_I2C, \
+#define I2CBUS(a) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_I2C, \
                                         .fd = FD, .i2c_addr = (a) })
 
 /*
@@ -190,7 +190,7 @@ extern const mag_ops_t mmc5983ma_ops;
  */
 #define SPI_FD_IMU 71
 #define SPI_FD_MAG 72
-#define SPIBUS(f) (&(const imud_bus_t){ .kind = BUS_SPI, .fd = (f), \
+#define SPIBUS(f) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_SPI, .fd = (f), \
                                         .spi_mode = 3, .spi_inc_mask = 0, \
                                         .spi_hz = 10000000 })
 

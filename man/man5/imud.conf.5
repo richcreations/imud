@@ -117,7 +117,9 @@ Hardware bus selection.
 .TP
 .B i2c_bus
 .RI (string,\ default:\ \(dq/dev/i2c-1\(dq)
-I2C bus device node.
+I2C bus device node, or an
+.B ftdi:
+node for an FT232H USB bridge.
 .TP
 .B gpio_chip
 .RI (string,\ default:\ \(dqgpiochip0\(dq)

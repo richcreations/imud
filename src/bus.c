@@ -25,6 +25,52 @@
 #include "bus_backend.h"
 #include "log.h"
 
+/*
+ * The backends this build carries, innermost first.  The Makefile writes the
+ * list from the same decision that picks $(BUS_SRC), so a build cannot name a
+ * backend it did not compile, and adding one is a Makefile line rather than an
+ * edit here.  The default is the answer for a host with no backend at all.
+ */
+#ifndef IMUD_BUS_BACKENDS
+#define IMUD_BUS_BACKENDS &bus_null_backend
+#endif
+
+static const bus_backend_t *const g_backends[] = { IMUD_BUS_BACKENDS };
+
+#define N_BACKENDS ((unsigned)(sizeof g_backends / sizeof g_backends[0]))
+
+/*
+ * Which backend serves this node.  A backend with a scheme takes the nodes
+ * that start with it ("ftdi:"); the one without takes everything else, which
+ * is how a plain /dev path keeps reaching the host's own bus.  Returns NULL
+ * when a scheme was written that no backend in this build answers to — an
+ * `ftdi:` node in a build without the FT232H backend, say, which is worth a
+ * distinct message rather than a confusing open() failure.
+ */
+static const bus_backend_t *pick_backend(const char *node)
+{
+    const bus_backend_t *fallback = NULL;
+
+    for (unsigned i = 0; i < N_BACKENDS; i++) {
+        const char *s = g_backends[i]->scheme;
+        if (!s) {
+            if (!fallback) fallback = g_backends[i];
+            continue;
+        }
+        if (strncmp(node, s, strlen(s)) == 0) return g_backends[i];
+    }
+
+    /*
+     * A node that names some other scheme must not fall through to the
+     * device-node backend, which would try to open() a path that was never
+     * one.  "scheme" here means a prefix up to a colon that is not a path.
+     */
+    const char *colon = strchr(node, ':');
+    if (colon && node[0] != '/') return NULL;
+
+    return fallback;
+}
+
 static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
                     const bus_caps_t *caps, const char *who)
 {
@@ -52,17 +98,17 @@ static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
         return -1;
     }
 
-    int fd = bus_be_open(spec->node);
+    int fd = b->be->open(spec->node);
     if (fd < 0) {
         LOG_E("[%s] cannot open %s: %s\n", who, spec->node, strerror(errno));
         return -1;
     }
 
     uint8_t mode = caps->spi_mode;
-    if (bus_be_spi_setup(fd, mode, 8, hz) < 0) {
+    if (b->be->spi_setup(fd, mode, 8, hz) < 0) {
         LOG_E("[%s] cannot configure %s for SPI mode %u at %u Hz: %s\n",
               who, spec->node, mode, hz, strerror(errno));
-        bus_be_close(fd);
+        b->be->close(fd);
         return -1;
     }
 
@@ -77,7 +123,7 @@ static int open_spi(imud_bus_t *b, const bus_spec_t *spec,
 
 static int open_i2c(imud_bus_t *b, const bus_spec_t *spec, const char *who)
 {
-    int fd = bus_be_open(spec->node);
+    int fd = b->be->open(spec->node);
     if (fd < 0) {
         LOG_E("[%s] cannot open %s: %s\n", who, spec->node, strerror(errno));
         return -1;
@@ -113,6 +159,18 @@ int bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
 {
     bus_init(b);
 
+    if (!spec->node || spec->node[0] == '\0') {
+        LOG_E("[%s] no device node configured\n", who);
+        return -1;
+    }
+
+    b->be = pick_backend(spec->node);
+    if (!b->be) {
+        LOG_E("[%s] no bus backend in this build handles %s\n",
+              who, spec->node);
+        return -1;
+    }
+
     switch (spec->kind) {
     case BUS_I2C: return open_i2c(b, spec, who);
     case BUS_SPI: return open_spi(b, spec, caps, who);
@@ -125,6 +183,6 @@ int bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
 void bus_close(imud_bus_t *b)
 {
     if (!b) return;
-    bus_be_close(b->fd);
+    if (b->be) b->be->close(b->fd);
     bus_init(b);
 }

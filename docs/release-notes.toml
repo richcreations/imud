@@ -35,6 +35,12 @@ to hold its setup through a run."""
   text     = "imud-imutest reported the mpu9250/mpu9255 pair as not holding its configuration through a run. A driver's probe() now leaves an already-configured part alone, which is what the tool's repeated probes had been disturbing."
   impact   = "The finding was the tool's, not the driver's: reports show a FAIL on imu.regs.after_run and a WARN on imu.init.idempotent, both naming USER_CTRL. The daemon probes once, before it configures anything, and was never affected. rm3100's probe had the same fault and is fixed with it."
 
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-utils"]
+  text     = "imud can reach an I2C IMU through an FT232H USB bridge, for a host with no bus on a header. Set [device] i2c_bus to an \"ftdi:\" node; the drivers, calibration and output streams are unchanged."
+  impact   = "I2C only for now — SPI over the bridge is not implemented. The transport has no interrupt line, so set int_gpio = 0 in [imu] and [mag] and both readers poll. On Linux it needs no library and no root, and it detaches the kernel ftdi_sio driver while imud holds the dongle. Leave it out with ./configure --without-ft232h."
+
 [[release]]
 version = "1.10.0"
 date    = "2026-09-05"

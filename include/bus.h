@@ -42,11 +42,25 @@ typedef enum {
     BUS_SPI = 1,
 } bus_kind_t;
 
+/*
+ * The host's transport, defined in include/bus_backend.h.  Named here only as
+ * a pointer, so this header stays free of the backend contract — bus_backend.h
+ * includes this one, not the other way round.
+ */
+typedef struct bus_backend bus_backend_t;
+
 /* A live bus.  fd < 0 means "not open". */
 typedef struct {
     bus_kind_t kind;
-    /* The backend's token, from bus_be_open() — a file descriptor on the
-     * hosts that have device nodes, not necessarily on one that does not.
+    /* Which backend serves this handle, chosen by bus_open() from the node.
+     * NULL until then, which is what makes bus_close() safe on a handle that
+     * was never opened — but the transfer helpers in src/drivers/bus_io.h
+     * dereference it without checking, exactly as they do fd.  So a handle
+     * either comes from bus_open() or names its own backend; a suite that
+     * builds one by hand must set this to the backend it linked. */
+    const bus_backend_t *be;
+    /* The backend's token, from its open() — a file descriptor on the hosts
+     * that have device nodes, not necessarily on one that does not.
      * Only src/bus.c and src/drivers/bus_io.h read it, and both hand it
      * straight back to the backend. */
     int        fd;
@@ -89,6 +103,7 @@ typedef struct {
 static inline void bus_init(imud_bus_t *b)
 {
     b->kind         = BUS_I2C;
+    b->be           = NULL;
     b->fd           = -1;
     b->i2c_addr     = 0;
     b->spi_mode     = 0;

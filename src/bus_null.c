@@ -7,8 +7,8 @@
 /*
  * bus_null.c — include/bus_backend.h with no bus behind it.
  *
- * Selected in place of src/bus_linux.c on a host with no i2c-dev and no
- * spidev, which is what lets imud build and link on a BSD or a Mac before
+ * Selected when a build carries no other backend — a host with no i2c-dev and
+ * no spidev, which is what lets imud build and link on a BSD or a Mac before
  * either has a backend of its own.
  *
  * open() and close() are real, because they are POSIX rather than Linux and
@@ -29,34 +29,45 @@
 
 #include "bus_backend.h"
 
-int bus_be_open(const char *node)
+static int null_open(const char *node)
 {
     return open(node, O_RDWR | O_CLOEXEC);
 }
 
-void bus_be_close(int h)
+static void null_close(int h)
 {
     if (h >= 0) close(h);
 }
 
-int bus_be_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
+static int null_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
 {
     (void)h; (void)mode; (void)bits; (void)hz;
     errno = ENOSYS;
     return -1;
 }
 
-int bus_be_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
-                    uint8_t *rx, uint16_t rxlen)
+static int null_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
+                         uint8_t *rx, uint16_t rxlen)
 {
     (void)b; (void)tx; (void)txlen; (void)rx; (void)rxlen;
     errno = ENOSYS;
     return -1;
 }
 
-int bus_be_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs, unsigned n)
+static int null_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs,
+                        unsigned n)
 {
     (void)b; (void)legs; (void)n;
     errno = ENOSYS;
     return -1;
 }
+
+const bus_backend_t bus_null_backend = {
+    .name      = "null",
+    .scheme    = NULL,
+    .open      = null_open,
+    .close     = null_close,
+    .spi_setup = null_spi_setup,
+    .i2c_xfer  = null_i2c_xfer,
+    .spi_msg   = null_spi_msg,
+};

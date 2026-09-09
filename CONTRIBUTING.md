@@ -62,8 +62,8 @@ Please keep the tree **warning-clean**: the build uses `-Wall -Wextra`, and CI
 runs `make && make bridges && make test`. Add or extend a test for any new
 behaviour.
 
-**Not developing on Linux?** `make test-portable` runs the 39 portable suites —
-which is all 39 suites; nothing in `make test` is Linux-only. Adding a suite
+**Not developing on Linux?** `make test-portable` runs the 40 portable suites —
+which is all 40 suites; nothing in `make test` is Linux-only. Adding a suite
 that is takes an entry in `NONPORTABLE_TEST_BINS` with the reason beside it, and
 `make check-portable-tests` will not accept one without.
 

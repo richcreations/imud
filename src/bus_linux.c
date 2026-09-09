@@ -29,19 +29,19 @@
 
 #include "bus_backend.h"
 
-int bus_be_open(const char *node)
+static int linux_open(const char *node)
 {
     /* O_CLOEXEC on the open itself, per the tree-wide close-on-exec rule —
      * there is no window here for a fork to inherit the descriptor. */
     return open(node, O_RDWR | O_CLOEXEC);
 }
 
-void bus_be_close(int h)
+static void linux_close(int h)
 {
     if (h >= 0) close(h);
 }
 
-int bus_be_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
+static int linux_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
 {
     if (ioctl(h, SPI_IOC_WR_MODE, &mode) < 0 ||
         ioctl(h, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0 ||
@@ -50,8 +50,8 @@ int bus_be_spi_setup(int h, uint8_t mode, uint8_t bits, uint32_t hz)
     return 0;
 }
 
-int bus_be_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
-                    uint8_t *rx, uint16_t rxlen)
+static int linux_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
+                          uint8_t *rx, uint16_t rxlen)
 {
     /* struct i2c_msg.buf is __u8 *, but the kernel only writes it on a
      * message flagged I2C_M_RD.  The write leg here never is. */
@@ -64,7 +64,8 @@ int bus_be_i2c_xfer(const imud_bus_t *b, const uint8_t *tx, uint16_t txlen,
     return ioctl(b->fd, I2C_RDWR, &xfer) < 0 ? -1 : 0;
 }
 
-int bus_be_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs, unsigned n)
+static int linux_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs,
+                         unsigned n)
 {
     if (n < 1 || n > BUS_SPI_MAX_LEGS) { errno = EINVAL; return -1; }
 
@@ -87,3 +88,13 @@ int bus_be_spi_msg(const imud_bus_t *b, const bus_spi_leg_t *legs, unsigned n)
     default: return ioctl(b->fd, SPI_IOC_MESSAGE(4), tr) < 0 ? -1 : 0;
     }
 }
+
+const bus_backend_t bus_linux_backend = {
+    .name      = "linux",
+    .scheme    = NULL,          /* plain device paths: /dev/i2c-1, /dev/spidev0.0 */
+    .open      = linux_open,
+    .close     = linux_close,
+    .spi_setup = linux_spi_setup,
+    .i2c_xfer  = linux_i2c_xfer,
+    .spi_msg   = linux_spi_msg,
+};

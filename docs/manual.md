@@ -370,7 +370,9 @@ Hardware bus and GPIO controller. **[restart]**
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys device.1 -->
-| `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used. |
+| `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.
+
+A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several — a USB serial, a `<bus>.<dev>` pair or a sysfs port path such as `1-2` — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller. |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
 | `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits. |
@@ -938,6 +940,51 @@ Points worth knowing:
   produce identical register traffic, which is a different claim from "the
   board is wired right". Run `imud-imutest --all` after changing transport —
   its report should match the one you get on I²C.
+
+### 5.2 I²C over an FT232H USB bridge
+
+A host with no I²C on a header — a laptop, a Mac, a Pi whose header is already
+spoken for — can reach the parts through an FT232H dongle. Set `[device]
+i2c_bus` to an `ftdi:` node and everything above the bus is unchanged: the same
+drivers, the same calibration, the same output streams.
+
+```ini
+[device]
+i2c_bus  = "ftdi:"               # the first FT232H found, at 400 kHz
+
+[imu]
+driver   = "lsm6dsox"
+i2c_addr = 0x6A
+int_gpio = 0                     # no interrupt line on this transport
+```
+
+The node is `ftdi:[<match>][@<hz>]`. `<match>` picks between several dongles —
+a USB serial, a `<bus>.<dev>` pair, or the sysfs port path (`1-2`), which is
+the one that survives a replug into the same socket. `<hz>` sets the bus clock
+and defaults to 400000; drop it to 100000 if the parts sit on long jumper
+leads.
+
+Four things differ from a header:
+
+- **Wiring.** AD0 is SCL; AD1 and AD2 must BOTH connect to SDA, because MPSSE
+  drives its output on AD1 and always samples its input on AD2. Pull-ups are
+  yours — the FT232H has none.
+- **No interrupt line.** Set `int_gpio = 0` in `[imu]` and `[mag]`; both
+  readers then run on their polling timer, which is the same fallback used
+  when a line is configured but never fires.
+- **Latency, not clock rate, sets the ceiling.** Each transaction is a USB
+  round trip of roughly a millisecond, against ~20 µs for an ioctl on a
+  header. A FIFO burst amortises that over its whole payload, so the batched
+  drain matters much more here; a high ODR with a small `fifo_wm` will not
+  keep up.
+- **SPI is not implemented** on this backend yet — it fails with `ENOSYS`.
+
+On Linux it needs no library and no root: the backend drives usbfs directly,
+and a dongle plugged into a logged-in seat carries an ACL granting that user
+access. imud detaches the kernel's `ftdi_sio` serial driver while it holds the
+device, so `/dev/ttyUSB*` for that dongle goes away until imud exits.
+
+Leave it out of a build with `./configure --without-ft232h`.
 
 ---
 

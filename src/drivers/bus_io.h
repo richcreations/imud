@@ -10,12 +10,15 @@
  * This is FRAMING, not transport: what goes in the command byte, how many
  * legs a transfer takes and how wide each one is. The transfer itself is the
  * host's, through include/bus_backend.h, so every driver runs unchanged on
- * any backend — src/bus_linux.c, src/bus_null.c, or test/bus_mock.c, which is
- * the third and is what the driver suites run against.
+ * any backend — src/bus_linux.c, src/bus_ft232h.c, src/bus_null.c, or
+ * test/bus_mock.c, which is what the driver suites run against.
  *
- * static inline in a driver-private header on purpose: each driver TU still
- * issues its own single transfer, with no per-call dispatch between the
- * register logic and the bus.
+ * static inline in a driver-private header on purpose: the framing is inlined
+ * into each driver TU, so a register read is one transfer and not a call
+ * chain.  The transfer itself goes through the handle's backend pointer,
+ * which costs one indirect call against an ioctl (~20 us) or a USB round trip
+ * (~1 ms) on the other side of it — that is what lets a build carry both a
+ * device-node backend and a USB bridge and choose per sensor.
  *
  * The bus handle carries the address, the transport and the SPI clock, so a
  * driver names only the register it wants and the same register logic runs on
@@ -69,13 +72,13 @@ static inline int i2c_burst_read(const imud_bus_t *b, uint8_t reg,
                                  uint8_t *buf, uint16_t len)
 {
     uint8_t r = reg;
-    return bus_be_i2c_xfer(b, &r, 1, buf, len);
+    return b->be->i2c_xfer(b, &r, 1, buf, len);
 }
 
 static inline int i2c_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = { reg, val };
-    return bus_be_i2c_xfer(b, buf, 2, NULL, 0);
+    return b->be->i2c_xfer(b, buf, 2, NULL, 0);
 }
 
 /*
@@ -122,7 +125,7 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
             .tx = (const uint8_t *)&tx, .rx = (uint8_t *)&rx,
             .len = 2, .bits = 16,
         };
-        if (bus_be_spi_msg(b, &leg, 1) < 0) return -1;
+        if (b->be->spi_msg(b, &leg, 1) < 0) return -1;
         buf[0] = (uint8_t)(rx & 0xFFu);
         return 0;
     }
@@ -158,7 +161,7 @@ static inline int spi_burst_read(const imud_bus_t *b, uint8_t reg,
         { .tx = &cmd, .len = 1,   .bits = 8 },
         { .rx = buf,  .len = len, .bits = 8 },
     };
-    return bus_be_spi_msg(b, legs, 2);
+    return b->be->spi_msg(b, legs, 2);
 }
 
 static inline int spi_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
@@ -168,7 +171,7 @@ static inline int spi_reg_write(const imud_bus_t *b, uint8_t reg, uint8_t val)
     bus_spi_leg_t leg = {
         .tx = (const uint8_t *)&word, .len = 2, .bits = 16,
     };
-    return bus_be_spi_msg(b, &leg, 1);
+    return b->be->spi_msg(b, &leg, 1);
 }
 
 /* ── Transport dispatch ─────────────────────────────────────────────────── */

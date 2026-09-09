@@ -62,24 +62,58 @@ else
     override CPPFLAGS += -DIMUD_NO_GPIOD
 endif
 
-# The bus backend behind include/bus_backend.h.  src/bus_linux.c is the
-# i2c-dev and spidev ioctls; src/bus_null.c is the same five entry points with
-# open() and close() real and every transfer failing ENOSYS, which leaves a
-# `driver = sim` build running the whole pipeline on a host that has neither.
-# That is the state a port starts from — a BSD or a Mac builds and runs before
-# it has a backend of its own.
+# The bus backends behind include/bus_backend.h.  src/bus_linux.c is the
+# i2c-dev and spidev ioctls; src/bus_ft232h.c drives an FT232H USB bridge for a
+# host with no bus on a header; src/bus_null.c is the same five entry points
+# with open() and close() real and every transfer failing ENOSYS, which leaves
+# a `driver = sim` build running the whole pipeline on a host that has none of
+# them.  That is the state a port starts from — a BSD or a Mac builds and runs
+# before it has a backend of its own.
 #
-# Detected by ./configure, which writes NO_LINUX_BUS into config.mk; the
-# default here is the Linux backend, so a plain `make` on the target platform
-# needs no configure step.
+# More than one can be built at once, and src/bus.c chooses between them per
+# sensor from the node the operator wrote: a plain path goes to the host's own
+# bus, an "ftdi:" node to the bridge.  That is what lets ONE binary — the
+# shipped .deb — serve a Pi with a header and a Pi with a dongle.
+#
+# BUS_BACKENDS is the same decision as a C initialiser, handed to src/bus.c so
+# it needs no #ifdef of its own and a new backend is one line here.  The
+# trailing comma each entry carries is legal in an initialiser list.
+#
+# Detected by ./configure, which writes NO_LINUX_BUS and NO_FT232H into
+# config.mk; the defaults here are both backends, so a plain `make` on the
+# target platform needs no configure step.
 NO_LINUX_BUS ?= 0
+NO_FT232H    ?= 0
+
+# The USB transport behind include/ft_usb.h, which src/bus_ft232h.c sits on.
+# src/ft_usb_linux.c is usbfs; a Mac or a BSD writes one file against that
+# header and names it here, with nothing else in the build to edit.
+FT_USB_SRC ?= src/ft_usb_linux.c
+
+BUS_SRC      =
+BUS_BACKENDS =
+
+ifeq ($(NO_FT232H),0)
+    BUS_SRC      += src/bus_ft232h.c $(FT_USB_SRC)
+    BUS_BACKENDS += &bus_ft232h_backend,
+endif
 
 ifeq ($(NO_LINUX_BUS),0)
-    BUS_SRC = src/bus_linux.c
-else
-    BUS_SRC = src/bus_null.c
-    override CPPFLAGS += -DIMUD_NO_LINUX_BUS
+    BUS_SRC      += src/bus_linux.c
+    BUS_BACKENDS += &bus_linux_backend,
 endif
+
+ifeq ($(strip $(BUS_SRC)),)
+    BUS_SRC      = src/bus_null.c
+    BUS_BACKENDS = &bus_null_backend
+endif
+
+override CPPFLAGS += -DIMUD_BUS_BACKENDS='$(BUS_BACKENDS)'
+
+# The suites that put test/bus_mock.c behind src/bus.c select it the same way.
+# -U first, because the build-wide -D above is already on the command line and
+# redefining a macro to a different value is a diagnostic.
+MOCK_BACKEND_DEF = -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_mock_backend'
 
 # The host clock backend behind include/host_time.h — the absolute-deadline
 # sleep the output threads pace on, the monotonic condition variable src/ring.c
@@ -326,6 +360,13 @@ src/drivers/%.o: src/drivers/%.c
 src/%.entry.o: src/%.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -Dmain=$*_entry -c -o $@ $<
 
+# src/bus.c compiles the backend table in from a -D, and make does not treat a
+# flag change as a reason to recompile -- the same trap the .entry.o rule above
+# has.  So name what decides it: without this, `./configure --without-ft232h &&
+# make` reuses a bus.o still naming a backend the link no longer carries, and
+# fails on an undefined reference that looks like a source error.
+src/bus.o: Makefile $(wildcard config.mk)
+
 -include $(wildcard src/*.d src/drivers/*.d lib/*.d)
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -396,6 +437,21 @@ test_imu_gpio_null: src/imu_gpio_null.c test/test_imu_gpio_null.c
 # identically whichever backend the tree is configured for.
 test_bus_null: src/bus_null.c test/test_bus_null.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
+
+# The FT232H bus backend over test/ft_usb_fake.c, which stands in for
+# include/ft_usb.h and INTERPRETS the MPSSE stream as a bus — so what the suite
+# asserts is the I2C that reached the wire, not the encoding that produced it.
+# No dongle, no usbfs and no kernel headers, so it runs everywhere.
+#
+# Only this backend is named, which is also the point of two of the cases: a
+# plain device path then has nothing to fall back to, exactly as in a build for
+# a host with no bus of its own.  -Isrc is for the quoted drivers/bus_io.h,
+# whose framing the register cases go through.
+test_bus_ft232h: src/bus_ft232h.c src/bus.c src/log.c \
+                 test/ft_usb_fake.c test/test_bus_ft232h.c \
+                 test/ft_usb_fake.h include/ft_usb.h src/drivers/bus_io.h
+	$(CC) $(CPPFLAGS) -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_ft232h_backend,' \
+	    $(CFLAGS) -Isrc $(LDFLAGS) -o $@ $(filter %.c %.o,$^) $(ATOMIC_LIB)
 
 # The conformance suite for include/host_time.h.  It asserts the contract, not
 # one rung's implementation, so it holds for any backend — which is what lets a
@@ -607,7 +663,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/bus_io.h src/drivers/chip_ts.h \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc $(LDFLAGS) \
+	$(CC) $(CPPFLAGS) $(MOCK_BACKEND_DEF) $(CFLAGS) -Isrc $(LDFLAGS) \
 	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # The imud-imutest checker logic over the mock bus, with a scripted
@@ -661,7 +717,7 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
                   $(filter-out $(BUS_SRC) $(GPIO_SRC),$(HWTOOLS_SRCS)) \
                   test/bus_mock.c test/test_hwtools_e2e.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) \
+	$(CC) $(CPPFLAGS) $(MOCK_BACKEND_DEF) $(CFLAGS) $(LDFLAGS) \
 	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon test_nmea test_packet test_capture test_ring \
@@ -669,7 +725,7 @@ TEST_BINS =test_fusion test_fit_ra test_config test_cli test_status test_mon tes
       test_mount test_cal test_cal_math test_wmm test_position test_client \
       test_stream test_netserv test_log test_signalk test_mqtt test_influxdb \
       test_mavlink test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon \
-      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest test_hwtools_e2e \
+      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_bus_ft232h test_host_time test_drivers test_imutest test_hwtools_e2e \
       test_configure
 
 # Suites the macos CI job does not run, and why.  Empty: every suite in
@@ -744,6 +800,7 @@ test: $(TEST_BINS)
 	./test_imu_math
 	./test_imu_gpio_null
 	./test_bus_null
+	./test_bus_ft232h
 	./test_host_time
 	./test_drivers
 	./test_imutest
@@ -1549,7 +1606,7 @@ clean:
 	      test_cal test_cal_math test_wmm test_position test_client test_stream \
 	      test_netserv test_log test_signalk test_mqtt test_influxdb test_mavlink \
       test_libimud test_bridge test_prometheus test_bridge_e2e test_tools_e2e test_daemon test_capture test_concurrency \
-	      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_host_time test_drivers test_imutest \
+	      test_drivers_registry test_imu_math test_imu_gpio_null test_bus_null test_bus_ft232h test_host_time test_drivers test_imutest \
       test_hwtools_e2e test_configure \
 	      fuzz_config fuzz_json fuzz_packet fuzz_capture fuzz_wmm fuzz_cal \
 	      fuzz_argv \

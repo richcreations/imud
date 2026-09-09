@@ -85,6 +85,7 @@ static const char *STUB_CC =
     "  *pthread.h*)        [ \"${STUB_PTHREAD:-1}\" = 1 ] || fail pthread ;;\n"
     "  *math.h*)           [ \"${STUB_LIBM:-1}\" = 1 ] || fail libm ;;\n"
     "  *linux/i2c-dev.h*)  [ \"${STUB_BUS:-1}\" = 1 ] || fail bus ;;\n"
+    "  *usbdevice_fs.h*)   [ \"${STUB_USBFS:-1}\" = 1 ] || fail usbfs ;;\n"
     "  *__ORDER_BIG_ENDIAN__*)\n"
     "      [ \"${STUB_ENDIAN:-little}\" = little ] || fail bigendian ;;\n"
     "  *stdatomic.h*)\n"
@@ -164,6 +165,7 @@ static void fixture_reset(void)
 {
     static const char *vars[] = {
         "STUB_CC_BROKEN", "STUB_C11", "STUB_PTHREAD", "STUB_LIBM", "STUB_BUS",
+        "STUB_USBFS",
         "STUB_ENDIAN", "STUB_INLINE_ATOMIC", "STUB_LATOMIC", "STUB_MOSQUITTO",
         "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_ACCEPT4", "STUB_GPIOD_VERSION",
     };
@@ -368,7 +370,19 @@ static void test_bus_absent(void)
     setenv("STUB_BUS", "0", 1);
 
     EXPECT(run("") == 0, "a host with no i2c-dev/spidev still configures");
-    EXPECT(cfg_is("NO_LINUX_BUS", "1"), "NO_LINUX_BUS = 1 selects the null backend");
+    EXPECT(cfg_is("NO_LINUX_BUS", "1"), "NO_LINUX_BUS = 1 drops the Linux backend");
+
+    /* usbfs alone is still a usable bus, so the null backend is only reached
+     * when BOTH are gone -- which is the case the sim line is about. */
+    EXPECT(cfg_is("NO_FT232H", "0"), "the FT232H backend carries the build");
+    EXPECT(strstr(out("stdout"), "ftdi:") != NULL,
+           "and the summary says every node must be an ftdi: one");
+
+    fixture_reset();
+    setenv("STUB_BUS", "0", 1);
+    setenv("STUB_USBFS", "0", 1);
+    EXPECT(run("") == 0, "a host with neither still configures");
+    EXPECT(cfg_is("NO_FT232H", "1"), "NO_FT232H = 1 too");
     EXPECT(strstr(out("stdout"), "null") != NULL,
            "and the summary says the backend is null");
     EXPECT(strstr(out("stdout"), "sim") != NULL,
@@ -378,6 +392,7 @@ static void test_bus_absent(void)
     fixture_reset();
     EXPECT(run("") == 0, "a host with them configures");
     EXPECT(cfg_is("NO_LINUX_BUS", "0"), "with the Linux backend");
+    EXPECT(cfg_is("NO_FT232H", "0"), "and the FT232H beside it");
 }
 
 /*

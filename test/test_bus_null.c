@@ -27,6 +27,8 @@
 
 #include "bus_backend.h"
 
+static const bus_backend_t *const B = &bus_null_backend;
+
 static int g_fail;
 static int g_checks;
 
@@ -45,18 +47,18 @@ static void test_open_and_close_are_real(void)
 {
     printf("test_open_and_close_are_real\n");
 
-    int h = bus_be_open("/dev/null");
+    int h = B->open("/dev/null");
     EXPECT(h >= 0, "open of a real node succeeds");
-    bus_be_close(h);
+    B->close(h);
 
     errno = 0;
-    EXPECT(bus_be_open("/nonexistent/imud-bus-null") < 0,
+    EXPECT(B->open("/nonexistent/imud-bus-null") < 0,
            "open of a missing node fails");
     EXPECT(errno != 0, "leaving errno set for the caller's message");
 
     /* bus_close() reaches here with a handle that was never opened, because
      * bus_init() starts one at -1 and every error path is safe to close. */
-    bus_be_close(-1);
+    B->close(-1);
     EXPECT(1, "close(-1) returns");
 }
 
@@ -72,11 +74,11 @@ static void test_transfers_fail_with_enosys(void)
     uint8_t tx[2] = { 0x0F, 0x00 }, rx[8] = { 0 };
 
     errno = 0;
-    EXPECT(bus_be_i2c_xfer(&b, tx, 1, rx, sizeof rx) == -1, "i2c read fails");
+    EXPECT(B->i2c_xfer(&b, tx, 1, rx, sizeof rx) == -1, "i2c read fails");
     EXPECT(errno == ENOSYS, "with ENOSYS");
 
     errno = 0;
-    EXPECT(bus_be_i2c_xfer(&b, tx, 2, NULL, 0) == -1, "i2c write fails");
+    EXPECT(B->i2c_xfer(&b, tx, 2, NULL, 0) == -1, "i2c write fails");
     EXPECT(errno == ENOSYS, "with ENOSYS");
 
     bus_spi_leg_t legs[2] = {
@@ -85,15 +87,15 @@ static void test_transfers_fail_with_enosys(void)
     };
 
     errno = 0;
-    EXPECT(bus_be_spi_msg(&b, legs, 2) == -1, "spi burst read fails");
+    EXPECT(B->spi_msg(&b, legs, 2) == -1, "spi burst read fails");
     EXPECT(errno == ENOSYS, "with ENOSYS");
 
     errno = 0;
-    EXPECT(bus_be_spi_msg(&b, legs, 1) == -1, "spi single-leg message fails");
+    EXPECT(B->spi_msg(&b, legs, 1) == -1, "spi single-leg message fails");
     EXPECT(errno == ENOSYS, "with ENOSYS");
 
     errno = 0;
-    EXPECT(bus_be_spi_setup(0, 3, 8, 1000000) == -1, "spi setup fails");
+    EXPECT(B->spi_setup(0, 3, 8, 1000000) == -1, "spi setup fails");
     EXPECT(errno == ENOSYS, "with ENOSYS");
 }
 
@@ -112,7 +114,7 @@ static void test_no_transfer_reports_a_bus_error(void)
     uint8_t reg = 0x0F, val = 0;
 
     errno = 0;
-    (void)bus_be_i2c_xfer(&b, &reg, 1, &val, 1);
+    (void)B->i2c_xfer(&b, &reg, 1, &val, 1);
     EXPECT(errno != EIO,    "not EIO — that would read as a wiring fault");
     EXPECT(errno != ENODEV, "not ENODEV — that would read as a missing part");
     EXPECT(errno == ENOSYS, "ENOSYS names the missing backend");
@@ -130,7 +132,7 @@ static void test_failed_transfer_writes_nothing(void)
 
     uint8_t reg = 0x0F;
     uint8_t rx[4] = { 0xAA, 0xBB, 0xCC, 0xDD };
-    (void)bus_be_i2c_xfer(&b, &reg, 1, rx, sizeof rx);
+    (void)B->i2c_xfer(&b, &reg, 1, rx, sizeof rx);
     EXPECT(rx[0] == 0xAA && rx[1] == 0xBB && rx[2] == 0xCC && rx[3] == 0xDD,
            "i2c read leaves the caller's buffer alone");
 
@@ -139,15 +141,40 @@ static void test_failed_transfer_writes_nothing(void)
         { .tx = &reg, .len = 1,         .bits = 8 },
         { .rx = srx,  .len = sizeof srx, .bits = 8 },
     };
-    (void)bus_be_spi_msg(&b, legs, 2);
+    (void)B->spi_msg(&b, legs, 2);
     EXPECT(srx[0] == 0x11 && srx[1] == 0x22,
            "spi read leaves the caller's buffer alone");
+}
+
+/*
+ * The vtable contract, which src/bus.c dereferences without checking.  A
+ * backend with a hole in it would crash at the first transfer rather than
+ * fail, and bus_init() leaving `be` unset is what makes bus_close() safe on a
+ * handle that was never opened — the calloc'd-context case bus.h warns about.
+ */
+static void test_backend_struct_is_complete(void)
+{
+    printf("test_backend_struct_is_complete\n");
+
+    EXPECT(B->name != NULL,      "the backend names itself");
+    EXPECT(B->scheme == NULL,    "no scheme: it takes plain device paths");
+    EXPECT(B->open != NULL,      "open is set");
+    EXPECT(B->close != NULL,     "close is set");
+    EXPECT(B->spi_setup != NULL, "spi_setup is set");
+    EXPECT(B->i2c_xfer != NULL,  "i2c_xfer is set");
+    EXPECT(B->spi_msg != NULL,   "spi_msg is set");
+
+    imud_bus_t b;
+    bus_init(&b);
+    EXPECT(b.be == NULL, "bus_init leaves no backend, so bus_close is safe");
+    EXPECT(b.fd == -1,   "and no descriptor");
 }
 
 int main(void)
 {
     printf("=== test_bus_null ===\n");
 
+    test_backend_struct_is_complete();
     test_open_and_close_are_real();
     test_transfers_fail_with_enosys();
     test_no_transfer_reports_a_bus_error();

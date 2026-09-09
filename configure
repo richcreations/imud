@@ -38,6 +38,7 @@ docdir=
 infodir=
 want_gpiod=auto
 want_linux_bus=auto
+want_ft232h=auto
 want_host_time=auto
 out=config.mk
 
@@ -89,6 +90,8 @@ Options take their value with an =, as shown.
   --without-gpiod           build the null GPIO backend even where it is present
   --with-linux-bus          require i2c-dev and spidev; fail if absent
   --without-linux-bus       build the null bus backend even where they are present
+  --with-ft232h             require usbfs; fail if it is absent
+  --without-ft232h          leave the FT232H USB bridge backend out
   --with-host-time=FILE     the include/host_time.h backend to build, for a
                             host none of the shipped rungs fits
 
@@ -117,6 +120,8 @@ for arg do
         --without-gpiod)  want_gpiod=no ;;
         --with-linux-bus)    want_linux_bus=yes ;;
         --without-linux-bus) want_linux_bus=no ;;
+        --with-ft232h)       want_ft232h=yes ;;
+        --without-ft232h)    want_ft232h=no ;;
         --with-host-time=*)  want_host_time=${arg#*=} ;;
         *) die "unrecognized option: $arg (see --help)" ;;
     esac
@@ -173,6 +178,7 @@ fi
 cc_ok=no
 endian=unknown
 have_linux_bus=0
+have_usbfs=0
 
 if echo 'int main(void){return 0;}' | try_link; then
     cc_ok=yes
@@ -209,6 +215,17 @@ int main(void){return I2C_RDWR==0;}' | try_link; then
         have_linux_bus=1
     else
         have_linux_bus=0
+    fi
+
+    # The FT232H bridge backend, which needs only usbfs -- no libusb and no
+    # libftdi.  Not fatal either: without it a host simply has no "ftdi:" node
+    # to name, and the backends it does have are unaffected.
+    if echo '#include <sys/ioctl.h>
+#include <linux/usbdevice_fs.h>
+int main(void){return USBDEVFS_BULK==0;}' | try_link; then
+        have_usbfs=1
+    else
+        have_usbfs=0
     fi
 
     # Host byte order.  Reported, not required: the wire packet and .imucap
@@ -285,6 +302,17 @@ case $want_linux_bus in
         no_linux_bus=1 ;;
     *)
         if [ "$have_linux_bus" = 1 ]; then no_linux_bus=0; else no_linux_bus=1; fi ;;
+esac
+
+case $want_ft232h in
+    yes)
+        [ "$have_usbfs" = 1 ] ||
+            die "--with-ft232h: no usbfs (<linux/usbdevice_fs.h>) found"
+        no_ft232h=0 ;;
+    no)
+        no_ft232h=1 ;;
+    *)
+        if [ "$have_usbfs" = 1 ]; then no_ft232h=0; else no_ft232h=1; fi ;;
 esac
 
 # ── Probed: the host runtime the threads sit on ──────────────────────────────
@@ -413,6 +441,12 @@ GPIOD_MAJ = $gpiod_maj
 # \`driver = sim\` end to end.
 NO_LINUX_BUS = $no_linux_bus
 
+# The FT232H USB bridge (src/bus_ft232h.c over src/ft_usb_linux.c).  0 links
+# it beside whatever else the build has, and src/bus.c routes an "ftdi:" node
+# to it; 1 leaves it out.  Both may be built at once -- that is what lets one
+# binary serve a header and a dongle.
+NO_FT232H = $no_ft232h
+
 # Empty unless 64-bit atomics need libatomic (ARMv6).  It must follow the
 # objects on the link line, never sit in LDFLAGS.
 ATOMIC_LIB = $atomic_lib
@@ -470,9 +504,14 @@ printf '    %-18s %s\n' "compiler" "$CC (C11, pthreads, libm)"
 printf '    %-18s %s\n' "64-bit atomics" "$atomic_how"
 if [ "$no_linux_bus" = 0 ]; then
     printf '    %-18s %s\n' "bus backend" "Linux i2c-dev + spidev"
+elif [ "$no_ft232h" = 0 ]; then
+    printf '    %-18s %s\n' "bus backend" "FT232H only -- every node is ftdi:"
 else
     printf '    %-18s %s\n' "bus backend" \
            "null -- no I2C or SPI; only driver = sim will run"
+fi
+if [ "$no_ft232h" = 0 ]; then
+    printf '    %-18s %s\n' "USB bridge" "FT232H over usbfs (ftdi: nodes)"
 fi
 printf '    %-18s %s\n' "byte order" "$endian-endian (wire stays little-endian)"
 if [ "$no_gpiod" = 0 ]; then

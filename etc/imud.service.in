@@ -146,6 +146,11 @@ DeviceAllow=/dev/gpiochip4 rw
 # using SPI1..6, or a second SPI bus, needs its own line here.
 DeviceAllow=/dev/spidev0.0 rw
 DeviceAllow=/dev/spidev0.1 rw
+# An FT232H USB bridge (i2c_bus = "ftdi:") is reached through usbfs, whose
+# nodes are /dev/bus/usb/BBB/DDD and are renumbered on every replug — so the
+# whole char-usb_device class is allowed rather than one path.  Inert on a
+# host with no such dongle.
+DeviceAllow=char-usb_device rw
 
 # Memory ceiling (spec target: <14 MB RSS; 32 MB allows headroom).
 MemoryMax=32M

@@ -612,7 +612,7 @@ key inline and is the fastest way to see a working configuration.
 @anchor{#device}
 Hardware bus and GPIO controller. @strong{[restart]}
 
-@multitable @columnfractions 0.15 0.09 0.19 0.56 
+@multitable @columnfractions 0.13 0.09 0.19 0.59 
 @headitem 
 Key
  @tab Type
@@ -625,41 +625,33 @@ Key
  @tab I²C bus device node. Use @code{/dev/i2c-1} on Pi 4;
 @code{/dev/i2c-1} or @code{/dev/i2c-3} on Pi 5 depending on which header
 pins are used.
-@item 
-@code{gpio_chip}
- @tab string
- @tab @code{"gpiochip0"}
- @tab gpiochip device name. @strong{Run @code{gpiodetect} and use the
-chip it lists for the header pins} --- the number comes from probe order
-and is not stable across kernels. @code{"gpiochip0"} is right on Pi 4,
-and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1
-controller to 0 like every other model). Earlier Pi 5 kernels exposed it
-as @code{"gpiochip4"}, and Pi OS keeps a @code{/dev/gpiochip4} symlink
-for compatibility --- a symlink, not a second controller.
-@item 
-@code{sim_file}
- @tab string
- @tab @code{""}
- @tab An @code{.imucap} capture for the sim driver to replay
+@end multitable
+
+A host with no I²C on a header can instead name an FT232H USB bridge as
+@code{ftdi:[<match>][@@<hz>]}. @code{<match>} picks between several ---
+a USB serial, a @code{<bus>.<dev>} pair or a sysfs port path such as
+@code{1-2} --- and is omitted for the first one found. @code{<hz>} sets
+the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2
+together to SDA; pull-ups are yours. There is no interrupt line on this
+transport, so set @code{int_gpio = 0} and both readers poll. | |
+@code{gpio_chip} | string | @code{"gpiochip0"} | gpiochip device name.
+@strong{Run @code{gpiodetect} and use the chip it lists for the header
+pins} --- the number comes from probe order and is not stable across
+kernels. @code{"gpiochip0"} is right on Pi 4, and on Pi 5 with kernels
+from mid-2024 onward (which renumber the RP1 controller to 0 like every
+other model). Earlier Pi 5 kernels exposed it as @code{"gpiochip4"}, and
+Pi OS keeps a @code{/dev/gpiochip4} symlink for compatibility --- a
+symlink, not a second controller. | | @code{sim_file} | string |
+@code{""} | An @code{.imucap} capture for the sim driver to replay
 (@code{driver = "sim"} in both @code{[imu]} and @code{[mag]}); empty
 selects the built-in synthetic scenario. @code{imud --replay FILE} is
 the shortcut. See
 @uref{https://github.com/richcreations/imud/blob/main/docs/capture.md,capture
-& replay}.
-@item 
-@code{sim_loop}
- @tab bool
- @tab @code{false}
- @tab Repeat the capture forever; timestamps and sequence numbers are
-rebased to stay monotonic. Ignored under @code{--replay}, which plays a
-file once and exits.
-@item 
-@code{sim_speed}
- @tab float
- @tab @code{1.0}
- @tab Playback pacing: @code{2.0} = double speed, @code{0} = as fast as
-the pipeline accepts.
-@end multitable
+& replay}. | | @code{sim_loop} | bool | @code{false} | Repeat the
+capture forever; timestamps and sequence numbers are rebased to stay
+monotonic. Ignored under @code{--replay}, which plays a file once and
+exits. | | @code{sim_speed} | float | @code{1.0} | Playback pacing:
+@code{2.0} = double speed, @code{0} = as fast as the pipeline accepts. |
 
 @node [runtime]
 @section [runtime]
@@ -2019,6 +2011,7 @@ have.
 * Sample rates and which ones your host can actually run::
 * Fitting an MPU-9250 or MPU-9255::
 * Running a sensor on SPI::
+* 52 I²C over an FT232H USB bridge::
 @end menu
 
 @node Running without a magnetometer 6-DoF
@@ -2224,6 +2217,61 @@ claim from "the board is wired right". Run @code{imud-imutest --all}
 after changing transport --- its report should match the one you get on
 I²C.
 @end itemize
+
+@node 52 I²C over an FT232H USB bridge
+@section 5.2 I²C over an FT232H USB bridge
+@anchor{#52-i²c-over-an-ft232h-usb-bridge}
+A host with no I²C on a header --- a laptop, a Mac, a Pi whose header is
+already spoken for --- can reach the parts through an FT232H dongle. Set
+@code{[device] i2c_bus} to an @code{ftdi:} node and everything above the
+bus is unchanged: the same drivers, the same calibration, the same
+output streams.
+
+@verbatim
+[device]
+i2c_bus  = "ftdi:"               # the first FT232H found, at 400 kHz
+
+[imu]
+driver   = "lsm6dsox"
+i2c_addr = 0x6A
+int_gpio = 0                     # no interrupt line on this transport
+@end verbatim
+
+The node is @code{ftdi:[<match>][@@<hz>]}. @code{<match>} picks between
+several dongles --- a USB serial, a @code{<bus>.<dev>} pair, or the
+sysfs port path (@code{1-2}), which is the one that survives a replug
+into the same socket. @code{<hz>} sets the bus clock and defaults to
+400000; drop it to 100000 if the parts sit on long jumper leads.
+
+Four things differ from a header:
+
+@itemize
+@item
+@strong{Wiring.} AD0 is SCL; AD1 and AD2 must BOTH connect to SDA,
+because MPSSE drives its output on AD1 and always samples its input on
+AD2. Pull-ups are yours --- the FT232H has none.
+@item
+@strong{No interrupt line.} Set @code{int_gpio = 0} in @code{[imu]} and
+@code{[mag]}; both readers then run on their polling timer, which is the
+same fallback used when a line is configured but never fires.
+@item
+@strong{Latency, not clock rate, sets the ceiling.} Each transaction is
+a USB round trip of roughly a millisecond, against ~20 µs for an ioctl
+on a header. A FIFO burst amortises that over its whole payload, so the
+batched drain matters much more here; a high ODR with a small
+@code{fifo_wm} will not keep up.
+@item
+@strong{SPI is not implemented} on this backend yet --- it fails with
+@code{ENOSYS}.
+@end itemize
+
+On Linux it needs no library and no root: the backend drives usbfs
+directly, and a dongle plugged into a logged-in seat carries an ACL
+granting that user access. imud detaches the kernel's @code{ftdi_sio}
+serial driver while it holds the device, so @code{/dev/ttyUSB*} for that
+dongle goes away until imud exits.
+
+Leave it out of a build with @code{./configure --without-ft232h}.
 
 @iftex
 @bigskip@hrule@bigskip

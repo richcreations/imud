@@ -664,7 +664,7 @@ CASES = [
     # A stated count going stale -- both spellings, since the two are checked
     # against different lists.
     ("check-portable-tests", "CONTRIBUTING.md",
-     sub(r'the 39 portable suites', 'the 3 portable suites'),
+     sub(r'the 40 portable suites', 'the 3 portable suites'),
      "3 portable suites"),
 
     # ── check-web-drivers ────────────────────────────────────────────────────
@@ -705,7 +705,7 @@ CASES = [
      "ten parts have never run"),
 
     ("check-portable-tests", "devbox/README.md",
-     sub(r'runs 39 suites', 'runs 99 suites'),
+     sub(r'runs 40 suites', 'runs 99 suites'),
      "99 suites"),
 
 ]

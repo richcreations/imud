@@ -16,6 +16,17 @@ A driver's probe() no longer disturbs a part that init() has already
 configured, which was making imud-imutest report the MPU-925x pair as failing
 to hold its setup through a run.
 
+Added:
+
+* imud can reach an I2C IMU through an FT232H USB bridge, for a host with no
+  bus on a header. Set [device] i2c_bus to an "ftdi:" node; the drivers,
+  calibration and output streams are unchanged.
+  I2C only for now — SPI over the bridge is not implemented. The transport has
+  no interrupt line, so set int_gpio = 0 in [imu] and [mag] and both readers
+  poll. On Linux it needs no library and no root, and it detaches the kernel
+  ftdi_sio driver while imud holds the dongle. Leave it out with ./configure
+  --without-ft232h.
+
 Fixed:
 
 * imud-imutest reported the mpu9250/mpu9255 pair as not holding its

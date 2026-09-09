@@ -19,7 +19,7 @@ Two audiences:
 
 ## Why
 
-`make test` runs 39 suites, and `make test-portable` runs the 39 portable suites
+`make test` runs 40 suites, and `make test-portable` runs the 40 portable suites
 — every one of them, on macOS included. So the gap this box fills is no longer
 coverage. It is these, which macOS cannot do at all: the sanitizers, `make
 coverage`, the `.deb` builds, the systemd unit checks, and the libgpiod **v1**
