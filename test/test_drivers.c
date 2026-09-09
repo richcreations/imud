@@ -1818,12 +1818,13 @@ static void test_lsm_probe(void)
     const imu_ops_t *d = &lsm6dso_ops;
 
     i2cmock_reset();
-    /* This driver backs BOTH registry names, so it must accept either
-     * WHO_AM_I — rejecting 0x6D would silently break the lsm6dsox entry. */
+    /* This driver backs BOTH registry names, and both parts answer 0x6C. */
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6C);
     EXPECT(d->probe(I2CBUS(LSM_ADDR)) == 0, "probe accepts LSM6DSO (0x6C)");
+    EXPECT(lsm6dsox_ops.probe(I2CBUS(LSM_ADDR)) == 0,
+           "probe accepts LSM6DSOX (0x6C)");
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6D);
-    EXPECT(d->probe(I2CBUS(LSM_ADDR)) == 0, "probe accepts LSM6DSOX (0x6D)");
+    EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe rejects 0x6D");
 
     i2cmock_set_reg(LSM_ADDR, 0x0F, 0x6B);   /* ISM330DHCX's ID */
     EXPECT(d->probe(I2CBUS(LSM_ADDR)) != 0, "probe rejects a different ST part");

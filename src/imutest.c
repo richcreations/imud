@@ -538,7 +538,7 @@ static const imt_regmap_t imt_regmaps[] = {
                 {0x76,0x77} }, .nresv = 9 },
     { .driver = "lsm6dsox",   .lo = 0x00, .hi = 0x7F,
       .nrd_lo = 0x78, .nrd_hi = 0x7E, .freq_fine_reg = 0x63,
-      .whoami_reg = 0x0F, .whoami_val = 0x6D,
+      .whoami_reg = 0x0F, .whoami_val = 0x6C,
       /* Same output file and temperature scaling as the ISM330DHCX. */
       .dir = { .base = 0x20, .len = 14, .be = false,
                .t_off = 0, .g_off = 2, .a_off = 8, .sign = { 1, -1, -1 },

@@ -9,7 +9,7 @@
  *
  * Near-identical register layout to ISM330DHCX (same FIFO scheme, same
  * timestamp peripheral, same sensitivity table).  Three differences:
- *   1. WHO_AM_I is 0x6C (LSM6DSO) or 0x6D (LSM6DSOX) instead of 0x6B.
+ *   1. WHO_AM_I is 0x6C instead of 0x6B, on both parts.
  *   2. DEVICE_CONF (REG_CTRL9_XL) write is not required.
  *   3. ODR table extends to 3332 Hz (code 0x9) and 6664 Hz (code 0xA).
  *
@@ -64,8 +64,9 @@
 
 /* ── Chip identity ─────────────────────────────────────────────────────────── */
 
+/* Both registry names answer 0x6C: the LSM6DSO per DS12140 §9.11, the
+ * LSM6DSOX measured on the bench. */
 #define WHO_AM_I_LSM6DSO   0x6C
-#define WHO_AM_I_LSM6DSOX  0x6D
 
 /* ── Static driver state ───────────────────────────────────────────────────── */
 
@@ -185,9 +186,9 @@ static int lsm_probe(const imud_bus_t *bus)
         LOG_E("lsm6dso: WHO_AM_I read failed: %s\n", strerror(errno));
         return -1;
     }
-    if (who != WHO_AM_I_LSM6DSO && who != WHO_AM_I_LSM6DSOX) {
-        LOG_E("lsm6dso: WHO_AM_I = 0x%02X, expected 0x%02X or 0x%02X\n",
-                who, WHO_AM_I_LSM6DSO, WHO_AM_I_LSM6DSOX);
+    if (who != WHO_AM_I_LSM6DSO) {
+        LOG_E("lsm6dso: WHO_AM_I = 0x%02X, expected 0x%02X\n",
+                who, WHO_AM_I_LSM6DSO);
         return -1;
     }
     return 0;

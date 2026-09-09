@@ -4456,7 +4456,7 @@ static void test_bus_integrity_uses_an_invariant(void)
     static const struct { const char *drv; uint8_t reg, val; } id[] = {
         { "ism330dhcx", 0x0F, 0x6B },
         { "lsm6dso",    0x0F, 0x6C },
-        { "lsm6dsox",   0x0F, 0x6D },
+        { "lsm6dsox",   0x0F, 0x6C },
         { "icm42688p",  0x75, 0x47 },
         { "mpu9250",    0x75, 0x71 },
         { "mpu9255",    0x75, 0x73 },
