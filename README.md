@@ -43,7 +43,7 @@ software at the stream.
 It depends on the C standard library and, for the interrupt lines, `libgpiod`
 — nothing else, and `./configure` builds without `libgpiod` where it is
 absent. Linux is the packaged target; imud also builds and runs on macOS,
-where an FT232H USB dongle carries the I²C bus. License: MIT — see
+where an FT232H USB dongle carries the sensor bus. License: MIT — see
 [LICENSE](LICENSE).
 
 ## What it does
@@ -72,10 +72,10 @@ where an FT232H USB dongle carries the I²C bus. License: MIT — see
   notes are in the
   [driver table](docs/manual.md#5-supported-drivers).
 - **I²C, SPI, or a USB dongle.** The sensor sits on a header's I²C or SPI bus,
-  or on an FT232H USB bridge (`i2c_bus = "ftdi:"`) for a host that has no bus
-  of its own — a laptop, a Mac, a Pi whose header is already spoken for. Same
-  drivers, same config, no library and no root; the bridge has no interrupt
-  line, so the readers poll. See
+  or on an FT232H USB bridge — I²C or SPI there too — for a host that has no
+  bus of its own: a laptop, a Mac, a Pi whose header is already spoken for.
+  Same drivers, same config, no library and no root; the bridge has no
+  interrupt line, so the readers poll. See
   [§5.2 of the manual](docs/manual.md#52-i²c-or-spi-over-an-ft232h-usb-bridge).
 - **6-DoF or 9-DoF.** With `mag.driver = "none"` imud runs a gyro+accelerometer
   board and everything that does not need a compass keeps working: roll, pitch,
@@ -182,8 +182,9 @@ sudo systemctl enable --now imud
 **On macOS** the build is `./configure && make` — configure is required there,
 since it is what picks the backends a Mac has (add Homebrew's `mosquitto` for
 the MQTT bridge). There is no header bus, so reach the sensor through an
-FT232H dongle (`i2c_bus = "ftdi:"` and `int_gpio = 0`), or run the `sim`
-driver with no hardware at all. `sudo make install` installs a launchd job
+FT232H dongle over I²C (`i2c_bus = "ftdi:"`) or SPI (`spi_dev = "ftdi:/cs0"`),
+with `int_gpio = 0` either way — or run the `sim` driver with no hardware at
+all. `sudo make install` installs a launchd job
 rather than a systemd unit. There is no package; CI builds and runs the whole
 test suite on macOS 14 and 26 and on Intel.
 
