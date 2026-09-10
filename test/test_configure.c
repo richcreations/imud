@@ -1076,6 +1076,89 @@ static void test_service_unit_follows_the_host(void)
 }
 
 /*
+ * uninstall has to STOP a service before it removes the unit file, or the init
+ * system is left holding a job whose file is gone.  The launchd half was
+ * missing entirely: the plist was deleted while the job stayed bootstrapped.
+ *
+ * Answerable here rather than only on a Mac, because `make -n` echoes an
+ * @-prefixed recipe -- so the branch a Linux box never runs is still readable.
+ */
+static void test_uninstall_stops_the_service(void)
+{
+    printf("test_uninstall_stops_the_service\n");
+
+    setenv("PATH", g_real_path, 1);
+
+    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+
+    static const char *kinds[] = { "launchd", "systemd", "none" };
+
+    for (unsigned i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        snprintf(cmd, sizeof cmd,
+                 "cd '%s' && make -n uninstall SVC_KIND=%s SVCDIR=/tmp/svc "
+                 "DESTDIR=/tmp/imud-nonexistent > '%s/mk.txt' 2>&1",
+                 root, kinds[i], g_work);
+        EXPECT(system(cmd) == 0, "make -n uninstall parses");
+
+        snprintf(path, sizeof path, "%s/mk.txt", g_work);
+        const char *buf = slurp(path);
+
+        int boots_out = strstr(buf, "launchctl bootout") != NULL;
+        int disables  = strstr(buf, "systemctl disable") != NULL;
+
+        if (strcmp(kinds[i], "launchd") == 0) {
+            EXPECT(boots_out, "SVC_KIND=launchd boots the job out");
+            EXPECT(!disables, "and does not reach for systemctl");
+            EXPECT(strstr(buf, "bootout system/io.github.richcreations.$n")
+                   != NULL, "addressing it by label");
+            /*
+             * The trap this test exists for: bootout takes the LABEL, and
+             * svc-dst is the FILENAME -- the same string plus ".plist".
+             * Passing the filename is refused, and the 2>/dev/null that lets
+             * an unloaded job pass would swallow that too.
+             */
+            EXPECT(strstr(buf, "bootout system/io.github.richcreations.$n.plist")
+                   == NULL, "never the .plist filename");
+            /*
+             * Over every name in SVC_NAMES, not just imud.  Pinned in full so
+             * a seventh bridge added to that list fails here rather than being
+             * installed and then never stopped.
+             */
+            EXPECT(strstr(buf, "for n in imud imud-signalk imud-mqtt "
+                               "imud-influxdb imud-prometheus imud-mavlink")
+                   != NULL, "for every service, not just the daemon");
+            /*
+             * bootout returns while the job is still exiting, so without a
+             * wait the job is still listed the instant uninstall returns --
+             * which is the state issue #86 reports.  Measured on macOS: still
+             * there immediately after, gone moments later.
+             */
+            EXPECT(strstr(buf, "launchctl print system/$(LAUNCHD_PREFIX)")
+                   != NULL
+                   || strstr(buf, "launchctl print system/io.github") != NULL,
+                   "then waits for the job to actually go");
+        } else if (strcmp(kinds[i], "systemd") == 0) {
+            EXPECT(disables, "SVC_KIND=systemd disables the units");
+            EXPECT(!boots_out, "and does not reach for launchctl");
+            EXPECT(strstr(buf, "for n in imud imud-signalk imud-mqtt "
+                               "imud-influxdb imud-prometheus imud-mavlink")
+                   != NULL, "over the same list");
+        } else {
+            EXPECT(!boots_out && !disables,
+                   "SVC_KIND=none stops nothing, having installed nothing");
+        }
+
+        /* Whichever kind: removing the files is still uninstall's job. */
+        EXPECT(strstr(buf, "rm -f") != NULL, "and the files are still removed");
+    }
+
+    setenv("PATH", g_stub, 1);
+}
+
+/*
  * config.mk has to be a makefile, not just a text file that looks like one.
  * The Makefile -includes it ahead of everything, so a syntax error there
  * breaks every target at once — including the ones that never compile
@@ -1150,6 +1233,7 @@ int main(void)
     test_prefix_reaches_the_binary();
     test_service_unit_follows_the_host();
     test_service_none();
+    test_uninstall_stops_the_service();
     test_config_mk_is_valid_make();
 
     printf("\n%d passed, %d failed\n", g_checks - g_fail, g_fail);

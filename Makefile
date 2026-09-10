@@ -1761,15 +1761,44 @@ else
 endif
 	@echo "  (requires imud's [stream] output enabled; see $(ETCDIR)/imud-mavlink.conf)"
 
+# Stop each service before its unit is removed below, or the init system is
+# left holding a job whose file is gone.  Both branches loop over SVC_NAMES so
+# a seventh bridge cannot be added to that list and silently never stopped.
+#
+# The launchd label is $(call svc-dst,<n>) WITHOUT the .plist: bootout takes
+# the label, not the filename, and passing the filename fails silently under
+# the 2>/dev/null below.  DESTDIR means a staged root, which has no running
+# service to stop, so both branches sit behind the same guard as the
+# daemon-reload at the end.
+#
+# bootout is ASYNCHRONOUS -- it returns while the job is still exiting, so a
+# job read back immediately afterwards is still listed, in state SIGTERMed.
+# Measured on macOS 14.8.9: still present the instant uninstall returned, gone
+# moments later.  Waiting is what makes the postcondition true, and what stops
+# an uninstall/install pair failing with "service already loaded".
 uninstall:
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl disable --now imud 2>/dev/null || true; \
-	    systemctl disable --now imud-signalk 2>/dev/null || true; \
-	    systemctl disable --now imud-mqtt 2>/dev/null || true; \
-	    systemctl disable --now imud-influxdb 2>/dev/null || true; \
-	    systemctl disable --now imud-prometheus 2>/dev/null || true; \
-	    systemctl disable --now imud-mavlink 2>/dev/null || true; \
+ifeq ($(SVC_KIND),launchd)
+	@if [ -z "$(DESTDIR)" ] && command -v launchctl >/dev/null 2>&1; then \
+	    for n in $(SVC_NAMES); do \
+	        launchctl bootout system/$(LAUNCHD_PREFIX).$$n 2>/dev/null || true; \
+	    done; \
+	    for i in 1 2 3 4 5 6 7 8 9 10; do \
+	        left=0; \
+	        for n in $(SVC_NAMES); do \
+	            launchctl print system/$(LAUNCHD_PREFIX).$$n >/dev/null 2>&1 \
+	                && left=1; \
+	        done; \
+	        [ $$left = 0 ] && break; \
+	        sleep 1; \
+	    done; \
 	fi
+else ifeq ($(SVC_KIND),systemd)
+	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+	    for n in $(SVC_NAMES); do \
+	        systemctl disable --now $$n 2>/dev/null || true; \
+	    done; \
+	fi
+endif
 	rm -f $(DESTDIR)$(PREFIX)/bin/imud \
 	      $(DESTDIR)$(PREFIX)/bin/imud-cal \
 	      $(DESTDIR)$(PREFIX)/bin/imud-status \
