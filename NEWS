@@ -10,47 +10,39 @@ Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
 registry rather than this file.
 
 
+1.11.0
+------
+macOS support, installation under any prefix, and an FT232H USB bridge for a
+host with no bus on a header.
+
+Added:
+
+* FT232H USB bridge support, over I2C or SPI, for a host with no bus on a
+  header.
+* imud installs and runs as a service on macOS.
+* libimud installs as a shared library on macOS.
+* imud installs under a prefix that is not /usr.
+
+Changed:
+
+* imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf
+  when there is no system config.
+
+Fixed:
+
+* Heading stayed magnetic on a build not installed at PREFIX=/usr.
+* lsm6dsox is recognised again.
+* The magnetometer ran at a third of its configured rate with no interrupt
+  line.
+* imud-cal checks the output is writable before collecting a magnetometer
+  swing, not after.
+
+
 1.10.1
 ------
 A driver's probe() no longer disturbs a part that init() has already
 configured, which was making imud-imutest report the MPU-925x pair as failing
 to hold its setup through a run.
-
-Added:
-
-* imud installs and runs as a service on macOS. ./configure detects the host,
-  and make install writes a launchd job into /Library/LaunchDaemons or a
-  systemd unit, for the daemon and each bridge.
-  Supported on macOS 14 Sonoma through macOS 26 Tahoe. The launchd job runs as
-  root: macOS has no equivalent of the unit's imud user, its device policy or
-  its watchdog. A Mac has no /run either, so the installed config's socket
-  paths move to /var/run. Override the choice with ./configure --with-
-  service=systemd|launchd.
-* libimud is installed as a shared library on macOS, as libimud.0.dylib.
-  Applications build against it with pkg-config exactly as on Linux.
-* imud can reach an I2C IMU through an FT232H USB bridge on Linux and macOS,
-  for a host with no bus on a header. Set [device] i2c_bus to an "ftdi:" node;
-  the drivers, calibration and output streams are unchanged.
-  I2C only for now — SPI over the bridge is not implemented. The transport has
-  no interrupt line, so set int_gpio = 0 in [imu] and [mag] and both readers
-  poll. It needs no library and no privilege on either host, and takes the
-  dongle from the kernel FTDI serial driver while imud holds it. Leave it out
-  with ./configure --without-ft232h.
-* imud installs under a prefix that is not /usr. The install directories are
-  compiled in, so the binaries find their own config, calibration, sockets and
-  WMM data rather than a Debian package's.
-  ./configure gains --datadir, --rundir, --statedir, and --with-service=none
-  for a package manager that defines the service itself: it installs no unit
-  and creates no state directory. A build at PREFIX=/usr is unchanged, so the
-  .deb is byte-identical.
-
-Changed:
-
-* imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf
-  when there is no system config, the search imud already ran. A host with no
-  /etc/imud is configured once and serves all four.
-  An explicit --config still replaces the search rather than heading it, for
-  all four.
 
 Fixed:
 
@@ -62,12 +54,6 @@ Fixed:
   imu.regs.after_run and a WARN on imu.init.idempotent, both naming USER_CTRL.
   The daemon probes once, before it configures anything, and was never
   affected. rm3100's probe had the same fault and is fixed with it.
-* make install-wmm-data put WMM.COF under the prefix while the daemon looked
-  only in /usr/share. Declination stayed zero and heading stayed magnetic,
-  with no warning. Both sides now follow the prefix.
-  Affects any build not made with PREFIX=/usr, the default source install at
-  /usr/local included; the .deb was never affected. A newer model dropped at
-  /etc/imud/WMM.COF still wins, as before.
 
 
 1.10.0
