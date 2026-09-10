@@ -262,6 +262,39 @@ static int cfg_is(const char *name, const char *want)
     return got && strcmp(got, want) == 0;
 }
 
+/*
+ * The whole of `path`, NUL-terminated, in storage that lives until the next
+ * call — "" if it cannot be read, so a missing file fails an assertion instead
+ * of crashing the suite.
+ *
+ * Sized from the file rather than from a constant, because `make -n install`
+ * prints every build recipe still outstanding ahead of the install rules and
+ * so has no bound: 10 KB with the tree built, 32 KB with nothing built.  A
+ * fixed buffer truncated it, which failed the positive assertions in whichever
+ * job had built the least and passed the negative ones from any build state.
+ */
+static const char *slurp(const char *path)
+{
+    static char *buf;
+    struct stat st;
+    FILE *f;
+    size_t n;
+
+    free(buf);
+    buf = NULL;
+    if (!(f = fopen(path, "r")))
+        return "";
+    if (fstat(fileno(f), &st) != 0 || st.st_size < 0
+        || !(buf = malloc((size_t)st.st_size + 1))) {
+        fclose(f);
+        return "";
+    }
+    n = fread(buf, 1, (size_t)st.st_size, f);
+    buf[n] = '\0';
+    fclose(f);
+    return buf;
+}
+
 /* Slurps configure's stdout or stderr from the last run. */
 static const char *out(const char *which)
 {
@@ -999,7 +1032,7 @@ static void test_service_unit_follows_the_host(void)
     /* ── the Makefile's half ─────────────────────────────────────────────── */
     setenv("PATH", g_real_path, 1);
 
-    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX], buf[8192];
+    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
     snprintf(root, sizeof root, "%s", g_configure);
     char *slash = strrchr(root, '/');
     if (slash) *slash = '\0';
@@ -1015,9 +1048,7 @@ static void test_service_unit_follows_the_host(void)
         EXPECT(system(cmd) == 0, "make -n install parses");
 
         snprintf(path, sizeof path, "%s/mk.txt", g_work);
-        FILE *f = fopen(path, "r");
-        buf[0] = '\0';
-        if (f) { size_t n = fread(buf, 1, sizeof buf - 1, f); buf[n] = '\0'; fclose(f); }
+        const char *buf = slurp(path);
 
         if (launchd) {
             EXPECT(strstr(buf, "/tmp/svc/io.github.richcreations.imud.plist")
