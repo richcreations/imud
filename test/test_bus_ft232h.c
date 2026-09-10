@@ -7,12 +7,18 @@
 /*
  * test_bus_ft232h.c — the FT232H bus backend (src/bus_ft232h.c).
  *
- * What is pinned here is the I2C, not the MPSSE: test/ft_usb_fake.c interprets
+ * What is pinned here is the bus, not the MPSSE: test/ft_usb_fake.c interprets
  * the command stream as a bus does, so these assertions are about start
  * conditions, addresses, the repeated start before a read and the NAK that
  * ends one — the things a driver's register access depends on and that no
  * readback would reveal on its own.  A register read that skipped its repeated
  * start would still return the right byte from a forgiving slave.
+ *
+ * The SPI cases are the same idea one layer over: a "message" is one chip
+ * select held low, so leg count and word width are assertable where a readback
+ * would show nothing.  A one-byte register read sent as two 8-bit legs instead
+ * of the single 16-bit word returns the identical byte and is a different
+ * transfer — see spi_burst_read() in src/drivers/bus_io.h.
  *
  * Runs everywhere: no dongle, no usbfs, no kernel headers.
  */
@@ -229,7 +235,10 @@ static void test_two_handles_share_one_dongle(void)
 
     EXPECT(bus_open(&ib, &is, NULL, "imu") == 0, "the IMU handle opens");
     EXPECT(bus_open(&mb, &ms, NULL, "mag") == 0, "the mag handle opens");
-    EXPECT_EQ(ib.fd, mb.fd, "both name the same device");
+    /* Two handles, one claimed interface: the token is per sensor, because on
+     * SPI each carries its own chip select, mode and clock.  That they share
+     * the dongle is what the reads below and the survivor at the end show. */
+    EXPECT(ib.fd != mb.fd, "each gets its own handle");
 
     const uint8_t d[] = { 0x6C, 0x3D };
     ftfake_set_read_data(d, sizeof d);
@@ -332,34 +341,257 @@ static void test_missing_dongle_fails_open(void)
     EXPECT(1, "and bus_close on it returns");
 }
 
-/*
- * SPI is not implemented, and must say so rather than clock something wrong
- * onto a bus.  ENOSYS is the same answer src/bus_null.c gives for a transport
- * the build cannot do — see issue #73.
- */
-static void test_spi_is_enosys(void)
+/* Open a SPI handle for a part clocking `mode`, at its 10 MHz maximum.  Does
+ * NOT reset the fake: the two-handle cases open a second one behind the first. */
+static int open_spi(imud_bus_t *b, const char *node, uint8_t mode)
 {
-    printf("test_spi_is_enosys\n");
+    bus_caps_t caps = { .spi_capable = true, .spi_mode = mode,
+                        .spi_max_hz = 10000000, .spi_inc_mask = 0 };
+    bus_spec_t spec = { .kind = BUS_SPI, .node = node, .spi_hz = 0 };
+    return bus_open(b, &spec, &caps, "imu");
+}
+
+/*
+ * SPI wants the opposite of I2C on two of the three settings: two-phase
+ * clocking, because a SPI part samples on a clock edge rather than mid-bit,
+ * and push-pull, because nothing on the bus is open-drain.  Getting either
+ * wrong still clocks bytes, which is what makes them worth asserting.
+ */
+static void test_spi_init_configures_for_spi(void)
+{
+    printf("test_spi_init_configures_for_spi\n");
+
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 0) == 0, "opens the bridge for SPI");
+    EXPECT(!ftfake_three_phase(), "two-phase clocking");
+    EXPECT_EQ(ftfake_drive_zero(), 0x00, "push-pull, not open-drain");
+    /* 10 MHz, the part's maximum: div = 30e6/hz - 1. */
+    EXPECT_EQ(ftfake_divisor(), 2, "divisor for 10 MHz");
+    EXPECT(ftfake_spi_idle(), "every chip select high at rest");
+    bus_close(&b);
+}
+
+/*
+ * The byte-order assertion, and the one most easily got wrong: bus_io.h builds
+ * a register write as ONE native-endian uint16_t and the wire is MSB first, so
+ * on a little-endian host the pair swaps.  A backend that emitted the buffer
+ * as it found it would write the value into the register named by the value.
+ */
+static void test_spi_register_write_is_one_selected_word(void)
+{
+    printf("test_spi_register_write_is_one_selected_word\n");
+
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 0) == 0, "opens");
+
+    EXPECT(bus_reg_write(&b, 0x12, 0x44) == 0, "the write succeeds");
+    EXPECT_EQ(ftfake_spi_msgs(), 1, "one chip-select assertion");
+    EXPECT_EQ(ftfake_spi_cs(0), 0, "on cs0");
+    EXPECT_EQ(ftfake_spi_legs(0), 1, "as a single leg");
+    EXPECT_EQ(ftfake_spi_bytes(0), 2, "of two bytes");
+    EXPECT_EQ(ftfake_spi_op(0, 0), 0x11, "mode 0 clocks out on the falling edge");
+    EXPECT_EQ(ftfake_spi_mosi(0), 0x12, "the register goes first");
+    EXPECT_EQ(ftfake_spi_mosi(1), 0x44, "then the value");
+    EXPECT(ftfake_spi_idle(), "and the select is released");
+    bus_close(&b);
+}
+
+/*
+ * A one-byte read is command and data in one 16-bit word precisely so it
+ * cannot be split — see spi_burst_read() in src/drivers/bus_io.h.  One leg is
+ * the whole claim; a backend that sent two would return the same byte.
+ */
+static void test_spi_one_byte_read_is_one_word(void)
+{
+    printf("test_spi_one_byte_read_is_one_word\n");
+
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 0) == 0, "opens");
+
+    const uint8_t back[] = { 0xAA, 0x6B };   /* dummy under the command, data */
+    ftfake_set_read_data(back, sizeof back);
+
+    uint8_t v = 0;
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == 0, "the read succeeds");
+    EXPECT_EQ(v, 0x6B, "and lands the data byte, not the dummy");
+    EXPECT_EQ(ftfake_spi_msgs(), 1, "one chip-select assertion");
+    EXPECT_EQ(ftfake_spi_legs(0), 1, "one leg: a 16-bit word cannot be split");
+    EXPECT_EQ(ftfake_spi_bytes(0), 2, "of two bytes");
+    EXPECT_EQ(ftfake_spi_op(0, 0), 0x31, "duplex, so MOSI is driven throughout");
+    EXPECT_EQ(ftfake_spi_mosi(0), 0x8F, "the register with the read bit set");
+    bus_close(&b);
+}
+
+/*
+ * A multi-byte read is two legs under one select, and its data phase must
+ * clock ZEROS.  bus_io.h reasons about that fill explicitly — an in-only
+ * opcode would leave MOSI wherever the command byte left it, and a 1 in bit 7
+ * is a read opcode to these parts.
+ */
+static void test_spi_burst_read_is_two_legs_one_select(void)
+{
+    printf("test_spi_burst_read_is_two_legs_one_select\n");
+
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 0) == 0, "opens");
+
+    const uint8_t back[] = { 1, 2, 3, 4, 5, 6 };
+    ftfake_set_read_data(back, sizeof back);
+
+    uint8_t buf[6] = { 0 };
+    EXPECT(bus_burst_read(&b, 0x22, buf, sizeof buf) == 0, "the burst succeeds");
+    EXPECT(memcmp(buf, back, sizeof back) == 0, "and returns what was clocked");
+
+    EXPECT_EQ(ftfake_spi_msgs(), 1, "one chip select for the whole burst");
+    EXPECT_EQ(ftfake_spi_legs(0), 2, "command leg then data leg");
+    EXPECT_EQ(ftfake_spi_bytes(0), 7, "one command byte and six data");
+    EXPECT_EQ(ftfake_spi_op(0, 0), 0x11, "the command is written");
+    EXPECT_EQ(ftfake_spi_op(0, 1), 0x31, "the data phase is duplex");
+    EXPECT_EQ(ftfake_spi_mosi(0), 0xA2, "0x22 with the read bit");
+
+    int zeros = 1;
+    for (unsigned i = 1; i < 7; i++) if (ftfake_spi_mosi(i) != 0x00) zeros = 0;
+    EXPECT(zeros, "and the data phase clocks zeros, as spidev would");
+    bus_close(&b);
+}
+
+/*
+ * The topology this transport exists for: two sensors, one dongle, a chip
+ * select each.  They share the claimed USB interface — keying the device table
+ * on the whole node string would try to claim it twice, which usbfs refuses.
+ */
+static void test_spi_two_handles_get_their_own_select(void)
+{
+    printf("test_spi_two_handles_get_their_own_select\n");
+
+    ftfake_reset();
+    imud_bus_t imu, mag;
+    EXPECT(open_spi(&imu, "ftdi:/cs0", 0) == 0, "the IMU opens on cs0");
+    EXPECT(open_spi(&mag, "ftdi:/cs1", 0) == 0, "the mag opens on cs1");
+    EXPECT(imu.fd != mag.fd, "with tokens of their own");
+
+    EXPECT(bus_reg_write(&imu, 0x10, 0x60) == 0, "the IMU writes");
+    EXPECT(bus_reg_write(&mag, 0x09, 0x01) == 0, "the mag writes");
+
+    EXPECT_EQ(ftfake_spi_msgs(), 2, "two selections");
+    EXPECT_EQ(ftfake_spi_cs(0), 0, "the first on cs0");
+    EXPECT_EQ(ftfake_spi_cs(1), 1, "the second on cs1");
+    EXPECT(ftfake_spi_idle(), "both released afterwards");
+
+    bus_close(&imu);
+    bus_close(&mag);
+}
+
+/*
+ * MPSSE reaches CPHA=1 only by borrowing three-phase clocking, which leaves
+ * SCLK at a 25/75 duty cycle.  Refusing beats shipping a signal nothing here
+ * can validate — the operator gets an error naming the mode, not a part that
+ * reads plausible rubbish.
+ */
+static void test_spi_modes_1_and_3_are_refused(void)
+{
+    printf("test_spi_modes_1_and_3_are_refused\n");
 
     imud_bus_t b;
-    bus_init(&b);
-    b.be = &bus_ft232h_backend;
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:/cs0", 1) < 0, "mode 1 is refused");
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:/cs0", 3) < 0, "mode 3 is refused");
 
-    errno = 0;
-    EXPECT_EQ(b.be->spi_setup(0, 0, 8, 1000000), -1, "spi setup fails");
-    EXPECT_EQ(errno, ENOSYS, "with ENOSYS");
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:/cs0", 2) == 0, "mode 2 is native and accepted");
+    bus_close(&b);
+}
 
-    uint8_t tx = 0x8F, rx = 0;
-    bus_spi_leg_t leg = { .tx = &tx, .rx = &rx, .len = 1, .bits = 8 };
-    errno = 0;
-    EXPECT_EQ(b.be->spi_msg(&b, &leg, 1), -1, "spi message fails");
-    EXPECT_EQ(errno, ENOSYS, "with ENOSYS");
+/* Mode 2 idles SCK high and drives on the rising edge, so it needs the other
+ * pair of opcodes.  Same bytes on the wire, different edges under them. */
+static void test_spi_mode_2_uses_its_own_opcodes(void)
+{
+    printf("test_spi_mode_2_uses_its_own_opcodes\n");
 
-    /* And a config asking for it is refused at open, by bus.c's own policy. */
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 2) == 0, "opens in mode 2");
+    EXPECT(bus_reg_write(&b, 0x12, 0x44) == 0, "the write succeeds");
+    EXPECT_EQ(ftfake_spi_op(0, 0), 0x10, "clocks out on the rising edge");
+
+    uint8_t v = 0;
+    const uint8_t back[] = { 0x00, 0x77 };
+    ftfake_set_read_data(back, sizeof back);
+    EXPECT(bus_reg_read(&b, 0x0F, &v) == 0, "the read succeeds");
+    EXPECT_EQ(ftfake_spi_op(1, 0), 0x34, "and reads on the falling one");
+    bus_close(&b);
+}
+
+/*
+ * A FIFO drain is longer than one MPSSE command buffer, so it chunks across
+ * USB writes.  The select is an ADBUS latch and holds its level across them —
+ * if it did not, the burst would break into separate transfers and the part
+ * would restart its auto-increment mid-drain.
+ */
+static void test_spi_long_burst_stays_one_select(void)
+{
+    printf("test_spi_long_burst_stays_one_select\n");
+
+    ftfake_reset();
+    imud_bus_t b;
+    EXPECT(open_spi(&b, "ftdi:/cs0", 0) == 0, "opens");
+
+    static uint8_t buf[1500];
+    EXPECT(bus_burst_read(&b, 0x3E, buf, sizeof buf) == 0, "the burst succeeds");
+    EXPECT_EQ(ftfake_spi_msgs(), 1, "still one chip-select assertion");
+    EXPECT_EQ(ftfake_spi_bytes(0), 1 + sizeof buf, "carrying every byte");
+    EXPECT(ftfake_spi_legs(0) > 2, "split into chunks under it");
+    EXPECT(ftfake_spi_idle(), "and released at the end");
+    bus_close(&b);
+}
+
+/*
+ * The node has to say which pin selects the part: two sensors defaulting to
+ * one select would collide silently, so there is no default.  And "@<hz>" is
+ * the I2C clock — accepting it on a SPI node would read as setting the SPI one.
+ */
+static void test_spi_node_must_name_a_select(void)
+{
+    printf("test_spi_node_must_name_a_select\n");
+
+    imud_bus_t b;
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:", 0) < 0, "a bare node is refused for SPI");
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:@100000/cs0", 0) < 0,
+           "a bus clock on a SPI node is refused");
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:/cs9", 0) < 0, "a select out of range is refused");
+    ftfake_reset();
+    EXPECT(open_spi(&b, "ftdi:/xx0", 0) < 0, "a malformed tail is refused");
+
+    /* And a driver with no SPI at all is still refused by bus.c's own policy. */
     bus_caps_t caps = { .spi_capable = false };
-    bus_spec_t spec = { .kind = BUS_SPI, .node = "ftdi:", .spi_hz = 1000000 };
-    imud_bus_t sb;
-    EXPECT(bus_open(&sb, &spec, &caps, "imu") < 0, "a SPI open is refused");
+    bus_spec_t spec = { .kind = BUS_SPI, .node = "ftdi:/cs0", .spi_hz = 1000000 };
+    ftfake_reset();
+    EXPECT(bus_open(&b, &spec, &caps, "imu") < 0,
+           "a driver without SPI is refused");
+}
+
+/* One dongle drives one protocol: SPI and I2C want the same three pins with
+ * incompatible framing, so a mixed pair could not share a wire in any case. */
+static void test_spi_and_i2c_cannot_share_a_dongle(void)
+{
+    printf("test_spi_and_i2c_cannot_share_a_dongle\n");
+
+    ftfake_reset();
+    ftfake_add_device(IMU_ADDR);
+
+    imud_bus_t i2c, spi;
+    bus_spec_t spec = { .kind = BUS_I2C, .node = "ftdi:", .i2c_addr = IMU_ADDR };
+    EXPECT(bus_open(&i2c, &spec, NULL, "imu") == 0, "the I2C handle opens");
+    EXPECT(open_spi(&spi, "ftdi:/cs0", 0) < 0, "and a SPI one on it is refused");
+    bus_close(&i2c);
 }
 
 static void test_backend_struct_is_complete(void)
@@ -390,7 +622,17 @@ int main(void)
     test_node_speed_suffix();
     test_node_routing();
     test_missing_dongle_fails_open();
-    test_spi_is_enosys();
+
+    test_spi_init_configures_for_spi();
+    test_spi_register_write_is_one_selected_word();
+    test_spi_one_byte_read_is_one_word();
+    test_spi_burst_read_is_two_legs_one_select();
+    test_spi_two_handles_get_their_own_select();
+    test_spi_modes_1_and_3_are_refused();
+    test_spi_mode_2_uses_its_own_opcodes();
+    test_spi_long_burst_stays_one_select();
+    test_spi_node_must_name_a_select();
+    test_spi_and_i2c_cannot_share_a_dongle();
 
     printf("\n%d passed, %d failed\n", g_checks - g_fail, g_fail);
     return g_fail ? 1 : 0;

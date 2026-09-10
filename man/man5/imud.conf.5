@@ -260,6 +260,11 @@ ignored otherwise.
 The chip select in the node name does the addressing, so
 .B i2c_addr
 is unused.
+An FT232H USB bridge is named
+.BI ftdi: [match] /cs N
+instead, where
+.I N
+is 0 to 4 for AD3 through AD7.
 .TP
 .B spi_speed_hz
 .RI (int,\ default:\ 0)
@@ -347,10 +352,10 @@ is 0, where there is no expected arrival to be late against.
 Polling cadence in milliseconds for an install with
 .B no
 interrupt line.
-0 derives it from the rate and watermark, which is what you want: a
-fixed interval under-polls at high ODR \(en the FIFO overflows and the
-delivered rate falls below the configured one \(en and burns reads at
-low ODR.
+0 derives it from the rate and watermark \(en half the time the
+watermark takes to fill \(en which is what you want: a fixed interval
+under-polls at high ODR \(en the FIFO overflows and the delivered rate
+falls below the configured one \(en and burns reads at low ODR.
 Set a value only to force a specific cadence.
 Ignored entirely when
 .B int_gpio
@@ -410,6 +415,11 @@ ignored otherwise.
 The chip select in the node name does the addressing, so
 .B i2c_addr
 is unused.
+An FT232H USB bridge is named
+.BI ftdi: [match] /cs N
+instead, and must name a different
+.I N
+from the IMU.
 .TP
 .B spi_speed_hz
 .RI (int,\ default:\ 0)
@@ -464,10 +474,10 @@ is 0, where there is no expected arrival to be late against.
 Polling cadence in milliseconds for an install with
 .B no
 interrupt line.
-0 derives it from the rate, which is what you want: a
-fixed interval under-polls at high ODR \(en the FIFO overflows and the
-delivered rate falls below the configured one \(en and burns reads at
-low ODR.
+0 derives it from the rate \(en half a sample period \(en which is what
+you want: these parts have no FIFO, so a poll that arrives late loses
+the conversion outright rather than merely delaying it, and a fixed
+interval burns reads at low ODR besides.
 Set a value only to force a specific cadence.
 Ignored entirely when
 .B int_gpio

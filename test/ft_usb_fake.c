@@ -28,13 +28,24 @@
 #define OP_GETB_LOW   0x81
 #define OP_CLK_DIV    0x86
 #define OP_FLUSH      0x87
-#define OP_3PHASE     0x8D
+#define OP_3PHASE     0x8C
 #define OP_DRIVE_ZERO 0x9E
 #define OP_BOGUS      0xAB
+#define OP_3PHASE_OFF 0x8D
 #define OP_OUT_BYTES  0x11
 #define OP_OUT_BITS   0x13
 #define OP_IN_BYTES   0x20
 #define OP_IN_BITS    0x22
+
+/* The SPI spellings of the byte opcodes: mode 0 drives on the falling edge,
+ * mode 2 on the rising one, and a duplex opcode does both directions at once. */
+#define OP_OUT_BYTES2 0x10
+#define OP_IN_BYTES2  0x24
+#define OP_IO_BYTES   0x31
+#define OP_IO_BYTES2  0x34
+
+#define N_CS   5           /* AD3–AD7 */
+#define MAXLEG 8
 
 #define MAXOBS 512
 #define MAXQ   8192
@@ -66,12 +77,25 @@ static struct {
     uint16_t divisor;
     char     want[128];
 
+    /* SPI: chip-select levels, and one "message" per select held low */
+    int      cs[N_CS];
+    int      spi_cs;                 /* the select currently low, or -1 */
+    unsigned spi_msgs;
+    int      msg_cs[MAXOBS];
+    unsigned msg_bytes[MAXOBS];
+    unsigned msg_legs[MAXOBS];
+    uint8_t  msg_op[MAXOBS][MAXLEG];
+    unsigned spi_n_mosi;
+    uint8_t  spi_mosi[MAXOBS];
+
     /* reply queue back to the host */
     uint8_t  q[MAXQ];
     unsigned qn, qi;
 
-    /* partial command carried between bulk writes */
-    uint8_t  pend[512];
+    /* partial command carried between bulk writes.  Big enough for one SPI
+     * opcode at the backend's chunk size, which is far larger than any I2C
+     * command — a short buffer here would silently drop payload. */
+    uint8_t  pend[2048];
     unsigned pendn;
 } F;
 
@@ -80,6 +104,8 @@ void ftfake_reset(void)
     memset(&F, 0, sizeof F);
     F.nak_nth = -1;
     F.scl = F.sda = F.prev_scl = F.prev_sda = 1;
+    F.spi_cs = -1;
+    for (int i = 0; i < N_CS; i++) F.cs[i] = 1;   /* deasserted */
 }
 
 void ftfake_add_device(uint8_t addr)   { F.devs[addr & 0x7F] = 1; }
@@ -107,6 +133,41 @@ int      ftfake_drive_zero(void)      { return F.drive_zero; }
 uint16_t ftfake_divisor(void)         { return F.divisor; }
 const char *ftfake_want(void)         { return F.want; }
 
+unsigned ftfake_spi_msgs(void)        { return F.spi_msgs; }
+unsigned ftfake_spi_n_mosi(void)      { return F.spi_n_mosi; }
+
+int ftfake_spi_cs(unsigned i)
+{
+    return i < F.spi_msgs && i < MAXOBS ? F.msg_cs[i] : -1;
+}
+
+unsigned ftfake_spi_bytes(unsigned i)
+{
+    return i < F.spi_msgs && i < MAXOBS ? F.msg_bytes[i] : 0;
+}
+
+unsigned ftfake_spi_legs(unsigned i)
+{
+    return i < F.spi_msgs && i < MAXOBS ? F.msg_legs[i] : 0;
+}
+
+uint8_t ftfake_spi_op(unsigned i, unsigned leg)
+{
+    if (i >= F.spi_msgs || i >= MAXOBS || leg >= MAXLEG) return 0;
+    return leg < F.msg_legs[i] ? F.msg_op[i][leg] : 0;
+}
+
+uint8_t ftfake_spi_mosi(unsigned i)
+{
+    return i < F.spi_n_mosi && i < MAXOBS ? F.spi_mosi[i] : 0;
+}
+
+int ftfake_spi_idle(void)
+{
+    for (int i = 0; i < N_CS; i++) if (!F.cs[i]) return 0;
+    return 1;
+}
+
 static void push(uint8_t b)
 {
     if (F.qn < MAXQ) F.q[F.qn++] = b;
@@ -119,6 +180,31 @@ static void set_pins(uint8_t val, uint8_t dir)
     F.prev_sda = F.sda;
     F.scl = (dir & 0x01) ? ((val >> 0) & 1) : 1;
     F.sda = (dir & 0x02) ? ((val >> 1) & 1) : 1;
+
+    /*
+     * Chip selects on AD3–AD7.  An undriven one reads high, as a pull-up or
+     * the part's own would leave it, so a select the backend forgot to make an
+     * output looks deasserted here rather than silently asserted.  A falling
+     * edge opens a message and a rising edge closes it.
+     */
+    for (int k = 0; k < N_CS; k++) {
+        uint8_t bit = (uint8_t)(0x08u << k);
+        int lvl = (dir & bit) ? ((val & bit) ? 1 : 0) : 1;
+        if (lvl == F.cs[k]) continue;
+        F.cs[k] = lvl;
+
+        if (!lvl) {
+            F.spi_cs = k;
+            if (F.spi_msgs < MAXOBS) {
+                F.msg_cs[F.spi_msgs]    = k;
+                F.msg_bytes[F.spi_msgs] = 0;
+                F.msg_legs[F.spi_msgs]  = 0;
+            }
+            F.spi_msgs++;
+        } else if (F.spi_cs == k) {
+            F.spi_cs = -1;
+        }
+    }
 
     if (!F.primed) { F.primed = 1; return; }
 
@@ -156,6 +242,34 @@ static void wrote_byte(uint8_t v)
     F.last_ack = (present && !forced) ? 0 : 1;
 }
 
+/*
+ * Record one byte opcode against the message the open chip select started.
+ * `mosi` is NULL for an opcode that only reads, which is how a test tells a
+ * duplex read leg (zeros on MOSI, as spidev would send) from an in-only one.
+ */
+static void spi_leg(uint8_t op, const uint8_t *mosi, unsigned len, int reads)
+{
+    if (F.spi_cs < 0 || F.spi_msgs == 0) return;
+
+    unsigned m = F.spi_msgs - 1;
+    if (m < MAXOBS) {
+        if (F.msg_legs[m] < MAXLEG) F.msg_op[m][F.msg_legs[m]] = op;
+        F.msg_legs[m]++;
+        F.msg_bytes[m] += len;
+    }
+
+    if (mosi) {
+        for (unsigned i = 0; i < len; i++) {
+            if (F.spi_n_mosi < MAXOBS) F.spi_mosi[F.spi_n_mosi] = mosi[i];
+            F.spi_n_mosi++;
+        }
+    }
+
+    if (!reads) return;
+    for (unsigned i = 0; i < len; i++)
+        push(F.rdata_i < F.rdata_n ? F.rdata[F.rdata_i++] : 0xFF);
+}
+
 /* Consume one complete command from `p`, returning its length, or 0 when the
  * buffer holds only part of one. */
 static unsigned step(const uint8_t *p, unsigned n)
@@ -185,6 +299,10 @@ static unsigned step(const uint8_t *p, unsigned n)
         F.three_phase = 1;
         return 1;
 
+    case OP_3PHASE_OFF:
+        F.three_phase = 0;
+        return 1;
+
     case OP_BOGUS:
         push(0xFA);
         push(OP_BOGUS);
@@ -194,12 +312,32 @@ static unsigned step(const uint8_t *p, unsigned n)
         push((uint8_t)((F.scl ? 1 : 0) | (F.sda ? 2 : 0) | 0xFC));
         return 1;
 
-    case OP_OUT_BYTES: {
+    case OP_OUT_BYTES:
+    case OP_OUT_BYTES2: {
         if (n < 3) return 0;
         unsigned len = (unsigned)(p[1] | ((unsigned)p[2] << 8)) + 1u;
         if (n < 3 + len) return 0;
-        for (unsigned i = 0; i < len; i++) wrote_byte(p[3 + i]);
+        if (F.spi_cs >= 0) spi_leg(op, p + 3, len, 0);
+        else if (op == OP_OUT_BYTES)
+            for (unsigned i = 0; i < len; i++) wrote_byte(p[3 + i]);
         return 3 + len;
+    }
+
+    /* Duplex: a payload goes out and the same count comes back. */
+    case OP_IO_BYTES:
+    case OP_IO_BYTES2: {
+        if (n < 3) return 0;
+        unsigned len = (unsigned)(p[1] | ((unsigned)p[2] << 8)) + 1u;
+        if (n < 3 + len) return 0;
+        spi_leg(op, p + 3, len, 1);
+        return 3 + len;
+    }
+
+    case OP_IN_BYTES2: {
+        if (n < 3) return 0;
+        unsigned len = (unsigned)(p[1] | ((unsigned)p[2] << 8)) + 1u;
+        spi_leg(op, NULL, len, 1);
+        return 3;
     }
 
     case OP_OUT_BITS:
@@ -211,6 +349,7 @@ static unsigned step(const uint8_t *p, unsigned n)
     case OP_IN_BYTES: {
         if (n < 3) return 0;
         unsigned len = (unsigned)(p[1] | ((unsigned)p[2] << 8)) + 1u;
+        if (F.spi_cs >= 0) { spi_leg(op, NULL, len, 1); return 3; }
         for (unsigned i = 0; i < len; i++) {
             push(F.rdata_i < F.rdata_n ? F.rdata[F.rdata_i++] : 0xFF);
             F.n_read++;

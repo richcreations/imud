@@ -54,9 +54,32 @@ unsigned ftfake_n_read(void);        /* bytes clocked in */
 int ftfake_last_read_nakked(void);
 
 /* The MPSSE configuration the backend applied, for the init assertions. */
-int      ftfake_three_phase(void);   /* 0x8D seen */
+int      ftfake_three_phase(void);   /* 0x8D seen, and not since cleared by 0x8E */
 int      ftfake_drive_zero(void);    /* 0x9E seen, and its low-byte mask */
 uint16_t ftfake_divisor(void);       /* the 0x86 operand */
+
+/* ── what the SPI bus saw ────────────────────────────────────────────────── */
+
+/*
+ * Modelled the same way as the I2C above: chip selects are tracked through
+ * every SET_BITS_LOW, so a "message" here is one select held low and what got
+ * clocked while it was, rather than a particular run of opcodes.  That is the
+ * property src/drivers/bus_io.h depends on — a one-byte register read must be
+ * ONE 16-bit word under ONE select, and no readback would show the difference.
+ */
+unsigned ftfake_spi_msgs(void);           /* chip-select assertions */
+int      ftfake_spi_cs(unsigned i);       /* which select the i-th used, or -1 */
+unsigned ftfake_spi_bytes(unsigned i);    /* bytes clocked during the i-th */
+unsigned ftfake_spi_legs(unsigned i);     /* byte opcodes inside the i-th */
+uint8_t  ftfake_spi_op(unsigned i, unsigned leg);  /* that leg's opcode */
+
+/* MOSI, across every message: the command bytes and whatever filled the data
+ * phases.  A read leg that clocked something other than zeros shows up here. */
+unsigned ftfake_spi_n_mosi(void);
+uint8_t  ftfake_spi_mosi(unsigned i);
+
+/* Is every chip select high right now?  False means one was left asserted. */
+int      ftfake_spi_idle(void);
 
 /* The device the last ft_usb_open() was asked for. */
 const char *ftfake_want(void);

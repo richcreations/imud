@@ -209,6 +209,29 @@ static void test_int_fallback_ms(void)
     EXPECT(imu_int_fallback_ms(6664000, 1, 1) >= 1, "6664 Hz still waits >= 1 ms");
 
     /*
+     * The poll cadence for a part with NO interrupt line is a different
+     * question, and answering it with the fallback above is issue #85: at
+     * ODR/(depth + grace) a magnetometer configured for 106 Hz delivered 35.
+     * Half the arrival interval instead, so a poll cannot sit a whole period
+     * behind the conversion it is waiting for.
+     */
+    /* 106 Hz, no FIFO: half a period, so at least two polls per conversion. */
+    EXPECT(imu_poll_interval_ms(106000, 1) == 5, "106 Hz, depth 1");
+    EXPECT(imu_poll_interval_ms(106000, 1) * 2 <= 1000000 / 106000 + 1,
+           "twice the interval is within one sample period");
+    /* Strictly faster than the missed-edge fallback at the same rate — that
+     * gap is the defect. */
+    EXPECT(imu_poll_interval_ms(100000, 1) < imu_int_fallback_ms(100000, 1, 2),
+           "polls faster than it would wait for a missed edge");
+    /* Behind a FIFO the depth is the watermark: 833 Hz, wm 64 → 32 periods. */
+    EXPECT(imu_poll_interval_ms(833000, 64) == 38, "833 Hz, wm 64");
+    /* Degenerate inputs, same contract as the fallback. */
+    EXPECT(imu_poll_interval_ms(0, 64) == 20, "unknown rate falls back");
+    EXPECT(imu_poll_interval_ms(-1, 1) == 20, "negative rate falls back");
+    EXPECT(imu_poll_interval_ms(833000, 0) > 0, "depth 0 is treated as 1");
+    EXPECT(imu_poll_interval_ms(6664000, 1) >= 1, "6664 Hz still waits >= 1 ms");
+
+    /*
      * Monotonic: a faster rate never waits longer than a slower one.  Seeded
      * at LONG_MAX so the first entry is always accepted -- a helper
      * clamped at 250 ms, so a literal seed worked; unclamped, 1 Hz with one

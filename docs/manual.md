@@ -66,7 +66,7 @@ included, is POSIX. See §11 for writing one.
 bridges build and run on macOS 14 Sonoma through macOS 26 Tahoe, and CI runs
 the whole test suite on both ends of that range and on Intel. A Mac has no I²C
 or SPI node and no GPIO chip, so the sensor comes in over an FT232H USB bridge
-([§5.2](#52-i²c-over-an-ft232h-usb-bridge)) with both readers polling. It runs
+([§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge)) with both readers polling. It runs
 under launchd rather than systemd. See
 [Building on macOS](#building-on-macos) and
 [As a launchd job](#as-a-launchd-job-macos) below.
@@ -96,7 +96,7 @@ under launchd rather than systemd. See
   Debian bookworm and trixie are the packaged targets (arm64 and armhf);
   Raspberry Pi OS is the most exercised host, not a requirement. A host with
   no bus of its own reaches the parts over an FT232H USB bridge instead
-  ([§5.2](#52-i²c-over-an-ft232h-usb-bridge)), and macOS is supported on those
+  ([§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge)), and macOS is supported on those
   terms — see [Building on macOS](#building-on-macos).
 - **The armhf packages are built for ARMv6**, so they run on every Raspberry
   Pi that boots a 32-bit userland — the Pi 1 and Pi Zero/Zero W included.
@@ -174,7 +174,7 @@ brew install mosquitto        # only for the MQTT bridge
 It reports the bus backend as `FT232H only -- every node is ftdi:`, a null
 GPIO backend and the fallback clock. So there are two ways to run: a real
 sensor over an FT232H USB bridge
-([§5.2](#52-i²c-over-an-ft232h-usb-bridge)), or `driver = "sim"` with no
+([§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge)), or `driver = "sim"` with no
 hardware. Set `int_gpio = 0` under `[imu]` and `[mag]` either way — this host
 has no interrupt line to take.
 
@@ -470,7 +470,7 @@ Hardware bus and GPIO controller. **[restart]**
 <!-- BEGIN GENERATED: config-keys device.1 -->
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.
 
-A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. |
+A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. The same dongle drives SPI instead when `[imu]`/`[mag] spi_dev` name it with a `/cs<N>` chip select, which is set here rather than in `[device]`. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller. |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
 | `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits. |
@@ -500,7 +500,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 <!-- BEGIN GENERATED: config-keys imu.1 -->
 | `driver` | string | `"ism330dhcx"` | Driver to load. See [Supported drivers](#5-supported-drivers). |
 | `bus` | string | `"i2c"` | Transport: `"i2c"` or `"spi"`. SPI is faster per transfer, which is what unlocks the high sample rates and shortens the FIFO drain; not every driver has it, and the daemon refuses to start on one that does not (see [Supported drivers](#5-supported-drivers)). The IMU and the magnetometer choose independently. |
-| `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused. |
+| `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused. An FT232H USB bridge is named `"ftdi:[<match>]/cs<N>"` instead, `<N>` from 0 to 4 for AD3 through AD7 — see [§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge). |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. **Do not set this below 2.5 MHz when a magnetometer shares the same SPI controller.** Measured on an ism330dhcx + mmc5983ma pair: driving the IMU below about 2.2 MHz stops the magnetometer completing measurements entirely, and re-running `init()` cannot hold it. The default is unaffected, and the daemon warns at startup when it sees a slow clock alongside a shared-bus magnetometer. |
 | `i2c_addr` | int | `0x6B` | I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
 | `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR. |
@@ -509,7 +509,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets: how deep the chip buffers before raising its interrupt. This sets **both buffer depth and sample latency** — with `int_grace`, the reader waits `fifo_wm + int_grace` sample periods, so 64 at 833 Hz batches about 77 ms. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO; at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64. |
 | `int_grace` | int | `2` | How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. The wait is `fifo_wm + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against. |
-| `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate and watermark, which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
+| `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate and watermark — half the time the watermark takes to fill — which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
 <!-- END GENERATED: config-keys imu.1 -->
 
 ### `[mag]`
@@ -521,14 +521,14 @@ Magnetometer driver settings. **[restart]**
 <!-- BEGIN GENERATED: config-keys mag.1 -->
 | `driver` | string | `"mmc5983ma"` | Driver to load, or `"none"` for a board with no magnetometer. See [Supported drivers](#5-supported-drivers). With `"none"` imud runs 6-DoF: roll, pitch, heave, sea state and rate of turn are unaffected; heading starts at zero, is relative to the orientation imud started in rather than to earth north, and drifts without bound, with `FLAG_MAG_VALID` clear. |
 | `bus` | string | `"i2c"` | Transport: `"i2c"` or `"spi"`, as for `[imu]` above. The AKM compasses (`ak09916`, `ak8963`) are I²C-only — they have no SPI port and are reached through the host IMU's bypass. |
-| `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`. |
+| `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`. An FT232H USB bridge is named `"ftdi:[<match>]/cs<N>"` instead, and must name a different `<N>` from the IMU — see [§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge). |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`. Note that a magnetometer's *own* clock is not what starves it on a shared controller — a slow `[imu] spi_speed_hz` is. This key can be lowered safely. |
 | `i2c_addr` | int | `0x30` | I²C address; used only when `bus = "i2c"`. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both. |
 | `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
 | `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
 | `int_grace` | int | `2` | How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. These magnetometers have no FIFO, so the line signals one finished conversion and the wait is `1 + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against. |
-| `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate, which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
+| `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate — half a sample period — which is normally what you want: these parts have no FIFO, so a poll that arrives late loses the conversion outright rather than merely delaying it, and a fixed interval burns reads at low ODR besides. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
 <!-- END GENERATED: config-keys mag.1 -->
 
 ### `[fusion]`
@@ -1040,12 +1040,12 @@ Points worth knowing:
   board is wired right". Run `imud-imutest --all` after changing transport —
   its report should match the one you get on I²C.
 
-### 5.2 I²C over an FT232H USB bridge
+### 5.2 I²C or SPI over an FT232H USB bridge
 
-A host with no I²C on a header — a laptop, a Mac, a Pi whose header is already
-spoken for — can reach the parts through an FT232H dongle. Set `[device]
-i2c_bus` to an `ftdi:` node and everything above the bus is unchanged: the same
-drivers, the same calibration, the same output streams.
+A host with no bus on a header — a laptop, a Mac, a Pi whose header is already
+spoken for — can reach the parts through an FT232H dongle. Point the node at
+`ftdi:` and everything above the bus is unchanged: the same drivers, the same
+calibration, the same output streams.
 
 ```ini
 [device]
@@ -1057,27 +1057,66 @@ i2c_addr = 0x6A
 int_gpio = 0                     # no interrupt line on this transport
 ```
 
-The node is `ftdi:[<match>][@<hz>]`. `<match>` picks between several dongles
-by USB serial, or — for a board whose EEPROM carries none — by the identifier
-that follows the physical socket rather than the plug order: the sysfs port
-path on Linux (`1-2`), the location ID on macOS (`14100000`, the number macOS
-also puts in `/dev/cu.usbserial-1410`). `<hz>` sets the bus clock and defaults
-to 400000; drop it to 100000 if the parts sit on long jumper leads.
+The node is `ftdi:[<match>][@<hz>][/cs<N>]`. `<match>` picks between several
+dongles by USB serial, or — for a board whose EEPROM carries none — by the
+identifier that follows the physical socket rather than the plug order: the
+sysfs port path on Linux (`1-2`), the location ID on macOS (`14100000`, the
+number macOS also puts in `/dev/cu.usbserial-1410`). `<hz>` sets the I²C bus
+clock and defaults to 400000; drop it to 100000 if the parts sit on long
+jumper leads.
 
 Four things differ from a header:
 
-- **Wiring.** AD0 is SCL; AD1 and AD2 must BOTH connect to SDA, because MPSSE
-  drives its output on AD1 and always samples its input on AD2. Pull-ups are
-  yours — the FT232H has none.
+- **Wiring.** For I²C, AD0 is SCL and AD1 and AD2 must BOTH connect to SDA,
+  because MPSSE drives its output on AD1 and always samples its input on AD2.
+  Pull-ups are yours — the FT232H has none. For SPI, AD0 is SCK, AD1 is MOSI,
+  AD2 is MISO, and the D1/D2 tie must be OFF.
 - **No interrupt line.** Set `int_gpio = 0` in `[imu]` and `[mag]`; both
-  readers then run on their polling timer, which is the same fallback used
-  when a line is configured but never fires.
+  readers then poll at half the interval their next data is due in, which for
+  the magnetometer is half a sample period and for the IMU is half the time
+  the FIFO watermark takes to fill.
 - **Latency, not clock rate, sets the ceiling.** Each transaction is a USB
   round trip of roughly a millisecond, against ~20 µs for an ioctl on a
   header. A FIFO burst amortises that over its whole payload, so the batched
   drain matters much more here; a high ODR with a small `fifo_wm` will not
-  keep up.
-- **SPI is not implemented** on this backend yet — it fails with `ENOSYS`.
+  keep up. A magnetometer has no FIFO to amortise with, so it runs at the
+  round trip rather than at its configured ODR.
+- **SPI is the faster half.** MPSSE synthesises I²C in software and pays
+  several USB transfers per byte written, where a SPI leg is one opcode.
+
+#### SPI
+
+Append `/cs<N>` to name the chip select, `N` from 0 to 4 for AD3 through AD7.
+Each sensor needs its own, and there is no default: two parts sharing a select
+would collide silently. All five are driven high from the first SPI open, so a
+part whose interface is chosen by its CS level cannot see a floating one while
+the other sensor initialises.
+
+```ini
+[imu]
+driver       = "ism330dhcx"
+bus          = "spi"
+spi_dev      = "ftdi:/cs0"       # AD3
+spi_speed_hz = 0                 # 0 = the driver's datasheet maximum
+int_gpio     = 0
+
+[mag]
+driver       = "mmc5983ma"
+bus          = "spi"
+spi_dev      = "ftdi:/cs1"       # AD4
+int_gpio     = 0
+```
+
+`@<hz>` is the I²C clock and is refused on a SPI node — set the SPI clock with
+`spi_speed_hz`, which is clamped to the part's datasheet maximum as on any
+other backend. One dongle drives one protocol: I²C and SPI want the same three
+pins with incompatible framing, so a mixed pair is refused at open.
+
+**Modes 0 and 2 only.** MPSSE clocks CPHA=0 natively and reaches modes 1 and 3
+only by borrowing the three-phase clocking I²C uses, which leaves SCLK at a
+25/75 duty cycle. imud refuses those rather than ship a signal it cannot
+validate, so `icm42688p`, `lis3mdl` and `rm3100` do not run over this
+transport. Every other SPI-capable driver does.
 
 It needs no library and no privilege on either host, and `./configure` picks
 the rung: usbfs on Linux, IOKit on macOS. Both take the device from the

@@ -367,6 +367,33 @@ long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples)
 }
 
 /*
+ * How often to poll a reader that has no interrupt line at all, in ms.
+ *
+ * Half the time `depth` samples take to arrive.  Deliberately not
+ * imu_int_fallback_ms(): that answers "how long before a missed edge is worth
+ * acting on", a question with no meaning when no edge is coming, and using it
+ * as a cadence caps a part with no FIFO at ODR/(depth + grace) -- measured as
+ * 35 Hz delivered from a magnetometer configured for 106.
+ *
+ * Halved because polling exactly at the arrival interval aliases against the
+ * part's own conversion clock and lands just short about half the time.  A
+ * magnetometer loses that sample; behind a FIFO it is only delayed, because
+ * the next drain takes whatever accumulated.  An early poll costs one transfer
+ * and nothing else -- a driver reports not-ready as 1, not as an error.
+ */
+long imu_poll_interval_ms(int odr_mhz, int depth)
+{
+    if (depth < 1)    depth = 1;
+    if (odr_mhz <= 0) return 20;             /* unknown rate: the old constant */
+
+    /* odr is milli-Hz, so half a sample period in ms is 5e5 / odr_mhz. */
+    double ms = 500000.0 * (double)depth / (double)odr_mhz;
+    if (ms > 600000.0) ms = 600000.0;        /* guard the arithmetic, 10 min */
+    long out = (long)(ms + 0.5);
+    return out < 1 ? 1 : out;
+}
+
+/*
  * How long a magnetometer may deliver nothing before the reader says so.
  *
  * The staleness guard in mmc_read() returns 1 for "no new measurement", and the

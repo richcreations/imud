@@ -3353,6 +3353,25 @@ static void test_spi_same_controller(void)
     EXPECT(!bus_spi_same_controller(NULL, "/dev/spidev0.0"), "NULL is safe");
 
     /*
+     * An FT232H has one MPSSE engine and so one SCK for every chip select on
+     * it — the same question the spidev bus number answers.  Without this the
+     * two sensors of the reference pair would slip past the mode check, which
+     * is exactly the pairing it exists to catch.
+     */
+    EXPECT(bus_spi_same_controller("ftdi:/cs0", "ftdi:/cs1"),
+           "two chip selects on one dongle share a controller");
+    EXPECT(bus_spi_same_controller("ftdi:A1B2/cs0", "ftdi:A1B2/cs3"),
+           "matched by serial too");
+    EXPECT(!bus_spi_same_controller("ftdi:A1B2/cs0", "ftdi:C3D4/cs0"),
+           "two different dongles do not");
+    EXPECT(!bus_spi_same_controller("ftdi:1-2/cs0", "ftdi:1-20/cs0"),
+           "port 1-2 is not port 1-20 — a prefix match would say it was");
+    EXPECT(bus_spi_same_controller("ftdi:1.6/cs0", "ftdi:1.6/cs1"),
+           "a bus.dev match containing a dot is not split on it");
+    EXPECT(!bus_spi_same_controller("ftdi:/cs0", "/dev/spidev0.0"),
+           "a dongle and a header controller are never the same");
+
+    /*
      * And the combination that matters: every SPI-capable driver here that
      * could sit beside the reference magnetometer must agree with it, or the
      * pair is unusable on a shared bus.

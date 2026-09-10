@@ -307,20 +307,35 @@ int snap_odr_up(const int supported[], int requested);
  * acknowledge and then a silent bus, 0 further edges in 3 s at 20 Hz and 1 at
  * 100 Hz, at every rate on its ladder.
  *
- * HALF a sample period, so a missed edge costs less than one sample.  It has
- * to be a fraction rather than a multiple: on this part the acknowledge the
- * fallback performs is also what re-arms the line, so waiting longer produces
- * FEWER edges, not merely later ones.  Measured at 20 Hz over 3 s: a 20 ms
- * fallback yields 64 edges and a 95 ms one yields 36.
+ * `depth` sample periods plus `grace_samples` more: what the line is waiting
+ * FOR, plus an allowance for jitter.  A magnetometer passes depth 1 because it
+ * has no FIFO; the IMU passes fifo_wm, because that is when the watermark is
+ * due.  Draining before the watermark can assert is worse than waiting: a
+ * LEVEL watermark deasserts when a drain empties the FIFO, so an early
+ * fallback holds it below the threshold and the line never asserts at all.
  *
  * A fixed timeout is wrong at both ends of a ladder spanning 1 Hz to 6664:
  * 20 ms is fifty reads per conversion at 1 Hz and twenty-four conversions of
  * latency at 1204.
  *
- * Bounded at 2 ms so the fastest rates cannot spin, and at 250 ms so a 1 Hz
- * part still notices a stalled line within a quarter second.
+ * Floored at 1 ms so the fastest rates cannot spin, capped at ten minutes so
+ * the arithmetic cannot run away, and 20 ms when the rate is not yet known.
+ *
+ * This is NOT the poll cadence for a part with no interrupt line at all --
+ * see imu_poll_interval_ms().
  */
 long imu_int_fallback_ms(int odr_mhz, int depth, int grace_samples);
+
+/*
+ * How often to poll a reader that has no interrupt line, in ms: half the time
+ * `depth` samples take to arrive.
+ *
+ * The distinction from imu_int_fallback_ms() is the whole point.  A grace is
+ * how long to wait before concluding an edge was missed; with no edge coming
+ * there is nothing to be late against, and spending that interval as a cadence
+ * caps a part with no FIFO at ODR/(depth + grace).  See the definition.
+ */
+long imu_poll_interval_ms(int odr_mhz, int depth);
 
 /*
  * How long a magnetometer may deliver nothing before the reader warns.

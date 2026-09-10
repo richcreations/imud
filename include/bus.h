@@ -125,10 +125,12 @@ int  bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
 void bus_close(imud_bus_t *b);
 
 /*
- * True when two spidev node paths name the same SPI controller (the B in
- * /dev/spidevB.C).  Devices that share a controller share its clock, so their
- * drivers must agree about the SPI mode; imu.c refuses the combination rather
- * than letting one part corrupt the other's transfers.
+ * True when two node paths name the same SPI controller: the B in
+ * /dev/spidevB.C, or the same dongle behind two "ftdi:" nodes, whose one MPSSE
+ * engine drives one SCK however many chip selects hang off it.  Devices that
+ * share a controller share its clock, so their drivers must agree about the
+ * SPI mode; imu.c refuses the combination rather than letting one part corrupt
+ * the other's transfers.
  */
 bool bus_spi_same_controller(const char *a, const char *b);
 

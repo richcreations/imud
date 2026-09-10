@@ -144,10 +144,25 @@ static int open_i2c(imud_bus_t *b, const bus_spec_t *spec, const char *who)
  * be a guess. Two devices on one controller must agree about the clock mode,
  * because the controller has a single SCLK and mode 0 idles it low while mode
  * 3 idles it high -- see the check in imu.c that uses this.
+ *
+ * An "ftdi:" node is the same question with a different spelling: one FT232H
+ * has one MPSSE engine driving one SCK for every chip select on it, so two
+ * nodes naming the same dongle are one controller. The identity is the match
+ * part alone -- neither the "/cs<N>" that distinguishes the two sensors nor
+ * the "@<hz>" suffix belongs to it.
  */
 bool bus_spi_same_controller(const char *a, const char *b)
 {
     if (!a || !b) return false;
+
+    static const char scheme[] = "ftdi:";
+    const size_t slen = sizeof scheme - 1;
+    if (strncmp(a, scheme, slen) == 0 && strncmp(b, scheme, slen) == 0) {
+        const char *ma = a + slen, *mb = b + slen;
+        size_t la = strcspn(ma, "@/"), lb = strcspn(mb, "@/");
+        return la == lb && strncmp(ma, mb, la) == 0;
+    }
+
     const char *da = strrchr(a, '.'), *db = strrchr(b, '.');
     if (!da || !db) return false;
     size_t la = (size_t)(da - a), lb = (size_t)(db - b);

@@ -76,7 +76,7 @@ where an FT232H USB dongle carries the I²C bus. License: MIT — see
   of its own — a laptop, a Mac, a Pi whose header is already spoken for. Same
   drivers, same config, no library and no root; the bridge has no interrupt
   line, so the readers poll. See
-  [§5.2 of the manual](docs/manual.md#52-i²c-over-an-ft232h-usb-bridge).
+  [§5.2 of the manual](docs/manual.md#52-i²c-or-spi-over-an-ft232h-usb-bridge).
 - **6-DoF or 9-DoF.** With `mag.driver = "none"` imud runs a gyro+accelerometer
   board and everything that does not need a compass keeps working: roll, pitch,
   heave, sea state and rate of turn are all gravity- or gyro-referenced. Only
