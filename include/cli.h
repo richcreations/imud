@@ -90,6 +90,7 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a);
 
 typedef struct {
     const char *sockpath;      /* default DEFAULT_STATUS_SOCK; points into argv */
+    bool        want_json;     /* --json: ask the daemon for the JSON report */
 } cli_status_t;
 
 #define CLI_DEFAULT_STATUS_SOCK IMUD_STATUS_SOCK

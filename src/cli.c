@@ -302,12 +302,13 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
 static void usage_status(FILE *o, const char *p)
 {
     fprintf(o,
-        "Usage: %s [--socket PATH]\n"
+        "Usage: %s [--socket PATH] [--json]\n"
         "\n"
         "Options:\n"
         /* Concatenated from the constant the parser defaults to, so the help
          * text cannot drift from the actual default. */
         "  --socket PATH  Status socket (default: " CLI_DEFAULT_STATUS_SOCK ")\n"
+        "  --json         Print the report as one JSON object\n"
         "  --version      Print version and exit\n"
         "  -h, --help     Print this help and exit\n", p);
 }
@@ -320,6 +321,8 @@ int cli_parse_status(int argc, char **argv, cli_status_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             a->sockpath = argv[++i];
+        } else if (strcmp(argv[i], "--json") == 0) {
+            a->want_json = true;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("imud-status %s\n", IMUD_VERSION_STR);
             return 1;

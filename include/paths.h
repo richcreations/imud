@@ -51,6 +51,16 @@
 #define IMUD_STATUS_SOCK  IMUD_RUNDIR  "/imud.sock"
 #define IMUD_STREAM_SOCK  IMUD_RUNDIR  "/imud-stream.sock"
 
+/*
+ * The request line imud-status sends on the status socket, before reading.
+ * The daemon waits IMUD_STATUS_REQ_MS for one and answers with the text report
+ * when none arrives, so a client from before 1.11 — or a hand-rolled socat —
+ * still works, just that much later.
+ */
+#define IMUD_STATUS_REQ_TEXT  "text\n"
+#define IMUD_STATUS_REQ_JSON  "json\n"
+#define IMUD_STATUS_REQ_MS    250
+
 /* $(ETCDIR)/imud-<name>.conf — each bridge's own file, never imud.conf. */
 #define IMUD_BRIDGE_CONF(name) IMUD_ETCDIR "/imud-" name ".conf"
 

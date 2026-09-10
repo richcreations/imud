@@ -50,6 +50,11 @@ host with no bus on a header."""
 
   [[release.change]]
   kind     = "feature"
+  packages = ["imud"]
+  text     = "imud-status --json prints the report as one JSON object."
+
+  [[release.change]]
+  kind     = "feature"
   packages = ["imud", "imud-utils"]
   text     = "Capture files carry a CRC32 on every record, so a corrupt .imucap is refused instead of replayed as data."
   impact   = "Captures are about 8% larger, and older ones still read."

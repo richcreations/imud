@@ -26,6 +26,7 @@
  * Portable — builds and runs on the macOS dev box.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -468,6 +469,278 @@ static void test_truncation(void)
     end(fb);
 }
 
+/* ── JSON (status_format_json) ────────────────────────────────────────────── */
+
+/*
+ * Structurally complete: braces and brackets balanced, string state tracked so
+ * a '{' inside a warning does not count, and the whole thing closed off.  Not a
+ * parser — a parser would only be able to say the same thing, and this can say
+ * it about a buffer that was deliberately cut short.
+ */
+static bool json_complete(const char *s)
+{
+    int depth = 0;
+    bool instr = false, esc = false, closed = false;
+    for (; *s; s++) {
+        if (instr) {
+            if (esc)              esc = false;
+            else if (*s == '\\')  esc = true;
+            else if (*s == '"')   instr = false;
+            continue;
+        }
+        switch (*s) {
+        case '"': instr = true; break;
+        case '{': case '[': depth++; break;
+        case '}': case ']':
+            if (--depth < 0) return false;
+            if (depth == 0)  closed = true;
+            break;
+        default: break;
+        }
+    }
+    return closed && depth == 0 && !instr;
+}
+
+/* Everything on, so every conditional field carries a real value. */
+static void everything_on(imud_config_t *cfg, status_input_t *in)
+{
+    baseline(cfg, in);
+    cfg->capture_enabled  = true;
+    cfg->heave_tau_s      = 12.0f;
+    cfg->wave_tau_s       = 120.0f;
+    cfg->nmea_enabled     = true;
+    cfg->nmea_tcp_enabled = true;
+    cfg->highrate_enabled = true;
+    in->capture_active    = true;
+    in->capture_path      = "/var/lib/imud/imud-20260803-120000.imucap";
+    in->capture_bytes     = 4096;
+    in->capture_drops     = 7;
+    in->state.flags       = FLAG_DECLINATION_VALID | FLAG_WAVE_VALID |
+                            FLAG_FUSION_CONVERGED  | FLAG_MAG_VALID |
+                            FLAG_ACCEL_CAL | FLAG_GYRO_CAL | FLAG_MAG_CAL;
+    in->state.declination_deg = 13.25f;
+    in->state.wave_height_m   = 1.5f;
+    in->recent = "  12:00:00 W [mag] one\n  12:00:01 E [imu] two\n";
+}
+
+/*
+ * The schema is the contract — a script must not have to test for a key's
+ * presence before reading it, so every subsystem's object is emitted whether
+ * or not it is enabled.  These assertions are what make that a promise.
+ */
+static void test_json_schema(void)
+{
+    begin("test_json_schema");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    everything_on(&cfg, &in);
+
+    char j[4096];
+    size_t n = status_format_json(j, sizeof j, &in);
+    EXPECT(n > 0 && n == strlen(j),  "returns the length it wrote");
+    EXPECT(json_complete(j),         "the object is structurally complete");
+    EXPECT(j[n - 1] == '\n',         "ends with a newline");
+
+    static const char *keys[] = {
+        "\"imud_version\":", "\"uptime_s\":", "\"imu\":", "\"mag\":",
+        "\"fusion\":", "\"calibration\":", "\"attitude\":", "\"declination\":",
+        "\"heave\":", "\"sea_state\":", "\"capture\":", "\"nmea\":",
+        "\"highrate\":", "\"counters\":", "\"warnings\":",
+    };
+    int missing = 0;
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
+        if (!has(j, keys[i])) missing++;
+    EXPECT(missing == 0, "every top-level key is present");
+
+    EXPECT(has(j, "\"uptime_s\":3661"),               "uptime is seconds");
+    EXPECT(has(j, "\"driver\":\"ism330dhcx\""),       "IMU driver name");
+    EXPECT(has(j, "\"odr_mhz\":833000"),              "ODR stays milli-Hz");
+    EXPECT(has(j, "\"converged\":true"),              "fusion convergence");
+    EXPECT(has(j, "\"accel\":true,\"gyro\":true,\"mag\":true"),
+           "calibration flags");
+    EXPECT(has(j, "\"heading_deg\":123.4"),           "heading");
+    EXPECT(has(j, "\"declination_deg\":13.25"),       "declination");
+    EXPECT(has(j, "\"true_heading_deg\":136.65"),     "true heading is summed");
+    EXPECT(has(j, "\"bytes\":4096,\"drops\":7"),      "capture counters");
+    EXPECT(has(j, "\"imu_samples\":1000,\"fifo_overflows\":2"), "counters");
+    EXPECT(has(j, "\"12:00:00 W [mag] one\""),        "a warning, indent gone");
+    EXPECT(has(j, "\"12:00:01 E [imu] two\""),        "and the second");
+
+    EXPECT(status_format_json(NULL, 100, &in) == 0, "NULL buffer returns 0");
+
+    end(fb);
+}
+
+/* The three heading states, which the text report spends a paragraph on. */
+static void test_json_heading_source(void)
+{
+    begin("test_json_heading_source");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    char j[4096];
+
+    baseline(&cfg, &in);
+    in.state.flags = FLAG_MAG_VALID;
+    status_format_json(j, sizeof j, &in);
+    EXPECT(has(j, "\"heading_source\":\"calibrated\""), "MAG_VALID");
+
+    baseline(&cfg, &in);
+    in.state.flags = FLAG_MAG_UNCAL;
+    status_format_json(j, sizeof j, &in);
+    EXPECT(has(j, "\"heading_source\":\"uncalibrated\""), "MAG_UNCAL");
+
+    baseline(&cfg, &in);
+    in.state.flags = 0;
+    status_format_json(j, sizeof j, &in);
+    EXPECT(has(j, "\"heading_source\":\"dead_reckoned\""), "neither");
+
+    end(fb);
+}
+
+/*
+ * A field whose subsystem is off is null, never a zero that reads as a
+ * measurement: "heave_m": 0 on a daemon with heave disabled is a lie a script
+ * cannot detect.
+ */
+static void test_json_disabled_is_null(void)
+{
+    begin("test_json_disabled_is_null");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    baseline(&cfg, &in);                    /* declination invalid, all off */
+    cfg.heave_tau_s = 0.0f;
+    cfg.wave_tau_s  = 0.0f;
+    cfg.capture_enabled = false;
+
+    char j[4096];
+    EXPECT(status_format_json(j, sizeof j, &in) > 0, "formats");
+    EXPECT(json_complete(j), "still a complete object");
+
+    EXPECT(has(j, "\"declination\":{\"valid\":false,\"declination_deg\":null,"
+                  "\"true_heading_deg\":null}"), "declination unknown");
+    EXPECT(has(j, "\"heave\":{\"enabled\":false,\"heave_m\":null}"),
+           "heave off");
+    EXPECT(has(j, "\"sea_state\":{\"enabled\":false,\"valid\":false,"
+                  "\"wave_height_m\":null"), "sea state off");
+    EXPECT(has(j, "\"capture\":{\"enabled\":false,\"active\":false,"
+                  "\"path\":null,\"bytes\":null,\"drops\":null}"),
+           "capture off");
+    EXPECT(has(j, "\"warnings\":[]"), "no warnings is an empty array");
+
+    /* Enabled but not yet settled is a third thing again: on, and no number. */
+    baseline(&cfg, &in);
+    cfg.heave_tau_s = 12.0f;
+    cfg.wave_tau_s  = 120.0f;
+    status_format_json(j, sizeof j, &in);
+    EXPECT(has(j, "\"sea_state\":{\"enabled\":true,\"valid\":false,"
+                  "\"wave_height_m\":null"), "sea state settling");
+
+    end(fb);
+}
+
+/*
+ * The MEKF can reset itself on a non-finite state (FLAG_STATE_RESET exists for
+ * exactly that), and printf writes "nan", which is not JSON.  A diverging
+ * filter is the moment a monitoring script most needs a parsable answer.
+ */
+static void test_json_non_finite_is_null(void)
+{
+    begin("test_json_non_finite_is_null");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    everything_on(&cfg, &in);
+    in.state.heading_deg = NAN;
+    in.state.pitch       = (float)INFINITY;
+    in.state.roll        = -(float)INFINITY;
+    in.state.cov[0]      = NAN;
+
+    char j[4096];
+    EXPECT(status_format_json(j, sizeof j, &in) > 0, "still formats");
+    EXPECT(json_complete(j), "still a complete object");
+    EXPECT(!has(j, "nan") && !has(j, "NaN"), "no nan anywhere");
+    EXPECT(!has(j, "inf") && !has(j, "Inf"), "no inf anywhere");
+    EXPECT(has(j, "\"heading_deg\":null"),      "heading is null");
+    EXPECT(has(j, "\"pitch_deg\":null"),        "pitch is null");
+    EXPECT(has(j, "\"roll_deg\":null"),         "roll is null");
+    EXPECT(has(j, "\"cov_trace_rad2\":null"),   "cov trace is null");
+    /* A non-finite heading must not poison the true heading either. */
+    EXPECT(has(j, "\"true_heading_deg\":null"), "true heading is null");
+
+    end(fb);
+}
+
+/* Log lines and paths are not JSON-safe by construction. */
+static void test_json_escapes(void)
+{
+    begin("test_json_escapes");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    everything_on(&cfg, &in);
+    in.capture_path = "/tmp/a\"b\\c.imucap";
+    in.recent       = "  12:00:00 W said \"no\"\n  12:00:01 E a\tb\x01\n";
+
+    char j[4096];
+    EXPECT(status_format_json(j, sizeof j, &in) > 0, "formats");
+    EXPECT(json_complete(j), "the object survives the quotes");
+    EXPECT(has(j, "\"path\":\"/tmp/a\\\"b\\\\c.imucap\""), "path is escaped");
+    EXPECT(has(j, "said \\\"no\\\""),  "a quote in a warning is escaped");
+    EXPECT(has(j, "a\\tb\\u0001"),     "tab and a control byte are escaped");
+
+    end(fb);
+}
+
+/*
+ * All or nothing.  Half an object fails a consumer's parser, so at every
+ * buffer size the answer is either nothing at all or something complete —
+ * the warnings array shedding elements to stay inside the buffer rather than
+ * pushing the object over.  Guard bytes catch a write past the end.
+ */
+static void test_json_all_or_nothing(void)
+{
+    begin("test_json_all_or_nothing");
+    int fb = g_fail;
+
+    imud_config_t cfg; status_input_t in;
+    everything_on(&cfg, &in);
+
+    char full[4096];
+    size_t flen = status_format_json(full, sizeof full, &in);
+    EXPECT(flen > 600 && flen < sizeof full, "the everything-on object is sane");
+
+    int bad_len = 0, bad_form = 0, bad_guard = 0, degraded = 0;
+    for (size_t sz = 0; sz <= flen + 8; sz++) {
+        unsigned char arena[5000];
+        memset(arena, 0xAA, sizeof arena);
+        char *b = (char *)arena + 64;         /* 64 guard bytes either side */
+
+        size_t n = status_format_json(b, sz, &in);
+
+        if (n == 0) {
+            if (sz > 0 && b[0] != '\0') bad_len++;
+        } else {
+            if (n != strlen(b) || n >= sz) bad_len++;
+            if (!json_complete(b))         bad_form++;
+            if (n < flen)                  degraded++;
+        }
+        for (size_t g = 0; g < 64; g++)
+            if (arena[g] != 0xAA) { bad_guard++; break; }
+        for (size_t g = 64 + sz; g < sizeof arena; g++)
+            if (arena[g] != 0xAA) { bad_guard++; break; }
+    }
+
+    EXPECT(bad_len   == 0, "returned length is strlen and is < sz");
+    EXPECT(bad_form  == 0, "every non-empty result is a complete object");
+    EXPECT(bad_guard == 0, "never writes outside [buf, buf + sz)");
+    EXPECT(degraded  >  0, "a short buffer sheds warnings instead of failing");
+
+    end(fb);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -483,6 +756,12 @@ int main(void)
     test_outputs();
     test_recent();
     test_truncation();
+    test_json_schema();
+    test_json_heading_source();
+    test_json_disabled_is_null();
+    test_json_non_finite_is_null();
+    test_json_escapes();
+    test_json_all_or_nothing();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -51,6 +51,7 @@
 
 #include "types.h"
 #include "packet.h"
+#include "paths.h"
 
 int status_main_entry(int argc, char **argv);
 int mon_main_entry(int argc, char **argv);
@@ -110,18 +111,59 @@ static const char *ST_REPORT =
     "imud 1.8  up 0d 00:12:34\n"
     "state: converged  heading 271.5°\n";
 
-/* Serve one canned report and hang up — imud's status socket is one-shot. */
+static const char *ST_JSON =
+    "{\"imud_version\":\"1.11.0\",\"attitude\":{\"heading_deg\":271.5}}\n";
+
+/*
+ * Serve one canned report and hang up — imud's status socket is one-shot.
+ *
+ * `read_request` is the daemon-version switch: a 1.11 daemon reads the request
+ * line and answers what it asked for, one before it never reads at all and
+ * answers text.  The client must work against both.
+ */
+typedef struct {
+    int         srv;
+    const char *reply;
+    bool        read_request;
+    char        request[32];   /* what the client actually sent */
+} st_server_t;
+
 static void *status_server(void *arg)
 {
-    int srv = *(int *)arg;
-    int c = accept(srv, NULL, NULL);
+    st_server_t *s = arg;
+    int c = accept(s->srv, NULL, NULL);
     if (c >= 0) {
-        size_t len = strlen(ST_REPORT);
-        ssize_t w = send(c, ST_REPORT, len, 0);
+        if (s->read_request) {
+            /* Bounded, as the daemon's own responder is: a client that sends
+             * nothing must leave the request empty and fail an assertion, not
+             * wedge the suite. */
+            struct timeval rto = { .tv_sec = 1, .tv_usec = 0 };
+            setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof rto);
+            ssize_t r = recv(c, s->request, sizeof s->request - 1, 0);
+            s->request[r > 0 ? (size_t)r : 0] = '\0';
+        }
+        ssize_t w = send(c, s->reply, strlen(s->reply), 0);
         (void)w;
         close(c);
     }
     return NULL;
+}
+
+/* Bind ST_SOCK and start one server thread against it. */
+static int status_serve(st_server_t *s, const char *reply, bool read_request)
+{
+    unlink(ST_SOCK);
+    memset(s, 0, sizeof *s);
+    s->reply        = reply;
+    s->read_request = read_request;
+    s->srv = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", ST_SOCK);
+    if (bind(s->srv, (struct sockaddr *)&a, sizeof a) != 0) return -1;
+    if (listen(s->srv, 1) != 0) return -1;
+    return 0;
 }
 
 static void test_status_prints_the_report(void)
@@ -129,17 +171,11 @@ static void test_status_prints_the_report(void)
     begin("test_status_prints_the_report");
     int fb = g_fail;
 
-    unlink(ST_SOCK);
-    int srv = socket(AF_UNIX, SOCK_STREAM, 0);
-    struct sockaddr_un a;
-    memset(&a, 0, sizeof a);
-    a.sun_family = AF_UNIX;
-    snprintf(a.sun_path, sizeof a.sun_path, "%s", ST_SOCK);
-    EXPECT(bind(srv, (struct sockaddr *)&a, sizeof a) == 0, "status socket bound");
-    EXPECT(listen(srv, 1) == 0, "listening");
+    st_server_t s;
+    EXPECT(status_serve(&s, ST_REPORT, true) == 0, "status socket bound");
 
     pthread_t tid;
-    pthread_create(&tid, NULL, status_server, &srv);
+    pthread_create(&tid, NULL, status_server, &s);
 
     char *argv[] = { (char *)"imud-status", (char *)"--socket", (char *)ST_SOCK, NULL };
     cap_t cap;
@@ -149,12 +185,78 @@ static void test_status_prints_the_report(void)
     cap_end(&cap, out, sizeof out);
 
     pthread_join(tid, NULL);
-    close(srv);
+    close(s.srv);
     unlink(ST_SOCK);
 
     EXPECT(rc == 0, "exit 0 on a served report");
     EXPECT(strstr(out, "converged") != NULL, "the report reached stdout");
     EXPECT(strstr(out, "271.5") != NULL, "verbatim, not reformatted");
+    EXPECT(strcmp(s.request, IMUD_STATUS_REQ_TEXT) == 0,
+           "asks for the text report by name");
+    end(fb);
+}
+
+/* --json asks for JSON and prints what comes back untouched. */
+static void test_status_json(void)
+{
+    begin("test_status_json");
+    int fb = g_fail;
+
+    st_server_t s;
+    EXPECT(status_serve(&s, ST_JSON, true) == 0, "status socket bound");
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, status_server, &s);
+
+    char *argv[] = { (char *)"imud-status", (char *)"--socket", (char *)ST_SOCK,
+                     (char *)"--json", NULL };
+    cap_t cap;
+    cap_begin(&cap, "/tmp/imud_e2e_status_json.out");
+    int rc = status_main_entry(4, argv);
+    char out[4096];
+    cap_end(&cap, out, sizeof out);
+
+    pthread_join(tid, NULL);
+    close(s.srv);
+    unlink(ST_SOCK);
+
+    EXPECT(rc == 0, "exit 0 on a served object");
+    EXPECT(strcmp(s.request, IMUD_STATUS_REQ_JSON) == 0, "asks for JSON");
+    EXPECT(strstr(out, "\"heading_deg\":271.5") != NULL, "the object reached stdout");
+    end(fb);
+}
+
+/*
+ * A daemon older than 1.11 never reads the request and answers text.  Feeding
+ * that to whatever was going to parse the JSON is the one outcome worth
+ * refusing: say so on stderr and exit non-zero instead.
+ */
+static void test_status_json_against_an_old_daemon(void)
+{
+    begin("test_status_json_against_an_old_daemon");
+    int fb = g_fail;
+
+    st_server_t s;
+    EXPECT(status_serve(&s, ST_REPORT, false) == 0, "status socket bound");
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, status_server, &s);
+
+    char *argv[] = { (char *)"imud-status", (char *)"--socket", (char *)ST_SOCK,
+                     (char *)"--json", NULL };
+    cap_t cap;
+    cap_begin(&cap, "/tmp/imud_e2e_status_oldd.out");
+    int rc = status_main_entry(4, argv);
+    char out[4096];
+    cap_end(&cap, out, sizeof out);
+
+    pthread_join(tid, NULL);
+    close(s.srv);
+    unlink(ST_SOCK);
+
+    EXPECT(rc == 4, "a text answer to --json exits 4");
+    EXPECT(strstr(out, "does not support --json") != NULL, "and says why");
+    EXPECT(strstr(out, "converged") == NULL, "the prose is not printed");
     end(fb);
 }
 
@@ -457,6 +559,8 @@ static void test_mon_falls_back_to_home_config(void)
 int main(void)
 {
     test_status_prints_the_report();
+    test_status_json();
+    test_status_json_against_an_old_daemon();
     test_status_no_daemon();
     test_status_path_too_long();
     test_mon_renders_both_streams();

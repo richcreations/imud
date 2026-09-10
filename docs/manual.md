@@ -1425,6 +1425,19 @@ output status, sample counts and overflow counts, uptime, and a "Recent
 warnings" section listing the last few warning/error log lines. Use
 `--socket PATH` for a non-default socket.
 
+For a script, `--json` renders the same snapshot as one JSON object:
+
+```sh
+imud-status --json | jq .counters.fifo_overflows
+```
+
+The schema is stable, so a consumer never has to test for a key before
+reading it: every subsystem is reported whether or not it is enabled, and a
+field whose subsystem is off — or whose value the filter has made non-finite —
+is `null` rather than a zero that reads as a measurement. A daemon older than
+1.11 answers with the text report, and `imud-status --json` exits 4 rather
+than print it.
+
 ### imud-mon
 
 A receive-side monitor that listens on the UDP output ports from any host on

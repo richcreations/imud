@@ -62,4 +62,21 @@ typedef struct {
  */
 size_t status_format(char *buf, size_t sz, const status_input_t *in);
 
+/*
+ * The same snapshot as one JSON object, for `imud-status --json`.  Returns the
+ * number of bytes written, not counting the NUL.
+ *
+ * All or nothing: on any overflow the buffer is emptied and 0 is returned,
+ * because half an object fails a consumer's parser at the moment it most needs
+ * an answer.  The only unbounded input is the warnings list, and its elements
+ * are dropped one at a time to stay inside the buffer rather than pushing the
+ * object over.
+ *
+ * Unlike status_format()'s text, this IS a contract: the schema is stable, and
+ * every subsystem's object is present whether or not it is enabled.  A field
+ * whose subsystem is off, or whose value the filter has made non-finite, is
+ * null — never a placeholder number and never "nan", which is not JSON.
+ */
+size_t status_format_json(char *buf, size_t sz, const status_input_t *in);
+
 #endif /* IMUD_STATUS_FMT_H */

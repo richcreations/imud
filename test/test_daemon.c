@@ -59,6 +59,7 @@
 #include "output.h"     /* the three output thread entry points, for the wrap */
 #include "capture.h"    /* cap_writer_* — the --replay cases build their own */
 #include "drivers.h"    /* sim_synth_imu / sim_synth_mag */
+#include "paths.h"      /* the status socket's request lines */
 
 int main_entry(int argc, char **argv);
 
@@ -287,12 +288,19 @@ static int connect_unix(const char *path, int timeout_ms)
  * `timeout_ms` bounds the CONNECT only — recv then blocks until the health
  * thread accepts and answers.  Never wrap this in a retry loop: connect_unix
  * already retries, so an outer loop multiplies the two budgets together and a
- * socket that is never going to appear costs minutes instead of seconds. */
-static bool fetch_status_from(const char *path, int timeout_ms,
-                              char *buf, size_t bufsz)
+ * socket that is never going to appear costs minutes instead of seconds.
+ *
+ * `req` is the request line; NULL sends nothing, which is what a client from
+ * before 1.11 does and must still be answered. */
+static bool fetch_status_req(const char *path, const char *req, int timeout_ms,
+                             char *buf, size_t bufsz)
 {
     int fd = connect_unix(path, timeout_ms);
     if (fd < 0) return false;
+    if (req) {
+        ssize_t w = send(fd, req, strlen(req), 0);
+        (void)w;
+    }
     size_t got = 0;
     for (;;) {
         ssize_t r = recv(fd, buf + got, bufsz - 1 - got, 0);
@@ -303,6 +311,12 @@ static bool fetch_status_from(const char *path, int timeout_ms,
     buf[got] = '\0';
     close(fd);
     return got > 0;
+}
+
+static bool fetch_status_from(const char *path, int timeout_ms,
+                              char *buf, size_t bufsz)
+{
+    return fetch_status_req(path, IMUD_STATUS_REQ_TEXT, timeout_ms, buf, bufsz);
 }
 
 /* The compiled-in socket, which every case but the [runtime] one uses. */
@@ -455,6 +469,22 @@ static void test_daemon_lifecycle(void)
     EXPECT(strstr(rep, "833") != NULL, "reports the configured 833 Hz");
     EXPECT(strstr(rep, "NMEA out:      10 Hz") != NULL ||
            strstr(rep, "10 Hz") != NULL, "reports the configured NMEA rate");
+
+    /* ── and in JSON, on request ──────────────────────────────────────────── */
+    char jrep[8192];
+    EXPECT(fetch_status_req(T_STATUS_SOCK, IMUD_STATUS_REQ_JSON, 5000,
+                            jrep, sizeof jrep), "the JSON request is answered");
+    EXPECT(jrep[0] == '{', "with an object, not the text report");
+    EXPECT(strstr(jrep, "\"odr_mhz\":833000") != NULL, "carrying the same ODR");
+    EXPECT(strstr(jrep, "\"driver\":\"sim\"") != NULL, "and the driver name");
+    EXPECT(strstr(jrep, "\"rate_hz\":10") != NULL, "and the NMEA rate");
+
+    /* A client that sends no request at all — every imud-status before 1.11 —
+     * still gets the text report, which is what keeps the flag additive. */
+    char orep[8192];
+    EXPECT(fetch_status_req(T_STATUS_SOCK, NULL, 5000, orep, sizeof orep),
+           "a client that sends nothing is still answered");
+    EXPECT(strstr(orep, "IMU ODR:") != NULL, "with the text report");
 
     /* ── the PID file exists while it runs ────────────────────────────────── */
     struct stat st;

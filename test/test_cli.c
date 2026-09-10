@@ -407,6 +407,12 @@ static void test_status(void)
         cap_begin(); rc = cli_parse_status(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && strcmp(a.sockpath, CLI_DEFAULT_STATUS_SOCK) == 0,
                "default socket path");
+        EXPECT(rc == 0 && !a.want_json, "the text report is the default");
+    }
+
+    {   char *v[] = { "imud-status", "--json", NULL };
+        cap_begin(); rc = cli_parse_status(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.want_json, "--json");
     }
 
     /* The default must agree with what imud actually binds (main.c

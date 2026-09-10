@@ -7,7 +7,7 @@ imud\-status \- query imud daemon health and sensor status
 
 [SYNOPSIS]
 .B imud-status
-\&[\fB\-\-socket\fR \fIPATH\fR]
+\&[\fB\-\-socket\fR \fIPATH\fR] [\fB\-\-json\fR]
 
 [DESCRIPTION]
 .B imud-status
@@ -15,6 +15,14 @@ connects to the running
 .BR imud (8)
 daemon over a Unix domain socket, requests a status snapshot, and prints a
 formatted summary to stdout.
+.PP
+With
+.B \-\-json
+the daemon renders the same snapshot as one JSON object instead, for a
+monitoring script that would otherwise have to match the text with a regular
+expression.  The schema is stable: every subsystem is reported whether or not
+it is enabled, and a field whose subsystem is off, or whose value the filter
+has made non-finite, is null.
 .PP
 The summary includes:
 .PP
@@ -40,7 +48,16 @@ For a continuous live display use
 .B 0
 on success,
 .B 1
-if the daemon is not reachable.
+on a usage error,
+.B 2
+if the socket cannot be created or its path is too long,
+.B 3
+if the daemon cannot be reached, and
+.B 4
+if
+.B \-\-json
+was asked for and the daemon answered with the text report, which is what a
+daemon older than 1.11 does.
 
 [PERMISSIONS]
 The status socket is mode 0660, owner
@@ -63,6 +80,7 @@ under
 [EXAMPLES]
 .EX
 imud-status
+imud-status --json | jq .counters.fifo_overflows
 .EE
 
 [SEE ALSO]

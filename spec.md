@@ -1509,7 +1509,13 @@ warnings only, `130` aborted. Per-check definitions are in
 ### imud-status
 
 Connects to the AF_UNIX socket at `/run/imud/imud.sock` and prints the
-daemon's current state. Accepts `--socket PATH` to use an alternate socket.
+daemon's current state. Accepts `--socket PATH` to use an alternate socket and
+`--json` for the machine-readable form.
+
+The client sends one request line — `text\n` or `json\n` — and reads the
+answer until the daemon closes. The daemon waits 250 ms for that line and
+sends the text report when none arrives, so a client that only connects and
+reads still works.
 
 ```text
 Chip IDs:       ism330dhcx 0x6B   mmc5983ma 0x30
@@ -1525,6 +1531,42 @@ Hi-rate out:    disabled
 IMU samples:    1234567  overflows: 0
 Uptime:         00:04:32
 ```
+
+The text is a human interface and its lines may be reworded; the JSON is a
+contract. Every subsystem object is present whether or not it is enabled, and
+a field whose subsystem is off — or whose value the filter has made
+non-finite — is `null`. The daemon sends it as one line; it is wrapped here.
+
+```json
+{
+  "imud_version": "1.11.0",
+  "uptime_s": 272,
+  "imu": {"driver": "ism330dhcx", "addr": 107, "odr_mhz": 833000,
+          "fifo_watermark": 64},
+  "mag": {"driver": "mmc5983ma", "addr": 48, "odr_mhz": 100000,
+          "set_period_s": 5},
+  "fusion": {"converged": true, "cov_trace_rad2": 4.2e-06},
+  "calibration": {"accel": true, "gyro": true, "mag": true},
+  "attitude": {"pitch_deg": -3.1, "roll_deg": 9.5, "heading_deg": 214.7,
+               "heading_source": "calibrated"},
+  "declination": {"valid": true, "declination_deg": 13.2,
+                  "true_heading_deg": 227.9},
+  "heave": {"enabled": true, "heave_m": 0.42},
+  "sea_state": {"enabled": false, "valid": false, "wave_height_m": null,
+                "wave_period_s": null, "roll_period_s": null},
+  "capture": {"enabled": false, "active": false, "path": null,
+              "bytes": null, "drops": null},
+  "nmea": {"udp_enabled": true, "tcp_enabled": false, "rate_hz": 10,
+           "udp_port": 10110, "tcp_port": 10110},
+  "highrate": {"enabled": false, "rate_hz": 100, "port": 10111,
+               "coord_frame": "NED"},
+  "counters": {"imu_samples": 1234567, "fifo_overflows": 0},
+  "warnings": []
+}
+```
+
+`heading_source` is `calibrated`, `uncalibrated` or `dead_reckoned` — the
+three states the text report spells out under Attitude.
 
 ### Bridges
 

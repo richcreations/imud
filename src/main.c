@@ -250,9 +250,35 @@ typedef struct {
     int                  status_fd;   /* listening AF_UNIX fd */
 } health_ctx_t;
 
+/*
+ * Read the request line imud-status sends after connecting, and say whether it
+ * asked for JSON.
+ *
+ * A client that sends nothing gets the text report once the wait expires: that
+ * is every imud-status before 1.11, and anything hand-rolled that connects and
+ * reads.  The wait is what buys them that, so keep it short — a local write
+ * that has already happened is visible here immediately.
+ */
+static bool status_request_is_json(int fd)
+{
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    struct timeval tv = { .tv_sec  =  IMUD_STATUS_REQ_MS / 1000,
+                          .tv_usec = (IMUD_STATUS_REQ_MS % 1000) * 1000 };
+    if (select(fd + 1, &rfds, NULL, NULL, &tv) <= 0) return false;
+
+    char req[16];
+    ssize_t n = recv(fd, req, sizeof req - 1, 0);
+    if (n <= 0) return false;
+    req[n] = '\0';
+    return strncmp(req, IMUD_STATUS_REQ_JSON, 4) == 0;
+}
+
 static void write_status_response(int fd,
                                   const imud_config_t *cfg,
-                                  imu_ctx_t *imu)
+                                  imu_ctx_t *imu,
+                                  bool json)
 {
     status_input_t in;
     memset(&in, 0, sizeof in);
@@ -277,7 +303,8 @@ static void write_status_response(int fd,
         in.recent = recent;
 
     char   buf[STATUS_BUF];
-    size_t n = status_format(buf, sizeof buf, &in);
+    size_t n = json ? status_format_json(buf, sizeof buf, &in)
+                    : status_format(buf, sizeof buf, &in);
 
     /* Write all at once; ignore partial-write on client disconnect.  glibc
      * marks write() warn_unused_result and gcc deliberately does not honour a
@@ -325,11 +352,12 @@ static void *health_thread(void *arg)
                 struct timeval rto = { .tv_sec = 1, .tv_usec = 0 };
                 setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
                            &rto, sizeof(rto));
+                bool json = status_request_is_json(client);
                 imud_config_t cfg_snap;
                 pthread_mutex_lock(&g_cfg_lock);
                 cfg_snap = *ctx->cfg;
                 pthread_mutex_unlock(&g_cfg_lock);
-                write_status_response(client, &cfg_snap, ctx->imu);
+                write_status_response(client, &cfg_snap, ctx->imu, json);
                 close(client);
             }
         }
