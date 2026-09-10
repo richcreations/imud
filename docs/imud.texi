@@ -870,6 +870,8 @@ high) or @code{0x6A} (SA0 low via jumper).
  @tab int
  @tab @code{17}
  @tab BCM GPIO number for the FIFO watermark interrupt (board pin 11).
+Wire the part's own interrupt pin to it --- @code{INT1} on the ST and
+TDK parts, @code{INT} on the MPU-925x family; §5 names it per driver.
 Set @code{0} to poll instead of using a hardware interrupt. The polling
 cadence is then the same @code{fifo_wm + int_grace} sample periods the
 interrupt path waits for, unless @code{poll_ms} overrides it: a flat
@@ -997,7 +999,10 @@ their own address: set @code{0x0C} for both.
  @tab int
  @tab @code{27}
  @tab BCM GPIO number for the measurement-done interrupt (board pin 13).
-Set @code{0} to poll on a timer.
+Wire the part's measurement-done pin to it --- @code{INT} on the
+MMC5983MA, @code{DRDY} on the LIS3MDL and RM3100. A part with a separate
+threshold-interrupt pin drives it for something else: on the LIS3MDL,
+@code{INT} is not the one to wire. Set @code{0} to poll on a timer.
 @item 
 @code{odr_hz}
  @tab int
@@ -1838,7 +1843,7 @@ datasheets are collected in
 @item
 @strong{I²C address}: 0x6A--0x6B
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT1} → BCM 17 · pin 11
 @item
 @strong{SPI}: @strong{yes} --- mode 0, 10 MHz
 @item
@@ -1856,7 +1861,7 @@ datasheets are collected in
 @item
 @strong{I²C address}: 0x68--0x69
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT1} → BCM 17 · pin 11
 @item
 @strong{SPI}: no --- AKM compass behind the bypass
 @item
@@ -1874,7 +1879,7 @@ I²C master. No hardware timestamp.
 @item
 @strong{I²C address}: 0x68--0x69
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT1} → BCM 17 · pin 11
 @item
 @strong{SPI}: yes --- mode 3, 24 MHz
 @item
@@ -1893,7 +1898,7 @@ not run on a Pi}, see below.
 @item
 @strong{I²C address}: 0x6A--0x6B
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT1} → BCM 17 · pin 11
 @item
 @strong{SPI}: yes --- mode 0, 10 MHz
 @item
@@ -1911,7 +1916,7 @@ not run on a Pi}, see below.
 @item
 @strong{I²C address}: 0x6A--0x6B
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT1} → BCM 17 · pin 11
 @item
 @strong{SPI}: yes --- mode 0, 10 MHz
 @item
@@ -1928,7 +1933,7 @@ not run on a Pi}, see below.
 @item
 @strong{I²C address}: 0x68--0x69
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT} → BCM 17 · pin 11
 @item
 @strong{SPI}: no --- the shared MPU-925x code path is I²C-only
 @item
@@ -1948,7 +1953,7 @@ driver, FIFO and rates as @code{mpu9250}.
 @item
 @strong{I²C address}: 0x68--0x69
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT} → BCM 17 · pin 11
 @item
 @strong{SPI}: no --- AKM compass behind the bypass
 @item
@@ -1966,7 +1971,7 @@ bypass. No hardware timestamp; 512-byte FIFO. NRND.
 @item
 @strong{I²C address}: 0x68--0x69
 @item
-@strong{GPIO interrupt}: BCM 17 · pin 11
+@strong{Interrupt wiring}: @code{INT} → BCM 17 · pin 11
 @item
 @strong{SPI}: no --- as @code{mpu9250}
 @item
@@ -1985,7 +1990,7 @@ via I²C bypass; no hardware timestamp.
 @item
 @strong{I²C address}: 0x30
 @item
-@strong{GPIO interrupt}: BCM 27 · pin 13
+@strong{Interrupt wiring}: @code{INT} → BCM 27 · pin 13
 @item
 @strong{SPI}: @strong{yes} --- mode 0, 10 MHz
 @item
@@ -2004,7 +2009,7 @@ controller --- it stops measuring.
 @item
 @strong{I²C address}: 0x0C
 @item
-@strong{GPIO interrupt}: none (polling)
+@strong{Interrupt wiring}: none (polling)
 @item
 @strong{SPI}: no --- part has no SPI port
 @item
@@ -2022,7 +2027,7 @@ no external INT pin.
 @item
 @strong{I²C address}: 0x0C
 @item
-@strong{GPIO interrupt}: none (polling)
+@strong{Interrupt wiring}: none (polling)
 @item
 @strong{SPI}: no --- part has no SPI port
 @item
@@ -2040,13 +2045,15 @@ factory fuse-ROM sensitivity correction. Not the same part as AK09916.
 @item
 @strong{I²C address}: 0x1C--0x1E
 @item
-@strong{GPIO interrupt}: BCM 27 · pin 13
+@strong{Interrupt wiring}: @code{DRDY} → BCM 27 · pin 13
 @item
 @strong{SPI}: yes --- mode 3, 10 MHz
 @item
 @strong{Notes}: @emph{Experimental.} Popular standalone mag. ±4 G fixed.
-ODR 1--155 Hz; the part's 300/560/1000 Hz modes need a lower-performance
-setting and are not offered, see below.
+The part has two output pins and only DRDY is the one to wire --- INT
+reports a field threshold, which imud never configures. ODR 1--155 Hz;
+the part's 300/560/1000 Hz modes need a lower-performance setting and
+are not offered, see below.
 @end itemize
 
 @item @code{lis2mdl}
@@ -2059,7 +2066,7 @@ setting and are not offered, see below.
 @item
 @strong{I²C address}: 0x1E
 @item
-@strong{GPIO interrupt}: BCM 27 · pin 13
+@strong{Interrupt wiring}: @code{INT/DRDY} → BCM 27 · pin 13
 @item
 @strong{SPI}: no --- 4-wire costs data-ready
 @item
@@ -2076,7 +2083,7 @@ setting and are not offered, see below.
 @item
 @strong{I²C address}: 0x20--0x23
 @item
-@strong{GPIO interrupt}: BCM 27 · pin 13
+@strong{Interrupt wiring}: @code{DRDY} → BCM 27 · pin 13
 @item
 @strong{SPI}: yes --- mode 3, 1 MHz
 @item
@@ -2098,7 +2105,7 @@ assignment is your wiring: the driver assumes the manual's NED layout.
 @item
 @strong{I²C address}: ---
 @item
-@strong{GPIO interrupt}: none
+@strong{Interrupt wiring}: none
 @item
 @strong{SPI}: n/a
 @item
@@ -2233,10 +2240,19 @@ sample, not the whole set; both implement the @code{actual_odr_hz} hook
 and report what they really programmed.
 @end itemize
 
-GPIO pins shown are the defaults (@code{imu.int_gpio = 17},
-@code{mag.int_gpio = 27}). Set @code{int_gpio = 0} to disable the
-interrupt and use a polling timer --- useful when the pin is wired
-differently or unavailable.
+The interrupt column is one wire, sensor end first: the pin name the
+part's datasheet uses --- which is what a breakout silkscreens --- and
+the Pi GPIO the defaults take it to (@code{imu.int_gpio = 17},
+@code{mag.int_gpio = 27}). Set @code{int_gpio = 0} to drop the wire and
+poll on a timer instead. Where a part offers more than one output pin,
+only the one named here is configured: a LIS3MDL's @code{INT} reports a
+field threshold and will never wake the reader.
+
+Which pad carries that pin on a @strong{particular breakout}, and the
+rest of a board's wiring, is on the
+@uref{https://github.com/richcreations/imud/wiki/Wiring,wiki} rather
+than here --- it is a fact about a PCB, not about imud, and it wants
+photos and other people's edits.
 
 @strong{Experimental} drivers have their register maps verified against
 the datasheet but have @strong{not} been validated on physical hardware.

@@ -268,6 +268,20 @@ CASES = [
      sub(r"\.experimental\s*=\s*true", ".experimental     = false"),
      "driver table does not match"),
 
+    # A sidecar entry short of a field.  A new driver's entry is copied from a
+    # neighbour and edited, so the field that goes missing is the newest one --
+    # and a KeyError names it in a traceback rather than a report line.
+    ("gen-drivers", "docs/driver-notes.toml",
+     sub(r"^sensor_pin = 'DRDY'\ngpio = 'BCM 27 · pin 13'\nspi_override = ''\n"
+         r"notes = '''\nPopular", "gpio = 'BCM 27 · pin 13'\n"
+         "spi_override = ''\nnotes = '''\nPopular"),
+     "'lis3mdl' has no sensor_pin"),
+
+    # The wire changed on the part and the table kept the old pin.
+    ("gen-drivers", "docs/driver-notes.toml",
+     sub(r"^sensor_pin = 'INT/DRDY'", "sensor_pin = 'INTM'"),
+     "driver table does not match"),
+
     ("check-mqtt-topics", "src/mqtt_publish.c",
      sub(r'\{ "imu/temperature"', '{ "imu/zzztemp"'),
      "imu/zzztemp"),

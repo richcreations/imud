@@ -485,6 +485,12 @@ ISM330DHCX: 0x6B (SA0 high) or 0x6A (SA0 low).'''
   man_style = "tight"
   man = '''
 BCM GPIO number for the FIFO watermark interrupt.
+Wire the part's own interrupt pin to it \(em
+.B INT1
+on the ST and TDK parts,
+.B INT
+on the MPU\-925x family.
+The manual's driver table names it per driver.
 Set
 .B 0
 to poll instead.  The polling cadence is then the same
@@ -497,7 +503,7 @@ unless
 overrides it.'''
   md_type = 'int'
   md_default = '`17`'
-  desc = 'BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR.'
+  desc = '''BCM GPIO number for the FIFO watermark interrupt (board pin 11). Wire the part's own interrupt pin to it — `INT1` on the ST and TDK parts, `INT` on the MPU-925x family; §5 names it per driver. Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR.'''
 
   [[section.key]]
   names = ["odr_hz"]
@@ -775,12 +781,21 @@ I²C address; used only when `bus = "i2c"`. MMC5983MA has a fixed address. The A
   man_style = "tight"
   man = '''
 BCM GPIO for the measurement-done interrupt.
+Wire the part's measurement-done pin to it \(em
+.B INT
+on the MMC5983MA,
+.B DRDY
+on the LIS3MDL and RM3100.
+A part with a separate threshold-interrupt pin drives it for something else:
+on the LIS3MDL,
+.B INT
+is not the one to wire.
 Set
 .B 0
 to use a polling timer.'''
   md_type = 'int'
   md_default = '`27`'
-  desc = 'BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer.'
+  desc = '''BCM GPIO number for the measurement-done interrupt (board pin 13). Wire the part's measurement-done pin to it — `INT` on the MMC5983MA, `DRDY` on the LIS3MDL and RM3100. A part with a separate threshold-interrupt pin drives it for something else: on the LIS3MDL, `INT` is not the one to wire. Set `0` to poll on a timer.'''
 
 
   [[section.key]]

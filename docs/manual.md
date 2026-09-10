@@ -503,7 +503,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.0"` (CE0). **Required** when `bus = "spi"`; ignored otherwise. The chip select in the node name does the addressing, so `i2c_addr` is unused. An FT232H USB bridge is named `"ftdi:[<match>]/cs<N>"` instead, `<N>` from 0 to 4 for AD3 through AD7 — see [§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge). |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz. `0` means the driver's datasheet maximum, which is the useful default. A request above that maximum is clamped rather than refused, and the daemon logs what it really programmed. **Do not set this below 2.5 MHz when a magnetometer shares the same SPI controller.** Measured on an ism330dhcx + mmc5983ma pair: driving the IMU below about 2.2 MHz stops the magnetometer completing measurements entirely, and re-running `init()` cannot hold it. The default is unaffected, and the daemon warns at startup when it sees a slow clock alongside a shared-bus magnetometer. |
 | `i2c_addr` | int | `0x6B` | I²C address; used only when `bus = "i2c"`. `0x6B` (SA0 high) or `0x6A` (SA0 low via jumper). |
-| `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR. |
+| `int_gpio` | int | `17` | BCM GPIO number for the FIFO watermark interrupt (board pin 11). Wire the part's own interrupt pin to it — `INT1` on the ST and TDK parts, `INT` on the MPU-925x family; §5 names it per driver. Set `0` to poll instead of using a hardware interrupt. The polling cadence is then the same `fifo_wm + int_grace` sample periods the interrupt path waits for, unless `poll_ms` overrides it: a flat cadence under-polls at high ODR, where the FIFO overflows and the effective rate drops below the configured one, and burns reads at low ODR. |
 | `odr_hz` | int | `833` | Output data rate in Hz; must be greater than zero. A rate the chip cannot produce is rounded **up** to the next one it can, and the filter is tuned for that actual rate — the daemon logs `requested, N Hz actual` at startup when the two differ. ISM330DHCX supports: `13.016`, `26.031`, `52.063`, `104.125`, `208.25`, `416.5`, `833`, `1666`, `3332`, `6664`. Other drivers differ — see the driver table in [Supported drivers](#5-supported-drivers), and note that the top rates of some parts are beyond what a Raspberry Pi can sustain. |
 | `accel_g` | int | `8` | Accelerometer full-scale range in g. ISM330DHCX: `2`, `4`, `8`, `16`. |
 | `gyro_dps` | int | `2000` | Gyroscope full-scale range in degrees/second. ISM330DHCX: `125`, `250`, `500`, `1000`, `2000`, `4000`. |
@@ -524,7 +524,7 @@ Magnetometer driver settings. **[restart]**
 | `spi_dev` | string | `""` | spidev node, e.g. `"/dev/spidev0.1"` (CE1 — the IMU usually takes CE0). **Required** when `bus = "spi"`. An FT232H USB bridge is named `"ftdi:[<match>]/cs<N>"` instead, and must name a different `<N>` from the IMU — see [§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge). |
 | `spi_speed_hz` | int | `0` | SPI clock in Hz; `0` means the driver's datasheet maximum. As for `[imu]`. Note that a magnetometer's *own* clock is not what starves it on a shared controller — a slow `[imu] spi_speed_hz` is. This key can be lowered safely. |
 | `i2c_addr` | int | `0x30` | I²C address; used only when `bus = "i2c"`. MMC5983MA has a fixed address. The AKM compasses inside a 9-axis IMU — AK09916 in the ICM-20948, AK8963 in the MPU-9250/9255 — sit behind the host chip's I²C **bypass**, not its I²C master, and answer on the host bus at their own address: set `0x0C` for both. |
-| `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Set `0` to poll on a timer. |
+| `int_gpio` | int | `27` | BCM GPIO number for the measurement-done interrupt (board pin 13). Wire the part's measurement-done pin to it — `INT` on the MMC5983MA, `DRDY` on the LIS3MDL and RM3100. A part with a separate threshold-interrupt pin drives it for something else: on the LIS3MDL, `INT` is not the one to wire. Set `0` to poll on a timer. |
 | `odr_hz` | int | `100` | Output data rate in Hz; must be greater than zero. Rounded **up** to a supported rate as for `[imu] odr_hz`, and the mag noise variance is sized for that actual rate. MMC5983MA supports: `1`, `10`, `20`, `50`, `100`, `200`, `1000`. |
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
 | `int_grace` | int | `2` | How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. These magnetometers have no FIFO, so the line signals one finished conversion and the wait is `1 + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against. |
@@ -842,22 +842,22 @@ Links to the manufacturers' datasheets are collected in
 [datasheets.md](datasheets.md).
 
 <!-- BEGIN GENERATED: driver-table -->
-| Driver name | Chip | Type | I²C address | GPIO interrupt | SPI | Notes |
+| Driver name | Chip | Type | I²C address | Interrupt wiring | SPI | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | **yes** — mode 0, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
-| `icm20948` | TDK ICM-20948 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes a built-in AK09916 mag via I²C master. No hardware timestamp. |
-| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below. |
-| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
-| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
-| `mpu6500` | TDK MPU-6500 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — the shared MPU-925x code path is I²C-only | Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`. |
-| `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
-| `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | BCM 17 · pin 11 | no — as `mpu9250` | MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the pair validated on hardware. Includes an AK8963 mag via I²C bypass; no hardware timestamp. |
-| `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | BCM 27 · pin 13 | **yes** — mode 0, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_speed_hz below 2.5 MHz while this part shares the controller — it stops measuring. |
+| `ism330dhcx` | ST ISM330DHCX | IMU | 0x6A–0x6B | `INT1` → BCM 17 · pin 11 | **yes** — mode 0, 10 MHz | Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz. |
+| `icm20948` | TDK ICM-20948 | IMU | 0x68–0x69 | `INT1` → BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes a built-in AK09916 mag via I²C master. No hardware timestamp. |
+| `icm42688p` | TDK ICM-42688-P | IMU | 0x68–0x69 | `INT1` → BCM 17 · pin 11 | yes — mode 3, 24 MHz | *Experimental.* Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below. |
+| `lsm6dso` | ST LSM6DSO | IMU | 0x6A–0x6B | `INT1` → BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* Near-clone of ISM330DHCX. ODR 12–6664 Hz. |
+| `lsm6dsox` | ST LSM6DSOX | IMU | 0x6A–0x6B | `INT1` → BCM 17 · pin 11 | yes — mode 0, 10 MHz | *Experimental.* LSM6DSO with ML core; same driver. |
+| `mpu6500` | TDK MPU-6500 | IMU | 0x68–0x69 | `INT` → BCM 17 · pin 11 | no — the shared MPU-925x code path is I²C-only | Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`. |
+| `mpu9250` | TDK MPU-9250 | IMU | 0x68–0x69 | `INT` → BCM 17 · pin 11 | no — AKM compass behind the bypass | *Experimental.* Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND. |
+| `mpu9255` | TDK MPU-9255 | IMU | 0x68–0x69 | `INT` → BCM 17 · pin 11 | no — as `mpu9250` | MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the pair validated on hardware. Includes an AK8963 mag via I²C bypass; no hardware timestamp. |
+| `mmc5983ma` | MEMSIC MMC5983MA | Magnetometer | 0x30 | `INT` → BCM 27 · pin 13 | **yes** — mode 0, 10 MHz | Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_speed_hz below 2.5 MHz while this part shares the controller — it stops measuring. |
 | `ak09916` | AKM AK09916 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | *Experimental.* Used via the ICM-20948 I²C bypass; no external INT pin. |
 | `ak8963` | AKM AK8963 | Magnetometer | 0x0C | none (polling) | no — part has no SPI port | The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916. |
-| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |
-| `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
-| `rm3100` | PNI RM3100 | Magnetometer | 0x20–0x23 | BCM 27 · pin 13 | yes — mode 3, 1 MHz | *Experimental.* Magneto-inductive, not AMR: no SET/RESET coil, so `set_period_s` does nothing here. ODR 1–600 Hz, but the top two rungs cost resolution — the cycle count sets both gain and rate ceiling, and the driver drops it from 200 to 100 above 150 Hz and to 50 above 300 Hz. Three separate coils plus an ASIC, so the axis assignment is your wiring: the driver assumes the manual's NED layout. |
+| `lis3mdl` | ST LIS3MDL | Magnetometer | 0x1C–0x1E | `DRDY` → BCM 27 · pin 13 | yes — mode 3, 10 MHz | *Experimental.* Popular standalone mag. ±4 G fixed. The part has two output pins and only DRDY is the one to wire — INT reports a field threshold, which imud never configures. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below. |
+| `lis2mdl` | ST LIS2MDL | Magnetometer | 0x1E | `INT/DRDY` → BCM 27 · pin 13 | no — 4-wire costs data-ready | *Experimental.* LIS3MDL successor. Fixed ±50 G. |
+| `rm3100` | PNI RM3100 | Magnetometer | 0x20–0x23 | `DRDY` → BCM 27 · pin 13 | yes — mode 3, 1 MHz | *Experimental.* Magneto-inductive, not AMR: no SET/RESET coil, so `set_period_s` does nothing here. ODR 1–600 Hz, but the top two rungs cost resolution — the cycle count sets both gain and rate ceiling, and the driver drops it from 200 to 100 above 150 Hz and to 50 above 300 Hz. Three separate coils plus an ASIC, so the axis assignment is your wiring: the driver assumes the manual's NED layout. |
 | `sim` | — | IMU + Magnetometer | — | none | n/a | Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both. |
 <!-- END GENERATED: driver-table -->
 
@@ -948,9 +948,18 @@ Two drivers deliberately advertise less than their part can do:
   both implement the `actual_odr_hz` hook and report what they really
   programmed.
 
-GPIO pins shown are the defaults (`imu.int_gpio = 17`, `mag.int_gpio = 27`).
-Set `int_gpio = 0` to disable the interrupt and use a polling timer — useful
-when the pin is wired differently or unavailable.
+The interrupt column is one wire, sensor end first: the pin name the part's
+datasheet uses — which is what a breakout silkscreens — and the Pi GPIO the
+defaults take it to (`imu.int_gpio = 17`, `mag.int_gpio = 27`). Set
+`int_gpio = 0` to drop the wire and poll on a timer instead. Where a part
+offers more than one output pin, only the one named here is configured:
+a LIS3MDL's `INT` reports a field threshold and will never wake the reader.
+
+Which pad carries that pin on a **particular breakout**, and the rest of a
+board's wiring, is on the [wiki][wiki-wiring] rather than here — it is a fact
+about a PCB, not about imud, and it wants photos and other people's edits.
+
+[wiki-wiring]: https://github.com/richcreations/imud/wiki/Wiring
 
 **Experimental** drivers have their register maps verified against the
 datasheet but have **not** been validated on physical hardware. imud prints a

@@ -7,8 +7,15 @@
 # From the code: the name a config file writes, whether the driver is
 # registered as an IMU, a magnetometer or both, whether it is experimental,
 # and the SPI mode and clock it offers.  Not from the code, and therefore
-# here: which physical part it drives, the I2C address range, which GPIO the
-# reference wiring uses, WHY a part is not offered on SPI, and the notes.
+# here: which physical part it drives, the I2C address range, which pin on the
+# part carries the interrupt and which GPIO the reference wiring takes it to,
+# WHY a part is not offered on SPI, and the notes.
+#
+# `sensor_pin` is the pin name the datasheet uses, which is what a breakout
+# silkscreens.  It is the half of the wire the table used to leave out: `gpio`
+# alone says where the wire ends, not where it starts, and on a part with more
+# than one candidate pin — LIS3MDL has both INT and DRDY — the reader cannot
+# guess which one imud drives.  Empty for a part imud polls.
 #
 # Keyed by driver name — the name a config file writes — because that is what
 # the table is a list of.  `sim` is registered in both registries and appears
@@ -25,6 +32,7 @@
 [drivers.ism330dhcx]
 chip = 'ST ISM330DHCX'
 i2c_addr = '0x6A–0x6B'
+sensor_pin = 'INT1'
 gpio = 'BCM 17 · pin 11'
 spi_override = ''
 notes = 'Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz.'
@@ -32,6 +40,7 @@ notes = 'Primary reference IMU. FIFO + hardware timestamp. ODR 12–6664 Hz.'
 [drivers.icm20948]
 chip = 'TDK ICM-20948'
 i2c_addr = '0x68–0x69'
+sensor_pin = 'INT1'
 gpio = 'BCM 17 · pin 11'
 spi_override = 'no — AKM compass behind the bypass'
 notes = 'Includes a built-in AK09916 mag via I²C master. No hardware timestamp.'
@@ -39,6 +48,7 @@ notes = 'Includes a built-in AK09916 mag via I²C master. No hardware timestamp.
 [drivers.icm42688p]
 chip = 'TDK ICM-42688-P'
 i2c_addr = '0x68–0x69'
+sensor_pin = 'INT1'
 gpio = 'BCM 17 · pin 11'
 spi_override = ''
 notes = 'Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz — **16000 and 32000 will not run on a Pi**, see below.'
@@ -46,6 +56,7 @@ notes = 'Best-in-class noise floor. FIFO + hardware timestamp. ODR 12–32000 Hz
 [drivers.lsm6dso]
 chip = 'ST LSM6DSO'
 i2c_addr = '0x6A–0x6B'
+sensor_pin = 'INT1'
 gpio = 'BCM 17 · pin 11'
 spi_override = ''
 notes = 'Near-clone of ISM330DHCX. ODR 12–6664 Hz.'
@@ -53,6 +64,7 @@ notes = 'Near-clone of ISM330DHCX. ODR 12–6664 Hz.'
 [drivers.lsm6dsox]
 chip = 'ST LSM6DSOX'
 i2c_addr = '0x6A–0x6B'
+sensor_pin = 'INT1'
 gpio = 'BCM 17 · pin 11'
 spi_override = ''
 notes = 'LSM6DSO with ML core; same driver.'
@@ -60,6 +72,7 @@ notes = 'LSM6DSO with ML core; same driver.'
 [drivers.mpu6500]
 chip = 'TDK MPU-6500'
 i2c_addr = '0x68–0x69'
+sensor_pin = 'INT'
 gpio = 'BCM 17 · pin 11'
 spi_override = 'no — the shared MPU-925x code path is I²C-only'
 notes = 'Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and what a board sold as an MPU-9250 usually turns out to be. No magnetometer: pair it with one in `[mag]` for heading. Same driver, FIFO and rates as `mpu9250`.'
@@ -67,6 +80,7 @@ notes = 'Six-axis. The gyro/accel die the MPU-925x packages with an AK8963, and 
 [drivers.mpu9250]
 chip = 'TDK MPU-9250'
 i2c_addr = '0x68–0x69'
+sensor_pin = 'INT'
 gpio = 'BCM 17 · pin 11'
 spi_override = 'no — AKM compass behind the bypass'
 notes = 'Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte FIFO. NRND.'
@@ -74,6 +88,7 @@ notes = 'Includes an AK8963 mag via I²C bypass. No hardware timestamp; 512-byte
 [drivers.mpu9255]
 chip = 'TDK MPU-9255'
 i2c_addr = '0x68–0x69'
+sensor_pin = 'INT'
 gpio = 'BCM 17 · pin 11'
 spi_override = 'no — as `mpu9250`'
 notes = 'MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the pair validated on hardware. Includes an AK8963 mag via I²C bypass; no hardware timestamp.'
@@ -81,6 +96,7 @@ notes = 'MPU-9250 with a different `WHO_AM_I`; same driver, and the one of the p
 [drivers.sim]
 chip = '—'
 i2c_addr = '—'
+sensor_pin = ''
 gpio = 'none'
 spi_override = 'n/a'
 notes = 'Software simulation of a small boat under way. No hardware. Set `int_gpio = 0` on both.'
@@ -88,6 +104,7 @@ notes = 'Software simulation of a small boat under way. No hardware. Set `int_gp
 [drivers.mmc5983ma]
 chip = 'MEMSIC MMC5983MA'
 i2c_addr = '0x30'
+sensor_pin = 'INT'
 gpio = 'BCM 27 · pin 13'
 spi_override = ''
 notes = 'Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_speed_hz below 2.5 MHz while this part shares the controller — it stops measuring.'
@@ -95,6 +112,7 @@ notes = 'Primary reference mag. 18-bit, SET/RESET coil. Do not set the IMU spi_s
 [drivers.ak09916]
 chip = 'AKM AK09916'
 i2c_addr = '0x0C'
+sensor_pin = ''
 gpio = 'none (polling)'
 spi_override = 'no — part has no SPI port'
 notes = 'Used via the ICM-20948 I²C bypass; no external INT pin.'
@@ -102,6 +120,7 @@ notes = 'Used via the ICM-20948 I²C bypass; no external INT pin.'
 [drivers.ak8963]
 chip = 'AKM AK8963'
 i2c_addr = '0x0C'
+sensor_pin = ''
 gpio = 'none (polling)'
 spi_override = 'no — part has no SPI port'
 notes = 'The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-ROM sensitivity correction. Not the same part as AK09916.'
@@ -109,14 +128,16 @@ notes = 'The MPU-9250/9255 compass, via I²C bypass. Applies the factory fuse-RO
 [drivers.lis3mdl]
 chip = 'ST LIS3MDL'
 i2c_addr = '0x1C–0x1E'
+sensor_pin = 'DRDY'
 gpio = 'BCM 27 · pin 13'
 spi_override = ''
 notes = '''
-Popular standalone mag. ±4 G fixed. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below.'''
+Popular standalone mag. ±4 G fixed. The part has two output pins and only DRDY is the one to wire — INT reports a field threshold, which imud never configures. ODR 1–155 Hz; the part's 300/560/1000 Hz modes need a lower-performance setting and are not offered, see below.'''
 
 [drivers.lis2mdl]
 chip = 'ST LIS2MDL'
 i2c_addr = '0x1E'
+sensor_pin = 'INT/DRDY'
 gpio = 'BCM 27 · pin 13'
 spi_override = 'no — 4-wire costs data-ready'
 notes = 'LIS3MDL successor. Fixed ±50 G.'
@@ -124,6 +145,7 @@ notes = 'LIS3MDL successor. Fixed ±50 G.'
 [drivers.rm3100]
 chip = 'PNI RM3100'
 i2c_addr = '0x20–0x23'
+sensor_pin = 'DRDY'
 gpio = 'BCM 27 · pin 13'
 spi_override = ''
 notes = '''

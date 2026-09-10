@@ -114,14 +114,14 @@ Verify with `i2cdetect -y 1`. Expected output: `0x30` (MMC5983MA) and `0x6b`
 
 ### GPIO Wiring
 
-|Signal     |Pi Pin|BCM GPIO|Notes               |
-|-----------|------|--------|--------------------|
-|ISM330 INT1|Pin 11|GPIO 17 |FIFO watermark      |
-|MMC5983 INT|Pin 13|GPIO 27 |Mag measurement done|
-|I2C SDA    |Pin 3 |GPIO 2  |Shared Qwiic bus    |
-|I2C SCL    |Pin 5 |GPIO 3  |Shared Qwiic bus    |
-|3.3V       |Pin 1 |—       |Power               |
-|GND        |Pin 9 |—       |Ground              |
+Two interrupt lines, whatever the data transport: the ISM330DHCX's `INT1` to
+BCM 17 (header pin 11) for the FIFO watermark, and the MMC5983MA's `INT` to
+BCM 27 (pin 13) for measurement-done. The reference rig has run on both I²C
+and SPI, and only the data pins move between them.
+
+The rest — which pad is which on a given breakout, and the SPI wiring — is on
+the [wiki](https://github.com/richcreations/imud/wiki/Wiring), which is not
+pinned to a release.
 
 -----
 

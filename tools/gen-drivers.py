@@ -24,8 +24,10 @@ lists all follow from the code.
 Four of the table's seven columns come from the ops initialiser — the name,
 the type (which registry it is in), the SPI mode and clock, and the
 *Experimental.* marker.  The other three are prose about the physical part and
-live in the sidecar.  The split is the point: the columns that restate the
-code are generated, the columns that describe the world are written.
+live in the sidecar; the interrupt column is half of each, the sensor-side pin
+from the sidecar and the host-side GPIO with it.  The split is the point: the
+columns that restate the code are generated, the columns that describe the
+world are written.
 
 docs/datasheets.md is deliberately NOT generated.  It merges LSM6DSO with
 LSM6DSOX and MPU-9250 with MPU-9255 into one row each, omits `sim` (which
@@ -77,6 +79,24 @@ def spi_cell(d, override):
     return "%s — mode %s, %d MHz" % (yes, d["spi_mode"], mhz)
 
 
+# Every field the table reads out of the sidecar.  Checked by name so a new
+# driver's entry fails as a report line rather than a KeyError traceback.
+FIELDS = ("chip", "i2c_addr", "sensor_pin", "gpio", "spi_override", "notes")
+
+
+def wire_cell(note):
+    """The interrupt column: the whole wire, sensor end first.
+
+    `gpio` alone said where the wire ends and never where it starts, which is
+    unanswerable on a part with two output pins — LIS3MDL breaks out both INT
+    and DRDY and only DRDY is the one imud drives.  A part imud polls has no
+    sensor end, so it keeps the bare cell.
+    """
+    if not note["sensor_pin"]:
+        return note["gpio"]
+    return "`%s` → %s" % (note["sensor_pin"], note["gpio"])
+
+
 def table(ds, notes, rep):
     """The manual's §5 driver table, one row per driver name."""
     kinds = {}
@@ -95,7 +115,7 @@ def table(ds, notes, rep):
                 seen.append(d["name"])
                 order.append(d)
 
-    lines = ["| Driver name | Chip | Type | I²C address | GPIO interrupt "
+    lines = ["| Driver name | Chip | Type | I²C address | Interrupt wiring "
              "| SPI | Notes |",
              "| --- | --- | --- | --- | --- | --- | --- |"]
     for d in order:
@@ -103,6 +123,11 @@ def table(ds, notes, rep):
         if note is None:
             rep.fail(f"{NOTES}: no entry for driver '{d['name']}' "
                      f"(registered in {d['where']})")
+            continue
+        missing = [f for f in FIELDS if f not in note]
+        if missing:
+            rep.fail(f"{NOTES}: '{d['name']}' has no "
+                     f"{', '.join(missing)}")
             continue
         # Which registries list it, not a field anyone maintains: `sim` is in
         # both, and that IS its type.
@@ -113,7 +138,7 @@ def table(ds, notes, rep):
         if d["experimental"]:
             body = "*Experimental.* " + body
         lines.append("| `%s` | %s | %s | %s | %s | %s | %s |" % (
-            d["name"], note["chip"], typ, note["i2c_addr"], note["gpio"],
+            d["name"], note["chip"], typ, note["i2c_addr"], wire_cell(note),
             spi_cell(d, note["spi_override"]), body))
 
     for name in sorted(set(notes) - set(seen)):
