@@ -50,6 +50,15 @@
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag */
 #include "drivers.h"
 #include "fit_ra.h"
+#include "paths.h"
+
+/* The system config the search starts from, overridable at compile time so
+ * test_hwtools_e2e can aim it at a path it can rely on being absent —
+ * /etc/imud/imud.conf exists on any machine where `make install` has been
+ * run, this bench included. */
+#ifndef SYS_CONF
+# define SYS_CONF  IMUD_SYS_CONF
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -887,9 +896,12 @@ int main(int argc, char **argv)
      * sensor modes stay strict (defaults could probe the wrong bus). */
     imud_config_t cfg;
     config_defaults(&cfg);
-    int crc = config_load(args.config_path, &cfg);
+    char conf_path[sizeof args.config_path];
+    int crc = config_load_resolved(
+            SYS_CONF, args.config_explicit ? args.config_path : NULL,
+            &cfg, conf_path, sizeof conf_path);
     if (crc == CONFIG_ERR_PARSE || (crc < 0 && !args.offline)) {
-        fprintf(stderr, "cal: cannot load config from %s\n", args.config_path);
+        fprintf(stderr, "cal: cannot load config from %s\n", conf_path);
         return 1;
     }
 

@@ -59,6 +59,12 @@ to hold its setup through a run."""
   impact   = "./configure gains --datadir, --rundir, --statedir, and --with-service=none for a package manager that defines the service itself: it installs no unit and creates no state directory. A build at PREFIX=/usr is unchanged, so the .deb is byte-identical."
 
   [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-utils"]
+  text     = "imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf when there is no system config, the search imud already ran. A host with no /etc/imud is configured once and serves all four."
+  impact   = "An explicit --config still replaces the search rather than heading it, for all four."
+
+  [[release.change]]
   kind     = "fix"
   packages = ["imud"]
   text     = "make install-wmm-data put WMM.COF under the prefix while the daemon looked only in /usr/share. Declination stayed zero and heading stayed magnetic, with no warning. Both sides now follow the prefix."

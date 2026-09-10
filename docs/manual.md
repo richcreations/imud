@@ -417,6 +417,12 @@ does not exist means built-in defaults and a warning — not a quiet fall back t
 `~/.config/imud/imud.conf`, which would let a typo start the daemon on a
 different configuration. Without `--config`, neither file existing is fine.
 
+`imud-cal`, `imud-mon` and `imud-imutest` run the same search, so a host with no
+`/etc/imud` — an unprivileged install under a prefix of its own, a build tree, a
+container — is configured once in `~/.config/imud/imud.conf` and serves all four.
+`imud-status` reads no config file; point it at a non-default socket with
+`--socket`.
+
 **Reload behaviour:**
 - Keys marked **[restart]** take effect only after restarting the daemon
   (`systemctl restart imud`).

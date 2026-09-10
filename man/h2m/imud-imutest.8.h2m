@@ -143,6 +143,9 @@ Aborted by the operator.
 .I /etc/imud/imud.conf
 Default configuration file.
 .TP
+.I ~/.config/imud/imud.conf
+Per-user configuration override, read when the system file is absent.
+.TP
 .I ./imud-imutest-<driver>-<timestamp>.md
 Default report path.
 

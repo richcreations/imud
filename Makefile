@@ -647,9 +647,17 @@ test_daemon: $(IMUD_OBJS) src/main.entry.o test/test_daemon.c
 # halves are already covered by test_status/test_mon (status_fmt.c, mon_parse.c);
 # what only main() holds is the socket work and the render loop, so this drives
 # the real entry points against sockets the test binds and captures stdout.
+#
+# SYS_CONF is redirected for the same reason main.entry.o's is: without
+# --config the tool searches the system config and then $HOME, so the only way
+# a test reaches the $HOME arm is a system path it can rely on being absent.
+# /etc/imud/imud.conf is not that on a machine where `make install` has run.
+src/mon_main.entry.o: CPPFLAGS += -DSYS_CONF='"/tmp/imud_e2e_mon_sysconf.conf"'
+src/mon_main.entry.o: Makefile
+
 test_tools_e2e: src/status_main.entry.o src/mon_main.entry.o \
                 src/cli.c src/config.c src/log.c src/mon_parse.c src/packet.c \
-                test/test_tools_e2e.c
+                test/test_tools_e2e.c Makefile
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # Bridge scaffolding (src/bridge.c + src/sdnotify.c): CLI matrix, emit-tick
@@ -764,6 +772,17 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 # -Wl,--wrap'ing over it costs nothing (the wrappers never fell through to
 # __real_, so the real three were dead code here) and drops the GNU-ld
 # dependency: Apple ld has no --wrap.  imu_gpio_null.c has its own suite.
+#
+# SYS_CONF is redirected for the same reason main.entry.o's is: without
+# --config each tool searches the system config and then $HOME, so the only
+# way a test reaches the $HOME arm is a system path it can rely on being
+# absent.  /etc/imud/imud.conf is not that on a machine where `make install`
+# has run.  The two get different names so neither case can be satisfied by
+# the other's file.
+src/cal_main.entry.o:     CPPFLAGS += -DSYS_CONF='"/tmp/imud_hwtools_cal_sysconf.conf"'
+src/imutest_main.entry.o: CPPFLAGS += -DSYS_CONF='"/tmp/imud_hwtools_imt_sysconf.conf"'
+src/cal_main.entry.o src/imutest_main.entry.o: Makefile
+
 test_hwtools_e2e: src/cal_main.entry.o src/imutest_main.entry.o \
                   $(filter-out $(BUS_SRC) $(GPIO_SRC),$(HWTOOLS_SRCS)) \
                   test/bus_mock.c test/test_hwtools_e2e.c Makefile

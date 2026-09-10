@@ -38,7 +38,16 @@
 #include "config.h"
 #include "mon_parse.h"
 #include "packet.h"
+#include "paths.h"
 #include "types.h"
+
+/* The system config the search starts from, overridable at compile time so
+ * test_tools_e2e can aim it at a path it can rely on being absent —
+ * /etc/imud/imud.conf exists on any machine where `make install` has been
+ * run, this bench included. */
+#ifndef SYS_CONF
+# define SYS_CONF  IMUD_SYS_CONF
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -183,7 +192,10 @@ int main(int argc, char **argv)
     /* Load config — ignore failure, defaults have the right port numbers */
     imud_config_t cfg;
     config_defaults(&cfg);
-    config_load(args.config_path, &cfg);
+    char conf_path[sizeof args.config_path];
+    config_load_resolved(SYS_CONF,
+                         args.config_explicit ? args.config_path : NULL,
+                         &cfg, conf_path, sizeof conf_path);
 
     /* Open receive sockets */
     int nmea_fd = -1, bin_fd = -1;

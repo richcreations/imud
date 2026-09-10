@@ -927,6 +927,119 @@ static void test_load_partial_override(void)
     end_test(fb);
 }
 
+/*
+ * config_load_resolved(): the search every front-end runs when the operator
+ * named no file.  All four go through it, so a slip here is a slip in imud,
+ * imud-cal, imud-mon and imud-imutest at once.
+ *
+ * $HOME is redirected to a directory this case owns, so the fallback resolves
+ * to a file the test wrote rather than to the developer's real config, and
+ * the system arm is a /tmp path — never /etc/imud/imud.conf, which exists on
+ * any machine where `make install` has been run.
+ */
+#define RS_HOME  "/tmp/imud_test_resolved_home"
+#define RS_ALT   RS_HOME "/.config/imud/imud.conf"
+#define RS_SYS   "/tmp/imud_test_resolved_sys.conf"
+
+static void rs_write(const char *path, const char *content)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) { perror("fopen resolved"); exit(1); }
+    fputs(content, f);
+    fclose(f);
+}
+
+static void test_load_resolved_search(void)
+{
+    begin_test("test_load_resolved_search");
+    int fb = g_fail;
+
+    mkdir(RS_HOME, 0700);
+    mkdir(RS_HOME "/.config", 0700);
+    mkdir(RS_HOME "/.config/imud", 0700);
+    remove(RS_SYS);
+    remove(RS_ALT);
+
+    char *saved_home = getenv("HOME");
+    char home_copy[512] = "";
+    if (saved_home) snprintf(home_copy, sizeof home_copy, "%s", saved_home);
+    setenv("HOME", RS_HOME, 1);
+
+    /* Two distinct rates, so every assertion below names which file was read
+     * rather than passing on a value both could have produced. */
+    rs_write(RS_ALT, "[nmea]\nrate_hz = 3\n");
+
+    imud_config_t cfg;
+    char got[256];
+    int rc;
+
+    /* System file absent → the $HOME file, and `got` names it. */
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == 0,                     "missing system config falls back");
+    EXPECT_STR(got, RS_ALT,             "and reports the file it read");
+    EXPECT(cfg.nmea_rate_hz == 3,       "the fallback's values are applied");
+
+    /* Both present → the system file wins outright.  "Or else", not "then":
+     * the two are alternatives, so the $HOME file must not be layered over
+     * the system one. */
+    rs_write(RS_SYS, "[nmea]\nrate_hz = 5\n");
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == 0,                     "system config loads when present");
+    EXPECT_STR(got, RS_SYS,             "and is the file reported");
+    EXPECT(cfg.nmea_rate_hz == 5,       "the $HOME file is not merged over it");
+
+    /* An explicit --config replaces the search rather than heading it: a
+     * mistyped path must not quietly start on someone else's settings. */
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, "/tmp/imud_test_resolved_typo.conf",
+                              &cfg, got, sizeof got);
+    EXPECT(rc == CONFIG_ERR_OPEN,       "a named missing file is not fallen back from");
+    EXPECT_STR(got, "/tmp/imud_test_resolved_typo.conf",
+                                        "and the named path is what is reported");
+    EXPECT(cfg.nmea_rate_hz == 10,      "neither default file was read");
+
+    /* A system config that parses badly is reported as such — the $HOME file
+     * must not paper over it. */
+    rs_write(RS_SYS, "[nmea]\nrate_hz = notanumber\n");
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == CONFIG_ERR_PARSE,      "a bad system config returns PARSE");
+    EXPECT_STR(got, RS_SYS,             "naming the file that failed");
+    EXPECT(cfg.nmea_rate_hz != 3,       "and the $HOME file is not consulted");
+
+    /* Neither file exists: survivable, defaults kept, and `got` keeps naming
+     * the system path so an operator who creates it later is reloading the
+     * right file. */
+    remove(RS_SYS);
+    remove(RS_ALT);
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == CONFIG_ERR_OPEN,       "neither file existing is survivable");
+    EXPECT_STR(got, RS_SYS,             "and the system path is what is named");
+    EXPECT(cfg.nmea_rate_hz == 10,      "defaults are kept");
+
+    /* No $HOME at all: there is no alternative to try, and the search must
+     * not build a path out of a null pointer. */
+    unsetenv("HOME");
+    rs_write(RS_SYS, "[nmea]\nrate_hz = 5\n");
+    config_defaults(&cfg);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == 0 && cfg.nmea_rate_hz == 5, "system config still loads with no $HOME");
+    config_defaults(&cfg);
+    remove(RS_SYS);
+    rc = config_load_resolved(RS_SYS, NULL, &cfg, got, sizeof got);
+    EXPECT(rc == CONFIG_ERR_OPEN,       "no $HOME and no system config is survivable");
+    EXPECT_STR(got, RS_SYS,             "and still names the system path");
+
+    if (home_copy[0]) setenv("HOME", home_copy, 1);
+    rmdir(RS_HOME "/.config/imud");
+    rmdir(RS_HOME "/.config");
+    rmdir(RS_HOME);
+    end_test(fb);
+}
+
 /* [position] defaults: all zero / disabled, wmm_file = "" (auto-resolve). */
 static void test_defaults_position(void)
 {
@@ -2040,6 +2153,7 @@ int main(void)
     test_load_inline_comment();
     test_load_tilde_expansion();
     test_load_partial_override();
+    test_load_resolved_search();
     test_position_keys_load();
     test_runtime_paths_load();
     test_runtime_status_socket_too_long();

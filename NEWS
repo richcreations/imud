@@ -44,6 +44,14 @@ Added:
   and creates no state directory. A build at PREFIX=/usr is unchanged, so the
   .deb is byte-identical.
 
+Changed:
+
+* imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf
+  when there is no system config, the search imud already ran. A host with no
+  /etc/imud is configured once and serves all four.
+  An explicit --config still replaces the search rather than heading it, for
+  all four.
+
 Fixed:
 
 * imud-imutest reported the mpu9250/mpu9255 pair as not holding its

@@ -80,6 +80,17 @@ imud-mon --config config/sim.conf
 .EE
 .RE
 
+[FILES]
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+Only the port and address keys are read \(em
+.B imud-mon
+has no configuration of its own.
+.TP
+.I ~/.config/imud/imud.conf
+Per-user configuration override, read when the system file is absent.
+
 [SEE ALSO]
 .BR imud (8),
 .BR imud-status (1),

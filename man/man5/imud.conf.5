@@ -12,10 +12,14 @@ is a TOML-like text file that controls all aspects of
 which sensors to use, MEKF filter parameters, output stream destinations,
 magnetic declination, and logging.
 .PP
-.B imud
-takes the path given on the command line with
+.BR imud (8),
+.BR imud\-cal (8),
+.BR imud\-mon (1)
+and
+.BR imud\-imutest (8)
+take the path given on the command line with
 .BR \-\-config ,
-and otherwise searches:
+and otherwise search:
 .PP
 .RS 4
 1.
@@ -27,12 +31,14 @@ and otherwise searches:
 .PP
 The two are alternatives, not a single list:
 .B \-\-config
-replaces the search, so a path named there that does not exist means built-in
-defaults (with a warning) rather than a fall back to
+replaces the search, so a path named there that does not exist is not fallen
+back from: a mistyped path cannot silently start on
 .IR ~/.config/imud/imud.conf .
 Without
 .BR \-\-config ,
-neither file existing is not an error \(em the daemon runs on defaults.
+neither file existing is not an error \(em
+.B imud
+runs on built-in defaults.
 .SS Syntax
 .TP
 Sections

@@ -194,6 +194,7 @@ int cli_parse_cal(int argc, char **argv, cli_cal_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             snprintf(a->config_path, sizeof(a->config_path), "%s", argv[++i]);
+            a->config_explicit = true;
         } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             a->output_path = argv[++i];
         } else if (strcmp(argv[i], "--from") == 0 && i + 1 < argc) {
@@ -274,6 +275,7 @@ int cli_parse_mon(int argc, char **argv, cli_mon_t *a)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             snprintf(a->config_path, sizeof a->config_path, "%s", argv[++i]);
+            a->config_explicit = true;
         } else if (strcmp(argv[i], "nmea") == 0) {
             a->want_nmea   = true; any_stream = true;
         } else if (strcmp(argv[i], "binary") == 0) {

@@ -1416,3 +1416,36 @@ int config_load(const char *path, imud_config_t *cfg)
     if (validate_bus(cfg, path) != 0) rc = CONFIG_ERR_PARSE;
     return rc;
 }
+
+int config_load_resolved(const char *sys_path, const char *explicit_path,
+                         imud_config_t *cfg, char *loaded, size_t loaded_sz)
+{
+    if (explicit_path) {
+        snprintf(loaded, loaded_sz, "%s", explicit_path);
+        return config_load(explicit_path, cfg);
+    }
+
+    snprintf(loaded, loaded_sz, "%s", sys_path);
+    int rc = config_load(sys_path, cfg);
+    if (rc != CONFIG_ERR_OPEN) return rc;   /* read it, or refused to */
+
+    /* No $HOME means there is no alternative to try; naming the file already
+     * loaded makes the comparison below skip it.  sys_path, not the literal,
+     * or a build that redirects it would fall through to the real
+     * /etc/imud/imud.conf here. */
+    char alt[256];
+    const char *home = getenv("HOME");
+    if (home) snprintf(alt, sizeof alt, "%s/.config/imud/imud.conf", home);
+    else      snprintf(alt, sizeof alt, "%s", sys_path);
+
+    if (strcmp(sys_path, alt) == 0) return CONFIG_ERR_OPEN;
+
+    int alt_rc = config_load(alt, cfg);
+    /* Neither file existing keeps loaded[] on sys_path: the alt is not the
+     * file the caller is running on, and reporting a missing $HOME config to
+     * an operator who never had one would name the wrong path. */
+    if (alt_rc == CONFIG_ERR_OPEN) return CONFIG_ERR_OPEN;
+
+    snprintf(loaded, loaded_sz, "%s", alt);
+    return alt_rc;
+}

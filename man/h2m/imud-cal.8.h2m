@@ -137,6 +137,9 @@ Default calibration output path.
 .TP
 .I /etc/imud/imud.conf
 Default configuration file.
+.TP
+.I ~/.config/imud/imud.conf
+Per-user configuration override, read when the system file is absent.
 
 [NOTES]
 The daemon

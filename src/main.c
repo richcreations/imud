@@ -601,81 +601,47 @@ int main(int argc, char **argv)
     int cli_rc = cli_parse_imud(argc, argv, &args);
     if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --version */
 
-    /* --config PATH, or else SYS_CONF then ~/.config/imud/imud.conf.  "or
-     * else", not "then": an explicit --config names one file and gets no
-     * fallback. */
     imud_config_t cfg;
     config_defaults(&cfg);
 
-    const char *primary = args.config_explicit ? args.config_path : SYS_CONF;
-
-    /* The path SIGHUP reloads: the file startup actually READ, which is not
-     * always the file it was asked for.  Reloading args.config_path instead
-     * means a daemon that came up on the $HOME fallback answers every SIGHUP
-     * with "reload failed" — re-reading a file that does not exist — so hot
-     * reload is dead for it and the message blames the config. */
+    /* --config PATH, or else SYS_CONF then ~/.config/imud/imud.conf; the
+     * search itself is config_load_resolved(), shared with the three tools.
+     *
+     * cfg_path is the path SIGHUP reloads: the file startup actually READ,
+     * which is not always the file it was asked for.  Reloading
+     * args.config_path instead means a daemon that came up on the $HOME
+     * fallback answers every SIGHUP with "reload failed" — re-reading a file
+     * that does not exist — so hot reload is dead for it and the message
+     * blames the config. */
     char cfg_path[sizeof args.config_path];
-    snprintf(cfg_path, sizeof cfg_path, "%s", primary);
+    int cfg_rc = config_load_resolved(
+            SYS_CONF, args.config_explicit ? args.config_path : NULL,
+            &cfg, cfg_path, sizeof cfg_path);
 
     /* A config file that exists but fails to parse is fatal: starting with
      * a half-applied config (everything after the bad line discarded) is
      * worse than not starting at all. A missing file is fine — defaults. */
-    int cfg_rc = config_load(primary, &cfg);
     if (cfg_rc == CONFIG_ERR_PARSE) {
         LOG_E("[main] %s has errors (see above) — refusing to start\n",
-                primary);
+                cfg_path);
         return 1;
     }
-    /* Existing-but-unreadable is fatal for the same reason, and must not fall
-     * through to the alt path below: silently running on defaults when the
-     * operator has written a config is the worst of both. */
+    /* Existing-but-unreadable is fatal for the same reason: silently running
+     * on defaults when the operator has written a config is the worst of
+     * both. */
     if (cfg_rc == CONFIG_ERR_PERM) {
         LOG_E("[main] %s exists but cannot be read (see above) — refusing to "
-                "start\n", primary);
+                "start\n", cfg_path);
         return 1;
     }
-    if (cfg_rc == CONFIG_ERR_OPEN && args.config_explicit) {
-        /* No fallback for a named file.  Loading a DIFFERENT config because
-         * the requested one was missing is how a typo starts the daemon on
-         * someone else's settings, and imud.8 has always documented --config
-         * as replacing the search rather than heading it.  Missing is still
-         * survivable — defaults — but it must not be silent. */
+    /* A named file that is missing got no fallback.  Loading a DIFFERENT
+     * config because the requested one was absent is how a typo starts the
+     * daemon on someone else's settings, and imud.8 has always documented
+     * --config as replacing the search rather than heading it.  Missing is
+     * still survivable — defaults — but it must not be silent. */
+    if (cfg_rc == CONFIG_ERR_OPEN && args.config_explicit)
         LOG_W("[main] --config %s does not exist — running on defaults\n",
-                primary);
-    } else if (cfg_rc == CONFIG_ERR_OPEN) {
-        /* Fallback: try the other default */
-        char alt[256];
-        const char *home = getenv("HOME");
-        if (home)
-            snprintf(alt, sizeof(alt), "%s/.config/imud/imud.conf", home);
-        else
-            /* No $HOME means there is no alternative to try; naming the file
-             * already loaded makes the strcmp below skip it.  SYS_CONF, not the
-             * literal, or a build that redirects it would fall through to the
-             * real /etc/imud/imud.conf here. */
-            snprintf(alt, sizeof(alt), "%s", SYS_CONF);
-
-        if (strcmp(primary, alt) != 0) {
-            int alt_rc = config_load(alt, &cfg);
-            if (alt_rc == CONFIG_ERR_PARSE) {
-                LOG_E("[main] %s has errors (see above) — refusing to start\n",
-                        alt);
-                return 1;
-            }
-            if (alt_rc == CONFIG_ERR_PERM) {
-                LOG_E("[main] %s exists but cannot be read (see above) — "
-                        "refusing to start\n", alt);
-                return 1;
-            }
-            /* This is the file the daemon is running on, so it is the file
-             * SIGHUP must re-read. */
-            if (alt_rc == 0)
-                snprintf(cfg_path, sizeof cfg_path, "%s", alt);
-        }
-        /* Neither file existing is fine — defaults remain, and cfg_path keeps
-         * naming the system config: if the operator creates it later, SIGHUP
-         * picks it up. */
-    }
+                cfg_path);
 
     /* Apply CLI overrides */
     if (args.no_nmea) {      cfg.nmea_enabled     = false;

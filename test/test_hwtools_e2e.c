@@ -542,6 +542,105 @@ static void test_cal_missing_config(void)
     end(fb);
 }
 
+/*
+ * ── The $HOME config search, for both tools ──────────────────────────────
+ *
+ * No --config at all: each tool tries the system config and then
+ * $HOME/.config/imud/imud.conf.  Before this, both stopped at the system
+ * path, so a host with no /etc/imud — an unprivileged prefix install, a build
+ * tree, a container — could only be served by passing --config every time.
+ *
+ * The system path each tool searches is the one the Makefile compiles into
+ * this copy of its main(), and nothing here creates it: /etc/imud/imud.conf
+ * exists on any machine where `make install` has been run, so the real one
+ * would satisfy the search and the fallback would never be reached.
+ *
+ * The evidence is a driver name that appears in no other config this suite
+ * writes, so the message naming it could have come from nowhere but the
+ * $HOME file.  Both tools fail at driver resolution, which is cheap.
+ */
+#define HOME_DIR       "/tmp/imud_hwtools_home"
+#define HOME_CONF      HOME_DIR "/.config/imud/imud.conf"
+#define HOME_ONLY_IMU  "homeconfimu"
+
+static char g_saved_home[512];
+
+/* Write the $HOME config and point $HOME at it.  cal_file has to be somewhere
+ * writable: imud-cal checks that before it looks at the driver, and the
+ * compiled-in default is under /etc. */
+static void home_conf_up(const char *sys_conf)
+{
+    remove(sys_conf);
+    mkdir(HOME_DIR, 0700);
+    mkdir(HOME_DIR "/.config", 0700);
+    mkdir(HOME_DIR "/.config/imud", 0700);
+
+    FILE *f = fopen(HOME_CONF, "w");
+    if (!f) { perror(HOME_CONF); exit(1); }
+    fprintf(f,
+        "[device]\ni2c_bus = \"/dev/null\"\n"
+        "[imu]\ndriver = \"" HOME_ONLY_IMU "\"\nint_gpio = 0\n"
+        "[mag]\ndriver = \"none\"\nint_gpio = 0\n"
+        "[calibration]\nfile = \"%s\"\n", g_cal);
+    fclose(f);
+
+    const char *h = getenv("HOME");
+    snprintf(g_saved_home, sizeof g_saved_home, "%s", h ? h : "");
+    setenv("HOME", HOME_DIR, 1);
+}
+
+static void home_conf_down(void)
+{
+    if (g_saved_home[0]) setenv("HOME", g_saved_home, 1);
+    remove(HOME_CONF);
+    rmdir(HOME_DIR "/.config/imud");
+    rmdir(HOME_DIR "/.config");
+    rmdir(HOME_DIR);
+}
+
+static void test_cal_falls_back_to_home_config(void)
+{
+    begin("test_cal_falls_back_to_home_config");
+    int fb = g_fail;
+
+    home_conf_up("/tmp/imud_hwtools_cal_sysconf.conf");
+
+    char *av[] = { (char *)"imud-cal", (char *)"gyro", NULL };
+    cap_t c; cap_begin(&c, CAPFILE);
+    int rc = cal_main_entry(2, av);
+    cap_end(&c, g_out, sizeof g_out);
+
+    EXPECT(rc == 1, "the run still ends on the unresolvable driver");
+    EXPECT(strstr(g_out, "unknown IMU driver '" HOME_ONLY_IMU "'") != NULL,
+           "and it is the one the $HOME config named");
+    EXPECT(strstr(g_out, "cannot load config") == NULL,
+           "so the missing system config was not fatal");
+
+    home_conf_down();
+    end(fb);
+}
+
+static void test_imutest_falls_back_to_home_config(void)
+{
+    begin("test_imutest_falls_back_to_home_config");
+    int fb = g_fail;
+
+    home_conf_up("/tmp/imud_hwtools_imt_sysconf.conf");
+
+    char *av[] = { (char *)"imud-imutest", (char *)"--force",
+                   (char *)"--non-interactive", NULL };
+    cap_t c; cap_begin(&c, CAPFILE);
+    int rc = imutest_main_entry(3, av);
+    cap_end(&c, g_out, sizeof g_out);
+
+    EXPECT(rc == 1, "the run still ends on the unresolvable driver");
+    EXPECT(strstr(g_out, "unknown IMU driver '" HOME_ONLY_IMU "'") != NULL,
+           "and it is the one the $HOME config named");
+
+    home_conf_down();
+    end(fb);
+}
+
 /* ── imud-cal: the offline analysis modes ────────────────────────────────── */
 
 static void test_cal_characterize(void)
@@ -1779,6 +1878,7 @@ int main(void)
     test_cal_version_and_help();
     test_cal_bad_argv();
     test_cal_missing_config();
+    test_cal_falls_back_to_home_config();
     test_cal_characterize();
     test_cal_fit_temp();
     test_cal_fit_temp_flat();
@@ -1796,6 +1896,7 @@ int main(void)
 
     test_imutest_version_and_bad_option();
     test_imutest_missing_config();
+    test_imutest_falls_back_to_home_config();
     test_imutest_daemon_guard();
     test_imutest_degauss_unsupported();
     test_imutest_degauss_bus_open_failure();

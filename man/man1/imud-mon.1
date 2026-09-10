@@ -70,6 +70,16 @@ Monitor binary stream    (UDP port 10111)
 .IP
 With no stream arguments both streams are shown.
 Port numbers and multicast addresses are read from the config file.
+.SH FILES
+.TP
+.I /etc/imud/imud.conf
+Default configuration file.
+Only the port and address keys are read \(em
+.B imud-mon
+has no configuration of its own.
+.TP
+.I ~/.config/imud/imud.conf
+Per-user configuration override, read when the system file is absent.
 .SH EXAMPLES
 Monitor both streams:
 .PP

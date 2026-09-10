@@ -370,6 +370,90 @@ static void test_mon_selects_one_stream(void)
     end(fb);
 }
 
+/*
+ * No --config at all: the tool searches the system config and then
+ * $HOME/.config/imud/imud.conf.  Before this, imud-mon stopped at the system
+ * path, so a host with no /etc/imud — an unprivileged prefix install, a build
+ * tree, a container — could only be served by passing --config every time.
+ *
+ * The system path here is the one the Makefile compiles into this copy of
+ * mon_main.c, and nothing creates it: /etc/imud/imud.conf exists on any
+ * machine where `make install` has been run, so the real one would satisfy
+ * the search and the fallback would never be reached.
+ */
+#define MON_SYS_CONF  "/tmp/imud_e2e_mon_sysconf.conf"
+#define MON_HOME      "/tmp/imud_e2e_mon_home"
+#define MON_HOME_CONF MON_HOME "/.config/imud/imud.conf"
+
+typedef struct { int rc; pthread_t tid; } mon_bare_t;
+
+static void *mon_bare_thread(void *arg)
+{
+    mon_bare_t *m = (mon_bare_t *)arg;
+    char *argv[] = { (char *)"imud-mon", NULL };
+    m->rc = mon_main_entry(1, argv);
+    return NULL;
+}
+
+static void test_mon_falls_back_to_home_config(void)
+{
+    begin("test_mon_falls_back_to_home_config");
+    int fb = g_fail;
+
+    unlink(MON_SYS_CONF);
+    mkdir(MON_HOME, 0700);
+    mkdir(MON_HOME "/.config", 0700);
+    mkdir(MON_HOME "/.config/imud", 0700);
+
+    int nmea_port = free_udp_port();
+    int bin_port  = free_udp_port();
+    EXPECT(nmea_port > 0 && bin_port > 0, "found two free UDP ports");
+
+    FILE *f = fopen(MON_HOME_CONF, "w");
+    fprintf(f,
+            "[nmea]\nenabled = true\ndest_addr = \"127.0.0.1\"\ndest_port = %d\n"
+            "[highrate]\nenabled = true\ndest_addr = \"127.0.0.1\"\ndest_port = %d\n"
+            "[logging]\nlevel = \"error\"\n",
+            nmea_port, bin_port);
+    fclose(f);
+
+    char *saved = getenv("HOME");
+    char home_copy[512] = "";
+    if (saved) snprintf(home_copy, sizeof home_copy, "%s", saved);
+    setenv("HOME", MON_HOME, 1);
+
+    cap_t cap;
+    cap_begin(&cap, "/tmp/imud_e2e_mon_home.out");
+
+    mon_bare_t m = { .rc = -999 };
+    pthread_create(&m.tid, NULL, mon_bare_thread, &m);
+
+    struct timespec settle = { 0, 400 * 1000 * 1000 };
+    nanosleep(&settle, NULL);
+    pthread_kill(m.tid, SIGTERM);
+    pthread_join(m.tid, NULL);
+
+    char out[16384];
+    cap_end(&cap, out, sizeof out);
+
+    if (home_copy[0]) setenv("HOME", home_copy, 1);
+
+    /* The banner names the ports it bound, and these two came from nowhere
+     * but the $HOME file — the defaults are 10110/10111. */
+    char want_n[64], want_b[64];
+    snprintf(want_n, sizeof want_n, "NMEA:%d",   nmea_port);
+    snprintf(want_b, sizeof want_b, "Binary:%d", bin_port);
+    EXPECT(m.rc == 0, "mon exits 0 on SIGTERM");
+    EXPECT(strstr(out, want_n) != NULL, "bound the NMEA port from the $HOME config");
+    EXPECT(strstr(out, want_b) != NULL, "bound the binary port from it too");
+
+    unlink(MON_HOME_CONF);
+    rmdir(MON_HOME "/.config/imud");
+    rmdir(MON_HOME "/.config");
+    rmdir(MON_HOME);
+    end(fb);
+}
+
 int main(void)
 {
     test_status_prints_the_report();
@@ -377,6 +461,7 @@ int main(void)
     test_status_path_too_long();
     test_mon_renders_both_streams();
     test_mon_selects_one_stream();
+    test_mon_falls_back_to_home_config();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

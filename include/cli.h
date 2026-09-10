@@ -42,10 +42,10 @@ typedef struct {
     char config_path[256];
     /* True only when --config was actually given.  config_path is pre-filled
      * with the system default either way, so the flag is the only way to tell
-     * "the operator named this file" from "nobody said" — and imud treats the
-     * two differently: an explicit --config disables the $HOME fallback, so a
-     * mistyped path cannot silently start the daemon on someone else's
-     * config. */
+     * "the operator named this file" from "nobody said" — and every front-end
+     * treats the two differently: an explicit --config disables the $HOME
+     * fallback, so a mistyped path cannot silently start on someone else's
+     * config.  config_load_resolved() is where that rule lives. */
     bool config_explicit;
     char replay_path[256];
     int  skip_bias_cal;
@@ -59,6 +59,7 @@ int cli_parse_imud(int argc, char **argv, cli_imud_t *a);
 
 typedef struct {
     char        config_path[256];
+    bool        config_explicit;  /* --config given; see cli_imud_t */
     const char *output_path;   /* NULL unless --output; points into argv */
     const char *from_path;     /* NULL unless --from */
     const char *mode;          /* never NULL on a 0 return */
@@ -77,6 +78,7 @@ int cli_parse_cal(int argc, char **argv, cli_cal_t *a);
 
 typedef struct {
     char config_path[256];
+    bool config_explicit;      /* --config given; see cli_imud_t */
     bool want_nmea;
     bool want_binary;
 } cli_mon_t;
@@ -105,7 +107,10 @@ int cli_parse_status(int argc, char **argv, cli_status_t *a);
 typedef struct {
     char config_path[256];
     char report_path[512];
-    bool have_config_arg;      /* --config given: makes a load failure fatal */
+    /* --config given.  cli_imud_t's config_explicit under an older name: it
+     * disables the $HOME fallback, and here it also makes a load failure
+     * fatal. */
+    bool have_config_arg;
     bool force, quiet, non_interactive;
     unsigned phases;           /* IMT_PHASE_*; never 0 on a 0 return */
 

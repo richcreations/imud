@@ -306,6 +306,17 @@ static void test_cal(void)
         cap_begin(); rc = cli_parse_cal(argc_of(v), v, &a); cap_end();
         EXPECT(rc == 0 && strcmp(a.config_path, "/tmp/y.conf") == 0,
                "--config after the mode");
+        EXPECT(a.config_explicit, "--config marks the path explicit");
+    }
+
+    /* config_path is pre-filled with the system default either way, so the
+     * flag is the only thing that distinguishes "the operator named this
+     * file" from "nobody said" — and only the latter gets the $HOME search. */
+    {   char *v[] = { "imud-cal", "gyro", NULL };
+        cap_begin(); rc = cli_parse_cal(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && strcmp(a.config_path, IMUD_SYS_CONF) == 0,
+               "default config");
+        EXPECT(!a.config_explicit, "the pre-filled default is not 'explicit'");
     }
 
     /* Only one positional is allowed; the second falls through to unknown. */
@@ -334,6 +345,8 @@ static void test_mon(void)
                "no stream args → both streams");
         EXPECT(strcmp(a.config_path, IMUD_SYS_CONF) == 0,
                "default config");
+        /* Only an unnamed path gets the $HOME search; see cli_imud_t. */
+        EXPECT(!a.config_explicit, "the pre-filled default is not 'explicit'");
     }
 
     {   char *v[] = { "imud-mon", "nmea", NULL };
@@ -357,6 +370,7 @@ static void test_mon(void)
         EXPECT(rc == 0 && a.want_nmea && a.want_binary &&
                strcmp(a.config_path, "/tmp/m.conf") == 0,
                "--config does not count as a stream");
+        EXPECT(a.config_explicit, "--config marks the path explicit");
     }
 
     {   char *v[] = { "imud-mon", "--help", NULL };

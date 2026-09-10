@@ -642,6 +642,13 @@ warning --- not a quiet fall back to @code{~/.config/imud/imud.conf},
 which would let a typo start the daemon on a different configuration.
 Without @code{--config}, neither file existing is fine.
 
+@code{imud-cal}, @code{imud-mon} and @code{imud-imutest} run the same
+search, so a host with no @code{/etc/imud} --- an unprivileged install
+under a prefix of its own, a build tree, a container --- is configured
+once in @code{~/.config/imud/imud.conf} and serves all four.
+@code{imud-status} reads no config file; point it at a non-default
+socket with @code{--socket}.
+
 @strong{Reload behaviour:}
 
 @itemize

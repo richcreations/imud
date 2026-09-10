@@ -33,7 +33,16 @@
 #include "config.h"
 #include "fileio.h"
 #include "imutest.h"
+#include "paths.h"
 #include "version.h"
+
+/* The system config the search starts from, overridable at compile time so
+ * test_hwtools_e2e can aim it at a path it can rely on being absent —
+ * /etc/imud/imud.conf exists on any machine where `make install` has been
+ * run, this bench included. */
+#ifndef SYS_CONF
+# define SYS_CONF  IMUD_SYS_CONF
+#endif
 
 /* ── Terminal implementation of imt_ui_t ──────────────────────────────────── */
 
@@ -157,8 +166,10 @@ int main(int argc, char **argv)
     if (cli_rc != 0) return cli_rc < 0 ? 1 : 0;   /* -1 bad usage, 1 --version/--help */
 
     /* Names the rest of main() already used; args owns the storage.  Only
-     * report_path and phases are written below, so those two stay writable. */
-    const char *config_path     = args.config_path;
+     * report_path and phases are written below, so those two stay writable.
+     * config_path is filled in by the search below — the file actually read,
+     * which is what the report has to name. */
+    char        config_path[sizeof args.config_path];
     char       *report_path     = args.report_path;
     const bool  have_config_arg = args.have_config_arg;
     const bool  force = args.force, quiet = args.quiet;
@@ -182,7 +193,10 @@ int main(int argc, char **argv)
     /* ── Config ──────────────────────────────────────────────────────────── */
     imud_config_t cfg;
     config_defaults(&cfg);
-    if (config_load(config_path, &cfg) < 0 && have_config_arg) {
+    if (config_load_resolved(SYS_CONF,
+                             have_config_arg ? args.config_path : NULL,
+                             &cfg, config_path, sizeof config_path) < 0
+            && have_config_arg) {
         fprintf(stderr, "imud-imutest: cannot read %s: %s\n",
                 config_path, strerror(errno));
         return 1;

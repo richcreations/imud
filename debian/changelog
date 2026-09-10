@@ -23,6 +23,11 @@ imud (1.10.1-1) unstable; urgency=medium
     package manager that defines the service itself: it installs no unit
     and creates no state directory. A build at PREFIX=/usr is unchanged,
     so the .deb is byte-identical.
+  * imud-cal, imud-mon and imud-imutest fall back to
+    ~/.config/imud/imud.conf when there is no system config, the search
+    imud already ran. A host with no /etc/imud is configured once and
+    serves all four.  An explicit --config still replaces the search
+    rather than heading it, for all four.
   * imud-imutest reported the mpu9250/mpu9255 pair as not holding its
     configuration through a run. A driver's probe() now leaves an already-
     configured part alone, which is what the tool's repeated probes had

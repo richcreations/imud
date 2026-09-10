@@ -345,6 +345,34 @@ bool config_spi_mag_clock_risk(const imud_config_t *cfg);
 int  config_load(const char *path, imud_config_t *cfg);
 
 /*
+ * config_load_resolved: load the config a front-end runs on, doing the search
+ * for it.  The four that take a config file — imud, imud-cal, imud-mon,
+ * imud-imutest — all come through here, so none of them can disagree about
+ * which file that is.
+ *
+ * explicit_path is --config, or NULL when the operator named nothing.  A named
+ * file is loaded outright; otherwise sys_path is tried and, only if it does
+ * not exist, $HOME/.config/imud/imud.conf.  "Or else", not "then": --config
+ * replaces the search rather than heading it, so a mistyped path cannot
+ * silently start on someone else's settings, and a system config that parses
+ * badly is reported rather than papered over by a user file.
+ *
+ * loaded[] receives the path actually settled on, which is not always the one
+ * asked for: it is the file an error message must name, and the file SIGHUP
+ * must re-read.  Neither existing leaves it naming sys_path, so an operator
+ * who creates that file later gets it on the next reload.
+ *
+ * Returns the config_load() code of the file it settled on.
+ *
+ * sys_path is a parameter rather than IMUD_SYS_CONF so a caller can pass a
+ * compile-time override — which is how the end-to-end suites aim the search at
+ * a path they can rely on being absent, /etc/imud/imud.conf being present on
+ * any machine where `make install` has been run.
+ */
+int  config_load_resolved(const char *sys_path, const char *explicit_path,
+                          imud_config_t *cfg, char *loaded, size_t loaded_sz);
+
+/*
  * config_defaults: fill cfg with the values from the spec (§9).
  * Call before config_load so unset keys get the right fallback.
  */
