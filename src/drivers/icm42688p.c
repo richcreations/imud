@@ -10,10 +10,13 @@
  * FIFO mode using 16-byte Packet 3 format (accel + gyro + temp + timestamp).
  * Hardware timestamp via Bank 1 TMSTVAL registers (20-bit, 1 µs/tick).
  *
- * Chip axis convention (SparkFun DEV-21301, Adafruit 4754): X=bow, Y=port, Z=up.
- * Remap to NED board frame: Y flipped (port→starboard), Z flipped (up→down).
- * Physical orientation varies by breakout PCB; use [mount] rotation_euler_deg
- * to correct for your installation if needed.
+ * Chip axis convention, from the datasheet's §10.1 figure: X and Y in the
+ * package plane, Z out of the top face.  Remap to the NED board frame for a
+ * part lying top-face-up with X forward: Y flipped (left→starboard), Z
+ * flipped (up→down).  No breakout is named because the part has no reference
+ * board — nothing from Adafruit or SparkFun carries it, and what people buy
+ * is an unbranded module.  Physical orientation varies by PCB; use [mount]
+ * rotation_euler_deg to correct for your installation.
  *
  * Register references: ICM-42688-P datasheet DS-000347 Rev 1.2, except where a
  * comment cites Rev 1.6 — the SPI characteristics and the ODR tables were
