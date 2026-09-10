@@ -49,6 +49,12 @@ host with no bus on a header."""
   text     = "imud installs under a prefix that is not /usr."
 
   [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-utils"]
+  text     = "Capture files carry a CRC32 on every record, so a corrupt .imucap is refused instead of replayed as data."
+  impact   = "Captures are about 8% larger, and older ones still read."
+
+  [[release.change]]
   kind     = "behaviour"
   packages = ["imud", "imud-utils"]
   text     = "imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf when there is no system config."

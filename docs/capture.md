@@ -34,9 +34,9 @@ by `imud-status` in the `Capture:` line) — never sensor latency. A crashed or
 power-cut daemon leaves a valid file with a truncated tail that readers treat
 as clean EOF.
 
-Sizing: one IMU record is 48 bytes on disk. At 104 Hz with a 100 Hz
-magnetometer that is ~25 MB/hour; the default 8 × 256 MB ring holds several
-days of continuous recording.
+Sizing: one IMU record is 52 bytes on disk. At 104 Hz with a 100 Hz
+magnetometer that is ~32 MB/hour; the default 8 × 256 MB ring holds about
+two and a half days of continuous recording.
 
 ## Replay
 
@@ -186,7 +186,9 @@ so a capture written on a big-endian machine reads identically anywhere.
 | imu_driver, mag_driver | char[16] ×2 | driver names |
 | imud_version | char[16] | writer's release |
 | t0_wall_ns, t0_mono_ns | u64 ×2 | CLOCK_REALTIME / CLOCK_MONOTONIC at start |
-| reserved | u8[24] | zeroed |
+| imu_odr_mhz | u32 | exact IMU rate in milli-Hz; 0 on a file written before it existed |
+| file_flags | u16 | bit 0: every record carries a CRC32 |
+| reserved | u8[18] | zeroed |
 
 **Records** — frame `{u8 type, u8 flags, u16 len, u64 mono_ns}` + payload:
 
@@ -196,7 +198,15 @@ so a capture written on a big-endian machine reads identically anywhere.
 | 2 MAG | field[3] f32 (pre-mount/cal), wall_ns u64; `valid` = frame flag bit 0 | 20 |
 | 3 MARK | code u32 (annotations; reserved) | 4 |
 
+Frame flag bit 7 says the payload ends in a u32 CRC32 of the frame bytes and
+the payload before it, counted in `len`. A record that fails it is reported as
+corrupt and ends the read, so a damaged capture is refused rather than
+replayed as data — a flipped `type`, `len` or timestamp is caught with the
+samples. Header bit 0 is what catches a flip in the frame flag itself.
+
 Readers skip unknown record types via `len` and read-then-skip extended
-payloads, so the format grows append-only like the wire packet. A truncated
-trailing record is treated as clean EOF. The reader is fuzz-tested
-(`fuzz/fuzz_capture.c`) — captures are exactly the artifact users share.
+payloads, so the format grows append-only like the wire packet: a capture
+written before the CRC existed still reads, and a reader that predates it
+skips the trailer. A truncated trailing record is treated as clean EOF. The
+reader is fuzz-tested (`fuzz/fuzz_capture.c`) — captures are exactly the
+artifact users share.

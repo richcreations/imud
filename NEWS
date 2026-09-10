@@ -22,6 +22,9 @@ Added:
 * imud installs and runs as a service on macOS.
 * libimud installs as a shared library on macOS.
 * imud installs under a prefix that is not /usr.
+* Capture files carry a CRC32 on every record, so a corrupt .imucap is refused
+  instead of replayed as data.
+  Captures are about 8% larger, and older ones still read.
 
 Changed:
 

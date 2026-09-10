@@ -13,6 +13,8 @@
  *   - bad magic / unsupported version / short file are rejected cleanly
  *   - a truncated trailing record reads as clean EOF (black-box crash case)
  *   - unknown record types and extended payloads are skipped (forward compat)
+ *   - a flipped byte anywhere in a record is caught by its CRC, and a file
+ *     written before CRCs existed still reads
  *   - rewind replays the stream from the first record
  *   - tap ring: FIFO order, batch pop, drop-newest on overflow with counter
  *   - rotator: size-based rotation, oldest-file pruning, name ordering
@@ -78,6 +80,54 @@ static imu_sample_t mk_imu(float base, uint32_t seq)
     return s;
 }
 
+/*
+ * IEEE 802.3 CRC32, kept here rather than taken from include/crc32.h for the
+ * same reason test_packet.c keeps its own: sharing the implementation would
+ * have these tests check the writer against itself.
+ */
+static uint32_t local_crc32(const void *data, size_t len)
+{
+    const unsigned char *p = data;
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+/*
+ * Append a hand-built record whose payload is `a` then `b`, followed by the
+ * CRC32 of the frame and both parts.  fr->len must already count the 4.
+ */
+static void append_crc_rec(FILE *f, const cap_frame_t *fr,
+                           const void *a, size_t alen,
+                           const void *b, size_t blen)
+{
+    unsigned char buf[256];
+    size_t n = 0;
+    memcpy(buf + n, fr, sizeof(*fr));  n += sizeof(*fr);
+    if (alen) { memcpy(buf + n, a, alen); n += alen; }
+    if (blen) { memcpy(buf + n, b, blen); n += blen; }
+    uint32_t crc = local_crc32(buf, n);
+    for (int i = 0; i < 4; i++) buf[n++] = (unsigned char)(crc >> (8 * i));
+    fwrite(buf, n, 1, f);
+}
+
+/* Flip the `mask` bits of the byte at `off`, in place. */
+static bool flip_byte(const char *path, long off, unsigned char mask)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    unsigned char c;
+    bool ok = fseek(f, off, SEEK_SET) == 0 && fread(&c, 1, 1, f) == 1;
+    c ^= mask;
+    ok = ok && fseek(f, off, SEEK_SET) == 0 && fwrite(&c, 1, 1, f) == 1;
+    fclose(f);
+    return ok;
+}
+
 static mag_sample_t mk_mag(float base, bool valid)
 {
     mag_sample_t m;
@@ -124,13 +174,13 @@ static void test_wire_is_little_endian(void)
     EXPECT(cap_writer_imu(&w, &s, 0x0807060504030201ull) == 0, "imu record written");
     cap_writer_close(&w);
 
-    unsigned char b[104 + 12 + 36];
+    unsigned char b[104 + 12 + 36 + 4];
     FILE *f = fopen(path, "rb");
     EXPECT(f != NULL, "capture file opened for byte inspection");
     if (!f) { end(fb); return; }
     size_t n = fread(b, 1, sizeof b, f);
     fclose(f);
-    EXPECT(n == sizeof b, "header + one frame + one payload on disk");
+    EXPECT(n == sizeof b, "header + one frame + one payload + CRC on disk");
     if (n != sizeof b) { end(fb); return; }
 
     EXPECT(memcmp(b, "IMUCAP1", 7) == 0, "magic is the literal 8 bytes");
@@ -140,10 +190,13 @@ static void test_wire_is_little_endian(void)
     EXPECT(memcmp(b + 64, t0_le, 8) == 0, "t0_wall_ns is LSB-first at offset 64");
     EXPECT(b[80] == 0x40 && b[81] == 0x96 && b[82] == 0x01 && b[83] == 0x00,
            "imu_odr_mhz 104000 LSB-first at offset 80");
+    EXPECT(b[84] == CAP_HF_CRC32 && b[85] == 0,
+           "file_flags LSB-first at offset 84");
 
     /* Frame at 104: type, flags, len (LE u16), mono_ns (LE u64). */
     EXPECT(b[104] == CAP_REC_IMU,          "frame type");
-    EXPECT(b[106] == 36 && b[107] == 0,    "frame len LSB-first");
+    EXPECT(b[105] == CAP_F_CRC32,          "frame carries a CRC");
+    EXPECT(b[106] == 40 && b[107] == 0,    "frame len counts the CRC, LSB-first");
     const unsigned char mono_le[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
     EXPECT(memcmp(b + 108, mono_le, 8) == 0, "frame mono_ns LSB-first");
 
@@ -152,6 +205,17 @@ static void test_wire_is_little_endian(void)
     EXPECT(memcmp(b + 116, one_le, 4) == 0, "float 1.0f emits 00 00 80 3F");
     const unsigned char seq_le[4] = { 0xEF, 0xBE, 0xAD, 0xDE };
     EXPECT(memcmp(b + 116 + 32, seq_le, 4) == 0, "uint32 seq LSB-first");
+
+    /* CRC trailer at 152, over the 12 frame bytes and the 36 payload bytes.
+     * Computed by this file's own implementation, so the assertion checks the
+     * written bytes rather than the writer against itself. */
+    uint32_t want_crc = local_crc32(b + 104, 48);
+    const unsigned char crc_le[4] = {
+        (unsigned char)(want_crc), (unsigned char)(want_crc >> 8),
+        (unsigned char)(want_crc >> 16), (unsigned char)(want_crc >> 24)
+    };
+    EXPECT(memcmp(b + 152, crc_le, 4) == 0,
+           "CRC32 trailer LSB-first over frame + payload");
 
     /* And the reader gets the same values back off those bytes. */
     cap_reader_t r;
@@ -368,6 +432,108 @@ static void test_truncated_tail(void)
     end(fb);
 }
 
+/*
+ * A capture with a flipped byte must be refused, not replayed as data — the
+ * whole point of the CRC.  Three flips, one per thing that can go wrong:
+ * inside the payload, inside the frame, and on the flag bit that says a CRC
+ * is there at all.
+ */
+static void test_crc_detects_corruption(void)
+{
+    begin("test_crc_detects_corruption");
+    int fb = g_fail;
+
+    /* Record 1 at 104, record 2 at 104 + 52. */
+    const long rec2   = 104 + 52;
+    const long payld2 = rec2 + 12 + 20;   /* mid-payload of record 2 */
+
+    struct { const char *name; long off; unsigned char mask;
+             const char *what; } cases[] = {
+        { "crc_payload.imucap", payld2,   0x01,
+          "a flipped payload byte is caught" },
+        { "crc_frame.imucap",   rec2 + 8, 0x01,
+          "a flipped frame mono_ns is caught" },
+        /* Clearing CAP_F_CRC32 removes the trailer the reader would check,
+         * so only the header's promise catches this one. */
+        { "crc_flag.imucap",    rec2 + 1, CAP_F_CRC32,
+          "a cleared CRC flag is caught by the header flag" },
+    };
+
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        const char *path = path_in_dir(cases[c].name);
+
+        cap_writer_t w;
+        EXPECT(cap_writer_open(&w, path, 100, 100000, "sim", "sim",
+                               "1.11", 0, 0) == 0, "writer opened");
+        imu_sample_t s = mk_imu(1.0f, 1);
+        for (int i = 0; i < 3; i++) {
+            s.seq = (uint32_t)i;
+            cap_writer_imu(&w, &s, (uint64_t)(100 + i));
+        }
+        cap_writer_close(&w);
+
+        EXPECT(flip_byte(path, cases[c].off, cases[c].mask), "byte flipped");
+
+        cap_reader_t r;
+        cap_record_t rec;
+        EXPECT(cap_reader_open(&r, path) == 0, "corrupt file still opens");
+        EXPECT(cap_reader_next(&r, &rec) == 1, "record before the flip reads");
+        EXPECT(cap_reader_next(&r, &rec) == CAP_ERR_CRC, cases[c].what);
+        cap_reader_close(&r);
+        unlink(path);
+    }
+
+    end(fb);
+}
+
+/*
+ * A capture written before CRCs existed — header flag clear, records without
+ * the frame bit — still reads.  Every .imucap already on disk is one of
+ * these, so this is the compatibility the format promised.
+ */
+static void test_legacy_no_crc_reads(void)
+{
+    begin("test_legacy_no_crc_reads");
+    int fb = g_fail;
+    const char *path = path_in_dir("legacy.imucap");
+
+    /* Hand-build the header: a pre-CRC writer's bytes, file_flags zero. */
+    unsigned char hdr[104];
+    memset(hdr, 0, sizeof hdr);
+    memcpy(hdr, "IMUCAP1", 7);
+    hdr[8]  = 1;   /* version 1 */
+    hdr[10] = 104; /* hdr_len   */
+    hdr[12] = 100; /* imu_odr_hz */
+
+    FILE *f = fopen(path, "wb");
+    EXPECT(f != NULL, "legacy file created");
+    if (!f) { end(fb); return; }
+    fwrite(hdr, sizeof hdr, 1, f);
+
+    /* Frame {type, flags, len, mono_ns} + a 36-byte IMU payload, no CRC. */
+    unsigned char frame[12] = { CAP_REC_IMU, 0, 36, 0, 7, 0, 0, 0, 0, 0, 0, 0 };
+    unsigned char payload[36];
+    memset(payload, 0, sizeof payload);
+    payload[3]  = 0x3F; payload[2] = 0x80;   /* accel[0] = 1.0f, LE */
+    payload[32] = 0x2A;                      /* seq = 42 */
+    fwrite(frame, sizeof frame, 1, f);
+    fwrite(payload, sizeof payload, 1, f);
+    fclose(f);
+
+    cap_reader_t r;
+    cap_record_t rec;
+    EXPECT(cap_reader_open(&r, path) == 0, "legacy header accepted");
+    EXPECT(r.hdr.file_flags == 0, "file_flags reads 0 on an old file");
+    EXPECT(cap_reader_next(&r, &rec) == 1, "flagless record read");
+    EXPECT(rec.imu.accel[0] == 1.0f && rec.imu.seq == 42u &&
+           rec.mono_ns == 7u, "legacy record decoded");
+    EXPECT(cap_reader_next(&r, &rec) == 0, "clean EOF");
+    cap_reader_close(&r);
+    unlink(path);
+
+    end(fb);
+}
+
 static void test_forward_compat(void)
 {
     begin("test_forward_compat");
@@ -379,20 +545,19 @@ static void test_forward_compat(void)
     cap_writer_open(&w, path, 100, 100000, "sim", "sim", "1.5", 0, 0);
     cap_writer_close(&w);   /* header only; append frames manually */
 
+    /* Both records carry a CRC, as a writer of this file's vintage emits. */
     FILE *f = fopen(path, "ab");
-    cap_frame_t fr = { .type = 99, .flags = 0, .len = 16, .mono_ns = 50 };
     uint8_t junk[16] = {0xAB};
-    fwrite(&fr, sizeof(fr), 1, f);
-    fwrite(junk, sizeof(junk), 1, f);
+    cap_frame_t fr = { .type = 99, .flags = CAP_F_CRC32,
+                       .len = sizeof(junk) + 4, .mono_ns = 50 };
+    append_crc_rec(f, &fr, junk, sizeof(junk), NULL, 0);
 
     cap_imu_rec_t rec = { .accel = {1, 2, 3}, .gyro = {4, 5, 6},
                           .temp_c = 25.0f, .chip_ts = 400, .seq = 9 };
     uint8_t extra[8] = {0xCD};            /* future appended fields */
-    fr = (cap_frame_t){ .type = CAP_REC_IMU, .flags = 0,
-                        .len = sizeof(rec) + sizeof(extra), .mono_ns = 60 };
-    fwrite(&fr, sizeof(fr), 1, f);
-    fwrite(&rec, sizeof(rec), 1, f);
-    fwrite(extra, sizeof(extra), 1, f);
+    fr = (cap_frame_t){ .type = CAP_REC_IMU, .flags = CAP_F_CRC32,
+                        .len = sizeof(rec) + sizeof(extra) + 4, .mono_ns = 60 };
+    append_crc_rec(f, &fr, &rec, sizeof(rec), extra, sizeof(extra));
     fclose(f);
 
     cap_reader_t r;
@@ -481,8 +646,8 @@ static void test_rotator(void)
            "rotator open");
     EXPECT(cap_rot_path(&rt)[0] != '\0', "current path set");
 
-    /* one imu record = 12 + 36 = 48 bytes → ~22k records per MB;
-     * 70k records ≈ 3.4 MB → several rotations */
+    /* one imu record = 12 + 36 + 4 = 52 bytes → ~20k records per MB;
+     * 70k records ≈ 3.6 MB → several rotations */
     cap_ring_rec_t rec;
     memset(&rec, 0, sizeof(rec));
     rec.type = CAP_REC_IMU;
@@ -841,6 +1006,8 @@ int main(void)
     test_path_writable();
     test_open_rejects();
     test_truncated_tail();
+    test_crc_detects_corruption();
+    test_legacy_no_crc_reads();
     test_forward_compat();
     test_ring();
     test_rotator();

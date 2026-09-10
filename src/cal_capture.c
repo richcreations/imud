@@ -48,11 +48,19 @@ long cal_capture_load(const char *path, double settle_sec, size_t max_samples,
     cap_record_t rec;
     uint64_t first_mono = 0, last_mono = 0;
     size_t   count = 0;
-    while (cap_reader_next(&r, &rec) == 1) {
+    int      nrc;
+    while ((nrc = cap_reader_next(&r, &rec)) == 1) {
         if (rec.type != CAP_REC_IMU) continue;
         if (count == 0) first_mono = rec.mono_ns;
         last_mono = rec.mono_ns;
         count++;
+    }
+    /* Analysing the records before a corrupt one would report Allan numbers
+     * for an unknown fraction of the run, which is the failure this refuses. */
+    if (nrc == CAP_ERR_CRC) {
+        cap_reader_close(&r);
+        *cap_rc = nrc;
+        return -1;
     }
     st->count = count;
     if (count < 16 || last_mono <= first_mono) {

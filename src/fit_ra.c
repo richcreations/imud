@@ -127,7 +127,8 @@ static int replay(const char *path, const imud_config_t *cfg_in,
     double   t0 = -1.0, t_now = 0.0, t_meas0 = -1.0;
     double   sum_dt = 0.0; uint64_t n_dt = 0;
 
-    while (cap_reader_next(&r, &rec) == 1) {
+    int nrc;
+    while ((nrc = cap_reader_next(&r, &rec)) == 1) {
         double t = (double)rec.mono_ns * 1e-9;
         if (t0 < 0.0) t0 = t;
         t_now = t - t0;
@@ -196,6 +197,13 @@ static int replay(const char *path, const imud_config_t *cfg_in,
         }
     }
     cap_reader_close(&r);
+
+    if (nrc == CAP_ERR_CRC) {
+        snprintf(errbuf, errbufsz,
+                 "%s is corrupt — a record failed its checksum, so the "
+                 "innovation statistics below it would be meaningless", path);
+        return -1;
+    }
 
     a->dt_mean = n_dt ? sum_dt / (double)n_dt : 1.0 / odr;
     *dur_out = (t_meas0 >= 0.0) ? (t_now - t_meas0) : 0.0;

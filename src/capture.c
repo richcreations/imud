@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "capture.h"
+#include "crc32.h"
 #include "fileio.h"
 #include "wire.h"
 
@@ -44,7 +45,8 @@ static void hdr_encode(uint8_t b[104], const cap_header_t *h)
     wire_put_u64(b + 64, h->t0_wall_ns);
     wire_put_u64(b + 72, h->t0_mono_ns);
     wire_put_u32(b + 80, h->imu_odr_mhz);
-    /* b[84..103] stays the zeroed `reserved` tail. */
+    wire_put_u16(b + 84, h->file_flags);
+    /* b[86..103] stays the zeroed `reserved` tail. */
 }
 
 static void hdr_decode(cap_header_t *h, const uint8_t b[104])
@@ -60,6 +62,7 @@ static void hdr_decode(cap_header_t *h, const uint8_t b[104])
     h->t0_wall_ns   = wire_get_u64(b + 64);
     h->t0_mono_ns   = wire_get_u64(b + 72);
     h->imu_odr_mhz  = wire_get_u32(b + 80);
+    h->file_flags   = wire_get_u16(b + 84);
 }
 
 static void frame_encode(uint8_t b[12], const cap_frame_t *f)
@@ -132,6 +135,7 @@ int cap_writer_open(cap_writer_t *w, const char *path,
     hdr.hdr_len    = (uint16_t)sizeof(cap_header_t);
     hdr.imu_odr_hz  = imu_odr_hz;
     hdr.imu_odr_mhz = imu_odr_mhz;
+    hdr.file_flags  = CAP_HF_CRC32;
     snprintf(hdr.imu_driver,   sizeof(hdr.imu_driver),   "%s", imu_driver   ? imu_driver   : "");
     snprintf(hdr.mag_driver,   sizeof(hdr.mag_driver),   "%s", mag_driver   ? mag_driver   : "");
     snprintf(hdr.imud_version, sizeof(hdr.imud_version), "%s", imud_version ? imud_version : "");
@@ -149,19 +153,30 @@ int cap_writer_open(cap_writer_t *w, const char *path,
     return 0;
 }
 
-/* payload is already in wire order. */
+/*
+ * payload is already in wire order.  A u32 CRC32 of the frame plus the
+ * payload is appended and counted in the frame's len, so a reader that
+ * predates it reads the struct it knows and skips the trailer.
+ */
 static int cap_write_rec(cap_writer_t *w, uint8_t type, uint8_t flags,
                          const uint8_t *payload, uint16_t len, uint64_t mono_ns)
 {
     if (!w->f) return -1;
 
-    cap_frame_t fr = { .type = type, .flags = flags,
-                       .len = len, .mono_ns = mono_ns };
+    cap_frame_t fr = { .type = type, .flags = (uint8_t)(flags | CAP_F_CRC32),
+                       .len = (uint16_t)(len + 4), .mono_ns = mono_ns };
     uint8_t fb[sizeof(cap_frame_t)];
     frame_encode(fb, &fr);
+
+    uint32_t crc = crc32_ieee_update(CRC32_INIT, fb, sizeof(fb));
+    crc = crc32_ieee_update(crc, payload, len);
+    uint8_t tb[4];
+    wire_put_u32(tb, crc32_ieee_final(crc));
+
     if (fwrite(fb, sizeof(fb), 1, w->f) != 1)       return -1;
     if (len && fwrite(payload, len, 1, w->f) != 1)  return -1;
-    w->bytes += sizeof(fr) + len;
+    if (fwrite(tb, sizeof(tb), 1, w->f) != 1)       return -1;
+    w->bytes += sizeof(fr) + fr.len;
     return 0;
 }
 
@@ -263,6 +278,68 @@ static int read_payload(FILE *f, void *dst, size_t dst_sz, uint16_t len)
     return 1;
 }
 
+/*
+ * As read_payload, but the last 4 payload bytes are a CRC32 of the frame and
+ * everything before them.  The body is streamed through a small scratch
+ * buffer rather than buffered whole, so an absurd len out of a damaged file
+ * costs nothing.  Returns 1 ok, 0 truncated, -1 read error, -2 CRC mismatch.
+ */
+static int read_payload_crc(FILE *f, void *dst, size_t dst_sz,
+                            uint16_t len, const uint8_t fb[12])
+{
+    uint32_t body = (uint32_t)len - 4u;         /* caller checked len >= 4 */
+    uint32_t crc  = crc32_ieee_update(CRC32_INIT, fb, 12);
+    uint8_t  scratch[128];
+    uint8_t *d    = dst;
+    size_t   got  = 0;
+
+    while (body) {
+        size_t chunk = body < sizeof scratch ? body : sizeof scratch;
+        if (fread(scratch, chunk, 1, f) != 1) return ferror(f) ? -1 : 0;
+        crc = crc32_ieee_update(crc, scratch, chunk);
+        if (got < dst_sz) {
+            size_t take = dst_sz - got < chunk ? dst_sz - got : chunk;
+            memcpy(d + got, scratch, take);
+            got += take;
+        }
+        body -= (uint32_t)chunk;
+    }
+
+    uint8_t tb[4];
+    if (fread(tb, sizeof(tb), 1, f) != 1) return ferror(f) ? -1 : 0;
+    return crc32_ieee_final(crc) == wire_get_u32(tb) ? 1 : -2;
+}
+
+/*
+ * Read one record's payload, CRC-checked when the frame says it carries one,
+ * into a dst that is zeroed by the caller.  dst_sz 0 reads past a payload
+ * whose contents are not wanted.  Returns 1 ok, 0 short or truncated (treat
+ * as EOF), -1 read error, -2 CRC mismatch.
+ */
+static int cap_read_payload(cap_reader_t *r, const uint8_t fb[12],
+                            const cap_frame_t *fr, void *dst, size_t dst_sz)
+{
+    bool   crc = (fr->flags & CAP_F_CRC32) != 0;
+    size_t min = dst_sz + (crc ? 4u : 0u);
+
+    /*
+     * A file that promises a CRC on every record and then hands over one
+     * without the bit has had that bit flipped: nothing else clears it.
+     */
+    if (!crc && (r->hdr.file_flags & CAP_HF_CRC32)) return -2;
+    if (fr->len < min) return 0;                    /* corrupt or short tail */
+
+    return crc ? read_payload_crc(r->f, dst, dst_sz, fr->len, fb)
+               : read_payload(r->f, dst, dst_sz, fr->len);
+}
+
+/* cap_read_payload's non-success codes as cap_reader_next() returns them. */
+static int rc_to_err(int rc)
+{
+    if (rc == -2) return CAP_ERR_CRC;
+    return rc < 0 ? CAP_ERR_IO : 0;
+}
+
 int cap_reader_next(cap_reader_t *r, cap_record_t *out)
 {
     if (!r->f) return CAP_ERR_IO;
@@ -283,9 +360,8 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
             cap_imu_rec_t rec;
             uint8_t       rb[sizeof(cap_imu_rec_t)];
             memset(rb, 0, sizeof(rb));
-            if (fr.len < sizeof(rb)) return 0;         /* corrupt tail */
-            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
-            if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
+            int rc = cap_read_payload(r, fb, &fr, rb, sizeof(rb));
+            if (rc <= 0) return rc_to_err(rc);
             imu_rec_decode(&rec, rb);
             out->imu.accel[0] = rec.accel[0];
             out->imu.accel[1] = rec.accel[1];
@@ -302,9 +378,8 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
             cap_mag_rec_t rec;
             uint8_t       rb[sizeof(cap_mag_rec_t)];
             memset(rb, 0, sizeof(rb));
-            if (fr.len < sizeof(rb)) return 0;
-            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
-            if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
+            int rc = cap_read_payload(r, fb, &fr, rb, sizeof(rb));
+            if (rc <= 0) return rc_to_err(rc);
             mag_rec_decode(&rec, rb);
             out->mag.field[0] = rec.field[0];
             out->mag.field[1] = rec.field[1];
@@ -319,17 +394,18 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
         case CAP_REC_MARK: {
             uint8_t rb[sizeof(cap_mark_rec_t)];
             memset(rb, 0, sizeof(rb));
-            if (fr.len < sizeof(rb)) return 0;
-            int rc = read_payload(r->f, rb, sizeof(rb), fr.len);
-            if (rc <= 0) return rc < 0 ? CAP_ERR_IO : 0;
+            int rc = cap_read_payload(r, fb, &fr, rb, sizeof(rb));
+            if (rc <= 0) return rc_to_err(rc);
             out->mark = wire_get_u32(rb);
             return 1;
         }
-        default:
-            /* Unknown record type from a newer writer: skip and continue. */
-            if (fr.len && fseek(r->f, (long)fr.len, SEEK_CUR) != 0)
-                return ferror(r->f) ? CAP_ERR_IO : 0;
+        default: {
+            /* Unknown record type from a newer writer: check its CRC, since
+             * a bad one still means the file is damaged, then skip it. */
+            int rc = cap_read_payload(r, fb, &fr, NULL, 0);
+            if (rc <= 0) return rc_to_err(rc);
             break;
+        }
         }
     }
 }

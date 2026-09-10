@@ -406,6 +406,10 @@ static int pb_fetch(pb_stream_t *st, uint8_t type)
             return 1;
         }
         if (rc != 0) {            /* read error */
+            LOG_E("[sim] playback stopped: %s (%s)\n", pb.file,
+                  rc == CAP_ERR_CRC ? "capture is corrupt — a record failed "
+                                      "its checksum"
+                                    : "I/O error");
             st->done   = true;
             st->failed = true;
             return -1;

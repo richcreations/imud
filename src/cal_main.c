@@ -715,6 +715,11 @@ static long load_capture(const char *path, double settle_sec, double *fs_out,
     long n = cal_capture_load(path, settle_sec, 0, gyro, accel, temp,
                               &cs, &cap_rc);
 
+    if (n < 0 && cap_rc == CAP_ERR_CRC) {
+        fprintf(stderr, "cal: %s is corrupt — a record failed its checksum, "
+                        "so the data cannot be trusted\n", path);
+        return -1;
+    }
     if (n < 0 && cap_rc != 0) {
         fprintf(stderr, "cal: cannot open %s (%s)\n", path,
                 cap_rc == CAP_ERR_FORMAT ? "not an .imucap / wrong version"

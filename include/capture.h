@@ -21,7 +21,9 @@
  *   repeated records:
  *     cap_frame_t                 12 bytes  {type, flags, len, mono_ns}
  *     payload                     len bytes (cap_imu_rec_t / cap_mag_rec_t /
- *                                            cap_mark_rec_t / future types)
+ *                                            cap_mark_rec_t / future types),
+ *                                 ending in a u32 CRC32 when CAP_F_CRC32 is
+ *                                 set in the frame's flags
  *
  * Robustness rules:
  *   - a truncated tail (power loss mid-write) reads as clean EOF
@@ -29,6 +31,10 @@
  *   - a payload longer than the struct we know is read then skipped past
  *     (a future writer may append fields — same append-only discipline as
  *     the wire packet)
+ *   - corruption inside a record is caught by its CRC and reported as
+ *     CAP_ERR_CRC, so a damaged capture is refused rather than replayed as
+ *     data.  The CRC covers the frame as well as the payload, so a flipped
+ *     type, len or timestamp is caught too
  *
  * This TU is pure (no logging, no daemon deps) so tools and tests link it
  * standalone; callers do their own logging.
@@ -68,10 +74,20 @@ typedef struct __attribute__((packed)) {
      * still whole Hz, for exactly that reason.
      */
     uint32_t imu_odr_mhz;
-    uint8_t  reserved[20];    /* zeroed; room for future header fields */
+    /*
+     * Likewise taken from `reserved`.  Says what every record in this file
+     * carries, so a reader can tell "no CRC was written" from "the frame bit
+     * saying there is one was itself corrupted" — the one flip a per-record
+     * flag cannot catch on its own.  Old files read 0 here.
+     */
+    uint16_t file_flags;      /* CAP_HF_* */
+    uint8_t  reserved[18];    /* zeroed; room for future header fields */
 } cap_header_t;
 
 _Static_assert(sizeof(cap_header_t) == 104, "cap_header_t must be 104 bytes");
+
+/* Header flag bits */
+#define CAP_HF_CRC32  0x0001u /* every record carries a trailing CRC32 */
 
 /* Record types */
 #define CAP_REC_IMU   1u
@@ -80,6 +96,9 @@ _Static_assert(sizeof(cap_header_t) == 104, "cap_header_t must be 104 bytes");
 
 /* Frame flag bits */
 #define CAP_MAGF_VALID 0x01u  /* CAP_REC_MAG: mag_sample_t.valid */
+#define CAP_F_CRC32    0x80u  /* any type: payload ends in a u32 CRC32 of the
+                               * 12 frame bytes + the payload before it, and
+                               * len counts those 4 bytes */
 
 typedef struct __attribute__((packed)) {
     uint8_t  type;            /* CAP_REC_* */
@@ -156,14 +175,20 @@ typedef struct {
 
 #define CAP_ERR_IO     (-1)   /* open/read failure (errno set) */
 #define CAP_ERR_FORMAT (-2)   /* bad magic, unsupported version, bad header */
+#define CAP_ERR_CRC    (-3)   /* a record failed its CRC — the file is corrupt */
 
 /* Open and validate.  0 ok, CAP_ERR_IO or CAP_ERR_FORMAT otherwise. */
 int cap_reader_open(cap_reader_t *r, const char *path);
 
 /*
- * Read the next known record.  Unknown types are skipped silently.
+ * Read the next known record.  Unknown types are skipped silently — their
+ * CRC is still checked.
+ *
  * Returns 1 with *out filled, 0 on end of file (a truncated trailing
- * record also ends the stream cleanly), CAP_ERR_IO on read error.
+ * record also ends the stream cleanly), CAP_ERR_IO on read error, and
+ * CAP_ERR_CRC when a record is damaged.  A CRC failure is terminal: the
+ * frame length it was read with is no longer trustworthy, so there is
+ * nothing to resynchronise on.
  */
 int cap_reader_next(cap_reader_t *r, cap_record_t *out);
 
