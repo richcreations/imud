@@ -40,13 +40,18 @@
  * was built for — a launchd install puts it in /var/run, not /run/imud.  Not
  * include/paths.h: this file must still compile standalone against libc when
  * vendored out of the tree, so it takes the -D if there is one and falls back
- * to the Linux default if there is not. */
+ * to the Linux default if there is not.
+ *
+ * Both guards are #ifndef, mirroring include/paths.h, and selecting the
+ * fallback with `#ifdef IMUD_RUNDIR` instead is what must not be retried:
+ * cppcheck enumerates a configuration for every #ifdef and defines the macro
+ * as 1, so the concatenation below became `1 "/imud-stream.sock"` and the use
+ * site failed to parse. */
+#ifndef IMUD_RUNDIR
+# define IMUD_RUNDIR "/run/imud"
+#endif
 #ifndef IMUD_DEFAULT_STREAM_SOCK
-# ifdef IMUD_RUNDIR
-#  define IMUD_DEFAULT_STREAM_SOCK IMUD_RUNDIR "/imud-stream.sock"
-# else
-#  define IMUD_DEFAULT_STREAM_SOCK "/run/imud/imud-stream.sock"
-# endif
+# define IMUD_DEFAULT_STREAM_SOCK IMUD_RUNDIR "/imud-stream.sock"
 #endif
 #define IMUD_DEFAULT_UDP_PORT    10111
 #define IMUD_DEFAULT_TCP_PORT    10112
