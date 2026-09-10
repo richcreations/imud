@@ -41,7 +41,8 @@
 /* ── Register addresses — Bank 0 ────────────────────────────────────────────── */
 
 #define REG_DEVICE_CONFIG   0x11   /* bit0 = SOFT_RESET */
-#define REG_INT_CONFIG      0x14
+#define REG_INT_CONFIG      0x14   /* bit2=INT1_MODE, bit1=INT1_DRIVE_CIRCUIT,
+                                    * bit0=INT1_POLARITY; INT2 in [5:3] */
 #define REG_FIFO_CONFIG     0x16   /* bits[7:6]: 00=bypass, 01=stream */
 #define REG_FIFO_COUNTH     0x2E   /* high byte; burst-read latches count */
 #define REG_FIFO_COUNTL     0x2F   /* low byte */
@@ -55,7 +56,8 @@
 #define REG_FIFO_CONFIG1    0x5F   /* bit3=TMST_FSYNC_EN, bit1=GYRO_EN, bit0=ACCEL_EN */
 #define REG_FIFO_CONFIG2    0x60   /* watermark low 8 bits */
 #define REG_FIFO_CONFIG3    0x61   /* watermark high 4 bits */
-#define REG_INT_CONFIG1     0x64   /* bit4=INT_ASYNC_RESET (must write 0 after reset) */
+#define REG_INT_CONFIG1     0x64   /* bit6=INT_TPULSE_DURATION, bit5=INT_TDEASSERT_DISABLE,
+                                    * bit4=INT_ASYNC_RESET (must write 0 after reset) */
 #define REG_INT_SOURCE0     0x65   /* bit2=FIFO_THS_INT1_EN */
 #define REG_WHO_AM_I        0x75   /* reads 0x47 */
 #define REG_BANK_SEL        0x76   /* bank select: 0–4 */
@@ -271,8 +273,23 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     uint8_t gfs  = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
     uint8_t afs  = accel_fs_encode(cfg->accel_g, &accel_scale);
 
-    /* Must clear INT_ASYNC_RESET after reset (datasheet §12.6). */
-    if (bus_reg_write(bus, REG_INT_CONFIG1, 0x00) < 0) return -1;
+    /*
+     * INT1 active high, push-pull, pulsed.  The part resets to active low and
+     * open drain (§14.3, reset value 0x00), which imud can read neither way:
+     * imu_gpio waits for a RISING edge and requests the line with no bias, so
+     * an open-drain output has nothing to pull it up.  Pulsed rather than
+     * latched because latched clears only on a status read the reader never
+     * issues.
+     */
+    if (bus_reg_write(bus, REG_INT_CONFIG, 0x03) < 0) return -1;
+
+    /*
+     * Must clear INT_ASYNC_RESET after reset (datasheet §12.6).  At 4 kHz and
+     * above §14.50 also requires the short 8 µs pulse and no de-assert
+     * minimum, since the default 100 µs of each outlast a sample period.
+     */
+    uint8_t int_cfg1 = odr_actual(cfg->odr_mhz) >= 4000000 ? 0x60 : 0x00;
+    if (bus_reg_write(bus, REG_INT_CONFIG1, int_cfg1) < 0) return -1;
 
     /* Enable hardware timestamp latch to Bank 1 registers. */
     if (bus_reg_write(bus, REG_TMST_CONFIG, 0x11) < 0) return -1; /* TO_REGS_EN|EN */

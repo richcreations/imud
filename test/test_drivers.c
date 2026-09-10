@@ -3789,6 +3789,122 @@ static void test_ticks_per_sample_across_rates(void)
     end(fb);
 }
 
+/* ── The interrupt pin each driver leaves behind ─────────────────────────── */
+
+/*
+ * imu_gpio requests the line for RISING edges and sets no bias, so every
+ * driver owes it an active-high push-pull INT1.  Neither half is a reset
+ * default worth trusting: the ICM-42688-P comes up active low and open drain
+ * (DS-000347 §14.3, reset value 0x00) and shipped that way, because nothing
+ * wrote INT_CONFIG at all.  Open drain with no pull-up leaves the line
+ * floating; active low inverts what a rising edge means.
+ *
+ * Read the register back after init rather than counting writes, so a driver
+ * that sets the bits and clobbers them later still fails.  Every part here
+ * writes its INT register during init, so none of these pass vacuously
+ * against the mock's zeroed register file.
+ */
+struct int_pin_case {
+    const char      *name;
+    const imu_ops_t *ops;
+    uint8_t          addr;
+    uint8_t          reg;
+    const char      *regname;
+    uint8_t          pol_mask, pol_high;  /* masked value meaning active high */
+    uint8_t          drv_mask, drv_pp;    /* masked value meaning push-pull   */
+};
+
+static const struct int_pin_case int_pin_cases[] = {
+    /* TDK INT_CONFIG: 1 = active high, 1 = push-pull. */
+    { "icm42688p",  &icm42688p_ops,  ICM42_ADDR,  0x14, "INT_CONFIG",
+      0x01, 0x01, 0x02, 0x02 },
+    /* ST CTRL3_C: H_LACTIVE and PP_OD both read the other way round. */
+    { "ism330dhcx", &ism330dhcx_ops, ISM_ADDR,    0x12, "CTRL3_C",
+      0x20, 0x00, 0x10, 0x00 },
+    { "lsm6dso",    &lsm6dso_ops,    LSM_ADDR,    0x12, "CTRL3_C",
+      0x20, 0x00, 0x10, 0x00 },
+    { "lsm6dsox",   &lsm6dsox_ops,   LSM_ADDR,    0x12, "CTRL3_C",
+      0x20, 0x00, 0x10, 0x00 },
+    /* InvenSense INT_PIN_CFG: ACTL and OPEN, likewise inverted. */
+    { "mpu6500",    &mpu6500_ops,    MPU_ADDR,    0x37, "INT_PIN_CFG",
+      0x80, 0x00, 0x40, 0x00 },
+    { "mpu9250",    &mpu9250_ops,    MPU_ADDR,    0x37, "INT_PIN_CFG",
+      0x80, 0x00, 0x40, 0x00 },
+    { "mpu9255",    &mpu9255_ops,    MPU_ADDR,    0x37, "INT_PIN_CFG",
+      0x80, 0x00, 0x40, 0x00 },
+    { "icm20948",   &icm20948_ops,   ICM209_ADDR, 0x0F, "INT_PIN_CFG",
+      0x80, 0x00, 0x40, 0x00 },
+};
+
+/* INT_CONFIG1 after init at `mhz`; 0x64 in Bank 0, which init never leaves. */
+static uint8_t icm42_int_cfg1(int mhz)
+{
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_mhz = mhz, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 64 };
+    if (icm42688p_ops.init(I2CBUS(ICM42_ADDR), &cfg) != 0) return 0xFF;
+    return i2cmock_get_reg(ICM42_ADDR, 0x64);
+}
+
+static void test_int_pin_config(void)
+{
+    begin("test_int_pin_config");
+    int fb = g_fail;
+
+    for (unsigned i = 0; i < sizeof int_pin_cases / sizeof int_pin_cases[0]; i++) {
+        const struct int_pin_case *c = &int_pin_cases[i];
+        char msg[128];
+
+        i2cmock_reset();
+        imu_cfg_t cfg = { .odr_mhz = 100000, .accel_g = 8, .gyro_dps = 2000,
+                          .fifo_wm = 64 };
+        snprintf(msg, sizeof msg, "%s: init succeeds", c->name);
+        EXPECT(c->ops->init(I2CBUS(c->addr), &cfg) == 0, msg);
+
+        uint8_t v = i2cmock_get_reg(c->addr, c->reg);
+        snprintf(msg, sizeof msg, "%s: %s drives INT1 active high",
+                 c->name, c->regname);
+        EXPECT((v & c->pol_mask) == c->pol_high, msg);
+        snprintf(msg, sizeof msg, "%s: %s drives INT1 push-pull",
+                 c->name, c->regname);
+        EXPECT((v & c->drv_mask) == c->drv_pp, msg);
+    }
+
+    /*
+     * Pulsed, not latched: a latched INT1 clears only on a status read, and
+     * icm_read never issues one, so the first edge would be the last.
+     */
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_mhz = 100000, .accel_g = 8, .gyro_dps = 2000,
+                      .fifo_wm = 64 };
+    EXPECT(icm42688p_ops.init(I2CBUS(ICM42_ADDR), &cfg) == 0,
+           "icm42688p: init succeeds");
+    EXPECT((i2cmock_get_reg(ICM42_ADDR, 0x14) & 0x04) == 0,
+           "icm42688p: INT_CONFIG leaves INT1 pulsed, not latched");
+
+    /*
+     * INT_CONFIG1: INT_ASYNC_RESET clear at every rate (§12.6), and from 4 kHz
+     * up the 8 µs pulse with the de-assert minimum disabled (§14.50) — the
+     * 100 µs defaults outlast a sample period there.
+     */
+    static const struct { int mhz; uint8_t want; } tpulse[] = {
+        {   12500, 0x00 }, {  1000000, 0x00 }, { 2000000, 0x00 },
+        { 4000000, 0x60 }, { 32000000, 0x60 },
+    };
+    for (unsigned i = 0; i < sizeof tpulse / sizeof tpulse[0]; i++) {
+        char msg[128];
+        uint8_t v = icm42_int_cfg1(tpulse[i].mhz);
+        snprintf(msg, sizeof msg, "icm42688p %d mHz -> INT_CONFIG1 0x%02X",
+                 tpulse[i].mhz, tpulse[i].want);
+        EXPECT(v == tpulse[i].want, msg);
+        snprintf(msg, sizeof msg,
+                 "icm42688p %d mHz leaves INT_ASYNC_RESET clear", tpulse[i].mhz);
+        EXPECT((v & 0x10) == 0, msg);
+    }
+
+    end(fb);
+}
+
 /* ── Dual-transport agreement ────────────────────────────────────────────── */
 
 /*
@@ -4535,6 +4651,7 @@ int main(void)
     test_odr_agreement();
     test_odr_codes_match_datasheet();
     test_ticks_per_sample_across_rates();
+    test_int_pin_config();
 
     test_dual_transport_ism330dhcx();
     test_dual_transport_mmc5983ma();
