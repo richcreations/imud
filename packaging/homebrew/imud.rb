@@ -89,11 +89,14 @@ class Imud < Formula
       odr_hz   = 100
     CONF
 
+    # A redirect target has to be a String, not the Pathname testpath hands
+    # back: spawn raises ArgumentError, "wrong exec redirect action", on one.
+    log = testpath/"imud.log"
     pid = spawn bin/"imud", "--config", testpath/"imud.conf",
-                [:out, :err] => testpath/"imud.log"
+                [:out, :err] => [log.to_s, "w"]
     sleep 10
     Process.kill "TERM", pid
     Process.wait pid
-    assert_match "running", (testpath/"imud.log").read
+    assert_match "running", log.read
   end
 end

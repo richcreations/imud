@@ -945,10 +945,12 @@ jobs:
 
       - name: Every formula is valid Ruby
         run: |
+          n=0
           for f in packaging/homebrew/*.rb; do
             ruby -c "$f" >/dev/null || { echo "::error file=$f::syntax"; exit 1; }
+            n=$((n + 1))
           done
-          echo "OK: $(ls -1 packaging/homebrew/*.rb | wc -l) formulae parse"
+          echo "OK: $n formulae parse"
 
       # This tree's formulae, not the tap's: copied over the tapped copies so
       # the job gates the branch under review rather than what was last
