@@ -329,6 +329,16 @@ sudo systemctl enable --now imud</code></pre></div>
   <code>imud-utils</code>. See the
   <a href="apt/">apt repository page</a> for the full package list.</p>
 
+  <p>On macOS, or on a Linux host with Homebrew, the tap carries one formula
+  per package:</p>
+
+  <div class="scroll"><pre><code>brew tap richcreations/imud
+brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew services start richcreations/imud/imud</code></pre></div>
+
+  <p><code>--HEAD</code> is needed until 1.11.0 ships — the 1.10.1 release
+  tarball predates the install flags the formulae pass.</p>
+
   <p>On any other Linux host with I²C or SPI, build from source:</p>
 
   <div class="scroll"><pre><code>sudo apt update &amp;&amp; sudo apt install -y build-essential libgpiod-dev
@@ -341,8 +351,9 @@ sudo systemctl enable --now imud</code></pre></div>
   <p>On macOS the build is <code>./configure &amp;&amp; make</code> — configure
   is required there, since it is what picks the backends a Mac has. There is no
   header bus, so the sensor arrives over an FT232H USB dongle, or run the
-  <code>sim</code> driver with no hardware. There is no package and no service
-  unit; CI builds and runs the whole test suite on Intel and Apple silicon.</p>
+  <code>sim</code> driver with no hardware. There is no <code>.deb</code> —
+  install with Homebrew above, or from source; CI builds and runs the whole
+  test suite on Intel and Apple silicon.</p>
 
   <p>Once it is running, <code>imud-status</code> reports daemon health,
   attitude, declination, and heave; <code>imud-mon</code> gives a live view of

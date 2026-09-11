@@ -178,15 +178,47 @@ sensor over an FT232H USB bridge
 hardware. Set `int_gpio = 0` under `[imu]` and `[mag]` either way — this host
 has no interrupt line to take.
 
-There is no `.deb` — build from source. `sudo make install` works here and
-installs a launchd job rather than a systemd unit, which
-[As a launchd job](#as-a-launchd-job-macos) covers.
+There is no `.deb`. Install with Homebrew (below), or build from source:
+`sudo make install` works here and installs a launchd job rather than a systemd
+unit, which [As a launchd job](#as-a-launchd-job-macos) covers.
 
 A Mac has no `/run`, so the AF_UNIX paths in the config `make install` writes
 are rewritten to `/var/run`, which every boot provides. Running from the build
 tree instead, name a `pid_file` and `status_socket` the daemon can write;
 `config/sim.conf` puts those and its stream socket under `/tmp`, and runs
 unpatched.
+
+### Installing with Homebrew
+
+The tap carries one formula per Debian package, so a host installs only the
+parts it needs. It works on Linux as well as macOS.
+
+```sh
+brew tap richcreations/imud
+brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew services start richcreations/imud/imud
+```
+
+`--HEAD` is needed until 1.11.0 ships. The formulae pass `--prefix`,
+`--rundir`, `--statedir` and `--with-service=none`, none of which the 1.10.1
+release tarball's `configure` takes, so there is no stable release they can
+build from yet.
+
+| Formula | What it installs |
+|---|---|
+| `imud` | the daemon, `imud-cal`, `imud-status`, libimud and its header |
+| `imud-utils` | `imud-mon` and `imud-imutest` |
+| `imud-wmm-data` | the World Magnetic Model coefficients |
+| `imud-signalk`, `imud-mqtt`, `imud-influxdb`, `imud-mavlink`, `imud-prometheus` | one bridge each |
+
+Every other formula depends on `imud`, so installing a bridge installs the
+daemon with it. `libimud` is not separate here — Homebrew does not split a
+library from its headers.
+
+Config lives in `$(brew --prefix)/etc/imud/` and an edited file survives an
+upgrade. The formulae install no launchd job of their own; `brew services`
+owns that, so [As a launchd job](#as-a-launchd-job-macos) applies to a
+from-source install rather than this one.
 
 ### Install
 

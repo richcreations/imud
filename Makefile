@@ -1316,6 +1316,19 @@ install-svc  = install -m 644 $(call svc-src,$(1)) \
                        $(DESTDIR)$(SVCDIR)/$(call svc-dst,$(1))
 endif
 
+# Telling the init system that a unit file changed.  Only systemd has such a
+# step, and only a build that installs units needs it: under `none` there is
+# no unit to reload, and the call fails for want of privilege on an
+# unprivileged prefix install — which aborted `make install` outright rather
+# than being skipped.  One definition, so the seven call sites cannot drift.
+ifeq ($(SVC_KIND),systemd)
+reload-svc = if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
+                 systemctl daemon-reload; \
+             fi
+else
+reload-svc = :
+endif
+
 # The runtime and state directories written into every config that ships.
 # Both substitutions are the identity under systemd, so the installed file is
 # the source byte for byte there and only a launchd host sees a difference.
@@ -1445,9 +1458,7 @@ endif
 	fi
 	# ── Service unit ───────────────────────────────────────────────────────
 	$(call install-svc,imud)
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),systemd)
 	# ── udev rule: group access to /dev/i2c-* and /dev/gpiochip* ───────────
 	#
@@ -1502,7 +1513,10 @@ endif
 	               docs/libimud/spec.md $(DESTDIR)$(DOCDIR)/libimud/
 	install -m 644 packaging/libimud/copyright $(DESTDIR)$(DOCDIR)/libimud/copyright
 	gzip -9nc packaging/libimud/changelog > $(DESTDIR)$(DOCDIR)/libimud/changelog.gz
-	@if [ -z "$(DESTDIR)" ] && command -v ldconfig >/dev/null 2>&1; then \
+	# Root only: ldconfig rewrites a system-wide cache, so an unprivileged
+	# prefix install cannot run it and must not fail for not running it.
+	@if [ -z "$(DESTDIR)" ] && [ "$$(id -u)" = 0 ] \
+	   && command -v ldconfig >/dev/null 2>&1; then \
 	    ldconfig; \
 	fi
 	@echo "Installed libimud:      $(DESTDIR)$(LIBDIR)/$(SHLIB) (+ imud.h, libimud.pc, libimud.3)"
@@ -1599,9 +1613,7 @@ install-signalk: imud-signalk $(call svc-src,imud-signalk)
 	install -m 644 packaging/imud-signalk/copyright $(DESTDIR)$(DOCDIR)/imud-signalk/copyright
 	gzip -9nc packaging/imud-signalk/changelog > $(DESTDIR)$(DOCDIR)/imud-signalk/changelog.gz
 	@$(CONF_SUBST) config/imud-signalk.conf > $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-signalk/examples/imud-signalk.conf
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-signalk.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-signalk)"
 else ifeq ($(SVC_KIND),none)
@@ -1645,9 +1657,7 @@ endif
 	install -m 644 packaging/imud-mqtt/copyright $(DESTDIR)$(DOCDIR)/imud-mqtt/copyright
 	gzip -9nc packaging/imud-mqtt/changelog > $(DESTDIR)$(DOCDIR)/imud-mqtt/changelog.gz
 	@$(CONF_SUBST) config/imud-mqtt.conf > $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-mqtt/examples/imud-mqtt.conf
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mqtt.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mqtt)"
 else ifeq ($(SVC_KIND),none)
@@ -1690,9 +1700,7 @@ endif
 	install -m 644 packaging/imud-influxdb/copyright $(DESTDIR)$(DOCDIR)/imud-influxdb/copyright
 	gzip -9nc packaging/imud-influxdb/changelog > $(DESTDIR)$(DOCDIR)/imud-influxdb/changelog.gz
 	@$(CONF_SUBST) config/imud-influxdb.conf > $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-influxdb/examples/imud-influxdb.conf
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-influxdb.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-influxdb)"
 else ifeq ($(SVC_KIND),none)
@@ -1718,9 +1726,7 @@ install-prometheus: imud-prometheus $(call svc-src,imud-prometheus)
 	install -m 644 packaging/imud-prometheus/copyright $(DESTDIR)$(DOCDIR)/imud-prometheus/copyright
 	gzip -9nc packaging/imud-prometheus/changelog > $(DESTDIR)$(DOCDIR)/imud-prometheus/changelog.gz
 	@$(CONF_SUBST) config/imud-prometheus.conf > $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-prometheus/examples/imud-prometheus.conf
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-prometheus.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-prometheus)"
 else ifeq ($(SVC_KIND),none)
@@ -1749,9 +1755,7 @@ endif
 	install -m 644 packaging/imud-mavlink/copyright $(DESTDIR)$(DOCDIR)/imud-mavlink/copyright
 	gzip -9nc packaging/imud-mavlink/changelog > $(DESTDIR)$(DOCDIR)/imud-mavlink/changelog.gz
 	@$(CONF_SUBST) config/imud-mavlink.conf > $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf && chmod 644 $(DESTDIR)$(DOCDIR)/imud-mavlink/examples/imud-mavlink.conf
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mavlink.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mavlink)"
 else ifeq ($(SVC_KIND),none)
@@ -1828,9 +1832,7 @@ endif
 	       $(DESTDIR)$(DOCDIR)/imud-mavlink $(DESTDIR)$(DOCDIR)/imud-prometheus \
 	       $(DESTDIR)$(DOCDIR)/imud-wmm-data $(DESTDIR)$(DOCDIR)/imud-utils \
 	       $(DESTDIR)$(DOCDIR)/libimud
-	@if [ -z "$(DESTDIR)" ] && command -v systemctl >/dev/null 2>&1; then \
-	    systemctl daemon-reload; \
-	fi
+	@$(reload-svc)
 	@echo "Config and calibration in $(ETCDIR) were NOT removed — delete manually if no longer needed."
 
 # ── Clean ─────────────────────────────────────────────────────────────────────

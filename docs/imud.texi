@@ -196,6 +196,7 @@ exporter (see @ref{9a Bridges,,§9a Bridges}).
 * Prerequisites::
 * Build::
 * Building on macOS::
+* Installing with Homebrew::
 * Install::
 @end menu
 
@@ -309,8 +310,9 @@ run: a real sensor over an FT232H USB bridge
 @code{[imu]} and @code{[mag]} either way --- this host has no interrupt
 line to take.
 
-There is no @code{.deb} --- build from source. @code{sudo make install}
-works here and installs a launchd job rather than a systemd unit, which
+There is no @code{.deb}. Install with Homebrew (below), or build from
+source: @code{sudo make install} works here and installs a launchd job
+rather than a systemd unit, which
 @ref{As a launchd job macOS,,As a launchd job} covers.
 
 A Mac has no @code{/run}, so the AF_UNIX paths in the config
@@ -319,6 +321,54 @@ boot provides. Running from the build tree instead, name a
 @code{pid_file} and @code{status_socket} the daemon can write;
 @code{config/sim.conf} puts those and its stream socket under
 @code{/tmp}, and runs unpatched.
+
+@node Installing with Homebrew
+@section Installing with Homebrew
+@anchor{#installing-with-homebrew}
+The tap carries one formula per Debian package, so a host installs only
+the parts it needs. It works on Linux as well as macOS.
+
+@verbatim
+brew tap richcreations/imud
+brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew services start richcreations/imud/imud
+@end verbatim
+
+@code{--HEAD} is needed until 1.11.0 ships. The formulae pass
+@code{--prefix}, @code{--rundir}, @code{--statedir} and
+@code{--with-service=none}, none of which the 1.10.1 release tarball's
+@code{configure} takes, so there is no stable release they can build
+from yet.
+
+@multitable @columnfractions 0.66 0.34 
+@headitem 
+Formula
+ @tab What it installs
+@item 
+@code{imud}
+ @tab the daemon, @code{imud-cal}, @code{imud-status}, libimud and its
+header
+@item 
+@code{imud-utils}
+ @tab @code{imud-mon} and @code{imud-imutest}
+@item 
+@code{imud-wmm-data}
+ @tab the World Magnetic Model coefficients
+@item 
+@code{imud-signalk}, @code{imud-mqtt}, @code{imud-influxdb},
+@code{imud-mavlink}, @code{imud-prometheus}
+ @tab one bridge each
+@end multitable
+
+Every other formula depends on @code{imud}, so installing a bridge
+installs the daemon with it. @code{libimud} is not separate here ---
+Homebrew does not split a library from its headers.
+
+Config lives in @code{$(brew --prefix)/etc/imud/} and an edited file
+survives an upgrade. The formulae install no launchd job of their own;
+@code{brew services} owns that, so
+@ref{As a launchd job macOS,,As a launchd job} applies to a from-source
+install rather than this one.
 
 @node Install
 @section Install

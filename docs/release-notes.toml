@@ -51,6 +51,12 @@ host with no bus on a header."""
   [[release.change]]
   kind     = "feature"
   packages = ["imud"]
+  text     = "imud installs with Homebrew, on macOS or Linux, one formula per package."
+  impact   = "brew tap richcreations/imud, then brew install richcreations/imud/imud."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud"]
   text     = "imud-status --json prints the report as one JSON object."
 
   [[release.change]]

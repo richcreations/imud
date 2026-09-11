@@ -167,6 +167,19 @@ Optional bridges and the network monitor are separate packages:
 `imud-signalk`, `imud-mqtt`, `imud-influxdb`, `imud-mavlink`, `imud-prometheus`,
 `imud-utils`. See <https://richcreations.github.io/imud/apt/>.
 
+**Or with Homebrew**, on macOS or Linux:
+
+```sh
+brew tap richcreations/imud
+brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew services start richcreations/imud/imud
+```
+
+The split matches the packages above — `imud-utils` and each of the five
+bridges is its own formula, so `brew install --HEAD richcreations/imud/imud-signalk`
+brings the daemon and that one bridge. `--HEAD` is needed until 1.11.0 ships:
+the newest release tarball predates the install flags the formulae pass.
+
 **Or build from source** (any Linux host with I²C or SPI):
 
 ```sh
@@ -185,8 +198,8 @@ the MQTT bridge). There is no header bus, so reach the sensor through an
 FT232H dongle over I²C (`i2c_bus = "ftdi:"`) or SPI (`spi_dev = "ftdi:/cs0"`),
 with `int_gpio = 0` either way — or run the `sim` driver with no hardware at
 all. `sudo make install` installs a launchd job
-rather than a systemd unit. There is no package; CI builds and runs the whole
-test suite on macOS 14 and 26 and on Intel.
+rather than a systemd unit; `brew install` above is the packaged route. CI
+builds and runs the whole test suite on macOS 14 and 26 and on Intel.
 
 Check it and watch the streams:
 

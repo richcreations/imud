@@ -22,6 +22,8 @@ Added:
 * imud installs and runs as a service on macOS.
 * libimud installs as a shared library on macOS.
 * imud installs under a prefix that is not /usr.
+* imud installs with Homebrew, on macOS or Linux, one formula per package.
+  brew tap richcreations/imud, then brew install richcreations/imud/imud.
 * imud-status --json prints the report as one JSON object.
 * Capture files carry a CRC32 on every record, so a corrupt .imucap is refused
   instead of replayed as data.

@@ -968,6 +968,159 @@ static void test_service_none(void)
 }
 
 /*
+ * The Homebrew formulae, held against the configure they drive.
+ *
+ * packaging/homebrew/imud.rb is READ rather than restated here, so a flag
+ * renamed on one side and not the other fails in this suite rather than on
+ * someone's Mac, where nothing in this tree can see it.
+ *
+ * The second half is issue #88: under --with-service=none the install must
+ * reach for neither systemctl nor ldconfig.  Neither works unprivileged, and
+ * the failure aborted `make install` rather than being skipped — which is
+ * every prefix install from source, Homebrew's included.
+ */
+#define BREW_PREFIX "/opt/brewtest"
+
+/* The formula's Ruby interpolations, resolved to a prefix a test can name. */
+static void brew_expand(char *dst, size_t n, const char *src)
+{
+    static const struct { const char *from, *to; } SUB[] = {
+        { "#{HOMEBREW_PREFIX}", BREW_PREFIX },
+        { "#{etc}",             BREW_PREFIX "/etc" },
+        { "#{var}",             BREW_PREFIX "/var" },
+    };
+    size_t o = 0, nsub = sizeof SUB / sizeof SUB[0];
+
+    for (size_t i = 0; src[i] && o + 1 < n; ) {
+        size_t k;
+        for (k = 0; k < nsub; k++) {
+            size_t fl = strlen(SUB[k].from);
+            if (strncmp(src + i, SUB[k].from, fl) != 0) continue;
+            for (const char *t = SUB[k].to; *t && o + 1 < n; t++) dst[o++] = *t;
+            i += fl;
+            break;
+        }
+        if (k == nsub) dst[o++] = src[i++];
+    }
+    dst[o] = '\0';
+}
+
+/*
+ * The --flags of the formula's ./configure call, expanded and space-joined.
+ * Line-wise and bounded to that one statement: "--config" appears again in
+ * the service and test blocks, and a scan of the whole file would collect it.
+ */
+static int brew_configure_args(const char *rb, char *args, size_t n)
+{
+    FILE *f = fopen(rb, "r");
+    if (!f) return 0;
+
+    char line[1024];
+    int started = 0;
+    size_t o = 0;
+
+    args[0] = '\0';
+    while (fgets(line, sizeof line, f)) {
+        if (!started) {
+            if (!strstr(line, "\"./configure\"")) continue;
+            started = 1;
+        }
+        const char *p = strstr(line, "\"--");
+        if (!p) break;                  /* the statement ended with the last flag */
+        const char *q = strchr(++p, '"');
+        if (!q) break;
+
+        char raw[512], exp[1024];
+        size_t len = (size_t)(q - p);
+        if (len >= sizeof raw) break;
+        memcpy(raw, p, len);
+        raw[len] = '\0';
+        brew_expand(exp, sizeof exp, raw);
+
+        int w = snprintf(args + o, n - o, "%s%s", o ? " " : "", exp);
+        if (w < 0 || (size_t)w >= n - o) break;
+        o += (size_t)w;
+    }
+    fclose(f);
+    return started && o > 0;
+}
+
+static void test_homebrew_formula(void)
+{
+    printf("test_homebrew_formula\n");
+    fixture_reset();
+
+    char root[PATH_MAX], rb[PATH_MAX], args[2048];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+    snprintf(rb, sizeof rb, "%s/packaging/homebrew/imud.rb", root);
+
+    EXPECT(brew_configure_args(rb, args, sizeof args),
+           "imud.rb names a ./configure call with flags");
+    EXPECT(strstr(args, "--with-service=none") != NULL,
+           "and one of them is --with-service=none");
+
+    EXPECT(run(args) == 0,
+           "every flag the formula passes is one configure takes");
+    EXPECT(cfg_is("PREFIX", BREW_PREFIX), "PREFIX is Homebrew's own prefix");
+    EXPECT(cfg_is("ETCDIR", BREW_PREFIX "/etc/imud"), "ETCDIR under it");
+    EXPECT(cfg_is("RUNDIR", BREW_PREFIX "/var/run"), "RUNDIR under it");
+    EXPECT(cfg_is("STATEDIR", BREW_PREFIX "/var/imud"), "STATEDIR under it");
+    EXPECT(cfg_is("SVC_KIND", "none"), "and no init system is claimed");
+
+    /* ── what that install actually runs ─────────────────────────────────── */
+    setenv("PATH", g_real_path, 1);
+
+    char cmd[PATH_MAX * 3 + 1024], path[PATH_MAX], want[PATH_MAX];
+    snprintf(path, sizeof path, "%s/mk.txt", g_work);
+
+    #define MK(target, extra)                                                 \
+        (snprintf(cmd, sizeof cmd,                                            \
+                  "cd '%s' && make -n %s PREFIX=" BREW_PREFIX                 \
+                  " ETCDIR=" BREW_PREFIX "/etc/imud %s"                       \
+                  " DESTDIR='%s/stage' > '%s' 2>&1",                          \
+                  root, (target), (extra), g_work, path),                     \
+         system(cmd) == 0)
+    #define MK_HAS(pat)                                                       \
+        (snprintf(cmd, sizeof cmd, "grep -qF -- '%s' '%s'", (pat), path),     \
+         system(cmd) == 0)
+
+    EXPECT(MK("install", "SVC_KIND=none"),
+           "make -n install parses with the formula's paths");
+
+    /* Issue #88, both directions.  The absence alone would also pass if the
+     * grep were simply looking in the wrong place, so the systemd run below
+     * proves `none` is what removes the call. */
+    /* The commands, not the words: `make -n` echoes a recipe's comments too,
+     * and the block below is introduced by one naming useradd. */
+    EXPECT(!MK_HAS("systemctl"), "no systemctl under --with-service=none");
+    EXPECT(!MK_HAS("useradd --system"), "and no system user is created");
+    EXPECT(!MK_HAS("/etc/udev"), "and no udev rule is written");
+    EXPECT(MK_HAS("[ \"$(id -u)\" = 0 ]"),
+           "while ldconfig is gated on being root");
+
+    snprintf(want, sizeof want, "%s/stage" BREW_PREFIX "/bin", g_work);
+    EXPECT(MK_HAS(want), "the binaries still install, under the staged prefix");
+    snprintf(want, sizeof want,
+             "%s/stage" BREW_PREFIX "/etc/imud/imud.conf", g_work);
+    EXPECT(MK_HAS(want), "and the config lands in the formula's etcdir");
+
+    EXPECT(MK("install-signalk", "SVC_KIND=none"),
+           "make -n install-signalk parses too");
+    EXPECT(!MK_HAS("systemctl"), "and reaches for no systemctl either");
+
+    EXPECT(MK("install", "SVC_KIND=systemd SVCDIR=/tmp/svc"),
+           "make -n install parses under systemd");
+    EXPECT(MK_HAS("systemctl"),
+           "where the reload IS the right thing, so `none` is what removed it");
+
+    #undef MK
+    #undef MK_HAS
+    setenv("PATH", g_stub, 1);
+}
+
+/*
  * Which service unit gets installed is the host's answer, not something the
  * caller has to remember: a Mac gets a launchd job in /Library/LaunchDaemons,
  * everything else a systemd unit.  The stub uname above is what makes both
@@ -1233,6 +1386,7 @@ int main(void)
     test_prefix_reaches_the_binary();
     test_service_unit_follows_the_host();
     test_service_none();
+    test_homebrew_formula();
     test_uninstall_stops_the_service();
     test_config_mk_is_valid_make();
 
