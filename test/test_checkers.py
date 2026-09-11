@@ -783,6 +783,37 @@ CASES = [
      sub(r"^        imud_wire_version;$", "        libimud_teardown;"),
      "libimud_teardown"),
 
+    # ── check-homebrew ───────────────────────────────────────────────────────
+    # A head block is a supported route from the tap straight to main, which
+    # is the one thing a delivery channel must not offer: main is allowed to
+    # carry half-finished work. The formulae shipped HEAD-only for a day, so
+    # this is the state being refused, not a hypothetical one.
+    ("check-homebrew", "packaging/homebrew/imud.rb",
+     sub(r'^  license "MIT"$',
+         '  license "MIT"\n  head "https://github.com/richcreations/imud.git", branch: "main"'),
+     "head"),
+
+    # One formula left behind by a rewrite. imud-signalk depends on imud, so a
+    # bridge pinned to a different release installs against a daemon it was
+    # never built beside -- and both formulae look perfectly valid alone.
+    ("check-homebrew", "packaging/homebrew/imud-signalk.rb",
+     sub(r'^  sha256 "[0-9a-f]{64}"$',
+         '  sha256 "' + "0" * 64 + '"'),
+     "different release from"),
+
+    # The tag and the tarball name disagreeing: half of a hand edit, and the
+    # url still looks like a release url at a glance.
+    ("check-homebrew", "packaging/homebrew/imud-utils.rb",
+     sub(r"/download/v([0-9][^/]*)/", r"/download/v9.9.9/"),
+     "but tarball"),
+
+    # A package apt users can install and brew users cannot. Adding a bridge
+    # is already a many-surface edit; without this, the formula is the surface
+    # nothing complains about.
+    ("check-homebrew", "debian/control",
+     sub(r"^Package: imud-mavlink$", "Package: imud-zzz"),
+     "imud-zzz"),
+
 ]
 
 

@@ -171,14 +171,14 @@ Optional bridges and the network monitor are separate packages:
 
 ```sh
 brew tap richcreations/imud
-brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew install richcreations/imud/imud richcreations/imud/imud-wmm-data
 brew services start richcreations/imud/imud
 ```
 
 The split matches the packages above — `imud-utils` and each of the five
-bridges is its own formula, so `brew install --HEAD richcreations/imud/imud-signalk`
-brings the daemon and that one bridge. `--HEAD` is needed until 1.11.0 ships:
-the newest release tarball predates the install flags the formulae pass.
+bridges is its own formula, so `brew install richcreations/imud/imud-signalk`
+brings the daemon and that one bridge. The formulae track releases only;
+there is no route to an untagged tree.
 
 **Or build from source** (any Linux host with I²C or SPI):
 

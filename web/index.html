@@ -333,11 +333,8 @@ sudo systemctl enable --now imud</code></pre></div>
   per package:</p>
 
   <div class="scroll"><pre><code>brew tap richcreations/imud
-brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew install richcreations/imud/imud richcreations/imud/imud-wmm-data
 brew services start richcreations/imud/imud</code></pre></div>
-
-  <p><code>--HEAD</code> is needed until 1.11.0 ships — the 1.10.1 release
-  tarball predates the install flags the formulae pass.</p>
 
   <p>On any other Linux host with I²C or SPI, build from source:</p>
 

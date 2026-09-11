@@ -923,14 +923,18 @@ jobs:
   # that needs brew itself — the staged-prefix move, the service block, and
   # whether the thing installs and runs.
   #
-  # --HEAD because the formulae are HEAD-only: every flag their install block
-  # passes to configure postdates 1.10.1, so there is no release tarball they
-  # can build from until 1.11.0 (issue #80 writes that stable block).
+  # The published formulae carry no `head` block on purpose — a tap serves
+  # releases, never a branch, and check-homebrew.py refuses one.  So this job
+  # injects a head of its own, pointing at the runner's checkout, AFTER the
+  # audit has read the real thing.  That also fixes what the obvious spelling
+  # gets wrong: `--HEAD` against the published git url would clone main's tip
+  # and quietly test a different commit from the one under review.
   #
-  # `brew audit --strict` is deliberately NOT here.  It bootstraps Homebrew's
-  # developer gems from rubygems on first use, and it has never been run
-  # against these formulae, so it would be an unverified blocking check.  Run
-  # it by hand and add the step once its findings are known.
+  # `brew audit --strict` bootstraps Homebrew's developer gems — rubocop and
+  # some forty others — the first time it runs on a machine, which is a minute
+  # or two of this job.  Worth it: it is the only check here that reads a
+  # formula the way Homebrew itself does, and a reduced gem set silently
+  # passes the style half, so a fast audit is not a clean one.
   homebrew:
     strategy:
       fail-fast: false
@@ -956,10 +960,33 @@ jobs:
       # the job gates the branch under review rather than what was last
       # published.  The bridges declare depends_on "richcreations/imud/imud",
       # which only resolves inside a tap, hence the tap rather than a path.
-      - name: brew install, and brew test
+      - name: Audit them in the tap
         run: |
           brew tap richcreations/imud
           cp packaging/homebrew/*.rb "$(brew --repo richcreations/imud)/Formula/"
+          brew audit --strict --tap richcreations/imud
+          echo "OK: all eight pass brew audit --strict"
+
+      - name: brew install, and brew test
+        run: |
+          # A branch of our own, so the head clone resolves whether or not the
+          # checkout is detached — a PR checkout is.
+          git branch -f ci-under-test HEAD
+          tap="$(brew --repo richcreations/imud)"
+
+          # python3, not sed: BSD sed on these runners takes neither a bare
+          # -i nor a \n in the replacement, and this has to be exact.
+          python3 - "$tap/Formula/imud.rb" "$PWD" <<'PY'
+          import sys
+          path, repo = sys.argv[1], sys.argv[2]
+          src = open(path).read()
+          head = '  head "file://%s", using: :git, branch: "ci-under-test"\n' % repo
+          out = src.replace('  license "MIT"\n', '  license "MIT"\n' + head, 1)
+          assert out != src, "no license line to inject a head after"
+          open(path, "w").write(out)
+          PY
+          grep -n '^  head ' "$tap/Formula/imud.rb"
+
           brew install --build-from-source --HEAD richcreations/imud/imud
           brew test --HEAD richcreations/imud/imud
           "$(brew --prefix)/bin/imud" --version

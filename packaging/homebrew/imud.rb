@@ -8,12 +8,12 @@
 class Imud < Formula
   desc "IMU daemon publishing attitude, heading and heave over NMEA and UDP"
   homepage "https://github.com/richcreations/imud"
+  # url and sha256 are rewritten at every release by homebrew-publish.yml, on
+  # the gate apt already uses: publishing the draft release.  There is no head
+  # block by design — a tap serves releases, never a branch.
+  url "https://github.com/richcreations/imud/releases/download/v1.10.1/imud-1.10.1.tar.gz"
+  sha256 "d402928b1501637063cc8a7014dfe8e4758dd8e4dd697fea06b7bf6236f912d0"
   license "MIT"
-
-  # HEAD-only until 1.11.0: every flag the install block passes to configure
-  # was added after 1.10.1, so the newest release tarball cannot build it.
-  # release.yml writes the stable url and sha256 at that tag — imud issue #80.
-  head "https://github.com/richcreations/imud.git", branch: "main"
 
   def install
     # imud compiles its paths in (include/paths.h), so a keg-relative prefix

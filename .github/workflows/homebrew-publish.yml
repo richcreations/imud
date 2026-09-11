@@ -1,0 +1,171 @@
+# Sync the Homebrew tap to a release.
+#
+# Same gate as apt-publish.yml, and for the same reason: publishing the draft
+# GitHub Release is the single moment anything becomes available to a user.
+# main is allowed to carry half-finished work; a tap must never serve it.
+# That is why packaging/homebrew/*.rb declare no `head` block and why nothing
+# here runs on a push — check-homebrew.py refuses the first, and the trigger
+# below is the second.
+#
+# What it does: rewrites url and sha256 across all eight formulae to the
+# tarball this release carries, pushes them to richcreations/homebrew-imud,
+# and commits the same rewrite back to main so the two copies cannot drift.
+#
+# TWO credentials, deliberately different:
+#
+#   * the tap push uses HOMEBREW_TAP_DEPLOY_KEY, an SSH deploy key with write
+#     access to homebrew-imud and nothing else.  GITHUB_TOKEN is scoped to
+#     this repository and cannot write to another one at all.
+#   * the commit back to main uses GITHUB_TOKEN, which can.  A push made with
+#     it does not trigger other workflows, so this cannot start a CI run, let
+#     alone loop.
+#
+# Rehearse with workflow_dispatch: dry_run does every step except the two
+# pushes, and prints the diff it would have made.
+name: Homebrew tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to sync, e.g. v1.11.0 (default: latest)"
+        required: false
+      dry_run:
+        description: "Do everything except push"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Two releases published in quick succession must not interleave: the loser
+# would push an older pin over a newer one.
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # the commit back to main
+    steps:
+      # main, not the tag: the formulae being rewritten are main's, and the
+      # commit at the end has to land there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Which release
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag=${EVENT_TAG:-$INPUT_TAG}
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::error::tag '$tag' does not look like vX.Y.Z" >&2; exit 1 ;;
+          esac
+          echo "tag=$tag"            >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"    >> "$GITHUB_OUTPUT"
+          echo "syncing the tap to $tag"
+
+      # The sha256 comes from the asset itself, never from anything written by
+      # hand: this is the value that tells a user's brew the download was not
+      # tampered with, and a stale one is indistinguishable from an attack.
+      - name: Hash the release tarball
+        id: tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          VER: ${{ steps.rel.outputs.version }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+             --pattern "imud-*.tar.gz" --dir /tmp/rel
+          f="/tmp/rel/imud-$VER.tar.gz"
+          [ -f "$f" ] || {
+            echo "::error::$TAG carries no imud-$VER.tar.gz" >&2
+            find /tmp/rel -maxdepth 1 -type f >&2; exit 1; }
+          sha=$(sha256sum "$f" | cut -d' ' -f1)
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "imud-$VER.tar.gz  $sha"
+
+      - name: Pin every formula to it
+        env:
+          VER: ${{ steps.rel.outputs.version }}
+          SHA: ${{ steps.tarball.outputs.sha256 }}
+        run: |
+          python3 tools/pin-homebrew.py --version "$VER" --sha256 "$SHA"
+          python3 tools/check-homebrew.py
+          git --no-pager diff -- packaging/homebrew
+
+      - name: Push the formulae to the tap
+        if: ${{ github.event_name == 'release' || inputs.dry_run == false }}
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          VER: ${{ steps.rel.outputs.version }}
+        run: |
+          [ -n "$DEPLOY_KEY" ] || {
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY is not set" >&2; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_key
+          chmod 600 ~/.ssh/tap_key
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          git clone --depth 1 git@github.com:richcreations/homebrew-imud.git tap
+          cp packaging/homebrew/*.rb tap/Formula/
+          git -C tap config user.name  "github-actions[bot]"
+          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C tap add Formula
+          if git -C tap diff --cached --quiet; then
+            echo "tap already serves $VER"
+            exit 0
+          fi
+          # No Signed-off-by: the DCO trailer is a person's assertion, and a
+          # workflow substituting a URL and a hash has not made one.
+          git -C tap commit -m "imud $VER" \
+                     -m "Pinned by homebrew-publish.yml when v$VER was published."
+          git -C tap push
+          echo "tap now serves $VER"
+
+      # Keeps packaging/homebrew/ and the tap identical, so the in-tree copy
+      # is always a formula someone can read and trust rather than a stale one.
+      - name: Pin the formulae on main too
+        if: ${{ github.event_name == 'release' || inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.rel.outputs.version }}
+        run: |
+          if git diff --quiet -- packaging/homebrew; then
+            echo "main already pinned to $VER"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/homebrew
+          git commit -m "homebrew: pin the formulae to $VER" \
+                     -m "Written by homebrew-publish.yml when v$VER was published."
+          # main moves rarely at release time, but a rebase costs nothing and
+          # turns a lost race into a retry rather than a failed release.
+          git fetch origin main
+          git rebase origin/main
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+          echo "main pinned to $VER"
+
+      - name: What a dry run would have done
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        env:
+          VER: ${{ steps.rel.outputs.version }}
+        run: |
+          echo "DRY RUN — nothing was pushed."
+          echo "Would have published imud $VER to richcreations/homebrew-imud"
+          echo "and committed the same pin to main."

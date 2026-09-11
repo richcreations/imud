@@ -330,15 +330,15 @@ the parts it needs. It works on Linux as well as macOS.
 
 @verbatim
 brew tap richcreations/imud
-brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew install richcreations/imud/imud richcreations/imud/imud-wmm-data
 brew services start richcreations/imud/imud
 @end verbatim
 
-@code{--HEAD} is needed until 1.11.0 ships. The formulae pass
-@code{--prefix}, @code{--rundir}, @code{--statedir} and
-@code{--with-service=none}, none of which the 1.10.1 release tarball's
-@code{configure} takes, so there is no stable release they can build
-from yet.
+The formulae build a release tarball and nothing else --- they declare
+no @code{head}, so there is no @code{brew install --HEAD} route to an
+untagged tree. The tap is rewritten to each new release by
+@code{homebrew-publish.yml}, on the same trigger that promotes the
+@code{.deb}s into the apt repository: publishing the draft release.
 
 @multitable @columnfractions 0.66 0.34 
 @headitem 

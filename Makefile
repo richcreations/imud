@@ -996,7 +996,8 @@ $(CHECK_DOC_TOOLS):
 # touching a document.
 check-generated-text: check-docs check-devices check-flags $(CHECK_DOC_TOOLS) \
                      check-config-docs check-packet-docs check-driver-docs \
-                     check-release-notes check-texi check-math-pdf-stamp
+                     check-release-notes check-texi check-math-pdf-stamp \
+                     check-homebrew
 
 # The 150 config keys have ONE home now (docs/config-keys.toml); this asserts
 # the man5 entries, the manual tables and the generated defaults test on disk
@@ -1099,6 +1100,9 @@ math-pdf:
 # An mtime rule could not work: git does not preserve mtimes.
 check-math-pdf-stamp:
 	@python3 tools/check-math-pdf-stamp.py
+
+check-homebrew:
+	@python3 tools/check-homebrew.py
 
 uninstall-info-doc:
 	@if [ -z "$(DESTDIR)" ] && command -v install-info >/dev/null 2>&1; then \

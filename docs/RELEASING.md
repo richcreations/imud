@@ -162,8 +162,22 @@ that Sequoia `sqv` (what apt uses from trixie onward) rejects outright.
 
 Review the draft release, write the notes, and click **Publish**.
 
-Publishing is what promotes the packages: it fires
-`.github/workflows/apt-publish.yml`, which routes the debs into
+Publishing is what promotes the packages. It fires **two** workflows.
+
+`.github/workflows/homebrew-publish.yml` rewrites the `url` and `sha256` of
+every formula in `packaging/homebrew/` to this release's source tarball,
+pushes them to the **richcreations/homebrew-imud** tap, and commits the same
+pin back to `main` so the two copies cannot drift. The tap push uses the
+`HOMEBREW_TAP_DEPLOY_KEY` secret — an SSH deploy key with write access to that
+repository and nothing else, since `GITHUB_TOKEN` cannot write to another
+repo. Rehearse it from the Actions tab (**Run workflow** → tag, `dry_run`
+checked): it does everything except the two pushes and prints the diff.
+
+The formulae declare no `head` block, and `check-homebrew.py` fails the build
+if one appears, so the tap can only ever serve a release. That is the same
+promise this whole section makes about apt.
+
+`.github/workflows/apt-publish.yml` routes the debs into
 `pool/<suite>/` on the orphan **`apt-pool`** branch, prunes to the three most
 recent versions per suite, rebuilds that branch as a single root commit,
 force-pushes it, and triggers `apt-repo.yml` to rebuild and GPG-sign the index

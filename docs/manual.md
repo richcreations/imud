@@ -195,14 +195,15 @@ parts it needs. It works on Linux as well as macOS.
 
 ```sh
 brew tap richcreations/imud
-brew install --HEAD richcreations/imud/imud richcreations/imud/imud-wmm-data
+brew install richcreations/imud/imud richcreations/imud/imud-wmm-data
 brew services start richcreations/imud/imud
 ```
 
-`--HEAD` is needed until 1.11.0 ships. The formulae pass `--prefix`,
-`--rundir`, `--statedir` and `--with-service=none`, none of which the 1.10.1
-release tarball's `configure` takes, so there is no stable release they can
-build from yet.
+The formulae build a release tarball and nothing else — they declare no `head`,
+so there is no `brew install --HEAD` route to an untagged tree. The tap is
+rewritten to each new release by `homebrew-publish.yml`, on the same trigger
+that promotes the `.deb`s into the apt repository: publishing the draft
+release.
 
 | Formula | What it installs |
 |---|---|
