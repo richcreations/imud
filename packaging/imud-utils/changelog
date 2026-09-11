@@ -1,3 +1,21 @@
+imud-utils (1.11.0) unstable; urgency=medium
+
+  * imud runs on macOS: it builds, installs, and runs as a launchd
+    service.
+  * FT232H USB bridge support, over I2C or SPI, for a host with no bus on
+    a header.
+  * imud installs with Homebrew on macOS or Linux, and from source under
+    any prefix.
+  * Capture files carry a CRC32 on every record, so a corrupt .imucap is
+    refused instead of replayed as data.  Older captures still read.
+  * imud-cal, imud-mon and imud-imutest fall back to
+    ~/.config/imud/imud.conf when there is no system config.
+  * lsm6dsox is recognised again.
+  * The magnetometer ran at a third of its configured rate with no
+    interrupt line.
+
+ -- Richard Simpson <richcreations@gmail.com>  Thu, 10 Sep 2026 23:54:40 -0700
+
 imud-utils (1.10.1) unstable; urgency=medium
 
   * imud-imutest reported the mpu9250/mpu9255 pair as not holding its

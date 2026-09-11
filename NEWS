@@ -12,22 +12,20 @@ registry rather than this file.
 
 1.11.0
 ------
-macOS support, installation under any prefix, and an FT232H USB bridge for a
-host with no bus on a header.
+macOS support, Homebrew packages, and an FT232H USB bridge for a host with no
+bus on a header.
 
 Added:
 
+* imud runs on macOS: it builds, installs, and runs as a launchd service.
 * FT232H USB bridge support, over I2C or SPI, for a host with no bus on a
   header.
-* imud installs and runs as a service on macOS.
-* libimud installs as a shared library on macOS.
-* imud installs under a prefix that is not /usr.
-* imud installs with Homebrew, on macOS or Linux, one formula per package.
-  brew tap richcreations/imud, then brew install richcreations/imud/imud.
+* imud installs with Homebrew on macOS or Linux, and from source under any
+  prefix.
 * imud-status --json prints the report as one JSON object.
 * Capture files carry a CRC32 on every record, so a corrupt .imucap is refused
   instead of replayed as data.
-  Captures are about 8% larger, and older ones still read.
+  Older captures still read.
 
 Changed:
 
@@ -36,12 +34,9 @@ Changed:
 
 Fixed:
 
-* Heading stayed magnetic on a build not installed at PREFIX=/usr.
 * lsm6dsox is recognised again.
 * The magnetometer ran at a third of its configured rate with no interrupt
   line.
-* imud-cal checks the output is writable before collecting a magnetometer
-  swing, not after.
 
 
 1.10.1

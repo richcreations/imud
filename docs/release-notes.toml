@@ -23,10 +23,15 @@
 
 [[release]]
 version = "1.11.0"
-date    = "unreleased"
+date    = "2026-09-11"
 summary = """
-macOS support, installation under any prefix, and an FT232H USB bridge for a
-host with no bus on a header."""
+macOS support, Homebrew packages, and an FT232H USB bridge for a host with no
+bus on a header."""
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-utils", "libimud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "imud runs on macOS: it builds, installs, and runs as a launchd service."
 
   [[release.change]]
   kind     = "feature"
@@ -35,24 +40,8 @@ host with no bus on a header."""
 
   [[release.change]]
   kind     = "feature"
-  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
-  text     = "imud installs and runs as a service on macOS."
-
-  [[release.change]]
-  kind     = "feature"
-  packages = ["libimud"]
-  text     = "libimud installs as a shared library on macOS."
-
-  [[release.change]]
-  kind     = "feature"
   packages = ["imud", "imud-utils", "libimud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
-  text     = "imud installs under a prefix that is not /usr."
-
-  [[release.change]]
-  kind     = "feature"
-  packages = ["imud"]
-  text     = "imud installs with Homebrew, on macOS or Linux, one formula per package."
-  impact   = "brew tap richcreations/imud, then brew install richcreations/imud/imud."
+  text     = "imud installs with Homebrew on macOS or Linux, and from source under any prefix."
 
   [[release.change]]
   kind     = "feature"
@@ -63,17 +52,12 @@ host with no bus on a header."""
   kind     = "feature"
   packages = ["imud", "imud-utils"]
   text     = "Capture files carry a CRC32 on every record, so a corrupt .imucap is refused instead of replayed as data."
-  impact   = "Captures are about 8% larger, and older ones still read."
+  impact   = "Older captures still read."
 
   [[release.change]]
   kind     = "behaviour"
   packages = ["imud", "imud-utils"]
   text     = "imud-cal, imud-mon and imud-imutest fall back to ~/.config/imud/imud.conf when there is no system config."
-
-  [[release.change]]
-  kind     = "fix"
-  packages = ["imud"]
-  text     = "Heading stayed magnetic on a build not installed at PREFIX=/usr."
 
   [[release.change]]
   kind     = "fix"
@@ -84,11 +68,6 @@ host with no bus on a header."""
   kind     = "fix"
   packages = ["imud", "imud-utils"]
   text     = "The magnetometer ran at a third of its configured rate with no interrupt line."
-
-  [[release.change]]
-  kind     = "fix"
-  packages = ["imud", "imud-utils"]
-  text     = "imud-cal checks the output is writable before collecting a magnetometer swing, not after."
 
 [[release]]
 version = "1.10.1"
