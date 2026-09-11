@@ -814,6 +814,18 @@ CASES = [
      sub(r"^Package: imud-mavlink$", "Package: imud-zzz"),
      "imud-zzz"),
 
+    # The tap README is copied verbatim at every release and nothing rewrites
+    # it, so a version in it is wrong from the next release onward. It shipped
+    # exactly this way: it advertised --HEAD, and was still doing so after the
+    # release that made --HEAD impossible.
+    ("check-homebrew", "packaging/homebrew/README.md",
+     sub(r"^# homebrew-imud$", "# homebrew-imud 1.11.0"),
+     "names a version"),
+
+    ("check-homebrew", "packaging/homebrew/README.md",
+     sub(r"^brew install richcreations", "brew install --HEAD richcreations"),
+     "advertises --HEAD"),
+
 ]
 
 

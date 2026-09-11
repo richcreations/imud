@@ -123,9 +123,13 @@ jobs:
 
           git clone --depth 1 git@github.com:richcreations/homebrew-imud.git tap
           cp packaging/homebrew/*.rb tap/Formula/
+          # The README too, or it says whatever it said at the last hand edit.
+          # check-homebrew.py keeps it version-agnostic so copying it verbatim
+          # is always right.
+          cp packaging/homebrew/README.md tap/README.md
           git -C tap config user.name  "github-actions[bot]"
           git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C tap add Formula
+          git -C tap add Formula README.md
           if git -C tap diff --cached --quiet; then
             echo "tap already serves $VER"
             exit 0

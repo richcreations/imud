@@ -58,6 +58,9 @@ NO_FORMULA = {
     "libimud-dev": "same formula as libimud0 would be, so also inside imud",
 }
 
+# The tap's README, rendered from packaging/homebrew/README.md at each release.
+README = "packaging/homebrew/README.md"
+
 
 def control_packages(text):
     """The binary package names debian/control builds."""
@@ -138,6 +141,25 @@ def main():
         rep.check(name in packages,
                   f"{FORMULA_DIR}/{name}.rb installs {name}, which "
                   f"{CONTROL} does not build")
+
+    # ── 4. the README is version-agnostic, and offers no branch either ───────
+    #
+    # It is copied to the tap verbatim at each release, so anything
+    # version-specific in it is stale the moment the next one ships — which is
+    # exactly how it came to advertise `--HEAD` for a release that had already
+    # been tagged.  Nothing rewrites it, so nothing must need rewriting.
+    readme = must_read(README, "the tap README")
+    for m in re.finditer(r"\b\d+\.\d+(?:\.\d+)?\b", readme):
+        rep.fail(f"{README} names a version ({m.group(0)}). The tap README is "
+                 f"copied verbatim at every release and nothing rewrites it, "
+                 f"so it has to read the same for all of them")
+
+    for path, text in list(forms.items()) + [(README, readme)]:
+        where = README if path == README else f"{FORMULA_DIR}/{path}.rb"
+        rep.check("--HEAD" not in text,
+                  f"{where} advertises --HEAD. The formulae carry no head "
+                  f"block, so that instruction cannot work — and a tap serves "
+                  f"releases only")
 
     version = want[0].rsplit("/imud-", 1)[-1][:-7] if pins else "?"
     return rep.finish(f"{len(forms)} formulae, all pinned to {version}")
