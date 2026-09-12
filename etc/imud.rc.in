@@ -1,0 +1,80 @@
+#!/bin/sh
+#
+# imud.rc — the rc.d counterpart of etc/imud.service.
+#
+# Installed to /usr/local/etc/rc.d/imud, mode 0755, and enabled with:
+#
+#     sysrc imud_enable=YES && service imud start
+#
+# Knobs, all settable in /etc/rc.conf:
+#
+#     imud_enable   NO by default
+#     imud_config   config file, @ETCDIR@/imud.conf by default
+#     imud_flags    extra arguments, none by default
+#
+# THE SERVICE RUNS AS ROOT, as the launchd job does and for a similar reason:
+# nothing here creates a service account, and the daemon needs no privilege of
+# its own — the FT232H bridge opens unprivileged.  A site that wants it
+# confined can add -u to imud_daemon_flags; the AF_UNIX paths in imud.conf must
+# then move somewhere that account can write.
+#
+# There is no notify protocol and no RuntimeDirectory= here, so daemon(8)
+# backgrounds the process and the runtime directory is made on every start —
+# the same two gaps the plist works around.
+#
+# -r -R 3 is Restart=/RestartSec=3, with one difference worth knowing:
+# daemon(8) restarts on ANY exit, where the unit and the plist both restart
+# only on failure.  A clean shutdown comes from `service imud stop`, which
+# signals the supervisor, so the distinction costs nothing in practice.
+#
+# PIDFILE, and why it is the supervisor's: rc.subr stops what the pidfile
+# names.  Pointed at the daemon itself that would kill the child and leave
+# daemon(8) to restart it three seconds later, so -P names the supervisor and
+# imud's own [pid] file stays separate for imud-status to read.
+
+# PROVIDE: imud
+# REQUIRE: DAEMON NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="imud"
+desc="IMU daemon — 9DoF AHRS bridge (NMEA 0183 + binary UDP)"
+rcvar="imud_enable"
+
+load_rc_config $name
+
+: ${imud_enable:="NO"}
+: ${imud_config:="@ETCDIR@/imud.conf"}
+: ${imud_flags:=""}
+
+pidfile="/var/run/imud/${name}.supervisor.pid"
+
+command="/usr/sbin/daemon"
+command_args="-f -S -T ${name} -P ${pidfile} -r -R 3 \
+              @BINDIR@/imud --config ${imud_config} ${imud_flags}"
+
+start_precmd="imud_precmd"
+reload_cmd="imud_reload"
+extra_commands="reload"
+
+imud_precmd()
+{
+	# /var/run is cleared at boot, so the directory holding the PID files and
+	# the AF_UNIX sockets has to be made on every start.
+	install -d -m 0750 /var/run/imud
+}
+
+imud_reload()
+{
+	# SIGHUP re-reads the config's [hot] keys, as ExecReload= does.  It goes to
+	# the daemon, not the supervisor, so it reads imud's own PID file.
+	if [ -f /var/run/imud/imud.pid ]; then
+		kill -HUP "$(cat /var/run/imud/imud.pid)"
+	else
+		echo "imud: no PID file at /var/run/imud/imud.pid" >&2
+		return 1
+	fi
+}
+
+run_rc_command "$1"

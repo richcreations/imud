@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# imud-mavlink.rc — the rc.d counterpart of etc/imud-mavlink.service.
+#
+#     sysrc imud_mavlink_enable=YES && service imud-mavlink start
+#
+# Requires imud's [stream] output: the bridge reads the AF_UNIX socket named in
+# its own config, which is why REQUIRE lists imud.
+#
+# See etc/imud.rc.in for why the pidfile is the supervisor's rather than the
+# bridge's, and for what -r -R 3 does and does not share with Restart=.
+#
+# NAME IS THE UNDERSCORE FORM, and the hyphenated one is kept in $svc.  rc.subr
+# builds shell variable names out of $name — ${name}_program, ${name}_flags and
+# more — so a hyphen there expands as $imud followed by the rest of the name as
+# literal text, and run_rc_command fails with "cannot run -..._program" before
+# the bridge is ever executed.
+
+# PROVIDE: imud_mavlink
+# REQUIRE: imud
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="imud_mavlink"
+svc="imud-mavlink"
+desc="imud → MAVLink bridge (binary stream → MAVLink over UDP/serial)"
+rcvar="imud_mavlink_enable"
+
+load_rc_config $name
+
+: ${imud_mavlink_enable:="NO"}
+: ${imud_mavlink_config:="@ETCDIR@/imud-mavlink.conf"}
+: ${imud_mavlink_flags:=""}
+
+pidfile="/var/run/imud/${svc}.supervisor.pid"
+
+command="/usr/sbin/daemon"
+command_args="-f -S -T ${svc} -P ${pidfile} -r -R 3 \
+              @BINDIR@/imud-mavlink --config ${imud_mavlink_config} ${imud_mavlink_flags}"
+
+start_precmd="imud_mavlink_precmd"
+
+imud_mavlink_precmd()
+{
+	# Shared with imud, and made here too: a bridge may be started before the
+	# daemon has ever run.
+	install -d -m 0750 /var/run/imud
+}
+
+run_rc_command "$1"

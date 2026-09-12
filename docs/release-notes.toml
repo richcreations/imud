@@ -22,6 +22,18 @@
 #             it is rendered prominently.
 
 [[release]]
+version = "1.12.0"
+date    = "unreleased"
+summary = """
+FreeBSD support: the daemon, the tools, the client library and every bridge,
+over an FT232H USB bridge and under rc.d."""
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-utils", "libimud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "imud runs on FreeBSD: it builds, installs, and runs as an rc.d service."
+
+[[release]]
 version = "1.11.0"
 date    = "2026-09-11"
 summary = """

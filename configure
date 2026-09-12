@@ -36,9 +36,15 @@ udevdir=/etc/udev/rules.d
 # where.  uname, not a link probe: there is nothing to compile here and the
 # host kernel is the whole of the answer.  --with-service= overrides it, and
 # --svcdir= overrides the directory alone.
+# An unrecognised host gets `none` rather than systemd: writing a unit into
+# /etc/systemd/system on a machine with no systemd installs a file nothing will
+# ever read, and hides the fact that the service was never wired up.  --with-
+# service= names one explicitly, which is how a NetBSD or illumos port starts.
 case $(uname -s) in
-    Darwin) svc_kind=launchd; svcdir=/Library/LaunchDaemons ;;
-    *)      svc_kind=systemd; svcdir=/etc/systemd/system ;;
+    Darwin)  svc_kind=launchd; svcdir=/Library/LaunchDaemons ;;
+    FreeBSD) svc_kind=rc;      svcdir=${LOCALBASE:-/usr/local}/etc/rc.d ;;
+    Linux)   svc_kind=systemd; svcdir=/etc/systemd/system ;;
+    *)       svc_kind=none;    svcdir= ;;
 esac
 svcdir_given=no
 want_service=auto
@@ -106,8 +112,8 @@ Options take their value with an =, as shown.
   --statedir=DIR            captures [from the init system]
 
   --with-service=NAME       init system to install a unit for: systemd,
-                            launchd, or none to install no unit and create
-                            no state directory [$svc_kind]
+                            launchd, rc (FreeBSD rc.d), or none to install no
+                            unit and create no state directory [$svc_kind]
   --with-gpiod              require libgpiod; fail if it is absent
   --without-gpiod           build the null GPIO backend even where it is present
   --with-linux-bus          require i2c-dev and spidev; fail if absent
@@ -157,20 +163,20 @@ done
 # past an explicit --svcdir: a packager naming both means both.
 case $want_service in
     auto) ;;
-    systemd|launchd)
+    systemd|launchd|rc)
         svc_kind=$want_service
         if [ "$svcdir_given" = no ]; then
-            if [ "$svc_kind" = launchd ]; then
-                svcdir=/Library/LaunchDaemons
-            else
-                svcdir=/etc/systemd/system
-            fi
+            case $svc_kind in
+                launchd) svcdir=/Library/LaunchDaemons ;;
+                rc)      svcdir=${LOCALBASE:-/usr/local}/etc/rc.d ;;
+                *)       svcdir=/etc/systemd/system ;;
+            esac
         fi ;;
     none)
         # No unit to place, so the directory is unused rather than empty:
         # leaving it set keeps config.mk uniform and costs nothing.
         svc_kind=none ;;
-    *) die "--with-service: expected systemd, launchd or none, not \"$want_service\"" ;;
+    *) die "--with-service: expected systemd, launchd, rc or none, not \"$want_service\"" ;;
 esac
 
 : "${libdir:=$prefix/lib}"
@@ -194,8 +200,19 @@ esac
 # -D_GNU_SOURCE because the Makefile puts it in CPPFLAGS unconditionally.  A
 # probe that omits it reports accept4 and friends absent on a host that has
 # them, since glibc hides them behind the feature-test macro.
+# FreeBSD keeps everything pkg installs under LOCALBASE, which is not on the
+# compiler's default search path the way /usr/include is on Linux.  The probe
+# has to look where the Makefile will, or a library that is installed probes
+# as absent and its bridge silently drops out of the build.
+LOCALBASE_FLAGS=
+if [ "$(uname -s)" = FreeBSD ]; then
+    LOCALBASE=${LOCALBASE:-/usr/local}
+    LOCALBASE_FLAGS="-I$LOCALBASE/include -L$LOCALBASE/lib"
+fi
+
 try_link() {   # try_link <flag>...  — program on stdin
-    $CC $CFLAGS_PROBE -D_GNU_SOURCE -x c - "$@" -o /dev/null >/dev/null 2>&1
+    $CC $CFLAGS_PROBE $LOCALBASE_FLAGS -D_GNU_SOURCE -x c - "$@" -o /dev/null \
+        >/dev/null 2>&1
 }
 
 have_tool() {
@@ -267,8 +284,9 @@ int main(void){return I2C_RDWR==0;}' | try_link; then
         have_linux_bus=0
     fi
 
-    # The FT232H bridge backend.  Two rungs, neither needing a library: usbfs
-    # on Linux, IOKit on macOS.  Not fatal either way -- without one a host
+    # The FT232H bridge backend.  Three rungs, each the host's own USB layer:
+    # usbfs on Linux, IOKit on macOS, libusb20 on FreeBSD.  Not fatal -- without
+    # one a host
     # simply has no "ftdi:" node to name, and its other backends are
     # unaffected.  The probe picks the rung as well as answering yes or no,
     # because there is nothing else to tell them apart.
@@ -286,6 +304,12 @@ int main(void){return kIOUSBFindInterfaceDontCare==0;}' \
         ft_usb_src=src/ft_usb_darwin.c
         ft_usb_lib="-framework IOKit -framework CoreFoundation"
         ft_usb_how="IOKit"
+    elif echo '#include <libusb20.h>
+int main(void){return libusb20_be_alloc_default()==0;}' | try_link -lusb; then
+        have_usbfs=1
+        ft_usb_src=src/ft_usb_freebsd.c
+        ft_usb_lib="-lusb"
+        ft_usb_how="libusb20"
     else
         have_usbfs=0
     fi

@@ -71,6 +71,15 @@ under launchd rather than systemd. See
 [Building on macOS](#building-on-macos) and
 [As a launchd job](#as-a-launchd-job-macos) below.
 
+**FreeBSD** is the third, on the same terms: the daemon, the tools, the client
+library and all five bridges build and run there, the sensor comes in over an
+FT232H USB bridge — reached through libusb20 rather than usbfs — and both
+readers poll. `./configure` detects it from `uname` and installs an rc.d script
+into `/usr/local/etc/rc.d` instead of a unit, enabled with
+`sysrc imud_enable=YES`. Everything pkg installs lives under `LOCALBASE`, so
+the build adds `-I$LOCALBASE/include` and `-L$LOCALBASE/lib`; without them
+libmosquitto is unreachable and `imud-mqtt` will not compile.
+
 **Binaries.**
 
 | Binary | Purpose |
@@ -361,7 +370,7 @@ than chmod'd down after `bind()`, so they are never momentarily wider — howeve
 `make install` on macOS installs
 `/Library/LaunchDaemons/io.github.richcreations.imud.plist` instead of a
 systemd unit — `./configure` picks which from `uname`, and
-`--with-service=systemd|launchd|none` overrides it. Each bridge installs its
+`--with-service=systemd|launchd|rc|none` overrides it. Each bridge installs its
 own, labelled the same way. `none` installs no unit and creates no state
 directory, for a package manager that defines the service itself.
 
@@ -503,7 +512,7 @@ Hardware bus and GPIO controller. **[restart]**
 <!-- BEGIN GENERATED: config-keys device.1 -->
 | `i2c_bus` | string | `"/dev/i2c-1"` | I²C bus device node. Use `/dev/i2c-1` on Pi 4; `/dev/i2c-1` or `/dev/i2c-3` on Pi 5 depending on which header pins are used.
 
-A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. The same dongle drives SPI instead when `[imu]`/`[mag] spi_dev` name it with a `/cs<N>` chip select, which is set here rather than in `[device]`. |
+A host with no I²C on a header can instead name an FT232H USB bridge as `ftdi:[<match>][@<hz>]`. `<match>` picks between several by USB serial, or by the identifier that follows the socket — a sysfs port path such as `1-2` on Linux, a location ID such as `14100000` on macOS, a ugen name such as `ugen0.2` on FreeBSD — and is omitted for the first one found. `<hz>` sets the bus clock, 400000 by default. Wire AD0 to SCL and AD1 and AD2 together to SDA; pull-ups are yours. There is no interrupt line on this transport, so set `int_gpio = 0` and both readers poll. The same dongle drives SPI instead when `[imu]`/`[mag] spi_dev` name it with a `/cs<N>` chip select, which is set here rather than in `[device]`. |
 | `gpio_chip` | string | `"gpiochip0"` | gpiochip device name. **Run `gpiodetect` and use the chip it lists for the header pins** — the number comes from probe order and is not stable across kernels. `"gpiochip0"` is right on Pi 4, and on Pi 5 with kernels from mid-2024 onward (which renumber the RP1 controller to 0 like every other model). Earlier Pi 5 kernels exposed it as `"gpiochip4"`, and Pi OS keeps a `/dev/gpiochip4` symlink for compatibility — a symlink, not a second controller. |
 | `sim_file` | string | `""` | An `.imucap` capture for the sim driver to replay (`driver = "sim"` in both `[imu]` and `[mag]`); empty selects the built-in synthetic scenario. `imud --replay FILE` is the shortcut. See [capture & replay](capture.md). |
 | `sim_loop` | bool | `false` | Repeat the capture forever; timestamps and sequence numbers are rebased to stay monotonic. Ignored under `--replay`, which plays a file once and exits. |

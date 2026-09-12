@@ -86,7 +86,8 @@ Packaging notes: when DESTDIR is set the install is a pure file copy — no
 system user is created, no groups are made, and systemctl/udevadm/ldconfig are
 never invoked (those belong to a package's maintainer scripts). Packagers
 should also set SVCDIR=/lib/systemd/system (service units are generated from
-etc/*.service.in, or etc/*.plist.in on a launchd host, with the chosen bin and
+etc/*.service.in, or etc/*.plist.in on a launchd host and etc/*.rc.in on an
+rc.d one, with the chosen bin and
 config dirs) and UDEVDIR=/usr/lib/udev/rules.d
 (the default /etc/udev/rules.d is right for a source install but is reserved
 for the admin in a package; udev never reads rules from PREFIX). CC/CFLAGS/
@@ -152,7 +153,7 @@ and fails on linux/i2c-dev.h:
         /Library/LaunchDaemons/io.github.richcreations.imud.plist
 
 configure detects launchd from uname and installs a launchd job instead of a
-systemd unit, into /Library/LaunchDaemons; --with-service=systemd|launchd|none
+systemd unit, into /Library/LaunchDaemons; --with-service=systemd|launchd|rc|none
 overrides the choice and --svcdir the directory. The job runs as root, because
 macOS has no useradd and none of the unit's confinement — see the comment at
 the top of etc/imud.plist.in. There is no udev rule and no imud user here, and
@@ -168,6 +169,39 @@ A Mac has no I2C or SPI node and no GPIO chip, so a real sensor comes in over
 an FT232H USB bridge (i2c_bus = "ftdi:", int_gpio = 0; see docs/manual.md
 §5.2), and driver = sim runs the pipeline with no hardware at all. There is no
 .deb; build from source.
+
+
+On FreeBSD
+----------
+
+The daemon, the tools, the client library and all five bridges build and run on
+FreeBSD 14. ./configure is REQUIRED here too, and gmake rather than make — the
+Makefile is GNU make's:
+
+    pkg install gmake mosquitto   # mosquitto only for the MQTT bridge
+    ./configure && gmake
+    gmake install
+    sysrc imud_enable=YES && service imud start
+
+configure detects rc from uname and installs an rc.d script instead of a unit,
+into LOCALBASE/etc/rc.d; --with-service=systemd|launchd|rc|none overrides the
+choice and --svcdir the directory. Each service takes its own rcvar, spelled
+with underscores: imud_enable, imud_signalk_enable, imud_mqtt_enable and so on.
+The script runs the daemon under daemon(8), which supplies the backgrounding
+and the restart-on-exit that Type=notify and Restart= give on Linux.
+
+Like macOS it runs as root, has no udev rule and no imud user, and has no /run:
+the AF_UNIX paths in the installed config are rewritten to /var/run/imud, which
+the rc script creates on every start.
+
+Everything pkg installs lives under LOCALBASE (/usr/local), which is not on the
+compiler's default search path, so the build adds -I$LOCALBASE/include and
+-L$LOCALBASE/lib. Without them libmosquitto probes as absent while installed
+and imud-mqtt fails to compile.
+
+There is no I2C or SPI node and no GPIO chip reached here either: the sensor
+comes in over an FT232H USB bridge, through libusb20 rather than Linux's usbfs.
+There is no package; build from source.
 
 The full installation, configuration, and calibration guide is docs/manual.md
 (installed to /usr/share/doc/imud/manual.md).

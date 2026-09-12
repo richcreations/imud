@@ -13,9 +13,11 @@
  * is host-specific is how a process reaches a USB endpoint at all, which is
  * these six calls.
  *
- * src/ft_usb_linux.c is usbfs, and needs no library.  A Mac or a BSD writes one
- * file against this header — libusb is the obvious answer on both — and names
- * it in the Makefile as FT_USB_SRC, with nothing else in the build to edit.
+ * src/ft_usb_linux.c is usbfs, src/ft_usb_darwin.c is IOKit and
+ * src/ft_usb_freebsd.c is libusb20 — each its host's own USB layer, none of
+ * them a dependency the tree does not already assume.  A further host writes
+ * one file against this header and names it in the Makefile as FT_USB_SRC,
+ * with nothing else in the build to edit.
  *
  * Everything here is synchronous and blocking.  src/bus_ft232h.c serialises
  * its own access, so no call below has to be reentrant on one handle.

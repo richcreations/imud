@@ -91,10 +91,11 @@ lib/*.d
 __pycache__/
 *.pyc
 
-# Generated service units (from etc/*.service.in and etc/*.plist.in; see
-# Makefile).  The .in templates are tracked; these are not.
+# Generated service units (from etc/*.service.in, etc/*.plist.in and
+# etc/*.rc.in; see Makefile).  The .in templates are tracked; these are not.
 /etc/*.service
 /etc/*.plist
+/etc/*.rc
 
 # Release tarballs (make dist)
 /imud-*.tar.gz

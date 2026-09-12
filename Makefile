@@ -39,6 +39,23 @@ ifeq ($(origin UNAME_S),undefined)
 UNAME_S := $(shell uname -s)
 endif
 
+# Defined on every host, because SVC_KIND=rc can be asked for anywhere and it
+# names the rc.d directory under this prefix.
+LOCALBASE ?= /usr/local
+
+# FreeBSD keeps everything pkg installs under LOCALBASE, and unlike /usr/include
+# on Linux it is not on the compiler's default search path — so libmosquitto is
+# unreachable without this and imud-mqtt fails to compile on a host that has it.
+# configure's probes carry the same two flags, or the library would come out
+# "NO" while being installed.
+#
+# override, like every other CPPFLAGS line here: once the variable carries that
+# origin a plain += is ignored outright, and the flag vanishes silently.
+ifeq ($(UNAME_S),FreeBSD)
+    override CPPFLAGS += -I$(LOCALBASE)/include
+    override LDFLAGS  += -L$(LOCALBASE)/lib
+endif
+
 # The GPIO backend behind include/imu_gpio.h.  src/imu_gpio.c is libgpiod;
 # src/imu_gpio_null.c is the same three entry points failing with ENOSYS, which
 # leaves the reader threads on the rate-sized timer they already fall back to
@@ -93,16 +110,18 @@ NO_LINUX_BUS ?= 0
 NO_FT232H    ?= 0
 
 # The USB transport behind include/ft_usb.h, which src/bus_ft232h.c sits on.
-# src/ft_usb_linux.c is usbfs and src/ft_usb_darwin.c is IOKit; neither needs a
-# library, which is what keeps the bridge backend dependency-free on both.  A
-# BSD writes one file against that header and names it here, with nothing else
-# in the build to edit.
+# src/ft_usb_linux.c is usbfs, src/ft_usb_darwin.c is IOKit and
+# src/ft_usb_freebsd.c is libusb20 — each its host's own USB layer, so the
+# bridge backend adds no dependency any of them lacks.
 #
-# FT_USB_LIB rides with it: empty where the host API is in libc, and the two
-# frameworks on Darwin.  ./configure writes both.
+# FT_USB_LIB rides with it: empty on Linux, where usbfs is ioctls on libc, and
+# the host's own library elsewhere.  ./configure writes both.
 ifeq ($(UNAME_S),Darwin)
     FT_USB_SRC ?= src/ft_usb_darwin.c
     FT_USB_LIB ?= -framework IOKit -framework CoreFoundation
+else ifeq ($(UNAME_S),FreeBSD)
+    FT_USB_SRC ?= src/ft_usb_freebsd.c
+    FT_USB_LIB ?= -lusb
 else
     FT_USB_SRC ?= src/ft_usb_linux.c
     FT_USB_LIB ?=
@@ -1240,11 +1259,18 @@ UDEVDIR ?= /etc/udev/rules.d
 # config.mk; the probe here is what keeps a plain `make install` right with
 # no configure step.
 # $(origin) rather than ?= for the reason given at UNAME_S above.
+# systemd is Linux's by name, not by default: an unrecognised host takes `none`
+# rather than having a unit written into a directory nothing reads.  A port
+# names its own with SVC_KIND= or ./configure --with-service=.
 ifeq ($(origin SVC_KIND),undefined)
 ifeq ($(UNAME_S),Darwin)
 SVC_KIND := launchd
-else
+else ifeq ($(UNAME_S),FreeBSD)
+SVC_KIND := rc
+else ifeq ($(UNAME_S),Linux)
 SVC_KIND := systemd
+else
+SVC_KIND := none
 endif
 endif
 
@@ -1268,6 +1294,16 @@ svc-src  = etc/$(1).plist
 svc-dst  = $(LAUNCHD_PREFIX).$(1).plist
 SVCDIR   ?= /Library/LaunchDaemons
 RUNDIR   ?= /var/run
+STATEDIR ?= /var/db/imud
+else ifeq ($(SVC_KIND),rc)
+# FreeBSD's rc.d: a shell script under LOCALBASE, named for the service with no
+# extension, enabled by sysrc rather than by a symlink the installer makes.  It
+# has no RuntimeDirectory= either, so the script makes /var/run/imud itself on
+# every start — /var/run is cleared at boot.
+svc-src  = etc/$(1).rc
+svc-dst  = $(1)
+SVCDIR   ?= $(LOCALBASE)/etc/rc.d
+RUNDIR   ?= /var/run/imud
 STATEDIR ?= /var/db/imud
 else ifeq ($(SVC_KIND),none)
 # No unit to build or name, so both calls expand to nothing and every recipe
@@ -1314,6 +1350,11 @@ override CPPFLAGS += -DIMUD_PREFIX='"$(PREFIX)"' -DIMUD_ETCDIR='"$(ETCDIR)"' \
 ifeq ($(SVC_KIND),none)
 SVCDIR_STAGE =
 install-svc  = echo "No service unit installed ($(1): --with-service=none)."
+else ifeq ($(SVC_KIND),rc)
+# 0755, not 0644: an rc.d script is executed, where a unit and a plist are read.
+SVCDIR_STAGE = $(DESTDIR)$(SVCDIR)
+install-svc  = install -m 755 $(call svc-src,$(1)) \
+                       $(DESTDIR)$(SVCDIR)/$(call svc-dst,$(1))
 else
 SVCDIR_STAGE = $(DESTDIR)$(SVCDIR)
 install-svc  = install -m 644 $(call svc-src,$(1)) \
@@ -1398,8 +1439,8 @@ libimud.pc: lib/libimud.pc.in .FORCE
 	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@LIBDIR@|$(LIBDIR)|g' \
 	    -e 's|@VERSION@|$(VERSION)|g' $< > $@
 
-# Service units are generated from etc/*.service.in (systemd) and
-# etc/*.plist.in (launchd) with the real install paths.  .FORCE regenerates on
+# Service units are generated from etc/*.service.in (systemd), etc/*.plist.in
+# (launchd) and etc/*.rc.in (FreeBSD rc.d) with the real install paths.  .FORCE regenerates on
 # every make so a changed PREFIX can't leave stale units.  One substitution
 # list for both kinds: the .service.in files carry no @ETCDIR@ today, and that
 # is the only reason they read the same either way.
@@ -1409,6 +1450,9 @@ etc/%.service: etc/%.service.in .FORCE
 	$(SVC_SUBST) $< > $@
 
 etc/%.plist: etc/%.plist.in .FORCE
+	$(SVC_SUBST) $< > $@
+
+etc/%.rc: etc/%.rc.in .FORCE
 	$(SVC_SUBST) $< > $@
 
 .FORCE:
@@ -1437,10 +1481,11 @@ ifeq ($(SVC_KIND),systemd)
 	        usermod -aG "$$grp" imud 2>/dev/null || true; \
 	    done; \
 	fi
-else ifeq ($(SVC_KIND),launchd)
-	# launchd has no RuntimeDirectory=/StateDirectory=.  The runtime paths sit
-	# directly in $(RUNDIR), which the system provides; the state directory has
-	# to survive a boot, so it is made here rather than at start.
+else ifneq ($(filter $(SVC_KIND),launchd rc),)
+	# Neither launchd nor rc.d has RuntimeDirectory=/StateDirectory=.  The
+	# runtime directory is made at start (the plist's /var/run, the rc script's
+	# own precmd); the state directory has to survive a boot, so it is made
+	# here rather than at start.
 	install -d -m 0750 $(DESTDIR)$(STATEDIR)
 endif
 	# ── Config + calibration (all in /etc/imud) ────────────────────────────
@@ -1565,6 +1610,8 @@ endif
 	@echo "Next steps:"
 ifeq ($(SVC_KIND),launchd)
 	@echo "  sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "  sudo sysrc imud_enable=YES && sudo service imud start"
 else ifeq ($(SVC_KIND),none)
 	@echo "  start imud yourself: --with-service=none installed no unit"
 else
@@ -1620,6 +1667,8 @@ install-signalk: imud-signalk $(call svc-src,imud-signalk)
 	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-signalk.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-signalk)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "Installed imud-signalk.  Enable with: sudo sysrc imud_signalk_enable=YES && sudo service imud-signalk start"
 else ifeq ($(SVC_KIND),none)
 	@echo "Installed imud-signalk.  No service unit: --with-service=none."
 else
@@ -1664,6 +1713,8 @@ endif
 	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mqtt.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mqtt)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "Installed imud-mqtt.  Enable with: sudo sysrc imud_mqtt_enable=YES && sudo service imud-mqtt start"
 else ifeq ($(SVC_KIND),none)
 	@echo "Installed imud-mqtt.  No service unit: --with-service=none."
 else
@@ -1707,6 +1758,8 @@ endif
 	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-influxdb.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-influxdb)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "Installed imud-influxdb.  Enable with: sudo sysrc imud_influxdb_enable=YES && sudo service imud-influxdb start"
 else ifeq ($(SVC_KIND),none)
 	@echo "Installed imud-influxdb.  No service unit: --with-service=none."
 else
@@ -1733,6 +1786,8 @@ install-prometheus: imud-prometheus $(call svc-src,imud-prometheus)
 	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-prometheus.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-prometheus)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "Installed imud-prometheus.  Enable with: sudo sysrc imud_prometheus_enable=YES && sudo service imud-prometheus start"
 else ifeq ($(SVC_KIND),none)
 	@echo "Installed imud-prometheus.  No service unit: --with-service=none."
 else
@@ -1762,6 +1817,8 @@ endif
 	@$(reload-svc)
 ifeq ($(SVC_KIND),launchd)
 	@echo "Installed imud-mavlink.  Enable with: sudo launchctl bootstrap system $(SVCDIR)/$(call svc-dst,imud-mavlink)"
+else ifeq ($(SVC_KIND),rc)
+	@echo "Installed imud-mavlink.  Enable with: sudo sysrc imud_mavlink_enable=YES && sudo service imud-mavlink start"
 else ifeq ($(SVC_KIND),none)
 	@echo "Installed imud-mavlink.  No service unit: --with-service=none."
 else
@@ -1798,6 +1855,15 @@ ifeq ($(SVC_KIND),launchd)
 	        done; \
 	        [ $$left = 0 ] && break; \
 	        sleep 1; \
+	    done; \
+	fi
+else ifeq ($(SVC_KIND),rc)
+	# Stop first, then clear the rcvar, so a reinstall does not come back
+	# enabled.  sysrc -x removes the setting rather than writing NO.
+	@if [ -z "$(DESTDIR)" ] && command -v service >/dev/null 2>&1; then \
+	    for n in $(SVC_NAMES); do \
+	        service $$n stop 2>/dev/null || true; \
+	        sysrc -x $$(echo $$n | tr - _)_enable 2>/dev/null || true; \
 	    done; \
 	fi
 else ifeq ($(SVC_KIND),systemd)
@@ -1862,7 +1928,7 @@ clean:
 	      mkseed_packet imud.info \
 	      src/*.gcda src/*.gcno src/drivers/*.gcda src/drivers/*.gcno \
 	      lib/*.gcda lib/*.gcno *.gcda *.gcno coverage.info \
-	      etc/*.service etc/*.plist imud-*.tar.gz
+	      etc/*.service etc/*.plist etc/*.rc imud-*.tar.gz
 	rm -rf coverage-html *.dSYM
 
 # GNU convention: clean removes what make built, distclean also removes what

@@ -1,7 +1,7 @@
 # imud — IMU Daemon
 
 [![Latest release](https://img.shields.io/github/v/release/richcreations/imud?sort=semver)](https://github.com/richcreations/imud/releases)
-[![Platform: Linux | macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue.svg)](docs/manual.md)
+[![Platform: Linux | macOS | FreeBSD](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20FreeBSD-blue.svg)](docs/manual.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)  
 [![CI](https://github.com/richcreations/imud/actions/workflows/ci.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/richcreations/imud/actions/workflows/codeql.yml/badge.svg)](https://github.com/richcreations/imud/actions/workflows/codeql.yml)
@@ -42,8 +42,8 @@ software at the stream.
 
 It depends on the C standard library and, for the interrupt lines, `libgpiod`
 — nothing else, and `./configure` builds without `libgpiod` where it is
-absent. Linux is the packaged target; imud also builds and runs on macOS,
-where an FT232H USB dongle carries the sensor bus. License: MIT — see
+absent. Linux is the packaged target; imud also builds and runs on macOS and
+FreeBSD, where an FT232H USB dongle carries the sensor bus. License: MIT — see
 [LICENSE](LICENSE).
 
 ## What it does
@@ -200,6 +200,11 @@ with `int_gpio = 0` either way — or run the `sim` driver with no hardware at
 all. `sudo make install` installs a launchd job
 rather than a systemd unit; `brew install` above is the packaged route. CI
 builds and runs the whole test suite on macOS 14 and 26 and on Intel.
+
+**On FreeBSD** it is `./configure && gmake` — GNU make, and configure again
+picks the backends, reaching the dongle through libusb20. `gmake install`
+writes an rc.d script rather than a unit; enable it with
+`sysrc imud_enable=YES`.
 
 Check it and watch the streams:
 

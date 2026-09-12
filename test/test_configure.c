@@ -50,6 +50,10 @@ static char g_work[]  = "/tmp/imud-conf-XXXXXX";
  * PATH_MAX buffer; g_work is a fixed /tmp template, so this is never tight. */
 static char g_stub[PATH_MAX / 2];    /* $g_work/bin — the whole PATH */
 static char g_real_path[8192];       /* the PATH this suite was started with */
+static char g_mkbin[PATH_MAX / 2];   /* holds one symlink: make -> GNU make */
+/* Sized from its two inputs rather than guessed, so the join provably fits and
+ * -Wformat-truncation stays quiet. */
+static char g_make_path[sizeof g_real_path + sizeof g_mkbin + 2];
 
 /* ── Fixture ─────────────────────────────────────────────────────────────── */
 
@@ -89,6 +93,7 @@ static const char *STUB_CC =
     "  *linux/i2c-dev.h*)  [ \"${STUB_BUS:-1}\" = 1 ] || fail bus ;;\n"
     "  *usbdevice_fs.h*)   [ \"${STUB_USBFS:-1}\" = 1 ] || fail usbfs ;;\n"
     "  *IOUSBLib.h*)       [ \"${STUB_IOKIT:-0}\" = 1 ] || fail iokit ;;\n"
+    "  *libusb20.h*)       [ \"${STUB_LIBUSB20:-0}\" = 1 ] || fail libusb20 ;;\n"
     "  *__ORDER_BIG_ENDIAN__*)\n"
     "      [ \"${STUB_ENDIAN:-little}\" = little ] || fail bigendian ;;\n"
     "  *stdatomic.h*)\n"
@@ -150,6 +155,56 @@ static void link_real(const char *tool)
     exit(2);
 }
 
+/*
+ * The recipes under test are GNU make's, and `make` is not GNU make everywhere
+ * -- on a BSD it is the host's own, which cannot parse this Makefile at all.
+ * So the make-driven cases run with a one-entry directory ahead of the real
+ * PATH, holding a `make` that points at the GNU one.  Identical on Linux,
+ * where they are already the same binary.
+ */
+static int find_in_real_path(const char *tool, char *out, size_t n)
+{
+    if (strchr(tool, '/')) {                   /* already a path */
+        if (access(tool, X_OK) != 0) return 0;
+        snprintf(out, n, "%s", tool);
+        return 1;
+    }
+    char dirs[sizeof g_real_path];
+    snprintf(dirs, sizeof dirs, "%s", g_real_path);
+    for (char *save = NULL, *d = strtok_r(dirs, ":", &save); d;
+         d = strtok_r(NULL, ":", &save)) {
+        char cand[PATH_MAX];
+        snprintf(cand, sizeof cand, "%s/%s", d, tool);
+        if (access(cand, X_OK) == 0) {
+            snprintf(out, n, "%s", cand);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* MAKE is exported by GNU make itself, so `gmake test` names the right one;
+ * a suite run by hand falls back to gmake, then to make. */
+static void link_gnu_make(void)
+{
+    const char *env = getenv("MAKE");
+    const char *tries[3];
+    size_t n = 0;
+    if (env && *env) tries[n++] = env;
+    tries[n++] = "gmake";
+    tries[n++] = "make";
+
+    char src[PATH_MAX], dst[PATH_MAX];
+    for (size_t i = 0; i < n; i++) {
+        if (!find_in_real_path(tries[i], src, sizeof src)) continue;
+        snprintf(dst, sizeof dst, "%s/make", g_mkbin);
+        if (symlink(src, dst) != 0 && errno != EEXIST) { perror(dst); exit(2); }
+        return;
+    }
+    fprintf(stderr, "test_configure: no make on this host\n");
+    exit(2);
+}
+
 static void fixture_init(void)
 {
     char path[PATH_MAX];
@@ -174,6 +229,11 @@ static void fixture_init(void)
 
     snprintf(g_real_path, sizeof g_real_path, "%s", getenv("PATH") ? getenv("PATH") : "");
 
+    snprintf(g_mkbin, sizeof g_mkbin, "%s/mkbin", g_work);
+    if (mkdir(g_mkbin, 0755) != 0) { perror(g_mkbin); exit(2); }
+    link_gnu_make();
+    snprintf(g_make_path, sizeof g_make_path, "%s:%s", g_mkbin, g_real_path);
+
     /* The stub PATH is the whole environment configure gets, so every
      * optional tool it probes with `command -v` is absent unless a case adds
      * one.  That makes "nothing but a compiler" the default fixture. */
@@ -185,7 +245,7 @@ static void fixture_reset(void)
 {
     static const char *vars[] = {
         "STUB_CC_BROKEN", "STUB_C11", "STUB_PTHREAD", "STUB_LIBM", "STUB_BUS",
-        "STUB_USBFS", "STUB_IOKIT",
+        "STUB_USBFS", "STUB_IOKIT", "STUB_LIBUSB20",
         "STUB_ENDIAN", "STUB_INLINE_ATOMIC", "STUB_LATOMIC", "STUB_MOSQUITTO",
         "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_ACCEPT4", "STUB_GPIOD_VERSION",
         "STUB_UNAME_S", "STUB_UNAME_M",
@@ -484,8 +544,25 @@ static void test_ft232h_rung_follows_the_host(void)
     EXPECT(run("--with-ft232h") == 0, "--with-ft232h is satisfied by IOKit");
 
     fixture_reset();
+    setenv("STUB_BUS", "0", 1);
     setenv("STUB_USBFS", "0", 1);
-    EXPECT(run("--with-ft232h") == 1, "and fails when neither is there");
+    setenv("STUB_LIBUSB20", "1", 1);
+    EXPECT(run("") == 0, "a FreeBSD-shaped host configures");
+    EXPECT(cfg_is("NO_FT232H", "0"), "with the bridge built");
+    EXPECT(cfg_is("FT_USB_SRC", "src/ft_usb_freebsd.c"), "on the libusb20 rung");
+    /* libusb20 is in FreeBSD base, but it is still a library to link: the
+     * usbfs rung is the only one that needs nothing. */
+    EXPECT(cfg_is("FT_USB_LIB", "-lusb"), "naming the library that rung links");
+    EXPECT(strstr(out("stdout"), "libusb20") != NULL, "and the summary says so");
+
+    fixture_reset();
+    setenv("STUB_USBFS", "0", 1);
+    setenv("STUB_LIBUSB20", "1", 1);
+    EXPECT(run("--with-ft232h") == 0, "--with-ft232h is satisfied by libusb20");
+
+    fixture_reset();
+    setenv("STUB_USBFS", "0", 1);
+    EXPECT(run("--with-ft232h") == 1, "and fails when none of the three is there");
 }
 
 /*
@@ -801,7 +878,7 @@ static void test_prefix_reaches_the_binary(void)
 {
     printf("test_prefix_reaches_the_binary\n");
     fixture_reset();
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char root[PATH_MAX], cmd[PATH_MAX * 3 + 1024];
     snprintf(root, sizeof root, "%s", g_configure);
@@ -906,7 +983,7 @@ static void test_service_none(void)
     EXPECT(cfg_is("DATADIR", "/opt/imud/share"), "DATADIR derived");
 
     /* ── the Makefile's half ─────────────────────────────────────────────── */
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
     snprintf(root, sizeof root, "%s", g_configure);
@@ -1070,7 +1147,7 @@ static void test_homebrew_formula(void)
     EXPECT(cfg_is("SVC_KIND", "none"), "and no init system is claimed");
 
     /* ── what that install actually runs ─────────────────────────────────── */
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char cmd[PATH_MAX * 3 + 1024], path[PATH_MAX], want[PATH_MAX];
     snprintf(path, sizeof path, "%s/mk.txt", g_work);
@@ -1183,7 +1260,7 @@ static void test_service_unit_follows_the_host(void)
     EXPECT(!wrote_config_mk(), "and writes no config.mk");
 
     /* ── the Makefile's half ─────────────────────────────────────────────── */
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
     snprintf(root, sizeof root, "%s", g_configure);
@@ -1240,7 +1317,7 @@ static void test_uninstall_stops_the_service(void)
 {
     printf("test_uninstall_stops_the_service\n");
 
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
     snprintf(root, sizeof root, "%s", g_configure);
@@ -1327,7 +1404,7 @@ static void test_config_mk_is_valid_make(void)
 
     /* make itself is not one of configure's dependencies, so it is not on the
      * stub PATH.  Hand this one step the real environment back. */
-    setenv("PATH", g_real_path, 1);
+    setenv("PATH", g_make_path, 1);
 
     char cmd[PATH_MAX * 2 + 512];
     snprintf(cmd, sizeof cmd,

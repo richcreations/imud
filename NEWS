@@ -10,6 +10,16 @@ Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
 registry rather than this file.
 
 
+1.12.0
+------
+FreeBSD support: the daemon, the tools, the client library and every bridge,
+over an FT232H USB bridge and under rc.d.
+
+Added:
+
+* imud runs on FreeBSD: it builds, installs, and runs as an rc.d service.
+
+
 1.11.0
 ------
 macOS support, Homebrew packages, and an FT232H USB bridge for a host with no
