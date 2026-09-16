@@ -79,7 +79,10 @@ RUN apt-get install -y --no-install-recommends \
 #
 #    The libFuzzer runtime is a version-suffixed package (libclang-rt-14-dev on
 #    bookworm, -19- on trixie) with no unversioned alias, so resolve it from the
-#    package lists rather than pinning a number that rots at the next release.
+#    package lists by the major version of the clang installed above.  Never
+#    take the newest match instead: trixie carries a runtime newer than `clang`
+#    resolves to, and clang looks only in its own resource directory, so that
+#    links against nothing.
 #
 #    Keep the comments ABOVE the RUN, not interleaved as `# …` command
 #    substitutions: those expand to nothing but still occupy the command's first
@@ -98,13 +101,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y --no-install-recommends \
         cppcheck clang clang-tools lcov mandoc pyflakes3 \
         help2man texinfo pandoc && \
+    maj=$(clang -dumpversion | cut -d. -f1) && \
     rt=$(apt-cache --names-only search '^libclang-rt-[0-9]+-dev$' \
-         | awk '{print $1}' | sort -V | tail -1) && \
+         | awk -v m="libclang-rt-$maj-dev" '$1 == m {print $1}') && \
     if [ -n "$rt" ]; then \
         echo "fuzzer runtime: $rt"; \
         apt-get install -y --no-install-recommends "$rt"; \
     else \
-        echo "WARNING: no libclang-rt-*-dev found; -fsanitize=fuzzer will fail"; \
+        echo "WARNING: no libclang-rt-dev for clang $maj; -fsanitize=fuzzer will fail"; \
     fi && \
     rm -rf /var/lib/apt/lists/*
 

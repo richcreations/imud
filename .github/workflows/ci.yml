@@ -1481,7 +1481,8 @@ jobs:
           apt_setup clang
           rt=$(clang_rt_package)
           if [ -z "$rt" ]; then
-            echo "no libclang-rt-*-dev in the archive; -fsanitize=fuzzer will fail" >&2
+            echo "no libclang-rt-dev for clang $(clang -dumpversion);" \
+                 "-fsanitize=fuzzer will fail" >&2
             exit 1
           fi
           echo "fuzzer runtime: $rt"

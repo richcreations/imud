@@ -45,11 +45,14 @@ apt_setup() {
 }
 
 # The libFuzzer runtime is a version-suffixed package (libclang-rt-19-dev on
-# trixie) with no unversioned alias, so resolve it from the package lists
-# rather than pinning a number that rots at the next Debian release.  Same
-# reasoning, and the same query, as devbox/Dockerfile.  Run this only after
-# apt_setup, which is what refreshes the lists it reads.
+# trixie) with no unversioned alias, so resolve it from the package lists by
+# the major version of the clang that will link against it.  Never take the
+# newest match instead: trixie's archive carries a runtime newer than `clang`
+# resolves to, and clang looks only in its own resource directory, so that
+# links against nothing.  Same query as devbox/Dockerfile.  Run this only
+# after apt_setup clang, which installs the compiler and refreshes the lists.
 clang_rt_package() {
+    maj=$(clang -dumpversion | cut -d. -f1) || return 1
     apt-cache --names-only search '^libclang-rt-[0-9]+-dev$' \
-        | awk '{print $1}' | sort -V | tail -1
+        | awk -v m="libclang-rt-$maj-dev" '$1 == m {print $1}'
 }
