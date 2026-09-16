@@ -1,0 +1,2 @@
+# Drop Debian trixie .deb files here (arm64 + _all), commit, and push.
+# The apt-repo workflow regenerates the signed index and redeploys Pages.
