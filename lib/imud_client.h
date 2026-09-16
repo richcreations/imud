@@ -148,7 +148,7 @@ typedef struct IMUD__PACKED {
     float quat_y;
     float quat_z;
     float pitch;              /* rad, NED (+bow up) */
-    float roll;               /* rad, NED (+starboard up) */
+    float roll;               /* rad, NED (+ = starboard down / heel to stbd) */
     float yaw;                /* rad, NED magnetic */
     float heading_deg;        /* 0–360° magnetic */
     float rate_of_turn;       /* deg/min, + = turning right */

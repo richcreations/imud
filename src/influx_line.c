@@ -7,7 +7,7 @@
 /*
  * influx_line.c — InfluxDB line-protocol encoder (see influx_line.h)
  *
- * Attitude uses imud's native NED convention (roll + = starboard up, pitch +
+ * Attitude uses imud's native NED convention (roll + = starboard down, pitch +
  * = bow up); no sign is flipped. `measurement` and `source_label` are assumed
  * to be simple identifiers (no spaces/commas) — the defaults are.
  */

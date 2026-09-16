@@ -36,11 +36,12 @@ future home but requires an engine identity imud does not have.
 ## Conventions
 
 Signal K's magnetic variation is Easterly-positive and rate of turn is
-starboard-positive, both matching imud directly. Signal K's schema does not state
-the attitude sign directions; imud's **roll is negated** into the widely used
-Signal K convention (roll + = starboard-down), while **pitch and yaw pass
-through**. Verify against a live Signal K display and flip if the horizon reads
-inverted.
+starboard-positive, both matching imud directly. So is attitude: the schema
+defines roll as "+ve is list to starboard" and pitch as "+ve is bow up", which
+are imud's own NED signs, so **roll, pitch and yaw all pass through unchanged**.
+
+Before 1.11.0 the bridge negated roll, publishing every heel to starboard as a
+negative list.
 
 ## Example delta
 

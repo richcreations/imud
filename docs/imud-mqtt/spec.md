@@ -2,7 +2,7 @@
 
 `imud-mqtt` consumes imud's AF_UNIX stream and publishes one scalar value per
 topic under a prefix (default `imud`), at the configured rate. Attitude uses
-imud's **native NED convention** (roll + = starboard up, pitch + = bow up) — no
+imud's **native NED convention** (roll + = starboard down, pitch + = bow up) — no
 sign flip. Values are degrees / °/min / m / °C by default (`units = deg`), or SI
 radians / rad/s (`units = rad`).
 

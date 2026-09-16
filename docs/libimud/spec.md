@@ -55,7 +55,7 @@ settled — check the corresponding flag.
 | `mag_raw[3]` | float | µT, pre-calibration |
 | `quat[4]` | float | unit quaternion [w, x, y, z], body→NED. The authoritative attitude — never singular (see below) |
 | `pitch` | float | rad, NED (+bow up) |
-| `roll` | float | rad, NED (+starboard up); degenerate near pitch ±90° |
+| `roll` | float | rad, NED (+ = starboard down, a heel to starboard); degenerate near pitch ±90° |
 | `yaw` | float | rad, NED magnetic; degenerate near pitch ±90° |
 | `heading_deg` | float | 0–360° magnetic; degenerate near pitch ±90° |
 | `heading_true_deg` | float | 0–360° true; **-1.0** until declination known |

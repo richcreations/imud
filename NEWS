@@ -19,6 +19,14 @@ Added:
 
 * imud runs on FreeBSD: it builds, installs, and runs as an rc.d service.
 
+Fixed:
+
+* navigation.attitude.roll had its sign inverted: a heel to starboard was
+  published as a negative list.
+  Remove any offset or plugin added to compensate. Only the Signal K bridge
+  was affected; NMEA, MQTT, InfluxDB, MAVLink, Prometheus and the binary
+  stream were always correct.
+
 
 1.11.0
 ------

@@ -154,7 +154,7 @@ typedef struct {
     float    bias_gyro[3];   /* estimated gyro bias, rad/s */
     float    cov[9];         /* 3×3 attitude error covariance, row-major (rad²) */
     float    pitch;          /* rad, NED (+bow up) */
-    float    roll;           /* rad, NED (+starboard up) */
+    float    roll;           /* rad, NED (+ = starboard down / heel to stbd) */
     float    yaw;            /* rad, NED magnetic */
     float    heading_deg;    /* 0–360° magnetic */
     float    declination_deg; /* °E+; valid only when FLAG_DECLINATION_VALID set */

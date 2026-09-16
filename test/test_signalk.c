@@ -109,7 +109,9 @@ static void test_attitude_object_and_sign(void)
     /* attitude is a compound object */
     EXPECT(strstr(buf, "\"path\":\"navigation.attitude\",\"value\":{\"roll\":") != NULL,
            "attitude emitted as {roll,pitch,yaw} object");
-    /* roll is negated to the SK convention; pitch/yaw pass through */
+    /* All three pass through: imud's NED signs are Signal K's. make_data()'s
+     * roll of +0.10 rad is a heel to starboard, which Signal K defines as a
+     * positive list — so a negative roll here is the 1.11.0 sign inversion. */
     const char *a = strstr(buf, "\"navigation.attitude\"");
     double roll = 0, pitch = 0, yaw = 0;
     if (a) {
@@ -117,7 +119,7 @@ static void test_attitude_object_and_sign(void)
         const char *pp = strstr(a, "\"pitch\":");  if (pp)  pitch = strtod(pp + 8, NULL);
         const char *yp = strstr(a, "\"yaw\":");    if (yp)  yaw   = strtod(yp + 6, NULL);
     }
-    EXPECT(fabs(roll - (-0.10)) < 1e-4,  "roll negated (imud +stbd-up → SK +stbd-down)");
+    EXPECT(fabs(roll - 0.10) < 1e-4,     "starboard heel stays positive (SK: +ve is list to starboard)");
     EXPECT(fabs(pitch - (-0.05)) < 1e-4, "pitch passed through");
     EXPECT(fabs(yaw - 1.23) < 1e-4,      "yaw passed through");
     end(fb);

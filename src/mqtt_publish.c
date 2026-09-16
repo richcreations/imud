@@ -8,10 +8,9 @@
  * mqtt_publish.c — MQTT message builders (see mqtt_publish.h)
  *
  * Scalar "one value per topic" telemetry plus Home Assistant MQTT-discovery
- * configs. Attitude/heading use imud's native NED convention (roll + = starboard
- * up, pitch + = bow up) — unlike the Signal K bridge, no sign is flipped; this
- * is raw telemetry for dashboards, and the discovery `unit_of_meas` documents
- * the units.
+ * configs. Attitude/heading use imud's native NED convention (roll + =
+ * starboard down, pitch + = bow up); no sign is flipped. This is raw telemetry
+ * for dashboards, and the discovery `unit_of_meas` documents the units.
  */
 
 #include "mqtt_publish.h"

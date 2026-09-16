@@ -61,7 +61,7 @@ int prom_build_metrics(char *buf, size_t sz, const imud_data_t *d,
     if (d->flags & IMUD_FLAG_DECLINATION_VALID)
         GAUGE("imud_heading_true_degrees", "True heading, 0-360 degrees.",
               "%.4f", d->heading_true_deg);
-    GAUGE("imud_roll_radians",  "Roll, NED (+starboard up).",  "%.6f", d->roll);
+    GAUGE("imud_roll_radians",  "Roll, NED (+ = starboard down).",  "%.6f", d->roll);
     GAUGE("imud_pitch_radians", "Pitch, NED (+bow up).",       "%.6f", d->pitch);
     GAUGE("imud_yaw_radians",   "Yaw, NED magnetic.",          "%.6f", d->yaw);
     GAUGE("imud_rate_of_turn_radians_per_second",

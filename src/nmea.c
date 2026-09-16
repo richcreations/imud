@@ -9,7 +9,7 @@
  *
  * Coordinate conventions (§6 / fusion.h):
  *   pitch: + = bow up     (NED)
- *   roll:  + = starboard up (NED)
+ *   roll:  + = starboard down, i.e. a heel to starboard (NED)
  *   heading_deg: 0–360° magnetic
  *   rate_of_turn: deg/min, + = turning right (clockwise from above)
  *   cov[0] = roll error variance (rad²)
@@ -131,7 +131,7 @@ static int build_tirot(char *buf, size_t bufsz, int *pos, float rot_deg_min)
 
 /*
  * $IIXDR — pitch and roll transducer.
- * Pitch: + = bow up.  Roll: + = starboard up.
+ * Pitch: + = bow up.  Roll: + = starboard down.
  * Values always emitted with explicit sign per NMEA XDR convention.
  */
 static int build_iixdr(char *buf, size_t bufsz, int *pos,

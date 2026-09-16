@@ -33,6 +33,12 @@ over an FT232H USB bridge and under rc.d."""
   packages = ["imud", "imud-utils", "libimud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
   text     = "imud runs on FreeBSD: it builds, installs, and runs as an rc.d service."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-signalk"]
+  text     = "navigation.attitude.roll had its sign inverted: a heel to starboard was published as a negative list."
+  impact   = "Remove any offset or plugin added to compensate. Only the Signal K bridge was affected; NMEA, MQTT, InfluxDB, MAVLink, Prometheus and the binary stream were always correct."
+
 [[release]]
 version = "1.11.0"
 date    = "2026-09-11"

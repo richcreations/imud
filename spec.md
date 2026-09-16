@@ -714,7 +714,7 @@ $PASHR,HHH.H,M,RRR.R,PPP.P,0.0,ra.r,pa.p,0,A,,*hh<CR><LF>
 Fields:
   HHH.H   Magnetic heading (0–360°); null when the magnetometer is not fused
   M       Always magnetic (PASHR carries magnetic heading regardless of declination)
-  RRR.R   Roll, degrees (+ = starboard up)
+  RRR.R   Roll, degrees (+ = starboard down, i.e. a heel to starboard)
   PPP.P   Pitch, degrees (+ = bow up)
   h.hh    Heave, metres, positive up (band-passed vertical-accel double
           integration; live when heave_tau_s > 0, else 0.0)

@@ -112,7 +112,7 @@ typedef struct imud_data {
     /* Fused attitude */
     float quat[4];             /* unit quaternion [w, x, y, z], body→NED */
     float pitch;               /* rad, NED (+bow up) */
-    float roll;                /* rad, NED (+starboard up) */
+    float roll;                /* rad, NED (+ = starboard down / heel to stbd) */
     float yaw;                 /* rad, NED magnetic */
     float heading_deg;         /* 0–360° magnetic */
     float heading_true_deg;    /* 0–360° true; -1.0 until declination known */

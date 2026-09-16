@@ -16,11 +16,14 @@
  *   navigation.attitude         rad {roll, pitch, yaw}
  *   environment.heave           m, "vertical movement of the vessel due to waves"
  *
- * Attitude sign convention: imud uses pitch + = bow up, roll + = starboard up,
- * yaw = magnetic heading. Signal K's schema does not state attitude sign
- * directions; the widely-used convention is roll + = starboard down, so imud's
- * roll is NEGATED here. Pitch and yaw are passed through. Revisit against a
- * live Signal K display if roll appears inverted.
+ * Attitude sign convention: imud's roll, pitch and yaw are the NED aerospace
+ * angles — roll + = starboard down, pitch + = bow up — and the Signal K schema
+ * defines roll as "+ve is list to starboard" and pitch as "+ve is bow up". The
+ * two agree, so all three pass through unchanged.
+ *
+ * Do not negate roll here. It was negated until 1.11.0, on the belief that
+ * imud's roll was starboard-up positive, which published every heel to
+ * starboard as a negative list.
  */
 
 #include "sk_delta.h"
@@ -109,11 +112,11 @@ int sk_build_delta(char *buf, size_t sz, const imud_data_t *d,
     APPEND("%s{\"path\":\"navigation.rateOfTurn\",\"value\":%.6f}",
            first ? "" : ",", d->rate_of_turn * (DEG2RAD / 60.0));
 
-    /* navigation.attitude: roll/pitch/yaw already radians; roll negated to the
-     * Signal K convention (starboard-down positive). */
+    /* navigation.attitude: roll/pitch/yaw already radians, and imud's NED signs
+     * are Signal K's (roll + = list to starboard, pitch + = bow up). */
     APPEND(",{\"path\":\"navigation.attitude\",\"value\":"
            "{\"roll\":%.5f,\"pitch\":%.5f,\"yaw\":%.5f}}",
-           -d->roll, d->pitch, d->yaw);
+           d->roll, d->pitch, d->yaw);
 
     /* environment.heave (metres, +up) — only once the estimator has settled
      * (~10·τ), so subscribers never see the startup transient. */
