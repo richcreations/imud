@@ -1,3 +1,13 @@
+imud-signalk (1.11.1) unstable; urgency=medium
+
+  * navigation.attitude.roll had its sign inverted: a heel to starboard
+    was published as a negative list.  Remove any offset or plugin added
+    to compensate. Only the Signal K bridge was affected; NMEA, MQTT,
+    InfluxDB, MAVLink, Prometheus and the binary stream were always
+    correct.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 16 Sep 2026 15:54:39 -0700
+
 imud-signalk (1.11.0) unstable; urgency=medium
 
   * imud runs on macOS: it builds, installs, and runs as a launchd

@@ -171,37 +171,5 @@ an FT232H USB bridge (i2c_bus = "ftdi:", int_gpio = 0; see docs/manual.md
 .deb; build from source.
 
 
-On FreeBSD
-----------
-
-The daemon, the tools, the client library and all five bridges build and run on
-FreeBSD 14. ./configure is REQUIRED here too, and gmake rather than make — the
-Makefile is GNU make's:
-
-    pkg install gmake mosquitto   # mosquitto only for the MQTT bridge
-    ./configure && gmake
-    gmake install
-    sysrc imud_enable=YES && service imud start
-
-configure detects rc from uname and installs an rc.d script instead of a unit,
-into LOCALBASE/etc/rc.d; --with-service=systemd|launchd|rc|none overrides the
-choice and --svcdir the directory. Each service takes its own rcvar, spelled
-with underscores: imud_enable, imud_signalk_enable, imud_mqtt_enable and so on.
-The script runs the daemon under daemon(8), which supplies the backgrounding
-and the restart-on-exit that Type=notify and Restart= give on Linux.
-
-Like macOS it runs as root, has no udev rule and no imud user, and has no /run:
-the AF_UNIX paths in the installed config are rewritten to /var/run/imud, which
-the rc script creates on every start.
-
-Everything pkg installs lives under LOCALBASE (/usr/local), which is not on the
-compiler's default search path, so the build adds -I$LOCALBASE/include and
--L$LOCALBASE/lib. Without them libmosquitto probes as absent while installed
-and imud-mqtt fails to compile.
-
-There is no I2C or SPI node and no GPIO chip reached here either: the sensor
-comes in over an FT232H USB bridge, through libusb20 rather than Linux's usbfs.
-There is no package; build from source.
-
 The full installation, configuration, and calibration guide is docs/manual.md
 (installed to /usr/share/doc/imud/manual.md).

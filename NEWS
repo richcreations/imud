@@ -10,17 +10,14 @@ Entries from 1.7 onward are generated from docs/release-notes.toml; edit the
 registry rather than this file.
 
 
-1.12.0
+1.11.1
 ------
-FreeBSD support: the daemon, the tools, the client library and every bridge,
-over an FT232H USB bridge and under rc.d.
-
-Added:
-
-* imud runs on FreeBSD: it builds, installs, and runs as an rc.d service.
+A correctness release: heading is no longer silenced after a magnetometer
+calibration, and Signal K roll is no longer inverted.
 
 Fixed:
 
+* Heading no longer arrives in bursts after a magnetometer calibration.
 * navigation.attitude.roll had its sign inverted: a heel to starboard was
   published as a negative list.
   Remove any offset or plugin added to compensate. Only the Signal K bridge
