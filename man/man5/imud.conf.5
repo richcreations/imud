@@ -625,7 +625,10 @@ wire field, by design: the dip channel is being trusted less.
 .B mag_reject_gauss
 .RI (double,\ default:\ 0.05)
 Strong-anomaly cutoff: reject magnetometer updates whose post-calibration
-residual exceeds this value (Gauss). Fine-grained consistency is handled by
+residual exceeds this value (Gauss). The residual measured is the one the
+update fuses \(em the horizontal (heading) component under
+.BR mag_yaw_only ,
+the full field vector otherwise. Fine-grained consistency is handled by
 internal chi-squared innovation gates; keep this a coarse threshold
 (~10% of the Earth field).
 .TP

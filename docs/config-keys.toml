@@ -1063,12 +1063,15 @@ Uncertainty in degrees of the magnetic reference's **dip** angle. Applies only t
   man_style = "tight"
   man = '''
 Strong-anomaly cutoff: reject magnetometer updates whose post-calibration
-residual exceeds this value (Gauss). Fine-grained consistency is handled by
+residual exceeds this value (Gauss). The residual measured is the one the
+update fuses \(em the horizontal (heading) component under
+.BR mag_yaw_only ,
+the full field vector otherwise. Fine-grained consistency is handled by
 internal chi-squared innovation gates; keep this a coarse threshold
 (~10% of the Earth field).'''
   md_type = 'double'
   md_default = '`0.05`'
-  desc = 'Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field).'
+  desc = 'Strong-anomaly cutoff: reject a magnetometer measurement whose post-calibration residual exceeds this value (Gauss). Guards against nearby iron/magnets. The residual measured is the one the update fuses — the horizontal (heading) component under `mag_yaw_only`, the full field vector otherwise, so the dip a swing-circle calibration cannot measure never gates a healthy heading. Fine-grained consistency is handled internally by χ² innovation gates that self-scale with filter confidence, so keep this a coarse threshold (~10% of the Earth field).'
 
   [[section.key]]
   names = ["accel_skip_thresh"]

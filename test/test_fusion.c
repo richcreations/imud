@@ -1281,6 +1281,48 @@ TEST(test_mag_uncalibrated_survives_convergence)
 }
 
 /*
+ * Same failure one step along, and the one that bites the default config:
+ * mag_yaw_only fuses the horizontal direction alone, but the reject gate used
+ * to test the full 3-vector residual. A swing-circle cal cannot measure the
+ * dip, so that residual stays past the threshold for a healthy compass and
+ * heading is dropped from the moment the filter converges — arriving in
+ * bursts while attitude runs on.  Issue #96.
+ */
+TEST(test_mag_yaw_only_survives_dip_error)
+{
+    imud_config_t cfg = make_cfg();
+    cfg.mag_yaw_only = true;
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+
+    /* Dip off by 0.10 G — 3-vector residual 0.157, threshold 0.059 — with
+     * the heading component exactly right. */
+    mag_sample_t m = make_mag(0.20f, 0.0f, 0.15f);
+
+    f.converged = true;
+    uint32_t a0 = f.mag_accepted;
+    for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
+    EXPECT(f.mag_accepted > a0,
+           "yaw-only filter accepts a mag whose dip alone is off");
+
+    /* The same threshold in the plane the update DOES use: 40° of heading
+     * error is a 0.137 G horizontal chord, well past mag_reject_gauss. Still
+     * rejected, so the gate has not simply been removed. */
+    mekf_t g;
+    mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
+    g.converged = true;
+    uint32_t b0 = g.mag_accepted;
+    mag_sample_t skew = make_mag(0.20f*cosf(40.0f*DEG),
+                                 0.20f*sinf(40.0f*DEG), 0.05f);
+    for (int i = 0; i < 50; i++) mekf_update_mag(&g, &skew);
+    EXPECT(g.mag_accepted == b0,
+           "yaw-only filter still rejects a heading residual past the threshold");
+}
+
+/*
  * The m_ref magnitude/dip EMA must not run on an uncalibrated field. Its
  * premise is that |B| and the dip are attitude-independent invariants; under
  * uncorrected hard iron |B| depends on heading, so the EMA would chase the
@@ -4509,6 +4551,7 @@ int main(void)
     RUN(test_mag_uncalibrated_never_touches_roll_pitch);
     RUN(test_mag_uncalibrated_withdrawal);
     RUN(test_mag_uncalibrated_survives_convergence);
+    RUN(test_mag_yaw_only_survives_dip_error);
     RUN(test_mag_uncalibrated_does_not_move_mref);
     RUN(test_mag_ratio_gate);
     RUN(test_mekf_reconfigure);

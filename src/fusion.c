@@ -1579,41 +1579,60 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
     }
 
     /*
-     * Tight anomaly threshold (converged only), scaled to normalised units.
-     *
-     * res_sq is the full 3-vector residual, so it answers a question the
-     * heading-only path never asks: an uncalibrated field has a permanently
-     * wrong magnitude and dip, and res_sq stays large once yaw has converged
-     * onto the offset heading.  Applying this gate there would reject every
-     * sample from the moment the filter converged and revert to dead
-     * reckoning without saying so.  YAW_CHI2_GATE inside eskf_update_yaw is
-     * the right test for that path and still runs.
+     * Heading innovation: the angle between the measured and the reference
+     * field in the horizontal plane.  Both the anomaly gate below and the
+     * heading-only update use it, so it is formed once here.  A near-vertical
+     * field carries no heading information at all (magnetic poles).
      */
-    if (!uncal && f->converged && res_sq > f->mag_reject_sq / (h_mag * h_mag))
-        return;
+    float m_ned[3];
+    for (int i = 0; i < 3; i++)
+        m_ned[i] = R[i][0]*mx + R[i][1]*my + R[i][2]*mz;
+
+    float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
+    float mh_mea = sqrtf(m_ned[0]*m_ned[0] + m_ned[1]*m_ned[1]);
+    bool  hdg_ok = (mh_ref >= 0.2f * h_mag && mh_mea >= 0.2f * h_mag);
+
+    float y = 0.0f;
+    if (hdg_ok) {
+        y = atan2f(m_ned[1], m_ned[0])
+          - atan2f(f->m_ref[1], f->m_ref[0]);
+        while (y >  (float)M_PI) y -= 2.0f*(float)M_PI;
+        while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
+    }
+
+    /*
+     * Tight anomaly threshold (converged only): the residual chord, in Gauss,
+     * measured on the channel the update below actually fuses.
+     *
+     * Under mag_yaw_only that is the horizontal plane alone.  The full
+     * 3-vector residual would count the dip, which a structurally 2-D
+     * swing-circle cal cannot measure, so it stays large once yaw has
+     * converged — and gating on it rejects nearly every sample while heading
+     * is in fact correct.  An uncalibrated field is worse still (wrong
+     * magnitude AND wrong dip) and is skipped entirely; YAW_CHI2_GATE inside
+     * eskf_update_yaw is the right test for both.
+     *
+     * Both forms are the same test — the squared chord between measurement
+     * and prediction, 2·|B|²·(1−cos θ) — taken in the plane each mode fuses.
+     */
+    if (!uncal && f->converged) {
+        if (f->mag_yaw_only) {
+            if (2.0f * mh_ref * mh_ref * (1.0f - cosf(y)) > f->mag_reject_sq)
+                return;
+        } else if (res_sq > f->mag_reject_sq / (h_mag * h_mag)) {
+            return;
+        }
+    }
 
     int rc;
     if (f->mag_yaw_only || uncal) {
         /*
          * Heading-only fusion (marine default): the swing-circle mag cal is
          * structurally 2D, so the field's dip component is the least
-         * calibrated channel — it must not pull on roll/pitch. Rotate the
-         * measurement into NED with the current attitude and innovate on
+         * calibrated channel — it must not pull on roll/pitch. Innovate on
          * the horizontal field direction only.
          */
-        float m_ned[3];
-        for (int i = 0; i < 3; i++)
-            m_ned[i] = R[i][0]*mx + R[i][1]*my + R[i][2]*mz;
-
-        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
-        float mh_mea = sqrtf(m_ned[0]*m_ned[0] + m_ned[1]*m_ned[1]);
-        if (mh_ref < 0.2f * h_mag || mh_mea < 0.2f * h_mag)
-            return;   /* nearly vertical field (magnetic poles) — no heading info */
-
-        float y = atan2f(m_ned[1], m_ned[0])
-                - atan2f(f->m_ref[1], f->m_ref[0]);
-        while (y >  (float)M_PI) y -= 2.0f*(float)M_PI;
-        while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
+        if (!hdg_ok) return;   /* nearly vertical field — no heading info */
 
         /* Heading noise: per-axis field noise over the horizontal magnitude */
         /*
@@ -1687,7 +1706,6 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
          */
         float R33[3][3];
         const float (*Rp)[3] = NULL;
-        float mh_ref = sqrtf(f->m_ref[0]*f->m_ref[0] + f->m_ref[1]*f->m_ref[1]);
         if (f->dip_sig2 > 0.0f && mh_ref > 0.2f * h_mag) {
             /* â_NED = ĥ_hor × ê_D = (ĥ_hor_y, −ĥ_hor_x, 0) */
             float a_ned[3] = { f->m_ref[1]/mh_ref, -f->m_ref[0]/mh_ref, 0.0f };

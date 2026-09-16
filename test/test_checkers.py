@@ -342,7 +342,7 @@ CASES = [
 
     # A range that runs backwards.
     ("check-math-citations", "docs/math.md",
-     sub(r"`fusion\.c:1829`–`\d+`", "`fusion.c:1829`–`999`"),
+     sub(r"(`fusion\.c:\d+`)–`\d+`", r"\1–`999`"),
      "run forwards"),
 
     # The `:449` shorthand, which continues whichever file was named last,

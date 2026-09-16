@@ -988,8 +988,8 @@ Residual $\nu = z-h$, $\text{res\_sq}=\lVert\nu\rVert^2$.
 **Compass-health metrics** — computed **before** the gates (§8).
 
 **Gates.** Magnitude ratio $r=|m|/|h_{raw}|$ must lie in $[0.5,2]$; direction
-$\text{res\_sq}<4$ (≤90° correction); and, once converged, the tight anomaly
-gate $\text{res\_sq} > \text{mag\_reject\_sq}/|h_{raw}|^2$ ⇒ skip.
+$\text{res\_sq}<4$ (≤90° correction). The tight anomaly gate is below, after
+the heading innovation it needs.
 
 **Reference adaptation (m_ref EMA), magnitude + dip only.** When
 `mref_alpha`>0, `g_body_valid`, $\text{res\_sq}<0.1$, and
@@ -1000,14 +1000,31 @@ $$ m_{ref}^{h}\!\leftarrow m_{ref}^{h}\big(1+\alpha_{mref}(|m|\cos\text{dip}/m_{
    m_{ref,z}\!\leftarrow m_{ref,z}+\alpha_{mref}(|m|\sin\text{dip}-m_{ref,z}). $$
 The horizontal **direction** is never touched.
 
-**Update.** If `mag_yaw_only` (marine default): rotate $m$ to NED, form the
-heading innovation
+**Heading innovation.** Rotate $m$ to NED and take the angle between the
+measured and reference field in the horizontal plane,
 $$ y = \operatorname{atan2}(m^{NED}_y,m^{NED}_x) -
-       \operatorname{atan2}(m_{ref,y},m_{ref,x})\ (\text{wrapped}), $$
-noise $R_\psi = R_m/(m_{ref}^{h})^2$, and call the scalar update §4.6.
+       \operatorname{atan2}(m_{ref,y},m_{ref,x})\ (\text{wrapped}). $$
+A near-vertical field ($m^h<0.2|h_{raw}|$, measured or reference) carries no
+heading information; $y$ is undefined there and the heading-only update is
+skipped.
+
+**Tight anomaly gate (converged only).** The squared residual chord in Gauss²,
+taken in the plane the update actually fuses:
+$$ \begin{cases}
+ 2\,(m_{ref}^{h})^2\,(1-\cos y) > \text{mag\_reject\_sq} & \texttt{mag\_yaw\_only} \\[2pt]
+ \text{res\_sq} > \text{mag\_reject\_sq}/|h_{raw}|^2 & \text{otherwise}
+\end{cases} \Rightarrow \text{skip}. $$
+Both are the one test, $2|B|^2(1-\cos\theta)$ between measurement and
+prediction, restricted to the fused channel. The 3-vector form counts the dip,
+which a structurally 2-D swing calibration (§3.3, §12.3) cannot measure, so it
+stays past the threshold for a healthy compass — applying it to the
+heading-only path rejects nearly every sample from the moment the filter
+converges.
+
+**Update.** If `mag_yaw_only` (marine default): noise
+$R_\psi = R_m/(m_{ref}^{h})^2$, and call the scalar update §4.6 with $y$.
 Otherwise call the full vector update §4.5 with $(h,z,R,11.34)$, where $R$
-carries the anisotropic dip term of §4.8.1. A near-vertical field
-($m^h<0.2|h_{raw}|$) carries no heading information and is skipped.
+carries the anisotropic dip term of §4.8.1.
 
 #### 4.8.1 The dip-reference error, and the anisotropic $R$
 
@@ -1132,7 +1149,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:1988`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2006`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1144,7 +1161,7 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1918`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1936`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
@@ -1185,7 +1202,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:1771`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1789`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -1221,18 +1238,18 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:1829`–`1916`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1847`–`1934`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1847`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1865`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:1854`).
+`fusion.c:1872`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):
