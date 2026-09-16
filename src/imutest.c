@@ -5417,12 +5417,20 @@ static void fill_environment(imt_report_t *r, const imud_config_t *cfg)
 {
     snprintf(r->imud_version, sizeof r->imud_version, "%s", IMUD_VERSION_STR);
 
+    /* The precision is not decoration: glibc's utsname fields are 65 bytes and
+     * fit, while a BSD's are 256 and do not, so an unbounded %s warns under
+     * -Wformat-truncation there.  Naming the bound says the truncation is
+     * intended and keeps the build clean on both. */
     struct utsname u;
     if (uname(&u) == 0) {
-        snprintf(r->sysname, sizeof r->sysname, "%s", u.sysname);
-        snprintf(r->release, sizeof r->release, "%s", u.release);
-        snprintf(r->machine, sizeof r->machine, "%s", u.machine);
-        snprintf(r->hostname, sizeof r->hostname, "%s", u.nodename);
+        snprintf(r->sysname,  sizeof r->sysname,  "%.*s",
+                 (int)(sizeof r->sysname)  - 1, u.sysname);
+        snprintf(r->release,  sizeof r->release,  "%.*s",
+                 (int)(sizeof r->release)  - 1, u.release);
+        snprintf(r->machine,  sizeof r->machine,  "%.*s",
+                 (int)(sizeof r->machine)  - 1, u.machine);
+        snprintf(r->hostname, sizeof r->hostname, "%.*s",
+                 (int)(sizeof r->hostname) - 1, u.nodename);
     }
 #if defined(IMUD_NO_GPIOD)
     r->gpiod = "none";

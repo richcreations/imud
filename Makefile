@@ -1312,7 +1312,11 @@ else ifeq ($(SVC_KIND),none)
 svc-src  =
 svc-dst  =
 SVCDIR   ?=
-ifeq ($(UNAME_S),Darwin)
+# /run and /var/lib are Linux's; a BSD has neither, and compiling them in gives
+# a daemon whose socket and state directories cannot be created.  /var/run is
+# there on every BSD boot, where a subdirectory made at install time would not
+# be, so the paths go straight into it.
+ifneq ($(filter $(UNAME_S),Darwin FreeBSD NetBSD OpenBSD),)
 RUNDIR   ?= /var/run
 STATEDIR ?= /var/db/imud
 else
