@@ -447,22 +447,6 @@ void config_mag_bus_spec(const imud_config_t *cfg, bus_spec_t *out)
  * and the daemon refuses to start.
  */
 /*
- * The controller index in a spidev node name: 0 for "/dev/spidev0.1".  Two
- * parts on the same index share one controller, and therefore share SCK and
- * MOSI.  -1 when the name is not a spidev node.
- */
-static int spidev_controller(const char *dev)
-{
-    const char *p = strstr(dev, "spidev");
-    if (!p) return -1;
-    p += 6;
-    if (!isdigit((unsigned char)*p)) return -1;
-    int n = 0;
-    while (isdigit((unsigned char)*p)) n = n * 10 + (*p++ - '0');
-    return *p == '.' ? n : -1;
-}
-
-/*
  * True when this configuration will silently stop a shared-bus magnetometer.
  *
  * On an ism330dhcx + mmc5983ma pair sharing one RP1 controller, driving the
@@ -474,6 +458,10 @@ static int spidev_controller(const char *dev)
  * the CS level and has no I2C_disable, so while its CS is high it is on those
  * same lines as an I2C slave.  A slow clock is what lets the run through its
  * input filter.  See the long comment in drivers/mmc5983ma.c.
+ *
+ * "Sharing" is bus.h's question, not a spidev one: an FT232H drives every chip
+ * select on it from one MPSSE engine, so two "ftdi:" nodes are one controller
+ * by construction and want this warning most of all.
  *
  * This is a warning, not an error.  The configuration is legal, the default
  * (0, meaning each part's declared maximum) is unaffected, and an operator with
@@ -488,9 +476,7 @@ bool config_spi_mag_clock_risk(const imud_config_t *cfg)
         return false;
     if (cfg->imu_spi_speed_hz >= IMUD_SPI_MAG_SAFE_HZ)
         return false;
-    int imu_c = spidev_controller(cfg->imu_spi_dev);
-    int mag_c = spidev_controller(cfg->mag_spi_dev);
-    return imu_c >= 0 && imu_c == mag_c;
+    return bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev);
 }
 
 static int validate_bus(const imud_config_t *cfg, const char *path)

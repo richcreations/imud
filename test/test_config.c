@@ -2050,6 +2050,22 @@ static void test_spi_mag_clock_risk(void)
     c.imu_bus_kind = BUS_I2C;
     EXPECT(!config_spi_mag_clock_risk(&c), "an I2C IMU cannot starve it");
 
+    /* One FT232H drives every chip select from one MPSSE engine, so a pair of
+     * "ftdi:" nodes is the case this warning exists for -- and the one it
+     * could not reach while the test here was spelt "spidev". */
+    c.imu_bus_kind = BUS_SPI;
+    snprintf(c.imu_spi_dev, sizeof c.imu_spi_dev, "ftdi:/cs0");
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "ftdi:/cs1");
+    EXPECT(config_spi_mag_clock_risk(&c), "one FT232H behind two nodes is a risk");
+
+    snprintf(c.imu_spi_dev, sizeof c.imu_spi_dev, "ftdi:A1B2@1000000/cs0");
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "ftdi:A1B2/cs3");
+    EXPECT(config_spi_mag_clock_risk(&c), "named the same dongle, still a risk");
+
+    snprintf(c.imu_spi_dev, sizeof c.imu_spi_dev, "ftdi:A1B2/cs0");
+    snprintf(c.mag_spi_dev, sizeof c.mag_spi_dev, "ftdi:C3D4/cs0");
+    EXPECT(!config_spi_mag_clock_risk(&c), "two dongles are two controllers");
+
     end_test(fb);
 }
 

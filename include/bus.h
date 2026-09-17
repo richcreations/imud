@@ -29,6 +29,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 /*
  * Deliberately no kernel headers here, and none in src/bus.c or
@@ -128,10 +129,39 @@ void bus_close(imud_bus_t *b);
  * True when two node paths name the same SPI controller: the B in
  * /dev/spidevB.C, or the same dongle behind two "ftdi:" nodes, whose one MPSSE
  * engine drives one SCK however many chip selects hang off it.  Devices that
- * share a controller share its clock, so their drivers must agree about the
- * SPI mode; imu.c refuses the combination rather than letting one part corrupt
- * the other's transfers.
+ * share a controller share its single SCLK, so their drivers must agree about
+ * the SPI mode -- mode 0 idles it low and mode 3 idles it high.  imu.c refuses
+ * that combination rather than letting one part corrupt the other's transfers,
+ * and config.c warns about a clock slow enough to stop a magnetometer on the
+ * same lines.
+ *
+ * Compared as text rather than parsed: anything not of either shape is not a
+ * node this can answer about, and guessing "same controller" would be worse
+ * than saying no.  For an "ftdi:" node the identity is the match part alone --
+ * neither the "/cs<N>" that distinguishes the two sensors nor the "@<hz>"
+ * suffix belongs to it.
+ *
+ * Header-only so a caller needs no link to src/bus.c: config.c is the second
+ * caller and is linked into the bridges and six suites that have no bus at
+ * all.  Its own narrower copy of this test is what made the warning
+ * unreachable on an FT232H.
  */
-bool bus_spi_same_controller(const char *a, const char *b);
+static inline bool bus_spi_same_controller(const char *a, const char *b)
+{
+    if (!a || !b) return false;
+
+    static const char scheme[] = "ftdi:";
+    const size_t slen = sizeof scheme - 1;
+    if (strncmp(a, scheme, slen) == 0 && strncmp(b, scheme, slen) == 0) {
+        const char *ma = a + slen, *mb = b + slen;
+        size_t la = strcspn(ma, "@/"), lb = strcspn(mb, "@/");
+        return la == lb && strncmp(ma, mb, la) == 0;
+    }
+
+    const char *da = strrchr(a, '.'), *db = strrchr(b, '.');
+    if (!da || !db) return false;
+    size_t la = (size_t)(da - a), lb = (size_t)(db - b);
+    return la == lb && strncmp(a, b, la) == 0;
+}
 
 #endif /* IMUD_BUS_H */
