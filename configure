@@ -545,7 +545,7 @@ ETCDIR = $etcdir
 # The init system install/uninstall write a unit for.  systemd installs
 # etc/<name>.service under its own name; launchd installs etc/<name>.plist
 # under the reverse-DNS label its flat system namespace wants, and skips the
-# udev rule and the imud user, neither of which macOS has.  `none` installs
+# udev rule and the imud user, neither of which macOS has.  \`none\` installs
 # no unit and creates no state directory, for a package manager that defines
 # the service itself.
 SVC_KIND = $svc_kind

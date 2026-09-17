@@ -1402,6 +1402,17 @@ static void test_config_mk_is_valid_make(void)
 
     EXPECT(run("") == 0, "a run to parse the output of");
 
+    /* The heredoc that writes config.mk is unquoted, so every backtick in it
+     * is command substitution unless escaped.  An unescaped pair ran the word
+     * between them and dropped it from the comment. */
+    EXPECT(strstr(out("stderr"), "not found") == NULL,
+           "writing config.mk runs nothing out of its own comments");
+
+    char mkpath[PATH_MAX];
+    snprintf(mkpath, sizeof mkpath, "%s/config.mk", g_work);
+    EXPECT(strstr(slurp(mkpath), "`none` installs") != NULL,
+           "and the words between the backticks survive into it");
+
     /* make itself is not one of configure's dependencies, so it is not on the
      * stub PATH.  Hand this one step the real environment back. */
     setenv("PATH", g_make_path, 1);
