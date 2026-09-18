@@ -403,8 +403,8 @@ esac
 
 # ── Probed: the host runtime the threads sit on ──────────────────────────────
 #
-# None of these is fatal.  The first two choose the include/host_time.h rung
-# below; the third is reported only, because include/cloexec.h already answers
+# None of these is fatal.  The first three choose the include/host_time.h rung
+# below; the fourth is reported only, because include/cloexec.h already answers
 # it at compile time.
 #
 #   clock_nanosleep   src/output.c's absolute-deadline output cadence, and with
@@ -412,14 +412,19 @@ esac
 #                     variable -- both are _POSIX_CLOCK_SELECTION, so one probe
 #                     settles both.  Without it the fallback rung loops
 #                     nanosleep, which converges but costs a syscall a signal.
-#   adjtimex          src/main.c reads the TAI offset with it.  Without it
-#                     ts_tai_ns carries UTC and is short by the leap seconds.
+#   adjtimex          src/main.c reads the TAI offset with it.  Without it, and
+#                     without ntp_gettime below, ts_tai_ns carries UTC and is
+#                     short by the leap seconds.
+#   mach_wait_until   the Darwin rung's whole clock, and its presence is what
+#                     identifies Darwin -- probed by linking rather than matched
+#                     against a uname string, like every other choice here.
 #   accept4           SOCK_CLOEXEC on an accepted fd.  POSIX accept() does not
 #                     carry FD_CLOEXEC, so without accept4 every accepted
 #                     connection leaks across an exec.
 
 have_clock_nanosleep=0
 have_adjtimex=0
+have_mach_time=0
 have_accept4=0
 if [ "$cc_ok" = yes ]; then
     echo '#include <time.h>
@@ -431,6 +436,14 @@ return clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&t,0);}' \
 int main(void){struct timex t={0};return adjtimex(&t);}' \
         | try_link && have_adjtimex=1
 
+    # Both halves of the Darwin rung in one probe: the mach sleep and the
+    # ntp_gettime offset.  Either alone would select a file that cannot build.
+    echo '#include <mach/mach_time.h>
+#include <sys/timex.h>
+int main(void){struct ntptimeval n;ntp_gettime(&n);
+return (int)mach_wait_until(mach_absolute_time())+(int)n.tai;}' \
+        | try_link && have_mach_time=1
+
     echo '#include <sys/socket.h>
 int main(void){return accept4(0,0,0,SOCK_CLOEXEC);}' \
         | try_link && have_accept4=1
@@ -438,14 +451,21 @@ fi
 
 # ── Selected: the host clock backend ─────────────────────────────────────────
 #
-# Three rungs, each the one above minus a capability -- see include/host_time.h.
-# The two probes above pick one; --with-host-time=FILE overrides with a rung
-# this script has never heard of, which is the whole affordance: a port writes
-# one file against the header and builds, with nothing here to patch first.
+# Three rungs, each the one above minus a capability, plus Darwin off the side
+# of them -- see include/host_time.h.  The probes above pick one;
+# --with-host-time=FILE overrides with a rung this script has never heard of,
+# which is the whole affordance: a port writes one file against the header and
+# builds, with nothing here to patch first.
+#
+# Darwin is tested first because it is the host that answers the two questions
+# separately: no clock selection, but a TAI offset.  The ladder below cannot
+# express that, so it would land on the fallback rung and lose the offset.
 if [ "$want_host_time" != auto ]; then
     host_time_src=$want_host_time
     [ -f "$srcdir/$host_time_src" ] ||
         die "--with-host-time: no such file: $host_time_src"
+elif [ "$have_mach_time" = 1 ]; then
+    host_time_src=src/host_time_darwin.c
 elif [ "$have_clock_nanosleep" = 0 ]; then
     host_time_src=src/host_time_fallback.c
 elif [ "$have_adjtimex" = 0 ]; then
@@ -563,10 +583,11 @@ DATADIR = $datadir
 # none of the shipped rungs fits.
 HOST_TIME_SRC = $host_time_src
 
-# Reported, not consumed by the build.  The first two are what chose
+# Reported, not consumed by the build.  The first three are what chose
 # HOST_TIME_SRC above; accept4 is answered in include/cloexec.h instead.
 HAVE_CLOCK_NANOSLEEP = $have_clock_nanosleep
 HAVE_ADJTIMEX = $have_adjtimex
+HAVE_MACH_TIME = $have_mach_time
 HAVE_ACCEPT4 = $have_accept4
 
 # Reported, not consumed by the build: what this host can do beyond the
@@ -625,10 +646,20 @@ else
 fi
 echo
 printf '    %-18s %s\n' "host clock" "${host_time_src#src/host_time_}"
+# Which call answers the TAI offset, rather than whether one particular call is
+# present: a NO against adjtimex said nothing about the host that has
+# ntp_gettime instead, and ts_tai_ns is what the reader is really asking about.
+if [ "$have_mach_time" = 1 ]; then
+    tai_how="ntp_gettime(2)"
+elif [ "$have_adjtimex" = 1 ]; then
+    tai_how="adjtimex(2)"
+else
+    tai_how="none — ts_tai_ns carries UTC, short by the leap seconds"
+fi
+printf '    %-18s %s\n' "TAI offset" "$tai_how"
 echo
 echo "  host runtime:"
 report "$have_clock_nanosleep" clock_nanosleep "absolute output deadlines"
-report "$have_adjtimex"        adjtimex        "TAI offset for the packet timestamp"
 report "$have_accept4"         accept4         "close-on-exec on accepted sockets"
 echo
 echo "  optional:"

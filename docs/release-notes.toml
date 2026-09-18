@@ -22,6 +22,24 @@
 #             it is rendered prominently.
 
 [[release]]
+version = "1.11.2"
+date    = "unreleased"
+summary = """
+macOS gets a clock backend of its own: mach where it has no POSIX equivalent,
+and a TAI offset it previously had no way to read."""
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "macOS reads the TAI offset from the kernel NTP state, so ts_tai_ns is TAI wherever a time daemon has set it."
+  impact   = "macOS sets no offset of its own, so ts_tai_ns still carries UTC there until a time daemon sets one."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "On macOS the output cadence and the IMU ring's waits now run on the mach timebase, so a wall-clock step can no longer stretch or cut them."
+
+[[release]]
 version = "1.11.1"
 date    = "2026-09-16"
 summary = """

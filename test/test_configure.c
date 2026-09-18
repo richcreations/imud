@@ -103,6 +103,7 @@ static const char *STUB_CC =
     "      esac ;;\n"
     "  *clock_nanosleep*)  [ \"${STUB_CLOCKNS:-1}\" = 1 ] || fail clockns ;;\n"
     "  *adjtimex*)         [ \"${STUB_ADJTIMEX:-1}\" = 1 ] || fail adjtimex ;;\n"
+    "  *mach_wait_until*)  [ \"${STUB_MACHTIME:-0}\" = 1 ] || fail machtime ;;\n"
     "  *accept4*)          [ \"${STUB_ACCEPT4:-1}\" = 1 ] || fail accept4 ;;\n"
     "esac\n"
     "echo \"$args\" >> \"$STUB_CC_LOG\"\n"
@@ -247,7 +248,8 @@ static void fixture_reset(void)
         "STUB_CC_BROKEN", "STUB_C11", "STUB_PTHREAD", "STUB_LIBM", "STUB_BUS",
         "STUB_USBFS", "STUB_IOKIT", "STUB_LIBUSB20",
         "STUB_ENDIAN", "STUB_INLINE_ATOMIC", "STUB_LATOMIC", "STUB_MOSQUITTO",
-        "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_ACCEPT4", "STUB_GPIOD_VERSION",
+        "STUB_CLOCKNS", "STUB_ADJTIMEX", "STUB_MACHTIME", "STUB_ACCEPT4",
+        "STUB_GPIOD_VERSION",
         "STUB_UNAME_S", "STUB_UNAME_M",
     };
     for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++)
@@ -772,6 +774,12 @@ static void test_host_runtime(void)
     EXPECT(strstr(out("stdout"), "close-on-exec") != NULL,
            "the summary says what accept4 buys");
 
+    /* Same run, the other prose with teeth: a host with no TAI source at all
+     * puts UTC in ts_tai_ns, and the summary has to say that rather than
+     * reporting one particular call missing. */
+    EXPECT(strstr(out("stdout"), "ts_tai_ns carries UTC") != NULL,
+           "and what no TAI source at all costs");
+
     /* The middle rung — clock selection but no TAI, which is every BSD. It is
      * reachable only from this combination, so a script that collapsed the two
      * probes into one would pass everything above and still never build it. */
@@ -782,6 +790,21 @@ static void test_host_runtime(void)
     EXPECT(cfg_is("HAVE_ADJTIMEX", "0"), "adjtimex absent");
     EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_posix.c"),
            "the middle rung with clock selection but no TAI");
+
+    /* macOS is off that ladder: no clock selection, and a TAI offset all the
+     * same.  The ladder alone sends it to the bottom rung and throws the offset
+     * away, which is issue #93.  uname is left saying Linux deliberately — the
+     * rung follows what links, not what the host calls itself. */
+    fixture_reset();
+    setenv("STUB_CLOCKNS", "0", 1);
+    setenv("STUB_ADJTIMEX", "0", 1);
+    setenv("STUB_MACHTIME", "1", 1);
+    EXPECT(run("") == 0, "a macOS-shaped host configures");
+    EXPECT(cfg_is("HAVE_MACH_TIME", "1"), "mach_wait_until found");
+    EXPECT(cfg_is("HOST_TIME_SRC", "src/host_time_darwin.c"),
+           "the rung off the ladder, chosen by capability and not by name");
+    EXPECT(strstr(out("stdout"), "ntp_gettime(2)") != NULL,
+           "and the summary names the call the offset comes from");
 
     /* --with-host-time is the affordance for a host none of the three fits:
      * one file against include/host_time.h, named here, nothing in the script

@@ -162,7 +162,9 @@ MOCK_BACKEND_DEF = -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_mock_backend'
 # waits on, and the TAI offset src/main.c checks.  Three rungs, each the one
 # above minus a capability: src/host_time_linux.c has clock selection and
 # CLOCK_TAI; src/host_time_posix.c has clock selection only (the BSDs);
-# src/host_time_fallback.c has neither and loops nanosleep instead (macOS).
+# src/host_time_fallback.c has neither and loops nanosleep instead.  macOS is
+# off that ladder in src/host_time_darwin.c — no clock selection, but a TAI
+# offset from ntp_gettime(2) and mach in place of both POSIX calls.
 #
 # The list is open.  A host that fits none of them writes one file against
 # include/host_time.h and names it here — `make HOST_TIME_SRC=src/host_time_x.c`
@@ -314,7 +316,7 @@ IMUD_OBJS    = $(IMUD_SRCS:.c=.o)
 CAL_OBJS     = $(CAL_SRCS:.c=.o)
 IMUTEST_OBJS = $(IMUTEST_SRCS:.c=.o)
 
-.PHONY: all bridges libimud clean test test-portable check check-docs coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
+.PHONY: all bridges libimud clean test test-portable test-host-time-rung check check-docs coverage dist install install-utils install-wmm-data install-signalk install-mqtt install-influxdb install-mavlink install-prometheus uninstall .FORCE
 
 all: imud imud-cal imud-imutest imud-status imud-mon
 
@@ -526,7 +528,7 @@ test_bus_ft232h: src/bus_ft232h.c src/bus.c src/bus_null.c src/log.c \
 # one rung's implementation, so it holds for any backend — which is what lets a
 # port check its own before it has anything else running:
 #
-#     make test_host_time HOST_TIME_TEST_SRC=src/host_time_myos.c && ./test_host_time
+#     make test-host-time-rung RUNG=src/host_time_myos.c
 #
 # The default is the fallback rung rather than $(HOST_TIME_SRC), on the same
 # terms as test_bus_null above: that is the rung with the substitutes in it —
@@ -537,6 +539,23 @@ HOST_TIME_TEST_SRC ?= src/host_time_fallback.c
 
 test_host_time: $(HOST_TIME_TEST_SRC) test/test_host_time.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+
+# The same suite against a rung other than the default — by default the one
+# THIS host links, which is the one the daemon will run on.  macOS is why it
+# exists: src/host_time_darwin.c is the only rung no other host can compile, so
+# without this it would be built by everyone and held by nobody.
+#
+# The two rm lines are the point of having a target at all.  make compares
+# mtimes, and a different HOST_TIME_TEST_SRC is not a reason to relink — so
+# building over a suite left by `make test` silently re-runs the old rung, and
+# leaving this one behind does the same to the next `make test`.
+RUNG ?= $(HOST_TIME_SRC)
+
+test-host-time-rung:
+	rm -f test_host_time
+	$(MAKE) test_host_time HOST_TIME_TEST_SRC=$(RUNG)
+	./test_host_time
+	rm -f test_host_time
 
 test_ring: src/ring.c $(HOST_TIME_SRC) test/test_ring.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)

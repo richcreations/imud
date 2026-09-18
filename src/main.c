@@ -173,8 +173,8 @@ static void clock_health_check(void)
                     strerror(errno));
         }
     } else if (tai_secs == 0) {
-        LOG_W("[clock] WARNING: CLOCK_TAI offset is 0 — "
-                "chrony has not set tai_offset (leapsectz right/UTC?). "
+        LOG_W("[clock] WARNING: TAI offset is 0 — no time daemon has set it "
+                "(chrony: leapsectz right/UTC; macOS: nothing sets it). "
                 "ts_tai_ns will be unreliable.\n");
     } else {
         LOG_I("[clock] CLOCK_TAI offset: %d s  OK\n", tai_secs);

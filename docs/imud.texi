@@ -133,8 +133,12 @@ Tahoe, and CI runs the whole test suite on both ends of that range and
 on Intel. A Mac has no I²C or SPI node and no GPIO chip, so the sensor
 comes in over an FT232H USB bridge
 (@ref{52 I²C or SPI over an FT232H USB bridge,,§5.2}) with both readers
-polling. It runs under launchd rather than systemd. See
-@ref{Building on macOS,,Building on macOS} and
+polling. It runs under launchd rather than systemd. It has no
+@code{CLOCK_TAI} and no @code{_POSIX_CLOCK_SELECTION}, so its clock
+backend is mach throughout and reads the TAI offset with
+@code{ntp_gettime(2)} --- which macOS itself never sets, so
+@code{ts_tai_ns} there carries UTC unless a time daemon has set the
+kernel offset. See @ref{Building on macOS,,Building on macOS} and
 @ref{As a launchd job macOS,,As a launchd job} below.
 
 @strong{Binaries.}
@@ -280,9 +284,10 @@ endianness. Everything else --- libmosquitto for the MQTT bridge, and
 the tools that regenerate documentation --- is reported with what its
 absence costs, and never fails the run.
 
-The clock backend it selects is printed as @code{host clock}.
-@code{--with-host-time=FILE} overrides it with a backend of your own,
-for a host none of the three shipped ones fits.
+The clock backend it selects is printed as @code{host clock}, and the
+call it reads the TAI offset with as @code{TAI offset}.
+@code{--with-host-time=FILE} overrides the backend with one of your own,
+for a host none of the four shipped ones fits.
 
 @code{make test} must be run from the repository root --- one test loads
 @code{data/WMM.COF} by relative path.

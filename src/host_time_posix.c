@@ -16,10 +16,12 @@
  * close() from src/bus_linux.c.  A shared file with two conditionals in it
  * would be shorter and would put the host question back above the seam.
  *
- * FreeBSD does have ntp_adjtime(2) and a struct timex, and NetBSD has both
- * too, so host_tai_offset() is implementable there -- it is ENOSYS here
- * because it is unwritten and untested, not because it is impossible.  A port
- * that wants it should split this rung rather than add an #ifdef.
+ * FreeBSD and NetBSD both have ntp_gettime(2), so host_tai_offset() is
+ * implementable there -- it is ENOSYS here because it is unwritten and
+ * untested, not because it is impossible.  OpenBSD has neither call, which is
+ * why the offset cannot simply be added to this rung: it would stop compiling
+ * for the host it would not help.  A port that wants it splits this rung, and
+ * src/host_time_darwin.c is the worked example of those two functions.
  */
 
 #include <errno.h>

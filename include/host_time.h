@@ -12,18 +12,25 @@
  * that macOS and the BSDs implement unchanged.  Below it are the two POSIX
  * options that a host may not have, and one Linux extension.
  *
- * The implementation is src/host_time_linux.c, src/host_time_posix.c or
- * src/host_time_fallback.c; the Makefile picks one, the same way it picks a
- * bus backend behind include/bus_backend.h and a GPIO backend behind
- * include/imu_gpio.h.
+ * The implementation is src/host_time_linux.c, src/host_time_posix.c,
+ * src/host_time_fallback.c or src/host_time_darwin.c; the Makefile picks one,
+ * the same way it picks a bus backend behind include/bus_backend.h and a GPIO
+ * backend behind include/imu_gpio.h.
  *
- * The three that exist are a LADDER, not a matrix -- each rung is the one above
- * it minus one capability, which is why there are three files and not four:
+ * Three of them are a LADDER -- each rung the one above it minus one
+ * capability -- and the fourth is the host that does not fit on it:
  *
  *   linux     clock selection, and CLOCK_TAI via adjtimex(2)
  *   posix     clock selection; no TAI            (FreeBSD, NetBSD, OpenBSD)
- *   fallback  neither                            (macOS, and any host that
- *                                                 has only POSIX.1-2001)
+ *   fallback  neither                            (any host with only
+ *                                                 POSIX.1-2001)
+ *
+ *   darwin    no clock selection, but a TAI offset via ntp_gettime(2), and
+ *             mach in place of both POSIX calls           (macOS)
+ *
+ * macOS is why the set is not one ladder: it has the capability the top rung
+ * has and not the one the middle rung has.  A host that answers both questions
+ * separately gets its own file rather than an #ifdef in one of these.
  *
  * THE LIST IS OPEN.  A host that fits none of them adds a rung -- one file, the
  * entry points below, no #ifdef and no edit above this line -- and selects it
@@ -38,8 +45,8 @@
  * which calls must agree with which -- so no rung has to be read to write
  * another.  test_host_time is the conformance suite for exactly those
  * contracts; point it at a new backend with
- * `make test_host_time HOST_TIME_TEST_SRC=src/host_time_<host>.c` and it will
- * hold that rung to the same terms as the three here.
+ * `make test-host-time-rung RUNG=src/host_time_<host>.c` and it will hold that
+ * rung to the same terms as the four here.
  *
  * CLOCK SELECTION is _POSIX_CLOCK_SELECTION, and it is one option rather than
  * two unrelated gaps -- which is the whole reason this header exists.  macOS
@@ -63,32 +70,30 @@
  * instantly or waits five decades.  No caller is handed the clockid to get
  * wrong.  test_host_time pins the agreement.
  *
- * WHAT A macOS RUNG WOULD PUT HERE.  Recorded rather than written, and still
- * unwritten now that macOS builds and runs: the fallback rung passes this
- * header's whole conformance suite there, so a mach rung would buy accuracy
- * rather than function, and the daemon does not need it to run.  What it would
- * buy is below — the answers are the awkward part of that port and finding
- * them twice is waste:
+ * WHAT THE macOS RUNG ANSWERS WITH, since none of it is POSIX:
  *
  *   host_sleep_until      mach_wait_until(), <mach/mach_time.h>.  An absolute
  *                         deadline the kernel compares against, so it needs
  *                         none of src/host_time_fallback.c's recompute loop.
- *   host_monotonic_now    mach_absolute_time(), or clock_gettime(
- *                         CLOCK_UPTIME_RAW) -- NOT CLOCK_MONOTONIC.  This is
- *                         the trap, and it is why reading the clock is in this
- *                         header at all: macOS CLOCK_MONOTONIC counts time
- *                         asleep and mach_wait_until's timebase does not, so a
- *                         backend that mixed them would be correct until the
- *                         lid closed.  Both ends must come from one source.
+ *   host_monotonic_now    clock_gettime(CLOCK_UPTIME_RAW) -- NOT
+ *                         CLOCK_MONOTONIC.  This is the trap, and it is why
+ *                         reading the clock is in this header at all: macOS
+ *                         CLOCK_MONOTONIC counts time asleep and
+ *                         mach_wait_until's timebase does not, so a backend
+ *                         that mixed them would be correct until the lid
+ *                         closed.  Both ends must come from one source.
  *   host_cond_timedwait   pthread_cond_timedwait_relative_np(), converting the
  *                         deadline to a remainder.  Relative, so a wall-clock
  *                         step cannot stretch the wait -- which is the one
  *                         thing the fallback rung gets wrong.
  *
- * Holding an output rate is a scheduling question beyond any of these: macOS
- * wants pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE), or
- * thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY) for a hard one.  Linux
- * wants SCHED_FIFO.  The tree sets neither on either host.
+ * That rung buys mechanism and not jitter, which is worth knowing before
+ * reaching further: against a 20 ms schedule on the bench Mac it and the
+ * fallback's nanosleep loop both land ~3 ms late with a 10 ms ceiling, and
+ * neither fires early.  The ceiling is macOS timer coalescing, and
+ * pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE) does not move it.
+ * A hard rate there wants thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY);
+ * Linux wants SCHED_FIFO.  The tree sets neither on either host.
  *
  * NOT everything that reads a clock belongs here.  The ~30 other
  * clock_gettime(CLOCK_MONOTONIC) calls in src/ measure elapsed intervals, and
@@ -166,8 +171,9 @@ int host_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m,
 int host_tai_offset(int *secs);
 
 /*
- * The current time on TAI.  Returns 0, or -1 with errno set to ENOSYS on a
- * host with no TAI clock -- and in that case *ts is still filled, with
+ * The current time on TAI.  Returns 0, or -1 with errno set -- ENOSYS where the
+ * build has no TAI at all, ENODATA where the host could be asked and nothing
+ * has set the offset.  In every failing case *ts is still filled, with
  * CLOCK_REALTIME, so a caller may carry on with a value that is UTC.
  *
  * Check the return before labelling the result TAI.  It is off by the leap

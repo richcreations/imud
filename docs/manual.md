@@ -67,7 +67,11 @@ bridges build and run on macOS 14 Sonoma through macOS 26 Tahoe, and CI runs
 the whole test suite on both ends of that range and on Intel. A Mac has no I²C
 or SPI node and no GPIO chip, so the sensor comes in over an FT232H USB bridge
 ([§5.2](#52-i²c-or-spi-over-an-ft232h-usb-bridge)) with both readers polling. It runs
-under launchd rather than systemd. See
+under launchd rather than systemd. It has no `CLOCK_TAI` and no
+`_POSIX_CLOCK_SELECTION`, so its clock backend is mach throughout and reads the
+TAI offset with `ntp_gettime(2)` — which macOS itself never sets, so
+`ts_tai_ns` there carries UTC unless a time daemon has set the kernel offset.
+See
 [Building on macOS](#building-on-macos) and
 [As a launchd job](#as-a-launchd-job-macos) below.
 
@@ -151,9 +155,9 @@ either endianness. Everything else — libmosquitto for the MQTT bridge, and the
 tools that regenerate documentation — is reported with what its absence costs,
 and never fails the run.
 
-The clock backend it selects is printed as `host clock`. `--with-host-time=FILE`
-overrides it with a backend of your own, for a host none of the three shipped
-ones fits.
+The clock backend it selects is printed as `host clock`, and the call it reads
+the TAI offset with as `TAI offset`. `--with-host-time=FILE` overrides the
+backend with one of your own, for a host none of the four shipped ones fits.
 
 `make test` must be run from the repository root — one test loads
 `data/WMM.COF` by relative path.

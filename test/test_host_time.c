@@ -11,7 +11,7 @@
  * any backend.  That is what lets a port check its own before it has anything
  * else running:
  *
- *     make test_host_time HOST_TIME_TEST_SRC=src/host_time_myos.c
+ *     make test-host-time-rung RUNG=src/host_time_myos.c
  *
  * The default rung is src/host_time_fallback.c rather than whichever one the
  * tree links, on the same terms as test_bus_null: the fallback is the one with
@@ -364,15 +364,42 @@ static void test_tai_contract(void)
         EXPECT(secs >= 0 && secs < 1000, "a reported offset is plausible");
     }
 
-    struct timespec ts;
+    const int have_offset = (secs > 0);
+
+    struct timespec ts, utc;
     memset(&ts, 0, sizeof(ts));
     errno = 0;
     int rc = host_clock_tai(&ts);
+    clock_gettime(CLOCK_REALTIME, &utc);
     if (rc < 0) EXPECT(errno != 0, "a failed TAI read leaves errno set");
 
     /* Filled whether or not it succeeded — after 2024-01-01, which is the same
      * sanity bound src/main.c's clock health check uses on CLOCK_REALTIME. */
     EXPECT(ts.tv_sec > 1704067200LL, "*ts is filled even when TAI is absent");
+
+    /*
+     * The two calls must AGREE, which is what makes the offset reach the wire:
+     * a rung can report 37 s from host_tai_offset() and still hand src/imu.c a
+     * UTC timestamp, and nothing downstream can see the difference. So a
+     * reported offset must be exactly the lead host_clock_tai() has over
+     * CLOCK_REALTIME — 1 s of slack for the gap between the two reads.
+     *
+     * With no offset to report the lead must be zero instead, and the return is
+     * the rung's to choose: src/host_time_darwin.c fails, because a host whose
+     * kernel offset nobody has set has no TAI clock at all, while
+     * src/host_time_linux.c succeeds, because CLOCK_TAI is a real clock that is
+     * merely misconfigured. src/main.c warns about that case from the offset.
+     */
+    const double lead = (double)(ts.tv_sec - utc.tv_sec)
+                      + (double)(ts.tv_nsec - utc.tv_nsec) / 1e9;
+    if (have_offset) {
+        EXPECT(rc == 0, "a host that reports an offset returns TAI");
+        EXPECT(lead > (double)secs - 1.0 && lead < (double)secs + 1.0,
+               "and TAI leads CLOCK_REALTIME by exactly that offset");
+    } else {
+        EXPECT(lead > -1.0 && lead < 1.0,
+               "with no offset, *ts stays on CLOCK_REALTIME");
+    }
 }
 
 int main(void)

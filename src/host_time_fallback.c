@@ -7,10 +7,12 @@
 /*
  * host_time_fallback.c — include/host_time.h with no clock selection.
  *
- * The bottom rung, and today that means macOS: no clock_nanosleep(2) and no
- * pthread_condattr_setclock(3), because both are _POSIX_CLOCK_SELECTION and
- * macOS does not implement the option.  This is what lets imud link there at
- * all -- src/ring.c had no other way to create its condition variable.
+ * The bottom rung: no clock_nanosleep(2) and no pthread_condattr_setclock(3),
+ * because both are _POSIX_CLOCK_SELECTION and the host does not implement the
+ * option.  It was written for macOS, which does not, and macOS now takes
+ * src/host_time_darwin.c instead -- so no host selects this today.  It stays
+ * because it is the rung a port lands on before anyone has written it one, and
+ * because test_host_time holds it on every run.
  *
  * Both substitutes are worse than the real thing, in ways worth knowing:
  *
@@ -37,9 +39,9 @@
 
 void host_monotonic_now(struct timespec *out)
 {
-    /* A macOS rung takes this from mach_absolute_time() or CLOCK_UPTIME_RAW,
-     * to match mach_wait_until()'s timebase.  Plain CLOCK_MONOTONIC here
-     * because nanosleep() below has no timebase of its own to match. */
+    /* Plain CLOCK_MONOTONIC because nanosleep() below has no timebase of its
+     * own to match.  src/host_time_darwin.c, which does, reads the clock its
+     * sleep waits on instead. */
     clock_gettime(CLOCK_MONOTONIC, out);
 }
 
@@ -83,9 +85,9 @@ void host_cond_deadline(struct timespec *out, long ms)
 int host_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m,
                         const struct timespec *deadline)
 {
-    /* Absolute, on the default clock host_cond_deadline() used.  A macOS rung
-     * converts the deadline to a remainder here and calls
-     * pthread_cond_timedwait_relative_np(), which a clock step cannot move. */
+    /* Absolute, on the default clock host_cond_deadline() used — so a wall-clock
+     * step can move this wait.  src/host_time_darwin.c converts the deadline to
+     * a remainder here, which is what a step cannot reach. */
     return pthread_cond_timedwait(c, m, deadline);
 }
 

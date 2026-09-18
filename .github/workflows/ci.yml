@@ -815,8 +815,9 @@ jobs:
 
   # macOS, which is what the three portability seams were built for: it has no
   # i2c-dev or spidev, no libgpiod, and no _POSIX_CLOCK_SELECTION.  So this is
-  # the only runner where all three fall to their null/fallback rung at once,
-  # and the only one that can tell whether ./configure gets there unaided.
+  # the only runner where the bus and GPIO seams fall to their null backend and
+  # the clock seam leaves the POSIX ladder entirely, and the only one that can
+  # tell whether ./configure gets there unaided.
   #
   # Every other job in this file has all three, so without this the port rots
   # the moment nobody is looking: `sigtimedwait` sat in src/main.c behind a
@@ -851,16 +852,16 @@ jobs:
       - name: libmosquitto, for imud-mqtt
         run: brew install mosquitto
 
-      - name: configure reaches the null and fallback rungs on its own
+      - name: configure reaches the null and Darwin backends on its own
         run: |
           ./configure
           for want in 'NO_LINUX_BUS = 1' \
                       'NO_GPIOD = 1' \
-                      'HOST_TIME_SRC = src/host_time_fallback.c'; do
+                      'HOST_TIME_SRC = src/host_time_darwin.c'; do
             grep -qF "$want" config.mk || {
               echo "FAIL: config.mk lacks '$want'" >&2; cat config.mk >&2; exit 1; }
           done
-          echo "OK: bus_null + imu_gpio_null + host_time_fallback, unaided"
+          echo "OK: bus_null + imu_gpio_null + host_time_darwin, unaided"
 
       # Homebrew's prefix is /usr/local on Intel, which clang already searches,
       # and /opt/homebrew on Apple silicon, which it does not — so imud-mqtt
@@ -889,14 +890,23 @@ jobs:
       # ~13 min on a 2019 Intel Air, of which test_fusion, test_imutest and
       # test_drivers are 12: they measure a real loop against a real clock and
       # do not get faster on a quicker box, which is what the 45 min budget is
-      # sized for.  test_host_time is in here — the clock seam's own
-      # conformance suite, held against the rung macOS actually gets, including
-      # that the cond's deadline and its timeout come from one clock.
-      - name: The suite, against the null and fallback rungs
+      # sized for.  test_host_time is in here at its default rung, which is the
+      # fallback one — no host selects that any more, so this is the only place
+      # it runs at all.  The rung macOS actually gets is the step below.
+      - name: The whole portable suite, against the null backends
         run: |
           prefix="$(brew --prefix)"
           make -j3 test-portable CPPFLAGS="-I${prefix}/include" \
                                  LDFLAGS="-L${prefix}/lib"
+
+      # The clock seam's own conformance suite against src/host_time_darwin.c:
+      # mach_wait_until for the deadline, CLOCK_UPTIME_RAW for the clock it
+      # waits on, a relative cond timeout, and the ntp_gettime TAI offset.  Both
+      # architectures matter here — a mach tick is 1 ns on Intel and 125/3 on
+      # Apple silicon, so the timebase conversion is the identity on one leg of
+      # this matrix and not on the other.
+      - name: The conformance suite, against the Darwin rung
+        run: make test-host-time-rung
 
       # The claim that matters: not that it links, but that it runs.  macOS has
       # no `timeout`, so the daemon is backgrounded and signalled by hand — and

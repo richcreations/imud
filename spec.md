@@ -1275,7 +1275,8 @@ capture. Both transports receive the final
 1.  Parse CLI args
 2.  Load config from file; apply CLI overrides
 3.  Redirect stderr to log file if logging.file is set
-4.  Clock health check: CLOCK_REALTIME sanity, CLOCK_TAI offset via adjtimex
+4.  Clock health check: CLOCK_REALTIME sanity, TAI offset (adjtimex on Linux,
+    ntp_gettime on macOS)
 5.  Load cal.json → warn if missing (not fatal); set cal flags
 6.  Open /dev/i2cN; probe + reset + init both sensors
 7.  Gyro bias estimation (gyro_bias_sec still window):
@@ -1833,9 +1834,11 @@ discipline, both nodes' `CLOCK_REALTIME` values are steered to within a few
 microseconds of true UTC.
 
 **Also include `CLOCK_TAI`** as a secondary field. CLOCK_TAI provides
-monotonicity across the rare leap-second boundary at zero cost. Requires chrony
-to set `tai_offset` — verify with `adjtimex`. If `tai_offset` is zero,
-CLOCK_TAI equals CLOCK_REALTIME; the daemon logs a startup warning in this case.
+monotonicity across the rare leap-second boundary at zero cost. It requires a
+time daemon to have set the kernel's TAI offset — chrony's `tai_offset` on
+Linux, verifiable with `adjtimex`; on macOS the offset is read with
+`ntp_gettime(2)` and nothing in the system sets it. Where the offset is zero the
+TAI field equals CLOCK_REALTIME; the daemon logs a startup warning in this case.
 
 **Internal use of `CLOCK_MONOTONIC`:** The IMU ring buffer condvar timeout uses
 `CLOCK_MONOTONIC` (not CLOCK_REALTIME) to avoid a 1-second spin at leap seconds.
@@ -1963,6 +1966,6 @@ Well below any camera/stabilization requirement.
 ```text
 [imud] CLOCK_REALTIME:    2026-05-14T09:41:22Z  OK
 [imud] CLOCK_TAI offset:  37 s  OK  (tai_offset set by chrony)
-[imud] WARNING: CLOCK_TAI offset is 0 — chrony has not set tai_offset.
-         Is 'leapsectz right/UTC' in chrony.conf? ts_tai_ns unreliable.
+[imud] WARNING: TAI offset is 0 — no time daemon has set it (chrony:
+         leapsectz right/UTC; macOS: nothing sets it). ts_tai_ns unreliable.
 ```

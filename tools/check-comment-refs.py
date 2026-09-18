@@ -35,17 +35,17 @@ DEFINED = re.compile(r'\b([a-z_][a-z0-9_]{3,})\s*\(')
 # Named in comments as concepts rather than as functions in this tree.
 #
 # The second group is host APIs the tree deliberately does NOT call: the macOS
-# answers include/host_time.h records for whoever writes that rung, on a box
-# where they cannot be compiled. Naming them is the point of the comment, so
-# they belong here rather than being reworded around the checker.
+# alternatives include/host_time.h names beside the ones src/host_time_darwin.c
+# does call, so that nobody reaches for them twice. Naming them is the point of
+# the comment, so they belong here rather than being reworded around the
+# checker.
 ALLOW = {
     "etc", "ioctl", "syscall", "sigwait", "select", "poll", "accept",
     "connect", "listen", "recv", "send", "read", "write", "open", "close",
     "fork", "exec", "exit", "main", "malloc", "free", "printf", "sleep",
     "pthread_self", "localtime", "recvfrom",
 
-    "mach_wait_until", "mach_absolute_time",
-    "pthread_cond_timedwait_relative_np",
+    "mach_absolute_time", "pthread_set_qos_class_self_np",
 }
 
 
