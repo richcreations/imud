@@ -156,6 +156,14 @@ static void test_past_deadline_returns_at_once(void)
  * so the first signal ended it with most of the interval still to run. Here
  * a signal lands every 5 ms across a 200 ms sleep — around 40 of them — and
  * the sleep must still return only at the deadline.
+ *
+ * Re-run while the HAMMER comes up starved, on the same terms as
+ * test_imutest's temperature window: it paces itself on a 5 ms nanosleep, and
+ * macOS coalesces timers, so on a loaded runner that interval stretches to
+ * tens of ms and delivers a handful of signals rather than ~40. Asserting
+ * through that grades the runner and not the rung. A window that delivered
+ * its signals is taken on the first try, and a starved one says so on the way
+ * past, so a report of this names its own branch.
  */
 static void test_sleep_absorbs_signals(void)
 {
@@ -166,20 +174,30 @@ static void test_sleep_absorbs_signals(void)
     sa.sa_handler = on_sig;      /* no SA_RESTART: nanosleep must see EINTR */
     sigaction(SIGUSR1, &sa, NULL);
 
-    struct timespec start, deadline, end;
-    host_monotonic_now(&start);
-    deadline = start;
-    ts_add_ms(&deadline, 200);
+    int    rc = 0, sigs = 0;
+    double el = 0.0;
 
-    hammer_start();
-    int rc = host_sleep_until(&deadline);
-    hammer_stop();
+    for (int attempt = 0; attempt < 4; attempt++) {
+        struct timespec start, deadline, end;
+        host_monotonic_now(&start);
+        deadline = start;
+        ts_add_ms(&deadline, 200);
 
-    host_monotonic_now(&end);
-    double el = ms_between(&start, &end);
+        hammer_start();
+        rc = host_sleep_until(&deadline);
+        hammer_stop();
+
+        host_monotonic_now(&end);
+        el   = ms_between(&start, &end);
+        sigs = g_sigs;
+        if (sigs > 5) break;
+
+        printf("  (attempt %d delivered %d signals in %.0f ms — hammer "
+               "starved, retrying)\n", attempt + 1, sigs, el);
+    }
 
     EXPECT(rc == 0, "returns 0 despite the signals");
-    EXPECT(g_sigs > 5, "the test actually delivered signals");
+    EXPECT(sigs > 5, "the test actually delivered signals");
     EXPECT(el >= 199.0, "does not return early on EINTR");
     EXPECT(el < 400.0,  "and does not overshoot wildly");
 }
