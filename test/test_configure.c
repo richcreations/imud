@@ -1150,7 +1150,11 @@ static void test_homebrew_formula(void)
     printf("test_homebrew_formula\n");
     fixture_reset();
 
-    char root[PATH_MAX], rb[PATH_MAX], args[2048];
+    /* rb holds root plus a 27-byte suffix, so it is sized from both rather
+     * than guessed at PATH_MAX, which cannot hold the longest root and the
+     * suffix together — and so warns under -Wformat-truncation whenever the
+     * optimizer cannot prove root is shorter. */
+    char root[PATH_MAX], rb[PATH_MAX + 32], args[2048];
     snprintf(root, sizeof root, "%s", g_configure);
     char *slash = strrchr(root, '/');
     if (slash) *slash = '\0';
@@ -1329,6 +1333,100 @@ static void test_service_unit_follows_the_host(void)
 }
 
 /*
+ * Which libimud the bridges link, per host.  A port that has been run links
+ * the shared library -- Linux by SONAME, Darwin by the dylib's install_name;
+ * anywhere else the bridges embed the client object, so a port nobody has run
+ * cannot be broken by a shared-library detail.
+ *
+ * UNAME_S on the command line rather than the uname stub: this is the
+ * Makefile's own variable, guarded with $(origin), and a command-line
+ * assignment beats both that probe and the config.mk the repo may carry.
+ *
+ * -B as well as -n: the recipe has to be PRINTED, and make prints nothing for
+ * a bridge that is already built -- which is every dev box and none of CI, so
+ * without it this passes by absence exactly where it is least watched.
+ */
+static const char *const BRIDGES[] = { "imud-signalk", "imud-mqtt",
+                                       "imud-influxdb", "imud-mavlink",
+                                       "imud-prometheus" };
+
+/* The one line of <recipe> carrying "-o <bridge> ", or "".  The whole line,
+ * because every check here is about what follows the objects on it. */
+static const char *link_line(const char *recipe, const char *bridge,
+                             char *out, size_t n)
+{
+    char want[64];
+    snprintf(want, sizeof want, "-o %s ", bridge);
+
+    const char *p = strstr(recipe, want);
+    if (!p) { out[0] = '\0'; return out; }
+
+    const char *end = strchr(p, '\n');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (len >= n) len = n - 1;
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return out;
+}
+
+static void test_bridges_link_libimud(void)
+{
+    printf("test_bridges_link_libimud\n");
+
+    fixture_reset();
+    setenv("PATH", g_make_path, 1);
+
+    char root[PATH_MAX], cmd[PATH_MAX * 2 + 512], path[PATH_MAX];
+    snprintf(root, sizeof root, "%s", g_configure);
+    char *slash = strrchr(root, '/');
+    if (slash) *slash = '\0';
+    snprintf(path, sizeof path, "%s/mk.txt", g_work);
+
+    /* no2 is a second rejection for the host that must carry neither shared
+     * name; "lib/libimud.o" contains "libimud.", so the two namespaces are
+     * separated by full names rather than by a stem. */
+    static const struct {
+        const char *uname, *want, *no1, *no2, *why;
+    } HOSTS[] = {
+        { "Linux",   "libimud.so.0.0",  "lib/libimud.o", NULL,
+          "the versioned .so" },
+        { "Darwin",  "libimud.0.dylib", "lib/libimud.o", NULL,
+          "the dylib, whose install_name is where it installs" },
+        { "FreeBSD", "lib/libimud.o",   "libimud.so",    "dylib",
+          "the object, until someone runs that port" },
+    };
+
+    for (size_t h = 0; h < sizeof HOSTS / sizeof HOSTS[0]; h++) {
+        snprintf(cmd, sizeof cmd,
+                 "cd '%s' && make -n -B bridges UNAME_S=%s > '%s' 2>&1",
+                 root, HOSTS[h].uname, path);
+        EXPECT(system(cmd) == 0, "make -n bridges parses for this host");
+
+        const char *buf = slurp(path);
+        for (size_t b = 0; b < sizeof BRIDGES / sizeof BRIDGES[0]; b++) {
+            char line[8192], msg[256];
+            link_line(buf, BRIDGES[b], line, sizeof line);
+
+            snprintf(msg, sizeof msg, "%s: %s links %s — %s",
+                     HOSTS[h].uname, BRIDGES[b], HOSTS[h].want, HOSTS[h].why);
+            EXPECT(strstr(line, HOSTS[h].want) != NULL, msg);
+
+            snprintf(msg, sizeof msg, "%s: %s does not also carry %s",
+                     HOSTS[h].uname, BRIDGES[b], HOSTS[h].no1);
+            EXPECT(strstr(line, HOSTS[h].no1) == NULL, msg);
+
+            if (HOSTS[h].no2) {
+                snprintf(msg, sizeof msg, "%s: %s carries no %s either",
+                         HOSTS[h].uname, BRIDGES[b], HOSTS[h].no2);
+                EXPECT(strstr(line, HOSTS[h].no2) == NULL, msg);
+            }
+        }
+    }
+
+    setenv("PATH", g_stub, 1);
+}
+
+/*
  * uninstall has to STOP a service before it removes the unit file, or the init
  * system is left holding a job whose file is gone.  The launchd half was
  * missing entirely: the plist was deleted while the job stayed bootstrapped.
@@ -1496,6 +1594,7 @@ int main(void)
     test_install_paths();
     test_prefix_reaches_the_binary();
     test_service_unit_follows_the_host();
+    test_bridges_link_libimud();
     test_service_none();
     test_homebrew_formula();
     test_uninstall_stops_the_service();

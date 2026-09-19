@@ -875,6 +875,21 @@ jobs:
           make         CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
           make bridges CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib"
 
+      # The macOS half of the ldd assertion the Linux leg makes: all five
+      # bridges link the dylib rather than embedding the client object.  The
+      # dylib's install_name is where it will be INSTALLED, so an in-tree run
+      # needs DYLD_LIBRARY_PATH the way the Linux one needs LD_LIBRARY_PATH —
+      # and running one is the claim that matters, since a bridge that links
+      # a library it cannot load still links.
+      - name: The bridges link libimud, and load it
+        run: |
+          for b in imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus; do
+            otool -L "$b" | grep -q 'libimud\.0\.dylib' || {
+              echo "FAIL: $b does not link libimud" >&2; otool -L "$b" >&2; exit 1; }
+          done
+          DYLD_LIBRARY_PATH=. ./imud-signalk --version
+          echo "OK: five bridges link libimud.0.dylib, and it loads"
+
       # The whole gate, not a sample of it.  This step ran test_host_time alone
       # until 1.9.2 — one suite, so a fusion, packet or config regression went
       # green here.  make test-portable is TEST_BINS minus

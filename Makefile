@@ -198,17 +198,11 @@ ATOMIC_LIB := $(shell printf '#include <stdatomic.h>\n_Atomic unsigned long long
 endif
 
 # ── libimud — the public client shared library ───────────────────────────────
-# Linux builds the versioned .so (SONAME libimud.so.0) and the bridges link it
-# (they are its first consumers). Darwin has no .so here: bridges link the
-# object directly so the macOS dev/test workflow keeps working. In-tree bridge
-# runs on Linux need LD_LIBRARY_PATH=. (the installed copy is found via
-# ldconfig).
-#
-# Darwin still gets a real shared library to install, it is just a different
-# shape: a dylib carrying its version in the install_name, because Mach-O has
-# no SONAME and no symbol versioning at all. SHLIB_FILES is what install and
-# uninstall move; SHLIB_LINK_CMDS is how the names beside $(SHLIB) are made,
-# which is a two-step SONAME chain on Linux and one plain name here.
+# Linux builds the versioned .so (SONAME libimud.so.0); Darwin builds a dylib
+# carrying its version in the install_name, because Mach-O has no SONAME and
+# no symbol versioning at all. SHLIB_FILES is what install and uninstall move;
+# SHLIB_LINK_CMDS is how the names beside $(SHLIB) are made, which is a
+# two-step SONAME chain on Linux and one plain name on Darwin.
 ifeq ($(UNAME_S),Darwin)
     SHLIB           = libimud.0.dylib
     SHLIB_FILES     = $(SHLIB) libimud.dylib
@@ -220,10 +214,15 @@ else
     SHLIB_LINK_CMDS = ln -sf $(SHLIB) $(1)/$(SONAME); ln -sf $(SONAME) $(1)/libimud.so
 endif
 
-# Which of the two the bridges link. Unchanged from before the dylib existed:
-# Linux links the library, and every other host links the object, so a port
-# that has not been run yet cannot be broken by a shared-library detail.
-ifeq ($(UNAME_S),Linux)
+# Which of the two the bridges link. A port that has been run links the
+# library — Linux by SONAME, Darwin by the absolute install_name the dylib
+# carries. Anywhere else the bridges embed the object, so a port nobody has
+# run yet cannot be broken by a shared-library detail (FreeBSD: issue #48).
+#
+# An in-tree bridge run needs the freshly built library on the loader's path:
+# LD_LIBRARY_PATH=. on Linux, DYLD_LIBRARY_PATH=. on macOS. An installed one
+# finds it through ldconfig or through the install_name.
+ifneq ($(filter $(UNAME_S),Linux Darwin),)
     LIBIMUD = $(SHLIB)
 else
     LIBIMUD = lib/libimud.o
@@ -349,8 +348,8 @@ imud-mon: src/cli.o src/config.o src/log.o src/mon_parse.o src/packet.o src/mon_
 
 # imud-signalk bridges the AF_UNIX stream to Signal K delta JSON over UDP.
 # Stream access + validation come from libimud ($(LIBIMUD) in $^ is either the
-# versioned .so — linked directly, embedding its SONAME — or, on Darwin, the
-# plain object).
+# shared library — linked directly, embedding its SONAME or install_name — or,
+# on a host whose port has not been run, the plain object).
 imud-signalk: src/sk_delta.o src/config.o src/log.o src/netserv.o src/bridge.o src/sdnotify.o src/signalk_main.o $(LIBIMUD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm $(ATOMIC_LIB)
 
@@ -382,7 +381,8 @@ bridges: imud-signalk imud-mqtt imud-influxdb imud-mavlink imud-prometheus
 
 # ── libimud shared library ────────────────────────────────────────────────────
 
-# PIC object (also linked directly into the bridges on Darwin).
+# PIC object (also linked directly into the bridges on a host that does not
+# link the shared library — see LIBIMUD above).
 lib/libimud.o: lib/libimud.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -fPIC -c -o $@ $<
 
@@ -1163,11 +1163,11 @@ test-tools:
 # man5 and man3 are NOT here: help2man documents a command's options, and a
 # config-file format is not that.  Those stay hand-written.
 #
-# This is the one docs target that needs a BUILD — help2man runs the binary.
-# On macOS imud, imud-cal and imud-imutest do not link at all, so regenerating
-# is a devbox/Linux operation.  The generated pages are committed, so a
-# packager never runs help2man and `make dist` (git archive HEAD) still ships
-# a complete tree.
+# This is the one docs target that needs a BUILD — help2man runs the binary,
+# and the recipe below reaches the freshly built libimud with LD_LIBRARY_PATH,
+# which is not the variable macOS reads.  So it is a Linux operation.  The
+# generated pages are committed, so a packager never runs help2man and
+# `make dist` (git archive HEAD) still ships a complete tree.
 MAN_GENERATED = $(addprefix man/,$(filter man1/% man8/%,$(MAN_ALL)))
 
 # $(call run-help2man,<binary>,<section>,<manual>,<output>)

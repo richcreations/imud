@@ -101,9 +101,9 @@ pkg-config metadata). Third-party apps build with
     cc app.c $(pkg-config --cflags --libs libimud)
 
 and stay binary-compatible across imud upgrades (see man 3 libimud). The
-bridges link libimud themselves; when running them from the build tree on
-Linux (not installed), prefix LD_LIBRARY_PATH=. so they find the freshly
-built library.
+bridges link libimud themselves; when running them from the build tree (not
+installed), prefix LD_LIBRARY_PATH=. on Linux or DYLD_LIBRARY_PATH=. on macOS
+so they find the freshly built library.
 
 Optional bridge daemons are built and installed separately — each is its own
 package with its own dependencies, config, and docs:
