@@ -81,6 +81,14 @@ def source_index():
 DEF_LINE = re.compile(r'^(?!\s)(?!#)(?!//)(?!/\*)(?!\*)'
                       r'(?:static\s+|inline\s+|const\s+|extern\s+)*'
                       r'[A-Za-z_][\w \t\*]*?'
+                      # A return type that wraps the name: `T (*f(args))[3]`
+                      # returns a pointer to array, `T (*f(args))(int)` a
+                      # pointer to function.  Without this the scan matched the
+                      # TYPE as the name, registering a definition called
+                      # `double` over the body -- and setdefault then left a
+                      # second such function with no entry at all, so a
+                      # citation into it read as citing nothing.
+                      r'(?:\(\s*\*\s*)?'
                       r'\b([A-Za-z_]\w*)\s*\(')
 MACRO_LINE = re.compile(r'^#\s*define\s+([A-Za-z_]\w*)')
 TYPEDEF_END = re.compile(r'^\}\s*([A-Za-z_]\w*)\s*;')

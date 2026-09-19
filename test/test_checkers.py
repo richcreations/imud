@@ -26,6 +26,7 @@ produce no new finding and the test would fail for the wrong reason.
 Run as `make test-tools`, or directly.  Needs git and python3, nothing else.
 """
 
+import importlib.util
 import os
 import re
 import shutil
@@ -829,6 +830,67 @@ CASES = [
 ]
 
 
+def test_def_line_parses_wrapped_returns():
+    """check-math-citations must find a function whose name sits inside its type.
+
+    Not a mutation case: every fixture above breaks a fact in the tree and
+    waits for a finding, and this cannot be stated that way — the tree holds no
+    such signature to cite, and inventing one in src/ purely to be cited is
+    worse than testing the parser directly.
+
+    `T (*f(args))[3]` (pointer to array) and `T (*f(args))(int)` (pointer to
+    function) put the name inside the return type.  The scan used to match the
+    TYPE, registering a definition called `double`; setdefault then left a
+    SECOND such function with no entry at all, so a citation into it was
+    reported as citing nothing while one into the first resolved by luck.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "cmc", os.path.join(TOOLS, "check-math-citations.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    src = (
+        "const double (*imu_rot_in_force(const imud_config_t *cfg))[3]\n"
+        "{\n    return NULL;\n}\n"
+        "\n"
+        "const double (*mag_rot_in_force(const imud_config_t *cfg))[3]\n"
+        "{\n    return NULL;\n}\n"
+        "\n"
+        "void (*sig_handler(int sig))(int)\n"
+        "{\n    return NULL;\n}\n"
+        "\n"
+        "static int plain_function(int x)\n"
+        "{\n    return x;\n}\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".c", delete=False) as fh:
+        fh.write(src)
+        path = fh.name
+    try:
+        defs = mod.definitions(path)
+    finally:
+        os.unlink(path)
+
+    bad = []
+    for name, span in (("imu_rot_in_force", (1, 4)),
+                       ("mag_rot_in_force", (6, 9)),
+                       ("sig_handler", (11, 14)),
+                       ("plain_function", (16, 19))):
+        if defs.get(name) != span:
+            bad.append(f"{name}: expected {span}, got {defs.get(name)!r}")
+    # The old failure registered the return type as the definition's name.
+    for kw in ("double", "void", "const", "int"):
+        if kw in defs:
+            bad.append(f"parsed a definition named {kw!r} — signature mis-read")
+
+    if bad:
+        print("FAIL check-math-citations [DEF_LINE]: " + "; ".join(bad),
+              file=sys.stderr)
+        return 1
+    print("ok   check-math-citations  DEF_LINE                     "
+          "parses name-inside-type returns")
+    return 0
+
+
 def findings(checker, root):
     """The set of FAIL lines a checker emits against `root`."""
     env = dict(os.environ, IMUD_ROOT=root)
@@ -898,6 +960,8 @@ def main():
                       f"{expect!r} after mutation", file=sys.stderr)
                 for l in sorted(new)[:3]:
                     print(f"       new finding: {l}", file=sys.stderr)
+
+        failures += test_def_line_parses_wrapped_returns()
 
         if failures:
             print(f"\n{failures} of {len(CASES)} checkers failed to detect "
