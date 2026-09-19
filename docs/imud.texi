@@ -871,7 +871,7 @@ reads no config file of its own.
 @anchor{#imu}
 IMU (gyroscope + accelerometer) driver settings. @strong{[restart]}
 
-@multitable @columnfractions 0.19 0.09 0.19 0.53 
+@multitable @columnfractions 0.27 0.09 0.19 0.45 
 @headitem 
 Key
  @tab Type
@@ -993,6 +993,15 @@ want: a fixed interval under-polls at high ODR --- the FIFO overflows
 and the delivered rate falls below the configured one --- and burns
 reads at low ODR. Set a non-zero value only to force a specific cadence.
 @strong{Ignored entirely when @code{int_gpio} is non-zero.}
+@item 
+@code{rotation_euler_deg}
+ @tab array
+ @tab @emph{(unset)}
+ @tab Rotation from this sensor into the body frame,
+@code{[roll, pitch, yaw]} in degrees, replacing @code{[mount]} for the
+accelerometer and gyroscope. Set it only when the IMU and magnetometer
+are mounted in different orientations; left unset, the sensor uses
+@code{[mount]}.
 @end multitable
 
 @node [mag]
@@ -1000,7 +1009,7 @@ reads at low ODR. Set a non-zero value only to force a specific cadence.
 @anchor{#mag}
 Magnetometer driver settings. @strong{[restart]}
 
-@multitable @columnfractions 0.19 0.09 0.18 0.54 
+@multitable @columnfractions 0.27 0.09 0.18 0.46 
 @headitem 
 Key
  @tab Type
@@ -1098,6 +1107,15 @@ a poll that arrives late loses the conversion outright rather than
 merely delaying it, and a fixed interval burns reads at low ODR besides.
 Set a non-zero value only to force a specific cadence. @strong{Ignored
 entirely when @code{int_gpio} is non-zero.}
+@item 
+@code{rotation_euler_deg}
+ @tab array
+ @tab @emph{(unset)}
+ @tab Rotation from this sensor into the body frame,
+@code{[roll, pitch, yaw]} in degrees, replacing @code{[mount]} for the
+magnetometer. The one to set for a compass mounted apart from the IMU
+--- on a bulkhead, or turned to clear a cable run --- since heading is
+otherwise wrong by exactly the angle between them.
 @end multitable
 
 @node [fusion]
@@ -1579,6 +1597,12 @@ The rotation is ZYX intrinsic Euler angles:
 is non-zero --- it corrects for the angle between the chip X axis and
 the platform's forward direction.
 
+@code{[mount]} describes the whole rig. When the IMU and the
+magnetometer are not mounted in the same orientation, give the odd one a
+@code{rotation_euler_deg} of its own under @ref{[imu],,[imu]} or
+@ref{[mag],,[mag]}: a sensor that sets one uses it instead of
+@code{[mount]}, and a sensor that does not falls back to @code{[mount]}.
+
 @multitable @columnfractions 0.27 0.14 0.23 0.36 
 @headitem 
 Key
@@ -1593,15 +1617,6 @@ Key
 chip X and the forward axis once (e.g. with a handbearing compass on a
 vessel); set that as @code{yaw}.
 @item 
-@code{preset}
- @tab string
- @tab @emph{(unset)}
- @tab Named shortcut: @code{"identity"}, @code{"yaw_90"},
-@code{"yaw_180"}, @code{"yaw_270"}, @code{"roll_90"}, @code{"roll_270"},
-@code{"pitch_90"}, @code{"pitch_270"}. Overrides
-@code{rotation_euler_deg} when set. An unrecognised name is a fatal
-config error.
-@item 
 @code{rotation_matrix}
  @tab array of 9
  @tab @emph{(unset)}
@@ -1612,12 +1627,14 @@ fatal config error. Whichever mount key appears last wins.
 @end multitable
 
 @strong{Example} --- chip X points aft (180° from forward; e.g. to a
-vessel's stern):
+vessel's stern), with a compass on a bulkhead turned 90° from it:
 
 @verbatim
+[mount]
 rotation_euler_deg = [0.0, 0.0, 180.0]
-# or equivalently:
-preset = "yaw_180"
+
+[mag]
+rotation_euler_deg = [0.0, 0.0, 270.0]
 @end verbatim
 
 @node [logging]

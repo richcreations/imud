@@ -389,8 +389,18 @@ long imu_mag_stall_ms(int odr_mhz);
 int odr_actual_imu(const imu_ops_t *ops, int req_mhz);
 int odr_actual_mag(const mag_ops_t *ops, int req_mhz);
 
-/* Apply mount rotation (board -> body) if configured. In-place on v. */
-void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3]);
+/* A board -> body rotation matrix, row-major: v_body = R * v_board. */
+typedef const double (*rot3_t)[3];
+
+/*
+ * The rotation in force for one sensor: the sensor's own [imu]/[mag] rotation
+ * when set, otherwise [mount]'s, otherwise NULL.
+ */
+rot3_t imu_rot_in_force(const imud_config_t *cfg);
+rot3_t mag_rot_in_force(const imud_config_t *cfg);
+
+/* Apply a board -> body rotation, in place on v. NULL is a no-op. */
+void apply_rot_if_set(rot3_t R, float v[3]);
 
 /*
  * Finish a sample: calibrate, then rotate board->body.

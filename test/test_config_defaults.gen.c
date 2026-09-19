@@ -215,8 +215,9 @@ CK_INT (c.mav_tcp_port,                 5760,             "[imud-mavlink] tcp_po
 /* Not assertable, and each one deliberately so:
  *   [mount] rotation_euler_deg
  *   [mount] rotation_matrix
- *   [mount] preset
+ *   [imu] rotation_euler_deg
+ *   [mag] rotation_euler_deg
  * they are hand-rolled blocks in apply_kv() that set several
- * members at once, or (preset) match a name and store nothing,
- * so there is no single field carrying the documented default.
- * test_defaults_mount() in test_config.c asserts all three. */
+ * members at once, so there is no single field carrying the
+ * documented default.
+ * test_defaults_mount() in test_config.c asserts them. */

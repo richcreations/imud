@@ -684,6 +684,51 @@ static void euler_deg_to_rot(const double euler[3], double R[3][3])
         }
 }
 
+/* ── Rotation keys ──────────────────────────────────────────────────────── */
+
+/*
+ * The members one section carries for its board→body rotation.  [mount], [imu]
+ * and [mag] each have a set, so the parse lives here once and each case in
+ * apply_kv() only names its own fields.
+ */
+typedef struct {
+    bool   *set;
+    double *euler_deg;    /* [3] */
+    double (*rot)[3];     /* [3][3] */
+} rot_target_t;
+
+/* Parse [roll, pitch, yaw] in degrees into one target. */
+static int apply_euler_key(rot_target_t t, const char *key, const char *val,
+                           const char *path, int lineno)
+{
+    double angs[3];
+    if (parse_float_array(val, angs, 3, path, lineno, key) < 0)
+        return -1;
+    *t.set = true;
+    for (int i = 0; i < 3; i++) t.euler_deg[i] = angs[i];
+    euler_deg_to_rot(t.euler_deg, t.rot);
+    return 0;
+}
+
+/*
+ * A [mount] key that no longer exists.  Reported rather than left to the
+ * unknown-key warning, which would start the daemon with the samples
+ * unrotated — the same silent bias that made an unrecognised preset name fatal
+ * back when presets existed.  Lives outside apply_kv() because the doc
+ * checkers read that function's strcmp chain as the list of keys imud parses,
+ * and a retired key must not appear in it.
+ */
+static int retired_mount_key(const char *key, const char *path, int lineno)
+{
+    if (strcmp(key, "preset") == 0) {
+        LOG_E("%s:%d: 'preset': removed — give the angles instead, e.g. "
+              "rotation_euler_deg = [0.0, 0.0, 180.0] for the old \"yaw_180\"\n",
+              path, lineno);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── Parser ─────────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -977,13 +1022,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_MOUNT:
         if (strcmp(key, "rotation_euler_deg") == 0) {
-            double angs[3];
-            if (parse_float_array(val, angs, 3, path, lineno, key) < 0)
-                return -1;
-            cfg->mount_set = true;
-            for (int i = 0; i < 3; i++) cfg->mount_euler_deg[i] = angs[i];
-            euler_deg_to_rot(cfg->mount_euler_deg, cfg->mount_rot);
-            return 0;
+            rot_target_t t = { &cfg->mount_set, cfg->mount_euler_deg,
+                               cfg->mount_rot };
+            return apply_euler_key(t, key, val, path, lineno);
         } else if (strcmp(key, "rotation_matrix") == 0) {
             /* Row-major 3×3: v_body = R · v_board. Last mount key wins. */
             double m[9];
@@ -1000,52 +1041,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
             cfg->mount_euler_deg[0] = cfg->mount_euler_deg[1] =
                 cfg->mount_euler_deg[2] = 0.0;
             return 0;
-        } else if (strcmp(key, "preset") == 0) {
-            /* Named preset — string value. Validate BEFORE committing: this
-             * Setting mount_set = true up front and only warning on an
-             * unrecognised name, so a typo left the daemon running with
-             * whatever angles happened to be in the struct. A silently wrong
-             * mount rotation biases every sample, so it is fatal. */
-            char preset[32];
-            /* Not NEED_STR — a preset name is matched, not stored — but the
-             * return cannot be ignored either: copy_str leaves the buffer
-             * alone when the value does not fit, and the strcasecmp chain
-             * below would then read it uninitialised.  Reported as the length
-             * error it is rather than as an unknown preset, which would send
-             * the operator looking for a name that is in fact spelled right. */
-            if (copy_str(val, preset, sizeof(preset)) != COPY_OK) {
-                LOG_E("%s:%d: '%s': preset name too long (max %zu chars)\n",
-                      path, lineno, key, sizeof(preset) - 1);
-                return -1;
-            }
-            double e[3] = {0.0, 0.0, 0.0};
-            if (strcasecmp(preset, "identity") == 0 || strcasecmp(preset, "board_forward") == 0) {
-                e[0] = 0.0; e[1] = 0.0; e[2] = 0.0;
-            } else if (strcasecmp(preset, "yaw_90") == 0 || strcasecmp(preset, "rot_z_90") == 0) {
-                e[0] = 0.0; e[1] = 0.0; e[2] = 90.0;
-            } else if (strcasecmp(preset, "yaw_180") == 0 || strcasecmp(preset, "rot_z_180") == 0) {
-                e[0] = 0.0; e[1] = 0.0; e[2] = 180.0;
-            } else if (strcasecmp(preset, "yaw_270") == 0 || strcasecmp(preset, "rot_z_270") == 0) {
-                e[0] = 0.0; e[1] = 0.0; e[2] = 270.0;
-            } else if (strcasecmp(preset, "roll_90") == 0 || strcasecmp(preset, "rot_x_90") == 0) {
-                e[0] = 90.0; e[1] = 0.0; e[2] = 0.0;
-            } else if (strcasecmp(preset, "roll_270") == 0 || strcasecmp(preset, "rot_x_270") == 0) {
-                e[0] = 270.0; e[1] = 0.0; e[2] = 0.0;
-            } else if (strcasecmp(preset, "pitch_90") == 0 || strcasecmp(preset, "rot_y_90") == 0) {
-                e[0] = 0.0; e[1] = 90.0; e[2] = 0.0;
-            } else if (strcasecmp(preset, "pitch_270") == 0 || strcasecmp(preset, "rot_y_270") == 0) {
-                e[0] = 0.0; e[1] = 270.0; e[2] = 0.0;
-            } else {
-                LOG_E("%s:%d: '%s': unknown mount preset '%s'\n",
-                      path, lineno, key, preset);
-                return -1;
-            }
-            snprintf(cfg->mount_preset, sizeof(cfg->mount_preset), "%s", preset);
-            cfg->mount_set = true;
-            for (int i = 0; i < 3; i++) cfg->mount_euler_deg[i] = e[i];
-            euler_deg_to_rot(cfg->mount_euler_deg, cfg->mount_rot);
-            return 0;
         }
+        if (retired_mount_key(key, path, lineno) < 0)
+            return -1;
         WARN_UNKNOWN();
         break;
 
@@ -1081,6 +1079,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_IMU:
+        if (strcmp(key, "rotation_euler_deg") == 0) {
+            rot_target_t t = { &cfg->imu_rot_set, cfg->imu_rot_euler_deg,
+                               cfg->imu_rot };
+            return apply_euler_key(t, key, val, path, lineno);
+        }
         if      (strcmp(key, "driver")   == 0) NEED_STR(cfg->imu_driver);
         else if (strcmp(key, "bus")      == 0) NEED_BUS_KIND(cfg->imu_bus_kind);
         else if (strcmp(key, "spi_dev")  == 0) NEED_STR(cfg->imu_spi_dev);
@@ -1097,6 +1100,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         break;
 
     case SEC_MAG:
+        if (strcmp(key, "rotation_euler_deg") == 0) {
+            rot_target_t t = { &cfg->mag_rot_set, cfg->mag_rot_euler_deg,
+                               cfg->mag_rot };
+            return apply_euler_key(t, key, val, path, lineno);
+        }
         if      (strcmp(key, "driver")       == 0) NEED_STR(cfg->mag_driver);
         else if (strcmp(key, "bus")          == 0) NEED_BUS_KIND(cfg->mag_bus_kind);
         else if (strcmp(key, "spi_dev")      == 0) NEED_STR(cfg->mag_spi_dev);

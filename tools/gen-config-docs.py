@@ -162,12 +162,10 @@ def man_entry(key, rep):
 def md_tables(section):
     """The section's entries grouped as the MANUAL lays them out.
 
-    Two things differ from the man page and both are reproduced rather than
+    One thing differs from the man page and is reproduced rather than
     unified — making them agree is a content change and belongs in a commit
     that shows it as a diff:
 
-      order   [mount] is euler/matrix/preset in the man page and
-              euler/preset/matrix in the manual;
       shape   [position] is one .SS in the man page but FOUR tables in the
               manual, with prose between them, so it gets four regions.
     """
@@ -377,9 +375,9 @@ def defaults_test(reg, rep):
     for label in skipped:
         out.append(" *   %s" % label)
     out.append(" * they are hand-rolled blocks in apply_kv() that set several")
-    out.append(" * members at once, or (preset) match a name and store nothing,")
-    out.append(" * so there is no single field carrying the documented default.")
-    out.append(" * test_defaults_mount() in test_config.c asserts all three. */")
+    out.append(" * members at once, so there is no single field carrying the")
+    out.append(" * documented default.")
+    out.append(" * test_defaults_mount() in test_config.c asserts them. */")
     return "\n".join(out) + "\n", n, skipped
 
 

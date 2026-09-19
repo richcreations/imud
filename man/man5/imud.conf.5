@@ -366,6 +366,25 @@ Set a value only to force a specific cadence.
 Ignored entirely when
 .B int_gpio
 is non-zero.
+.TP
+.B rotation_euler_deg
+.RI (array,\ unset)
+Rotation from this sensor's axes into the body frame, as
+[roll, pitch, yaw] in degrees, in place of the
+.B [mount]
+rotation.
+Set it only when the IMU and the magnetometer are mounted in
+different orientations \(en with one rotation for the whole rig,
+.B [mount]
+says it once.
+Applies to the accelerometer and gyroscope; the magnetometer keeps
+whatever
+.B [mag]
+or
+.B [mount]
+gives it.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.
 .\" END GENERATED: config-keys imu
 .SS [mag]
 Magnetometer driver settings.
@@ -513,6 +532,18 @@ Interval in seconds between degauss (SET/RESET) pulses.
 Set
 .B 0
 to disable.
+.TP
+.B rotation_euler_deg
+.RI (array,\ unset)
+Rotation from this sensor's axes into the body frame, as
+[roll, pitch, yaw] in degrees, in place of the
+.B [mount]
+rotation.
+This is the one to set for a compass mounted apart from the IMU \(en
+on a bulkhead, or turned to clear a cable run \(en since heading is
+then wrong by exactly the angle between them.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.
 .\" END GENERATED: config-keys mag
 .SS [fusion]
 MEKF noise parameters and rejection thresholds.
@@ -989,24 +1020,6 @@ for installations whose rotation is known as a matrix.
 Validated at load against R^T R = I and det(R) = +1;
 a non-orthonormal matrix or a reflection (det = -1, typically a
 sign-flipped axis) is a fatal configuration error.
-.TP
-.B preset
-.RI (string,\ unset)
-Named rotation shortcut.
-One of:
-.BR identity ,
-.BR yaw_90 ,
-.BR yaw_180 ,
-.BR yaw_270 ,
-.BR roll_90 ,
-.BR roll_270 ,
-.BR pitch_90 ,
-.BR pitch_270 .
-Overrides
-.B rotation_euler_deg
-when set; whichever mount key appears last in the file wins.
-An unrecognised preset name is a fatal configuration error \(em
-starting with a silently wrong mount rotation would bias every sample.
 .\" END GENERATED: config-keys mount
 .SS [logging]
 .B [hot]:

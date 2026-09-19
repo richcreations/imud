@@ -188,10 +188,11 @@ static void test_defaults_values(void)
  * documented default" for a generator to assert.  Written out here so the
  * exception is a covered case rather than a gap with a comment on it.
  *
- * The default rotation matrix is all zeros, NOT the identity — config_defaults
- * memsets and never touches it.  That is only safe because imu_math.c:265
- * returns early on !mount_set, so the degenerate matrix is never applied; the
- * pairing is what this pins.
+ * The default rotation matrices are all zeros, NOT the identity —
+ * config_defaults memsets and never touches them.  That is only safe because
+ * imu_rot_in_force()/mag_rot_in_force() return NULL when nothing is set and
+ * apply_rot_if_set() treats NULL as a no-op, so a degenerate matrix is never
+ * applied; the pairing is what this pins.
  */
 static void test_defaults_mount(void)
 {
@@ -209,6 +210,16 @@ static void test_defaults_mount(void)
             EXPECT_NEAR_D(cfg.mount_rot[i][j], 0.0, 1e-12,
                           "[mount] rotation_matrix is zeroed, and gated by "
                           "mount_set rather than being an identity");
+
+    EXPECT(cfg.imu_rot_set == false, "[imu] rotation unset by default");
+    EXPECT(cfg.mag_rot_set == false, "[mag] rotation unset by default");
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+            EXPECT_NEAR_D(cfg.imu_rot[i][j], 0.0, 1e-12,
+                          "[imu] rotation is zeroed, gated by imu_rot_set");
+            EXPECT_NEAR_D(cfg.mag_rot[i][j], 0.0, 1e-12,
+                          "[mag] rotation is zeroed, gated by mag_rot_set");
+        }
     end_test(fb);
 }
 
@@ -685,32 +696,6 @@ static void test_load_rejects_too_long_string(void)
 
     if (home_env) setenv("HOME", home_save, 1);
     else          unsetenv("HOME");
-
-    /*
-     * [mount] preset does not go through NEED_STR — the name is matched, not
-     * stored — but it must still not read the buffer copy_str declined to
-     * write.  Fatal, and reported as a length error rather than as an unknown
-     * preset, which would send the operator hunting a name spelled right.
-     */
-    snprintf(body, sizeof body, "[mount]\npreset = \"%s\"\n",
-             xstr(big, sizeof def.mount_preset + 8));
-    path = write_tmpconf(145, body);
-    config_defaults(&cfg);
-    cap_begin();
-    int prc = config_load(path, &cfg);
-    const char *pmsg = cap_end();
-    EXPECT(prc == CONFIG_ERR_PARSE, "over-long mount preset rejected");
-    EXPECT(!cfg.mount_set,          "rejected preset does not set the mount");
-    /*
-     * The return code alone cannot tell the guard from its absence: without
-     * it the uninitialised buffer matches no known name and the parse fails
-     * anyway, as "unknown mount preset". Asserting the message is what makes
-     * a regression here visible — verified by removing the guard and watching
-     * this line, and only this line, fail.
-     */
-    EXPECT(strstr(pmsg, "too long") != NULL,
-           "over-long preset reported as a length error, not an unknown name");
-    remove(path);
 
     end_test(fb);
 }
@@ -1893,92 +1878,50 @@ static void fill_distinct(imud_config_t *c)
     for (int i = 0; i < 3; i++) c->mount_euler_deg[i] = 142.5 + i;
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++) c->mount_rot[i][j] = 143.5 + i * 3 + j;
-    SET_STR(c->mount_preset, "distinct-144");
+    c->imu_rot_set = !c->imu_rot_set;
+    for (int i = 0; i < 3; i++) c->imu_rot_euler_deg[i] = 152.5 + i;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) c->imu_rot[i][j] = 153.5 + i * 3 + j;
+    c->mag_rot_set = !c->mag_rot_set;
+    for (int i = 0; i < 3; i++) c->mag_rot_euler_deg[i] = 162.5 + i;
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) c->mag_rot[i][j] = 163.5 + i * 3 + j;
 }
 
 /*
- * [mount] preset — the eight quarter-turn shortcuts and their aliases.
- *
- * Untested for a long time: the key is parsed, and it
- * is the one mount key that can be set with a typo. An unrecognised name is
- * deliberately fatal, because starting with a silently wrong mount rotation
- * biases every sample for the life of the run.
+ * [mount] preset is gone.  It must not degrade to the unknown-key warning,
+ * which would start the daemon with the samples unrotated — the silent bias
+ * the key's own fatal-on-typo behaviour existed to prevent.  The message has
+ * to name the replacement, or an operator upgrading has only "removed" and no
+ * way to write what they meant.
  */
-static void test_mount_preset(void)
+static void test_mount_preset_retired(void)
 {
-    begin_test("test_mount_preset");
+    begin_test("test_mount_preset_retired");
     int fb = g_fail;
 
-    static const struct { const char *name; double r, p, y; } cases[] = {
-        { "identity",      0,  0,   0 }, { "board_forward", 0,  0,   0 },
-        { "yaw_90",        0,  0,  90 }, { "rot_z_90",      0,  0,  90 },
-        { "yaw_180",       0,  0, 180 }, { "rot_z_180",     0,  0, 180 },
-        { "yaw_270",       0,  0, 270 }, { "rot_z_270",     0,  0, 270 },
-        { "roll_90",      90,  0,   0 }, { "rot_x_90",     90,  0,   0 },
-        { "roll_270",    270,  0,   0 }, { "rot_x_270",   270,  0,   0 },
-        { "pitch_90",      0, 90,   0 }, { "rot_y_90",      0, 90,   0 },
-        { "pitch_270",     0,270,   0 }, { "rot_y_270",     0,270,   0 },
-    };
+    const char *path = write_tmpconf(91, "[mount]\npreset = \"yaw_180\"\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    cap_begin();
+    int rc = config_load(path, &cfg);
+    const char *msg = cap_end();
 
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        char body[128];
-        snprintf(body, sizeof body, "[mount]\npreset = \"%s\"\n", cases[i].name);
-        const char *path = write_tmpconf(91, body);
-        imud_config_t cfg;
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) == 0, cases[i].name);
-        EXPECT(cfg.mount_set, "preset sets mount_set");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[0], cases[i].r, 1e-9, "roll");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[1], cases[i].p, 1e-9, "pitch");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[2], cases[i].y, 1e-9, "yaw");
-        EXPECT(strcmp(cfg.mount_preset, cases[i].name) == 0,
-               "the name as written is recorded");
-        remove(path);
-    }
+    EXPECT(rc == CONFIG_ERR_PARSE, "a retired preset key is fatal");
+    EXPECT(!cfg.mount_set, "and leaves the mount unset");
+    EXPECT(strstr(msg, "removed") != NULL, "reported as removed");
+    EXPECT(strstr(msg, "rotation_euler_deg") != NULL,
+           "and names the key that replaces it");
+    EXPECT(strstr(msg, "unknown key") == NULL,
+           "not the generic unknown-key warning");
+    remove(path);
 
-    /* Case-insensitive, per strcasecmp in apply_kv. */
-    {
-        const char *path = write_tmpconf(91, "[mount]\npreset = \"YAW_180\"\n");
-        imud_config_t cfg;
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) == 0, "preset names are case-insensitive");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 180.0, 1e-9, "YAW_180 → yaw 180");
-        remove(path);
-    }
-
-    /* Last mount key wins, in both directions. */
-    {
-        const char *path = write_tmpconf(91,
-            "[mount]\nrotation_euler_deg = [0.0, 0.0, 90.0]\n"
-            "preset = \"yaw_180\"\n");
-        imud_config_t cfg;
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) == 0, "euler then preset loads");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 180.0, 1e-9, "preset wins when last");
-        remove(path);
-
-        path = write_tmpconf(91,
-            "[mount]\npreset = \"yaw_180\"\n"
-            "rotation_euler_deg = [0.0, 0.0, 90.0]\n");
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) == 0, "preset then euler loads");
-        EXPECT_NEAR_D(cfg.mount_euler_deg[2], 90.0, 1e-9, "euler wins when last");
-        remove(path);
-    }
-
-    /* A typo must stop the daemon, not silently keep the default. */
-    {
-        const char *path = write_tmpconf(91, "[mount]\npreset = \"yaw_45\"\n");
-        imud_config_t cfg;
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) != 0, "unknown preset name is fatal");
-        remove(path);
-
-        path = write_tmpconf(91, "[mount]\npreset = \"\"\n");
-        config_defaults(&cfg);
-        EXPECT(config_load(path, &cfg) != 0, "empty preset name is fatal");
-        remove(path);
-    }
+    /* Only [mount] retired it; the name was never a key anywhere else, so it
+     * stays an ordinary unknown key there. */
+    path = write_tmpconf(91, "[mag]\npreset = \"yaw_180\"\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0, "[mag] preset is merely unknown");
+    remove(path);
 
     end_test(fb);
 }
@@ -2175,7 +2118,7 @@ int main(void)
     test_runtime_status_socket_too_long();
     test_mag_none_is_a_board();
     test_sim_conf_loads();
-    test_mount_preset();
+    test_mount_preset_retired();
     test_apply_hot_partition();
     test_spi_mag_clock_risk();
 

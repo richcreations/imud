@@ -547,6 +547,7 @@ IMU (gyroscope + accelerometer) driver settings. **[restart]**
 | `fifo_wm` | int | `64` | FIFO watermark in sample-sets: how deep the chip buffers before raising its interrupt. This sets **both buffer depth and sample latency** — with `int_grace`, the reader waits `fifo_wm + int_grace` sample periods, so 64 at 833 Hz batches about 77 ms. On the ST parts a watermark of 8 or more also batches the chip timestamp into the FIFO; at 32 and above that costs 1.6% of the word budget, so the same watermark holds about 63 sample-sets rather than 64. |
 | `int_grace` | int | `2` | How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. The wait is `fifo_wm + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against. |
 | `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate and watermark — half the time the watermark takes to fill — which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
+| `rotation_euler_deg` | array | *(unset)* | Rotation from this sensor into the body frame, `[roll, pitch, yaw]` in degrees, replacing `[mount]` for the accelerometer and gyroscope. Set it only when the IMU and magnetometer are mounted in different orientations; left unset, the sensor uses `[mount]`. |
 <!-- END GENERATED: config-keys imu.1 -->
 
 ### `[mag]`
@@ -566,6 +567,7 @@ Magnetometer driver settings. **[restart]**
 | `set_period_s` | float | `5.0` | Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable. |
 | `int_grace` | int | `2` | How late the interrupt may be, in **samples**, before the reader gives up and reads anyway. These magnetometers have no FIFO, so the line signals one finished conversion and the wait is `1 + int_grace` sample periods, so the fallback fires only when the line is genuinely *late* — never merely because the batch is not ready yet. Counted in samples rather than milliseconds because a fixed time means a different thing at every rate: 2 ms is thirteen samples at 6664 Hz and three hundredths of one at 13 Hz. Ignored when `int_gpio = 0`, where there is no expected arrival to be late against. |
 | `poll_ms` | int | `0` | Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate — half a sample period — which is normally what you want: these parts have no FIFO, so a poll that arrives late loses the conversion outright rather than merely delaying it, and a fixed interval burns reads at low ODR besides. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.** |
+| `rotation_euler_deg` | array | *(unset)* | Rotation from this sensor into the body frame, `[roll, pitch, yaw]` in degrees, replacing `[mount]` for the magnetometer. The one to set for a compass mounted apart from the IMU — on a bulkhead, or turned to clear a cable run — since heading is otherwise wrong by exactly the angle between them. |
 <!-- END GENERATED: config-keys mag.1 -->
 
 ### `[fusion]`
@@ -719,19 +721,26 @@ The rotation is ZYX intrinsic Euler angles: `R = Rz(yaw) × Ry(pitch) ×
 Rx(roll)`. In practice only `yaw` is non-zero — it corrects for the angle
 between the chip X axis and the platform's forward direction.
 
+`[mount]` describes the whole rig. When the IMU and the magnetometer are not
+mounted in the same orientation, give the odd one a `rotation_euler_deg` of
+its own under [`[imu]`](#imu) or [`[mag]`](#mag): a sensor that sets one uses
+it instead of `[mount]`, and a sensor that does not falls back to `[mount]`.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys mount.1 -->
 | `rotation_euler_deg` | array | `[0.0, 0.0, 0.0]` | `[roll, pitch, yaw]` in degrees. Measure the angle between chip X and the forward axis once (e.g. with a handbearing compass on a vessel); set that as `yaw`. |
-| `preset` | string | *(unset)* | Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. An unrecognised name is a fatal config error. |
 | `rotation_matrix` | array of 9 | *(unset)* | Board→body rotation given directly, row-major (`v_body = R · v_board`). Validated at load against `RᵀR = I` and `det(R) = +1`; a non-orthonormal matrix or a reflection is a fatal config error. Whichever mount key appears last wins. |
 <!-- END GENERATED: config-keys mount.1 -->
 
-**Example** — chip X points aft (180° from forward; e.g. to a vessel's stern):
+**Example** — chip X points aft (180° from forward; e.g. to a vessel's stern),
+with a compass on a bulkhead turned 90° from it:
 ```toml
+[mount]
 rotation_euler_deg = [0.0, 0.0, 180.0]
-# or equivalently:
-preset = "yaw_180"
+
+[mag]
+rotation_euler_deg = [0.0, 0.0, 270.0]
 ```
 
 ### `[logging]`

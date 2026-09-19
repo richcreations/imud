@@ -574,7 +574,8 @@ gyro-bias/temperature fit that **is** applied at runtime: the daemon
 subtracts `coeff × (temp − ref_c)` from each gyro sample.
 
 Applied corrections. `m` is the sample as the driver delivered it, in **sensor
-axes**; `R` is the `[mount]` rotation:
+axes**; `R` is the rotation in force for that sensor — its own `[imu]`/`[mag]`
+`rotation_euler_deg` when it sets one, otherwise `[mount]`'s:
 
 ```text
 accel_cal  = R × ((m_accel − accel_offset) × accel_scale)  (per-axis, then mount)
@@ -583,10 +584,10 @@ mag_cal    = R × (soft_iron × (m_mag − hard_iron))         (matrix × vector
 mag_z      = −raw_mag_z                                    (Z sign flip, always)
 ```
 
-**Calibration is applied in sensor axes, before the mount rotation**, because
+**Calibration is applied in sensor axes, before the rotation**, because
 that is the frame it was measured in: `imud-cal` reads the driver directly and
-never applies `[mount]`. Rotating first and calibrating second subtracts a
-sensor-frame offset from body-frame data — invisible while `[mount]` is
+never applies a rotation. Rotating first and calibrating second subtracts a
+sensor-frame offset from body-frame data — invisible while `R` is
 identity, wrong on every axis as soon as it is not. Rotating the calibration
 instead is not representable: `accel_scale` is a diagonal, and `R·diag·Rᵀ` is a
 full matrix.
@@ -1043,6 +1044,8 @@ odr_hz         = 833             # > 0; rounds UP: 12/26/52/104/208/416/833/1660
 accel_g        = 8               # full-scale: 2 | 4 | 8 | 16
 gyro_dps       = 2000            # full-scale: 125 | 250 | 500 | 1000 | 2000 | 4000
 fifo_wm        = 64              # FIFO watermark in sample-sets (ignored if no FIFO)
+# rotation_euler_deg = [0,0,0]   # this sensor's own board→body rotation, in place
+                                 # of [mount]; only when the two parts differ
 
 # Synthetic driver — no hardware needed. Set int_gpio = 0 for timer fallback.
 # driver       = "sim"
@@ -1056,6 +1059,7 @@ i2c_addr       = 0x30
 int_gpio       = 27              # BCM GPIO for measurement-done interrupt; 0 = timer fallback
 odr_hz         = 100             # > 0; rounds UP: 1/10/20/50/100/200/1000
 set_period_s   = 5.0             # degauss pulse interval, seconds (0 = disable)
+# rotation_euler_deg = [0,0,90]  # a compass mounted apart from the IMU
 
 # driver       = "sim"
 # i2c_addr     = 0x00
@@ -1164,15 +1168,12 @@ tcp_port       = 10112
 
 [mount]
 # Board → body rotation expressed as Euler angles [roll, pitch, yaw] in degrees.
-# R = Rz(yaw) × Ry(pitch) × Rx(roll).  Applied to all sensor vectors at runtime.
+# R = Rz(yaw) × Ry(pitch) × Rx(roll).  Applied to every sensor that does not
+# give a rotation_euler_deg of its own under [imu] or [mag].
 rotation_euler_deg = [0.0, 0.0, 0.0]
-# Named presets: identity | yaw_90 | yaw_180 | yaw_270 |
-#                roll_90 | roll_270 | pitch_90 | pitch_270
-# An unrecognised preset name is a fatal config error, not a warning.
-# preset = "identity"
 # Alternatively the rotation may be given directly, row-major (v_body = R*v_board).
 # Validated at load: R^T R = I and det(R) = +1; the daemon refuses to start
-# otherwise. Last of the three mount keys to appear wins.
+# otherwise. Last of the two mount keys to appear wins.
 # rotation_matrix = [1,0,0, 0,1,0, 0,0,1]
 
 [logging]

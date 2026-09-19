@@ -1183,10 +1183,12 @@ static void test_mount_rotation(void)
     imud_config_t cfg;
     memset(&cfg, 0, sizeof cfg);
 
-    /* Not configured → identity (no change). */
+    /* Not configured → NULL, and NULL is a no-op. */
     cfg.mount_set = false;
+    EXPECT(imu_rot_in_force(&cfg) == NULL, "unset: no IMU rotation");
+    EXPECT(mag_rot_in_force(&cfg) == NULL, "unset: no mag rotation");
     float v0[3] = { 1.0f, 2.0f, 3.0f };
-    apply_mount_rot_if_set(&cfg, v0);
+    apply_rot_if_set(NULL, v0);
     EXPECT_NEAR(v0[0], 1.0f, 1e-6, "unset: x unchanged");
     EXPECT_NEAR(v0[1], 2.0f, 1e-6, "unset: y unchanged");
     EXPECT_NEAR(v0[2], 3.0f, 1e-6, "unset: z unchanged");
@@ -1196,7 +1198,7 @@ static void test_mount_rotation(void)
     double I[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
     memcpy(cfg.mount_rot, I, sizeof I);
     float v1[3] = { 4.0f, 5.0f, 6.0f };
-    apply_mount_rot_if_set(&cfg, v1);
+    apply_rot_if_set(imu_rot_in_force(&cfg), v1);
     EXPECT_NEAR(v1[0], 4.0f, 1e-6, "identity: x");
     EXPECT_NEAR(v1[1], 5.0f, 1e-6, "identity: y");
     EXPECT_NEAR(v1[2], 6.0f, 1e-6, "identity: z");
@@ -1205,10 +1207,107 @@ static void test_mount_rotation(void)
     double R[3][3] = { {0,1,0}, {1,0,0}, {0,0,-1} };
     memcpy(cfg.mount_rot, R, sizeof R);
     float v2[3] = { 1.0f, 2.0f, 3.0f };
-    apply_mount_rot_if_set(&cfg, v2);
+    apply_rot_if_set(imu_rot_in_force(&cfg), v2);
     EXPECT_NEAR(v2[0], 2.0f,  1e-6, "swap: x<-y");
     EXPECT_NEAR(v2[1], 1.0f,  1e-6, "swap: y<-x");
     EXPECT_NEAR(v2[2], -3.0f, 1e-6, "flip: z<--z");
+
+    end(fb);
+}
+
+/*
+ * Which matrix each sensor gets.  A sensor's own rotation replaces [mount] for
+ * that sensor and for no other: the magnetometer taking the IMU's frame, or
+ * either one silently falling back to [mount] after setting its own, is a
+ * heading wrong by the angle between the parts.
+ */
+static void test_per_sensor_rotation_in_force(void)
+{
+    begin("test_per_sensor_rotation_in_force");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    memset(&cfg, 0, sizeof cfg);
+
+    double mount[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };     /* identity */
+    double imu[3][3]   = { {0,-1,0}, {1,0,0}, {0,0,1} };    /* Rz(+90) */
+    double mag[3][3]   = { {0,1,0}, {-1,0,0}, {0,0,1} };    /* Rz(-90) */
+
+    /* [mount] alone: both sensors take it. */
+    cfg.mount_set = true;
+    memcpy(cfg.mount_rot, mount, sizeof mount);
+    EXPECT(imu_rot_in_force(&cfg) == (rot3_t)cfg.mount_rot,
+           "IMU falls back to [mount]");
+    EXPECT(mag_rot_in_force(&cfg) == (rot3_t)cfg.mount_rot,
+           "mag falls back to [mount]");
+
+    /* One sensor overrides: it takes its own, the other still takes [mount]. */
+    cfg.mag_rot_set = true;
+    memcpy(cfg.mag_rot, mag, sizeof mag);
+    EXPECT(mag_rot_in_force(&cfg) == (rot3_t)cfg.mag_rot,
+           "mag takes its own when set");
+    EXPECT(imu_rot_in_force(&cfg) == (rot3_t)cfg.mount_rot,
+           "the IMU is not moved by the mag override");
+
+    cfg.imu_rot_set = true;
+    memcpy(cfg.imu_rot, imu, sizeof imu);
+    EXPECT(imu_rot_in_force(&cfg) == (rot3_t)cfg.imu_rot,
+           "IMU takes its own when set");
+    EXPECT(mag_rot_in_force(&cfg) == (rot3_t)cfg.mag_rot,
+           "and the mag keeps its own");
+
+    /* A sensor override with no [mount] at all still applies. */
+    cfg.mount_set = false;
+    EXPECT(imu_rot_in_force(&cfg) == (rot3_t)cfg.imu_rot,
+           "IMU override needs no [mount] behind it");
+    EXPECT(mag_rot_in_force(&cfg) == (rot3_t)cfg.mag_rot,
+           "mag override needs no [mount] behind it");
+
+    /* The two really are opposite: the same vector lands in opposite places. */
+    float a[3] = { 1.0f, 0.0f, 0.0f };
+    float m[3] = { 1.0f, 0.0f, 0.0f };
+    apply_rot_if_set(imu_rot_in_force(&cfg), a);
+    apply_rot_if_set(mag_rot_in_force(&cfg), m);
+    EXPECT_NEAR(a[1],  1.0f, 1e-6, "IMU x -> +y under Rz(+90)");
+    EXPECT_NEAR(m[1], -1.0f, 1e-6, "mag x -> -y under Rz(-90)");
+
+    end(fb);
+}
+
+/*
+ * The same split through the finalise path the reader threads actually call,
+ * so a regression that rotates the mag with the IMU's matrix is caught where
+ * it would happen rather than only in the resolver.
+ */
+static void test_finalise_uses_per_sensor_rotation(void)
+{
+    begin("test_finalise_uses_per_sensor_rotation");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    imud_cal_t cal;
+    memset(&cfg, 0, sizeof cfg);
+    memset(&cal, 0, sizeof cal);
+
+    /* IMU unrotated, magnetometer turned 90°. */
+    cfg.mag_rot_set = true;
+    double mag[3][3] = { {0,-1,0}, {1,0,0}, {0,0,1} };      /* Rz(+90) */
+    memcpy(cfg.mag_rot, mag, sizeof mag);
+
+    imu_sample_t s;
+    memset(&s, 0, sizeof s);
+    s.accel[0] = 1.0f; s.gyro[0] = 1.0f;
+    imu_finalise_sample(&cfg, &cal, &s);
+    EXPECT_NEAR(s.accel[0], 1.0f, 1e-6, "accel is not moved by the mag rotation");
+    EXPECT_NEAR(s.gyro[0],  1.0f, 1e-6, "gyro is not moved by the mag rotation");
+
+    mag_sample_t ms;
+    memset(&ms, 0, sizeof ms);
+    ms.field[0] = 1.0f;
+    mag_finalise_sample(&cfg, &cal, &ms);
+    EXPECT_NEAR(ms.field[0], 0.0f, 1e-6, "mag x is rotated away");
+    EXPECT_NEAR(ms.field[1], 1.0f, 1e-6, "mag x -> +y");
+    EXPECT_NEAR(ms.field_raw[1], 1.0f, 1e-6, "and field_raw takes the same one");
 
     end(fb);
 }
@@ -1336,6 +1435,8 @@ int main(void)
     test_anchor_interval_bounds();
     test_ts_ns();
     test_mount_rotation();
+    test_per_sensor_rotation_in_force();
+    test_finalise_uses_per_sensor_rotation();
     test_apply_imu_cal();
     test_apply_mag_cal();
 

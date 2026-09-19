@@ -568,9 +568,13 @@ CASES = [
      "imu_finalise_sample_gone()"),
 
     # A file:line citation pointing past the end of the file it names.
-    ("check-comment-refs", "test/test_config.c",
-     sub(r'imu_math\.c:265', 'imu_math.c:999999'),
-     "imu_math.c:999999"),
+    # The line number is matched as \d+ rather than pinned: the citation this
+    # rides on moves whenever its own file does, and a fixture that breaks on
+    # an unrelated edit teaches the next person to re-point it rather than to
+    # read it.
+    ("check-comment-refs", "test/test_imutest.c",
+     sub(r'imutest\.c:\d+', 'imutest.c:999999'),
+     "imutest.c:999999"),
 
     # ── check-arch-claims ────────────────────────────────────────────────────
     # The build moves to another CPU baseline and the documentation does not

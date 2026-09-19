@@ -161,9 +161,10 @@ One IMU sample traverses, in order:
 
 1. **Driver read** → raw `imu_sample_t{accel[3], gyro[3], temp_c, chip_ts}`
    in board axes.
-2. **Mount rotation** `apply_mount_rot_if_set()` (§3.1) → body axes.
-3. **Calibration** `apply_imu_cal()` (§3.2): gyro temperature compensation,
-   accel offset/scale. (Magnetometer: `apply_mag_cal()`, hard/soft iron.)
+2. **Calibration** `apply_imu_cal()` (§3.2): gyro temperature compensation,
+   accel offset/scale, in the sensor axes it was measured in. (Magnetometer:
+   `apply_mag_cal()`, hard/soft iron.)
+3. **Rotation** `apply_rot_if_set()` (§3.1) → body axes.
 4. **MEKF** (§4): `mekf_predict` on every IMU sample; `mekf_update_accel`
    every sample; `mekf_update_mag` per magnetometer sample.
 5. **Derived outputs**: Euler angles and heading (§4.10); Euler rates and
@@ -179,22 +180,28 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu_math.c:435`) applies a fixed 3×3 board→body
-matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
+`apply_rot_if_set()` (`imu_math.c:454`) applies a fixed 3×3 board→body matrix
+in place:
 
-$$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
+$$ v \leftarrow R_s\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
 
-Applied identically to accel, gyro, and magnetometer vectors. Accumulated in
-double, stored back as float.
+Accumulated in double, stored back as float.
 
-**As-implemented.** $R_{mount}$ is supplied by configuration (a fixed
-installation rotation, e.g. yaw 180° for a stern-facing board); imud does not
-estimate it. It may be given as Euler angles (`rotation_euler_deg`), a named
-`preset`, or directly as a 3×3 `rotation_matrix`. The first two are orthonormal
-by construction; a directly-supplied matrix is validated at config load against
-both $R^\top R\approx I$ and $\det R>0$ (rejecting reflections, which an
-orthogonality-only test would accept) and the daemon refuses to start if it
-fails.
+$R_s$ is per sensor: `imu_rot_in_force()` (`imu_math.c:441`) chooses it for
+accel and gyro, `mag_rot_in_force()` (`imu_math.c:448`) for the magnetometer.
+Each returns the sensor's own `[imu]`/`[mag]` rotation when it sets one,
+otherwise `[mount]`'s, otherwise none — so the magnetometer may take a
+different matrix from the inertial pair. A rig mounted as a unit sets only
+`[mount]` and every vector takes the same $R$.
+
+**As-implemented.** $R_s$ is supplied by configuration (a fixed installation
+rotation, e.g. yaw 180° for a stern-facing board); imud does not estimate it.
+It may be given as Euler angles (`rotation_euler_deg`) in any of the three
+sections, or — for `[mount]` alone — directly as a 3×3 `rotation_matrix`. The
+Euler form is orthonormal by construction; a directly-supplied matrix is
+validated at config load against both $R^\top R\approx I$ and $\det R>0$
+(rejecting reflections, which an orthogonality-only test would accept) and the
+daemon refuses to start if it fails.
 
 ### 3.2 Inertial calibration
 

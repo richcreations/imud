@@ -303,11 +303,23 @@ typedef struct {
     /* [mount] — Euler angles in degrees: [roll, pitch, yaw] (ZYX order)
      * If `mount_set` is true the 3x3 rotation matrix `mount_rot` maps
      * board-frame vectors into the configured body frame: v_body = R * v_board
+     *
+     * [imu] and [mag] carry the same pair.  A sensor whose own rotation is set
+     * uses it in place of [mount]'s for that sensor's samples, so a compass on
+     * a bulkhead and an IMU on the keel can each be described; a sensor that
+     * sets none falls back to [mount].
      */
     bool  mount_set;
     double mount_euler_deg[3];
     double mount_rot[3][3];
-    char   mount_preset[32];   /* optional named preset, e.g. "identity", "yaw_90" */
+
+    bool   imu_rot_set;
+    double imu_rot_euler_deg[3];
+    double imu_rot[3][3];
+
+    bool   mag_rot_set;
+    double mag_rot_euler_deg[3];
+    double mag_rot[3][3];
 
 } imud_config_t;
 

@@ -44,7 +44,7 @@
 name = "mount"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["rotation_euler_deg", "preset", "rotation_matrix"]]
+md_groups = [["rotation_euler_deg", "rotation_matrix"]]
 
   [[section.key]]
   names = ["rotation_euler_deg"]
@@ -85,34 +85,6 @@ sign-flipped axis) is a fatal configuration error.'''
   md_type = 'array of 9'
   md_default = '*(unset)*'
   desc = 'Board→body rotation given directly, row-major (`v_body = R · v_board`). Validated at load against `RᵀR = I` and `det(R) = +1`; a non-orthonormal matrix or a reflection is a fatal config error. Whichever mount key appears last wins.'
-
-  [[section.key]]
-  names = ["preset"]
-  fields = [""]
-  macros = [""]
-  type = 'string'
-  default = 'unset'
-  scope = ""
-  man_style = "tight"
-  man = '''
-Named rotation shortcut.
-One of:
-.BR identity ,
-.BR yaw_90 ,
-.BR yaw_180 ,
-.BR yaw_270 ,
-.BR roll_90 ,
-.BR roll_270 ,
-.BR pitch_90 ,
-.BR pitch_270 .
-Overrides
-.B rotation_euler_deg
-when set; whichever mount key appears last in the file wins.
-An unrecognised preset name is a fatal configuration error \(em
-starting with a silently wrong mount rotation would bias every sample.'''
-  md_type = 'string'
-  md_default = '*(unset)*'
-  desc = 'Named shortcut: `"identity"`, `"yaw_90"`, `"yaw_180"`, `"yaw_270"`, `"roll_90"`, `"roll_270"`, `"pitch_90"`, `"pitch_270"`. Overrides `rotation_euler_deg` when set. An unrecognised name is a fatal config error.'
 
 [[section]]
 name = "device"
@@ -354,7 +326,7 @@ Record raw samples from both sensors, exactly as the drivers delivered them
 name = "imu"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "accel_g", "gyro_dps", "fifo_wm", "int_grace", "poll_ms"]]
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "accel_g", "gyro_dps", "fifo_wm", "int_grace", "poll_ms", "rotation_euler_deg"]]
 
   [[section.key]]
   names = ["driver"]
@@ -632,11 +604,40 @@ is non-zero.'''
   md_default = '`0`'
   desc = '''Polling cadence in milliseconds for an install with **no** interrupt line. `0` derives it from the rate and watermark — half the time the watermark takes to fill — which is normally what you want: a fixed interval under-polls at high ODR — the FIFO overflows and the delivered rate falls below the configured one — and burns reads at low ODR. Set a non-zero value only to force a specific cadence. **Ignored entirely when `int_gpio` is non-zero.**'''
 
+  [[section.key]]
+  names = ["rotation_euler_deg"]
+  fields = [""]
+  macros = [""]
+  type = 'array'
+  default = 'unset'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Rotation from this sensor's axes into the body frame, as
+[roll, pitch, yaw] in degrees, in place of the
+.B [mount]
+rotation.
+Set it only when the IMU and the magnetometer are mounted in
+different orientations \(en with one rotation for the whole rig,
+.B [mount]
+says it once.
+Applies to the accelerometer and gyroscope; the magnetometer keeps
+whatever
+.B [mag]
+or
+.B [mount]
+gives it.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.'''
+  md_type = 'array'
+  md_default = '*(unset)*'
+  desc = '''Rotation from this sensor into the body frame, `[roll, pitch, yaw]` in degrees, replacing `[mount]` for the accelerometer and gyroscope. Set it only when the IMU and magnetometer are mounted in different orientations; left unset, the sensor uses `[mount]`.'''
+
 [[section]]
 name = "mag"
 man_file = "man/man5/imud.conf.5"
 md_file = "docs/manual.md"
-md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "set_period_s", "int_grace", "poll_ms"]]
+md_groups = [["driver", "bus", "spi_dev", "spi_speed_hz", "i2c_addr", "int_gpio", "odr_hz", "set_period_s", "int_grace", "poll_ms", "rotation_euler_deg"]]
 
   [[section.key]]
   names = ["driver"]
@@ -883,6 +884,28 @@ to disable.'''
   md_type = 'float'
   md_default = '`5.0`'
   desc = 'Interval in seconds between SET/RESET degauss pulses. Prevents gradual magnetisation of the sensor. Set `0` to disable.'
+
+  [[section.key]]
+  names = ["rotation_euler_deg"]
+  fields = [""]
+  macros = [""]
+  type = 'array'
+  default = 'unset'
+  scope = ""
+  man_style = "tight"
+  man = '''
+Rotation from this sensor's axes into the body frame, as
+[roll, pitch, yaw] in degrees, in place of the
+.B [mount]
+rotation.
+This is the one to set for a compass mounted apart from the IMU \(en
+on a bulkhead, or turned to clear a cable run \(en since heading is
+then wrong by exactly the angle between them.
+Exactly three values are required; a shorter or longer array is a
+fatal configuration error.'''
+  md_type = 'array'
+  md_default = '*(unset)*'
+  desc = '''Rotation from this sensor into the body frame, `[roll, pitch, yaw]` in degrees, replacing `[mount]` for the magnetometer. The one to set for a compass mounted apart from the IMU — on a bulkhead, or turned to clear a cable run — since heading is otherwise wrong by exactly the angle between them.'''
 
 [[section]]
 name = "fusion"

@@ -1,0 +1,29 @@
+# Seed for the rotation keys: the per-sensor [imu]/[mag] overrides, the
+# [mount] default they replace, the matrix form with its orthonormality
+# check, and the shapes parse_float_array rejects.
+
+[mount]
+rotation_euler_deg = [0.0, 0.0, 180.0]
+rotation_matrix = [0,-1,0, 1,0,0, 0,0,1]
+# A key [mount] no longer has: a fatal error naming its replacement rather
+# than an ignored unknown key.
+preset = "yaw_180"
+
+[imu]
+rotation_euler_deg = [10.0, 20.0, 30.0]
+
+[mag]
+rotation_euler_deg = [0.0, 0.0, 90.0]
+
+# Shapes that do not parse: too few, too many, malformed, no brackets, and a
+# reflection (det = -1) that an orthogonality-only test would accept.
+[imu]
+rotation_euler_deg = [1.0, 2.0]
+
+[mag]
+rotation_euler_deg = [1.0, 2.0, 3.0, 4.0]
+
+[mount]
+rotation_euler_deg = [1.0, x, 3.0]
+rotation_matrix = 1,0,0, 0,1,0, 0,0,1
+rotation_matrix = [-1,0,0, 0,1,0, 0,0,1]

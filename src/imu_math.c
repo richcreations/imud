@@ -431,19 +431,32 @@ int odr_actual_mag(const mag_ops_t *ops, int req_mhz)
     return snap_odr_up(ops->supported_odr_mhz, req_mhz);
 }
 
-/* Apply mount rotation (board -> body) if configured. In-place on v. */
-void apply_mount_rot_if_set(const imud_config_t *cfg, float v[3])
+/*
+ * The board->body rotation in force for one sensor: its own [imu]/[mag] one
+ * when that is set, else [mount]'s, else none.  NULL means no rotation, which
+ * is why the default all-zero matrix is never reached.
+ */
+rot3_t imu_rot_in_force(const imud_config_t *cfg)
 {
-    if (!cfg->mount_set) return;
-    double out0 = cfg->mount_rot[0][0] * v[0]
-                + cfg->mount_rot[0][1] * v[1]
-                + cfg->mount_rot[0][2] * v[2];
-    double out1 = cfg->mount_rot[1][0] * v[0]
-                + cfg->mount_rot[1][1] * v[1]
-                + cfg->mount_rot[1][2] * v[2];
-    double out2 = cfg->mount_rot[2][0] * v[0]
-                + cfg->mount_rot[2][1] * v[1]
-                + cfg->mount_rot[2][2] * v[2];
+    if (cfg->imu_rot_set) return cfg->imu_rot;
+    if (cfg->mount_set)   return cfg->mount_rot;
+    return NULL;
+}
+
+rot3_t mag_rot_in_force(const imud_config_t *cfg)
+{
+    if (cfg->mag_rot_set) return cfg->mag_rot;
+    if (cfg->mount_set)   return cfg->mount_rot;
+    return NULL;
+}
+
+/* Apply a board -> body rotation, in place on v. NULL is a no-op. */
+void apply_rot_if_set(rot3_t R, float v[3])
+{
+    if (!R) return;
+    double out0 = R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2];
+    double out1 = R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2];
+    double out2 = R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2];
     v[0] = (float)out0; v[1] = (float)out1; v[2] = (float)out2;
 }
 
@@ -465,9 +478,10 @@ void imu_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
     s->accel_raw[1] = s->accel[1];
     s->accel_raw[2] = s->accel[2];
     apply_imu_cal(cal, s);
-    apply_mount_rot_if_set(cfg, s->accel);
-    apply_mount_rot_if_set(cfg, s->gyro);
-    apply_mount_rot_if_set(cfg, s->accel_raw);
+    rot3_t R = imu_rot_in_force(cfg);
+    apply_rot_if_set(R, s->accel);
+    apply_rot_if_set(R, s->gyro);
+    apply_rot_if_set(R, s->accel_raw);
 }
 
 void mag_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
@@ -477,6 +491,7 @@ void mag_finalise_sample(const imud_config_t *cfg, const imud_cal_t *cal,
     s->field_raw[1] = s->field[1];
     s->field_raw[2] = s->field[2];
     apply_mag_cal(cal, s);
-    apply_mount_rot_if_set(cfg, s->field);
-    apply_mount_rot_if_set(cfg, s->field_raw);
+    rot3_t R = mag_rot_in_force(cfg);
+    apply_rot_if_set(R, s->field);
+    apply_rot_if_set(R, s->field_raw);
 }
