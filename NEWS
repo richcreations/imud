@@ -26,6 +26,8 @@ Fixed:
   wherever a time daemon has set it.
   macOS sets no offset of its own, so ts_tai_ns still carries UTC there until
   a time daemon sets one.
+* A [mount] rotation given as nan or inf loaded, and every sample the daemon
+  published was then NaN. Both keys now refuse a non-finite value.
 
 
 1.11.1

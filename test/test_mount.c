@@ -219,6 +219,44 @@ static void test_euler_partial_array_rejected(void)
     (void)fb;
 }
 
+/*
+ * nan, inf and an overflowing literal are all ordinary successes for strtod,
+ * and every one of them used to load: mount_set went true, the matrix went
+ * non-finite, and every accel, gyro and mag sample the daemon published was
+ * NaN from the first one on.  rotation_matrix was no safer — validate_rotation
+ * compares against the NaN and both its tests are false.
+ */
+static void test_non_finite_rejected(void)
+{
+    puts("test_non_finite_rejected");
+    int fb = g_fail;
+
+    static const struct { const char *body, *what; } cases[] = {
+        { "[mount]\nrotation_euler_deg = [nan, 0.0, 0.0]\n",    "euler nan"   },
+        { "[mount]\nrotation_euler_deg = [0.0, inf, 0.0]\n",    "euler inf"   },
+        { "[mount]\nrotation_euler_deg = [0.0, 0.0, -inf]\n",   "euler -inf"  },
+        { "[mount]\nrotation_euler_deg = [1e999, 0.0, 0.0]\n",  "euler 1e999" },
+        { "[mount]\nrotation_matrix = [nan,0,0, 0,nan,0, 0,0,nan]\n",
+          "matrix nan" },
+        { "[mount]\nrotation_matrix = [inf,0,0, 0,1,0, 0,0,1]\n",
+          "matrix inf" },
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        imud_config_t cfg;
+        config_defaults(&cfg);
+        const char *path = write_tmpconf(20 + (int)i, cases[i].body);
+        char msg[80];
+        snprintf(msg, sizeof msg, "%s is a parse error", cases[i].what);
+        EXPECT(config_load(path, &cfg) == CONFIG_ERR_PARSE, msg);
+        snprintf(msg, sizeof msg, "%s leaves the mount unset", cases[i].what);
+        EXPECT(cfg.mount_set == false, msg);
+        remove(path);
+    }
+
+    (void)fb;
+}
+
 /* A valid 3×3 rotation given directly must be accepted verbatim. */
 static void test_rotation_matrix_accepted(void)
 {
@@ -285,6 +323,7 @@ int main(void)
     test_euler_parse();
     test_preset_unknown_is_fatal();
     test_euler_partial_array_rejected();
+    test_non_finite_rejected();
     test_rotation_matrix_accepted();
     test_rotation_matrix_validated();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

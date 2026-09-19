@@ -19,3 +19,7 @@ lon_deg = inf
 
 [mag]
 set_period_s = 1e999
+
+[mount]
+rotation_euler_deg = [nan, 0.0, 0.0]
+rotation_matrix = [nan,0,0, 0,inf,0, 0,0,1e999]
