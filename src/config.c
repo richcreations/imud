@@ -610,6 +610,19 @@ static int parse_float_array(const char *val, double *out, int n,
                   path, lineno, key, (int)(p - val));
             return -1;
         }
+        /*
+         * strtod spells "nan", "inf" and an overflowing "1e999" as ordinary
+         * successes.  Every caller feeds a rotation, and a non-finite angle
+         * propagates through euler_deg_to_rot into all nine matrix elements
+         * and from there into every sample the daemon publishes, for the life
+         * of the run.  It also walks past validate_rotation, whose two tests
+         * compare AGAINST a NaN and are therefore both false.
+         */
+        if (!isfinite(v)) {
+            LOG_E("%s:%d: '%s': not a finite number at offset %d\n",
+                  path, lineno, key, (int)(p - val));
+            return -1;
+        }
         if (count < n) out[count] = v;
         count++;
         p = end;
