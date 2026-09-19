@@ -115,10 +115,19 @@ rather than a horizontal one, and alignment that can start while already moving
 are each additive paths selected by configuration. The marine configuration
 stays the default and does not regress.
 
-**Multi-IMU redundancy.** Two sensor pairs fused, or at minimum hot failover
-with cross-checking — the vessel-grade redundancy story the "gpsd for IMUs"
-comparison implies. This is the largest item here and would begin with a design
-document rather than code.
+**Multi-sensor redundancy.** Several IMUs and magnetometers, worth most to
+flying platforms where a wrong attitude is not recoverable. Detection and
+combination are separate operations: faults show up in the parity space of the
+redundant measurements, which is orthogonal to the estimate, while combining for
+accuracy is an inverse-covariance weighting of whatever survived. Voting on
+finished estimates is the weak form — each has already absorbed its own sensor's
+fault, and a filter estimating per-sensor bias absorbs a slow drift rather than
+flagging it. Both rest on a layer imud lacks: every sensor conditioned into a
+common frame on a common timebase, where one `[mount]` matrix serves all of them
+today. Failover, cross-check and combination are different guarantees at
+different costs, so several selectable modes are likely, with the marine
+configuration still the default. The largest item here, and its value lies
+entirely in guarantees that need a platform to validate them on.
 
 ---
 
