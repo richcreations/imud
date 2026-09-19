@@ -51,35 +51,10 @@ struct imu_ctx {
     imud_config_t    cfg;              /* copy at open; hot-reload fields updated via imu_ctx_update_config */
     imud_cal_t       cal;              /* copy at open, read-only afterwards */
 
-    /* One handle per sensor, not one bus shared by both: the two can sit on
-     * different nodes, and each driver addresses only its own. */
-    imud_bus_t       imu_bus;
-    imud_bus_t       mag_bus;
-    const imu_ops_t *imu_ops;
-    const mag_ops_t *mag_ops;
-    imu_cfg_t        imu_hw_cfg;
-    mag_cfg_t        mag_hw_cfg;
-    /* Rates the drivers said they would really program for the configured
-     * requests (odr_actual_imu / odr_actual_mag). These, not the raw config
-     * values, are what the drivers are handed and what the filter is tuned
-     * for — see the resolution comment in imu_ctx_open. */
-    int              actual_odr_mhz;      /* milli-Hz */
-    int              actual_mag_odr_mhz;  /* milli-Hz */
-    /*
-     * Chip-timer period actually in force: the driver's declared ts_tick_ns,
-     * or what ts_tick_ns_actual() said this individual part's timer runs at.
-     * Resolved once in imu_ctx_open after init() and read-only afterwards, so
-     * every consumer of the tick agrees.  0 when the part has no timer.
-     */
-    uint32_t         ts_tick_ns;
+    imu_src_t        imu;
+    mag_src_t        mag;
 
-    imu_gpio_line_t *imu_line;  /* GPIO for IMU FIFO watermark interrupt */
-    imu_gpio_line_t *mag_line;  /* GPIO for magnetometer measurement-done interrupt */
-
-    imu_ring_t       imu_ring;
-    mag_ring_t       mag_ring;
     shared_state_t   shared;
-    ts_anchor_t      anchor;
 
     /* Guards every post-open write to `cfg` (hot-reload params + live
      * position values from imu_ctx_update_config / set_declination /
@@ -193,7 +168,8 @@ static void cfg_snapshot(imu_ctx_t *ctx, imud_config_t *out)
 
 void *ism_reader_thread(void *arg)
 {
-    imu_ctx_t *ctx = arg;
+    imu_src_t *src = arg;
+    imu_ctx_t *ctx = src->ctx;
     imu_sample_t buf[IMU_DRAIN_MAX];
     int n;
     int consec_errors = 0;
@@ -220,7 +196,7 @@ void *ism_reader_thread(void *arg)
      * int_grace or poll_ms takes effect without a restart.
      */
     cfg_snapshot(ctx, &cfg);
-    long imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
+    long imu_wait_ms = imu_int_fallback_ms(src->actual_odr_mhz,
                                            cfg.imu_fifo_wm, cfg.imu_int_grace);
     /*
      * Interrupt-less installs poll.  That cadence must be adaptive too: a flat
@@ -233,7 +209,7 @@ void *ism_reader_thread(void *arg)
      */
     long imu_poll_ms = cfg.imu_poll_ms > 0
                      ? cfg.imu_poll_ms
-                     : imu_poll_interval_ms(ctx->actual_odr_mhz,
+                     : imu_poll_interval_ms(src->actual_odr_mhz,
                                             cfg.imu_fifo_wm);
 
     /* Replaying a capture rather than reading a part: see the poll branch. */
@@ -241,8 +217,8 @@ void *ism_reader_thread(void *arg)
     bool       got_burst = true;
 
     while (!ctx->stop) {
-        if (ctx->imu_line) {
-            int gr = imu_gpio_wait_edge(ctx->imu_line, imu_wait_ms);
+        if (src->line) {
+            int gr = imu_gpio_wait_edge(src->line, imu_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 LOG_E("[ism_reader] GPIO error: %s\n", strerror(errno));
@@ -275,17 +251,17 @@ void *ism_reader_thread(void *arg)
 
 
         cfg_snapshot(ctx, &cfg);
-        imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
+        imu_wait_ms = imu_int_fallback_ms(src->actual_odr_mhz,
                                           cfg.imu_fifo_wm, cfg.imu_int_grace);
         imu_poll_ms = cfg.imu_poll_ms > 0
                     ? cfg.imu_poll_ms
-                    : imu_poll_interval_ms(ctx->actual_odr_mhz,
+                    : imu_poll_interval_ms(src->actual_odr_mhz,
                                            cfg.imu_fifo_wm);
 
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
 
-        int rc = ctx->imu_ops->read(&ctx->imu_bus, buf, IMU_DRAIN_MAX, &n);
+        int rc = src->ops->read(&src->bus, buf, IMU_DRAIN_MAX, &n);
 
         clock_gettime(CLOCK_REALTIME, &t_after);
         /* UTC, not TAI, on a host with no TAI clock — main.c's clock health
@@ -297,9 +273,9 @@ void *ism_reader_thread(void *arg)
             ctx->imu_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[ism_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->imu_ops->reset(&ctx->imu_bus) == 0)
-                       && (ctx->imu_ops->init (&ctx->imu_bus,
-                                               &ctx->imu_hw_cfg) == 0);
+                int rok = (src->ops->reset(&src->bus) == 0)
+                       && (src->ops->init (&src->bus,
+                                               &src->hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
                     LOG_E("[ism_reader] reset failed (%d/3)\n",
@@ -438,20 +414,20 @@ void *ism_reader_thread(void *arg)
          * this half is what covers parts with no trim register to read. */
         double want = tick_measured ? 60.0 : 25.0;
         bool do_anchor = !anchor_valid
-                         || !ctx->imu_ops->has_hw_timestamp
+                         || !src->ops->has_hw_timestamp
                          || elapsed >= want;
         if (do_anchor) {
             uint64_t wall_at = cap_tb
                 ? cap_wall
                 : anchor_wall_ns(ts_ns(&t_before), ts_ns(&t_after),
-                                 ctx->imu_ops->has_hw_timestamp);
+                                 src->ops->has_hw_timestamp);
             /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
              * runs on; the REALTIME pair is only the absolute reference, and
              * an NTP step in it must not be read as the oscillator drifting. */
-            anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_at,
+            anchor_update(&src->anchor, buf[n - 1].chip_ts, wall_at,
                           cap_tb ? cap_wall : ts_ns(&t_tai), ts_ns(&now),
-                          ctx->imu_ops->has_hw_timestamp
-                              ? ctx->ts_tick_ns : 0);
+                          src->ops->has_hw_timestamp
+                              ? src->ts_tick_ns : 0);
             anchor_last  = now;
             anchor_valid = true;
 
@@ -462,9 +438,9 @@ void *ism_reader_thread(void *arg)
              * grades the same number, and a reading this far out is a hardware
              * characteristic rather than a driver defect.
              */
-            if (!tick_measured && ctx->imu_ops->has_hw_timestamp) {
-                double meas = anchor_measured_tick_ns(&ctx->anchor);
-                double nom  = (double)ctx->ts_tick_ns;
+            if (!tick_measured && src->ops->has_hw_timestamp) {
+                double meas = anchor_measured_tick_ns(&src->anchor);
+                double nom  = (double)src->ts_tick_ns;
                 if (meas > 0.0 && nom > 0.0) {
                     tick_measured = true;
                     if (fabs(meas - nom) / nom > 0.01)
@@ -486,7 +462,7 @@ void *ism_reader_thread(void *arg)
          * happens to batch. */
         if (cfg.engine_vibration_g2 > 0.0 && n > 0) {
             const float alpha =
-            1.0f / (VIB_TAU_S * (float)ctx->actual_odr_mhz * 1e-3f);
+            1.0f / (VIB_TAU_S * (float)src->actual_odr_mhz * 1e-3f);
             const float g = 9.80665f;
             for (int i = 0; i < n; i++) {
                 float a = sqrtf(buf[i].accel[0]*buf[i].accel[0]
@@ -511,7 +487,7 @@ void *ism_reader_thread(void *arg)
 
         /* Track hardware FIFO overflow (rc == 1) and software ring overflow. */
         if (rc == 1) { ctx->fifo_overflow_count++; pend_hw++; }
-        int dropped = imu_ring_push(&ctx->imu_ring, buf, n);
+        int dropped = imu_ring_push(&src->ring, buf, n);
         ctx->fifo_overflow_count += (uint64_t)dropped;
         ctx->imu_sample_count    += (uint64_t)n;
         pend_drop += (uint64_t)dropped;
@@ -553,7 +529,8 @@ void *ism_reader_thread(void *arg)
 
 void *mag_reader_thread(void *arg)
 {
-    imu_ctx_t *ctx = arg;
+    mag_src_t *src = arg;
+    imu_ctx_t *ctx = src->ctx;
     mag_sample_t s;
     int consec_errors = 0;
     int reset_failures = 0;
@@ -578,13 +555,13 @@ void *mag_reader_thread(void *arg)
     cfg_snapshot(ctx, &cfg);
     /* depth 1: these magnetometers have no FIFO, so the line signals one
      * finished conversion.  Recomputed below on SIGHUP. */
-    long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
+    long mag_wait_ms = imu_int_fallback_ms(src->actual_odr_mhz, 1,
                                            cfg.mag_int_grace);
     /* No interrupt line: poll from the sample period, not from the missed-edge
      * fallback, which would cap the rate at ODR/(1 + int_grace). */
     long mag_poll_ms = cfg.mag_poll_ms > 0
                      ? cfg.mag_poll_ms
-                     : imu_poll_interval_ms(ctx->actual_mag_odr_mhz, 1);
+                     : imu_poll_interval_ms(src->actual_odr_mhz, 1);
 
     /* Stall watch: read() returning 1 is normal, but only for a while. */
     struct timespec last_good;
@@ -596,9 +573,9 @@ void *mag_reader_thread(void *arg)
     bool       got_sample = true;
 
     while (!ctx->stop) {
-        if (ctx->mag_line) {
+        if (src->line) {
             /* Interrupt-driven, with a rate-sized fallback: see above. */
-            int gr = imu_gpio_wait_edge(ctx->mag_line, mag_wait_ms);
+            int gr = imu_gpio_wait_edge(src->line, mag_wait_ms);
             if (gr < 0) {
                 if (ctx->stop) break;
                 usleep(5000);
@@ -633,20 +610,20 @@ void *mag_reader_thread(void *arg)
         }
 
         cfg_snapshot(ctx, &cfg);
-        mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
+        mag_wait_ms = imu_int_fallback_ms(src->actual_odr_mhz, 1,
                                           cfg.mag_int_grace);
         mag_poll_ms = cfg.mag_poll_ms > 0
                     ? cfg.mag_poll_ms
-                    : imu_poll_interval_ms(ctx->actual_mag_odr_mhz, 1);
+                    : imu_poll_interval_ms(src->actual_odr_mhz, 1);
 
     /* Periodic SET/RESET (degauss) — skip this read cycle; wait for next edge. */
-        if (cfg.mag_set_period_s > 0.0f && ctx->mag_ops->set_reset) {
+        if (cfg.mag_set_period_s > 0.0f && src->ops->set_reset) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec  - last_set.tv_sec)
                            + (double)(now.tv_nsec - last_set.tv_nsec) * 1e-9;
             if (elapsed >= (double)cfg.mag_set_period_s) {
-                ctx->mag_ops->set_reset(&ctx->mag_bus);
+                src->ops->set_reset(&src->bus);
                 ctx->mag_set_flag = 1;
                 last_set = now;
                 usleep(1000); /* 1 ms settling — no read this cycle */
@@ -654,7 +631,7 @@ void *mag_reader_thread(void *arg)
             }
         }
 
-        int mrc = ctx->mag_ops->read(&ctx->mag_bus, &s);
+        int mrc = src->ops->read(&src->bus, &s);
         got_sample = (mrc == 0);
         if (mrc > 0) {
             /*
@@ -671,12 +648,12 @@ void *mag_reader_thread(void *arg)
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 long ms = (long)((now.tv_sec  - last_good.tv_sec)  * 1000L
                                + (now.tv_nsec - last_good.tv_nsec) / 1000000L);
-                if (ms >= imu_mag_stall_ms(ctx->actual_mag_odr_mhz)) {
+                if (ms >= imu_mag_stall_ms(src->actual_odr_mhz)) {
                     LOG_W("[mag_reader] no magnetometer sample for %.1f s "
                           "(%.3f Hz configured) -- the part has stopped "
                           "delivering; heading will not update\n",
                           (double)ms / 1000.0,
-                          (double)ctx->actual_mag_odr_mhz / 1000.0);
+                          (double)src->actual_odr_mhz / 1000.0);
                     stall_warned = true;
                 }
             }
@@ -691,9 +668,9 @@ void *mag_reader_thread(void *arg)
             ctx->mag_error_count++;
             if (++consec_errors >= 10) {
                 LOG_E("[mag_reader] 10 consecutive errors — resetting chip\n");
-                int rok = (ctx->mag_ops->reset(&ctx->mag_bus) == 0)
-                       && (ctx->mag_ops->init (&ctx->mag_bus,
-                                               &ctx->mag_hw_cfg) == 0);
+                int rok = (src->ops->reset(&src->bus) == 0)
+                       && (src->ops->init (&src->bus,
+                                               &src->hw_cfg) == 0);
                 consec_errors = 0;
                 if (!rok) {
                     LOG_E("[mag_reader] reset failed (%d/3)\n",
@@ -727,7 +704,7 @@ void *mag_reader_thread(void *arg)
         mag_finalise_sample(&cfg, &ctx->cal, &s);
         s.calibrated = ctx->cal.has_mag;
 
-        mag_ring_push(&ctx->mag_ring, &s);
+        mag_ring_push(&src->ring, &s);
         ctx->mag_sample_count++;
     }
 
@@ -754,10 +731,10 @@ void *capture_thread(void *arg)
     if (cap_rot_open(&rot, cfg.capture_dir,
                      (uint32_t)(cfg.capture_max_mb    > 0 ? cfg.capture_max_mb    : 0),
                      (uint32_t)(cfg.capture_max_files > 0 ? cfg.capture_max_files : 0),
-                     (uint32_t)((ctx->actual_odr_mhz + 500) / 1000),
-                     (uint32_t)ctx->actual_odr_mhz,
-                     ctx->imu_ops->name,
-                     ctx->mag_ops ? ctx->mag_ops->name : "none",
+                     (uint32_t)((ctx->imu.actual_odr_mhz + 500) / 1000),
+                     (uint32_t)ctx->imu.actual_odr_mhz,
+                     ctx->imu.ops->name,
+                     ctx->mag.ops ? ctx->mag.ops->name : "none",
                      IMUD_VERSION_STR) != 0) {
         LOG_E("[capture] cannot open capture file in %s: %s\n",
               cfg.capture_dir, strerror(errno));
@@ -857,8 +834,8 @@ void *fusion_thread(void *arg)
 {
     imu_ctx_t *ctx = arg;
     /* Rates the drivers actually programmed, not the cfg requests. */
-    float odr_hz     = (float)ctx->actual_odr_mhz     * 1e-3f;
-    float mag_odr_hz = (float)ctx->actual_mag_odr_mhz * 1e-3f;
+    float odr_hz     = (float)ctx->imu.actual_odr_mhz     * 1e-3f;
+    float mag_odr_hz = (float)ctx->mag.actual_odr_mhz * 1e-3f;
     imud_config_t cfg;
     cfg_snapshot(ctx, &cfg);   /* startup phase reads this snapshot */
 
@@ -872,12 +849,12 @@ void *fusion_thread(void *arg)
         imu_sample_t tmp;
         int discarded = 0;
         while (discarded < n_settle && !ctx->stop) {
-            if (imu_ring_pop(&ctx->imu_ring, &tmp, &ctx->stop) == 0)
+            if (imu_ring_pop(&ctx->imu.ring, &tmp, &ctx->stop) == 0)
                 discarded++;
         }
         /* Also flush the mag ring so alignment uses only post-settle mag data. */
         mag_sample_t mtmp;
-        while (mag_ring_try_pop(&ctx->mag_ring, &mtmp) == 0) {}
+        while (mag_ring_try_pop(&ctx->mag.ring, &mtmp) == 0) {}
     }
 
     if (ctx->stop) return NULL;
@@ -897,13 +874,13 @@ void *fusion_thread(void *arg)
      * is unbounded and cannot be.  Yaw-only keeps the uncorrected dip off
      * roll and pitch.
      */
-    else if (ctx->mag_ops && cfg.mag_fuse_uncal)
+    else if (ctx->mag.ops && cfg.mag_fuse_uncal)
         LOG_W("[fusion] no magnetometer calibration — heading is fused "
               "heading-only from the raw field, so it is bounded and "
               "repeatable but offset by the uncorrected hard iron. Pitch and "
               "roll are unaffected. Run `imud-cal mag` for an accurate "
               "number.\n");
-    else if (ctx->mag_ops)
+    else if (ctx->mag.ops)
         LOG_W("[fusion] no magnetometer calibration and mag_fuse_uncal is "
               "off — the yaw update is disabled, so heading is dead-reckoned "
               "from the gyro and drifts without bound. Pitch and roll are "
@@ -930,7 +907,7 @@ void *fusion_thread(void *arg)
          * average spans more wave cycles and cancels better. The MEKF
          * refines the bias online either way. */
         while (count < target && !ctx->stop) {
-            if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
+            if (imu_ring_pop(&ctx->imu.ring, &s, &ctx->stop) != 0)
                 continue;
             for (int k = 0; k < 3; k++) {
                 sum[k]   += s.gyro[k];
@@ -1063,14 +1040,14 @@ void *fusion_thread(void *arg)
         bool mag_uncal = !ctx->cal.has_mag;
 
         while (acc_n < n_avg && !ctx->stop) {
-            if (imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0) {
+            if (imu_ring_pop(&ctx->imu.ring, &isample, &ctx->stop) == 0) {
                 acc_sum[0] += isample.accel[0];
                 acc_sum[1] += isample.accel[1];
                 acc_sum[2] += isample.accel[2];
                 acc_n++;
             }
             while (mag_n < n_mag_avg
-                   && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+                   && mag_ring_try_pop(&ctx->mag.ring, &msample) == 0) {
                 if (msample.valid) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
@@ -1088,13 +1065,13 @@ void *fusion_thread(void *arg)
          * Not entered at all on a 6-DoF board: there is no mag_reader to fill
          * the ring, so the whole window would be spent proving that nothing
          * arrives, and every startup would carry mag_wait_s of dead time. */
-        while (ctx->mag_ops && mag_n == 0 && !ctx->stop) {
+        while (ctx->mag.ops && mag_n == 0 && !ctx->stop) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
                            + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
             if (elapsed > mag_wait_s) break;
-            if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+            if (mag_ring_try_pop(&ctx->mag.ring, &msample) == 0) {
                 if (msample.valid) {
                     mag_sum[0] += msample.field[0];
                     mag_sum[1] += msample.field[1];
@@ -1103,7 +1080,7 @@ void *fusion_thread(void *arg)
                 }
             } else {
                 /* Discard; the pop's 100 ms timeout paces the loop. */
-                imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop);
+                imu_ring_pop(&ctx->imu.ring, &isample, &ctx->stop);
             }
         }
 
@@ -1123,7 +1100,7 @@ void *fusion_thread(void *arg)
                  * so matters — the operator chose it, and the two cases want
                  * different responses.
                  */
-                if (!ctx->mag_ops)
+                if (!ctx->mag.ops)
                     LOG_I("[fusion] 6-DoF: aligned on gravity alone. Heading "
                           "starts at zero and is relative to this orientation, "
                           "not to earth north.\n");
@@ -1191,7 +1168,7 @@ void *fusion_thread(void *arg)
     ovf_latch_t ovf = OVF_LATCH_INIT;
 
     while (!ctx->stop) {
-        if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
+        if (imu_ring_pop(&ctx->imu.ring, &s, &ctx->stop) != 0)
             continue;
 
         cfg_snapshot(ctx, &cfg);   /* fresh live config for this sample */
@@ -1237,7 +1214,7 @@ void *fusion_thread(void *arg)
          * percent long and scaled all integrated rotation by the same factor.
          * ts_anchor_t measures the real period across consecutive anchors and
          * chip_to_wall applies it, which is what makes this paragraph true
-         * rather than aspirational.  ctx->ts_tick_ns is what it falls back to
+         * rather than aspirational.  ctx->imu.ts_tick_ns is what it falls back to
          * before two anchors exist, and is the part's own declared period where
          * the driver could ask for it (imu_ops_t.ts_tick_ns_actual) rather than
          * the typical — so the first minute is close too, not just the rest.
@@ -1247,12 +1224,12 @@ void *fusion_thread(void *arg)
          */
         uint64_t wall = 0, tai = 0;
         uint32_t gen  = 0;
-        bool have_ts  = (s.chip_ts != 0 || !ctx->imu_ops->has_hw_timestamp);
+        bool have_ts  = (s.chip_ts != 0 || !ctx->imu.ops->has_hw_timestamp);
         float dt      = f.dt;
         if (have_ts) {
-            chip_to_wall(&ctx->anchor, s.chip_ts, ctx->ts_tick_ns,
+            chip_to_wall(&ctx->imu.anchor, s.chip_ts, ctx->imu.ts_tick_ns,
                          &wall, &tai, &gen);
-            if (ctx->imu_ops->has_hw_timestamp && s.chip_ts != 0 &&
+            if (ctx->imu.ops->has_hw_timestamp && s.chip_ts != 0 &&
                 prev_wall_ns != 0 && gen == prev_gen && wall > prev_wall_ns) {
                 float d = (float)((double)(wall - prev_wall_ns) * 1e-9);
                 if (d > 0.5f * f.dt && d < 2.0f * f.dt)
@@ -1265,7 +1242,7 @@ void *fusion_thread(void *arg)
         mekf_predict(&f, &s, dt);
 
         /* Drain all pending mag samples before the accel update. */
-        while (mag_ring_try_pop(&ctx->mag_ring, &m) == 0) {
+        while (mag_ring_try_pop(&ctx->mag.ring, &m) == 0) {
             if (m.valid) {
                 mekf_update_mag(&f, &m);
                 if (f.mag_accepted != prev_mag_accepted) {
@@ -1352,7 +1329,7 @@ void *fusion_thread(void *arg)
         /* Permanent for the run: no magnetometer is configured at all, which
          * a consumer cannot infer from the two mag flags being clear — that
          * is also what a fitted magnetometer looks like while it is stale. */
-        if (!ctx->mag_ops) state.flags_ext |= FLAG_EXT_MAG_ABSENT;
+        if (!ctx->mag.ops) state.flags_ext |= FLAG_EXT_MAG_ABSENT;
 
         state.heave_m    = heave_update(&heave, f.q, s.accel);
         /* heave.vel is double (see heave_t); the wire field is float. */
@@ -1449,7 +1426,7 @@ void *fusion_thread(void *arg)
          * noise rather than FIFO residence.  Reporting the pipeline alone
          * would invite reading it as the total, so the whole thing stays zero.
          */
-        if (have_ts && ctx->imu_ops->has_hw_timestamp && s.read_done_ns) {
+        if (have_ts && ctx->imu.ops->has_hw_timestamp && s.read_done_ns) {
             struct timespec t_now;
             clock_gettime(CLOCK_REALTIME, &t_now);
             uint64_t now_ns = ts_ns(&t_now);
@@ -1465,7 +1442,7 @@ void *fusion_thread(void *arg)
              */
             lat_pub_t pf, pp;
             lat_step(&ctx->lat_fifo, &ctx->lat_pipe,
-                     (uint64_t)((ctx->actual_odr_mhz + 500) / 1000),
+                     (uint64_t)((ctx->imu.actual_odr_mhz + 500) / 1000),
                      wall, s.read_done_ns, s.host_done_ns, now_ns, &pf, &pp);
 
             if (pf.valid) {
@@ -1512,8 +1489,12 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (!ctx) { LOG_E("[imu] calloc: %s\n", strerror(errno)); return -1; }
     /* calloc zeros both handles to fd 0; bus_init makes them -1 so a fail:
      * before the opens does not close stdin. */
-    bus_init(&ctx->imu_bus);
-    bus_init(&ctx->mag_bus);
+    bus_init(&ctx->imu.bus);
+    bus_init(&ctx->mag.bus);
+    /* Each source's way back to the context, set before anything can hand one
+     * to a thread. */
+    ctx->imu.ctx = ctx;
+    ctx->mag.ctx = ctx;
 
     ctx->cfg = *cfg;
     if (cal) {
@@ -1525,11 +1506,11 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
             = ctx->cal.mag_soft_iron[2][2] = 1.0f;
     }
 
-    imu_ring_init(&ctx->imu_ring);
-    mag_ring_init(&ctx->mag_ring);
+    imu_ring_init(&ctx->imu.ring);
+    mag_ring_init(&ctx->mag.ring);
     cap_ring_init(&ctx->cap_ring);
     pthread_mutex_init(&ctx->shared.lock, NULL);
-    pthread_mutex_init(&ctx->anchor.mtx, NULL);
+    pthread_mutex_init(&ctx->imu.anchor.mtx, NULL);
     pthread_mutex_init(&ctx->live_lock, NULL);
 
     /* ── Locate drivers ──────────────────────────────────────────────────── */
@@ -1537,20 +1518,20 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     /* Arm sim-driver playback before init ([device] sim_file / --replay). */
     sim_set_playback(cfg->sim_file, cfg->sim_loop, cfg->sim_speed);
 
-    ctx->imu_ops = imu_driver_find(cfg->imu_driver);
-    if (!ctx->imu_ops) {
+    ctx->imu.ops = imu_driver_find(cfg->imu_driver);
+    if (!ctx->imu.ops) {
         LOG_E("[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
         goto fail;
     }
-    if (ctx->imu_ops->experimental)
+    if (ctx->imu.ops->experimental)
         LOG_W("[imu] WARNING: driver '%s' is EXPERIMENTAL — "
                 "not yet validated on hardware\n", cfg->imu_driver);
-    if (ctx->imu_ops->has_hw_timestamp && ctx->imu_ops->ts_tick_ns == 0)
+    if (ctx->imu.ops->has_hw_timestamp && ctx->imu.ops->ts_tick_ns == 0)
         LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
                 "hardware timestamps will not advance\n", cfg->imu_driver);
 
     /*
-     * "none" is a 6-DoF board, not a missing setting.  ctx->mag_ops then stays
+     * "none" is a 6-DoF board, not a missing setting.  ctx->mag.ops then stays
      * NULL and every mag stage below is skipped — the bus is never opened, the
      * interrupt line never requested, and main() does not start mag_reader.
      * The fusion already copes: it consumes the mag ring with try_pop, so a
@@ -1559,19 +1540,19 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * yaw update is disabled.
      */
     if (!mag_configured(cfg->mag_driver)) {
-        ctx->mag_ops = NULL;
+        ctx->mag.ops = NULL;
         LOG_I("[mag] no magnetometer configured — 6-DoF. Roll and pitch are "
               "gravity-referenced as usual; heading is dead-reckoned from the "
               "gyro and drifts without bound, and FLAG_MAG_VALID stays "
               "clear.\n");
     } else {
-        ctx->mag_ops = mag_driver_find(cfg->mag_driver);
-        if (!ctx->mag_ops) {
+        ctx->mag.ops = mag_driver_find(cfg->mag_driver);
+        if (!ctx->mag.ops) {
             LOG_E("[imu] unknown mag driver '%s' — name a driver, or \"none\" "
                   "for a board with no magnetometer\n", cfg->mag_driver);
             goto fail;
         }
-        if (ctx->mag_ops->experimental)
+        if (ctx->mag.ops->experimental)
             LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
                     "not yet validated on hardware\n", cfg->mag_driver);
     }
@@ -1584,9 +1565,9 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * driver rather than snapping here is what lets the divider-based parts
      * (mpu925x, icm20948) answer for their own grid.
      */
-    ctx->actual_odr_mhz     = odr_actual_imu(ctx->imu_ops, cfg->imu_odr_mhz);
-    ctx->actual_mag_odr_mhz = ctx->mag_ops
-                            ? odr_actual_mag(ctx->mag_ops, cfg->mag_odr_mhz)
+    ctx->imu.actual_odr_mhz     = odr_actual_imu(ctx->imu.ops, cfg->imu_odr_mhz);
+    ctx->mag.actual_odr_mhz = ctx->mag.ops
+                            ? odr_actual_mag(ctx->mag.ops, cfg->mag_odr_mhz)
                             : 0;
 
     /* ── Open the sensor buses ───────────────────────────────────────────── */
@@ -1611,26 +1592,26 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * question, not an operator mistake, so the message names both parts and
      * the modes they want rather than blaming the config.
      */
-    if (ctx->mag_ops &&
+    if (ctx->mag.ops &&
         cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
-        ctx->imu_ops->bus_caps.spi_mode != ctx->mag_ops->bus_caps.spi_mode &&
+        ctx->imu.ops->bus_caps.spi_mode != ctx->mag.ops->bus_caps.spi_mode &&
         bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev)) {
         LOG_E("[imu] %s wants SPI mode %u and %s wants mode %u, but %s and %s "
               "share one SPI controller, which has a single clock. Move one "
               "part to another SPI bus.\n",
-              ctx->imu_ops->name, ctx->imu_ops->bus_caps.spi_mode,
-              ctx->mag_ops->name, ctx->mag_ops->bus_caps.spi_mode,
+              ctx->imu.ops->name, ctx->imu.ops->bus_caps.spi_mode,
+              ctx->mag.ops->name, ctx->mag.ops->bus_caps.spi_mode,
               cfg->imu_spi_dev, cfg->mag_spi_dev);
         goto fail;
     }
 
     config_imu_bus_spec(cfg, &spec);
-    if (bus_open(&ctx->imu_bus, &spec, &ctx->imu_ops->bus_caps, "imu") < 0)
+    if (bus_open(&ctx->imu.bus, &spec, &ctx->imu.ops->bus_caps, "imu") < 0)
         goto fail;
 
-    if (ctx->mag_ops) {
+    if (ctx->mag.ops) {
         config_mag_bus_spec(cfg, &spec);
-        if (bus_open(&ctx->mag_bus, &spec, &ctx->mag_ops->bus_caps, "mag") < 0)
+        if (bus_open(&ctx->mag.bus, &spec, &ctx->mag.ops->bus_caps, "mag") < 0)
             goto fail;
     }
 
@@ -1638,13 +1619,13 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
 
     /* Resolved rates, not cfg->*_odr_mhz: the driver's own rounding is then a
      * no-op and it programs exactly what the filter was tuned for. */
-    ctx->imu_hw_cfg.odr_mhz  = ctx->actual_odr_mhz;
-    ctx->imu_hw_cfg.accel_g  = cfg->imu_accel_g;
-    ctx->imu_hw_cfg.gyro_dps = cfg->imu_gyro_dps;
-    ctx->imu_hw_cfg.fifo_wm  = cfg->imu_fifo_wm;
+    ctx->imu.hw_cfg.odr_mhz  = ctx->imu.actual_odr_mhz;
+    ctx->imu.hw_cfg.accel_g  = cfg->imu_accel_g;
+    ctx->imu.hw_cfg.gyro_dps = cfg->imu_gyro_dps;
+    ctx->imu.hw_cfg.fifo_wm  = cfg->imu_fifo_wm;
 
-    ctx->mag_hw_cfg.odr_mhz      = ctx->actual_mag_odr_mhz;
-    ctx->mag_hw_cfg.set_period_s = cfg->mag_set_period_s;
+    ctx->mag.hw_cfg.odr_mhz      = ctx->mag.actual_odr_mhz;
+    ctx->mag.hw_cfg.set_period_s = cfg->mag_set_period_s;
     /*
      * Deliberately the SAME condition that requests the line further down, so
      * the driver's idea of how it is being read cannot drift from what the
@@ -1652,25 +1633,25 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * mutually exclusive that disagreement is not cosmetic — it is the
      * difference between every sample and one in three.  See mag_cfg_t.
      */
-    ctx->mag_hw_cfg.int_driven   = ctx->mag_ops
-                                && ctx->mag_ops->has_interrupt
+    ctx->mag.hw_cfg.int_driven   = ctx->mag.ops
+                                && ctx->mag.ops->has_interrupt
                                 && cfg->mag_int_gpio > 0;
 
     char hb1[16], hb2[16];   /* MHZ_STR scratch for the startup lines */
 
     /* ── Probe + reset + init IMU ────────────────────────────────────────── */
 
-    if (ctx->imu_ops->probe(&ctx->imu_bus) < 0) {
+    if (ctx->imu.ops->probe(&ctx->imu.bus) < 0) {
         LOG_E("[imu] %s probe failed at 0x%02X\n",
-                ctx->imu_ops->name, cfg->imu_addr);
+                ctx->imu.ops->name, cfg->imu_addr);
         goto fail;
     }
-    if (ctx->imu_ops->reset(&ctx->imu_bus) < 0) {
-        LOG_E("[imu] %s reset failed\n", ctx->imu_ops->name);
+    if (ctx->imu.ops->reset(&ctx->imu.bus) < 0) {
+        LOG_E("[imu] %s reset failed\n", ctx->imu.ops->name);
         goto fail;
     }
-    if (ctx->imu_ops->init(&ctx->imu_bus, &ctx->imu_hw_cfg) < 0) {
-        LOG_E("[imu] %s init failed\n", ctx->imu_ops->name);
+    if (ctx->imu.ops->init(&ctx->imu.bus, &ctx->imu.hw_cfg) < 0) {
+        LOG_E("[imu] %s init failed\n", ctx->imu.ops->name);
         goto fail;
     }
     /*
@@ -1682,55 +1663,55 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * cannot have moved.  A driver with no hook, or one whose read fails,
      * leaves the declared constant in place, which is what shipped before.
      */
-    ctx->ts_tick_ns = ctx->imu_ops->ts_tick_ns;
-    if (ctx->imu_ops->ts_tick_ns_actual) {
-        uint32_t part = ctx->imu_ops->ts_tick_ns_actual(&ctx->imu_bus);
-        if (part != 0 && part != ctx->ts_tick_ns) {
+    ctx->imu.ts_tick_ns = ctx->imu.ops->ts_tick_ns;
+    if (ctx->imu.ops->ts_tick_ns_actual) {
+        uint32_t part = ctx->imu.ops->ts_tick_ns_actual(&ctx->imu.bus);
+        if (part != 0 && part != ctx->imu.ts_tick_ns) {
             LOG_I("[imu] %s declares a %u ns timer tick against the %u ns "
                   "typical (%+.2f%%); using the part's own value\n",
-                  ctx->imu_ops->name, part, ctx->ts_tick_ns,
-                  ((double)part - (double)ctx->ts_tick_ns)
-                      / (double)ctx->ts_tick_ns * 100.0);
-            ctx->ts_tick_ns = part;
+                  ctx->imu.ops->name, part, ctx->imu.ts_tick_ns,
+                  ((double)part - (double)ctx->imu.ts_tick_ns)
+                      / (double)ctx->imu.ts_tick_ns * 100.0);
+            ctx->imu.ts_tick_ns = part;
         }
     }
 
-    if (ctx->actual_odr_mhz != cfg->imu_odr_mhz)
+    if (ctx->imu.actual_odr_mhz != cfg->imu_odr_mhz)
         LOG_I("[imu] %s 0x%02X OK — ODR %s Hz requested, %s Hz actual\n",
-                ctx->imu_ops->name, cfg->imu_addr,
+                ctx->imu.ops->name, cfg->imu_addr,
                 MHZ_STR(hb1, cfg->imu_odr_mhz),
-                MHZ_STR(hb2, ctx->actual_odr_mhz));
+                MHZ_STR(hb2, ctx->imu.actual_odr_mhz));
     else
         LOG_I("[imu] %s 0x%02X OK — actual ODR %s Hz\n",
-                ctx->imu_ops->name, cfg->imu_addr,
-                MHZ_STR(hb1, ctx->actual_odr_mhz));
+                ctx->imu.ops->name, cfg->imu_addr,
+                MHZ_STR(hb1, ctx->imu.actual_odr_mhz));
 
     /* ── Probe + reset + init mag ────────────────────────────────────────── */
 
-    if (!ctx->mag_ops) goto mag_done;
+    if (!ctx->mag.ops) goto mag_done;
 
-    if (ctx->mag_ops->probe(&ctx->mag_bus) < 0) {
+    if (ctx->mag.ops->probe(&ctx->mag.bus) < 0) {
         LOG_E("[imu] %s probe failed at 0x%02X\n",
-                ctx->mag_ops->name, cfg->mag_addr);
+                ctx->mag.ops->name, cfg->mag_addr);
         goto fail;
     }
-    if (ctx->mag_ops->reset(&ctx->mag_bus) < 0) {
-        LOG_E("[imu] %s reset failed\n", ctx->mag_ops->name);
+    if (ctx->mag.ops->reset(&ctx->mag.bus) < 0) {
+        LOG_E("[imu] %s reset failed\n", ctx->mag.ops->name);
         goto fail;
     }
-    if (ctx->mag_ops->init(&ctx->mag_bus, &ctx->mag_hw_cfg) < 0) {
-        LOG_E("[imu] %s init failed\n", ctx->mag_ops->name);
+    if (ctx->mag.ops->init(&ctx->mag.bus, &ctx->mag.hw_cfg) < 0) {
+        LOG_E("[imu] %s init failed\n", ctx->mag.ops->name);
         goto fail;
     }
-    if (ctx->actual_mag_odr_mhz != cfg->mag_odr_mhz)
+    if (ctx->mag.actual_odr_mhz != cfg->mag_odr_mhz)
         LOG_I("[imu] %s 0x%02X OK — ODR %s Hz requested, %s Hz actual\n",
-                ctx->mag_ops->name, cfg->mag_addr,
+                ctx->mag.ops->name, cfg->mag_addr,
                 MHZ_STR(hb1, cfg->mag_odr_mhz),
-                MHZ_STR(hb2, ctx->actual_mag_odr_mhz));
+                MHZ_STR(hb2, ctx->mag.actual_odr_mhz));
     else
         LOG_I("[imu] %s 0x%02X OK — actual ODR %s Hz\n",
-                ctx->mag_ops->name, cfg->mag_addr,
-                MHZ_STR(hb1, ctx->actual_mag_odr_mhz));
+                ctx->mag.ops->name, cfg->mag_addr,
+                MHZ_STR(hb1, ctx->mag.actual_odr_mhz));
 
 mag_done:
     /* ── Configure GPIO lines ────────────────────────────────────────────── */
@@ -1744,9 +1725,9 @@ mag_done:
 
     /* IMU interrupt line — optional (timer fallback used when absent). */
     if (cfg->imu_int_gpio > 0) {
-        ctx->imu_line = imu_gpio_open(cfg->gpio_chip,
+        ctx->imu.line = imu_gpio_open(cfg->gpio_chip,
                                       (unsigned)cfg->imu_int_gpio, "imud");
-        if (!ctx->imu_line) {
+        if (!ctx->imu.line) {
             LOG_E("[imu] cannot request GPIO%d on %s: %s\n",
                     cfg->imu_int_gpio, cfg->gpio_chip, gpio_open_err());
             goto fail;
@@ -1754,10 +1735,10 @@ mag_done:
     }
 
     /* Mag interrupt line — only requested when the driver has an external pin. */
-    if (ctx->mag_ops && ctx->mag_ops->has_interrupt && cfg->mag_int_gpio > 0) {
-        ctx->mag_line = imu_gpio_open(cfg->gpio_chip,
+    if (ctx->mag.ops && ctx->mag.ops->has_interrupt && cfg->mag_int_gpio > 0) {
+        ctx->mag.line = imu_gpio_open(cfg->gpio_chip,
                                       (unsigned)cfg->mag_int_gpio, "imud");
-        if (!ctx->mag_line) {
+        if (!ctx->mag.line) {
             LOG_E("[imu] cannot request GPIO%d on %s: %s\n",
                     cfg->mag_int_gpio, cfg->gpio_chip, gpio_open_err());
             goto fail;
@@ -1768,16 +1749,16 @@ mag_done:
     return 0;
 
 fail:
-    bus_close(&ctx->imu_bus);
-    bus_close(&ctx->mag_bus);
-    imu_gpio_close(ctx->imu_line);
-    imu_gpio_close(ctx->mag_line);
+    bus_close(&ctx->imu.bus);
+    bus_close(&ctx->mag.bus);
+    imu_gpio_close(ctx->imu.line);
+    imu_gpio_close(ctx->mag.line);
     pthread_mutex_destroy(&ctx->shared.lock);
-    pthread_mutex_destroy(&ctx->anchor.mtx);
+    pthread_mutex_destroy(&ctx->imu.anchor.mtx);
     pthread_mutex_destroy(&ctx->live_lock);
-    pthread_mutex_destroy(&ctx->imu_ring.lock);
-    pthread_cond_destroy(&ctx->imu_ring.ready);
-    pthread_mutex_destroy(&ctx->mag_ring.lock);
+    pthread_mutex_destroy(&ctx->imu.ring.lock);
+    pthread_cond_destroy(&ctx->imu.ring.ready);
+    pthread_mutex_destroy(&ctx->mag.ring.lock);
     cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
     return -1;
@@ -1862,11 +1843,19 @@ void imu_ctx_set_declination(imu_ctx_t *ctx, float decl_deg, bool valid)
     pthread_mutex_unlock(&ctx->live_lock);
 }
 
+/*
+ * The sources, for pthread_create.  Accessors rather than public fields
+ * because imu_ctx_t is opaque and a source is only ever a thread argument;
+ * main.c has no business reaching into either one.
+ */
+imu_src_t *imu_ctx_imu_source(imu_ctx_t *ctx) { return &ctx->imu; }
+mag_src_t *imu_ctx_mag_source(imu_ctx_t *ctx) { return &ctx->mag; }
+
 void imu_ctx_stop(imu_ctx_t *ctx)
 {
     ctx->stop = 1;
     /* Wake threads blocked in imu_ring_pop. */
-    pthread_cond_broadcast(&ctx->imu_ring.ready);
+    pthread_cond_broadcast(&ctx->imu.ring.ready);
 }
 
 int imu_ctx_ring_backlog(imu_ctx_t *ctx)
@@ -1877,22 +1866,22 @@ int imu_ctx_ring_backlog(imu_ctx_t *ctx)
      * overwrite-on-full by design and carries corrections rather than the
      * sample stream, so samples left in it are not work owed to anyone.
      */
-    return ctx ? imu_ring_count(&ctx->imu_ring) : 0;
+    return ctx ? imu_ring_count(&ctx->imu.ring) : 0;
 }
 
 void imu_ctx_free(imu_ctx_t *ctx)
 {
     if (!ctx) return;
-    bus_close(&ctx->imu_bus);
-    bus_close(&ctx->mag_bus);
-    imu_gpio_close(ctx->imu_line);
-    imu_gpio_close(ctx->mag_line);
+    bus_close(&ctx->imu.bus);
+    bus_close(&ctx->mag.bus);
+    imu_gpio_close(ctx->imu.line);
+    imu_gpio_close(ctx->mag.line);
     pthread_mutex_destroy(&ctx->shared.lock);
-    pthread_mutex_destroy(&ctx->anchor.mtx);
+    pthread_mutex_destroy(&ctx->imu.anchor.mtx);
     pthread_mutex_destroy(&ctx->live_lock);
-    pthread_mutex_destroy(&ctx->imu_ring.lock);
-    pthread_cond_destroy(&ctx->imu_ring.ready);
-    pthread_mutex_destroy(&ctx->mag_ring.lock);
+    pthread_mutex_destroy(&ctx->imu.ring.lock);
+    pthread_cond_destroy(&ctx->imu.ring.ready);
+    pthread_mutex_destroy(&ctx->mag.ring.lock);
     cap_ring_destroy(&ctx->cap_ring);
     free(ctx);
 }

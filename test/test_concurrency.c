@@ -111,8 +111,8 @@ static void test_reload_race(void)
     if (!imu) { puts("FAIL"); return; }
 
     pthread_t ism, mag, fus, cap;
-    pthread_create(&ism, NULL, ism_reader_thread, imu);
-    pthread_create(&mag, NULL, mag_reader_thread, imu);
+    pthread_create(&ism, NULL, ism_reader_thread, imu_ctx_imu_source(imu));
+    pthread_create(&mag, NULL, mag_reader_thread, imu_ctx_mag_source(imu));
     pthread_create(&fus, NULL, fusion_thread, imu);
     /* The black box runs alongside: it drains the tap ring the reader threads
      * push into and publishes cap_* under shared.lock, which is exactly what
@@ -238,8 +238,8 @@ static void test_stream_shutdown_race(void)
     if (!imu) { puts("FAIL"); return; }
 
     pthread_t ism, mag, fus;
-    pthread_create(&ism, NULL, ism_reader_thread, imu);
-    pthread_create(&mag, NULL, mag_reader_thread, imu);
+    pthread_create(&ism, NULL, ism_reader_thread, imu_ctx_imu_source(imu));
+    pthread_create(&mag, NULL, mag_reader_thread, imu_ctx_mag_source(imu));
     pthread_create(&fus, NULL, fusion_thread, imu);
 
     out_ctx_t *out = NULL;
@@ -287,9 +287,69 @@ static void test_stream_shutdown_race(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/*
+ * Each reader thread is handed ONE source, so the wiring of those sources is
+ * what decides which part a reader drives.  The two are distinct objects and
+ * each must carry its own driver, its own ring and its own bus handle: a mag
+ * source pointing at the IMU's ring or ops is a refactor that still builds,
+ * still passes every behavioural suite at one sensor of each kind, and is
+ * wrong the moment a second one exists.
+ */
+static void test_sources_are_wired_to_their_own_part(void)
+{
+    puts("-- test_sources_are_wired_to_their_own_part");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    sim_cfg(&cfg);
+
+    imu_ctx_t *imu = NULL;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0, "imu_ctx_open (sources)");
+    if (!imu) { puts("FAIL"); return; }
+
+    imu_src_t *is = imu_ctx_imu_source(imu);
+    mag_src_t *ms = imu_ctx_mag_source(imu);
+
+    EXPECT(is != NULL, "the IMU source exists");
+    EXPECT(ms != NULL, "the mag source exists");
+    EXPECT((void *)is != (void *)ms, "the two sources are distinct objects");
+
+    /*
+     * A ring or ops mis-wiring cannot compile — the two kinds are different
+     * types.  The same-typed fields are the ones that can be crossed in
+     * silence: both buses are imud_bus_t and both rates are int, so a mag
+     * source handed the IMU's handle builds cleanly and then talks to the
+     * wrong address.  Compare CONTENTS, not addresses: two distinct struct
+     * members never share an address, so an address test cannot fail.
+     */
+    EXPECT(is->bus.i2c_addr == cfg.imu_addr,
+           "the IMU source carries the IMU's own bus address");
+    EXPECT(ms->bus.i2c_addr == cfg.mag_addr,
+           "the mag source carries the mag's own bus address");
+    EXPECT(is->bus.i2c_addr != ms->bus.i2c_addr,
+           "and the two are not the same handle copied twice");
+
+    /* sim_cfg asks for 200 Hz and 50 Hz, so a rate field wired from the wrong
+     * source shows up as the two agreeing. */
+    EXPECT(is->actual_odr_mhz > 0, "the IMU source resolved a rate");
+    EXPECT(ms->actual_odr_mhz > 0, "the mag source resolved a rate");
+    EXPECT(is->actual_odr_mhz != ms->actual_odr_mhz,
+           "each source resolved its OWN requested rate");
+
+    EXPECT(is->ops != NULL, "the IMU source carries a driver");
+    EXPECT(ms->ops != NULL, "the mag source carries a driver");
+    EXPECT(is->ctx == imu, "the IMU source points back at the context");
+    EXPECT(ms->ctx == imu, "the mag source points back at the context");
+
+    imu_ctx_stop(imu);
+    imu_ctx_free(imu);
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud concurrency tests (run under TSan) ===");
+    test_sources_are_wired_to_their_own_part();
     test_reload_race();
     test_stream_shutdown_race();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

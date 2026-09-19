@@ -27,11 +27,71 @@
 /* ── Calibration data (defined in cal.h) ───────────────────────────────── */
 
 #include "cal.h"       /* imud_cal_t */
-#include "imu_math.h"  /* lat_hist_t */
+#include "imu_math.h"  /* lat_hist_t, ts_anchor_t */
+#include "imu_gpio.h"  /* imu_gpio_line_t */
+#include "ring.h"      /* imu_ring_t, mag_ring_t */
 
 /* ── Opaque context (defined in imu.c) ─────────────────────────────────── */
 
 typedef struct imu_ctx imu_ctx_t;
+
+/* ── One sensor ──────────────────────────────────────────────────────────── */
+
+/*
+ * Everything that describes ONE part: its bus handle, its driver, the config
+ * that driver was handed, the rate it said it would really program, its
+ * interrupt line and the ring its reader fills.  A reader thread is given one
+ * of these rather than the whole context, so a second part of either kind has
+ * an argument it could be given.
+ *
+ * `ctx` is the way back out, and it is not avoidable: every reader needs the
+ * context-wide cfg snapshot, cal and shared state.  A source describes a
+ * part; it does not own the daemon.  The context itself stays opaque, which
+ * is why the two accessors below exist — nothing outside imu.c can take the
+ * address of a member of a type it cannot see.
+ *
+ * Two structs rather than one: the ops and ring types differ between the two
+ * kinds, and a union would only hide that behind a tag nobody needs.
+ */
+struct imu_src {
+    imu_ctx_t       *ctx;
+    /* One handle per sensor, not one bus shared by both: the two can sit on
+     * different nodes, and each driver addresses only its own. */
+    imud_bus_t       bus;
+    const imu_ops_t *ops;
+    imu_cfg_t        hw_cfg;
+    /* Rate the driver said it would really program for the configured request
+     * (odr_actual_imu).  This, not the raw config value, is what the driver
+     * was handed and what the filter is tuned for — see the resolution
+     * comment in imu_ctx_open. */
+    int              actual_odr_mhz;      /* milli-Hz */
+    /*
+     * Chip-timer period actually in force: the driver's declared ts_tick_ns,
+     * or what ts_tick_ns_actual() said this individual part's timer runs at.
+     * Resolved once in imu_ctx_open after init() and read-only afterwards, so
+     * every consumer of the tick agrees.  0 when the part has no timer.
+     */
+    uint32_t         ts_tick_ns;
+    imu_gpio_line_t *line;   /* GPIO for FIFO watermark interrupt */
+    imu_ring_t       ring;
+    ts_anchor_t      anchor; /* this part's chip timer against the wall clock */
+};
+
+struct mag_src {
+    imu_ctx_t       *ctx;
+    imud_bus_t       bus;
+    const mag_ops_t *ops;
+    mag_cfg_t        hw_cfg;
+    int              actual_odr_mhz;      /* milli-Hz; odr_actual_mag */
+    imu_gpio_line_t *line;   /* GPIO for measurement-done interrupt */
+    mag_ring_t       ring;
+};
+
+typedef struct imu_src imu_src_t;
+typedef struct mag_src mag_src_t;
+
+imu_src_t *imu_ctx_imu_source(imu_ctx_t *ctx);
+mag_src_t *imu_ctx_mag_source(imu_ctx_t *ctx);
 
 /* ── Thread statistics ──────────────────────────────────────────────────── */
 
@@ -150,8 +210,9 @@ void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid);
 void imu_ctx_free(imu_ctx_t *ctx);
 
 /*
- * Thread entry points — pass the same imu_ctx_t * as the void * argument
- * to each pthread_create call.
+ * Thread entry points.  The two readers each take ONE source — from
+ * imu_ctx_imu_source() / imu_ctx_mag_source() — because each drives a single
+ * part.  fusion_thread consumes both rings, so it takes the imu_ctx_t *.
  */
 void *ism_reader_thread(void *arg);
 void *mag_reader_thread(void *arg);

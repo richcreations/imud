@@ -799,7 +799,8 @@ int main(int argc, char **argv)
     bool mag_started = false;
 
     int prc;
-    prc = pthread_create(&ism_tid, NULL, ism_reader_thread, imu);
+    prc = pthread_create(&ism_tid, NULL, ism_reader_thread,
+                         imu_ctx_imu_source(imu));
     if (prc != 0) {
         LOG_E("[main] fatal: cannot create ism_reader thread: %s\n", strerror(prc));
         out_ctx_free(out); imu_ctx_free(imu);
@@ -807,7 +808,8 @@ int main(int argc, char **argv)
         pid_remove(pid_path); return 1;
     }
     if (mag_configured(cfg.mag_driver)) {
-        prc = pthread_create(&mag_tid, NULL, mag_reader_thread, imu);
+        prc = pthread_create(&mag_tid, NULL, mag_reader_thread,
+                             imu_ctx_mag_source(imu));
         if (prc != 0) {
             LOG_E("[main] fatal: cannot create mag_reader thread: %s\n", strerror(prc));
             imu_ctx_stop(imu); join_thread(ism_tid, "ism_reader");
