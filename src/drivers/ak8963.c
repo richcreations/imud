@@ -85,11 +85,14 @@
  */
 #define AK8963_SCALE    0.15f
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct ak_state {
     float adj[3];   /* per-axis fuse-ROM sensitivity multiplier, chip axes */
-} s = { .adj = { 1.0f, 1.0f, 1.0f } };
+};
+
+/* Unity adjustment, so a read() before init() scales by something defined. */
+static const struct ak_state ak_state_init = { .adj = { 1.0f, 1.0f, 1.0f } };
 
 /* Select the continuous mode code for the requested ODR. */
 static uint8_t odr_to_mode(int odr_mhz)
@@ -148,6 +151,8 @@ static int ak_reset(const imud_bus_t *bus)
 
 static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
+    struct ak_state *s = bus->drv;
+
     /* ── Read the factory sensitivity adjustment from fuse ROM ───────────── */
     if (set_mode(bus, MODE_FUSE_ROM) < 0) return -1;
 
@@ -175,15 +180,15 @@ static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
               "counterfeit or dead. Heading from it cannot be trusted. "
               "Applying no sensitivity adjustment.\n",
               asa[0], asa[1], asa[2]);
-        for (int i = 0; i < 3; i++) s.adj[i] = 1.0f;
+        for (int i = 0; i < 3; i++) s->adj[i] = 1.0f;
     } else {
         for (int i = 0; i < 3; i++)
-            s.adj[i] = ((float)asa[i] - 128.0f) * 0.5f / 128.0f + 1.0f;
+            s->adj[i] = ((float)asa[i] - 128.0f) * 0.5f / 128.0f + 1.0f;
     }
 
     LOG_D("ak8963: fuse-ROM ASA = %u/%u/%u -> adj %.4f/%.4f/%.4f\n",
           asa[0], asa[1], asa[2],
-          (double)s.adj[0], (double)s.adj[1], (double)s.adj[2]);
+          (double)s->adj[0], (double)s->adj[1], (double)s->adj[2]);
 
     /* ── Continuous measurement, 16-bit output ───────────────────────────── */
     return set_mode(bus, (uint8_t)(CNTL1_16BIT | odr_to_mode(cfg->odr_mhz)));
@@ -204,6 +209,8 @@ static int ak_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  */
 static int ak_read(const imud_bus_t *bus, mag_sample_t *out)
 {
+    struct ak_state *s = bus->drv;
+
     uint8_t st1 = 0;
     for (int i = 0; i < 15; i++) {
         if (bus_reg_read(bus, REG_ST1, &st1) < 0) return -1;
@@ -228,9 +235,9 @@ static int ak_read(const imud_bus_t *bus, mag_sample_t *out)
     int16_t hz = reg_s16le(&raw[4]);
 
     /* Factory sensitivity adjustment, applied in the AK8963's own axes. */
-    float mx = (float)hx * s.adj[0] * AK8963_SCALE;
-    float my = (float)hy * s.adj[1] * AK8963_SCALE;
-    float mz = (float)hz * s.adj[2] * AK8963_SCALE;
+    float mx = (float)hx * s->adj[0] * AK8963_SCALE;
+    float my = (float)hy * s->adj[1] * AK8963_SCALE;
+    float mz = (float)hz * s->adj[2] * AK8963_SCALE;
 
     /*
      * Remap to the NED-compatible board frame (X=bow, Y=starboard, Z=down).
@@ -276,6 +283,8 @@ static int ak_read(const imud_bus_t *bus, mag_sample_t *out)
 const mag_ops_t ak8963_ops = {
     .name            = "ak8963",
     .experimental    = false,
+    .state_bytes     = sizeof(struct ak_state),
+    .state_init      = &ak_state_init,
     .probe           = ak_probe,
     .reset           = ak_reset,
     .init            = ak_init,

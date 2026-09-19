@@ -92,9 +92,9 @@
 #define FIFO_HDR_TS_MASK  0x0C
 #define FIFO_HDR_TS_ODR   0x08
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct icm_state {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
     uint32_t seq;
@@ -112,7 +112,7 @@ static struct {
     uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
     uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
-} ic;
+};
 
 /* One second of ticks at 32/30 us; see chip_ts.h. */
 #define TS_MAX_JITTER_TICKS  937500u
@@ -268,6 +268,7 @@ reset_done:
 
 static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
+    struct icm_state *ic = bus->drv;
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t gfs  = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
@@ -321,9 +322,9 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     /* Start stream mode: FIFO_CONFIG bits[7:6] = 01. */
     if (bus_reg_write(bus, REG_FIFO_CONFIG, 0x40) < 0) return -1;
 
-    ic.accel_scale      = accel_scale;
-    ic.gyro_scale       = gyro_scale;
-    ic.seq              = 0;
+    ic->accel_scale      = accel_scale;
+    ic->gyro_scale       = gyro_scale;
+    ic->seq              = 0;
     /* Ticks between adjacent samples at the actual ODR.
      *
      * NOT 1000000/ODR.  The timestamp counter's LSB is 32/30 µs, not the 1 µs
@@ -341,10 +342,10 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * from a per-burst anchor (see the age calculation in icm_read), so the
      * error is bounded by the watermark depth rather than accumulating across
      * bursts.  Sub-tick resolution would buy nothing the counter can support. */
-    ic.ticks_per_sample =
+    ic->ticks_per_sample =
         (uint32_t)(937500000u / (unsigned)odr_actual(cfg->odr_mhz));
-    ic.ts_last_raw      = 0;    /* counter restarts with the chip */
-    ic.ts_hi            = 0;
+    ic->ts_last_raw      = 0;    /* counter restarts with the chip */
+    ic->ts_hi            = 0;
     /*
      * Can the per-packet FIFO timestamp be unwrapped at this rate?  Only if
      * adjacent samples are less than one 16-bit repeat apart, since that is
@@ -355,14 +356,14 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * read as adjacent.  That rung keeps the back-calculated timestamps.
      * The bound carries margin rather than sitting at the repeat itself.
      */
-    ic.ts_fifo_usable   = (ic.ticks_per_sample <= TS_FIFO_MAX_LAG);
-    ic.ts_rejects       = 0;
-    ic.ts_reject_next   = 1;
-    ic.ts_fwd_rejects   = 0;
-    ic.ts_fwd_next      = 1;
-    ic.ts_bwd_rejects   = 0;
-    ic.ts_bwd_next      = 1;
-    chip_ts_guard_reset(&ic.ts_guard);
+    ic->ts_fifo_usable   = (ic->ticks_per_sample <= TS_FIFO_MAX_LAG);
+    ic->ts_rejects       = 0;
+    ic->ts_reject_next   = 1;
+    ic->ts_fwd_rejects   = 0;
+    ic->ts_fwd_next      = 1;
+    ic->ts_bwd_rejects   = 0;
+    ic->ts_bwd_next      = 1;
+    chip_ts_guard_reset(&ic->ts_guard);
 
     return 0;
 }
@@ -399,6 +400,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 static int icm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
+    struct icm_state *ic = bus->drv;
+
     /* ── 1. Read FIFO byte count (big endian; COUNTH read latches both) ─── */
     uint8_t cnt[2];
     if (bus_burst_read(bus, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
@@ -438,14 +441,14 @@ static int icm_read(const imud_bus_t *bus,
          * Chip native: X=bow, Y=port, Z=up.
          * Flip Y (port→starboard) and Z (up→down) for NED board frame.
          */
-        buf[produced].accel[0] =  ax * ic.accel_scale;
-        buf[produced].accel[1] = -ay * ic.accel_scale;
-        buf[produced].accel[2] = -az * ic.accel_scale;
-        buf[produced].gyro[0]  =  gx * ic.gyro_scale;
-        buf[produced].gyro[1]  = -gy * ic.gyro_scale;
-        buf[produced].gyro[2]  = -gz * ic.gyro_scale;
+        buf[produced].accel[0] =  ax * ic->accel_scale;
+        buf[produced].accel[1] = -ay * ic->accel_scale;
+        buf[produced].accel[2] = -az * ic->accel_scale;
+        buf[produced].gyro[0]  =  gx * ic->gyro_scale;
+        buf[produced].gyro[1]  = -gy * ic->gyro_scale;
+        buf[produced].gyro[2]  = -gz * ic->gyro_scale;
         buf[produced].temp_c   = (float)(int8_t)pkt[13] + 25.0f;
-        buf[produced].seq      = ic.seq++;
+        buf[produced].seq      = ic->seq++;
         /* Park the raw 16-bit stamp here; phase 3 either widens it in place or
          * overwrites the lot with the back-calculation.  Using the field
          * itself avoids a second 128-entry array on the hot path. */
@@ -472,11 +475,11 @@ static int icm_read(const imud_bus_t *bus,
                  * times per second at every supported ODR, so at most one
                  * wrap occurs between drains.  (A >1 s stall would lose
                  * wraps; the dt clamp in imu.c bounds the damage.) */
-                if (raw < ic.ts_last_raw)
-                    ic.ts_hi += 1u << 20;
-                ic.ts_last_raw = raw;
+                if (raw < ic->ts_last_raw)
+                    ic->ts_hi += 1u << 20;
+                ic->ts_last_raw = raw;
 
-                uint32_t now_ts = ic.ts_hi + raw;
+                uint32_t now_ts = ic->ts_hi + raw;
                 bool     batched = false;
 
                 /*
@@ -495,7 +498,7 @@ static int icm_read(const imud_bus_t *bus,
                  * Differences are taken as signed 32-bit so the arithmetic
                  * stays correct across the counter's own 32-bit wrap.
                  */
-                if (all_stamped && ic.ts_fifo_usable) {
+                if (all_stamped && ic->ts_fifo_usable) {
                     uint32_t prev = now_ts;
                     batched = true;
 
@@ -530,12 +533,12 @@ static int icm_read(const imud_bus_t *bus,
                      * is, and that distinction is the whole diagnosis; logging
                      * every burst would bury it at 13 drains a second.
                      */
-                    if (!batched && ++ic.ts_rejects >= ic.ts_reject_next) {
+                    if (!batched && ++ic->ts_rejects >= ic->ts_reject_next) {
                         LOG_W("icm42688p: %llu burst(s) with FIFO timestamps "
                               "that failed their plausibility check — using "
                               "the post-drain TMSTVAL read for chip_ts\n",
-                              (unsigned long long)ic.ts_rejects);
-                        ic.ts_reject_next *= 10;
+                              (unsigned long long)ic->ts_rejects);
+                        ic->ts_reject_next *= 10;
                     }
                 }
 
@@ -548,7 +551,7 @@ static int icm_read(const imud_bus_t *bus,
                  */
                 if (!batched) {
                     uint32_t burst_ts = now_ts;
-                    uint32_t span  = (uint32_t)(produced - 1) * ic.ticks_per_sample;
+                    uint32_t span  = (uint32_t)(produced - 1) * ic->ticks_per_sample;
                     uint32_t first = burst_ts - span;
                     /*
                      * Is now_ts credible at all? A garbage counter read lands
@@ -564,10 +567,10 @@ static int icm_read(const imud_bus_t *bus,
                      * inside a run, and for what it emitted on the bench.
                      */
                     bool fwd_bad = !chip_ts_guard_forward_ok(
-                            &ic.ts_guard, first,
-                        ic.ticks_per_sample * TS_FWD_SLACK_SETS);
+                            &ic->ts_guard, first,
+                        ic->ticks_per_sample * TS_FWD_SLACK_SETS);
                     bool bwd_bad = !chip_ts_guard_backward_ok(
-                            &ic.ts_guard, first, TS_MAX_JITTER_TICKS);
+                            &ic->ts_guard, first, TS_MAX_JITTER_TICKS);
                     if (fwd_bad || bwd_bad) {
                         /*
                          * Refusing read after read means the ANCHOR is stale, not that
@@ -576,36 +579,36 @@ static int icm_read(const imud_bus_t *bus,
                          * reading and re-seed -- extrapolating again only walks the
                          * stamps further from real time.  See chip_ts.h.
                          */
-                        if (chip_ts_guard_refused(&ic.ts_guard)) {
-                            chip_ts_guard_accepted(&ic.ts_guard);   /* burst_ts stands */
+                        if (chip_ts_guard_refused(&ic->ts_guard)) {
+                            chip_ts_guard_accepted(&ic->ts_guard);   /* burst_ts stands */
                         } else {
-                        first    = chip_ts_guard_next(&ic.ts_guard,
-                                                      ic.ticks_per_sample);
+                        first    = chip_ts_guard_next(&ic->ts_guard,
+                                                      ic->ticks_per_sample);
                         burst_ts = first + span;
                         if (bwd_bad) {
-                            if (++ic.ts_bwd_rejects >= ic.ts_bwd_next) {
+                            if (++ic->ts_bwd_rejects >= ic->ts_bwd_next) {
                                 LOG_W("icm42688p: %llu post-drain timestamp "
                                       "read(s) implausibly far behind; "
                                       "extrapolating from the previous burst\n",
-                                      (unsigned long long)ic.ts_bwd_rejects);
-                                ic.ts_bwd_next *= 10;
+                                      (unsigned long long)ic->ts_bwd_rejects);
+                                ic->ts_bwd_next *= 10;
                             }
-                        } else if (++ic.ts_fwd_rejects >= ic.ts_fwd_next) {
+                        } else if (++ic->ts_fwd_rejects >= ic->ts_fwd_next) {
                             LOG_W("icm42688p: %llu post-drain timestamp "
                                   "read(s) implausibly far ahead; "
                                   "extrapolating from the previous burst\n",
-                                  (unsigned long long)ic.ts_fwd_rejects);
-                            ic.ts_fwd_next *= 10;
+                                  (unsigned long long)ic->ts_fwd_rejects);
+                            ic->ts_fwd_next *= 10;
                         }
                         }
                     } else {
-                        chip_ts_guard_accepted(&ic.ts_guard);
-                        burst_ts += chip_ts_guard_shift(&ic.ts_guard, first,
-                                                        ic.ticks_per_sample,
+                        chip_ts_guard_accepted(&ic->ts_guard);
+                        burst_ts += chip_ts_guard_shift(&ic->ts_guard, first,
+                                                        ic->ticks_per_sample,
                                                         TS_MAX_JITTER_TICKS);
                     }
                     for (int i = 0; i < produced; i++) {
-                        uint32_t age = (uint32_t)(produced - 1 - i) * ic.ticks_per_sample;
+                        uint32_t age = (uint32_t)(produced - 1 - i) * ic->ticks_per_sample;
                         buf[i].chip_ts = burst_ts - age;
                     }
                 } else {
@@ -616,14 +619,14 @@ static int icm_read(const imud_bus_t *bus,
                      * two comparisons and should never fire here, and the two
                      * paths must not leave it holding a stale anchor if a
                      * later burst falls back. */
-                    uint32_t shift = chip_ts_guard_shift(&ic.ts_guard,
+                    uint32_t shift = chip_ts_guard_shift(&ic->ts_guard,
                                                          buf[0].chip_ts,
-                                                         ic.ticks_per_sample,
+                                                         ic->ticks_per_sample,
                                                          TS_MAX_JITTER_TICKS);
                     for (int i = 0; shift && i < produced; i++)
                         buf[i].chip_ts += shift;
                 }
-                chip_ts_guard_note(&ic.ts_guard, buf[produced - 1].chip_ts);
+                chip_ts_guard_note(&ic->ts_guard, buf[produced - 1].chip_ts);
             }
             bus_reg_write(bus, REG_BANK_SEL, 0);
         }
@@ -638,6 +641,7 @@ static int icm_read(const imud_bus_t *bus,
 const imu_ops_t icm42688p_ops = {
     .name             = "icm42688p",
     .experimental     = true,
+    .state_bytes      = sizeof(struct icm_state),
     /* DS-000347 Rev 1.6 §9.6: MSB-first, latched on the rising edge and
      * transitioned on the falling — satisfied by mode 0 and mode 3 alike, and
      * mode 3 is what the rest of the tree uses. 24 MHz, 7-bit address behind

@@ -169,13 +169,13 @@
 #define ST_BURST           64
 #define ST_TRIES           2000
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct mpu_state {
     float    accel_scale;   /* m/s² per LSB */
     float    gyro_scale;    /* rad/s per LSB */
     uint32_t seq;
-} s;
+};
 
 /* ── Encoding helpers ──────────────────────────────────────────────────────── */
 
@@ -413,6 +413,7 @@ reset_done:
 
 static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
+    struct mpu_state *s = bus->drv;
     float accel_scale, gyro_scale;
     uint8_t gfs = gyro_fs_encode(cfg->gyro_dps,  &gyro_scale);
     uint8_t afs = accel_fs_encode(cfg->accel_g,  &accel_scale);
@@ -476,9 +477,9 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     /* Last: open the bypass so the AK8963 is visible to the host bus. */
     if (bus_reg_write(bus, REG_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
 
-    s.accel_scale = accel_scale;
-    s.gyro_scale  = gyro_scale;
-    s.seq         = 0;
+    s->accel_scale = accel_scale;
+    s->gyro_scale  = gyro_scale;
+    s->seq         = 0;
 
     return 0;
 }
@@ -496,6 +497,8 @@ static int mpu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 static int mpu_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
+    struct mpu_state *s = bus->drv;
+
     *n_out = 0;
 
     /* ── 1. Pending byte count (13-bit; reading COUNTH latches both) ─────── */
@@ -583,15 +586,15 @@ static int mpu_read(const imud_bus_t *bus,
          * different orientation, correct it in rotation_euler_deg rather
          * than here.
          */
-        buf[i].accel[0] =  ax * s.accel_scale;
-        buf[i].accel[1] = -ay * s.accel_scale;
-        buf[i].accel[2] = -az * s.accel_scale;
-        buf[i].gyro[0]  =  gx * s.gyro_scale;
-        buf[i].gyro[1]  = -gy * s.gyro_scale;
-        buf[i].gyro[2]  = -gz * s.gyro_scale;
+        buf[i].accel[0] =  ax * s->accel_scale;
+        buf[i].accel[1] = -ay * s->accel_scale;
+        buf[i].accel[2] = -az * s->accel_scale;
+        buf[i].gyro[0]  =  gx * s->gyro_scale;
+        buf[i].gyro[1]  = -gy * s->gyro_scale;
+        buf[i].gyro[2]  = -gz * s->gyro_scale;
         buf[i].temp_c   = 0.0f;   /* filled in below */
         buf[i].chip_ts  = 0;      /* no hardware timestamp on MPU-925x */
-        buf[i].seq      = s.seq++;
+        buf[i].seq      = s->seq++;
     }
 
     /* Temperature from the live register — one read for the whole burst. */
@@ -673,6 +676,8 @@ static int st_average(const imud_bus_t *bus, double acc[3], double gyr[3])
  */
 static int mpu_self_test(const imud_bus_t *bus, imu_selftest_t *out)
 {
+    struct mpu_state *s = bus->drv;
+
     memset(out, 0, sizeof *out);
 
     if (mpu_reset(bus) < 0) return -1;
@@ -689,8 +694,8 @@ static int mpu_self_test(const imud_bus_t *bus, imu_selftest_t *out)
 
     /* read() scales with whatever init() last left in s, so the two ranges
      * selected above have to be published to it here too. */
-    (void)gyro_fs_encode(250, &s.gyro_scale);
-    (void)accel_fs_encode(2,  &s.accel_scale);
+    (void)gyro_fs_encode(250, &s->gyro_scale);
+    (void)accel_fs_encode(2,  &s->accel_scale);
 
     usleep(GYRO_STARTUP_US);
     if (fifo_restart(bus) < 0) return -1;
@@ -734,6 +739,7 @@ done:
 const imu_ops_t mpu9250_ops = {
     .name             = "mpu9250",
     .experimental     = true,
+    .state_bytes      = sizeof(struct mpu_state),
     .probe            = mpu9250_probe,
     .reset            = mpu_reset,
     .init             = mpu_init,
@@ -751,6 +757,7 @@ const imu_ops_t mpu9250_ops = {
 const imu_ops_t mpu9255_ops = {
     .name             = "mpu9255",
     .experimental     = false,
+    .state_bytes      = sizeof(struct mpu_state),
     .probe            = mpu9255_probe,
     .reset            = mpu_reset,
     .init             = mpu_init,
@@ -777,6 +784,7 @@ const imu_ops_t mpu9255_ops = {
 const imu_ops_t mpu6500_ops = {
     .name             = "mpu6500",
     .experimental     = false,
+    .state_bytes      = sizeof(struct mpu_state),
     .probe            = mpu6500_probe,
     .reset            = mpu_reset,
     .init             = mpu_init,

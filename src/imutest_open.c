@@ -81,9 +81,10 @@ int imt_degauss(const imud_config_t *cfg, char *errbuf, size_t errbufsz)
     imud_bus_t mbus;
     bus_spec_t spec;
     config_mag_bus_spec(cfg, &spec);
-    if (bus_open(&mbus, &spec, &mag->bus_caps, "mag") < 0) {
+    if (mag_bus_open(&mbus, &spec, mag, "mag") < 0) {
         snprintf(errbuf, errbufsz, "cannot open %s for the magnetometer",
                  spec.node);
+        bus_close(&mbus);
         return -1;
     }
 
@@ -169,15 +170,16 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
         }
     }
 
-    /* One handle per sensor. bus_open logs the errno detail; errbuf carries
-     * the summary imud-imutest prints, so the operator sees both which sensor
-     * and why. */
+    /* One handle per sensor. imu/mag_bus_open log the errno detail; errbuf
+     * carries the summary imud-imutest prints, so the operator sees both which
+     * sensor and why. */
     imud_bus_t ibus, mbus;
     bus_spec_t spec;
 
     config_imu_bus_spec(cfg, &spec);
-    if (bus_open(&ibus, &spec, &imu->bus_caps, "imu") < 0) {
+    if (imu_bus_open(&ibus, &spec, imu, "imu") < 0) {
         snprintf(errbuf, errbufsz, "cannot open %s for the IMU", spec.node);
+        bus_close(&ibus);
         return -1;
     }
 
@@ -186,9 +188,10 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
     bus_init(&mbus);
     if (mag) {
         config_mag_bus_spec(cfg, &spec);
-        if (bus_open(&mbus, &spec, &mag->bus_caps, "mag") < 0) {
+        if (mag_bus_open(&mbus, &spec, mag, "mag") < 0) {
             snprintf(errbuf, errbufsz, "cannot open %s for the magnetometer",
                      spec.node);
+            bus_close(&mbus);
             bus_close(&ibus);
             return -1;
         }

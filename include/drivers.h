@@ -97,6 +97,33 @@ typedef struct {
  * than calling the hook directly, so the NULL default lives in one place.
  */
 
+/*
+ * ── Per-handle driver state, shared by both ops structs ────────────────────
+ *
+ * Both imu_ops_t and mag_ops_t carry:
+ *
+ *     size_t      state_bytes;
+ *     const void *state_init;
+ *
+ * A driver that needs to remember anything between calls — scale factors, a
+ * sample counter, a timestamp guard — declares its state struct in its own
+ * TU and sets state_bytes to sizeof it.  imu_bus_open()/mag_bus_open() then
+ * allocate that much per handle and leave it in bus->drv, so the hooks reach
+ * it as
+ *
+ *     struct my_state *s = bus->drv;
+ *
+ * and two handles on one driver keep their state apart.  A file-scope static
+ * would make a second part of the same kind share the first one's sequence
+ * counter and scales, which is silent sample corruption rather than a refused
+ * config.
+ *
+ * The state arrives zeroed.  state_init points at a template of state_bytes
+ * to copy in instead, for the rare field where zero is not a safe value
+ * before init() has run — ak8963's unity sensitivity adjustment, rm3100's
+ * default gain.  NULL for everything else.
+ */
+
 /* ── Built-in self-test ───────────────────────────────────────────────────── */
 
 /*
@@ -131,6 +158,10 @@ typedef struct {
      * refused by name rather than tried and mis-framed. See include/bus.h.
      */
     bus_caps_t bus_caps;
+
+    /* Per-handle state: how much, and what to seed it with.  See above. */
+    size_t      state_bytes;
+    const void *state_init;
 
     /*
      * Return 0 on success, -1 on failure.
@@ -246,6 +277,9 @@ typedef struct {
 
     bus_caps_t bus_caps;   /* as for imu_ops_t above */
 
+    size_t      state_bytes;   /* per-handle state, as for imu_ops_t above */
+    const void *state_init;
+
     /* Return 0 on success, -1 on failure, and probe() leaves the part as it
      * found it — as for imu_ops_t above. */
     int (*probe)    (const imud_bus_t *bus);
@@ -302,6 +336,23 @@ typedef struct {
 
 const imu_ops_t *imu_driver_find(const char *name);
 const mag_ops_t *mag_driver_find(const char *name);
+
+/* ── Opening a handle for a driver — implemented in drivers.c ─────────────── */
+
+/*
+ * bus_open() plus the driver's per-handle state, which is how every caller
+ * that is going to run a driver's hooks should open its handle: the two
+ * cannot be separated without a path where bus->drv is NULL and a hook
+ * dereferences it.  Returns what bus_open() returned, so a caller that
+ * tolerates a failed transport (imud-cal does, for the sim driver, which has
+ * state but never touches the bus) still gets its state — the allocation
+ * happens either way.  -1 with nothing allocated means the state itself could
+ * not be had, and the handle is closed.
+ */
+int imu_bus_open(imud_bus_t *b, const bus_spec_t *spec, const imu_ops_t *ops,
+                 const char *who);
+int mag_bus_open(imud_bus_t *b, const bus_spec_t *spec, const mag_ops_t *ops,
+                 const char *who);
 
 /* ── Sim driver synthesis hooks (src/drivers/sim.c) ────────────────────────── */
 

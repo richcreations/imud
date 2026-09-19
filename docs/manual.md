@@ -1815,19 +1815,40 @@ the mock and every non-Linux host.
 
 ### Writing an IMU driver (`imu_ops_t`)
 
-#### Static driver state
+#### Per-handle driver state
 
-Because the daemon runs exactly one IMU at a time, each driver stores its
-runtime state in a file-scoped static struct:
+A driver's runtime state belongs to the handle, not to the driver, so that two
+of the same part each keep their own. Declare the struct in your own file, set
+`state_bytes` to its size, and reach it through `bus->drv`:
 
 ```c
-static struct {
+struct myimu_state {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
     uint32_t seq;               /* monotonic sample counter */
     uint32_t ticks_per_sample;  /* chip timer ticks between samples (0 if none) */
-} s;
+};
+
+const imu_ops_t myimu_ops = {
+    .state_bytes = sizeof(struct myimu_state),
+    /* … */
+};
+
+static int myimu_read(const imud_bus_t *bus, imu_sample_t *buf, int max, int *n)
+{
+    struct myimu_state *s = bus->drv;
+    /* … */
+}
 ```
+
+`imu_bus_open()` / `mag_bus_open()` allocate it per handle and zero it. Where
+zero is not a safe value before `init()` has run, point `state_init` at a
+template of `state_bytes` to be copied in instead — `ak8963.c` does this for
+its unity sensitivity adjustment.
+
+A file-scoped static works until someone configures two of your part, and then
+fails silently: both handles share one sequence counter and one set of scale
+factors.
 
 `seq` is a monotonic counter incremented for every sample produced. It must
 **never reset** while the daemon runs — the fusion thread uses gaps in `seq`
@@ -2282,8 +2303,8 @@ heading      increases ~6°/s from a 60° start
 - [ ] `reset()` waits for the reset bit to self-clear **and** adds the
       datasheet startup time afterward — or, on a part with no reset bit,
       restores the power-on register values and says so in a comment.
-- [ ] `init()` stores sensitivity values to the static struct before
-      returning.
+- [ ] `state_bytes` is set, no driver state is a file-scoped static, and
+      `init()` stores sensitivity values to `bus->drv` before returning.
 - [ ] `read()` returns `-1` only on I²C errors, never on "no data yet".
 - [ ] Accelerometer output is m/s² in the NED-compatible board frame (flat
       component-up reads ≈ −9.81 on Z).

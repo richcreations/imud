@@ -101,9 +101,9 @@ static int st_fifo_burst_words(uint32_t spi_hz)
     return words;
 }
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct ism_state {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
     float    last_temp;         /* °C; persists across drains (temp batched at
@@ -118,7 +118,7 @@ static struct {
     uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
     uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* keeps chip_ts increasing across burst seams */
-} s;
+};
 
 /* A backward step larger than this is a counter reset, not read jitter, and is
  * re-seeded rather than corrected — see chip_ts.h.  One second of 25 µs ticks,
@@ -281,6 +281,7 @@ reset_done:
 
 static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
+    struct ism_state *s = bus->drv;
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
@@ -388,8 +389,8 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     /* Assert INT1 on FIFO watermark threshold (INT1_FIFO_TH = bit 3) */
     if (bus_reg_write(bus, REG_INT1_CTRL,  0x08)                        < 0) return -1;
 
-    s.accel_scale      = accel_scale;
-    s.gyro_scale       = gyro_scale;
+    s->accel_scale      = accel_scale;
+    s->gyro_scale       = gyro_scale;
     /* Seed last_temp from the live temperature register so samples emitted
      * before the first batched FIFO temp word carry a real reading, not a
      * 25 °C placeholder. Falls back to 25 °C only if the read fails. */
@@ -397,19 +398,19 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
         uint8_t tb[2];
         if (bus_burst_read(bus, REG_OUT_TEMP_L, tb, 2) == 0) {
             int16_t rt = reg_s16le(tb);
-            s.last_temp = (float)rt / 256.0f + 25.0f;
+            s->last_temp = (float)rt / 256.0f + 25.0f;
         } else {
-            s.last_temp = 25.0f;
+            s->last_temp = 25.0f;
         }
     }
-    s.seq              = 0;
-    s.ts_rejects       = 0;
-    s.ts_reject_next   = 1;
-    s.ts_fwd_rejects   = 0;
-    s.ts_fwd_next      = 1;
-    s.ts_bwd_rejects   = 0;
-    s.ts_bwd_next      = 1;
-    chip_ts_guard_reset(&s.ts_guard);
+    s->seq              = 0;
+    s->ts_rejects       = 0;
+    s->ts_reject_next   = 1;
+    s->ts_fwd_rejects   = 0;
+    s->ts_fwd_next      = 1;
+    s->ts_bwd_rejects   = 0;
+    s->ts_bwd_next      = 1;
+    chip_ts_guard_reset(&s->ts_guard);
     /* Chip timer ticks between samples: 1 s / (25 µs/tick) / ODR_hz.
      *
      * Integer division, and it is inexact at most rungs — the 25 µs tick is
@@ -420,7 +421,7 @@ static int ism_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * backwards within one burst from an anchor that is re-read every drain
      * (see ism_read), so the error is bounded by the watermark depth rather
      * than accumulating. */
-    s.ticks_per_sample =
+    s->ticks_per_sample =
         (uint32_t)(40000000u / (unsigned)odr_actual(cfg->odr_mhz));
 
     return 0;
@@ -452,6 +453,8 @@ static uint32_t ism_ts_tick_ns_actual(const imud_bus_t *bus)
 static int ism_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
+    struct ism_state *s = bus->drv;
+
     /* ── 1. Read FIFO status ─────────────────────────────────────────────── */
     uint8_t st[2];
     if (bus_burst_read(bus, REG_FIFO_STATUS1, st, 2) < 0) return -1;
@@ -524,17 +527,17 @@ static int ism_read(const imud_bus_t *bus,
 
         switch (tag) {
         case TAG_ACCEL_NC:
-            p_accel[0] = raw_x * s.accel_scale;
-            p_accel[1] = raw_y * s.accel_scale;
-            p_accel[2] = raw_z * s.accel_scale;
+            p_accel[0] = raw_x * s->accel_scale;
+            p_accel[1] = raw_y * s->accel_scale;
+            p_accel[2] = raw_z * s->accel_scale;
             have_accel = 1;
             set_tag    = word[0];
             break;
 
         case TAG_GYRO_NC:
-            p_gyro[0] = raw_x * s.gyro_scale;
-            p_gyro[1] = raw_y * s.gyro_scale;
-            p_gyro[2] = raw_z * s.gyro_scale;
+            p_gyro[0] = raw_x * s->gyro_scale;
+            p_gyro[1] = raw_y * s->gyro_scale;
+            p_gyro[2] = raw_z * s->gyro_scale;
             have_gyro = 1;
             set_tag    = word[0];
             break;
@@ -550,7 +553,7 @@ static int ism_read(const imud_bus_t *bus,
             /* 16-bit signed, 256 LSB/°C, 0 LSB = 25 °C (Table 4).
              * Persist: batched slower than we drain, so most drains carry no
              * temp word and must reuse the last reading (not reset to 25). */
-            s.last_temp = (float)raw_x / 256.0f + 25.0f;
+            s->last_temp = (float)raw_x / 256.0f + 25.0f;
             break;
 
         default:
@@ -573,8 +576,8 @@ static int ism_read(const imud_bus_t *bus,
             buf[produced].gyro[0]  =  p_gyro[0];
             buf[produced].gyro[1]  = -p_gyro[1];
             buf[produced].gyro[2]  = -p_gyro[2];
-            buf[produced].temp_c   = s.last_temp;
-            buf[produced].seq      = s.seq++;
+            buf[produced].temp_c   = s->last_temp;
+            buf[produced].seq      = s->seq++;
             buf[produced].chip_ts  = 0;  /* filled below */
             produced++;
             have_accel = have_gyro = 0;
@@ -601,7 +604,7 @@ static int ism_read(const imud_bus_t *bus,
              * on this path, which is the point of passing it in.
              */
             bool anchored = st_fifo_ts_apply(&fts, buf, produced,
-                                             s.ticks_per_sample, now_ts);
+                                             s->ticks_per_sample, now_ts);
 
             if (!anchored) {
                 /*
@@ -625,10 +628,10 @@ static int ism_read(const imud_bus_t *bus,
                  * burst's newest by a sample period and the guard has nothing
                  * useful to say.  Re-seed rather than widen the bound to cover it.
                  */
-                if (overflow) chip_ts_guard_reset(&s.ts_guard);
+                if (overflow) chip_ts_guard_reset(&s->ts_guard);
 
                 uint32_t burst_ts = now_ts;
-                uint32_t span  = (uint32_t)(produced - 1) * s.ticks_per_sample;
+                uint32_t span  = (uint32_t)(produced - 1) * s->ticks_per_sample;
                 uint32_t first = burst_ts - span;
                 /*
                  * Before trusting now_ts, ask whether it is credible. A garbage
@@ -647,10 +650,10 @@ static int ism_read(const imud_bus_t *bus,
                  * for the nine samples it sent out near 2^32.
                  */
                 bool fwd_bad = !chip_ts_guard_forward_ok(
-                        &s.ts_guard, first,
-                        s.ticks_per_sample * TS_FWD_SLACK_SETS);
+                        &s->ts_guard, first,
+                        s->ticks_per_sample * TS_FWD_SLACK_SETS);
                 bool bwd_bad = !chip_ts_guard_backward_ok(
-                        &s.ts_guard, first, TS_MAX_JITTER_TICKS);
+                        &s->ts_guard, first, TS_MAX_JITTER_TICKS);
                 if (fwd_bad || bwd_bad) {
                     /*
                      * Refusing read after read means the ANCHOR is stale, not that
@@ -659,36 +662,36 @@ static int ism_read(const imud_bus_t *bus,
                      * reading and re-seed -- extrapolating again only walks the
                      * stamps further from real time.  See chip_ts.h.
                      */
-                    if (chip_ts_guard_refused(&s.ts_guard)) {
-                        chip_ts_guard_accepted(&s.ts_guard);   /* burst_ts stands */
+                    if (chip_ts_guard_refused(&s->ts_guard)) {
+                        chip_ts_guard_accepted(&s->ts_guard);   /* burst_ts stands */
                     } else {
-                    first    = chip_ts_guard_next(&s.ts_guard,
-                                                  s.ticks_per_sample);
+                    first    = chip_ts_guard_next(&s->ts_guard,
+                                                  s->ticks_per_sample);
                     burst_ts = first + span;
                     if (bwd_bad) {
-                        if (++s.ts_bwd_rejects >= s.ts_bwd_next) {
+                        if (++s->ts_bwd_rejects >= s->ts_bwd_next) {
                             LOG_W("ism330dhcx: %llu post-drain timestamp "
                                   "read(s) implausibly far behind; "
                                   "extrapolating from the previous burst\n",
-                                  (unsigned long long)s.ts_bwd_rejects);
-                            s.ts_bwd_next *= 10;
+                                  (unsigned long long)s->ts_bwd_rejects);
+                            s->ts_bwd_next *= 10;
                         }
-                    } else if (++s.ts_fwd_rejects >= s.ts_fwd_next) {
+                    } else if (++s->ts_fwd_rejects >= s->ts_fwd_next) {
                         LOG_W("ism330dhcx: %llu post-drain timestamp read(s) "
                               "implausibly far ahead; extrapolating from the "
                               "previous burst\n",
-                              (unsigned long long)s.ts_fwd_rejects);
-                        s.ts_fwd_next *= 10;
+                              (unsigned long long)s->ts_fwd_rejects);
+                        s->ts_fwd_next *= 10;
                     }
                     }
                 } else {
-                    chip_ts_guard_accepted(&s.ts_guard);
-                    burst_ts += chip_ts_guard_shift(&s.ts_guard, first,
-                                                    s.ticks_per_sample,
+                    chip_ts_guard_accepted(&s->ts_guard);
+                    burst_ts += chip_ts_guard_shift(&s->ts_guard, first,
+                                                    s->ticks_per_sample,
                                                     TS_MAX_JITTER_TICKS);
                 }
                 for (int i = 0; i < produced; i++) {
-                    uint32_t age = (uint32_t)(produced - 1 - i) * s.ticks_per_sample;
+                    uint32_t age = (uint32_t)(produced - 1 - i) * s->ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;
                 }
 
@@ -698,12 +701,12 @@ static int ism_read(const imud_bus_t *bus,
                  * stumbled once from a payload layout that is not what
                  * st_fifo_ts.h assumes, and that distinction is the diagnosis.
                  */
-                if (fts.have_word && ++s.ts_rejects >= s.ts_reject_next) {
+                if (fts.have_word && ++s->ts_rejects >= s->ts_reject_next) {
                     LOG_W("ism330dhcx: %llu burst(s) whose batched FIFO "
                           "timestamp failed its check — using the post-drain "
                           "TIMESTAMP0 read for chip_ts\n",
-                          (unsigned long long)s.ts_rejects);
-                    s.ts_reject_next *= 10;
+                          (unsigned long long)s->ts_rejects);
+                    s->ts_reject_next *= 10;
                 }
             } else {
                 /*
@@ -713,13 +716,13 @@ static int ism_read(const imud_bus_t *bus,
                  * that should never fire, and the guard must not be left
                  * holding a stale anchor if a later burst falls back.
                  */
-                uint32_t shift = chip_ts_guard_shift(&s.ts_guard, buf[0].chip_ts,
-                                                     s.ticks_per_sample,
+                uint32_t shift = chip_ts_guard_shift(&s->ts_guard, buf[0].chip_ts,
+                                                     s->ticks_per_sample,
                                                      TS_MAX_JITTER_TICKS);
                 for (int i = 0; shift && i < produced; i++)
                     buf[i].chip_ts += shift;
             }
-            chip_ts_guard_note(&s.ts_guard, buf[produced - 1].chip_ts);
+            chip_ts_guard_note(&s->ts_guard, buf[produced - 1].chip_ts);
         }
         /* If the timestamp read fails, chip_ts stays 0; anchor detects this. */
     }
@@ -865,6 +868,7 @@ done:
 const imu_ops_t ism330dhcx_ops = {
     .name             = "ism330dhcx",
     .experimental     = false,
+    .state_bytes      = sizeof(struct ism_state),
     /* DS13012 Rev 7 §5.1.2 (protocol, mode 3) and §4.4.1 Table 5 (10 MHz).
      * No auto-increment bit: multi-byte transfers step the address when
      * CTRL3_C's IF_INC is set, which ism_init already does (0x44). */

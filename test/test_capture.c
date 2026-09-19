@@ -34,6 +34,7 @@
 #include "capture.h"
 #include "config.h"
 #include "drivers.h"
+#include "drv_state.h"
 #include "fileio.h"
 #include "fusion.h"
 
@@ -744,7 +745,10 @@ static void test_playback_replays_recorded_bursts(void)
     }
     cap_writer_close(&w);
 
+    /* The sim driver issues no transfer, but it does keep per-handle state,
+     * so the handle needs the slab imu_bus_open() would have given it. */
     imud_bus_t nobus; bus_init(&nobus);
+    nobus.drv = DRV_STATE_FOR(&sim_imu_ops);
     imu_cfg_t icfg = { .odr_mhz = 100, .accel_g = 8, .gyro_dps = 2000 };
     sim_set_playback(path, false, 0.0f);
     EXPECT(sim_imu_ops.init(&nobus, &icfg) == 0, "imu init (bursts)");
@@ -774,8 +778,10 @@ static void test_playback_driver(void)
     int fb = g_fail;
     const char *path = make_small_capture();
 
-    /* The sim driver ignores the bus entirely; a closed handle is enough. */
+    /* The sim driver issues no transfer, so a closed handle is enough — but
+     * it keeps per-handle state, which a hand-built handle must supply. */
     imud_bus_t nobus; bus_init(&nobus);
+    nobus.drv = DRV_STATE_FOR(&sim_imu_ops);
 
     imu_cfg_t icfg = { .odr_mhz = 100, .accel_g = 8, .gyro_dps = 2000 };
     mag_cfg_t mcfg = { .odr_mhz = 100 };

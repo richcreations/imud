@@ -74,13 +74,13 @@
 /* PWR_MGMT_1: auto-select best clock */
 #define CLKSEL_AUTO         0x01
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct icm_state {
     float    accel_scale;   /* m/s²/LSB */
     float    gyro_scale;    /* rad/s/LSB */
     uint32_t seq;
-} s;
+};
 
 /* ── I2C helpers ────────────────────────────────────────────────────────────── */
 
@@ -189,6 +189,7 @@ reset_done:
 
 static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
+    struct icm_state *s = bus->drv;
     float accel_scale, gyro_scale;
     uint8_t  gfs  = gyro_fs_encode(cfg->gyro_dps, &gyro_scale);
     uint8_t  afs  = accel_fs_encode(cfg->accel_g,  &accel_scale);
@@ -243,9 +244,9 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
     /* Enable I2C bypass so the AK09916 magnetometer is visible to the host. */
     if (bus_reg_write(bus, B0_INT_PIN_CFG, INT_PIN_BYPASS_EN) < 0) return -1;
 
-    s.accel_scale = accel_scale;
-    s.gyro_scale  = gyro_scale;
-    s.seq         = 0;
+    s->accel_scale = accel_scale;
+    s->gyro_scale  = gyro_scale;
+    s->seq         = 0;
 
     return 0;
 }
@@ -262,6 +263,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 static int icm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
+    struct icm_state *s = bus->drv;
+
     *n_out = 0;
 
     /* Must be in Bank 0 (set during init; reader never changes banks). */
@@ -321,15 +324,15 @@ static int icm_read(const imud_bus_t *bus,
          * X=bow, Y=starboard, Z=down.  If your board has a different Y
          * orientation, add a yaw or roll correction in rotation_euler_deg.
          */
-        buf[i].accel[0] =  ax * s.accel_scale;
-        buf[i].accel[1] = -ay * s.accel_scale;
-        buf[i].accel[2] = -az * s.accel_scale;
-        buf[i].gyro[0]  =  gx * s.gyro_scale;
-        buf[i].gyro[1]  = -gy * s.gyro_scale;
-        buf[i].gyro[2]  = -gz * s.gyro_scale;
+        buf[i].accel[0] =  ax * s->accel_scale;
+        buf[i].accel[1] = -ay * s->accel_scale;
+        buf[i].accel[2] = -az * s->accel_scale;
+        buf[i].gyro[0]  =  gx * s->gyro_scale;
+        buf[i].gyro[1]  = -gy * s->gyro_scale;
+        buf[i].gyro[2]  = -gz * s->gyro_scale;
         buf[i].temp_c   = 0.0f;  /* read separately if needed */
         buf[i].chip_ts  = 0;     /* no hardware timestamp on ICM-20948 */
-        buf[i].seq      = s.seq++;
+        buf[i].seq      = s->seq++;
     }
 
     /* Read temperature from live register (single read for the whole burst). */
@@ -350,6 +353,7 @@ static int icm_read(const imud_bus_t *bus,
 const imu_ops_t icm20948_ops = {
     .name             = "icm20948",
     .experimental     = true,
+    .state_bytes      = sizeof(struct icm_state),
     .probe            = icm_probe,
     .reset            = icm_reset,
     .init             = icm_init,

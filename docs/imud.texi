@@ -3607,7 +3607,7 @@ non-Linux host.
 @anchor{#writing-an-imu-driver-imu_ops_t}
 
 @menu
-* Static driver state::
+* Per-handle driver state::
 * probebus → 0 or -1::
 * resetbus → 0 or -1::
 * initbus cfg → 0 or -1::
@@ -3616,20 +3616,43 @@ non-Linux host.
 * self_test optional diagnostic::
 @end menu
 
-@node Static driver state
-@subsection Static driver state
-@anchor{#static-driver-state}
-Because the daemon runs exactly one IMU at a time, each driver stores
-its runtime state in a file-scoped static struct:
+@node Per-handle driver state
+@subsection Per-handle driver state
+@anchor{#per-handle-driver-state}
+A driver's runtime state belongs to the handle, not to the driver, so
+that two of the same part each keep their own. Declare the struct in
+your own file, set @code{state_bytes} to its size, and reach it through
+@code{bus->drv}:
 
 @verbatim
-static struct {
+struct myimu_state {
     float    accel_scale;       /* LSB → m/s² */
     float    gyro_scale;        /* LSB → rad/s */
     uint32_t seq;               /* monotonic sample counter */
     uint32_t ticks_per_sample;  /* chip timer ticks between samples (0 if none) */
-} s;
+};
+
+const imu_ops_t myimu_ops = {
+    .state_bytes = sizeof(struct myimu_state),
+    /* … */
+};
+
+static int myimu_read(const imud_bus_t *bus, imu_sample_t *buf, int max, int *n)
+{
+    struct myimu_state *s = bus->drv;
+    /* … */
+}
 @end verbatim
+
+@code{imu_bus_open()} / @code{mag_bus_open()} allocate it per handle and
+zero it. Where zero is not a safe value before @code{init()} has run,
+point @code{state_init} at a template of @code{state_bytes} to be copied
+in instead --- @code{ak8963.c} does this for its unity sensitivity
+adjustment.
+
+A file-scoped static works until someone configures two of your part,
+and then fails silently: both handles share one sequence counter and one
+set of scale factors.
 
 @code{seq} is a monotonic counter incremented for every sample produced.
 It must @strong{never reset} while the daemon runs --- the fusion thread
@@ -4203,7 +4226,8 @@ leaves any register it writes as it found it.
 the datasheet startup time afterward --- or, on a part with no reset
 bit, restores the power-on register values and says so in a comment.
 @item
-☐ @code{init()} stores sensitivity values to the static struct before
+☐ @code{state_bytes} is set, no driver state is a file-scoped static,
+and @code{init()} stores sensitivity values to @code{bus->drv} before
 returning.
 @item
 ☐ @code{read()} returns @code{-1} only on I²C errors, never on "no data

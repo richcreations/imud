@@ -22,7 +22,9 @@
  * The IMU and the magnetometer get one handle each, never a shared one.  On
  * I2C that means the same node is opened twice, which is harmless — an
  * I2C_RDWR message carries its own address — and it is what lets the two
- * sensors sit on different buses.
+ * sensors sit on different buses.  The handle is also where a driver's own
+ * per-sensor state lives, so two of one part are two handles and nothing
+ * else: see `drv` below.
  */
 #ifndef IMUD_BUS_H
 #define IMUD_BUS_H
@@ -73,6 +75,12 @@ typedef struct {
     uint8_t    spi_mode;
     uint8_t    spi_inc_mask;
     uint32_t   spi_hz;
+    /* The driver's per-handle state, sized by its ops->state_bytes and
+     * allocated by bus_drv_alloc().  NULL for a driver that declares none.
+     * Only that driver's own hooks look at it, so it is void * here rather
+     * than a type this header would have to know.  Two handles on one driver
+     * get two of these, which is what lets a rig carry two of a part. */
+    void      *drv;
 } imud_bus_t;
 
 /* What the operator asked for, before any device is touched. */
@@ -110,6 +118,7 @@ static inline void bus_init(imud_bus_t *b)
     b->spi_mode     = 0;
     b->spi_inc_mask = 0;
     b->spi_hz       = 0;
+    b->drv          = NULL;
 }
 
 /*
@@ -122,7 +131,21 @@ static inline void bus_init(imud_bus_t *b)
 int  bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
               const char *who);
 
-/* Close and mark closed.  Safe on an unopened or already-closed handle. */
+/*
+ * Give `b` its driver's per-handle state: `bytes` of it, zeroed, or copied
+ * from `tmpl` when zero is not a safe value before init() has run.  `bytes`
+ * 0 leaves b->drv NULL, which is what a stateless driver wants.  Returns 0,
+ * or -1 with the reason logged.
+ *
+ * Separate from bus_open() because this header cannot see an ops struct —
+ * drivers.h includes this one, not the other way round.  Callers reach both
+ * through imu_bus_open()/mag_bus_open() in drivers.h, which is the only
+ * shape that cannot forget one of them.
+ */
+int  bus_drv_alloc(imud_bus_t *b, size_t bytes, const void *tmpl);
+
+/* Close, release the driver state, and mark closed.  Safe on an unopened or
+ * already-closed handle. */
 void bus_close(imud_bus_t *b);
 
 /*

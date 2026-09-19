@@ -1606,12 +1606,12 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     }
 
     config_imu_bus_spec(cfg, &spec);
-    if (bus_open(&ctx->imu.bus, &spec, &ctx->imu.ops->bus_caps, "imu") < 0)
+    if (imu_bus_open(&ctx->imu.bus, &spec, ctx->imu.ops, "imu") < 0)
         goto fail;
 
     if (ctx->mag.ops) {
         config_mag_bus_spec(cfg, &spec);
-        if (bus_open(&ctx->mag.bus, &spec, &ctx->mag.ops->bus_caps, "mag") < 0)
+        if (mag_bus_open(&ctx->mag.bus, &spec, ctx->mag.ops, "mag") < 0)
             goto fail;
     }
 

@@ -39,6 +39,7 @@
 #include "imutest.h"
 #include "imu_gpio.h"
 #include "bus_mock.h"
+#include "drv_state.h"
 /* For the mock self-check below: the same single-byte read path the register
  * sweep uses, so the harness is exercised exactly the way the tool exercises
  * it. */
@@ -180,7 +181,8 @@ extern const mag_ops_t mmc5983ma_ops;
 /* Handles on the mock bus; the descriptor is ignored, the address selects
  * which register file a transfer lands in. */
 #define I2CBUS(a) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_I2C, \
-                                        .fd = FD, .i2c_addr = (a) })
+                                        .fd = FD, .i2c_addr = (a),                \
+                                        .drv = mock_drv(a) })
 
 /*
  * The same two parts reached over SPI.  There is no address on the wire, so
@@ -190,9 +192,28 @@ extern const mag_ops_t mmc5983ma_ops;
  */
 #define SPI_FD_IMU 71
 #define SPI_FD_MAG 72
+
+/*
+ * imu/mag_bus_open() is what gives a real handle its per-handle driver state,
+ * so a hand-built one has to supply it — see test/drv_state.h.  Keyed by the
+ * address or chip select, so the two parts keep their state apart exactly as
+ * two open handles would.  Defined here because it needs both key spaces; the
+ * macros above expand at their use sites, all of which are below.
+ */
+static void *mock_drv(uint8_t key)
+{
+    static const uint8_t k[256];
+    if (key == MMC_ADDR || key == SPI_FD_MAG)
+        return drv_state(&k[key], mmc5983ma_ops.state_init,
+                         mmc5983ma_ops.state_bytes);
+    return drv_state(&k[key], ism330dhcx_ops.state_init,
+                     ism330dhcx_ops.state_bytes);
+}
+
 #define SPIBUS(f) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_SPI, .fd = (f), \
                                         .spi_mode = 3, .spi_inc_mask = 0, \
-                                        .spi_hz = 10000000 })
+                                        .spi_hz = 10000000,               \
+                                        .drv = mock_drv(f) })
 
 /* ── Staging helpers ─────────────────────────────────────────────────────── */
 

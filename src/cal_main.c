@@ -140,17 +140,26 @@ static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
 /*
  * Open one sensor's bus.  Returns 0, or -1 with the reason already logged.
  *
- * A failure is survivable for the sim driver, which never looks at the handle:
- * the callers below only bail out when the configured driver is real hardware.
- * bus_open leaves the handle closed on failure, so bus_close() stays safe.
+ * A failure is survivable for the sim driver, which reads nothing over the
+ * handle: the callers below only bail out when the configured driver is real
+ * hardware.  imu/mag_bus_open leave the handle closed on failure but still
+ * give it the driver's per-handle state, so that path stays usable and
+ * bus_close() stays safe.
  */
-static int open_sensor_bus(const imud_config_t *cfg, bool is_imu,
-                           const bus_caps_t *caps, imud_bus_t *bus)
+static int open_imu_bus(const imud_config_t *cfg, const imu_ops_t *ops,
+                        imud_bus_t *bus)
 {
     bus_spec_t spec;
-    if (is_imu) config_imu_bus_spec(cfg, &spec);
-    else        config_mag_bus_spec(cfg, &spec);
-    return bus_open(bus, &spec, caps, is_imu ? "imu" : "mag");
+    config_imu_bus_spec(cfg, &spec);
+    return imu_bus_open(bus, &spec, ops, "imu");
+}
+
+static int open_mag_bus(const imud_config_t *cfg, const mag_ops_t *ops,
+                        imud_bus_t *bus)
+{
+    bus_spec_t spec;
+    config_mag_bus_spec(cfg, &spec);
+    return mag_bus_open(bus, &spec, ops, "mag");
 }
 
 /* ── IMU FIFO drain helper ──────────────────────────────────────────────── */
@@ -207,8 +216,8 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, false, &ops->bus_caps, &bus) < 0 &&
-        strcmp(cfg->mag_driver, "sim") != 0) return -1;
+    if (open_mag_bus(cfg, ops, &bus) < 0 &&
+        strcmp(cfg->mag_driver, "sim") != 0) { bus_close(&bus); return -1; }
 
     /* Resolved, as the daemon does — imu_cfg_t/mag_cfg_t take the rate the
      * driver will really program, not the raw request. */
@@ -449,8 +458,8 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, true, &ops->bus_caps, &bus) < 0 &&
-        strcmp(cfg->imu_driver, "sim") != 0) return -1;
+    if (open_imu_bus(cfg, ops, &bus) < 0 &&
+        strcmp(cfg->imu_driver, "sim") != 0) { bus_close(&bus); return -1; }
 
     imu_cfg_t icfg = {
         .odr_mhz  = odr_actual_imu(ops, cfg->imu_odr_mhz),
@@ -551,8 +560,8 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
     }
 
     imud_bus_t bus;
-    if (open_sensor_bus(cfg, true, &ops->bus_caps, &bus) < 0 &&
-        strcmp(cfg->imu_driver, "sim") != 0) return -1;
+    if (open_imu_bus(cfg, ops, &bus) < 0 &&
+        strcmp(cfg->imu_driver, "sim") != 0) { bus_close(&bus); return -1; }
 
     imu_cfg_t icfg = {
         .odr_mhz  = odr_actual_imu(ops, cfg->imu_odr_mhz),

@@ -65,15 +65,17 @@
  * alone signals data-ready; gating on the status bit as well costs one wasted
  * edge and one full timeout per sample.
  *
- * g_prev_raw is the staleness guard for that path, holding the last 7 output
+ * prev_raw is the staleness guard for that path, holding the last 7 output
  * bytes packed into one word.  An exact match on all three axes means the
  * conversion has not advanced, so a dead INT line degrades to the reader's
  * polling fallback instead of re-feeding the filter duplicates it cannot
  * distinguish from real data.  Both are written by init() from either thread,
  * hence _Atomic.
  */
-static _Atomic bool     g_int_driven = false;
-static _Atomic uint64_t g_prev_raw   = 0;   /* 7 output bytes, packed; 0 = none */
+struct mmc_state {
+    _Atomic bool     int_driven;
+    _Atomic uint64_t prev_raw;   /* 7 output bytes, packed; 0 = none */
+};
 
 /* ── ODR encoding ──────────────────────────────────────────────────────────── */
 
@@ -184,13 +186,14 @@ static int mmc_reset(const imud_bus_t *bus)
  */
 static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
+    struct mmc_state *s = bus->drv;
     uint8_t bw, cmfreq;
     odr_encode(cfg->odr_mhz, &bw, &cmfreq);
 
     /* How this caller waits decides what read() is able to check — and the
      * staleness guard must not carry a sample across a reconfigure. */
-    atomic_store(&g_int_driven, cfg->int_driven);
-    atomic_store(&g_prev_raw, 0);
+    atomic_store(&s->int_driven, cfg->int_driven);
+    atomic_store(&s->prev_raw, 0);
 
     /* Clear CTRL0: disable Auto_SR_en; we do periodic manual SET instead. */
     if (bus_reg_write(bus, REG_CTRL0, 0x00) < 0) return -1;
@@ -217,7 +220,7 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  *
  * Called by the mag_reader thread after a rising edge on the mag's INT line
  * (active-high; the line is `[mag] int_gpio`, 27 by default), or by a polling
- * caller such as imud-imutest and imud-cal.  g_int_driven selects which of the
+ * caller such as imud-imutest and imud-cal.  int_driven selects which of the
  * two data-ready tests below applies.
  *
  * Returns:
@@ -229,7 +232,8 @@ static int mmc_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  */
 static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
 {
-    const bool int_driven = atomic_load(&g_int_driven);
+    struct mmc_state *s = bus->drv;
+    const bool int_driven = atomic_load(&s->int_driven);
 
     /*
      * Polled: the status bit is the only signal available, and it works — for a
@@ -261,7 +265,7 @@ static int mmc_read(const imud_bus_t *bus, mag_sample_t *out)
         for (int i = 0; i < 7; i++)
             packed |= (uint64_t)raw[i] << (8 * i);
         packed |= (uint64_t)1u << 56;          /* tag: distinguishes "all zero" */
-        if (atomic_exchange(&g_prev_raw, packed) == packed) return 1;
+        if (atomic_exchange(&s->prev_raw, packed) == packed) return 1;
     }
 
     /*
@@ -355,6 +359,7 @@ static int mmc_set_reset(const imud_bus_t *bus)
 const mag_ops_t mmc5983ma_ops = {
     .name             = "mmc5983ma",
     .experimental     = false,
+    .state_bytes      = sizeof(struct mmc_state),
     /* Rev A pp.4-7: 10 MHz, SCK idle high and captured on the rising edge —
      * mode 3 — and multi-byte transfers add 8-clock blocks, so no
      * auto-increment bit. The command byte's address field is only six bits

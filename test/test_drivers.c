@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -53,6 +54,7 @@
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag — see test_odr_agreement */
 #include "bus_mock.h"
+#include "drv_state.h"
 #include "drivers/bus_io.h"     /* the framing under test in test_spi_framing */
 #include "drivers/st_fifo_ts.h" /* ST_TAG_TIMESTAMP and the tag-byte layout */
 
@@ -93,16 +95,36 @@ static const mag_ops_t *ak  = &ak8963_ops;
 #define FD 3   /* arbitrary; the mock ignores it */
 
 /*
+ * An I2C handle's state, keyed by address — all such a handle carries.  Only
+ * one address here belongs to a driver with a state_init to seed.  See
+ * test/drv_state.h.
+ */
+static void *i2c_drv(uint8_t addr)
+{
+    static const uint8_t key[128];   /* one stable address per I2C address */
+    if (addr == 0x0C)                /* AK_ADDR, the one with a state_init */
+        return drv_state(&key[addr], ak8963_ops.state_init,
+                         ak8963_ops.state_bytes);
+    return drv_state(&key[addr], NULL, 0);
+}
+
+/* A SPI handle carries no address, so its state is keyed by the ops itself. */
+#define IMU_DRV(o)  DRV_STATE_FOR(o)
+#define MAG_DRV(o)  DRV_STATE_FOR(o)
+
+/*
  * A handle addressing `a` on the mock bus.  bus_mock.c ignores the descriptor
  * entirely, so FD is arbitrary; the address is what selects which of the 128
  * register files a transfer lands in.
  */
 #define I2CBUS(a) (&(const imud_bus_t){ .be = &bus_mock_backend, .kind = BUS_I2C, \
-                                        .fd = FD, .i2c_addr = (a) })
+                                        .fd = FD, .i2c_addr = (a),               \
+                                        .drv = i2c_drv(a) })
 
 /* ── ISM330DHCX ──────────────────────────────────────────────────────────── */
 
-#define ISM_ADDR 0x6A
+#define ISM_ADDR  0x6A
+#define ISM_ADDR2 0x6B   /* SA0 high — a second ISM330DHCX on the same bus */
 
 /* Build one 7-byte FIFO word (tag + little-endian X/Y/Z) and queue it. */
 static void ism_push_word(uint8_t tag, int16_t x, int16_t y, int16_t z)
@@ -161,6 +183,80 @@ static void test_ism_init_registers(void)
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0A) == 0xE6,
            "FIFO_CTRL4 = DEC_TS_BATCH/32 | temp batch | continuous");
     EXPECT(i2cmock_get_reg(ISM_ADDR, 0x0D) == 0x08, "INT1_CTRL = FIFO_TH");
+
+    end(fb);
+}
+
+/* As ism_push_word, but to a chosen address — the two-handle test below drives
+ * a second ISM330DHCX at 0x6B. */
+static void ism_push_word_at(uint8_t addr, uint8_t tag,
+                             int16_t x, int16_t y, int16_t z)
+{
+    uint8_t w[7] = {
+        (uint8_t)(tag << 3),
+        (uint8_t)(x & 0xFF), (uint8_t)((x >> 8) & 0xFF),
+        (uint8_t)(y & 0xFF), (uint8_t)((y >> 8) & 0xFF),
+        (uint8_t)(z & 0xFF), (uint8_t)((z >> 8) & 0xFF),
+    };
+    i2cmock_fifo_push(addr, w, 7);
+}
+
+/* One accel+gyro pair staged and drained at `addr`. */
+static int ism_drain_one(uint8_t addr, imu_sample_t *out)
+{
+    i2cmock_set_reg(addr, 0x3A, 2);          /* DIFF_FIFO: 2 words */
+    i2cmock_set_reg(addr, 0x3B, 0);
+    i2cmock_set_fifo_reg(addr, 0x78);
+    ism_push_word_at(addr, 0x02, 1000, 0, 0);   /* accel X = 1000 counts */
+    ism_push_word_at(addr, 0x01, 1000, 0, 0);   /* gyro  X = 1000 counts */
+
+    int n = -1;
+    if (ism->read(I2CBUS(addr), out, 4, &n) != 0) return -1;
+    return n;
+}
+
+/*
+ * Two of the same part, each with its own state.
+ *
+ * The scales and the sample counter used to live in one file-scope static, so
+ * a second ISM330DHCX overwrote the first's: initialising B at ±16 g silently
+ * rescaled A's samples, and B's seq continued A's count.  Both are silent —
+ * nothing refuses the config, the numbers are just wrong.
+ */
+static void test_ism_two_handles(void)
+{
+    begin("test_ism_two_handles");
+    int fb = g_fail;
+    imu_sample_t a[4], b[4];
+
+    i2cmock_reset();
+    for (int i = 0; i < 2; i++) {
+        uint8_t at = i ? ISM_ADDR2 : ISM_ADDR;
+        i2cmock_set_reg(at, 0x20, 0x00);     /* OUT_TEMP_L */
+        i2cmock_set_reg(at, 0x21, 0x00);     /* OUT_TEMP_H */
+    }
+
+    imu_cfg_t ca = { .odr_mhz = 208000, .accel_g = 2,  .gyro_dps = 125,
+                     .fifo_wm = 64 };
+    imu_cfg_t cb = { .odr_mhz = 208000, .accel_g = 16, .gyro_dps = 2000,
+                     .fifo_wm = 64 };
+    EXPECT(ism->init(I2CBUS(ISM_ADDR),  &ca) == 0, "sensor A inits at +/-2 g");
+    EXPECT(ism->init(I2CBUS(ISM_ADDR2), &cb) == 0, "sensor B inits at +/-16 g");
+
+    const float as_2g  = 0.061e-3f  * 9.80665f;
+    const float as_16g = 0.488e-3f  * 9.80665f;
+
+    EXPECT(ism_drain_one(ISM_ADDR, a) == 1, "A produces one sample");
+    EXPECT_NEAR(a[0].accel[0], 1000 * as_2g, 1e-3,
+                "A still scales at +/-2 g after B was configured at +/-16 g");
+    EXPECT(a[0].seq == 0, "A's sequence counter starts at 0");
+
+    EXPECT(ism_drain_one(ISM_ADDR2, b) == 1, "B produces one sample");
+    EXPECT_NEAR(b[0].accel[0], 1000 * as_16g, 1e-3, "B scales at +/-16 g");
+    EXPECT(b[0].seq == 0, "B counts from 0 on its own, not on from A");
+
+    EXPECT(ism_drain_one(ISM_ADDR, a) == 1, "A produces a second sample");
+    EXPECT(a[0].seq == 1, "A's counter advanced by its own reads only");
 
     end(fb);
 }
@@ -594,9 +690,9 @@ static void test_mmc_read_decode(void)
     int fb = g_fail;
 
     i2cmock_reset();
-    /* State the mode rather than inheriting it: int_driven lives in a driver
-     * static, so without this the case would pass or fail depending on which
-     * test ran before it. */
+    /* State the mode rather than inheriting it: int_driven lives in the
+     * handle's state, which persists across these cases, so without this the
+     * case would pass or fail depending on which test ran before it. */
     mag_cfg_t polled = { .odr_mhz = 100000, .set_period_s = 5.0f, .int_driven = false };
     EXPECT(mmc->init(I2CBUS(MMC_ADDR), &polled) == 0, "init in polled mode");
     i2cmock_set_reg(MMC_ADDR, 0x08, 0x01);          /* STATUS: M_DONE set */
@@ -622,6 +718,53 @@ static void test_mmc_read_decode(void)
     /* I2C error on the status read. */
     i2cmock_fail_next_xfer();
     EXPECT(mmc->read(I2CBUS(MMC_ADDR), &out) == -1, "I2C error returns -1");
+
+    end(fb);
+}
+
+/*
+ * Two magnetometers, each with its own staleness guard.
+ *
+ * The edge-driven guard compares a reading against the last one THIS sensor
+ * produced.  Held in one static, a second part's first reading matched the
+ * first part's and was discarded as a duplicate — the honest sample thrown
+ * away because another sensor happened to read the same field.
+ */
+static void test_mmc_two_handles(void)
+{
+    begin("test_mmc_two_handles");
+    int fb = g_fail;
+
+    i2cmock_reset();
+
+    /* One register file, two handles — two identical parts reading one field,
+     * which is exactly the case the guard must not collapse. */
+    static const char key_b;
+    const imud_bus_t a = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD,
+                           .i2c_addr = MMC_ADDR, .drv = MAG_DRV(mmc) };
+    const imud_bus_t b = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD,
+                           .i2c_addr = MMC_ADDR,
+                           .drv = drv_state(&key_b, mmc->state_init,
+                                            mmc->state_bytes) };
+    EXPECT(a.drv != NULL && b.drv != NULL && a.drv != b.drv,
+           "the two handles hold separate state");
+
+    mag_cfg_t irq = { .odr_mhz = 100000, .set_period_s = 0.0f,
+                      .int_driven = true };
+    EXPECT(mmc->init(&a, &irq) == 0, "sensor A inits edge-driven");
+    EXPECT(mmc->init(&b, &irq) == 0, "sensor B inits edge-driven");
+
+    mmc_set_output(131072 + 16384, 131072 - 16384, 131072 + 8192);
+
+    mag_sample_t sa, sb;
+    memset(&sa, 0, sizeof sa);
+    memset(&sb, 0, sizeof sb);
+    EXPECT(mmc->read(&a, &sa) == 0 && sa.valid, "A reports its first reading");
+    EXPECT(mmc->read(&b, &sb) == 0 && sb.valid,
+           "B reports its own first reading, not A's as a duplicate");
+
+    /* And the guard still bites within one sensor. */
+    EXPECT(mmc->read(&a, &sa) == 1, "A's unchanged registers are still stale");
 
     end(fb);
 }
@@ -3142,7 +3285,8 @@ static void test_st_spi_disables_i2c_block(void)
         const int sfd = 11;                  /* any fd the mock is not using */
         spimock_bind(sfd, (uint8_t)a, 0);
         const imud_bus_t sbus = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = sfd, .spi_mode = 0,
-                                  .spi_inc_mask = 0, .spi_hz = 10000000 };
+                                  .spi_inc_mask = 0, .spi_hz = 10000000,
+                                  .drv = IMU_DRV(o) };
         i2cmock_set_reg(a, 0x20, 0x00);
         i2cmock_set_reg(a, 0x21, 0x00);
         EXPECT(o->init(&sbus, &cfg) == 0, "init over SPI succeeds");
@@ -3974,13 +4118,17 @@ static void test_dual_transport_ism330dhcx(void)
         i2cmock_set_fifo_range(at, 0x78, 0x7E);
     }
 
-    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT,
+                      .drv = IMU_DRV(ism) };
     /* Framing from the driver's own caps, as bus_open() does — see the
-     * mmc5983ma case below for why a literal here is circular. */
+     * mmc5983ma case below for why a literal here is circular.  The two
+     * handles deliberately share one state slab: this is one part reached two
+     * ways, and the comparison is of what each transport decoded. */
     imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                       .spi_mode     = ism->bus_caps.spi_mode,
                       .spi_inc_mask = ism->bus_caps.spi_inc_mask,
-                      .spi_hz       = 10000000 };
+                      .spi_hz       = 10000000,
+                      .drv          = IMU_DRV(ism) };
 
     EXPECT(ism->probe(&ib) == 0, "i2c probe");
     EXPECT(ism->probe(&sb) == 0, "spi probe");
@@ -4103,7 +4251,8 @@ static void test_dual_transport_mmc5983ma(void)
         i2cmock_set_regs(at, 0x00, raw, 7);
     }
 
-    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT };
+    imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = I2C_AT,
+                      .drv = MAG_DRV(mmc) };
     /*
      * The bus takes its framing FROM the driver's declared caps, exactly as
      * bus_open() does in production.  Writing the mask as a literal here made
@@ -4114,7 +4263,8 @@ static void test_dual_transport_mmc5983ma(void)
     imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                       .spi_mode      = mmc->bus_caps.spi_mode,
                       .spi_inc_mask  = mmc->bus_caps.spi_inc_mask,
-                      .spi_hz        = 10000000 };
+                      .spi_hz        = 10000000,
+                      .drv           = MAG_DRV(mmc) };
 
     EXPECT(mmc->probe(&ib) == 0, "i2c probe");
     EXPECT(mmc->probe(&sb) == 0, "spi probe");
@@ -4247,9 +4397,11 @@ static void test_dual_transport_others(void)
             i2cmock_set_reg(at, c->whoami_reg, c->whoami_val);
             i2cmock_set_selfclear(at, c->rst_reg, c->rst_bit);
         }
-        imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = c->i2c_at };
+        imud_bus_t ib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = c->i2c_at,
+                          .drv = IMU_DRV(c->ops) };
         imud_bus_t sb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
-                          .spi_inc_mask = c->inc, .spi_hz = 10000000 };
+                          .spi_inc_mask = c->inc, .spi_hz = 10000000,
+                          .drv = IMU_DRV(c->ops) };
 
         snprintf(msg, sizeof msg, "%s: probe agrees on both transports", c->name);
         EXPECT((c->ops->probe(&ib) == 0) == (c->ops->probe(&sb) == 0), msg);
@@ -4290,11 +4442,13 @@ static void test_dual_transport_others(void)
         i2cmock_set_regs(at, 0xA8, out, 6);     /* where I2C lands */
     }
 
-    imud_bus_t lib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C };
+    imud_bus_t lib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = L_I2C,
+                       .drv = MAG_DRV(&lis3mdl_ops) };
     imud_bus_t lsb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD,
                        .spi_mode     = lis3mdl_ops.bus_caps.spi_mode,
                        .spi_inc_mask = lis3mdl_ops.bus_caps.spi_inc_mask,
-                       .spi_hz       = 10000000 };
+                       .spi_hz       = 10000000,
+                       .drv          = MAG_DRV(&lis3mdl_ops) };
     const mag_ops_t *l3 = &lis3mdl_ops;
     mag_cfg_t mcfg = { .odr_mhz = 80000, .set_period_s = 0.0f };
 
@@ -4338,10 +4492,12 @@ static void test_dual_transport_others(void)
         i2cmock_set_regs(at, 0x24, rout, 9);
     }
 
-    imud_bus_t rib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C };
+    imud_bus_t rib = { .be = &bus_mock_backend, .kind = BUS_I2C, .fd = FD, .i2c_addr = R_I2C,
+                       .drv = MAG_DRV(&rm3100_ops) };
     imud_bus_t rsb = { .be = &bus_mock_backend, .kind = BUS_SPI, .fd = DUAL_SPI_FD, .spi_mode = 3,
                        .spi_inc_mask = rm3100_ops.bus_caps.spi_inc_mask,
-                       .spi_hz = 1000000 };
+                       .spi_hz = 1000000,
+                       .drv = MAG_DRV(&rm3100_ops) };
     const mag_ops_t *rm = &rm3100_ops;
     mag_cfg_t rcfg = { .odr_mhz = 100000, .set_period_s = 0.0f };
 
@@ -4584,6 +4740,42 @@ static void test_bus_open_policy(void)
     printf("%s\n", g_fail == fb ? "OK" : "FAIL");
 }
 
+/*
+ * The slabs above stand in for what imu_bus_open() allocates, so they have to
+ * be at least as big as any state this suite's drivers declare.  A slab too
+ * small is a heap overrun, which is exactly what a naive per-address map
+ * produced when LSM_ADDR turned out to be ISM_ADDR.
+ */
+static void test_drv_state_fits(void)
+{
+    begin("test_drv_state_fits");
+    int fb = g_fail;
+
+    const struct { const char *name; size_t bytes; } d[] = {
+        { ism330dhcx_ops.name, ism330dhcx_ops.state_bytes },
+        { lsm6dso_ops.name,    lsm6dso_ops.state_bytes    },
+        { lsm6dsox_ops.name,   lsm6dsox_ops.state_bytes   },
+        { icm42688p_ops.name,  icm42688p_ops.state_bytes  },
+        { icm20948_ops.name,   icm20948_ops.state_bytes   },
+        { mpu9250_ops.name,    mpu9250_ops.state_bytes    },
+        { mpu9255_ops.name,    mpu9255_ops.state_bytes    },
+        { mpu6500_ops.name,    mpu6500_ops.state_bytes    },
+        { mmc5983ma_ops.name,  mmc5983ma_ops.state_bytes  },
+        { ak8963_ops.name,     ak8963_ops.state_bytes     },
+        { ak09916_ops.name,    ak09916_ops.state_bytes    },
+        { lis3mdl_ops.name,    lis3mdl_ops.state_bytes    },
+        { lis2mdl_ops.name,    lis2mdl_ops.state_bytes    },
+        { rm3100_ops.name,     rm3100_ops.state_bytes     },
+    };
+    char msg[96];
+    for (unsigned i = 0; i < sizeof d / sizeof d[0]; i++) {
+        snprintf(msg, sizeof msg, "%s state fits the test slab", d[i].name);
+        EXPECT(d[i].bytes <= DRV_STATE_MAX, msg);
+    }
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver register tests (mock I2C) ===");
@@ -4592,11 +4784,13 @@ int main(void)
     test_ism_init_registers();
     test_ism_batched_timestamp();
     test_ism_read_decode();
+    test_ism_two_handles();
     test_ism_read_overflow_and_empty();
 
     test_mmc_probe();
     test_mmc_reset_and_init();
     test_mmc_read_decode();
+    test_mmc_two_handles();
     test_mock_fail_write_to();
     test_mmc_int_driven_read();
     test_mmc_set_reset();
@@ -4661,6 +4855,7 @@ int main(void)
     test_backend_leg_shapes();
     test_spi_inc_mask();
     test_bus_open_policy();
+    test_drv_state_fits();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

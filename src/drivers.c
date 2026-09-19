@@ -73,3 +73,35 @@ const mag_ops_t *mag_driver_find(const char *name)
             return mag_registry[i];
     return NULL;
 }
+
+/*
+ * The state is allocated even when the transport did not open, because
+ * bus_open() leaves a usable closed handle and imud-cal runs the sim driver
+ * on one — sim keeps state and never looks at the bus, so a NULL bus->drv
+ * there would be a null dereference on a path that works today.
+ */
+static int drv_open(imud_bus_t *b, const bus_spec_t *spec,
+                    const bus_caps_t *caps, size_t bytes, const void *tmpl,
+                    const char *who)
+{
+    int rc = bus_open(b, spec, caps, who);
+    if (bus_drv_alloc(b, bytes, tmpl) < 0) {
+        bus_close(b);
+        return -1;
+    }
+    return rc;
+}
+
+int imu_bus_open(imud_bus_t *b, const bus_spec_t *spec, const imu_ops_t *ops,
+                 const char *who)
+{
+    return drv_open(b, spec, &ops->bus_caps, ops->state_bytes,
+                    ops->state_init, who);
+}
+
+int mag_bus_open(imud_bus_t *b, const bus_spec_t *spec, const mag_ops_t *ops,
+                 const char *who)
+{
+    return drv_open(b, spec, &ops->bus_caps, ops->state_bytes,
+                    ops->state_init, who);
+}

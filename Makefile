@@ -157,6 +157,10 @@ override CPPFLAGS += -DIMUD_BUS_BACKENDS='$(BUS_BACKENDS)'
 # redefining a macro to a different value is a diagnostic.
 MOCK_BACKEND_DEF = -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_mock_backend'
 
+# And the suites that link src/bus.c only because src/drivers.c reaches it for
+# imu_bus_open()/mag_bus_open(), with no transport of their own.
+NULL_BACKEND_DEF = -UIMUD_BUS_BACKENDS -DIMUD_BUS_BACKENDS='&bus_null_backend'
+
 # The host clock backend behind include/host_time.h — the absolute-deadline
 # sleep the output threads pace on, the monotonic condition variable src/ring.c
 # waits on, and the TAI offset src/main.c checks.  Three rungs, each the one
@@ -480,7 +484,8 @@ test_cli: src/cli.c test/test_cli.c
 test_nmea: src/nmea.c test/test_nmea.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
-test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c test/test_capture.c
+test_capture: src/capture.c src/drivers/sim.c src/fusion.c src/log.c \
+              test/test_capture.c test/drv_state.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_packet: src/packet.c test/test_packet.c
@@ -720,14 +725,17 @@ test_bridge: src/bridge.c src/sdnotify.c src/config.c src/log.c lib/libimud.c te
 # src/bus_null.c rather than $(BUS_SRC): the subject is the registry — names,
 # counts, ODR ladders — and it issues no transfer.  Pinning the null backend
 # keeps the suite identical on every host, and makes a stray transfer fail
-# with ENOSYS rather than reach whatever fd it was handed.
+# with ENOSYS rather than reach whatever fd it was handed.  src/bus.c comes
+# with it because src/drivers.c reaches bus_open/bus_drv_alloc for
+# imu_bus_open()/mag_bus_open().
 test_drivers_registry: src/drivers.c $(DRIVER_SRCS) src/capture.c src/log.c \
-                       src/imu_math.c src/bus_null.c \
+                       src/imu_math.c src/bus.c src/bus_null.c \
                        test/test_drivers_registry.c \
                        test/rate_ladder.h \
                        src/drivers/bus_io.h src/drivers/chip_ts.h \
                        src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+	$(CC) $(CPPFLAGS) $(NULL_BACKEND_DEF) $(CFLAGS) $(LDFLAGS) \
+	    -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # imu.c pure math: ODR rounding, timestamp reconstruction, mount rotation,
 # calibration application — the helpers factored into src/imu_math.c.  Pure
@@ -755,7 +763,8 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/drivers/icm20948.c src/drivers/ak09916.c \
               src/drivers/lis3mdl.c src/drivers/lis2mdl.c \
               src/drivers/rm3100.c src/log.c \
-              src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c Makefile \
+              src/bus.c src/imu_math.c test/bus_mock.c test/test_drivers.c \
+              test/drv_state.h Makefile \
               src/drivers/bus_io.h src/drivers/chip_ts.h \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h
@@ -776,7 +785,7 @@ test_drivers: src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
 test_imutest: src/imutest.c src/imutest_report.c \
               src/drivers/ism330dhcx.c src/drivers/mmc5983ma.c \
               src/config.c src/log.c src/imu_math.c src/cal_math.c \
-              test/bus_mock.c test/test_imutest.c \
+              test/bus_mock.c test/test_imutest.c test/drv_state.h \
               src/drivers/bus_io.h src/drivers/chip_ts.h \
               src/drivers/st_freq_fine.h src/drivers/st_fifo_ts.h \
               include/bus.h

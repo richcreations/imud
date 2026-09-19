@@ -14,7 +14,8 @@
  * would only surface on a wired-up Pi.  This test validates the descriptor
  * tables and the registry lookups without touching any hardware: it reads
  * struct fields and calls imu_driver_find / mag_driver_find only.  It never
- * invokes probe/init/read, so no I2C fd is required.
+ * invokes probe/init/read, so no I2C fd is required — test_state_allocation
+ * does open handles, but only to see what imu_bus_open() put in them.
  *
  * Needs no --wrap and no gpiod, but it is NOT cross-platform: it links every
  * driver, and each of those reaches <linux/i2c.h> through i2c_io.h, so it
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include "bus.h"
 #include "drivers.h"
 #include "imu_math.h"   /* odr_actual_imu / odr_actual_mag / snap_odr_up */
 #include "rate_ladder.h" /* the ladder test_fusion walks; guarded below */
@@ -410,6 +412,79 @@ static void test_mag_degauss_presence(void)
     end(fb);
 }
 
+/*
+ * Every driver that keeps state gets its own copy of it, per handle.
+ *
+ * imu_bus_open()/mag_bus_open() are what make that true; opening two handles
+ * on one driver and finding one pointer — or none — is the shape that let two
+ * of a part corrupt each other's samples.
+ */
+static void test_state_allocation(void)
+{
+    begin("test_state_allocation");
+    int fb = g_fail;
+
+    const bus_spec_t spec = { .kind = BUS_I2C, .node = "/dev/null",
+                              .i2c_addr = 0x6A };
+    char msg[96];
+
+    for (unsigned i = 0; imu_names[i]; i++) {
+        const imu_ops_t *o = imu_driver_find(imu_names[i]);
+        imud_bus_t a, b;
+        if (!o) continue;
+        EXPECT(imu_bus_open(&a, &spec, o, "imu") == 0, "imu handle opens");
+        EXPECT(imu_bus_open(&b, &spec, o, "imu") == 0, "second handle opens");
+
+        snprintf(msg, sizeof msg, "%s: state is present exactly when declared",
+                 o->name);
+        EXPECT((a.drv != NULL) == (o->state_bytes != 0), msg);
+
+        snprintf(msg, sizeof msg, "%s: two handles, two states", o->name);
+        EXPECT(o->state_bytes == 0 || a.drv != b.drv, msg);
+
+        bus_close(&a);
+        bus_close(&b);
+        snprintf(msg, sizeof msg, "%s: close releases the state", o->name);
+        EXPECT(a.drv == NULL && b.drv == NULL, msg);
+    }
+
+    for (unsigned i = 0; mag_names[i]; i++) {
+        const mag_ops_t *o = mag_driver_find(mag_names[i]);
+        imud_bus_t a, b;
+        if (!o) continue;
+        EXPECT(mag_bus_open(&a, &spec, o, "mag") == 0, "mag handle opens");
+        EXPECT(mag_bus_open(&b, &spec, o, "mag") == 0, "second handle opens");
+
+        snprintf(msg, sizeof msg, "%s: state is present exactly when declared",
+                 o->name);
+        EXPECT((a.drv != NULL) == (o->state_bytes != 0), msg);
+
+        snprintf(msg, sizeof msg, "%s: two handles, two states", o->name);
+        EXPECT(o->state_bytes == 0 || a.drv != b.drv, msg);
+
+        bus_close(&a);
+        bus_close(&b);
+        snprintf(msg, sizeof msg, "%s: close releases the state", o->name);
+        EXPECT(a.drv == NULL && b.drv == NULL, msg);
+    }
+
+    /* A driver with nothing to remember must not carry a template either. */
+    for (unsigned i = 0; imu_names[i]; i++) {
+        const imu_ops_t *o = imu_driver_find(imu_names[i]);
+        snprintf(msg, sizeof msg, "%s: no state_init without state_bytes",
+                 imu_names[i]);
+        EXPECT(o && (o->state_bytes != 0 || o->state_init == NULL), msg);
+    }
+    for (unsigned i = 0; mag_names[i]; i++) {
+        const mag_ops_t *o = mag_driver_find(mag_names[i]);
+        snprintf(msg, sizeof msg, "%s: no state_init without state_bytes",
+                 mag_names[i]);
+        EXPECT(o && (o->state_bytes != 0 || o->state_init == NULL), msg);
+    }
+
+    end(fb);
+}
+
 int main(void)
 {
     puts("=== imud driver registry tests ===");
@@ -421,6 +496,7 @@ int main(void)
     test_validated_not_experimental();
     test_spi_capability_declarations();
     test_mag_degauss_presence();
+    test_state_allocation();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

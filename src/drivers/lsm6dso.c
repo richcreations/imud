@@ -68,9 +68,9 @@
  * LSM6DSOX measured on the bench. */
 #define WHO_AM_I_LSM6DSO   0x6C
 
-/* ── Static driver state ───────────────────────────────────────────────────── */
+/* ── Per-handle driver state (bus->drv; see include/drivers.h) ─────────────── */
 
-static struct {
+struct lsm_state {
     float    accel_scale;
     float    gyro_scale;
     float    last_temp;         /* °C; persists across drains (temp batched
@@ -84,7 +84,7 @@ static struct {
     uint64_t ts_bwd_rejects;    /* counter reads refused as too far behind */
     uint64_t ts_bwd_next;       /* next count worth a log line */
     chip_ts_guard_t ts_guard;   /* see chip_ts.h */
-} ls;
+};
 
 /* One second of 25 us ticks; see chip_ts.h. */
 #define TS_MAX_JITTER_TICKS  40000u
@@ -219,6 +219,7 @@ reset_done:
 
 static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
+    struct lsm_state *ls = bus->drv;
     float accel_scale, gyro_scale;
     uint8_t odr  = odr_encode(cfg->odr_mhz);
     uint8_t xlfs = xl_fs_encode(cfg->accel_g,  &accel_scale);
@@ -292,22 +293,22 @@ static int lsm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
         uint8_t tb[2];
         if (bus_burst_read(bus, REG_OUT_TEMP_L, tb, 2) == 0) {
             int16_t rt = reg_s16le(tb);
-            ls.last_temp = (float)rt / 256.0f + 25.0f;
+            ls->last_temp = (float)rt / 256.0f + 25.0f;
         } else {
-            ls.last_temp = 25.0f;
+            ls->last_temp = 25.0f;
         }
     }
-    ls.accel_scale      = accel_scale;
-    ls.gyro_scale       = gyro_scale;
-    ls.seq              = 0;
-    ls.ts_rejects       = 0;
-    ls.ts_reject_next   = 1;
-    ls.ts_fwd_rejects   = 0;
-    ls.ts_fwd_next      = 1;
-    ls.ts_bwd_rejects   = 0;
-    ls.ts_bwd_next      = 1;
-    chip_ts_guard_reset(&ls.ts_guard);
-    ls.ticks_per_sample =
+    ls->accel_scale      = accel_scale;
+    ls->gyro_scale       = gyro_scale;
+    ls->seq              = 0;
+    ls->ts_rejects       = 0;
+    ls->ts_reject_next   = 1;
+    ls->ts_fwd_rejects   = 0;
+    ls->ts_fwd_next      = 1;
+    ls->ts_bwd_rejects   = 0;
+    ls->ts_bwd_next      = 1;
+    chip_ts_guard_reset(&ls->ts_guard);
+    ls->ticks_per_sample =
         (uint32_t)(40000000u / (unsigned)odr_actual(cfg->odr_mhz));
 
     return 0;
@@ -329,6 +330,8 @@ static uint32_t lsm_ts_tick_ns_actual(const imud_bus_t *bus)
 static int lsm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
+    struct lsm_state *ls = bus->drv;
+
     uint8_t st[2];
     if (bus_burst_read(bus, REG_FIFO_STATUS1, st, 2) < 0) return -1;
 
@@ -360,17 +363,17 @@ static int lsm_read(const imud_bus_t *bus,
 
         switch (tag) {
         case TAG_ACCEL_NC:
-            p_accel[0] = raw_x * ls.accel_scale;
-            p_accel[1] = raw_y * ls.accel_scale;
-            p_accel[2] = raw_z * ls.accel_scale;
+            p_accel[0] = raw_x * ls->accel_scale;
+            p_accel[1] = raw_y * ls->accel_scale;
+            p_accel[2] = raw_z * ls->accel_scale;
             have_accel = 1;
             set_tag    = word[0];
             break;
 
         case TAG_GYRO_NC:
-            p_gyro[0] = raw_x * ls.gyro_scale;
-            p_gyro[1] = raw_y * ls.gyro_scale;
-            p_gyro[2] = raw_z * ls.gyro_scale;
+            p_gyro[0] = raw_x * ls->gyro_scale;
+            p_gyro[1] = raw_y * ls->gyro_scale;
+            p_gyro[2] = raw_z * ls->gyro_scale;
             have_gyro  = 1;
             set_tag    = word[0];
             break;
@@ -380,7 +383,7 @@ static int lsm_read(const imud_bus_t *bus,
             break;
 
         case TAG_TEMP:
-            ls.last_temp = (float)raw_x / 256.0f + 25.0f;   /* persist across drains */
+            ls->last_temp = (float)raw_x / 256.0f + 25.0f;   /* persist across drains */
             break;
 
         default:
@@ -394,8 +397,8 @@ static int lsm_read(const imud_bus_t *bus,
             buf[produced].gyro[0]  =  p_gyro[0];
             buf[produced].gyro[1]  = -p_gyro[1];
             buf[produced].gyro[2]  = -p_gyro[2];
-            buf[produced].temp_c   = ls.last_temp;
-            buf[produced].seq      = ls.seq++;
+            buf[produced].temp_c   = ls->last_temp;
+            buf[produced].seq      = ls->seq++;
             buf[produced].chip_ts  = 0;
             produced++;
             have_accel = have_gyro = 0;
@@ -416,7 +419,7 @@ static int lsm_read(const imud_bus_t *bus,
              * and takes now_ts as its cross-check.  Same shape as
              * ism330dhcx.c, which carries the fuller commentary. */
             bool anchored = st_fifo_ts_apply(&fts, buf, produced,
-                                             ls.ticks_per_sample, now_ts);
+                                             ls->ticks_per_sample, now_ts);
 
             if (!anchored) {
                 /* Read AFTER the drain, so it is "now" rather than the newest
@@ -429,10 +432,10 @@ static int lsm_read(const imud_bus_t *bus,
                  * burst's newest by a sample period and the guard has nothing
                  * useful to say.  Re-seed rather than widen the bound to cover it.
                  */
-                if (overflow) chip_ts_guard_reset(&ls.ts_guard);
+                if (overflow) chip_ts_guard_reset(&ls->ts_guard);
 
                 uint32_t burst_ts = now_ts;
-                uint32_t span  = (uint32_t)(produced - 1) * ls.ticks_per_sample;
+                uint32_t span  = (uint32_t)(produced - 1) * ls->ticks_per_sample;
                 uint32_t first = burst_ts - span;
                 /*
                  * Before trusting now_ts, ask whether it is credible. A garbage
@@ -450,10 +453,10 @@ static int lsm_read(const imud_bus_t *bus,
                  * inside a run, and for what it emitted on the bench.
                  */
                 bool fwd_bad = !chip_ts_guard_forward_ok(
-                        &ls.ts_guard, first,
-                        ls.ticks_per_sample * TS_FWD_SLACK_SETS);
+                        &ls->ts_guard, first,
+                        ls->ticks_per_sample * TS_FWD_SLACK_SETS);
                 bool bwd_bad = !chip_ts_guard_backward_ok(
-                        &ls.ts_guard, first, TS_MAX_JITTER_TICKS);
+                        &ls->ts_guard, first, TS_MAX_JITTER_TICKS);
                 if (fwd_bad || bwd_bad) {
                     /*
                      * Refusing read after read means the ANCHOR is stale, not that
@@ -462,53 +465,53 @@ static int lsm_read(const imud_bus_t *bus,
                      * reading and re-seed -- extrapolating again only walks the
                      * stamps further from real time.  See chip_ts.h.
                      */
-                    if (chip_ts_guard_refused(&ls.ts_guard)) {
-                        chip_ts_guard_accepted(&ls.ts_guard);   /* burst_ts stands */
+                    if (chip_ts_guard_refused(&ls->ts_guard)) {
+                        chip_ts_guard_accepted(&ls->ts_guard);   /* burst_ts stands */
                     } else {
-                    first    = chip_ts_guard_next(&ls.ts_guard,
-                                                  ls.ticks_per_sample);
+                    first    = chip_ts_guard_next(&ls->ts_guard,
+                                                  ls->ticks_per_sample);
                     burst_ts = first + span;
                     if (bwd_bad) {
-                        if (++ls.ts_bwd_rejects >= ls.ts_bwd_next) {
+                        if (++ls->ts_bwd_rejects >= ls->ts_bwd_next) {
                             LOG_W("lsm6dso: %llu post-drain timestamp "
                                   "read(s) implausibly far behind; "
                                   "extrapolating from the previous burst\n",
-                                  (unsigned long long)ls.ts_bwd_rejects);
-                            ls.ts_bwd_next *= 10;
+                                  (unsigned long long)ls->ts_bwd_rejects);
+                            ls->ts_bwd_next *= 10;
                         }
-                    } else if (++ls.ts_fwd_rejects >= ls.ts_fwd_next) {
+                    } else if (++ls->ts_fwd_rejects >= ls->ts_fwd_next) {
                         LOG_W("lsm6dso: %llu post-drain timestamp read(s) "
                               "implausibly far ahead; extrapolating from the "
                               "previous burst\n",
-                              (unsigned long long)ls.ts_fwd_rejects);
-                        ls.ts_fwd_next *= 10;
+                              (unsigned long long)ls->ts_fwd_rejects);
+                        ls->ts_fwd_next *= 10;
                     }
                     }
                 } else {
-                    chip_ts_guard_accepted(&ls.ts_guard);
-                    burst_ts += chip_ts_guard_shift(&ls.ts_guard, first,
-                                                    ls.ticks_per_sample,
+                    chip_ts_guard_accepted(&ls->ts_guard);
+                    burst_ts += chip_ts_guard_shift(&ls->ts_guard, first,
+                                                    ls->ticks_per_sample,
                                                     TS_MAX_JITTER_TICKS);
                 }
                 for (int i = 0; i < produced; i++) {
-                    uint32_t age = (uint32_t)(produced - 1 - i) * ls.ticks_per_sample;
+                    uint32_t age = (uint32_t)(produced - 1 - i) * ls->ticks_per_sample;
                     buf[i].chip_ts = burst_ts - age;
                 }
-                if (fts.have_word && ++ls.ts_rejects >= ls.ts_reject_next) {
+                if (fts.have_word && ++ls->ts_rejects >= ls->ts_reject_next) {
                     LOG_W("lsm6dso: %llu burst(s) whose batched FIFO timestamp "
                           "failed its check — using the post-drain TIMESTAMP0 "
                           "read for chip_ts\n",
-                          (unsigned long long)ls.ts_rejects);
-                    ls.ts_reject_next *= 10;
+                          (unsigned long long)ls->ts_rejects);
+                    ls->ts_reject_next *= 10;
                 }
             } else {
-                uint32_t shift = chip_ts_guard_shift(&ls.ts_guard, buf[0].chip_ts,
-                                                     ls.ticks_per_sample,
+                uint32_t shift = chip_ts_guard_shift(&ls->ts_guard, buf[0].chip_ts,
+                                                     ls->ticks_per_sample,
                                                      TS_MAX_JITTER_TICKS);
                 for (int i = 0; shift && i < produced; i++)
                     buf[i].chip_ts += shift;
             }
-            chip_ts_guard_note(&ls.ts_guard, buf[produced - 1].chip_ts);
+            chip_ts_guard_note(&ls->ts_guard, buf[produced - 1].chip_ts);
         }
     }
 
@@ -521,6 +524,7 @@ static int lsm_read(const imud_bus_t *bus,
 const imu_ops_t lsm6dso_ops = {
     .name             = "lsm6dso",
     .experimental     = true,
+    .state_bytes      = sizeof(struct lsm_state),
     /* DS12140 Rev 3 §5.1.2 (protocol, mode 3), §4.4.1 Table 5 (10 MHz).
      * Same family as the ISM330DHCX: multi-byte steps the address from
      * CTRL3_C IF_INC, which lsm_init writes as part of 0x44. */
@@ -555,6 +559,7 @@ const imu_ops_t lsm6dso_ops = {
 const imu_ops_t lsm6dsox_ops = {
     .name             = "lsm6dsox",
     .experimental     = true,
+    .state_bytes      = sizeof(struct lsm_state),
     /*
      * Mode 0, not 3. DS13012 §5.1: "The device is compatible with SPI modes 0
      * and 3." Both sample on the rising edge; they differ only in the level

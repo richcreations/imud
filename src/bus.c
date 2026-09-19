@@ -19,6 +19,7 @@
  */
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bus.h"
@@ -161,9 +162,23 @@ int bus_open(imud_bus_t *b, const bus_spec_t *spec, const bus_caps_t *caps,
     return -1;
 }
 
+int bus_drv_alloc(imud_bus_t *b, size_t bytes, const void *tmpl)
+{
+    if (bytes == 0) { b->drv = NULL; return 0; }
+
+    b->drv = calloc(1, bytes);
+    if (!b->drv) {
+        LOG_E("[bus] out of memory for %zu bytes of driver state\n", bytes);
+        return -1;
+    }
+    if (tmpl) memcpy(b->drv, tmpl, bytes);
+    return 0;
+}
+
 void bus_close(imud_bus_t *b)
 {
     if (!b) return;
     if (b->be) b->be->close(b->fd);
+    free(b->drv);
     bus_init(b);
 }

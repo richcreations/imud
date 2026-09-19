@@ -144,9 +144,11 @@ static void odr_encode(int mhz, uint16_t *cc, float *gain, uint8_t *tmrc)
  * init() chose.  Seeded with the power-on cycle count's gain so a read()
  * before init() still scales by something defined rather than zero.
  */
-static struct {
+struct rm_state {
     float gain;   /* LSB per µT */
-} s = { .gain = 75.0f };
+};
+
+static const struct rm_state rm_state_init = { .gain = 75.0f };
 
 /* ── Helpers ───────────────────────────────────────────────────────────────── */
 
@@ -240,6 +242,8 @@ static int rm_probe(const imud_bus_t *bus)
  */
 static int rm_reset(const imud_bus_t *bus)
 {
+    struct rm_state *s = bus->drv;
+
     if (bus_reg_write(bus, REG_CMM, 0x00) < 0) return -1;
     if (write_cc_all(bus, CC_DEFAULT) < 0) return -1;
     if (bus_reg_write(bus, REG_TMRC, TMRC_DEFAULT) < 0) return -1;
@@ -247,13 +251,14 @@ static int rm_reset(const imud_bus_t *bus)
     uint8_t drain[RESULTS_BYTES];
     if (bus_burst_read(bus, REG_MX, drain, RESULTS_BYTES) < 0) return -1;
 
-    s.gain = 75.0f;    /* matches CC_DEFAULT, per Table 3-1 */
+    s->gain = 75.0f;   /* matches CC_DEFAULT, per Table 3-1 */
     usleep(1000);      /* let the stopped sequence settle before init() */
     return 0;
 }
 
 static int rm_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
 {
+    struct rm_state *s = bus->drv;
     uint16_t cc;
     uint8_t  tmrc;
     float    gain;
@@ -266,7 +271,7 @@ static int rm_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
     /* Start continuous measurement on all three axes. */
     if (bus_reg_write(bus, REG_CMM, CMM_START_ALL) < 0) return -1;
 
-    s.gain = gain;
+    s->gain = gain;
     return 0;
 }
 
@@ -282,6 +287,8 @@ static int rm_init(const imud_bus_t *bus, const mag_cfg_t *cfg)
  */
 static int rm_read(const imud_bus_t *bus, mag_sample_t *out)
 {
+    struct rm_state *s = bus->drv;
+
     uint8_t status;
     if (bus_reg_read(bus, REG_STATUS, &status) < 0) return -1;
     if (!(status & STATUS_DRDY)) return 1;
@@ -295,9 +302,9 @@ static int rm_read(const imud_bus_t *bus, mag_sample_t *out)
 
     /* Gain is LSB/µT (Table 3-1), so divide.  Identity axis map — see the
      * file header for why. */
-    out->field[0] = (float)reg_s24be(&raw[0]) / s.gain;
-    out->field[1] = (float)reg_s24be(&raw[3]) / s.gain;
-    out->field[2] = (float)reg_s24be(&raw[6]) / s.gain;
+    out->field[0] = (float)reg_s24be(&raw[0]) / s->gain;
+    out->field[1] = (float)reg_s24be(&raw[3]) / s->gain;
+    out->field[2] = (float)reg_s24be(&raw[6]) / s->gain;
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -312,6 +319,8 @@ static int rm_read(const imud_bus_t *bus, mag_sample_t *out)
 const mag_ops_t rm3100_ops = {
     .name             = "rm3100",
     .experimental     = true,
+    .state_bytes      = sizeof(struct rm_state),
+    .state_init       = &rm_state_init,
     /* V11.0 §4.4: SCLK 1 MHz or less, and the part accepts CPOL = CPHA = 0 or
      * CPOL = CPHA = 1 — mode 0 or mode 3.  Mode 3 to match every other part
      * here.  The register pointer auto-increments on a multi-byte transfer

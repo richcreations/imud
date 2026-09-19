@@ -532,55 +532,56 @@ static int pb_mag_read(mag_sample_t *out)
     return 0;
 }
 
-/* ── IMU sim state ──────────────────────────────────────────────────────── */
+/* ── IMU sim state (per handle, in bus->drv; see include/drivers.h) ─────── */
 
-static struct {
+struct sim_imu_state {
     uint64_t t_last_ns;   /* end of the most-recently-delivered sample batch */
     uint32_t seq;
     int      odr_mhz;
-} imu_s;
+};
 
 static int sim_imu_probe(const imud_bus_t *bus) { (void)bus; return 0; }
 static int sim_imu_reset(const imud_bus_t *bus) { (void)bus; return 0; }
 
 static int sim_imu_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 {
-    (void)bus;
-    imu_s.t_last_ns = mono_ns();
-    imu_s.seq       = 0;
-    imu_s.odr_mhz   = cfg->odr_mhz > 0 ? cfg->odr_mhz : 100000;
-    if (!sim_t0_set) { sim_t0_ns = imu_s.t_last_ns; sim_t0_set = true; }
+    struct sim_imu_state *imu_s = bus->drv;
+
+    imu_s->t_last_ns = mono_ns();
+    imu_s->seq       = 0;
+    imu_s->odr_mhz   = cfg->odr_mhz > 0 ? cfg->odr_mhz : 100000;
+    if (!sim_t0_set) { sim_t0_ns = imu_s->t_last_ns; sim_t0_set = true; }
     return 0;
 }
 
 static int sim_imu_read(const imud_bus_t *bus,
                         imu_sample_t *buf, int max, int *n_out)
 {
-    (void)bus;
+    struct sim_imu_state *imu_s = bus->drv;
 
     if (pb.enabled) return pb_imu_read(buf, max, n_out);
 
     uint64_t now_ns    = mono_ns();
-    uint64_t period_ns = 1000000000000ULL / (uint64_t)imu_s.odr_mhz;
-    int      n         = (int)((now_ns - imu_s.t_last_ns) / period_ns);
+    uint64_t period_ns = 1000000000000ULL / (uint64_t)imu_s->odr_mhz;
+    int      n         = (int)((now_ns - imu_s->t_last_ns) / period_ns);
 
     if (n <= 0) { *n_out = 0; return 0; }
     if (n > max)  n = max;
 
     /* t_start: time of the first (oldest) sample in this batch */
-    uint64_t t_start_ns = imu_s.t_last_ns;
-    imu_s.t_last_ns += (uint64_t)n * period_ns;
+    uint64_t t_start_ns = imu_s->t_last_ns;
+    imu_s->t_last_ns += (uint64_t)n * period_ns;
 
     /* ISM330DHCX chip timer: 40000 ticks/s (25 µs/tick) */
-    uint32_t ticks_per = 40000000u / (uint32_t)imu_s.odr_mhz;
+    uint32_t ticks_per = 40000000u / (uint32_t)imu_s->odr_mhz;
 
     for (int i = 0; i < n; i++) {
         double t = (double)(t_start_ns + (uint64_t)i * period_ns - sim_t0_ns) * 1e-9;
 
         sim_synth_imu(t, &buf[i]);
-        buf[i].seq     = imu_s.seq;
-        buf[i].chip_ts = imu_s.seq * ticks_per;   /* wraps at ~29.8 h */
-        imu_s.seq++;
+        buf[i].seq     = imu_s->seq;
+        buf[i].chip_ts = imu_s->seq * ticks_per;   /* wraps at ~29.8 h */
+        imu_s->seq++;
     }
 
     *n_out = n;
@@ -600,9 +601,11 @@ static int sim_actual_odr_mhz(int req_mhz) { return req_mhz; }
 const imu_ops_t sim_imu_ops = {
     .name               = "sim",
     .experimental       = false,
-    /* The sim driver never touches the handle, so it imposes no transport
-     * constraint of its own. spi_dev must still name a real spidev node:
-     * bus_open configures mode and speed on it before any driver runs. */
+    .state_bytes        = sizeof(struct sim_imu_state),
+    /* The sim driver reads nothing over the handle, so it imposes no
+     * transport constraint of its own. spi_dev must still name a real spidev
+     * node: bus_open configures mode and speed on it before any driver
+     * runs. */
     .bus_caps           = { .spi_capable = true, .spi_mode = 3,
                             .spi_max_hz = 10000000 },
     .probe              = sim_imu_probe,
