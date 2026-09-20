@@ -703,6 +703,9 @@ void *mag_reader_thread(void *arg)
          * applied is a separate statement the fusion thread decides on. */
         mag_finalise_sample(&cfg, &ctx->cal, &s);
         s.calibrated = ctx->cal.has_mag;
+        /* The ring is all the fusion thread gets, so say which part this came
+         * from: s is a stack local the driver fills field-by-field. */
+        s.src = src->index;
 
         mag_ring_push(&src->ring, &s);
         ctx->mag_sample_count++;
@@ -1153,7 +1156,9 @@ void *fusion_thread(void *arg)
      * The floor covers the batch period (fifo_wm/odr, 77 ms at the 833 Hz /
      * 64-sample default) with room to spare.
      */
-    uint32_t prev_mag_accepted = 0;   /* f.mag_accepted at the last check */
+    /* The primary magnetometer's counter at the last check.  The flags follow
+     * the source the wire reports, which is source 0. */
+    uint32_t prev_mag_accepted = 0;
     float mag_stale_s = 0.5f;
     if (f.mag_odr_hz > 0.0f) {
         float w = 10.0f / f.mag_odr_hz;
@@ -1245,8 +1250,8 @@ void *fusion_thread(void *arg)
         while (mag_ring_try_pop(&ctx->mag.ring, &m) == 0) {
             if (m.valid) {
                 mekf_update_mag(&f, &m);
-                if (f.mag_accepted != prev_mag_accepted) {
-                    prev_mag_accepted = f.mag_accepted;
+                if (f.mag_health[0].accepted != prev_mag_accepted) {
+                    prev_mag_accepted = f.mag_health[0].accepted;
                     mag_accept_age_s  = 0.0f;
                 }
                 /* The filter records the withdrawal decision but does not log
@@ -1259,12 +1264,12 @@ void *fusion_thread(void *arg)
                               "may exceed the horizontal field and heading "
                               "would not be monotonic. Heading is now "
                               "dead-reckoned. Run `imud-cal mag`.\n",
-                              (double)f.mag_anom_ema,
+                              (double)f.mag_health[0].anom_ema,
                               (double)f.mag_uncal_limit);
                     else
                         LOG_W("[fusion] uncalibrated magnetometer re-admitted: "
                               "field anomaly %.2f back under %.2f\n",
-                              (double)f.mag_anom_ema,
+                              (double)f.mag_health[0].anom_ema,
                               (double)(0.8f * f.mag_uncal_limit));
                 }
             }

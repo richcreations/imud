@@ -1132,20 +1132,20 @@ TEST(test_mag_uncalibrated_is_fused)
     m.calibrated = false;
 
     float q0[4]; memcpy(q0, f.q, sizeof q0);
-    uint32_t a0 = f.mag_accepted;
+    uint32_t a0 = f.mag_health[0].accepted;
     for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
 
-    EXPECT(f.mag_accepted > a0, "uncalibrated sample reaches the update");
+    EXPECT(f.mag_health[0].accepted > a0, "uncalibrated sample reaches the update");
     EXPECT(fabsf(f.q[3] - q0[3]) > 1e-4f, "uncalibrated sample moves yaw");
 
     /* An invalid sample is still discarded regardless of calibrated. */
     mekf_t g;
     mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
     mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
-    uint32_t b0 = g.mag_accepted;
+    uint32_t b0 = g.mag_health[0].accepted;
     m.valid = false;
     for (int i = 0; i < 50; i++) mekf_update_mag(&g, &m);
-    EXPECT(g.mag_accepted == b0, "invalid sample still skipped when uncalibrated");
+    EXPECT(g.mag_health[0].accepted == b0, "invalid sample still skipped when uncalibrated");
 
     /* And mag_fuse_uncal = false restores the old discard behaviour. */
     imud_config_t off = make_cfg();
@@ -1153,10 +1153,10 @@ TEST(test_mag_uncalibrated_is_fused)
     mekf_t h;
     mekf_init(&h, &off, 833.0f, (float)off.mag_odr_mhz * 1e-3f, bias);
     mekf_align(&h, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
-    uint32_t c0 = h.mag_accepted;
+    uint32_t c0 = h.mag_health[0].accepted;
     m.valid = true;
     for (int i = 0; i < 50; i++) mekf_update_mag(&h, &m);
-    EXPECT(h.mag_accepted == c0, "mag_fuse_uncal=false discards uncalibrated");
+    EXPECT(h.mag_health[0].accepted == c0, "mag_fuse_uncal=false discards uncalibrated");
 }
 
 /*
@@ -1189,7 +1189,7 @@ TEST(test_mag_uncalibrated_never_touches_roll_pitch)
 }
 
 /*
- * The withdrawal backstop. mag_anom_ema measures |b|/|B|; the inversion
+ * The withdrawal backstop. The anomaly EMA measures |b|/|B|; the inversion
  * boundary is |b_h| > |H|, i.e. an anomaly of mh_ref/h_mag. Past the
  * configured fraction of that the mag is refused, and re-admission is
  * hysteretic at 0.8x so a marginal install cannot chatter.
@@ -1212,34 +1212,34 @@ TEST(test_mag_uncalibrated_withdrawal)
     float mh_ref = sqrtf(f.m_ref[0]*f.m_ref[0] + f.m_ref[1]*f.m_ref[1]);
     float limit  = cfg.mag_uncal_reject_frac * (mh_ref / h_mag);
 
-    f.mag_anom_ema = limit * 1.5f;
-    uint32_t a0 = f.mag_accepted;
+    f.mag_health[0].anom_ema = limit * 1.5f;
+    uint32_t a0 = f.mag_health[0].accepted;
     for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
     EXPECT(f.mag_uncal_withdrawn, "gross anomaly withdraws the uncalibrated mag");
-    EXPECT(f.mag_accepted == a0,  "withdrawn mag applies no update");
+    EXPECT(f.mag_health[0].accepted == a0,  "withdrawn mag applies no update");
 
     /* Hysteresis: just under the limit is NOT enough to come back. */
-    f.mag_anom_ema = limit * 0.9f;
+    f.mag_health[0].anom_ema = limit * 0.9f;
     for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
     EXPECT(f.mag_uncal_withdrawn, "re-admission needs more than dropping below the limit");
-    EXPECT(f.mag_accepted == a0,  "still no update while withdrawn");
+    EXPECT(f.mag_health[0].accepted == a0,  "still no update while withdrawn");
 
     /* Below 0.8x it comes back. */
-    f.mag_anom_ema = limit * 0.5f;
+    f.mag_health[0].anom_ema = limit * 0.5f;
     for (int i = 0; i < 20; i++) mekf_update_mag(&f, &m);
     EXPECT(!f.mag_uncal_withdrawn, "anomaly under 0.8x re-admits");
-    EXPECT(f.mag_accepted > a0,    "re-admitted mag applies updates again");
+    EXPECT(f.mag_health[0].accepted > a0,    "re-admitted mag applies updates again");
 
     /* A calibrated mag is never subject to this gate. */
     mekf_t g;
     mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
     mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
-    g.mag_anom_ema = limit * 5.0f;
-    uint32_t b0 = g.mag_accepted;
+    g.mag_health[0].anom_ema = limit * 5.0f;
+    uint32_t b0 = g.mag_health[0].accepted;
     mag_sample_t cal_m = make_mag(0.20f, 0.02f, 0.05f);
     for (int i = 0; i < 20; i++) mekf_update_mag(&g, &cal_m);
     EXPECT(!g.mag_uncal_withdrawn, "calibrated mag is never withdrawn by this gate");
-    EXPECT(g.mag_accepted > b0,    "calibrated mag keeps updating");
+    EXPECT(g.mag_health[0].accepted > b0,    "calibrated mag keeps updating");
 }
 
 /*
@@ -1262,9 +1262,9 @@ TEST(test_mag_uncalibrated_survives_convergence)
     m.calibrated = false;
 
     f.converged = true;
-    uint32_t a0 = f.mag_accepted;
+    uint32_t a0 = f.mag_health[0].accepted;
     for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
-    EXPECT(f.mag_accepted > a0,
+    EXPECT(f.mag_health[0].accepted > a0,
            "converged filter keeps accepting an uncalibrated mag");
 
     /* The same residual on a CALIBRATED sample is still rejected — the gate
@@ -1273,10 +1273,10 @@ TEST(test_mag_uncalibrated_survives_convergence)
     mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
     mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
     g.converged = true;
-    uint32_t b0 = g.mag_accepted;
+    uint32_t b0 = g.mag_health[0].accepted;
     mag_sample_t cal_m = make_mag(0.20f, 0.0f, 0.15f);
     for (int i = 0; i < 50; i++) mekf_update_mag(&g, &cal_m);
-    EXPECT(g.mag_accepted == b0,
+    EXPECT(g.mag_health[0].accepted == b0,
            "converged filter still rejects a calibrated mag past the threshold");
 }
 
@@ -1302,9 +1302,9 @@ TEST(test_mag_yaw_only_survives_dip_error)
     mag_sample_t m = make_mag(0.20f, 0.0f, 0.15f);
 
     f.converged = true;
-    uint32_t a0 = f.mag_accepted;
+    uint32_t a0 = f.mag_health[0].accepted;
     for (int i = 0; i < 50; i++) mekf_update_mag(&f, &m);
-    EXPECT(f.mag_accepted > a0,
+    EXPECT(f.mag_health[0].accepted > a0,
            "yaw-only filter accepts a mag whose dip alone is off");
 
     /* The same threshold in the plane the update DOES use: 40° of heading
@@ -1314,11 +1314,11 @@ TEST(test_mag_yaw_only_survives_dip_error)
     mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
     mekf_align(&g, (float[]){0, 0, -G}, (float[]){20.0f, 0.0f, 5.0f});
     g.converged = true;
-    uint32_t b0 = g.mag_accepted;
+    uint32_t b0 = g.mag_health[0].accepted;
     mag_sample_t skew = make_mag(0.20f*cosf(40.0f*DEG),
                                  0.20f*sinf(40.0f*DEG), 0.05f);
     for (int i = 0; i < 50; i++) mekf_update_mag(&g, &skew);
-    EXPECT(g.mag_accepted == b0,
+    EXPECT(g.mag_health[0].accepted == b0,
            "yaw-only filter still rejects a heading residual past the threshold");
 }
 
@@ -2234,7 +2234,7 @@ static void dip_run(double dip_sigma_deg, float dip_err_deg, float mag_noise_g,
     q_to_euler(f.q, &roll, &pitch, &yaw);
     *bias_deg  = sqrtf(roll*roll + pitch*pitch) / DEG;
     *sigma_deg = sqrtf(0.5f * (f.P[0][0] + f.P[1][1])) / DEG;
-    *nis_mag   = f.nis_mag_ema;
+    *nis_mag   = f.mag_health[0].nis_ema;
 }
 
 /*
@@ -2459,7 +2459,7 @@ TEST(test_nis_consistency_emas)
     mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
 
     EXPECT_NEAR(f.nis_accel_ema, 1.0f, 1e-6f, "accel NIS starts at 1.0");
-    EXPECT_NEAR(f.nis_mag_ema,   1.0f, 1e-6f, "mag NIS starts at 1.0");
+    EXPECT_NEAR(f.mag_health[0].nis_ema,   1.0f, 1e-6f, "mag NIS starts at 1.0");
 
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
 
@@ -2522,7 +2522,7 @@ TEST(test_reconfigure_preserves_nis)
         mekf_predict(&f, &zg, f.dt);
         mekf_update_accel(&f, &bad);
     }
-    float nis_a = f.nis_accel_ema, nis_m = f.nis_mag_ema;
+    float nis_a = f.nis_accel_ema, nis_m = f.mag_health[0].nis_ema;
     EXPECT(nis_a > 2.0f, "accel NIS moved off its seed before reconfigure");
 
     cfg.mekf_accel_noise = 0.05;    /* the kind of change an A/B would make */
@@ -2531,7 +2531,7 @@ TEST(test_reconfigure_preserves_nis)
 
     EXPECT_NEAR(f.nis_accel_ema, nis_a, 1e-6f,
                 "reconfigure preserves accumulated accel NIS");
-    EXPECT_NEAR(f.nis_mag_ema, nis_m, 1e-6f,
+    EXPECT_NEAR(f.mag_health[0].nis_ema, nis_m, 1e-6f,
                 "reconfigure preserves accumulated mag NIS");
     EXPECT_NEAR(f.nis_mag_alpha, 1.0f/(30.0f*100.0f), 1e-9f,
                 "the mag NIS gain stays on the programmed rate, not the "
@@ -3256,8 +3256,8 @@ TEST(test_mag_health)
     mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     mag_sample_t m = make_mag(0.20f, 0.0f, 0.05f);   /* Gauss (make_mag scales) */
     for (int i = 0; i < 2000; i++) mekf_update_mag(&f, &m);
-    EXPECT(f.mag_anom_ema  < 0.01f, "clean field: anomaly ~0");
-    EXPECT(f.mag_resid_ema < 0.01f, "clean field: residual ~0");
+    EXPECT(f.mag_health[0].anom_ema  < 0.01f, "clean field: anomaly ~0");
+    EXPECT(f.mag_health[0].resid_ema < 0.01f, "clean field: residual ~0");
 
     /* Magnitude anomaly: same direction, 1.5x strength (inside the hard
      * 0.5-2.0 gate). EMA (alpha=1/3000) reaches 63% of the 0.5 step. */
@@ -3266,8 +3266,8 @@ TEST(test_mag_health)
     mekf_align(&fa, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
     mag_sample_t ma = make_mag(0.30f, 0.0f, 0.075f);
     for (int i = 0; i < 3000; i++) mekf_update_mag(&fa, &ma);
-    EXPECT(fa.mag_anom_ema  > 0.2f,  "1.5x magnitude: anomaly rises");
-    EXPECT(fa.mag_resid_ema < 0.05f, "direction unchanged: residual low");
+    EXPECT(fa.mag_health[0].anom_ema  > 0.2f,  "1.5x magnitude: anomaly rises");
+    EXPECT(fa.mag_health[0].resid_ema < 0.05f, "direction unchanged: residual low");
 
     /* Heading anomaly with updates REJECTED (converged + tight gate): the
      * metric must rise precisely while the filter refuses the data. */
@@ -3279,8 +3279,87 @@ TEST(test_mag_health)
     mag_sample_t mr = make_mag(0.1732f, 0.10f, 0.05f);   /* horizontal +30 deg */
     for (int i = 0; i < 3000; i++) mekf_update_mag(&fr, &mr);
     EXPECT_NEAR(fr.q[3], q_before[3], 1e-4f, "rejected: attitude unmoved");
-    EXPECT(fr.mag_resid_ema > 0.2f,  "30 deg offset: residual rises while rejected");
-    EXPECT(fr.mag_anom_ema  < 0.05f, "magnitude unchanged: anomaly stays low");
+    EXPECT(fr.mag_health[0].resid_ema > 0.2f,  "30 deg offset: residual rises while rejected");
+    EXPECT(fr.mag_health[0].anom_ema  < 0.05f, "magnitude unchanged: anomaly stays low");
+}
+
+/*
+ * The same two faults, in one filter, on separate sensors: each reading has
+ * to stay with the sensor that produced it. A shared accumulator would report
+ * the average of the honest part and the lying one, which names neither.
+ */
+TEST(test_mag_health_per_source)
+{
+    imud_config_t cfg = make_cfg();
+    float bias[3] = {0};
+
+    mekf_t f;
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    f.converged = true;   /* arm the tight anomaly gate */
+
+    mag_sample_t clean  = make_mag(0.20f,   0.0f, 0.05f);    /* the reference */
+    mag_sample_t strong = make_mag(0.30f,   0.0f, 0.075f);   /* 1.5x magnitude */
+    mag_sample_t turned = make_mag(0.1732f, 0.10f, 0.05f);   /* +30 deg heading */
+    strong.src = 1;
+    turned.src = 2;
+
+    float q_before[4]; memcpy(q_before, f.q, sizeof f.q);
+    for (int i = 0; i < 3000; i++) {
+        mekf_update_mag(&f, &clean);
+        mekf_update_mag(&f, &strong);
+        mekf_update_mag(&f, &turned);
+    }
+    EXPECT_NEAR(f.q[3], q_before[3], 1e-4f, "the turned sensor is refused, not fused");
+
+    EXPECT(f.mag_health[1].anom_ema  > 0.2f,  "magnitude fault raises ITS source's anomaly");
+    EXPECT(f.mag_health[0].anom_ema  < 0.05f, "the clean source's anomaly is untouched");
+    EXPECT(f.mag_health[2].anom_ema  < 0.05f, "and so is the turned source's");
+    EXPECT(f.mag_health[2].resid_ema > 0.2f,  "heading fault raises ITS source's residual");
+    EXPECT(f.mag_health[0].resid_ema < 0.05f, "the clean source's residual is untouched");
+    EXPECT(f.mag_health[1].resid_ema < 0.05f, "and so is the strong source's");
+
+    EXPECT(f.mag_health[0].accepted > 0, "clean source updates the filter");
+    EXPECT(f.mag_health[1].accepted > 0, "so does a strong but well-aimed field");
+    EXPECT(f.mag_health[2].accepted == 0, "the turned one never reaches an update");
+
+    /* The wire is unmoved: it carries the primary source, as it always did. */
+    fused_state_t st;
+    mekf_get_state(&f, &st, 0);
+    EXPECT_NEAR(st.mag_anomaly,  f.mag_health[0].anom_ema,  1e-9f, "wire anomaly is source 0's");
+    EXPECT_NEAR(st.mag_residual, f.mag_health[0].resid_ema, 1e-9f, "wire residual is source 0's");
+    EXPECT_NEAR(st.nis_mag,      f.mag_health[0].nis_ema,   1e-9f, "wire NIS is source 0's");
+
+    /* A source the filter has no room for is not fused into another one. */
+    uint32_t a0 = f.mag_health[0].accepted;
+    mag_sample_t past = clean;
+    past.src = MAG_SRC_MAX;
+    for (int i = 0; i < 100; i++) mekf_update_mag(&f, &past);
+    EXPECT(f.mag_health[0].accepted == a0, "a source past the last slot is dropped");
+
+    /*
+     * Gate health and NIS split the same way. A field turned far enough to be
+     * thrown out by the innovation gate — rather than by the anomaly gate
+     * above it — is the case that reaches gate_health, so this one runs
+     * unconverged and at 160 deg.
+     */
+    mekf_t g;
+    mekf_init(&g, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&g, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+    mag_sample_t reversed = make_mag(-0.1879f, 0.0684f, 0.05f);
+    reversed.src = 1;
+    for (int i = 0; i < 3000; i++) {
+        mekf_update_mag(&g, &clean);
+        mekf_update_mag(&g, &reversed);
+    }
+    EXPECT(g.mag_health[1].reject_ema > 0.5f,  "the liar's updates are thrown out");
+    EXPECT(g.mag_health[0].reject_ema < 0.05f, "the honest sensor's are not");
+    EXPECT(g.mag_health[1].weight_ema < 0.5f,  "and its Huber weight collapses");
+    EXPECT(g.mag_health[0].weight_ema > 0.95f, "while the honest one is taken at face value");
+    EXPECT(g.mag_health[1].nis_ema > 10.0f * g.mag_health[0].nis_ema,
+           "NIS is per source too");
+    EXPECT(g.innov_reject_ema > 0.05f,
+           "the filter-wide pair still counts every update");
 }
 
 /* ── Rough-sea wave benchmark ───────────────────────────────────────────────── */
@@ -3790,7 +3869,7 @@ static void run_wave_scenario_ex(bool yaw_only, wave_scen_t scen, wave_run_t *ou
     out->innov_weight = f.innov_weight_ema;
     out->innov_reject = f.innov_reject_ema;
     out->nis_accel    = f.nis_accel_ema;
-    out->nis_mag      = f.nis_mag_ema;
+    out->nis_mag      = f.mag_health[0].nis_ema;
     memcpy(out->m_ref, f.m_ref, sizeof f.m_ref);
     out->conv_s = (conv_i >= 0) ? (float)(conv_i - align_n) * dt : -1.0f;
 }
@@ -4582,6 +4661,7 @@ int main(void)
     RUN(test_leaks_survive_a_tiny_dt_over_tau);
     RUN(test_settling_survives_a_long_window_at_a_high_rate);
     RUN(test_mag_health);
+    RUN(test_mag_health_per_source);
     RUN(test_wave_disabled_inert);
     RUN(test_wave_needs_both_knobs);
     RUN(test_wave_state_tracks_colored_residual);

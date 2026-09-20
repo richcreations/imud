@@ -62,7 +62,7 @@ rotation:
 
 $$ v_{NED} = R(q)\, v_{b}, \qquad R(q)\in SO(3). $$
 
-The rotation matrix `q_to_R()` (`fusion.c:280`) is
+The rotation matrix `q_to_R()` (`fusion.c:289`) is
 
 $$
 R(q)=\begin{bmatrix}
@@ -72,7 +72,7 @@ R(q)=\begin{bmatrix}
 \end{bmatrix}.
 $$
 
-The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:243`) uses the
+The Hamilton product `q_mul()` ($c = a\otimes b$, `fusion.c:252`) uses the
 standard scalar-first convention (Solà eq. 16).
 
 **Units.** Gyroscope rad·s⁻¹; accelerometer m·s⁻²; magnetometer µT on the
@@ -86,7 +86,7 @@ with the **gravity direction** $z_a=-\widehat{a}_b$ (§4.7).
 **As-implemented.** MEKF state — quaternion, bias, wave acceleration, and the
 covariance $P$ — is single precision (`float`); calibration fits and WMM are
 double precision. The quaternion is renormalized (`q_normalize`,
-`fusion.c:266`) after every multiplicative update, guarding unit-norm drift
+`fusion.c:275`) after every multiplicative update, guarding unit-norm drift
 from float round-off, and $P$ uses the Joseph form for the same reason
 (§4.5): the simple $(I-KH)P$ form slowly loses symmetry and
 positive-definiteness at 833 Hz over multi-day runs.
@@ -245,7 +245,7 @@ multiplicatively so the quaternion never leaves the unit sphere.
 
 ### 4.1 State and covariance
 
-Nominal state (`mekf_t`, `fusion.h:46`):
+Nominal state (`mekf_t`, `fusion.h:77`):
 - $q$ — unit quaternion, body→NED (`q[4]`).
 - $b$ — gyro bias, rad·s⁻¹ (`bias[3]`).
 - $a_w$ — wave acceleration, body frame, normalized gravity units
@@ -312,7 +312,7 @@ the measurement Jacobian in §4.5.
 **Source:** Solà 2017 §5.4 *(code comment)*; Markley & Crassidis 2014 §6.1;
 Trawny & Roumeliotis 2005 *(canonical)*.
 
-### 4.2 Initialization — `mekf_init()` (`fusion.c:1019`)
+### 4.2 Initialization — `mekf_init()` (`fusion.c:1033`)
 
 Nominal: $q=[1,0,0,0]$, $b=$ `gyro_bias_init` (from the startup still window,
 §10; may be 0).
@@ -360,7 +360,7 @@ not driven by the Allan-variance characterization of §12.5.
 
 **Source:** Solà 2017 §4.1 for discrete process noise *(code comment)*.
 
-### 4.3 Alignment — `mekf_align()` (`fusion.c:1077`)
+### 4.3 Alignment — `mekf_align()` (`fusion.c:1100`)
 
 Deterministic initial attitude from one static accel+mag pair (a
 tilt-then-heading decomposition, TRIAD-family).
@@ -395,7 +395,7 @@ $$ \phi = \operatorname{atan2}(\widehat g_{b,y},\ \widehat g_{b,z}),\qquad
    \sqrt{\widehat g_{b,y}^2+\widehat g_{b,z}^2}\big). $$
 
 Tilt quaternion $q_{tilt}=q_\theta\otimes q_\phi$ built directly from
-half-angles (`mekf_align`, `fusion.c:1094`).
+half-angles (`mekf_align`, `fusion.c:1100`).
 
 **Heading from magnetometer.** Rotate $m_b$ by $R(q_{tilt})$ into the
 tilt-levelled frame; with horizontal components $m_x,m_y$ there,
@@ -422,7 +422,7 @@ alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 **Source:** tilt/heading coarse alignment — Farrell 2008 §10; TRIAD lineage
 Shuster & Oh 1981 *(canonical)*.
 
-### 4.4 Prediction — `mekf_predict()` (`fusion.c:1134`)
+### 4.4 Prediction — `mekf_predict()` (`fusion.c:1157`)
 
 Per IMU sample, with measured interval $dt$ (from hardware timestamps, §11;
 falls back to nominal $1/\text{ODR}$).
@@ -430,7 +430,7 @@ falls back to nominal $1/\text{ODR}$).
 **Bias-corrected rate:** $\omega = s.\text{gyro} - b$.
 
 **Quaternion propagation** by the exponential map (`q_from_rotvec`,
-`fusion.c:293`):
+`fusion.c:302`):
 $$ q \leftarrow q \otimes \exp\!\big(\tfrac12\,[\,0,\ \omega\,dt\,]\big),
 \qquad
 \exp(\phi) = \Big[\cos\tfrac{|\vartheta|}{2},\
@@ -481,7 +481,7 @@ error convention.
 **Source:** Solà 2017 eq. 259 (integration), eq. 268 (covariance)
 *(code comment)*.
 
-### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:495`)
+### 4.5 Generic vector measurement update — `eskf_update()` (`fusion.c:507`)
 
 Measurement of a known NED reference observed in body: predicted $h$, actual
 $z$, isotropic noise $R_{noise}$, gate `chi2_gate`.
@@ -653,7 +653,7 @@ $\lVert v\rVert$ is guarded at 0.5; below that the acceleration is comparable
 to gravity itself and the linearisation is meaningless, so the update falls
 back to the plain direction form.
 
-### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:758`)
+### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:772`)
 
 Heading-only correction (a 1-D measurement). Innovation $y$ (rad, wrapped to
 $\pm\pi$), variance $R_{noise}$. The Jacobian projects the error onto the
@@ -666,7 +666,7 @@ $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
 
 **Source:** scalar-measurement EKF specialization of §4.5 *(canonical)*.
 
-### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1374`)
+### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1397`)
 
 **Speed-aided centripetal correction.** In a turn the accelerometer senses
 $a = a_{platform} - g$, and with speed-over-ground $v$ (body $\approx[v,0,0]$,
@@ -980,7 +980,7 @@ off optimal for 3-D — a deliberate compromise favouring the marine default, no
 an arbitrary number. Reproduce with `-DBENCH_SWEEP_NG`, composable with
 `-DBENCH_ODR_HZ=<rate>`.
 
-### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1438`)
+### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1461`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field
 $h_{raw}=R^\top m_{ref}$, magnitude $|h_{raw}|$.
@@ -1144,7 +1144,7 @@ marine AHRS practice, Farrell 2008 *(canonical)*; gauge-feedback avoidance is
 imud-specific design (see the in-code rationale in `mekf_update_mag`,
 `fusion.c:1550`).
 
-### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1057`)
+### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1080`)
 
 Given WMM horizontal magnitude $H$ and vertical $Z$ (Gauss) at a known
 position (from §13), rescale `m_ref` to those invariants while preserving
@@ -1156,7 +1156,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2006`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2039`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1168,14 +1168,14 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1936`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1969`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
 a new config on hot-reload; $q$, $P$, $b$, $dt$ and the runtime scalars
 (`Ra_scale`, `acc_quiet_ema`, the health EMAs) are untouched, so the filter
 keeps running. Both this and `mekf_init()` derive their tuning through one
-shared helper (`mekf_derive_tuning`, `fusion.c:864`), so no value can be
+shared helper (`mekf_derive_tuning`, `fusion.c:878`), so no value can be
 updated in one path and forgotten in the other — `mref_alpha` previously was,
 leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
@@ -1209,7 +1209,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:1789`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1822`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -1250,13 +1250,13 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1865`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1898`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:1872`).
+`fusion.c:1905`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):
@@ -1297,7 +1297,7 @@ recursion, West 1979 / Finch 2009 *(canonical)*.
 
 ---
 
-## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1438`)
+## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1461`)
 
 Two EMAs ($\alpha=1/3000$, $\tau\approx30$ s at 100 Hz mag ODR), updated
 **before** the rejection gates so that gated-out anomalies still register:
@@ -1320,7 +1320,7 @@ pre-gate innovations because the rejected samples are precisely the anomalies
 these metrics exist to surface. The 30 s time constant scales inversely with a
 non-standard mag rate (acceptable for a health indicator).
 
-### 8.1 Update-gate health — `gate_health()` (`fusion.c:159`)
+### 8.1 Update-gate health — `gate_health()` (`fusion.c:163`)
 
 Two further EMAs ($\tau\approx30$ s, gain per §4.7), written by every
 `eskf_update` / `eskf_update_yaw` call — accepted, capped and rejected alike,
@@ -1345,7 +1345,7 @@ from a synthetic benchmark.
 **Source:** exponential moving average, standard *(canonical)*; innovation
 consistency monitoring Bar-Shalom et al. 2001 *(canonical)*.
 
-### 8.2 Measurement-model consistency — `nis_record()` (`fusion.c:197`)
+### 8.2 Measurement-model consistency — `nis_record()` (`fusion.c:206`)
 
 Where §8.1 reports how hard the robustness machinery is *working*, this
 reports whether the noise model underneath it is *right*. Two EMAs of the
@@ -1427,7 +1427,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:833`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:836`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$

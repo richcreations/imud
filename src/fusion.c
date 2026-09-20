@@ -152,19 +152,28 @@ static void g_premul_rows3(const float G[3][3], float *M, int ncols)
  * Record how an eskf update fared against the innovation gate.
  *   w:   Huber weight actually applied (1.0 when uncapped, 0.0 when rejected)
  *   rej: 1.0 if the gross-outlier gate threw the measurement out, else 0.0
+ *   mh:  health of the magnetometer this update came from, or NULL for the
+ *        accel path.  Both destinations are fed: the filter-wide pair is what
+ *        the wire carries and it keeps counting every update, while the
+ *        source copy is what can name one sensor.
  * Rejected updates must still be counted — they are the strongest evidence
  * the filter and its measurements disagree, and hiding them would defeat the
  * purpose of the metric.
  */
-static void gate_health(mekf_t *f, float alpha, float w, float rej)
+static void gate_health(mekf_t *f, mag_health_t *mh,
+                        float alpha, float w, float rej)
 {
     f->innov_weight_ema += alpha * (w   - f->innov_weight_ema);
     f->innov_reject_ema += alpha * (rej - f->innov_reject_ema);
+    if (mh) {
+        mh->weight_ema += alpha * (w   - mh->weight_ema);
+        mh->reject_ema += alpha * (rej - mh->reject_ema);
+    }
 }
 
 /*
  * Record the normalised innovation squared for one update.
- *   ema:   channel accumulator (nis_accel_ema or nis_mag_ema)
+ *   ema:   channel accumulator (nis_accel_ema, or a source's nis_ema)
  *   alpha: that channel's EMA gain
  *   d2:    νᵀS⁻¹ν, BEFORE any Huber capping or rejection
  *   dof:   effective degrees of freedom — see below
@@ -478,6 +487,9 @@ static void dir_S(const float H[3][MEKF_N], const float PHt[MEKF_N][3],
  *            (χ²₃ quantile); 0 disables the gate.
  * nis_ema:   channel NIS accumulator to feed (NULL to skip)
  * nis_alpha: EMA gain for that accumulator
+ * mh:        health of the magnetometer this measurement came from, or NULL
+ *            for the accel path.  Non-NULL means nis_ema is that source's own
+ *            accumulator; see gate_health for what else it collects.
  * aw:        wave-acceleration estimate to fold into the prediction, or NULL
  *            for a plain direction measurement.  NULL takes literally the
  *            pre-§10.5 code path — no projection arithmetic runs at all — so
@@ -499,6 +511,7 @@ static int eskf_update(mekf_t *f,
                        float chi2_gate,
                        float *nis_ema,
                        float nis_alpha,
+                       mag_health_t *mh,
                        const float *aw,
                        const float (*R33)[3],
                        const float *protect)
@@ -564,7 +577,7 @@ static int eskf_update(mekf_t *f,
      * robustness device, not a statistical one. See docs/math.md §4.5.
      *
      * innov_weight_ema / innov_reject_ema below expose how hard the cap is
-     * being leaned on; nis_accel_ema / nis_mag_ema expose whether the noise
+     * being leaned on; the NIS accumulators expose whether the noise
      * model underneath it is right. */
     if (chi2_gate > 0.0f || nis_ema) {
         /* No convergence gate needed: S = HPHᵀ + R already contains P, so
@@ -584,7 +597,7 @@ static int eskf_update(mekf_t *f,
 
         if (chi2_gate > 0.0f) {
             if (d2 > GROSS_REJECT_MULT * chi2_gate) {
-                gate_health(f, nis_alpha, 0.0f, 1.0f);
+                gate_health(f, mh, nis_alpha, 0.0f, 1.0f);
                 return 1;
             }
             float w = 1.0f;
@@ -622,7 +635,7 @@ static int eskf_update(mekf_t *f,
 #error "HUBER_VARIANT must be 0, 1, 2 or 3"
 #endif
             }
-            gate_health(f, nis_alpha, w, 0.0f);
+            gate_health(f, mh, nis_alpha, w, 0.0f);
         }
     }
     #undef ESKF_SOLVE_GAIN
@@ -746,6 +759,7 @@ static int eskf_update(mekf_t *f,
  *
  * y:       heading innovation, rad, wrapped to ±π
  * R_noise: heading measurement variance, rad²
+ * mh:      health of the magnetometer the heading came from
  *
  * For the right-multiplied error convention, a heading innovation relates
  * to the error state through the NED-down axis expressed in body terms:
@@ -755,7 +769,7 @@ static int eskf_update(mekf_t *f,
 /* χ²(1) 99% quantile — yaw innovation gate. */
 #define YAW_CHI2_GATE 6.63f
 
-static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
+static int eskf_update_yaw(mekf_t *f, mag_health_t *mh, float y, float R_noise)
 {
     float R[3][3];
     q_to_R(f->q, R);
@@ -778,15 +792,15 @@ static int eskf_update_yaw(mekf_t *f, float y, float R_noise)
     float d2 = y * y / S;
 
     /* Scalar measurement: dof = 1. Recorded pre-cap, as in eskf_update. */
-    nis_record(&f->nis_mag_ema, f->nis_mag_alpha, d2, 1.0f);
+    nis_record(&mh->nis_ema, f->nis_mag_alpha, d2, 1.0f);
 
     if (d2 > GROSS_REJECT_MULT * YAW_CHI2_GATE) {
-        gate_health(f, f->nis_mag_alpha, 0.0f, 1.0f);
+        gate_health(f, mh, f->nis_mag_alpha, 0.0f, 1.0f);
         return 1;
     }
     float w = 1.0f;
     if (d2 > YAW_CHI2_GATE) { w = sqrtf(YAW_CHI2_GATE / d2); y *= w; }
-    gate_health(f, f->nis_mag_alpha, w, 0.0f);
+    gate_health(f, mh, f->nis_mag_alpha, w, 0.0f);
 
     float K[MEKF_N];
     for (int i = 0; i < MEKF_N; i++) K[i] = PHt[i] / S;
@@ -1051,7 +1065,16 @@ void mekf_init(mekf_t *f,
     /* NIS starts at the consistent value rather than 0, so a fresh filter
      * does not spend its first τ reporting an implausibly perfect model. */
     f->nis_accel_ema = 1.0f;
-    f->nis_mag_ema   = 1.0f;
+
+    /* Every source, not only the one configured: an entry read before its
+     * sensor has ever reported must say "nothing wrong seen" rather than the
+     * perfectly-rejected, perfectly-inconsistent reading a zeroed one gives.
+     * The memset above leaves the anomaly, residual and counter at 0. */
+    for (int i = 0; i < MAG_SRC_MAX; i++) {
+        f->mag_health[i].nis_ema    = 1.0f;
+        f->mag_health[i].weight_ema = 1.0f;
+        f->mag_health[i].reject_ema = 0.0f;
+    }
 }
 
 void mekf_set_mref_invariants(mekf_t *f, float h_gauss, float z_gauss)
@@ -1431,13 +1454,22 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
      * which is the axis heading is measured about and the exact null direction
      * of both accel Jacobians. */
     eskf_update(f, h, z, R_eff, ACCEL_CHI2_GATE,
-                &f->nis_accel_ema, alpha_a,
+                &f->nis_accel_ema, alpha_a, NULL,
                 f->wave_enabled ? f->wave_acc : NULL, NULL, h);
 }
 
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
 {
     if (!f->initialized || !f->m_ref_valid || !m->valid) return;
+
+    /*
+     * Which magnetometer's health this update lands in.  A sample naming a
+     * source the filter has no room for is not fused at all: folding it into
+     * another source's statistics would corrupt the reading that exists to
+     * say which sensor is wrong.
+     */
+    if (m->src >= MAG_SRC_MAX) return;
+    mag_health_t *health = &f->mag_health[m->src];
 
     /*
      * An uncalibrated sample carries an uncorrected hard/soft-iron error.  It
@@ -1495,17 +1527,17 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
      * fault behind a small residual). Fixed EMA, τ ≈ 30 s at the 100 Hz mag
      * ODR (τ scales with a nonstandard mag rate; diagnostics only).
      *
-     * mag_anom_ema:  fractional field-magnitude deviation — attitude-
-     *                independent (|h_raw| = |m_ref|), catches interference
-     *                and gross iron-cal drift.
-     * mag_resid_ema: |heading innovation| in rad, mode-independent (computed
-     *                here even under 3D fusion) — "the compass disagrees
-     *                with the filter by X rad" = calibration health.
+     * anom_ema:  fractional field-magnitude deviation — attitude-independent
+     *            (|h_raw| = |m_ref|), catches interference and gross iron-cal
+     *            drift.
+     * resid_ema: |heading innovation| in rad, mode-independent (computed here
+     *            even under 3D fusion) — "the compass disagrees with the
+     *            filter by X rad" = calibration health.
      */
     {
         const float alpha = 1.0f / 3000.0f;
         float anom = fabsf(z_mag - h_mag) / h_mag;
-        f->mag_anom_ema += alpha * (anom - f->mag_anom_ema);
+        health->anom_ema += alpha * (anom - health->anom_ema);
 
         float m_ned[3];
         for (int i = 0; i < 3; i++)
@@ -1517,7 +1549,7 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
                     - atan2f(f->m_ref[1], f->m_ref[0]);
             while (y >  (float)M_PI) y -= 2.0f*(float)M_PI;
             while (y < -(float)M_PI) y += 2.0f*(float)M_PI;
-            f->mag_resid_ema += alpha * (fabsf(y) - f->mag_resid_ema);
+            health->resid_ema += alpha * (fabsf(y) - health->resid_ema);
         }
     }
 
@@ -1641,7 +1673,7 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
          * exceeds the horizontal field: two true headings then read the same,
          * and the sense of the error inverts over half the rose, so a
          * heading-hold consumer diverges rather than degrades.  That boundary
-         * is |b_h| = |H|; mag_anom_ema measures |b|/|B| against the TOTAL
+         * is |b_h| = |H|; anom_ema measures |b|/|B| against the TOTAL
          * field, so the equivalent threshold is the reference ratio
          * |H_ref|/|B_ref| = mh_ref/h_mag, scaled by a margin.
          *
@@ -1658,16 +1690,16 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         if (uncal && f->mag_uncal_reject > 0.0f) {
             float limit = f->mag_uncal_reject * (mh_ref / h_mag);
             f->mag_uncal_limit = limit;
-            if (!f->mag_uncal_withdrawn && f->mag_anom_ema > limit)
+            if (!f->mag_uncal_withdrawn && health->anom_ema > limit)
                 f->mag_uncal_withdrawn = true;
-            else if (f->mag_uncal_withdrawn && f->mag_anom_ema < 0.8f * limit)
+            else if (f->mag_uncal_withdrawn && health->anom_ema < 0.8f * limit)
                 f->mag_uncal_withdrawn = false;
             if (f->mag_uncal_withdrawn) return;
         }
 
         float R_psi = f->Rm / (mh_ref * mh_ref);
-        rc = eskf_update_yaw(f, y, R_psi);
-        if (rc == 0) f->mag_accepted++;
+        rc = eskf_update_yaw(f, health, y, R_psi);
+        if (rc == 0) health->accepted++;
     } else {
         /*
          * 3-D vector fusion. Here the field's DIP constrains roll and pitch,
@@ -1730,8 +1762,9 @@ void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
         /* No protected axis: the magnetometer is the measurement that DOES
          * carry heading, so all three attitude axes are constrained here. */
         rc = eskf_update(f, h, z, Rm_n, ACCEL_CHI2_GATE,
-                         &f->nis_mag_ema, f->nis_mag_alpha, NULL, Rp, NULL);
-        if (rc == 0) f->mag_accepted++;
+                         &health->nis_ema, f->nis_mag_alpha, health,
+                         NULL, Rp, NULL);
+        if (rc == 0) health->accepted++;
     }
     (void)rc;
 }
@@ -1999,7 +2032,7 @@ bool mekf_sanitize(mekf_t *f)
     f->state_reset  = true;
     /* mag_uncal_withdrawn deliberately survives: it is an assessment of the
      * magnetometer's hard iron, which a filter reset does not change, and the
-     * mag_anom_ema it was made from survives too. */
+     * anomaly EMA it was made from survives too. */
     return true;
 }
 
@@ -2021,9 +2054,10 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
     /* Platform-quiescence metric (EMA of (|a|/g − 1)²) */
     out->quiescence = f->acc_quiet_ema;
 
-    /* Compass health diagnostics (see mekf_update_mag) */
-    out->mag_anomaly  = f->mag_anom_ema;
-    out->mag_residual = f->mag_resid_ema;
+    /* Compass health diagnostics (see mekf_update_mag).  The primary
+     * magnetometer's, which at one sensor is every sample there is. */
+    out->mag_anomaly  = f->mag_health[0].anom_ema;
+    out->mag_residual = f->mag_health[0].resid_ema;
 
     /* Update-gate health (see gate_health / eskf_update) */
     out->innov_weight = f->innov_weight_ema;
@@ -2031,7 +2065,7 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
 
     /* Measurement-model consistency (see nis_record) */
     out->nis_accel = f->nis_accel_ema;
-    out->nis_mag   = f->nis_mag_ema;
+    out->nis_mag   = f->mag_health[0].nis_ema;
 
     /* Euler angles from rotation matrix R (NED, 3-2-1 aerospace convention) */
     float R[3][3];

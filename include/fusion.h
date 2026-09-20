@@ -43,6 +43,37 @@
  */
 #define MEKF_N 9
 
+/*
+ * Per-magnetometer health, τ ≈ 30 s at 100 Hz mag ODR.
+ *
+ * One entry per source, because every statistic here describes a SENSOR:
+ * sharing one accumulator between several averages the honest part with the
+ * lying one, so the reading that would name the culprit is the one destroyed
+ * by adding sensors.  Fed BEFORE the rejection gates in mekf_update_mag —
+ * rejected samples are evidence of anomaly, not noise to hide.
+ *
+ * Source 0 is the primary, and is what mekf_get_state exports.
+ */
+typedef struct {
+    float anom_ema;   /* EMA of ||B|−|B_ref||/|B_ref| — interference / iron-cal drift */
+    float resid_ema;  /* EMA of |heading innovation|, rad — compass-vs-filter disagreement */
+    /* EMA of this source's d²/dof: d²/2 under 3-D fusion, d²/1 yaw-only.
+     * The NIS block in mekf_t says what the number means. */
+    float nis_ema;
+    /* This source's share of the update-gate health in mekf_t — the same two
+     * quantities, counted from its own updates alone, so a sensor being
+     * capped or thrown out is named instead of averaged into the pair that
+     * every accel update also feeds. */
+    float weight_ema;
+    float reject_ema;
+    /* Counter of mag updates that actually reached a measurement update, as
+     * opposed to returning at one of the gates above it. The caller cannot
+     * see inside mekf_update_mag, and "a mag sample arrived" is not the same
+     * claim as "the yaw estimate is being corrected" — FLAG_MAG_VALID is the
+     * second one. */
+    uint32_t accepted;
+} mag_health_t;
+
 typedef struct {
     /* ── Nominal state ────────────────────────────────────────────────── */
     float q[4];        /* unit quaternion [w, x, y, z], body→NED */
@@ -107,22 +138,16 @@ typedef struct {
      * mode, which never reads the dip channel. */
     float dip_sig2;
 
-    /* ── Compass health diagnostics (τ ≈ 30 s at 100 Hz mag ODR) ──────────
-     * Fed BEFORE the rejection gates in mekf_update_mag — rejected samples
-     * are evidence of anomaly, not noise to hide. Exported on the wire. */
-    float mag_anom_ema;  /* EMA of ||B|−|B_ref||/|B_ref| — interference / iron-cal drift */
-    float mag_resid_ema; /* EMA of |heading innovation|, rad — compass-vs-filter disagreement */
-    /* Counter of mag updates that actually reached a measurement update, as
-     * opposed to returning at one of the gates above it. The caller cannot
-     * see inside mekf_update_mag, and "a mag sample arrived" is not the same
-     * claim as "the yaw estimate is being corrected" — FLAG_MAG_VALID is the
-     * second one. */
-    uint32_t mag_accepted;
+    /* ── Compass health, one entry per magnetometer ───────────────────────
+     * See mag_health_t. Source 0's values are the ones on the wire. */
+    mag_health_t mag_health[MAG_SRC_MAX];
 
     /* ── Update-gate health (τ ≈ 30 s) ────────────────────────────────────
      * Fed by every eskf update (accel, 3-D mag, yaw), so at the 833 Hz accel
      * rate these are effectively an accel-path metric. Together they say how
-     * much the filter is having to distrust its own measurements. */
+     * much the filter is having to distrust its own measurements. A mag
+     * update feeds its source's copy as well, and these stay filter-wide —
+     * splitting them would change what the wire reports at one sensor. */
     float innov_weight_ema; /* EMA of the Huber weight √(γ/d²); 1.0 = never capped,
                              * → 0.33 = sustained capping at the reject boundary */
     float innov_reject_ema; /* EMA of the reject indicator; fraction of updates
@@ -155,8 +180,8 @@ typedef struct {
      * the mag signal would be invisible — and because they have different
      * dof (3 for accel and 3-D mag, 1 for yaw-only). */
     float nis_accel_ema;    /* accel gravity update, d²/2 */
-    float nis_mag_ema;      /* mag update: d²/2 (3-D) or d²/1 (yaw-only) */
-    float nis_mag_alpha;    /* per-update EMA gain for nis_mag_ema (mag ODR) */
+    /* The mag channel's accumulator is per source — mag_health_t.nis_ema. */
+    float nis_mag_alpha;    /* per-update EMA gain for that accumulator (mag ODR) */
 } mekf_t;
 
 /*

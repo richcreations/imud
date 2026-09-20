@@ -389,6 +389,11 @@ int cap_reader_next(cap_reader_t *r, cap_record_t *out)
             /* The tap records the field pre-calibration, so a replayed sample
              * is uncalibrated until the replay path applies a cal of its own. */
             out->mag.calibrated = false;
+            /* The format carries no source, so a capture is one magnetometer.
+             * Set rather than assumed: out is the caller's, often a stack
+             * local, and a garbage index would land in another source's
+             * health or be dropped outright. */
+            out->mag.src = 0;
             return 1;
         }
         case CAP_REC_MARK: {

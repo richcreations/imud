@@ -85,6 +85,10 @@ struct mag_src {
     int              actual_odr_mhz;      /* milli-Hz; odr_actual_mag */
     imu_gpio_line_t *line;   /* GPIO for measurement-done interrupt */
     mag_ring_t       ring;
+    /* Which magnetometer this is, 0-based: stamped on every sample the reader
+     * pushes, so the filter can keep this part's health separate from the
+     * next one's.  One source is configurable, so this is 0 today. */
+    uint8_t          index;
 };
 
 typedef struct imu_src imu_src_t;

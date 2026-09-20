@@ -329,12 +329,12 @@ CASES = [
      "fusion.c:999"),
 
     # A citation that names no symbol (they point at a comment or an
-    # expression) still has to land inside SOME definition — 453 is a gap
+    # expression) still has to land inside SOME definition — 462 is a gap
     # between two functions.
     ("check-math-citations", "docs/math.md",
      sub(r"the in-code comment at `fusion\.c:\d+`",
-         "the in-code comment at `fusion.c:453`"),
-     "fusion.c:453"),
+         "the in-code comment at `fusion.c:462`"),
+     "fusion.c:462"),
 
     # A line past the end of the file.
     ("check-math-citations", "docs/math.md",

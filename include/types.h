@@ -132,6 +132,13 @@ typedef struct {
 
 /* ── Magnetometer sample — one MMC5983MA reading ──────────────────────────── */
 
+/*
+ * Magnetometers the filter keeps separate health statistics for (mekf_t's
+ * mag_health array).  A sample naming a source at or past this is not fused.
+ * One is configurable today; the ceiling for the mode layer is #98's to set.
+ */
+#define MAG_SRC_MAX 4
+
 typedef struct {
     float    field[3];       /* µT, calibrated; field[2] has Z sign flipped */
     float    field_raw[3];   /* µT, pre-calibration (after mount rotation) */
@@ -145,6 +152,14 @@ typedef struct {
      */
     bool     valid;          /* sensor reading is good */
     bool     calibrated;     /* hard/soft-iron cal applied to field[] */
+    /*
+     * Which magnetometer this came from, 0-based.  Daemon-internal: not on
+     * the wire and not in a capture record (cap_mag_rec_t is built
+     * field-by-field).  The ring is the only thing between a reader and the
+     * filter, so the source has to ride on the sample; whoever fills one
+     * outside a reader sets it too.
+     */
+    uint8_t  src;
 } mag_sample_t;
 
 /* ── MEKF fused state — written by fusion thread, read by output threads ───── */
