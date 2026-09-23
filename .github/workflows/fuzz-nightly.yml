@@ -73,14 +73,14 @@ jobs:
       - name: Record the verdict
         if: failure()
         run: |
-          repro=$(ls -1 crash-* timeout-* oom-* 2>/dev/null || true)
+          mapfile -t repro < <(ls -1 crash-* timeout-* oom-* 2>/dev/null || true)
           {
             echo "target: ${{ matrix.target }}"
             echo "build: ${{ steps.build.outcome }}"
             echo "fuzz: ${{ steps.fuzz.outcome }}"
-            if [ -n "$repro" ]; then
+            if [ ${#repro[@]} -gt 0 ]; then
               echo "reproducers:"
-              echo "$repro" | sed 's/^/  /'
+              printf '  %s\n' "${repro[@]}"
             else
               echo "reproducers: none"
             fi
