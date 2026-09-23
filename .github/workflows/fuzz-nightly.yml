@@ -40,6 +40,7 @@ jobs:
           restore-keys: fuzz-corpus-${{ matrix.target }}-
 
       - name: Build harness
+        id: build
         run: |
           case "${{ matrix.target }}" in
             config)  DEPS="src/config.c src/log.c src/influx_line.c" ;;
@@ -57,6 +58,7 @@ jobs:
                 -o fuzz_${{ matrix.target }} -lm
 
       - name: Fuzz (1 h, 4-way fork)
+        id: fuzz
         run: |
           mkdir -p "corpus-${{ matrix.target }}"
           ./fuzz_${{ matrix.target }} \
@@ -64,12 +66,35 @@ jobs:
               -close_fd_mask=3 \
               "corpus-${{ matrix.target }}" "test/fuzz/corpus/${{ matrix.target }}"
 
-      - name: Save reproducers
+      # Writes what actually went wrong, for `notify` to read.  A reclaimed
+      # runner kills the job mid-step and runs nothing after it, so the file
+      # exists only when a step genuinely failed — which is the distinction
+      # job status alone cannot make.
+      - name: Record the verdict
+        if: failure()
+        run: |
+          repro=$(ls -1 crash-* timeout-* oom-* 2>/dev/null || true)
+          {
+            echo "target: ${{ matrix.target }}"
+            echo "build: ${{ steps.build.outcome }}"
+            echo "fuzz: ${{ steps.fuzz.outcome }}"
+            if [ -n "$repro" ]; then
+              echo "reproducers:"
+              echo "$repro" | sed 's/^/  /'
+            else
+              echo "reproducers: none"
+            fi
+            echo   # separates the blocks when notify cats them together
+          } > "verdict-${{ matrix.target }}.txt"
+          cat "verdict-${{ matrix.target }}.txt"
+
+      - name: Save verdict and reproducers
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: fuzz-nightly-reproducers-${{ matrix.target }}
+          name: fuzz-nightly-failure-${{ matrix.target }}
           path: |
+            verdict-${{ matrix.target }}.txt
             crash-*
             timeout-*
             oom-*
@@ -79,6 +104,10 @@ jobs:
   # Actions tab at 06:17 UTC, and the reproducers expire with the artifact
   # retention window.  Raise an issue so a crash cannot be missed, reusing
   # one issue for consecutive failures rather than filing a new one nightly.
+  #
+  # Gate this on a verdict file, not on job status: a reclaimed runner fails
+  # the job too, and filing on that alone raises an issue pointing at an
+  # artifact that was never created.
   notify:
     needs: fuzz
     if: failure() && github.event_name == 'schedule'
@@ -86,7 +115,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write
+      actions: read   # download-artifact reads this run's own artifacts
     steps:
+      - name: Collect the verdicts
+        continue-on-error: true   # no artifacts at all is the quiet case
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: fuzz-nightly-failure-*
+          path: verdicts
+
       - name: Open or update the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -96,9 +133,24 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # `|| true` because the step runs under `bash -e` and the quiet
+          # case is exactly the one where `verdicts/` was never created.
+          summary=$(find verdicts -name 'verdict-*.txt' -exec cat {} + 2>/dev/null || true)
+          if [ -z "$summary" ]; then
+            echo "No verdict file: every failed job died before it could"
+            echo "report one, which means a reclaimed runner or a"
+            echo "cancellation rather than a finding.  Not filing."
+            exit 0
+          fi
+
           title="Nightly fuzz failure"
-          body="A scheduled fuzz run failed. Reproducers are attached to the run as \
-          \`fuzz-nightly-reproducers-<target>\` artifacts (they expire — download them before then).
+          body="A scheduled fuzz run failed. Verdicts and any reproducers are attached to \
+          the run as \`fuzz-nightly-failure-<target>\` artifacts (they expire — download \
+          them before then).
+
+          \`\`\`
+          $summary
+          \`\`\`
 
           Run: $RUN_URL"
 
