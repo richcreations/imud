@@ -36,8 +36,8 @@
 # Dependabot bumps both (.github/dependabot.yml, docker ecosystem) the way it
 # bumps the action SHAs.  Do not "tidy" these back to a bare tag.
 ARG DIST=trixie
-FROM debian:bookworm@sha256:f37a335e82bca302e955fa39f9dfe28f1be618f016f8a2b56318e5a5111afc26 AS base-bookworm
-FROM debian:trixie@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c AS base-trixie
+FROM debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 AS base-bookworm
+FROM debian:trixie@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5 AS base-trixie
 FROM base-${DIST}
 
 ARG DEBIAN_FRONTEND=noninteractive
