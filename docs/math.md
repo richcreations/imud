@@ -523,14 +523,14 @@ Mahalanobis distance $d^2 = \nu^\top S^{-1}\nu$:
 
 $$
 \begin{cases}
-\text{reject the update} & d^2 > 9\,\gamma \\[2pt]
-\nu \leftarrow \nu\,\sqrt{\gamma/d^2} & \gamma < d^2 \le 9\gamma \\[2pt]
+\text{reject the update} & d^2 > 25\,\gamma \\[2pt]
+\nu \leftarrow \nu\,\sqrt{\gamma/d^2} & \gamma < d^2 \le 25\gamma \\[2pt]
 \nu \text{ unchanged} & d^2 \le \gamma
 \end{cases}
 $$
 
-$\gamma=$ `chi2_gate`. The middle branch caps the innovation's influence at
-the gate distance rather than discarding it.
+$\gamma=$ `chi2_gate`, and 25 is `GROSS_REJECT_MULT`. The middle branch caps
+the innovation's influence at the gate distance rather than discarding it.
 
 **Correction and injection:**
 $$ \delta x = K\,\nu,\qquad q \leftarrow q\otimes\exp(\delta\theta),\qquad
@@ -585,7 +585,7 @@ which keeps a genuine fault gate at 5× the cap radius instead of 3×.
 **Known inconsistency (measured, deliberately retained).** The cap scales
 $\nu$ but leaves $K$ — and hence the covariance update — at full confidence,
 so $P$ contracts as though the measurement had been fully trusted even when
-the correction was attenuated up to 3×. Making this consistent was tried three
+the correction was attenuated up to 5×. Making this consistent was tried three
 ways and measured over the 12-seed wave benchmark, where NEES $\approx 1$ would
 indicate a self-consistent filter:
 
@@ -665,8 +665,8 @@ back to the plain direction form.
 Heading-only correction (a 1-D measurement). Innovation $y$ (rad, wrapped to
 $\pm\pi$), variance $R_{noise}$. The Jacobian projects the error onto the
 NED-down axis expressed in body:
-$$ H = \big[\,-R[2][:]\ \mid\ 0_3\,\big]\in\mathbb{R}^{1\times6}, $$
-$R[2][:]$ = third row of $R(q)$. Then
+$$ H = \big[\,-R[2][:]\ \mid\ 0_3\ \mid\ 0_3\,\big]\in\mathbb{R}^{1\times9}, $$
+$R[2][:]$ = third row of $R(q)$; the bias and wave blocks are zero. Then
 $$ S = H P H^\top + R_{noise},\qquad K = P H^\top/S, $$
 with the same Huber policy on $d^2=y^2/S$ against
 $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
@@ -1522,7 +1522,7 @@ $$ A^\top A =
 \end{bmatrix},\quad
 A^\top b=\begin{bmatrix}2S_{xr}\\2S_{yr}\\2S_{zr}\\S_{xx}{+}S_{yy}{+}S_{zz}\end{bmatrix}, $$
 center $c=p[0{:}3]$, $r=\sqrt{p_3+\lVert c\rVert^2}$. Center = hard-iron
-offset; $r$ = reference field magnitude for §12.3.
+offset; $r$ = field magnitude, which scales the per-axis fallback of §12.3.
 
 **A level swing is not given to the sphere.** Its samples all read the same
 vertical field, so the centre is unconstrained along the vertical and lands
@@ -1551,18 +1551,22 @@ solved by `gauss4` with an identity pad row). Requires the conic
 $M=\begin{pmatrix}A&B/2\\B/2&C\end{pmatrix}$ positive-definite
 ($A>0$, $\det>0$).
 
-Soft-iron matrix $S = r\cdot M^{1/2}$ via the $2\times2$ symmetric
+Soft-iron matrix $S = r_h\cdot M^{1/2}$ via the $2\times2$ symmetric
 eigendecomposition: eigenvalues $\lambda_{1,2}=\tfrac{A+C}2\pm
 \sqrt{\tfrac14(A-C)^2+\tfrac14 B^2}$, unit eigenvector $v$ for $\lambda_1$,
 and
 $$ S = s_1\,v v^\top + s_2\,v_\perp v_\perp^\top,\qquad
-   s_{1,2}=r\sqrt{\lambda_{1,2}},\ v_\perp=(-v_y,v_x). $$
+   s_{1,2}=r_h\sqrt{\lambda_{1,2}},\ v_\perp=(-v_y,v_x). $$
+$r_h$ is the mean of the two horizontal half-extents of the centred samples
+(`cal_mag_fit`), not the §12.2 radius: for a heeled swing that one is the
+total field, and would over-scale the horizontal plane.
 
 **As-implemented / audit note.** The soft-iron correction is **2-D** (X–Y
 plane only). This is a deliberate specialization for the heading-only fusion
 default (§4.8): the swing is a horizontal circle, so the vertical/dip channel
-is not calibrated. `ellipse_fit` includes a diagonal fallback when the conic
-is degenerate. The full `mag_soft_iron[3][3]` applied live (§3.3) therefore
+is not calibrated. When the conic is degenerate `cal_mag_fit` falls back to a
+per-axis scale $r/\text{half-extent}$ (`cal_softiron_diag`), on the axes the
+swing swept. The full `mag_soft_iron[3][3]` applied live (§3.3) therefore
 has its Z couplings from configuration/identity, not from this fit.
 
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
