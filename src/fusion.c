@@ -632,13 +632,15 @@ static int eskf_update(mekf_t *f,
      * orthogonal to `protect`, so a measurement that carries no rotation about
      * that axis makes no correction about it and reduces no covariance on it —
      *
-     *   δx[0:3]·n = 0     and     nᵀP⁺n = nᵀP⁻n
+     *   δx[0:3]·n = 0     and     nᵀP′n = nᵀP⁻n
      *
-     * the second because Kᵀ(n,0,0) = (nᵀK_att)ᵀ = 0 leaves both (I−KH)ᵀ and
-     * K·R·Kᵀ inert along n.  Joseph form holds for any gain.  H_δθ·n = 0
-     * already holds exactly, so this subtracts nothing at small angle; it is
-     * what keeps the property true once P is large enough that one correction
-     * outruns the first-order reset G.  docs/math.md §4.7.
+     * P′ being the update before the reset G below, which then turns it by
+     * half the correction.  The second holds because Kᵀ(n,0,0) = (nᵀK_att)ᵀ = 0
+     * leaves both (I−KH)ᵀ and K·R·Kᵀ inert along n.  Joseph form holds for
+     * any gain.  H_δθ·n = 0 already holds exactly, so this subtracts nothing
+     * at small angle; it is what keeps the property true once P is large
+     * enough that one correction outruns the first-order reset G.
+     * docs/math.md §4.7.
      *
      * ATTITUDE ROWS ONLY.  A gyro-bias component along n is also unobservable
      * here, but n rotates in the body frame as the platform moves, so that

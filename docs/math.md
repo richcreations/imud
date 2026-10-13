@@ -305,7 +305,7 @@ the measurement Jacobian in §4.5.
 **Source:** Solà 2017 §5.4 *(code comment)*; Markley & Crassidis 2014 §6.1;
 Trawny & Roumeliotis 2005 *(canonical)*.
 
-### 4.2 Initialization — `mekf_init()` (`fusion.c:1020`)
+### 4.2 Initialization — `mekf_init()` (`fusion.c:1022`)
 
 Nominal: $q=[1,0,0,0]$, $b=$ `gyro_bias_init` (from the startup still window,
 §10; may be 0).
@@ -328,7 +328,7 @@ densities). Stored as `f->Qg`, `f->Qb`.
 Measurement-noise variances:
 $$ R_a = \left(\frac{N_a}{g}\right)^2 \text{ODR},\qquad
    R_m = N_m^2\,f_{s,\text{mag}}, $$
-`f->Ra` (`mekf_derive_tuning`, `fusion.c:897`) in normalized
+`f->Ra` (`mekf_derive_tuning`, `fusion.c:899`) in normalized
 (gravity-direction) units, `f->Rm` (`:898`) in Gauss², with
 $N_a=$ `mekf_accel_noise`, $N_m=$ `mekf_mag_noise`,
 $f_{s,\text{mag}}=$ `mag_odr_hz`.
@@ -353,7 +353,7 @@ not driven by the Allan-variance characterization of §12.5.
 
 **Source:** Solà 2017 §4.1 for discrete process noise *(code comment)*.
 
-### 4.3 Alignment — `mekf_align()` (`fusion.c:1075`)
+### 4.3 Alignment — `mekf_align()` (`fusion.c:1077`)
 
 Deterministic initial attitude from one static accel+mag pair (a
 tilt-then-heading decomposition, TRIAD-family).
@@ -389,7 +389,7 @@ $$ \phi = \operatorname{atan2}(\widehat g_{b,y},\ \widehat g_{b,z}),\qquad
    \sqrt{\widehat g_{b,y}^2+\widehat g_{b,z}^2}\big). $$
 
 Tilt quaternion $q_{tilt}=q_\theta\otimes q_\phi$ built directly from
-half-angles (`mekf_align`, `fusion.c:1092`).
+half-angles (`mekf_align`, `fusion.c:1094`).
 
 **Heading from magnetometer.** Rotate $m_b$ by $R(q_{tilt})$ into the
 tilt-levelled frame; with horizontal components $m_x,m_y$ there,
@@ -406,7 +406,7 @@ $$ m_{ref} = 0.01\, R(q)\, m_b. $$
 **No magnetometer at alignment.** If the window ends with no magnetometer
 sample, alignment takes the tilt alone: $\psi=0$ and `m_ref` stays unset. On a
 6-DoF board that is permanent. Otherwise the first second of samples sets the
-reference (`mref_acquire`, `fusion.c:1454`). Each is rotated into the level
+reference (`mref_acquire`, `fusion.c:1456`). Each is rotated into the level
 frame with the filter's own attitude; with $\bar m$ their mean,
 
 $$ \beta = \operatorname{atan2}(\bar m_E,\ \bar m_N),\qquad
@@ -421,7 +421,7 @@ $\operatorname{atan2}(-m_y,m_x)$, **not** $\operatorname{atan2}(+m_y,m_x)$;
 the levelled field is the true NED field rotated by $-\psi$, so the negative
 sign recovers vessel yaw. (The `+m_y` form returns $-\psi$, mirrored about
 north — a historical bug invisible when aligning while pointing north; see
-the in-code comment at `fusion.c:1104`.) The initial `m_ref` inherits any
+the in-code comment at `fusion.c:1106`.) The initial `m_ref` inherits any
 alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 (§4.8) and the WMM invariants (§4.9) later remove; its horizontal
 **direction** is the heading datum and is never subsequently adapted.
@@ -429,7 +429,7 @@ alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 **Source:** tilt/heading coarse alignment — Farrell 2008 §10; TRIAD lineage
 Shuster & Oh 1981 *(canonical)*.
 
-### 4.4 Prediction — `mekf_predict()` (`fusion.c:1137`)
+### 4.4 Prediction — `mekf_predict()` (`fusion.c:1139`)
 
 Per IMU sample, with measured interval $dt$ (from hardware timestamps, §11;
 falls back to nominal $1/\text{ODR}$).
@@ -438,16 +438,16 @@ falls back to nominal $1/\text{ODR}$).
 
 **Quaternion propagation** by the exponential map (`q_from_rotvec`,
 `fusion.c:293`):
-$$ q \leftarrow q \otimes \exp\!\big(\tfrac12\,[\,0,\ \omega\,dt\,]\big),
+$$ q \leftarrow q \otimes \operatorname{Exp}(\vartheta),
 \qquad
-\exp(\phi) = \Big[\cos\tfrac{|\vartheta|}{2},\
+\operatorname{Exp}(\vartheta) = \Big[\cos\tfrac{|\vartheta|}{2},\
 \tfrac{\sin(|\vartheta|/2)}{|\vartheta|}\,\vartheta\Big], $$
-$\vartheta=\omega\,dt$, with the small-angle branch
+$\vartheta=\omega\,dt$ a rotation vector, with the small-angle branch
 $\delta q\approx[1,\tfrac12\vartheta]$ for $|\vartheta|<10^{-7}$. Renormalized
 after.
 
 **Covariance propagation** $P \leftarrow \Phi P \Phi^\top + Q_d$, first-order
-discrete transition (`mekf_predict`, `fusion.c:1165`):
+discrete transition (`mekf_predict`, `fusion.c:1167`):
 
 $$
 \Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt & 0_3 \\
@@ -533,7 +533,7 @@ $\gamma=$ `chi2_gate`, and 25 is `GROSS_REJECT_MULT`. The middle branch caps
 the innovation's influence at the gate distance rather than discarding it.
 
 **Correction and injection:**
-$$ \delta x = K\,\nu,\qquad q \leftarrow q\otimes\exp(\delta\theta),\qquad
+$$ \delta x = K\,\nu,\qquad q \leftarrow q\otimes\operatorname{Exp}(\delta\theta),\qquad
    b \leftarrow b + \delta b,\qquad a_w \leftarrow a_w + \delta a_w, $$
 $\delta\theta=\delta x[0{:}3]$, $\delta b=\delta x[3{:}6]$,
 $\delta a_w=\delta x[6{:}9]$; quaternion renormalized. The $a_w$ injection is
@@ -660,7 +660,7 @@ $\lVert v\rVert$ is guarded at 0.5; below that the acceleration is comparable
 to gravity itself and the linearisation is meaningless, so the update falls
 back to the plain direction form.
 
-### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:758`)
+### 4.6 Scalar heading update — `eskf_update_yaw()` (`fusion.c:760`)
 
 Heading-only correction (a 1-D measurement). Innovation $y$ (rad, wrapped to
 $\pm\pi$), variance $R_{noise}$. The Jacobian projects the error onto the
@@ -673,7 +673,7 @@ $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
 
 **Source:** scalar-measurement EKF specialization of §4.5 *(canonical)*.
 
-### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1377`)
+### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1379`)
 
 **Speed-aided centripetal correction.** In a turn the accelerometer senses
 $a = a_{platform} - g$, and with speed-over-ground $v$ (body $\approx[v,0,0]$,
@@ -699,10 +699,24 @@ $\gamma=11.34$ ($\chi^2_3$ 99%). The gravity direction $z$ is stashed as
 which projects the attitude rows of $K$ onto the plane orthogonal to it:
 $$ K_{\delta\theta} \leftarrow (I - hh^\top)\,K_{\delta\theta}. $$
 Two properties follow, and they are what the update is entitled to claim:
-$$ \delta\theta \cdot h = 0, \qquad h^\top P^+ h = h^\top P^- h, $$
-the second because $K^\top(h,0,0) = (h^\top K_{\delta\theta})^\top = 0$
-leaves both $(I-KH)^\top$ and $KRK^\top$ inert along $h$. Joseph form holds
-for any gain, so nothing else in §4.5 changes.
+$$ \delta\theta \cdot h = 0, \qquad h^\top P' h = h^\top P^- h, $$
+where $P'$ is the Joseph update before the reset. The second holds because
+$K^\top(h,0,0) = (h^\top K_{\delta\theta})^\top = 0$ leaves both
+$(I-KH)^\top$ and $KRK^\top$ inert along $h$. Joseph form holds for any gain,
+so nothing else in §4.5 changes.
+
+**The reset moves it, to first order.** $P^+ = G P' G^\top$ turns $P'$ by half
+the correction, so what is preserved exactly is $w^\top P^+ w$ for
+$w = G^{-\top}h$, which points half-way between $h$ and where the correction
+takes it. About $h$ itself
+$$ h^\top P^+ h - h^\top P^- h = (\delta\theta\times h)^\top P' h
+   + \tfrac14(\delta\theta\times h)^\top P'(\delta\theta\times h), $$
+first order in $\delta\theta$ times the yaw–tilt covariance the update left.
+With 0.25 rad² on every axis, a yaw–roll correlation of 0.9 and a 0.17 rad
+correction that is +0.30% about the old $h$ and −0.27% about the new one
+(`test_protected_variance_large_p`); with no correlation, +0.02%. At the grown
+ceiling of the next paragraph the correction is capped near $5\times10^{-4}$
+rad and the change is below float resolution.
 
 $H_{\delta\theta}h = 0$ already holds exactly for both Jacobians — the
 projection subtracts nothing at small angle. It exists for the large-angle
@@ -987,7 +1001,7 @@ off optimal for 3-D — a deliberate compromise favouring the marine default, no
 an arbitrary number. Reproduce with `-DBENCH_SWEEP_NG`, composable with
 `-DBENCH_ODR_HZ=<rate>`.
 
-### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1489`)
+### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1491`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field
 $h_{raw}=R^\top m_{ref}$, magnitude $|h_{raw}|$.
@@ -1149,9 +1163,9 @@ and its dip channel is least trustworthy.
 **Source:** heading-only / tilt-compensated magnetometer fusion — standard
 marine AHRS practice, Farrell 2008 *(canonical)*; gauge-feedback avoidance is
 imud-specific design (see the in-code rationale in `mekf_update_mag`,
-`fusion.c:1608`).
+`fusion.c:1610`).
 
-### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1055`)
+### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1057`)
 
 Given WMM horizontal magnitude $H$ and vertical $Z$ (Gauss) at a known
 position (from §13), rescale `m_ref` to those invariants while preserving
@@ -1163,7 +1177,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2071`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2073`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1175,14 +1189,14 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1999`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:2001`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
 a new config on hot-reload; $q$, $P$, $b$, $dt$ and the runtime scalars
 (`Ra_scale`, `acc_quiet_ema`, the health EMAs) are untouched, so the filter
 keeps running. Both this and `mekf_init()` derive their tuning through one
-shared helper (`mekf_derive_tuning`, `fusion.c:864`), so no value can be
+shared helper (`mekf_derive_tuning`, `fusion.c:866`), so no value can be
 updated in one path and forgotten in the other — `mref_alpha` previously was,
 leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
@@ -1216,7 +1230,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:1847`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1849`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -1256,18 +1270,18 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:1909`–`1997`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1911`–`1999`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1927`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1929`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:1934`).
+`fusion.c:1936`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):
@@ -1308,7 +1322,7 @@ recursion, West 1979 / Finch 2009 *(canonical)*.
 
 ---
 
-## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1489`)
+## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1491`)
 
 Two EMAs ($\alpha=1/3000$, $\tau\approx30$ s at 100 Hz mag ODR), updated
 **before** the rejection gates so that gated-out anomalies still register:

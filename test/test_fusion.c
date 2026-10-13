@@ -725,6 +725,71 @@ TEST(test_accel_correction_is_orthogonal_to_gravity)
 }
 
 /*
+ * The variance about gravity on ONE large-P update, where the reset is no
+ * longer negligible.  The update carries it through exactly; the reset G then
+ * turns P by half the correction.  So the exact statement is about
+ * w = G⁻ᵀh, and about h itself it holds to first order in δθ, times the
+ * yaw–tilt covariance — which is seeded here, at 0.9, to make that term as
+ * large as it gets.  docs/math.md §4.7.
+ */
+TEST(test_protected_variance_large_p)
+{
+    imud_config_t cfg = make_cfg();
+    float bias[3] = {0};
+    mekf_t f;
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    imu_sample_t level = accel_at(0.0f, 0.0f);
+    mekf_align(&f, level.accel, (float[]){20.0f, 0, 5.0f});
+
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) f.P[i][j] = (i == j) ? 0.25f : 0.0f;
+    f.P[0][2] = f.P[2][0] = 0.9f * 0.25f;
+
+    float h[3], q0[4];
+    q_down_body(f.q, h);
+    memcpy(q0, f.q, sizeof q0);
+    const float v0 = p_att_quad(&f, h);
+
+    imu_sample_t tilted = accel_at(10.0f*DEG, 10.0f*DEG);
+    mekf_update_accel(&f, &tilted);
+
+    /* δθ back out of the quaternion change. */
+    float qc[4] = { q0[0], -q0[1], -q0[2], -q0[3] };
+    float dq[4] = {
+        qc[0]*f.q[0] - qc[1]*f.q[1] - qc[2]*f.q[2] - qc[3]*f.q[3],
+        qc[0]*f.q[1] + qc[1]*f.q[0] + qc[2]*f.q[3] - qc[3]*f.q[2],
+        qc[0]*f.q[2] - qc[1]*f.q[3] + qc[2]*f.q[0] + qc[3]*f.q[1],
+        qc[0]*f.q[3] + qc[1]*f.q[2] - qc[2]*f.q[1] + qc[3]*f.q[0],
+    };
+    float vn  = sqrtf(dq[1]*dq[1] + dq[2]*dq[2] + dq[3]*dq[3]);
+    float ang = 2.0f * atan2f(vn, dq[0]);
+
+    /* w = G⁻ᵀh = (h − a×h + a(a·h)) / (1 + |a|²), with a = δθ/2. */
+    float a[3] = { 0.5f*ang*dq[1]/vn, 0.5f*ang*dq[2]/vn, 0.5f*ang*dq[3]/vn };
+    float axh[3] = { a[1]*h[2] - a[2]*h[1], a[2]*h[0] - a[0]*h[2],
+                     a[0]*h[1] - a[1]*h[0] };
+    float adh = a[0]*h[0] + a[1]*h[1] + a[2]*h[2];
+    float aa  = a[0]*a[0] + a[1]*a[1] + a[2]*a[2];
+    float w[3];
+    for (int i = 0; i < 3; i++) w[i] = (h[i] - axh[i] + a[i]*adh) / (1.0f + aa);
+
+    float h1[3];
+    q_down_body(f.q, h1);
+    float vw = p_att_quad(&f, w), vh = p_att_quad(&f, h), vh1 = p_att_quad(&f, h1);
+
+    printf("\n    [#113] |dth| %.3f rad: about w %+.1e, old h %+.1e,"
+           " new h %+.1e (relative)\n    ", (double)ang,
+           (double)((vw - v0)/v0), (double)((vh - v0)/v0),
+           (double)((vh1 - v0)/v0));
+
+    EXPECT(ang > 0.1f, "the correction is a large one");
+    EXPECT(fabsf(vw - v0) < 1e-4f * v0,
+           "the update carries the variance about gravity through exactly");
+    EXPECT(fabsf(vh - v0) < 0.01f * v0 && fabsf(vh1 - v0) < 0.01f * v0,
+           "and the reset moves it by under 1 % about gravity itself");
+}
+
+/*
  * The protection is specific to the accelerometer.  The magnetometer is the
  * measurement that DOES carry heading, and it must still be able to collapse
  * the same yaw variance — otherwise the fix has disabled the compass.
@@ -4706,6 +4771,7 @@ int main(void)
     RUN(test_accel_reject_linear_acceleration);
     RUN(test_accel_update_preserves_yaw_variance);
     RUN(test_accel_correction_is_orthogonal_to_gravity);
+    RUN(test_protected_variance_large_p);
     RUN(test_mag_still_collapses_yaw_variance);
     RUN(test_mag_update_corrects_yaw);
     RUN(test_mag_reject_anomaly);
