@@ -335,11 +335,30 @@ static void *health_thread(void *arg)
          * run under systemd or when WatchdogSec is unset. */
         sd_notify_msg("WATCHDOG=1");
 
-        /* Poll the status socket with 1 s timeout. */
+        /* stats_hz is [hot]: read it every pass, so a reload changes the
+         * cadence from the next line on. */
+        pthread_mutex_lock(&g_cfg_lock);
+        log_stats_hz = ctx->cfg->log_stats_hz;
+        pthread_mutex_unlock(&g_cfg_lock);
+        stats_period_ns = (log_stats_hz > 0)
+            ? 1000000000L / log_stats_hz
+            : 1000000000L;
+
+        /* Poll the status socket until the next stats line is due, and for no
+         * more than a second so the watchdog above is fed in time.  A flat
+         * second here capped the line at 1 Hz whatever stats_hz said. */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t wait_ns = (int64_t)(next_stats.tv_sec - now.tv_sec) * 1000000000LL
+                        + (int64_t)(next_stats.tv_nsec - now.tv_nsec);
+        if (wait_ns < 0)            wait_ns = 0;
+        if (wait_ns > 1000000000LL) wait_ns = 1000000000LL;
+
         fd_set rfds;
         FD_ZERO(&rfds);
         if (ctx->status_fd >= 0) FD_SET(ctx->status_fd, &rfds);
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        struct timeval tv = { .tv_sec  = (time_t)(wait_ns / 1000000000LL),
+                              .tv_usec = (suseconds_t)((wait_ns % 1000000000LL) / 1000) };
         int nfds = (ctx->status_fd >= 0) ? ctx->status_fd + 1 : 1;
 
         if (select(nfds, &rfds, NULL, NULL, &tv) > 0 &&
@@ -363,14 +382,21 @@ static void *health_thread(void *arg)
         }
 
         /* Periodic stats log — suppressed until fusion is aligned */
-        struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         if ((now.tv_sec > next_stats.tv_sec) ||
             (now.tv_sec == next_stats.tv_sec &&
              now.tv_nsec >= next_stats.tv_nsec)) {
 
-            /* Advance deadline regardless so we don't burst when settled */
+            /* Advance deadline regardless so we don't burst when settled.  A
+             * pass that ran late is not repaid either: the next line is one
+             * period from now, not a queue of the ones that were missed. */
             ts_add_ns(&next_stats, stats_period_ns);
+            if ((now.tv_sec > next_stats.tv_sec) ||
+                (now.tv_sec == next_stats.tv_sec &&
+                 now.tv_nsec >= next_stats.tv_nsec)) {
+                next_stats = now;
+                ts_add_ns(&next_stats, stats_period_ns);
+            }
 
             if (!imu_ctx_is_settled(ctx->imu)) continue;
 

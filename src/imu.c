@@ -1874,39 +1874,36 @@ fail:
 void imu_ctx_update_config(imu_ctx_t *ctx, const imud_config_t *new_cfg)
 {
     pthread_mutex_lock(&ctx->live_lock);
-    ctx->cfg.mekf_gyro_noise           = new_cfg->mekf_gyro_noise;
-    ctx->cfg.mekf_gyro_bias            = new_cfg->mekf_gyro_bias;
-    ctx->cfg.mekf_accel_noise          = new_cfg->mekf_accel_noise;
-    ctx->cfg.mekf_mag_noise            = new_cfg->mekf_mag_noise;
-    ctx->cfg.mekf_wave_accel           = new_cfg->mekf_wave_accel;
-    ctx->cfg.mekf_wave_accel_tau_s     = new_cfg->mekf_wave_accel_tau_s;
-    ctx->cfg.mekf_mag_dip_sigma_deg    = new_cfg->mekf_mag_dip_sigma_deg;
-    ctx->cfg.mag_reject_gauss          = new_cfg->mag_reject_gauss;
-    ctx->cfg.accel_skip_thresh         = new_cfg->accel_skip_thresh;
-    ctx->cfg.engine_vibration_g2       = new_cfg->engine_vibration_g2;
-    ctx->cfg.engine_accel_skip_thresh  = new_cfg->engine_accel_skip_thresh;
-    /* [hot] fusion params the reconfigure path re-derives — these must be
-     * published here too or a SIGHUP change to them never reaches the
-     * running filter (mekf_reconfigure reads mag_yaw_only; the fusion loop
-     * reads heave_tau_s/wave_tau_s). */
-    ctx->cfg.mag_yaw_only              = new_cfg->mag_yaw_only;
-    ctx->cfg.heave_tau_s               = new_cfg->heave_tau_s;
-    ctx->cfg.wave_tau_s                = new_cfg->wave_tau_s;
+
+    const float decl       = ctx->cfg.pos_declination_deg;
+    const bool  decl_valid = ctx->cfg.pos_declination_valid;
+    const float mref_h     = ctx->cfg.pos_mref_h_gauss;
+    const float mref_z     = ctx->cfg.pos_mref_z_gauss;
+    const bool  mref_valid = ctx->cfg.pos_mref_valid;
+
+    /* Every [hot] key, from the one list that defines them.  A list kept
+     * here by hand fell behind it: two keys reloaded into main's config and
+     * never reached the filter. */
+    config_apply_hot(&ctx->cfg, new_cfg);
+
     /* Static declination applies only when no live position source is
-     * configured. With gpsd/SignalK enabled the position thread owns this
-     * field via imu_ctx_set_declination(); copying main's static value
-     * (typically 0.0) here would clobber the live GPS-derived declination
-     * on every SIGHUP and drop true-heading output until the next ≥5 km
+     * configured. With gpsd/SignalK enabled the position thread owns it and
+     * the field invariants (imu_ctx_set_declination, imu_ctx_set_mag_ref);
+     * main's static values (typically 0.0) would clobber the live ones on
+     * every SIGHUP and drop true-heading output until the next ≥5 km
      * position change. */
-    if (!new_cfg->pos_gpsd_enabled && !new_cfg->pos_signalk_enabled) {
-        ctx->cfg.pos_declination_deg   = new_cfg->pos_declination_deg;
-        ctx->cfg.pos_declination_valid = new_cfg->pos_declination_valid;
-        if (new_cfg->pos_mref_valid) {
-            ctx->cfg.pos_mref_h_gauss = new_cfg->pos_mref_h_gauss;
-            ctx->cfg.pos_mref_z_gauss = new_cfg->pos_mref_z_gauss;
-            ctx->cfg.pos_mref_valid   = true;
-            ctx->mref_update = 1;
-        }
+    if (new_cfg->pos_gpsd_enabled || new_cfg->pos_signalk_enabled) {
+        ctx->cfg.pos_declination_deg   = decl;
+        ctx->cfg.pos_declination_valid = decl_valid;
+    }
+    /* The invariants change only for a static position that has a field. */
+    if (!new_cfg->pos_gpsd_enabled && !new_cfg->pos_signalk_enabled &&
+        new_cfg->pos_mref_valid) {
+        ctx->mref_update = 1;
+    } else {
+        ctx->cfg.pos_mref_h_gauss = mref_h;
+        ctx->cfg.pos_mref_z_gauss = mref_z;
+        ctx->cfg.pos_mref_valid   = mref_valid;
     }
     ctx->reconfigure = 1;
     pthread_mutex_unlock(&ctx->live_lock);

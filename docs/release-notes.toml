@@ -59,6 +59,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "After a filter reset the daemon aligns again and carries on. It previously published a level attitude for the rest of the run. Output pauses for the alignment window."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A reload now applies mag_fuse_uncal, mag_uncal_reject_frac and stats_hz. A stats_hz above 1 had no effect at all, at startup or on reload."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

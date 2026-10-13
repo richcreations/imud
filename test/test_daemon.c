@@ -189,6 +189,9 @@ typedef struct {
     /* The status_socket that block names, when T_ALT_STATUS_SOCK is not the
      * point of the case.  Needs runtime_paths too. */
     const char *status_sock;
+    /* Appended as written, after everything else: whole sections for a case
+     * that needs keys none of the above covers. */
+    const char *extra;
 } conf_opt_t;
 
 static void write_conf_opt(conf_opt_t o)
@@ -255,6 +258,7 @@ static void write_conf_opt(conf_opt_t o)
             "startup_settle_sec = 0.0\n"
             "align_window_sec = 0.5\n",
             o.replay_realtime ? "1.0" : "0.0");
+    if (o.extra) fputs(o.extra, f);
     fclose(f);
 }
 
@@ -1387,6 +1391,96 @@ static void test_daemon_reload_reverts_a_deleted_key(void)
     end(fb);
 }
 
+#define T_RELOAD_LOG "/tmp/imud_e2e_daemon_reload.log"
+
+/* Aligns in half a second, with no cal.json wherever this runs, so the sim's
+ * magnetometer is fused uncalibrated. */
+#define T_QUICK_START \
+    "[calibration]\n" \
+    "file = \"/tmp/imud_e2e_no_such_cal.json\"\n" \
+    "startup_settle_sec = 0.0\n" \
+    "gyro_bias_sec = 0.0\n" \
+    "align_window_sec = 0.5\n"
+
+static int count_stats_lines(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[1024];
+    int n = 0;
+    while (fgets(line, sizeof line, f))
+        if (strstr(line, "[stats]")) n++;
+    fclose(f);
+    return n;
+}
+
+/*
+ * A [hot] key has to reach the thread that uses it, not just main's copy of
+ * the config.  Two did not: the fusion thread never saw mag_fuse_uncal, and
+ * the health thread read stats_hz once and then paced itself at a flat second.
+ */
+static void test_daemon_reload_reaches_the_threads(void)
+{
+    begin("test_daemon_reload_reaches_the_threads");
+    int fb = g_fail;
+
+    unlink(T_STATUS_SOCK);
+    unlink(T_STREAM_SOCK);
+    unlink(T_RELOAD_LOG);
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
+                                 .log_file = T_RELOAD_LOG,
+                                 .extra = T_QUICK_START });
+
+    /* [logging] file dup2()s over fd 2 process-wide; see the replay case. */
+    int saved_stderr = dup(STDERR_FILENO);
+
+    sigset_t old;
+    daemon_run_t d = {0};
+    daemon_start(&d, &old);
+
+    bool uncal = wait_for_status("heading is", "UNCALIBRATED", 20000);
+
+    int n0 = count_stats_lines(T_RELOAD_LOG);
+    msleep(2100);
+    int before = count_stats_lines(T_RELOAD_LOG) - n0;
+
+    write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 833,
+                                 .log_file = T_RELOAD_LOG,
+                                 .extra = T_QUICK_START
+                                          "[fusion]\n"
+                                          "mag_fuse_uncal = false\n"
+                                          "[logging]\n"
+                                          "stats_hz = 5\n" });
+    bool hup = pthread_kill(d.tid, SIGHUP) == 0;
+    bool dead_reckoned = wait_for_status("heading is", "DEAD RECKONED", 15000);
+
+    n0 = count_stats_lines(T_RELOAD_LOG);
+    msleep(2100);
+    int after = count_stats_lines(T_RELOAD_LOG) - n0;
+
+    bool term = pthread_kill(d.tid, SIGTERM) == 0;
+    pthread_join(d.tid, NULL);
+
+    if (saved_stderr >= 0) {                     /* before the first FAIL below */
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    EXPECT(uncal, "starts with the uncalibrated magnetometer fused");
+    EXPECT(before >= 1 && before <= 3, "and one [stats] line a second");
+    EXPECT(hup, "SIGHUP delivered");
+    EXPECT(dead_reckoned, "mag_fuse_uncal = false reaches the filter");
+    EXPECT(after >= 8, "stats_hz = 5 reaches the health thread");
+    EXPECT(term, "SIGTERM delivered");
+    EXPECT(d.rc == 0, "shuts down clean");
+
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    unlink(T_CONF);
+    unlink(T_STREAM_SOCK);
+    unlink(T_RELOAD_LOG);
+    end(fb);
+}
+
 /*
  * Startup falls back to $HOME when the system config
  * is missing, so reload must not re-read args.config_path regardless. A daemon
@@ -1538,6 +1632,7 @@ int main(void)
     test_daemon_nmea_thread_failure_closes_listener();
     test_daemon_hirate_thread_failure_sends_nothing();
     test_daemon_reload_reverts_a_deleted_key();
+    test_daemon_reload_reaches_the_threads();
     test_daemon_reload_follows_the_home_fallback();
     test_daemon_explicit_config_does_not_fall_back();
 
