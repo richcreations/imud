@@ -969,6 +969,65 @@ static void test_mqtt_publishes(void)
     end(fb);
 }
 
+/*
+ * With the magnetometer not being fused the bridge withholds the heading
+ * topics.  It also has to take the retained ones off the broker, or the last
+ * heading stays there to be handed to every later subscriber as current —
+ * unless the bridge was told not to retain, when there is nothing of its own
+ * to take off and it must leave the topics alone.
+ */
+static void test_mqtt_clears_a_withheld_heading(void)
+{
+    begin("test_mqtt_clears_a_withheld_heading");
+    int fb = g_fail;
+
+    for (int retain = 1; retain >= 0; retain--) {
+        fakestream_t fs;
+        EXPECT(fs_start(&fs, MQ_SOCK, 200) == 0, "fake stream started");
+        atomic_store(&fs.flags, FLAG_HEAVE_VALID);    /* no magnetometer */
+
+        fakebroker_t br;
+        EXPECT(fb_start(&br) == 0, "fake broker listening");
+
+        write_conf(MQ_CONF,
+                   "[imud-mqtt]\n"
+                   "enabled = true\n"
+                   "socket = \"%s\"\n"
+                   "broker_enabled = true\n"
+                   "broker_addr = \"127.0.0.1\"\n"
+                   "broker_port = %d\n"
+                   "topic_prefix = \"e2etop\"\n"
+                   "rate_hz = 50\n"
+                   "retain = %s\n"
+                   "ha_discovery = false\n"
+                   "[logging]\nlevel = \"error\"\n",
+                   MQ_SOCK, br.port, retain ? "true" : "false");
+
+        bridge_run_t r;
+        bridge_start(&r, mqtt_main_entry, MQ_CONF);
+
+        EXPECT(fb_wait_topic(&br, "e2etop/attitude/roll", 5000),
+               "values are being published");
+        if (retain) {
+            EXPECT(fb_wait_cleared(&br, "e2etop/navigation/headingMagnetic", 5000),
+                   "headingMagnetic is deleted from the broker");
+            EXPECT(fb_wait_cleared(&br, "e2etop/navigation/headingTrue", 5000),
+                   "and headingTrue with it");
+            EXPECT(!fb_wait_cleared(&br, "e2etop/attitude/roll", 200),
+                   "a topic that is being published is left alone");
+        } else {
+            EXPECT(!fb_wait_cleared(&br, "e2etop/navigation/headingMagnetic", 400),
+                   "with retain off nothing is deleted");
+        }
+
+        bridge_finish(&r);
+        fb_stop(&br);
+        fs_stop(&fs);
+        unlink(MQ_CONF);
+    }
+    end(fb);
+}
+
 int main(void)
 {
     test_signalk_udp_delta();
@@ -983,6 +1042,7 @@ int main(void)
     test_prometheus_scrape();
     test_prometheus_up_zero_without_daemon();
     test_mqtt_publishes();
+    test_mqtt_clears_a_withheld_heading();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

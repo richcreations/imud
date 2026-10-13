@@ -72,7 +72,35 @@ typedef struct {
     _Atomic bool deg;
     _Atomic bool emit_heave;
     _Atomic int  qos;
+    _Atomic int  expire_after_s;  /* discovery's expire_after; follows rate_hz */
+    /* Set by on_connect: whatever was cleared before may not have reached
+     * this broker, so the main loop clears every withheld topic again. */
+    _Atomic bool resync;
 } mqtt_ctx_t;
+
+/*
+ * How long Home Assistant waits for an update before it calls a sensor
+ * unavailable: three publish periods and a second, and never under ten
+ * seconds, so that one late tick does not flap every entity.
+ */
+static int expire_after_for(long period_ns)
+{
+    long s = 3 * period_ns / 1000000000L + 1;
+    return s < 10 ? 10 : (int)s;
+}
+
+static void publish_discovery(struct mosquitto *mosq, mqtt_ctx_t *c)
+{
+    if (!c->ha_discovery) return;
+    mqtt_msg_t d[MAX_MSGS];
+    int n = mqtt_build_discovery(d, MAX_MSGS, c->prefix, c->ha_prefix,
+                                 c->node_id, c->emit_heave, c->deg,
+                                 c->expire_after_s);
+    for (int i = 0; i < n; i++)
+        mosquitto_publish(mosq, NULL, d[i].topic, (int)strlen(d[i].payload),
+                          d[i].payload, c->qos, true);   /* retained */
+    LOG_I("[mqtt] published %d Home Assistant discovery configs\n", n);
+}
 
 /* ── libmosquitto callbacks ──────────────────────────────────────────────── */
 
@@ -88,15 +116,8 @@ static void on_connect(struct mosquitto *mosq, void *obj, int rc)
     /* Availability: retained "online" (the LWT sets "offline" on a crash). */
     mosquitto_publish(mosq, NULL, c->avail_topic, 6, "online", c->qos, true);
 
-    if (c->ha_discovery) {
-        mqtt_msg_t d[MAX_MSGS];
-        int n = mqtt_build_discovery(d, MAX_MSGS, c->prefix, c->ha_prefix,
-                                     c->node_id, c->emit_heave, c->deg);
-        for (int i = 0; i < n; i++)
-            mosquitto_publish(mosq, NULL, d[i].topic, (int)strlen(d[i].payload),
-                              d[i].payload, c->qos, true);   /* retained */
-        LOG_I("[mqtt] published %d Home Assistant discovery configs\n", n);
-    }
+    publish_discovery(mosq, c);
+    c->resync = true;
 }
 
 static void on_disconnect(struct mosquitto *mosq, void *obj, int rc)
@@ -136,6 +157,7 @@ int main(int argc, char **argv)
     ctx.deg          = deg;
     ctx.emit_heave   = emit_heave;
     ctx.qos          = cfg.mqtt_qos;
+    ctx.expire_after_s = expire_after_for(period_ns);
 
     /* ── libmosquitto setup (only when the broker output is enabled) ─────── */
     struct mosquitto *mosq = NULL;
@@ -181,6 +203,8 @@ int main(int argc, char **argv)
     imud_t      *stream = NULL;
     imud_data_t  latest;
     bool have_pkt = false;
+    /* The value topics holding a retained message of ours. */
+    mqtt_retained_t kept = {0};
 
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
@@ -194,6 +218,10 @@ int main(int argc, char **argv)
             emit_heave = nc.publish_heave;
             period_ns  = bridge_period_ns(nc.mqtt_rate_hz, 200000000L);
             ctx.deg = deg; ctx.emit_heave = emit_heave; ctx.qos = nc.mqtt_qos;
+            /* The configs carry the units and an expiry sized from the rate,
+             * so they go out again with whatever has just changed. */
+            ctx.expire_after_s = expire_after_for(period_ns);
+            if (mosq) publish_discovery(mosq, &ctx);
             if (nc.mqtt_broker_enabled != cfg.mqtt_broker_enabled)
                 LOG_W("[mqtt] broker_enabled change needs a restart to apply\n");
             if (strcmp(nc.mqtt_broker_addr, cfg.mqtt_broker_addr) != 0 ||
@@ -235,6 +263,17 @@ int main(int argc, char **argv)
                     mosquitto_publish(mosq, NULL, st[i].topic,
                                       (int)strlen(st[i].payload), st[i].payload,
                                       cfg.mqtt_qos, cfg.mqtt_retain);
+
+                /* A topic being withheld still holds its last retained value.
+                 * An empty retained payload is how MQTT deletes one. */
+                if (cfg.mqtt_retain) {
+                    if (atomic_exchange(&ctx.resync, false)) kept.primed = false;
+                    n = mqtt_build_clears(st, MAX_MSGS, &kept, &latest,
+                                          cfg.mqtt_topic_prefix, emit_heave);
+                    for (int i = 0; i < n; i++)
+                        mosquitto_publish(mosq, NULL, st[i].topic, 0, NULL,
+                                          cfg.mqtt_qos, true);
+                }
             }
             bridge_advance(&next, &now, period_ns);
         }

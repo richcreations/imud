@@ -239,7 +239,7 @@ static void test_engine_binary(void)
     EXPECT(e && strcmp(e->payload, "ON") == 0, "engine ON with flag");
 
     /* Discovery: binary_sensor config with payload map + device class. */
-    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true);
+    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true, 0);
     const mqtt_msg_t *cfg = find_topic(m, n, "homeassistant/binary_sensor/imud_engine/config");
     EXPECT(cfg != NULL, "engine binary_sensor discovery present");
     EXPECT(cfg && strstr(cfg->payload, "\"pl_on\":\"ON\"") != NULL, "pl_on present");
@@ -273,7 +273,7 @@ static void test_discovery(void)
     int fb = g_fail;
 
     mqtt_msg_t m[24];
-    int n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true);
+    int n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", false, true, 0);
     EXPECT(n == 9, "9 discovery configs (no heave family; engine binary_sensor always)");
 
     const mqtt_msg_t *d = find_topic(m, n, "homeassistant/sensor/imud_roll/config");
@@ -291,7 +291,7 @@ static void test_discovery(void)
 
     /* Discovery is config-gated (emit_heave), NOT gated on the runtime valid flag,
      * so HA keeps the entity and shows it 'unavailable' until heave settles. */
-    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, true);
+    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, true, 0);
     EXPECT(n == 17, "17 discovery configs (16 sensors + engine binary_sensor)");
     EXPECT(find_topic(m, n, "homeassistant/sensor/imud_heave/config") != NULL, "heave discovery when on");
     const mqtt_msg_t *dhr = find_topic(m, n, "homeassistant/sensor/imud_heave_rate/config");
@@ -299,7 +299,7 @@ static void test_discovery(void)
     EXPECT(dhr && strstr(dhr->payload, "\"unit_of_meas\":\"m/s\"") != NULL, "heaveRate unit m/s");
 
     /* rad mode advertises radian units */
-    mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, false);
+    mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud", true, false, 0);
     const mqtt_msg_t *dy = find_topic(m, 17, "homeassistant/sensor/imud_yaw/config");
     EXPECT(dy && strstr(dy->payload, "\"unit_of_meas\":\"rad\"") != NULL, "radian unit in rad mode");
     end(fb);
@@ -339,6 +339,104 @@ static void test_heading_withheld_without_mag(void)
     end(fb);
 }
 
+/*
+ * Withholding a topic leaves its last retained value on the broker, where it
+ * is handed to every later subscriber as current.  The topics to wipe are the
+ * ones that were being published and now are not — and, at the first look,
+ * every one being withheld, since an earlier run may have left them.
+ */
+static void test_withheld_topics_are_cleared(void)
+{
+    begin("test_withheld_topics_are_cleared");
+    int fb = g_fail;
+
+    mqtt_msg_t m[24];
+    mqtt_retained_t kept = {0};
+    imud_data_t d = make_data();    /* magnetometer fused; no declination, no heave */
+
+    /* First look: declination ×2, heave ×2 and sea state ×6 are withheld. */
+    int n = mqtt_build_clears(m, 24, &kept, &d, "imud", false);
+    EXPECT(n == 10, "every withheld topic is cleared at the first look");
+    EXPECT(find_topic(m, n, "imud/navigation/headingTrue") != NULL,
+           "headingTrue among them");
+    EXPECT(find_topic(m, n, "imud/environment/heave") != NULL, "and heave");
+    EXPECT(find_topic(m, n, "imud/navigation/headingMagnetic") == NULL,
+           "a topic that is being published is left alone");
+    EXPECT(find_topic(m, n, "imud/attitude/roll") == NULL,
+           "and so is one that is never withheld");
+    bool empty = true;
+    for (int i = 0; i < n; i++) if (m[i].payload[0] != '\0') empty = false;
+    EXPECT(empty, "each clear is an empty payload");
+
+    EXPECT(mqtt_build_clears(m, 24, &kept, &d, "imud", false) == 0,
+           "nothing changed, nothing to clear");
+
+    /* The magnetometer stops being fused. */
+    d.flags = 0;
+    n = mqtt_build_clears(m, 24, &kept, &d, "imud", false);
+    EXPECT(n == 1 && find_topic(m, n, "imud/navigation/headingMagnetic") != NULL,
+           "headingMagnetic is cleared when it stops being published");
+    EXPECT(mqtt_build_clears(m, 24, &kept, &d, "imud", false) == 0, "once");
+
+    /* Fused again with a declination, then the magnetometer goes: the true
+     * heading and the variation are gated on it too. */
+    d.flags = IMUD_FLAG_MAG_VALID | IMUD_FLAG_DECLINATION_VALID;
+    EXPECT(mqtt_build_clears(m, 24, &kept, &d, "imud", false) == 0,
+           "nothing to clear while they publish");
+    d.flags = IMUD_FLAG_DECLINATION_VALID;
+    n = mqtt_build_clears(m, 24, &kept, &d, "imud", false);
+    EXPECT(n == 3 &&
+           find_topic(m, n, "imud/navigation/headingMagnetic")   != NULL &&
+           find_topic(m, n, "imud/navigation/headingTrue")       != NULL &&
+           find_topic(m, n, "imud/navigation/magneticVariation") != NULL,
+           "all three heading topics go with the magnetometer");
+
+    /* Heave settles, then the estimator restarts. */
+    d.flags = IMUD_FLAG_HEAVE_VALID;
+    EXPECT(mqtt_build_clears(m, 24, &kept, &d, "imud", true) == 0,
+           "heave is published once it has settled");
+    d.flags = 0;
+    n = mqtt_build_clears(m, 24, &kept, &d, "imud", true);
+    EXPECT(n == 2 && find_topic(m, n, "imud/environment/heaveRate") != NULL,
+           "and both its topics are cleared when it is withdrawn");
+
+    /* After a reconnect the broker may never have had any of it. */
+    kept.primed = false;
+    EXPECT(mqtt_build_clears(m, 24, &kept, &d, "imud", true) == 11,
+           "a reconnect clears every withheld topic again");
+    end(fb);
+}
+
+/*
+ * Home Assistant ignores an empty payload, so a cleared topic does not stop
+ * it showing the last value.  expire_after is what does.
+ */
+static void test_discovery_expires(void)
+{
+    begin("test_discovery_expires");
+    int fb = g_fail;
+
+    mqtt_msg_t m[24];
+    int n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud",
+                                 false, true, 12);
+    const mqtt_msg_t *h = find_topic(m, n,
+        "homeassistant/sensor/imud_heading_magnetic/config");
+    EXPECT(h && strstr(h->payload, "\"exp_aft\":12,") != NULL,
+           "a sensor's config carries the expiry");
+    const mqtt_msg_t *e = find_topic(m, n,
+        "homeassistant/binary_sensor/imud_engine/config");
+    EXPECT(e && strstr(e->payload, "\"exp_aft\":12,") != NULL,
+           "and so does the engine binary sensor's");
+    EXPECT(h && h->payload[strlen(h->payload) - 1] == '}',
+           "the config still ends where it should");
+
+    n = mqtt_build_discovery(m, 24, "imud", "homeassistant", "imud",
+                             false, true, 0);
+    h = find_topic(m, n, "homeassistant/sensor/imud_heading_magnetic/config");
+    EXPECT(h && strstr(h->payload, "exp_aft") == NULL, "0 leaves the key out");
+    end(fb);
+}
+
 /* An uncalibrated fuse still publishes, and says so. */
 static void test_heading_published_when_uncal(void)
 {
@@ -369,6 +467,8 @@ int main(void)
     test_prefix_and_count_cap();
     test_heading_withheld_without_mag();
     test_heading_published_when_uncal();
+    test_withheld_topics_are_cleared();
+    test_discovery_expires();
     test_discovery();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

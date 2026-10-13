@@ -42,7 +42,8 @@ mosquitto_sub -t 'imud/#' -v
 ```
 
 In Home Assistant (with the MQTT integration configured) the `imud` device and
-its sensors appear automatically and go *unavailable* when the bridge stops.
+its sensors appear automatically and go *unavailable* when the bridge stops,
+or when a value stops being published — heading with the magnetometer gone.
 
 ## Configuration
 

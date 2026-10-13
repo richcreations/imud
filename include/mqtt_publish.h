@@ -22,6 +22,7 @@
 #define IMUD_MQTT_PUBLISH_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "../lib/imud.h"  /* imud_data_t + IMUD_FLAG_* */
 
 /* One MQTT message. payload is sized for the largest case (a discovery config). */
@@ -40,14 +41,44 @@ int mqtt_build_state(mqtt_msg_t *out, int max, const imud_data_t *d,
                      const char *prefix, bool emit_heave, bool deg);
 
 /*
+ * Which value topics hold a retained message this bridge put there, one bit
+ * per topic.  Zero it to start; clear `primed` again after a reconnect.
+ */
+typedef struct {
+    uint32_t live;
+    bool     primed;
+} mqtt_retained_t;
+
+/*
+ * mqtt_build_clears — the value topics to wipe from the broker for this
+ * sample: each one mqtt_build_state published before and is withholding now,
+ * and on the first call every one it is withholding, since an earlier run may
+ * have left them there.
+ *
+ * A retained message outlives the reason it was published.  Withholding a
+ * topic leaves its last value on the broker, to be handed to every later
+ * subscriber as current — which is the outcome the withholding exists to
+ * prevent.  Publishing the topic retained with an EMPTY payload is how MQTT
+ * deletes one, so every message returned has payload "".
+ */
+int mqtt_build_clears(mqtt_msg_t *out, int max, mqtt_retained_t *r,
+                      const imud_data_t *d, const char *prefix,
+                      bool emit_heave);
+
+/*
  * mqtt_build_discovery — retained Home Assistant MQTT-discovery config messages,
  * one per sensor mqtt_build_state can emit, published to
  * "<ha_prefix>/sensor/<node_id>_<sensor>/config". All sensors share one HA
  * device ("imud_<node_id>") and an availability topic "<prefix>/status/online".
  * heave is advertised only when `emit_heave`. Returns the count (<= max).
+ *
+ * `expire_after_s` > 0 goes into each config as expire_after: Home Assistant
+ * ignores an empty payload, so clearing a retained topic does not stop it
+ * showing the last value — a sensor that marks itself unavailable when its
+ * updates stop is what does.  0 leaves the key out.
  */
 int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
                          const char *ha_prefix, const char *node_id,
-                         bool emit_heave, bool deg);
+                         bool emit_heave, bool deg, int expire_after_s);
 
 #endif /* IMUD_MQTT_PUBLISH_H */

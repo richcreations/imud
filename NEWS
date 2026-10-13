@@ -50,6 +50,9 @@ Fixed:
 * The WMM is evaluated inside the five years its coefficients cover. A clock
   at 1970 used to run it out by 55 years: 4.6° of declination at San
   Francisco, published as valid.
+* A topic imud-mqtt stops publishing is deleted from the broker, and Home
+  Assistant sensors expire. The last heading stayed retained, and showed as
+  current, after the magnetometer was lost.
 
 
 1.11.1

@@ -26,7 +26,8 @@
  * later is handed the last value published — so a heading left on
  * navigation/headingMagnetic after the magnetometer died would sit there
  * indefinitely, presented as current.  Withholding is the only safe option
- * for a topic whose name states what it carries. */
+ * for a topic whose name states what it carries — and it only stops new
+ * values, so mqtt_build_clears wipes the one already there. */
 typedef enum { GATE_ALWAYS, GATE_DECL, GATE_HEAVE, GATE_WAVE, GATE_MAG } gate_t;
 typedef enum { U_ANGLE, U_ROT, U_HEAVE, U_VELOCITY, U_TEMP, U_SECONDS } unit_t;
 
@@ -159,11 +160,45 @@ int mqtt_build_state(mqtt_msg_t *out, int max, const imud_data_t *d,
     return n;
 }
 
+int mqtt_build_clears(mqtt_msg_t *out, int max, mqtt_retained_t *r,
+                      const imud_data_t *d, const char *prefix,
+                      bool emit_heave)
+{
+    if (!out || !r || !d || max <= 0) return 0;
+
+    int  n    = 0;
+    bool full = false;
+    for (int i = 0; i < NFIELDS; i++) {
+        uint32_t bit = 1u << i;
+        if (field_on(FIELDS[i].gate, d, emit_heave)) {
+            r->live |= bit;
+            continue;
+        }
+        /* Withheld.  Wipe it if we were publishing it, or if this is the
+         * first look and an earlier run may have been. */
+        if ((r->live & bit) || !r->primed) {
+            if (n >= max) { full = true; continue; }   /* goes next time */
+            snprintf(out[n].topic, sizeof out[n].topic, "%s/%s",
+                     prefix, FIELDS[i].sub);
+            out[n].payload[0] = '\0';
+            n++;
+        }
+        r->live &= ~bit;
+    }
+    if (!full) r->primed = true;
+    return n;
+}
+
 int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
                          const char *ha_prefix, const char *node_id,
-                         bool emit_heave, bool deg)
+                         bool emit_heave, bool deg, int expire_after_s)
 {
     if (!out || max <= 0) return 0;
+
+    /* "exp_aft" is Home Assistant's abbreviation of expire_after. */
+    char expire[32] = "";
+    if (expire_after_s > 0)
+        snprintf(expire, sizeof expire, "\"exp_aft\":%d,", expire_after_s);
 
     int n = 0;
     for (int i = 0; i < NFIELDS && n < max; i++) {
@@ -176,11 +211,11 @@ int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
                  "%s/sensor/%s_%s/config", ha_prefix, node_id, FIELDS[i].oid);
         snprintf(out[n].payload, sizeof out[n].payload,
             "{\"name\":\"%s\",\"uniq_id\":\"%s_%s\",\"stat_t\":\"%s/%s\","
-            "\"unit_of_meas\":\"%s\",\"avty_t\":\"%s/status/online\","
+            "\"unit_of_meas\":\"%s\",%s\"avty_t\":\"%s/status/online\","
             "\"dev\":{\"ids\":[\"imud_%s\"],\"name\":\"imud\","
             "\"mf\":\"imud\",\"mdl\":\"IMU daemon\"}}",
             FIELDS[i].name, node_id, FIELDS[i].oid, prefix, FIELDS[i].sub,
-            unit_str(FIELDS[i].unit, deg), prefix, node_id);
+            unit_str(FIELDS[i].unit, deg), expire, prefix, node_id);
         n++;
     }
 
@@ -192,10 +227,10 @@ int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
             "{\"name\":\"Engine running\",\"uniq_id\":\"%s_engine\","
             "\"stat_t\":\"%s/engine/running\","
             "\"pl_on\":\"ON\",\"pl_off\":\"OFF\",\"dev_cla\":\"running\","
-            "\"avty_t\":\"%s/status/online\","
+            "%s\"avty_t\":\"%s/status/online\","
             "\"dev\":{\"ids\":[\"imud_%s\"],\"name\":\"imud\","
             "\"mf\":\"imud\",\"mdl\":\"IMU daemon\"}}",
-            node_id, prefix, prefix, node_id);
+            node_id, prefix, expire, prefix, node_id);
         n++;
     }
     return n;

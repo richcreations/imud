@@ -45,6 +45,12 @@ SI (m, s) regardless of `units`; the amplitude topics are angles and follow
 engine-vibration detector (`FLAG_ENGINE_ON`) and is advertised to Home
 Assistant as a binary_sensor — `OFF` whenever detection is disabled.
 
+A topic that is withheld is also **removed from the broker**. With
+`retain = true` its last value would otherwise stay there and be handed to
+every later subscriber as current. The bridge publishes the topic retained
+with an empty payload — how MQTT deletes a retained message — when it stops
+publishing it, and for every topic it is withholding each time it connects.
+
 Raw high-rate accel/gyro/mag/quaternion and the gyro-bias / variance / quiescence
 diagnostics are **not** published over MQTT (wrong transport / not HA-relevant) —
 consume the binary stream or the InfluxDB bridge for those.
@@ -64,9 +70,16 @@ degrees):
 
 ```json
 {"name":"Roll","uniq_id":"imud_roll","stat_t":"imud/attitude/roll",
-"unit_of_meas":"°","avty_t":"imud/status/online",
+"unit_of_meas":"°","exp_aft":10,"avty_t":"imud/status/online",
 "dev":{"ids":["imud_imud"],"name":"imud","mf":"imud","mdl":"IMU daemon"}}
 ```
+
+`exp_aft` (`expire_after`) is three publish periods and a second, and never
+under 10 s. Home Assistant ignores the empty payload that clears a withheld
+topic, so this is what turns a sensor *unavailable* when its updates stop —
+a heading with the magnetometer gone, or everything when the daemon is. The
+configs are published again after a reload, since they carry `units` and an
+expiry sized from `rate_hz`.
 
 ## See also
 

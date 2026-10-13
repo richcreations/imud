@@ -47,6 +47,8 @@
 typedef struct {
     char topic[FB_TOPIC_MAX];
     char payload[FB_PAYLOAD_MAX];
+    int  plen;      /* payload length as sent; 0 with retain deletes a topic */
+    bool retain;    /* the PUBLISH's RETAIN bit */
 } fb_msg_t;
 
 typedef struct {
@@ -102,7 +104,8 @@ static inline bool fb_read_remaining(int fd, size_t *out)
     return false;
 }
 
-static inline void fb_record(fakebroker_t *fb, const unsigned char *body, size_t n)
+static inline void fb_record(fakebroker_t *fb, unsigned char hdr,
+                             const unsigned char *body, size_t n)
 {
     if (n < 2) return;
     size_t tlen = ((size_t)body[0] << 8) | body[1];
@@ -120,6 +123,8 @@ static inline void fb_record(fakebroker_t *fb, const unsigned char *body, size_t
     size_t pcopy = plen < FB_PAYLOAD_MAX - 1 ? plen : FB_PAYLOAD_MAX - 1;
     memcpy(fb->msg[idx].payload, body + 2 + tlen, pcopy);
     fb->msg[idx].payload[pcopy] = '\0';
+    fb->msg[idx].plen   = (int)plen;
+    fb->msg[idx].retain = (hdr & 0x01) != 0;
     pthread_mutex_unlock(&fb->lock);
 }
 
@@ -170,7 +175,7 @@ static inline void *fb_thread(void *arg)
                 break;
             }
             case FB_PUBLISH:
-                fb_record(fb, body, want);
+                fb_record(fb, hdr, body, want);
                 break;
             case FB_PINGREQ: {
                 unsigned char pong[2] = { FB_PINGRESP << 4, 0 };
@@ -243,6 +248,28 @@ static inline bool fb_wait_topic(fakebroker_t *fb, const char *needle, int timeo
         pthread_mutex_lock(&fb->lock);
         for (int i = 0; i < n; i++) {
             if (strstr(fb->msg[i].topic, needle)) {
+                pthread_mutex_unlock(&fb->lock);
+                return true;
+            }
+        }
+        pthread_mutex_unlock(&fb->lock);
+        struct timespec t = { 0, 5 * 1000 * 1000 };
+        nanosleep(&t, NULL);
+    }
+    return false;
+}
+
+/* True once `topic` has been published retained with an empty payload, which
+ * is the form that deletes a retained message. */
+static inline bool fb_wait_cleared(fakebroker_t *fb, const char *topic, int timeout_ms)
+{
+    for (int waited = 0; waited < timeout_ms; waited += 5) {
+        int n = atomic_load(&fb->nmsg);
+        if (n > FB_MAX_MSGS) n = FB_MAX_MSGS;
+        pthread_mutex_lock(&fb->lock);
+        for (int i = 0; i < n; i++) {
+            if (strcmp(fb->msg[i].topic, topic) == 0 &&
+                fb->msg[i].retain && fb->msg[i].plen == 0) {
                 pthread_mutex_unlock(&fb->lock);
                 return true;
             }

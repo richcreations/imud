@@ -59,7 +59,16 @@ typedef struct {
     atomic_int  drop_after;     /* close the client after N packets; -1 = never */
     atomic_int  truncate_after; /* send a short frame as packet N; -1 = never */
     atomic_uint seq;            /* imu_seq of the next packet */
+    atomic_uint flags;          /* FLAG_* of every packet; FS_FLAGS_DEFAULT
+                                 * unless a case stores something else */
 } fakestream_t;
+
+/* FLAG_MAG_VALID is part of the baseline because the bridges withhold
+ * their heading outputs without it, and the e2e cases key on the heading
+ * path to prove the packet reached the encoder and the encoder reached
+ * the socket.  Withholding is covered by each bridge's own unit tests. */
+#define FS_FLAGS_DEFAULT \
+    (FLAG_MAG_VALID | FLAG_DECLINATION_VALID | FLAG_HEAVE_VALID)
 
 /* One packet with known, checkable values, from the daemon's real encoder.
  * heading_deg is the field the tests key on: it survives every bridge's
@@ -69,7 +78,8 @@ typedef struct {
  * apiece rather than a tidy zero/identity: a bridge that reads the right
  * struct member but the wrong INDEX of it emits a plausible frame otherwise,
  * and every assertion still passes. */
-static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg)
+static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg,
+                                     uint16_t flags)
 {
     fused_state_t s;
     memset(&s, 0, sizeof s);
@@ -85,11 +95,7 @@ static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg)
     s.heave_m         = 0.42f;
     s.heave_rate      = 0.25f;
     s.quiescence      = 0.01f;
-    /* FLAG_MAG_VALID is part of the baseline because the bridges withhold
-     * their heading outputs without it, and the e2e cases key on the heading
-     * path to prove the packet reached the encoder and the encoder reached
-     * the socket.  Withholding is covered by each bridge's own unit tests. */
-    s.flags           = FLAG_MAG_VALID | FLAG_DECLINATION_VALID | FLAG_HEAVE_VALID;
+    s.flags           = flags;
     s.imu_seq         = seq;
     s.ts_wall_ns      = 1620307999123000000ULL;
 
@@ -131,7 +137,8 @@ static inline void *fs_thread(void *arg)
             int drop = atomic_load(&fs->drop_after);
             if (drop >= 0 && on_this_conn >= drop) break;   /* look like a restart */
 
-            imu_packet_t pkt = fs_packet(atomic_fetch_add(&fs->seq, 1), 90.0f);
+            imu_packet_t pkt = fs_packet(atomic_fetch_add(&fs->seq, 1), 90.0f,
+                                         (uint16_t)atomic_load(&fs->flags));
             uint8_t wire[IMUD_PACKET_BYTES];
             packet_encode(wire, &pkt);
 
@@ -164,6 +171,7 @@ static inline int fs_start(fakestream_t *fs, const char *path, int rate_hz)
     atomic_init(&fs->drop_after, -1);
     atomic_init(&fs->truncate_after, -1);
     atomic_init(&fs->seq, 1);
+    atomic_init(&fs->flags, FS_FLAGS_DEFAULT);
 
     unlink(path);
     fs->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
