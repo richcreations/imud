@@ -87,6 +87,12 @@ and a TAI offset it previously had no way to read."""
 
   [[release.change]]
   kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag fits in vessel axes, so it is right for a board mounted on edge. It fitted board X/Y whatever the [mount], which on such a board took the vertical field for a horizontal axis."
+  action   = "On a board with a roll or pitch [mount], repeat the magnetometer swing."
+
+  [[release.change]]
+  kind     = "fix"
   packages = ["imud-mqtt"]
   text     = "A topic imud-mqtt stops publishing is deleted from the broker, and Home Assistant sensors expire. The last heading stayed retained, and showed as current, after the magnetometer was lost."
 

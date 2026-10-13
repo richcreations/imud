@@ -15,6 +15,7 @@
 #ifndef IMUD_CAL_MATH_H
 #define IMUD_CAL_MATH_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /*
@@ -172,6 +173,40 @@ int extent_half(const extent_accum_t *a, double half[3]);
  * field the moment the sensor left level.
  */
 void cal_softiron_diag(const double half[3], double radius, double si[3]);
+
+/*
+ * What `imud-cal mag` writes, and what it tells the operator on the way.
+ * hard_iron and soft_iron are in BOARD axes, because that is where the daemon
+ * applies them — before the mount rotation.  The rest is in BODY axes, where
+ * the fit is done.
+ */
+typedef struct {
+    double hard_iron[3];      /* µT, board axes */
+    double soft_iron[3][3];   /* board axes */
+    double radius;            /* fitted field radius, µT */
+    double rms;               /* RMS residual about it, µT */
+    double half[3];           /* half-extent per body axis after centring, µT */
+    double S2[2][2];          /* horizontal soft-iron block, body axes */
+    double si[3];             /* diagonal soft iron, body axes */
+    bool   ellipse_ok;        /* S2 came from the ellipse fit; otherwise si */
+} cal_mag_fit_t;
+
+/*
+ * cal_mag_fit — hard and soft iron from a swing of n raw samples (µT, board
+ * axes).  `mount` is the board→body rotation from [mount], or NULL for a
+ * board mounted flat.
+ *
+ * The fit is done in body axes, because that is where a level swing is
+ * level: on a board mounted on edge the swing lies in board X–Z or Y–Z, and a
+ * fit of board X/Y takes the vertical field for one of the horizontal axes.
+ * The result is mapped back for cal.json, h_board = Rᵀ·h and
+ * S_board = Rᵀ·S·R, so that the daemon's R·S_board·(m − h_board) is the
+ * body-axis correction S·(R·m − h).
+ *
+ * Returns 0, or -1 when the samples do not determine a fit.
+ */
+int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
+                cal_mag_fit_t *out);
 
 /* ── Allan-variance sensor characterization (imud-cal characterize) ─────── */
 

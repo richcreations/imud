@@ -1488,7 +1488,16 @@ the per-sample time).
 
 ## 12. Offline calibration fits (`imud-cal`, `cal_math.c`)
 
-### 12.1 Linear solver — `gauss4()` (`cal_math.c:25`)
+**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:186`). The swing
+is fitted in body axes: each raw sample is turned by the mount rotation,
+$b = R\,m$, because that is where a level swing is level — on a board mounted
+on edge it lies in board X–Z or Y–Z. `cal.json` is in board axes, where the
+daemon applies it (§3.3), so the result is mapped back:
+$$ h_{board} = R^\top h,\qquad S_{board} = R^\top S\,R, $$
+which makes the daemon's $R\,S_{board}(m - h_{board})$ the body-axis
+correction $S\,(R\,m - h)$.
+
+### 12.1 Linear solver — `gauss4()` (`cal_math.c:26`)
 
 Gaussian elimination with **partial pivoting** on the augmented $4\times5$
 system, then back-substitution. Returns $-1$ if any pivot $<10^{-12}$.
@@ -1496,13 +1505,13 @@ Double precision.
 
 **Source:** Golub & Van Loan 2013 §3.4 *(canonical)*.
 
-### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:153`)
+### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:154`)
 
 Algebraic (linearized) sphere fit. The sphere
 $(x-c_x)^2+(y-c_y)^2+(z-c_z)^2=r^2$ is linearized as
 $$ x^2+y^2+z^2 = 2c_x x + 2c_y y + 2c_z z + (r^2 - \lVert c\rVert^2), $$
 and the normal equations $A^\top A\,p = A^\top b$ are accumulated
-incrementally (`sphere_add`, `cal_math.c:59`) over sums
+incrementally (`sphere_add`, `cal_math.c:60`) over sums
 $\Sigma x,\Sigma x^2,\Sigma xy,\Sigma x r^2,\dots$. Solved by `gauss4`:
 $$ A^\top A =
 \begin{bmatrix}
@@ -1523,7 +1532,7 @@ versus a geometric fit.
 **Source:** algebraic sphere/magnetometer fit, Renaudin et al. 2010; Coope
 1993 *(canonical)*.
 
-### 12.3 Soft-iron 2-D ellipse fit — `ellipse_fit()` (`cal_math.c:106`)
+### 12.3 Soft-iron 2-D ellipse fit — `ellipse_fit()` (`cal_math.c:107`)
 
 Conic least-squares on the horizontal magnetometer locus
 $A x^2 + B xy + C y^2 = 1$ (regressors $x^2,xy,y^2$; normal equations from
@@ -1549,7 +1558,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:308`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:386`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1557,7 +1566,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:327`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:405`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1565,7 +1574,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:360`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:438`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1580,7 +1589,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:384`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:462`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,

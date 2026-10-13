@@ -16,6 +16,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "cal_math.h"
 
 #ifndef M_PI
@@ -171,6 +172,83 @@ int sphere_fit(const sphere_accum_t *a, double center[3], double *radius)
     double r2 = sol[3] + sol[0]*sol[0] + sol[1]*sol[1] + sol[2]*sol[2];
     if (r2 <= 0) return -1;
     *radius = sqrt(r2);
+    return 0;
+}
+
+/* ── Magnetometer swing fit ───────────────────────────────────────────────── */
+
+static void rot3(const double R[3][3], const double v[3], double out[3])
+{
+    for (int i = 0; i < 3; i++)
+        out[i] = R[i][0]*v[0] + R[i][1]*v[1] + R[i][2]*v[2];
+}
+
+int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
+                cal_mag_fit_t *out)
+{
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    const double (*R)[3] = mount ? mount : I3;
+
+    /* Sphere through the samples, in body axes. */
+    sphere_accum_t acc = {0};
+    for (int i = 0; i < n; i++) {
+        double m[3] = { samps[i][0], samps[i][1], samps[i][2] }, b[3];
+        rot3(R, m, b);
+        sphere_add(&acc, (float)b[0], (float)b[1], (float)b[2]);
+    }
+    double c[3];
+    if (sphere_fit(&acc, c, &out->radius) < 0) return -1;
+
+    /* Residual, per-axis extent and the horizontal ellipse, about its centre. */
+    ellipse_accum_t eacc = {0};
+    extent_accum_t  xacc = {0};
+    double ss = 0.0;
+    for (int i = 0; i < n; i++) {
+        double m[3] = { samps[i][0], samps[i][1], samps[i][2] }, b[3];
+        rot3(R, m, b);
+        double dx = b[0] - c[0], dy = b[1] - c[1], dz = b[2] - c[2];
+        double res = sqrt(dx*dx + dy*dy + dz*dz) - out->radius;
+        ss += res * res;
+        ellipse_add(&eacc, (float)dx, (float)dy);
+        extent_add(&xacc, dx, dy, dz);
+    }
+    out->rms = sqrt(ss / n);
+    if (extent_half(&xacc, out->half) < 0) return -1;
+
+    /*
+     * Horizontal soft iron: a 2-D ellipse fit on the centred horizontal
+     * samples.  Unlike the per-axis half-range it recovers the CROSS term — a
+     * distortion ellipse turned away from the axes, which is the common case
+     * and shows as a heading error that varies round the swing.  The radius
+     * it is scaled to is the mean horizontal half-extent, because the sphere's
+     * includes the vertical field and over-scales a flat swing.
+     */
+    double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
+    double r_h = 0.5 * (out->half[0] + out->half[1]);
+    out->ellipse_ok = (ellipse_fit(&eacc, r_h, S2) == 0);
+    memcpy(out->S2, S2, sizeof out->S2);
+
+    /* The diagonal fallback, and the vertical axis either way: only an axis
+     * the swing swept is scaled — see CAL_SI_MIN_SPAN. */
+    cal_softiron_diag(out->half, out->radius, out->si);
+
+    double S[3][3] = { {out->si[0], 0, 0}, {0, out->si[1], 0}, {0, 0, out->si[2]} };
+    if (out->ellipse_ok) {
+        S[0][0] = out->S2[0][0];  S[0][1] = out->S2[0][1];
+        S[1][0] = out->S2[1][0];  S[1][1] = out->S2[1][1];
+    }
+
+    /* Back to board axes: h_board = Rᵀ·h, S_board = Rᵀ·S·R. */
+    for (int i = 0; i < 3; i++) {
+        out->hard_iron[i] = R[0][i]*c[0] + R[1][i]*c[1] + R[2][i]*c[2];
+        for (int j = 0; j < 3; j++) {
+            double v = 0.0;
+            for (int k = 0; k < 3; k++)
+                for (int l = 0; l < 3; l++)
+                    v += R[k][i] * S[k][l] * R[l][j];
+            out->soft_iron[i][j] = v;
+        }
+    }
     return 0;
 }
 

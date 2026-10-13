@@ -50,6 +50,11 @@ Fixed:
 * The WMM is evaluated inside the five years its coefficients cover. A clock
   at 1970 used to run it out by 55 years: 4.6° of declination at San
   Francisco, published as valid.
+* imud-cal mag fits in vessel axes, so it is right for a board mounted on
+  edge. It fitted board X/Y whatever the [mount], which on such a board took
+  the vertical field for a horizontal axis.
+  ACTION: On a board with a roll or pitch [mount], repeat the magnetometer
+  swing.
 * A topic imud-mqtt stops publishing is deleted from the broker, and Home
   Assistant sensors expire. The last heading stayed retained, and showed as
   current, after the magnetometer was lost.

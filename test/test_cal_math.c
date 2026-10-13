@@ -569,6 +569,138 @@ static void test_cov_wrong_center(void)
     end(fb);
 }
 
+/* ── cal_mag_fit: the whole swing fit ────────────────────────────────────── */
+
+/* Board on its side: v_body = R·v_board, a quarter turn about X. */
+static const double MOUNT_ROLL_90[3][3] = { {1, 0, 0}, {0, 0, -1}, {0, 1, 0} };
+
+/*
+ * A swing as the magnetometer hands it over: two circles of heading on a
+ * vessel heeling ±heel_deg as it goes, in a field of H horizontal and Z down,
+ * with hard iron `hard` (body axes).  Samples come out in BOARD axes,
+ * m = Rᵀ·b, for a board→body mount R; NULL is a board mounted flat.
+ */
+static void make_swing(float (*out)[3], int n, const double R[3][3],
+                       double H, double Z, const double hard[3],
+                       double heel_deg, double noise_ut)
+{
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    if (!R) R = I3;
+    unsigned lcg = 12345u;
+    for (int i = 0; i < n; i++) {
+        double psi  = 4.0 * M_PI * i / n;
+        double heel = heel_deg * (M_PI / 180.0) * sin(7.0 * psi);
+        /* The level field [H cos ψ, −H sin ψ, Z], seen from a heeled body. */
+        double ly = -H * sin(psi);
+        double b[3] = { H * cos(psi),
+                         ly * cos(heel) + Z * sin(heel),
+                        -ly * sin(heel) + Z * cos(heel) };
+        for (int k = 0; k < 3; k++) {
+            lcg = lcg * 1664525u + 1013904223u;
+            b[k] += hard[k] + noise_ut * (((lcg >> 8) & 0xffff) / 32768.0 - 1.0);
+        }
+        for (int k = 0; k < 3; k++)
+            out[i][k] = (float)(R[0][k]*b[0] + R[1][k]*b[1] + R[2][k]*b[2]);
+    }
+}
+
+/* What the daemon does with a calibration: correct in board axes, then mount.
+ * Returns the corrected sample in body axes. */
+static void apply_fit(const cal_mag_fit_t *f, const double R[3][3],
+                      const float m[3], double body[3])
+{
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    if (!R) R = I3;
+    double d[3], c[3];
+    for (int k = 0; k < 3; k++) d[k] = m[k] - f->hard_iron[k];
+    for (int i = 0; i < 3; i++)
+        c[i] = f->soft_iron[i][0]*d[0] + f->soft_iron[i][1]*d[1]
+             + f->soft_iron[i][2]*d[2];
+    for (int i = 0; i < 3; i++)
+        body[i] = R[i][0]*c[0] + R[i][1]*c[1] + R[i][2]*c[2];
+}
+
+/* Worst departure of the corrected horizontal field from H, as a fraction. */
+static double worst_horizontal_error(const cal_mag_fit_t *f, const double R[3][3],
+                                     float (*s)[3], int n, double H)
+{
+    double worst = 0.0;
+    for (int i = 0; i < n; i++) {
+        double b[3];
+        apply_fit(f, R, s[i], b);
+        double e = fabs(hypot(b[0], b[1]) - H) / H;
+        if (e > worst) worst = e;
+    }
+    return worst;
+}
+
+/*
+ * A board mounted on its side.  The swing is level in BODY axes; in board axes
+ * it lies in X–Z, so a fit of board X/Y takes the vertical field for one of
+ * the horizontal axes and "corrects" a round field by nearly nine times.
+ */
+static void test_mag_fit_follows_the_mount(void)
+{
+    begin("test_mag_fit_follows_the_mount");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    const double H = 22.0, Z = 42.0, hard[3] = { 6.0, -4.0, 0.0 };
+    make_swing(s, N, MOUNT_ROLL_90, H, Z, hard, 0.5, 0.3);
+
+    cal_mag_fit_t f;
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, MOUNT_ROLL_90, &f) == 0,
+           "the fit succeeds");
+    EXPECT(f.ellipse_ok, "with a horizontal ellipse");
+    /* 5 %: the half-extent the scale is taken from includes the noise. */
+    EXPECT_NEAR_D(f.S2[0][0], 1.0, 0.05, "a round field needs no soft-iron scale in X");
+    EXPECT_NEAR_D(f.S2[1][1], 1.0, 0.05, "nor in Y");
+    EXPECT_NEAR_D(f.S2[0][1], 0.0, 0.05, "nor a cross term");
+
+    /* The stored hard iron is in board axes; in body axes it is the one put in. */
+    double hb[3];
+    for (int i = 0; i < 3; i++)
+        hb[i] = MOUNT_ROLL_90[i][0]*f.hard_iron[0] + MOUNT_ROLL_90[i][1]*f.hard_iron[1]
+              + MOUNT_ROLL_90[i][2]*f.hard_iron[2];
+    EXPECT_NEAR_D(hb[0], hard[0], 0.5, "horizontal hard iron X recovered");
+    EXPECT_NEAR_D(hb[1], hard[1], 0.5, "horizontal hard iron Y recovered");
+
+    EXPECT(worst_horizontal_error(&f, MOUNT_ROLL_90, s, N, H) < 0.08,
+           "applied as the daemon applies it, the horizontal field is round");
+
+    end(fb);
+}
+
+/* A full tumble on a flat board is the case the sphere fit is for, and the
+ * mount handling must not have disturbed it. */
+static void test_mag_fit_tumble(void)
+{
+    begin("test_mag_fit_tumble");
+    int fb = g_fail;
+
+    enum { N = 1500 };
+    static float s[N][3];
+    const double c[3] = { 10.0, -5.0, 8.0 }, r = 45.0;
+    double golden = M_PI * (3.0 - sqrt(5.0));
+    for (int i = 0; i < N; i++) {
+        double y_unit = 1.0 - (2.0 * i) / (double)(N - 1);
+        double rho    = sqrt(1.0 - y_unit * y_unit);
+        s[i][0] = (float)(c[0] + r * rho * cos(golden * i));
+        s[i][1] = (float)(c[1] + r * y_unit);
+        s[i][2] = (float)(c[2] + r * rho * sin(golden * i));
+    }
+
+    cal_mag_fit_t f;
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+    EXPECT_NEAR_D(f.hard_iron[0], c[0], 0.05, "hard iron X");
+    EXPECT_NEAR_D(f.hard_iron[1], c[1], 0.05, "hard iron Y");
+    EXPECT_NEAR_D(f.hard_iron[2], c[2], 0.05, "hard iron Z, which a tumble does measure");
+    EXPECT_NEAR_D(f.radius, r, 0.05, "the field's radius");
+    EXPECT_NEAR_D(f.soft_iron[2][2], 1.0, 0.02, "and no soft iron on a sphere");
+    end(fb);
+}
+
 /* ── Allan deviation tests ───────────────────────────────────────────────── */
 
 /* Deterministic xorshift so results are reproducible across platforms. */
@@ -961,6 +1093,8 @@ int main(void)
     test_cov_full_circle();
     test_cov_half_circle();
     test_cov_wrong_center();
+    test_mag_fit_follows_the_mount();
+    test_mag_fit_tumble();
     test_allan_constant_signal();
     test_allan_white_noise();
     test_allan_random_walk();

@@ -1235,7 +1235,9 @@ axis-sign check, so the two tools can be cross-checked against each other.
 The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are
 rotated relative to the sensor is corrected — a per-axis scale cannot do
-this). It reports the field radius, a fit residual, and swing coverage; a
+this). The fit is done in vessel axes, so set `[mount]` before swinging: a
+board mounted on edge has the swing in a different plane of its own axes. It
+reports the field radius, a fit residual, and swing coverage; a
 residual under ~1 µT and coverage above ~75% indicate a good fit. Afterward,
 watch the wire's `mag_residual` / `mag_anomaly` compass-health metrics (v14,
 also on the InfluxDB and Prometheus bridges): a rising residual means the

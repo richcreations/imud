@@ -155,6 +155,9 @@ static char g_cap_still[128];   /* stationary .imucap, temperature ramp */
 static char g_cap_move[128];    /* the same, but turning: trips the motion gate */
 static char g_cap_wave[128];    /* moving .imucap with mag records, for fit-ra */
 static char g_cap_swing[128];   /* the sim's own mag field over a full circle */
+static char g_conf_edge[128];   /* g_conf with the board mounted on its side */
+static char g_cap_swing_edge[128];  /* that circle, as such a board reports it */
+static double g_edge_mount[3][3];   /* its board→body rotation, as config has it */
 static char g_report[128];
 
 /* Two more configs for the arms the sim cannot reach: a driver name nothing
@@ -430,7 +433,8 @@ static void write_wave_capture(const char *path, int odr, double dur_s)
  * sim_synth_mag() directly rather than waiting on the driver's real-time
  * pacing.  60 s covers 360 deg at the scenario's 6 deg/s.
  */
-static void write_swing_capture(const char *path, double hz, double dur_s)
+static void write_swing_capture(const char *path, double hz, double dur_s,
+                                const double mount[3][3])
 {
     cap_writer_t w;
     /* t0_mono_ns non-zero: pb_fetch's loop rebasing refuses to wrap a stream
@@ -446,6 +450,14 @@ static void write_swing_capture(const char *path, double hz, double dur_s)
         mag_sample_t m;
         memset(&m, 0, sizeof m);
         sim_synth_mag(t, &m);
+        /* The sim speaks body axes.  A board mounted with `mount` reports the
+         * same field in its own: board = Rᵀ·body. */
+        if (mount) {
+            float b[3] = { m.field[0], m.field[1], m.field[2] };
+            for (int k = 0; k < 3; k++)
+                m.field[k] = (float)(mount[0][k]*b[0] + mount[1][k]*b[1]
+                                   + mount[2][k]*b[2]);
+        }
         m.wall_ns = t0 + (uint64_t)(t * 1e9);
         cap_writer_mag(&w, &m, t0 + (uint64_t)(t * 1e9));
     }
@@ -1169,6 +1181,67 @@ static void test_cal_mag_swing(void)
     end(fb);
 }
 
+/*
+ * The same swing from a board mounted on its side.  It is level in body axes
+ * and lies in board X–Z, so the heading circle and the fit both have to be
+ * taken in body axes.  In board axes the circle fills 14 sectors of 24 and the
+ * fit takes the vertical field for a horizontal axis.
+ */
+static void test_cal_mag_swing_on_edge(void)
+{
+    begin("test_cal_mag_swing_on_edge");
+    int fb = g_fail;
+
+    char outbuf[128];
+    const char *out = calpath(outbuf, sizeof outbuf, 11);
+    stdin_from("y\n");
+    sim_set_playback(g_cap_swing_edge, true, 0.0f);
+
+    size_t bufsz = 8u * 1024 * 1024;
+    char *buf = malloc(bufsz);
+    if (!buf) { puts("SKIP (out of memory)"); return; }
+
+    char *av[] = { (char *)"imud-cal", (char *)"--config", g_conf_edge,
+                   (char *)"--output", (char *)out, (char *)"mag", NULL };
+    cap_t c; cap_begin(&c, CAPFILE);
+    int rc = cal_main_entry(6, av);
+    cap_end(&c, buf, bufsz);
+
+    sim_set_playback(NULL, false, 1.0f);
+
+    EXPECT(rc == 0, "mag exits 0");
+    EXPECT(strstr(buf, "24/24") != NULL,
+           "the swing covers every sector, counted in body axes");
+
+    imud_cal_t cal;
+    EXPECT(cal_load(out, &cal) == 0 && cal.has_mag,
+           "the written cal.json loads back");
+
+    /* cal.json is in board axes.  Turned into body axes, as the daemon turns
+     * what it corrects, the sim's round field needs no correction. */
+    const double (*R)[3] = g_edge_mount;
+    double hb[3], sb[3][3];
+    for (int i = 0; i < 3; i++) {
+        hb[i] = 0.0;
+        for (int k = 0; k < 3; k++) hb[i] += R[i][k] * cal.mag_hard_iron[k];
+        for (int j = 0; j < 3; j++) {
+            sb[i][j] = 0.0;
+            for (int k = 0; k < 3; k++)
+                for (int l = 0; l < 3; l++)
+                    sb[i][j] += R[i][k] * cal.mag_soft_iron[k][l] * R[j][l];
+        }
+    }
+    EXPECT(fabs(hb[0]) < 2.0 && fabs(hb[1]) < 2.0,
+           "no horizontal hard iron, as the sim has none");
+    EXPECT(fabs(sb[0][0] - 1.0) < 0.15 && fabs(sb[1][1] - 1.0) < 0.15 &&
+           fabs(sb[0][1]) < 0.10,
+           "and no horizontal soft iron either");
+
+    free(buf);
+    remove(out);
+    end(fb);
+}
+
 /* ── imud-imutest: argv and the guards ───────────────────────────────────── */
 
 static void test_imutest_version_and_bad_option(void)
@@ -1873,7 +1946,27 @@ int main(void)
     write_still_capture(g_cap_still, 4000, 100.0, 12.0, 0.0);
     write_still_capture(g_cap_move,  4000, 100.0, 12.0, 0.5);
     write_wave_capture(g_cap_wave, 833, 3.0);
-    write_swing_capture(g_cap_swing, 20.0, 65.0);
+    write_swing_capture(g_cap_swing, 20.0, 65.0, NULL);
+
+    /* The same bench with the board on its side: the rotation is read back
+     * from the config rather than written out twice. */
+    tmppath(g_conf_edge,      sizeof g_conf_edge,      "edge.conf");
+    tmppath(g_cap_swing_edge, sizeof g_cap_swing_edge, "swing_edge.imucap");
+    write_one_config(g_conf_edge, "/dev/null", "sim", "sim");
+    {
+        FILE *f = fopen(g_conf_edge, "a");
+        if (!f) { perror(g_conf_edge); exit(1); }
+        fputs("\n[mount]\npreset = \"roll_90\"\n", f);
+        fclose(f);
+        imud_config_t ec;
+        config_defaults(&ec);
+        if (config_load(g_conf_edge, &ec) != 0 || !ec.mount_set) {
+            fprintf(stderr, "cannot load %s with its mount\n", g_conf_edge);
+            exit(1);
+        }
+        memcpy(g_edge_mount, ec.mount_rot, sizeof g_edge_mount);
+    }
+    write_swing_capture(g_cap_swing_edge, 20.0, 65.0, g_edge_mount);
 
     test_cal_version_and_help();
     test_cal_bad_argv();
@@ -1893,6 +1986,7 @@ int main(void)
     test_cal_gyro_declined();
     test_cal_accel_geometry_refused();
     test_cal_mag_swing();
+    test_cal_mag_swing_on_edge();
 
     test_imutest_version_and_bad_option();
     test_imutest_missing_config();
@@ -1932,6 +2026,8 @@ int main(void)
     remove(g_cap_move);
     remove(g_cap_wave);
     remove(g_cap_swing);
+    remove(g_conf_edge);
+    remove(g_cap_swing_edge);
     unlink(g_sock);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

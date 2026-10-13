@@ -257,7 +257,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     int    n = 0;
 
     /* Running center estimate used for coverage display once we have > 50 pts */
-    double cx = 0, cy = 0;
+    double cx = 0, cy = 0, cz = 0;
     bool   have_center = false;
 
     /* Live fit-quality feedback, refreshed every 50 samples */
@@ -283,7 +283,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             double r;
             double ctr[3];
             if (sphere_fit(&acc, ctr, &r) == 0) {
-                cx = ctr[0]; cy = ctr[1];
+                cx = ctr[0]; cy = ctr[1]; cz = ctr[2];
                 have_center = true;
                 double ss = 0.0;
                 for (int i = 0; i < n; i++) {
@@ -299,8 +299,15 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             }
         }
 
-        int cur = cal_cov_mark(sectors, N_SECTORS, s.field[0], s.field[1],
-                               have_center ? cx : 0.0, have_center ? cy : 0.0);
+        /* The heading circle is counted in body axes: that is where the swing
+         * is level, however the board is mounted. */
+        float b[3]  = { s.field[0], s.field[1], s.field[2] };
+        float cb[3] = { (float)cx, (float)cy, (float)cz };
+        apply_mount_rot_if_set(cfg, b);
+        apply_mount_rot_if_set(cfg, cb);
+        int cur = cal_cov_mark(sectors, N_SECTORS, b[0], b[1],
+                               have_center ? cb[0] : 0.0,
+                               have_center ? cb[1] : 0.0);
         if (!full_announced && cal_cov_count(sectors, N_SECTORS) == N_SECTORS) {
             full_announced = true;
             putchar('\a');   /* audible cue: eyes are on the helm, not the screen */
@@ -311,60 +318,22 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     signal(SIGINT, SIG_DFL);
     printf("\n");
 
-    /* ── Sphere fit ──────────────────────────────────────────────────── */
+    /* ── Fit ─────────────────────────────────────────────────────────── */
 
-    double center[3], radius;
-    if (sphere_fit(&acc, center, &radius) < 0) {
-        fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
-        free(samps); bus_close(&bus); return -1;
-    }
-
-    /* ── Soft-iron: diagonal scale from per-axis half-range ─────────── */
-
-    double rms = 0.0;
-    ellipse_accum_t eacc = {0};
-    extent_accum_t  xacc = {0};
-
-    for (int i = 0; i < n; i++) {
-        double dx = samps[i][0] - center[0];
-        double dy = samps[i][1] - center[1];
-        double dz = samps[i][2] - center[2];
-        double res = sqrt(dx*dx + dy*dy + dz*dz) - radius;
-        rms += res * res;
-        ellipse_add(&eacc, (float)dx, (float)dy);
-        extent_add(&xacc, dx, dy, dz);
-    }
-    rms = sqrt(rms / n);
+    /* In body axes, which is what the mount rotation is for: see cal_mag_fit. */
+    cal_mag_fit_t fit;
+    int frc = cal_mag_fit((const float (*)[3])samps, n,
+                          cfg->mount_set ? cfg->mount_rot : NULL, &fit);
     free(samps);
-
-    /* Per-axis half-range after centering */
-    double half[3];
-    if (extent_half(&xacc, half) < 0) {
-        fprintf(stderr, "cal: no samples to measure\n");
+    if (frc < 0) {
+        fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
         bus_close(&bus);
         return -1;
     }
-
-    /*
-     * Horizontal soft iron: 2D ellipse fit on the centered X/Y samples.
-     * Unlike the per-axis half-range scale, this recovers the CROSS term —
-     * a distortion ellipse whose axes are rotated away from the sensor
-     * axes, which is the common case and shows up as a periodic heading
-     * error around the swing circle. Falls back to the diagonal method
-     * when the fit is degenerate (poor coverage).
-     */
-    double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
-    /* Horizontal radius: half the mean horizontal extent (the sphere-fit
-     * radius includes Z and over-scales flat swing data). */
-    double r_h = 0.5 * (half[0] + half[1]);
-    bool ellipse_ok = (ellipse_fit(&eacc, r_h, S2) == 0);
-
-    /* Only apply a diagonal soft-iron correction on an axis the swing actually
-     * swept -- see CAL_SI_MIN_SPAN.  A level swing is the procedure this mode
-     * asks for, and it sweeps no Z extent, so Z comes out uncorrected rather
-     * than scaled to cover data that was never taken. */
-    double si[3];
-    cal_softiron_diag(half, radius, si);
+    const double *center = fit.hard_iron, *half = fit.half, *si = fit.si;
+    const double (*S2)[2] = fit.S2;
+    const double radius = fit.radius, rms = fit.rms;
+    const bool   ellipse_ok = fit.ellipse_ok;
 
     /* ── Results ─────────────────────────────────────────────────────── */
 
@@ -417,19 +386,11 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         return 0;
     }
 
-    cal->mag_hard_iron[0] = (float)center[0];
-    cal->mag_hard_iron[1] = (float)center[1];
-    cal->mag_hard_iron[2] = (float)center[2];
-
-    for (int i = 0; i < 3; i++)
+    /* Both already in board axes, which is where the daemon applies them. */
+    for (int i = 0; i < 3; i++) {
+        cal->mag_hard_iron[i] = (float)fit.hard_iron[i];
         for (int j = 0; j < 3; j++)
-            cal->mag_soft_iron[i][j] = (i == j) ? (float)si[i] : 0.0f;
-    if (ellipse_ok) {
-        /* 2×2 horizontal block (with cross term) + Z from the guard above. */
-        cal->mag_soft_iron[0][0] = (float)S2[0][0];
-        cal->mag_soft_iron[0][1] = (float)S2[0][1];
-        cal->mag_soft_iron[1][0] = (float)S2[1][0];
-        cal->mag_soft_iron[1][1] = (float)S2[1][1];
+            cal->mag_soft_iron[i][j] = (float)fit.soft_iron[i][j];
     }
 
     cal->has_mag = true;
