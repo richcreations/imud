@@ -219,6 +219,31 @@ static void test_timestamp_format(void)
     end(fb);
 }
 
+/*
+ * A sample with no timestamp carries ts_wall_ns = 0, and formatting that dates
+ * the delta 1970-01-01.  Signal K makes "timestamp" optional and has the server
+ * fill it in, so it is left out and everything else still goes.
+ */
+static void test_timestamp_omitted_without_one(void)
+{
+    begin("test_timestamp_omitted_without_one");
+    int fb = g_fail;
+
+    imud_data_t d = make_data();
+    d.ts_wall_ns = 0;
+    char buf[512];
+    int n = sk_build_delta(buf, sizeof buf, &d, "imud", false);
+
+    EXPECT(n > 0, "delta still builds");
+    EXPECT(!strstr(buf, "timestamp"), "no timestamp property");
+    EXPECT(!strstr(buf, "1970"), "nothing dated 1970");
+    EXPECT(strstr(buf, "\"source\":{\"label\":\"imud\"},\"values\":[") != NULL,
+           "source runs straight into values");
+    EXPECT(braces_balanced(buf), "JSON braces/brackets balanced");
+    EXPECT(strstr(buf, "navigation.attitude") != NULL, "attitude still sent");
+    end(fb);
+}
+
 static void test_buffer_too_small(void)
 {
     begin("test_buffer_too_small");
@@ -284,6 +309,7 @@ int main(void)
     test_declination_gated();
     test_heave_gated();
     test_timestamp_format();
+    test_timestamp_omitted_without_one();
     test_heading_withheld_without_mag();
     test_heading_published_when_uncal();
     test_buffer_too_small();

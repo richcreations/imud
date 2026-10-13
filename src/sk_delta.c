@@ -69,13 +69,19 @@ int sk_build_delta(char *buf, size_t sz, const imud_data_t *d,
 {
     if (!buf || sz == 0 || !d) return -1;
 
-    char ts[28];
-    iso8601_ms(d->ts_wall_ns, ts, sizeof ts);
-
     int pos = 0;
 
-    APPEND("{\"updates\":[{\"source\":{\"label\":\"%s\"},"
-           "\"timestamp\":\"%s\",\"values\":[", source_label, ts);
+    APPEND("{\"updates\":[{\"source\":{\"label\":\"%s\"},", source_label);
+
+    /* A sample with no timestamp gets no "timestamp": the property is
+     * optional, and the server fills it in on receipt. */
+    if (d->ts_wall_ns != 0) {
+        char ts[28];
+        iso8601_ms(d->ts_wall_ns, ts, sizeof ts);
+        APPEND("\"timestamp\":\"%s\",", ts);
+    }
+
+    APPEND("\"values\":[");
 
     /*
      * navigation.headingMagnetic, and headingTrue below it, are emitted only

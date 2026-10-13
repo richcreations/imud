@@ -16,7 +16,8 @@
  *   *  emitted only when IMUD_FLAG_DECLINATION_VALID is set
  *   ** emitted only when emit_heave is true
  * Angles are degrees (deg = true) or radians (deg = false); rate_of_turn is
- * °/min or rad/s to match. The timestamp is d->ts_wall_ns (nanoseconds).
+ * °/min or rad/s to match. The timestamp is d->ts_wall_ns (nanoseconds), left
+ * off when that is 0.
  *
  * Pure and self-contained (no sockets, no globals) so it can be unit-tested.
  * Returns bytes written (excluding the NUL) or -1 if the buffer was too small.

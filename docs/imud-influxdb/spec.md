@@ -9,8 +9,9 @@ line-protocol point per tick:
 
 The measurement defaults to `imud`; the one tag is `source=<source_label>`. The
 timestamp is the packet's wall-clock time in **nanoseconds** — set the listener
-(UDP) or write endpoint (`precision=ns`) to match. Attitude uses imud's native
-NED convention (no sign flip).
+(UDP) or write endpoint (`precision=ns`) to match. A packet with no timestamp is
+written without one, and InfluxDB stamps it on receipt. Attitude uses imud's
+native NED convention (no sign flip).
 
 ## Fields
 

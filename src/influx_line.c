@@ -175,8 +175,10 @@ int influx_build_line(char *buf, size_t sz, const imud_data_t *d,
                (unsigned long long)d->ts_tai_ns, d->ts_chip_ticks, d->anchor_gen);
     }
 
-    /* space, then the nanosecond timestamp */
-    APPEND(" %llu", (unsigned long long)d->ts_wall_ns);
+    /* space, then the nanosecond timestamp.  Left off for a sample that has
+     * none, so InfluxDB stamps the point on receipt. */
+    if (d->ts_wall_ns != 0)
+        APPEND(" %llu", (unsigned long long)d->ts_wall_ns);
 
     if (pos >= (int)sz) return -1;   /* truncated */
     return pos;

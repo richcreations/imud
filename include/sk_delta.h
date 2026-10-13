@@ -36,7 +36,8 @@
  *   navigation.attitude {roll,pitch,yaw}  (always)
  *   environment.heave                     (when emit_heave)
  *
- * timestamp is ISO-8601 UTC with milliseconds, derived from d->ts_wall_ns.
+ * timestamp is ISO-8601 UTC with milliseconds, derived from d->ts_wall_ns, and
+ * left out when that is 0.
  *
  * Returns the number of bytes written (excluding the NUL), or -1 if the
  * buffer was too small.

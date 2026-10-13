@@ -103,6 +103,30 @@ static void test_structure_and_deg(void)
     end(fb);
 }
 
+/*
+ * A sample with no timestamp carries ts_wall_ns = 0, and writing that puts the
+ * point at 1970.  Line protocol makes the timestamp optional — InfluxDB stamps
+ * the point on receipt — so it is left off and the fields still go.
+ */
+static void test_timestamp_omitted_without_one(void)
+{
+    begin("test_timestamp_omitted_without_one");
+    int fb = g_fail;
+
+    imud_data_t d = make_data();
+    d.ts_wall_ns = 0;
+    char buf[1024];
+    int n = influx_build_line(buf, sizeof buf, &d, "imud", "imud", false, true, INFLUX_DETAIL_HEALTH);
+    EXPECT(n > 0, "encode succeeds");
+    /* one space only: tags|fields, with no fields|timestamp after it */
+    EXPECT(count_spaces(buf) == 1, "line carries no timestamp");
+    EXPECT(n > 0 && buf[n - 1] != ' ', "and no trailing space in its place");
+
+    double v;
+    EXPECT(field(buf, "heading", &v) && fabs(v - 90.0) < 1e-3, "fields unaffected");
+    end(fb);
+}
+
 static void test_rad_units(void)
 {
     begin("test_rad_units");
@@ -440,6 +464,7 @@ int main(void)
 {
     puts("=== imud influxdb line tests ===");
     test_structure_and_deg();
+    test_timestamp_omitted_without_one();
     test_rad_units();
     test_declination_gated();
     test_heave_gated_and_tags();

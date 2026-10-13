@@ -8,7 +8,8 @@ data-connection format). Values use Signal K SI units (radians, rad/s, metres).
 `context` is omitted, so
 the server applies the delta to `vessels.self`; `source.label` is the configured
 `source_label`; the delta `timestamp` is ISO-8601 UTC with milliseconds, from the
-packet's wall-clock time.
+packet's wall-clock time. It is left out when the packet carries none, and the
+server fills it in.
 
 ## Field mapping
 
