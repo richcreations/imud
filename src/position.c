@@ -303,6 +303,31 @@ void check_fix_ttl(pos_ctx_t *ctx, time_t *last_fix_time,
     *last_lon = POS_FORCE_UPDATE_DEG;
 }
 
+/*
+ * How long a speed over ground stays in use with no report to refresh it.
+ * Seconds, where the declination watchdog above is hours: speed scales the
+ * centripetal correction applied to every accelerometer sample, so a stale one
+ * tilts the horizon in each turn for as long as it is held.
+ */
+#define POS_SPEED_TTL_NS 5000000000ULL
+
+static uint64_t mono_now_ns(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+}
+
+void check_speed_ttl(pos_ctx_t *ctx, uint64_t *speed_at_ns, uint64_t now_ns)
+{
+    if (*speed_at_ns == 0 || now_ns - *speed_at_ns <= POS_SPEED_TTL_NS)
+        return;
+    LOG_W("[pos] no speed over ground for %d s — withdrawing it\n",
+          (int)(POS_SPEED_TTL_NS / 1000000000ULL));
+    imu_ctx_set_speed(ctx->imu, 0.0f, false);
+    *speed_at_ns = 0;
+}
+
 /* ── gpsd streaming ──────────────────────────────────────────────────────── */
 
 /*
@@ -333,12 +358,15 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
     line_reader_t rdr;
     line_reader_init(&rdr, fd);
     char line[4096];
+    /* When the speed in use last arrived; 0 while none is held. */
+    uint64_t speed_at = 0;
 
     for (;;) {
         /* Run the fix-TTL watchdog per iteration: this loop can hold the
          * thread for hours (streaming fixless TPVs, or a silent-but-open
          * session), and the outer-loop check only runs between connects. */
         check_fix_ttl(ctx, last_fix_time, last_lat, last_lon);
+        check_speed_ttl(ctx, &speed_at, mono_now_ns());
 
         int r = read_line(&rdr, line, sizeof line, &ctx->stop);
         if (r == POS_READ_IDLE) continue;   /* quiet second — watchdog ran */
@@ -347,7 +375,14 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
         if (!strstr(line, "\"class\":\"TPV\"")) continue;
         double mode = 0;
         pos_json_double(line, "mode", &mode);
-        if (mode < 2.0) continue;   /* no fix yet */
+        if (mode < 2.0) {
+            /* No fix: the speed held is from before it was lost. */
+            if (speed_at) {
+                imu_ctx_set_speed(ctx->imu, 0.0f, false);
+                speed_at = 0;
+            }
+            continue;
+        }
         double lat, lon;
         if (!pos_json_double(line, "lat", &lat)) continue;
         if (!pos_json_double(line, "lon", &lon)) continue;
@@ -359,13 +394,17 @@ static void run_gpsd(pos_ctx_t *ctx, const wmm_t *wmm,
         /* Speed over ground feeds the centripetal correction; refresh it on
          * every fix (not just threshold crossings). */
         double spd;
-        if (pos_json_double(line, "speed", &spd) && isfinite(spd) && spd >= 0.0)
+        if (pos_json_double(line, "speed", &spd) && isfinite(spd) && spd >= 0.0) {
             imu_ctx_set_speed(ctx->imu, (float)spd, true);
+            speed_at = mono_now_ns();
+        }
         if (!pos_fix_valid(lat, lon, alt)) continue;
         maybe_update_decl(ctx, wmm, lat, lon, alt,
                           last_lat, last_lon, last_fix_time);
     }
 
+    /* The session is over, and the speed it was reporting with it. */
+    if (speed_at) imu_ctx_set_speed(ctx->imu, 0.0f, false);
     LOG_I("[pos] gpsd disconnected\n");
     close(fd);
 }

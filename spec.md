@@ -659,8 +659,9 @@ data has real 3D coverage.
   removing the alignment bake-in error at the source.
 - **Speed-aided centripetal correction**: with speed over ground from gpsd,
   ω×v (v ≈ speed along the bow) is subtracted from the accelerometer before
-  the gravity update, so sustained turns no longer tilt the horizon; speed
-  is invalidated with the GPS fix TTL.
+  the gravity update, so sustained turns no longer tilt the horizon. A speed
+  is withdrawn when no report has refreshed it for 5 s, when gpsd reports no
+  fix, and when the gpsd session ends.
 - **Rate of turn** is the true Euler yaw rate
   ψ̇ = (ω_y·sinφ + ω_z·cosφ)/cosθ, not raw body-Z rate (falls back to ω_z
   near ±90° pitch).

@@ -72,11 +72,19 @@ void imu_ctx_set_mag_ref(imu_ctx_t *ctx, float h_gauss, float z_gauss)
 
 float g_last_speed = -1.0f;
 bool  g_last_speed_valid = true;
+float g_last_live_speed = -1.0f;      /* the last value handed over as valid */
+/* Whether a speed is in use right now, and how often one has been withdrawn.
+ * _Atomic, because the socket tests watch these while the thread runs. */
+_Atomic int g_speed_live        = 0;
+_Atomic int g_speed_withdrawals = 0;
 void imu_ctx_set_speed(imu_ctx_t *ctx, float speed_mps, bool valid)
 {
     (void)ctx;
     g_last_speed       = speed_mps;
     g_last_speed_valid = valid;
+    if (valid) g_last_live_speed = speed_mps;
+    else       g_speed_withdrawals++;
+    g_speed_live = valid ? 1 : 0;
 }
 
 /* ── Test framework ──────────────────────────────────────────────────────── */
@@ -532,7 +540,7 @@ static void test_gpsd_live_session(void)
     ctx.imu = (imu_ctx_t *)0x1;          /* only the stubs above touch it */
     snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
 
-    g_last_decl = -999.0f; g_last_speed = -1.0f;
+    g_last_decl = -999.0f; g_last_speed = -1.0f; g_last_live_speed = -1.0f;
     bool moved = run_until_fix(&ctx);
     pthread_join(srv, NULL);
 
@@ -545,11 +553,148 @@ static void test_gpsd_live_session(void)
     /* San Francisco: declination is easterly and single-digit. */
     EXPECT(g_last_decl > 0.0f && g_last_decl < 25.0f,
            "declination is plausible for the fix location");
-    EXPECT_NEAR_D(g_last_speed, 3.5, 1e-4, "speed over ground propagated");
+    EXPECT_NEAR_D(g_last_live_speed, 3.5, 1e-4, "speed over ground propagated");
+    EXPECT(!g_last_speed_valid, "and withdrawn when the session ended");
     EXPECT(g_last_mref_h > 0.0f, "magnetic reference H set from the fix");
     EXPECT(g_srv_cloexec_leaks == 0,
            "gpsd client socket is close-on-exec");
 
+    close(g_srv_listen); g_srv_listen = -1;
+    end(fb);
+}
+
+/*
+ * A speed over ground is good for a few seconds.  Held for the declination's
+ * hours instead, the last one from before a lost fix kept correcting every
+ * turn for a day.
+ */
+static void test_check_speed_ttl(void)
+{
+    begin("test_check_speed_ttl");
+    int fb = g_fail;
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.imu = (imu_ctx_t *)0x1;
+
+    const uint64_t s = 1000000000ULL;
+    uint64_t at = 10 * s;
+    int before = g_speed_withdrawals;
+
+    check_speed_ttl(&ctx, &at, 14 * s);
+    EXPECT(at == 10 * s && g_speed_withdrawals == before,
+           "a speed four seconds old is still in use");
+
+    check_speed_ttl(&ctx, &at, 16 * s);
+    EXPECT(at == 0 && g_speed_withdrawals == before + 1 && !g_last_speed_valid,
+           "one six seconds old is withdrawn");
+
+    check_speed_ttl(&ctx, &at, 60 * s);
+    EXPECT(g_speed_withdrawals == before + 1,
+           "and with none held there is nothing to withdraw");
+
+    end(fb);
+}
+
+/* A gpsd that sends its lines one at a time, each when the test asks. */
+static const char *g_script_lines[4];
+static _Atomic int g_script_step;      /* lines to have sent; -1 = hang up */
+
+static void *scripted_gpsd_thread(void *arg)
+{
+    (void)arg;
+    int c = accept(g_srv_listen, NULL, NULL);
+    if (c < 0) return NULL;
+    fcntl(c, F_SETFD, FD_CLOEXEC);
+
+    char watch[256];
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    ssize_t n = recv(c, watch, sizeof watch, 0);
+    (void)n;
+
+    for (int sent = 0; g_script_step >= 0; usleep(10000)) {
+        while (sent < g_script_step && g_script_lines[sent]) {
+            ssize_t w = write(c, g_script_lines[sent], strlen(g_script_lines[sent]));
+            (void)w;
+            sent++;
+        }
+    }
+    close(c);
+    return NULL;
+}
+
+/* Wait for a speed to be in use, or not.  Returns how long it took in ms,
+ * or -1 on timeout. */
+static int wait_speed_live(int want, int timeout_ms)
+{
+    for (int waited = 0; waited <= timeout_ms; waited += 20) {
+        if (g_speed_live == want) return waited;
+        usleep(20000);
+    }
+    return -1;
+}
+
+/*
+ * The three ways a session stops vouching for its last speed while staying
+ * connected or not: nothing refreshes it, a report says the fix is gone, and
+ * (in test_gpsd_live_session) the connection drops.
+ */
+static void test_gpsd_speed_is_withdrawn(void)
+{
+    begin("test_gpsd_speed_is_withdrawn");
+    int fb = g_fail;
+
+    int port = 0;
+    g_srv_listen = fake_server_open(&port);
+    EXPECT(g_srv_listen >= 0, "fake gpsd listening on loopback");
+    if (g_srv_listen < 0) { end(fb); return; }
+
+    g_script_lines[0] = "{\"class\":\"TPV\",\"mode\":3,\"lat\":37.8697,"
+                        "\"lon\":-122.3153,\"speed\":3.5}\n";
+    g_script_lines[1] = "{\"class\":\"TPV\",\"mode\":3,\"lat\":37.8697,"
+                        "\"lon\":-122.3153,\"speed\":4.0}\n";
+    g_script_lines[2] = "{\"class\":\"TPV\",\"mode\":1}\n";
+    g_script_lines[3] = NULL;
+    g_script_step = 0;
+    g_speed_live  = 0;
+
+    pthread_t srv;
+    pthread_create(&srv, NULL, scripted_gpsd_thread, NULL);
+
+    imud_config_t cfg;
+    socket_test_cfg(&cfg);
+    cfg.pos_gpsd_enabled = true;
+    cfg.pos_gpsd_port    = port;
+
+    pos_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.cfg = &cfg;
+    ctx.imu = (imu_ctx_t *)0x1;
+    snprintf(ctx.wmm_file, sizeof ctx.wmm_file, "data/WMM.COF");
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, position_thread, &ctx);
+
+    g_script_step = 1;
+    EXPECT(wait_speed_live(1, 3000) >= 0, "a fix with a speed puts it in use");
+
+    /* Silence on an open connection. */
+    int took = wait_speed_live(0, 9000);
+    EXPECT(took >= 0, "a speed that nothing refreshes is withdrawn");
+    EXPECT(took > 3000, "after a few seconds, not at once");
+
+    g_script_step = 2;
+    EXPECT(wait_speed_live(1, 3000) >= 0, "the next report brings it back");
+
+    g_script_step = 3;
+    took = wait_speed_live(0, 2000);
+    EXPECT(took >= 0, "a report with no fix withdraws it straight away");
+
+    g_script_step = -1;
+    ctx.stop = 1;
+    pthread_join(tid, NULL);
+    pthread_join(srv, NULL);
     close(g_srv_listen); g_srv_listen = -1;
     end(fb);
 }
@@ -687,7 +832,9 @@ int main(void)
     test_fix_ttl_arithmetic();
     test_check_fix_ttl();
     test_position_thread_disabled();
+    test_check_speed_ttl();
     test_gpsd_live_session();
+    test_gpsd_speed_is_withdrawn();
     test_gpsd_connection_refused();
     test_signalk_live_poll();
 

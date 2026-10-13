@@ -40,6 +40,9 @@ Fixed:
   stats_hz above 1 had no effect at all, at startup or on reload.
 * ts_tai_ns names the same instant as ts_wall_ns. It was later by the duration
   of the FIFO read, which is tens of milliseconds at a deep watermark.
+* GPS speed is dropped from the turn correction after 5 s without a report, on
+  a lost fix and when gpsd disconnects. The last speed was held for up to
+  fix_max_age_h and tilted the horizon in every turn.
 
 
 1.11.1

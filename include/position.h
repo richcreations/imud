@@ -25,6 +25,7 @@
 
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 #include "config.h"
 
@@ -77,5 +78,13 @@ bool pos_fix_valid(double lat, double lon, double alt);
  */
 void check_fix_ttl(pos_ctx_t *ctx, time_t *last_fix_time,
                    double *last_lat, double *last_lon);
+
+/*
+ * check_speed_ttl — withdraw speed over ground once no report has refreshed
+ * it for a few seconds.  *speed_at_ns is when the last one arrived
+ * (CLOCK_MONOTONIC ns; 0 = none held) and is zeroed on expiry.  Exposed here
+ * for unit tests.
+ */
+void check_speed_ttl(pos_ctx_t *ctx, uint64_t *speed_at_ns, uint64_t now_ns);
 
 #endif /* IMUD_POSITION_H */
