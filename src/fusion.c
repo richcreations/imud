@@ -2005,6 +2005,11 @@ bool mekf_sanitize(mekf_t *f)
 
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
 {
+    /* Zero the whole struct.  The caller fills the rest and skips some of it
+     * by design — flags_ext with a magnetometer fitted, the timestamps on a
+     * sample that has none — and whatever is left goes out on the wire. */
+    memset(out, 0, sizeof *out);
+
     memcpy(out->q,         f->q,    sizeof f->q);
     memcpy(out->bias_gyro, f->bias, sizeof f->bias);
 
@@ -2045,9 +2050,6 @@ void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in)
     float h_deg = out->yaw * (float)(180.0 / M_PI);
     if (h_deg < 0) h_deg += 360.0f;
     out->heading_deg = h_deg;
-
-    /* Rate of turn (deg/min) from bias-corrected yaw rate, NED Z-axis */
-    out->rate_of_turn = 0.0f;   /* set by fusion_thread from bias-corrected gyro[2] */
 
     uint16_t flags = flags_in;
     if (f->converged)    flags |= FLAG_FUSION_CONVERGED;

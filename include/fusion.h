@@ -255,6 +255,7 @@ bool mekf_sanitize(mekf_t *f);
  * mekf_get_state — extract nominal state into fused_state_t for output.
  * flags_in: FLAG_* bits set by the caller before this call (e.g. cal flags).
  * The function adds FLAG_FUSION_CONVERGED and FLAG_STARTUP as appropriate.
+ * Every field it does not set is zeroed, so *out is fully defined on return.
  */
 void mekf_get_state(const mekf_t *f, fused_state_t *out, uint16_t flags_in);
 

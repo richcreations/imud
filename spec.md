@@ -809,7 +809,8 @@ Offset  Bytes  Type      Field             Notes
  4      2      uint16    version           = 18  (IMUD_VERSION; wire revision,
                                               not the release version)
  6      2      uint16    flags             see below
- 8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns, SAMPLE-TAKEN
+ 8      8      uint64    ts_wall_ns        CLOCK_REALTIME ns, SAMPLE-TAKEN;
+                                          0 = the sample had no timestamp
 16      8      uint64    ts_tai_ns         CLOCK_TAI ns
 24      4      uint32    ts_chip_ticks     raw ISM330 counter (25 µs/tick)
 28      4      uint32    anchor_gen        increments on re-anchor

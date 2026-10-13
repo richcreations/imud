@@ -1345,7 +1345,7 @@ void *fusion_thread(void *arg)
             LOG_E("[fusion] non-finite filter state — reset and re-aligning "
                     "(occurrence %u)\n", f.reset_count);
 
-        /* Extract fused state and fill fields mekf_get_state leaves as stubs. */
+        /* Extract fused state and fill the fields mekf_get_state leaves at zero. */
         fused_state_t state;
         mekf_get_state(&f, &state, cal_flags);
 

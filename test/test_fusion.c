@@ -950,6 +950,36 @@ TEST(test_get_state_euler_extraction)
 }
 
 /*
+ * get_state defines the whole struct, not only the fields it computes.  The
+ * fusion thread fills the rest and skips some by design — flags_ext with a
+ * magnetometer fitted, the timestamps on a sample that has none — and whatever
+ * is left as it was found goes out on the wire.
+ */
+TEST(test_get_state_defines_every_field)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    /* Two different fills in, one result out: no byte survives the call. */
+    fused_state_t a, b;
+    memset(&a, 0xA5, sizeof a);
+    memset(&b, 0x5A, sizeof b);
+    mekf_get_state(&f, &a, 0);
+    mekf_get_state(&f, &b, 0);
+    EXPECT(memcmp(&a, &b, sizeof a) == 0,
+           "nothing of the caller's struct survives");
+
+    EXPECT(a.flags_ext == 0, "flags_ext starts clear");
+    EXPECT(a.ts_wall_ns == 0 && a.ts_tai_ns == 0 &&
+           a.ts_chip_ticks == 0 && a.anchor_gen == 0,
+           "timestamps start at zero");
+    EXPECT(a.declination_deg == 0.0f, "declination starts at zero");
+}
+
+/*
  * A non-finite state must never reach a packet, and must not be permanent.
  *
  * The motivating case: a gyro bias of NaN — which reached f->bias straight from
@@ -4542,6 +4572,7 @@ int main(void)
     RUN(test_convergence_flag);
     RUN(test_precomputed_bias_used);
     RUN(test_get_state_euler_extraction);
+    RUN(test_get_state_defines_every_field);
     RUN(test_sanitize_recovers_from_non_finite);
     RUN(test_state_reset_flag_latches_until_converged);
     RUN(test_get_state_heading_wrap);

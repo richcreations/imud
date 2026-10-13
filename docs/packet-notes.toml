@@ -26,7 +26,9 @@ version = '''
 = {version}  (IMUD_VERSION; wire revision,
                                               not the release version)'''
 flags = 'see below'
-ts_wall_ns = 'CLOCK_REALTIME ns, SAMPLE-TAKEN'
+ts_wall_ns = '''
+CLOCK_REALTIME ns, SAMPLE-TAKEN;
+                                          0 = the sample had no timestamp'''
 ts_tai_ns = 'CLOCK_TAI ns'
 ts_chip_ticks = 'raw ISM330 counter (25 µs/tick)'
 anchor_gen = 'increments on re-anchor'
