@@ -3824,7 +3824,9 @@ for (int i = 0; i < produced; i++) {
 If your chip has @strong{no hardware timer}, set
 @code{has_hw_timestamp = false} and leave @code{chip_ts = 0} in every
 sample. The anchor mechanism in @code{imu.c} handles this by updating
-the wall-clock anchor on every burst.
+the wall-clock anchor on every burst, and the reader measures the part's
+real sample period from the samples it delivers, so @code{dt} follows
+the oscillator rather than the nominal rate.
 
 @node self_test optional diagnostic
 @subsection self_test (optional, diagnostic)

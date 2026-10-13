@@ -145,6 +145,31 @@ double anchor_measured_tick_ns(ts_anchor_t *a);
 void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
                   uint64_t *wall_out, uint64_t *tai_out, uint32_t *gen_out);
 
+/*
+ * Sample period of a part with no timer of its own, measured by counting the
+ * samples it delivers against CLOCK_MONOTONIC.  It is to those parts what the
+ * anchor's tick measurement is to the ones with a chip timer: without it dt is
+ * the nominal period, and the part's oscillator error scales everything
+ * integrated over it.
+ *
+ * A window opens on one burst and closes on the first burst a window later;
+ * the period is the time between them over the samples delivered after the
+ * opening burst.  A FIFO overflow loses samples the count cannot see, so it
+ * abandons the window.  A result outside the tolerance is not an oscillator —
+ * it is a reader that stalled — and is ignored.
+ */
+typedef struct {
+    bool     open;       /* a window is running */
+    uint64_t t0_ns;      /* monotonic time of the burst that opened it */
+    uint64_t n;          /* samples delivered since that burst */
+    uint32_t period_ns;  /* latest accepted measurement; 0 until there is one */
+} rate_meas_t;
+
+/* Feed one drain: n samples, whether it reported an overflow, and when it
+ * finished.  Returns true when period_ns changed. */
+bool rate_meas_step(rate_meas_t *r, int n, bool overflow,
+                    uint64_t mono_ns, uint32_t nominal_ns);
+
 /* ── Sample latency ──────────────────────────────────────────────────────── */
 
 /*

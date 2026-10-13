@@ -820,6 +820,102 @@ static void test_tick_estimate_is_filtered(void)
     end(fb);
 }
 
+/* ── Sample period of a part with no chip timer ──────────────────────────── */
+
+/*
+ * Drains every 80 ms from a part nominally at 100 Hz whose oscillator runs
+ * `fast_pct` fast, for `seconds`.  Whole samples per drain, with the fraction
+ * carried, the way a FIFO hands them over.  Returns how many drains produced
+ * a measurement.
+ */
+#define RATE_NOM_NS 10000000u   /* 100 Hz */
+
+static int rate_run(rate_meas_t *r, uint64_t *mono, double fast_pct,
+                    double seconds, int overflow_at)
+{
+    const uint64_t drain_ns = 80000000ULL;
+    const double   per_drain = 8.0 * (1.0 + fast_pct / 100.0);
+    double carry = 0.0;
+    int    updates = 0;
+    int    drains = (int)(seconds * 1e9 / (double)drain_ns);
+    for (int i = 0; i < drains; i++) {
+        *mono += drain_ns;
+        carry += per_drain;
+        int n = (int)carry;
+        carry -= n;
+        if (rate_meas_step(r, n, i == overflow_at, *mono, RATE_NOM_NS))
+            updates++;
+    }
+    return updates;
+}
+
+static void test_rate_measured_from_drains(void)
+{
+    begin("test_rate_measured_from_drains");
+    int fb = g_fail;
+
+    rate_meas_t r = {0};
+    uint64_t mono = 1000000000ULL;
+
+    EXPECT(rate_run(&r, &mono, 4.0, 29.0, -1) == 0 && r.period_ns == 0,
+           "no measurement before a window has run");
+    EXPECT(rate_run(&r, &mono, 4.0, 2.0, -1) == 1, "one once it has");
+
+    double want = (double)RATE_NOM_NS / 1.04;
+    EXPECT(fabs((double)r.period_ns - want) / want < 0.002,
+           "the period is the part's real one, 4 % short of nominal");
+
+    end(fb);
+}
+
+/* Samples lost to an overflow are not in the count, so a window that contains
+ * one would measure a rate the part is not running at. */
+static void test_rate_measurement_abandons_overflow(void)
+{
+    begin("test_rate_measurement_abandons_overflow");
+    int fb = g_fail;
+
+    rate_meas_t r = {0};
+    uint64_t mono = 1000000000ULL;
+
+    /* An overflow 20 s in: the 31 s that would have closed the window do not. */
+    EXPECT(rate_run(&r, &mono, 4.0, 31.0, 250) == 0 && r.period_ns == 0,
+           "a window with an overflow in it measures nothing");
+    /* It restarts from the next drain, so a clean window follows. */
+    EXPECT(rate_run(&r, &mono, 4.0, 21.0, -1) == 1, "and the next one does");
+
+    end(fb);
+}
+
+/* A reader that stalls delivers too few samples for the time that passed.
+ * That is not an oscillator, and it must not become dt. */
+static void test_rate_measurement_rejects_nonsense(void)
+{
+    begin("test_rate_measurement_rejects_nonsense");
+    int fb = g_fail;
+
+    rate_meas_t r = {0};
+    uint64_t mono = 1000000000ULL;
+    rate_run(&r, &mono, 4.0, 31.0, -1);
+    uint32_t good = r.period_ns;
+    EXPECT(good != 0, "a good measurement to start from");
+
+    /* 30 % slow: outside anything an oscillator does. */
+    EXPECT(rate_run(&r, &mono, -30.0, 31.0, -1) == 0 && r.period_ns == good,
+           "a window 30 % off nominal is ignored and the last one kept");
+
+    /* The next good one moves the estimate a quarter of the way, not all.
+     * An overflow first, so its window holds nothing of the stalled run. */
+    rate_meas_step(&r, 0, true, mono, RATE_NOM_NS);
+    rate_run(&r, &mono, 0.0, 31.0, -1);
+    double moved = (double)r.period_ns - (double)good;
+    double whole = (double)RATE_NOM_NS - (double)good;
+    EXPECT(fabs(moved - 0.25 * whole) < 0.05 * whole,
+           "a later measurement is filtered in");
+
+    end(fb);
+}
+
 /* ── Sample-latency histogram ────────────────────────────────────────────── */
 
 static void test_lat_buckets_and_percentiles(void)
@@ -1327,6 +1423,9 @@ int main(void)
     test_dt_between_samples_is_true();
     test_tick_measurement_rejects_nonsense();
     test_tick_estimate_is_filtered();
+    test_rate_measured_from_drains();
+    test_rate_measurement_abandons_overflow();
+    test_rate_measurement_rejects_nonsense();
     test_lat_buckets_and_percentiles();
     test_lat_reset_keeps_all_time_max();
     test_lat_step_windows_are_independent();

@@ -1988,7 +1988,9 @@ for (int i = 0; i < produced; i++) {
 
 If your chip has **no hardware timer**, set `has_hw_timestamp = false` and
 leave `chip_ts = 0` in every sample. The anchor mechanism in `imu.c` handles
-this by updating the wall-clock anchor on every burst.
+this by updating the wall-clock anchor on every burst, and the reader measures
+the part's real sample period from the samples it delivers, so `dt` follows the
+oscillator rather than the nominal rate.
 
 #### `self_test` (optional, diagnostic)
 

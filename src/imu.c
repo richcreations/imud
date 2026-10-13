@@ -136,6 +136,10 @@ struct imu_ctx {
     _Atomic uint64_t drains_edge, drains_timeout;
     _Atomic uint64_t drain_samples, drain_max;
 
+    /* Measured sample period of a part with no chip timer, ns; 0 until
+     * ism_reader has measured one.  fusion_thread uses it as dt. */
+    _Atomic uint32_t sample_period_ns;
+
     float            vib_ema;       /* EMA of (|a|-g)² for engine detection, ism_reader only */
 
     /* Cross-thread signal flags: _Atomic int rather than volatile so the
@@ -207,6 +211,10 @@ void *ism_reader_thread(void *arg)
      * Thread-locals rather than ctx fields: this thread is the only writer and
      * the only reader, and the totals a consumer sees are the atomics below. */
     uint64_t pend_hw = 0, pend_drop = 0, last_gap_log = 0;
+    /* Sample period of a part with no chip timer; see rate_meas_t. */
+    rate_meas_t rate = {0};
+    const uint32_t nominal_period_ns =
+        (uint32_t)(1000000000000ULL / (uint64_t)ctx->actual_odr_mhz);
     imud_config_t cfg;
     /*
      * Wait sized to what the line is waiting FOR: fifo_wm sample-sets plus a
@@ -341,6 +349,9 @@ void *ism_reader_thread(void *arg)
             atomic_store(&ctx->drain_max, (uint64_t)n);
 
         got_burst = (n > 0);
+        /* An overflow that delivered nothing still lost samples, so the count
+         * across this drain is not a rate. */
+        if (rc == 1) rate.open = false;
         if (n == 0) continue;
         /* Counted per delivered burst rather than per poll: the replay branch
          * above polls far faster than it reads, and counting polls would make
@@ -474,6 +485,24 @@ void *ism_reader_thread(void *arg)
                               meas, nom, (meas - nom) / nom * 100.0);
                 }
             }
+        }
+
+        /*
+         * A part with no timer of its own: measure its real sample period
+         * against the monotonic clock, as the anchor does for one that has a
+         * timer.  `now` is capture time under --replay, so a replay reproduces
+         * the measurement the live daemon made.
+         */
+        if (!ctx->imu_ops->has_hw_timestamp &&
+            rate_meas_step(&rate, n, rc == 1, ts_ns(&now), nominal_period_ns)) {
+            bool first = atomic_load(&ctx->sample_period_ns) == 0;
+            atomic_store(&ctx->sample_period_ns, rate.period_ns);
+            double meas = (double)rate.period_ns, nom = (double)nominal_period_ns;
+            if (first && fabs(meas - nom) / nom > 0.01)
+                LOG_I("[imu] sample period measured at %.1f µs against the "
+                      "configured %.1f (%+.1f%%); using the measured value "
+                      "for dt\n", meas * 1e-3, nom * 1e-3,
+                      (meas - nom) / nom * 100.0);
         }
 
         /* Engine vibration detection: exponential moving average of (|a|-g)².
@@ -1260,6 +1289,12 @@ void *fusion_thread(void *arg)
             }
             prev_wall_ns = wall;
             prev_gen     = gen;
+        }
+        /* A part with no chip timer has no per-sample interval to read, but
+         * ism_reader measures its period.  Until it has, dt stays nominal. */
+        if (!ctx->imu_ops->has_hw_timestamp) {
+            uint32_t p = atomic_load(&ctx->sample_period_ns);
+            if (p) dt = (float)p * 1e-9f;
         }
 
         mekf_predict(&f, &s, dt);

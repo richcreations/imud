@@ -179,7 +179,7 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu_math.c:435`) applies a fixed 3×3 board→body
+`apply_mount_rot_if_set()` (`imu_math.c:485`) applies a fixed 3×3 board→body
 matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
@@ -1189,7 +1189,7 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`fusion_thread`, `imu.c:1376`–`1445`) from the
+Computed in the fusion thread (`fusion_thread`, `imu.c:1411`–`1480`) from the
 bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
 angles, using the inverse of the 3-2-1 kinematic relation.
 
@@ -1437,7 +1437,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:856`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:885`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$
@@ -1451,7 +1451,7 @@ $\max_k\sigma_k > 0.00873$ rad·s⁻¹ ($0.5°$·s⁻¹) the window is **doubled
 
 ---
 
-## 11. Timestamp anchoring and per-sample dt — `imu_math.c:58`–`194`
+## 11. Timestamp anchoring and per-sample dt — `imu_math.c:58`–`244`
 
 A single anchor $(\text{chip\_ticks}, \text{wall\_ns}, \text{tai\_ns},
 \text{gen})$ maps the sensor's free-running counter to system time. Per
@@ -1467,6 +1467,12 @@ consecutive samples of the same anchor generation, **clamped to
 $[0.5,\,2]\times$ nominal**; outside that (FIFO gap, anchor reset) the nominal
 $1/\text{ODR}$ is used. This keeps oscillator tolerance (few % on the chip
 clock) from scaling integrated rotation while rejecting gap artefacts.
+
+**A part with no chip timer** has no such delta, so its period is measured
+(`rate_meas_step`, `imu_math.c:204`): the samples delivered across a 30 s
+window of `CLOCK_MONOTONIC`. A FIFO overflow abandons the window, a result more
+than 10 % from nominal is ignored, and after the first each measurement moves
+the estimate a quarter of the way. Until one exists $dt$ is nominal.
 
 **As-implemented.** Linear (constant-rate) interpolation between anchors; no
 clock-drift model beyond the 60 s re-anchor. `tick_ns`=0 for chips without a

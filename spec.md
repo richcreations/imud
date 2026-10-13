@@ -611,9 +611,11 @@ data has real 3D coverage.
 - **Joseph-form covariance updates** everywhere, plus explicit
   symmetrization after predict — P stays symmetric positive-definite in
   float arithmetic over multi-day runs.
-- **Per-sample dt**: the predict step integrates over the measured
-  inter-sample interval from hardware timestamps (clamped to [0.5×, 2×]
-  nominal), so IMU oscillator tolerance does not scale integrated rotation.
+- **Per-sample dt**: the predict step and the heave estimator integrate over
+  the measured inter-sample interval from hardware timestamps (clamped to
+  [0.5×, 2×] nominal), so IMU oscillator tolerance does not scale integrated
+  rotation or heave. A part with no chip timer has its sample period measured
+  against the host's monotonic clock instead.
 - **χ² innovation handling** on accel and mag updates: the normalised
   innovation distance d² = νᵀS⁻¹ν is capped Huber-style at the χ² 99 %
   quantile (influence bounded, information still flows in a steady seaway)

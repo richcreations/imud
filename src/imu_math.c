@@ -193,6 +193,56 @@ void chip_to_wall(ts_anchor_t *a, uint32_t chip_ts, uint32_t tick_ns,
     pthread_mutex_unlock(&a->mtx);
 }
 
+/*
+ * The window is as long as the anchor's, for the same reason: where inside a
+ * drain the newest sample was taken is uncertain by a sample period plus the
+ * read, at both ends, and 30 s puts that under 0.1 % at 100 Hz.
+ */
+#define RATE_MEAS_WINDOW_NS  30000000000ULL   /* 30 s */
+#define RATE_MEAS_TOL_PCT    10
+
+bool rate_meas_step(rate_meas_t *r, int n, bool overflow,
+                    uint64_t mono_ns, uint32_t nominal_ns)
+{
+    if (overflow) {
+        r->open = false;
+        return false;
+    }
+    if (n <= 0 || nominal_ns == 0) return false;
+
+    /* Open on this drain; its own samples are before the window. */
+    if (!r->open || mono_ns <= r->t0_ns) {
+        r->open  = true;
+        r->t0_ns = mono_ns;
+        r->n     = 0;
+        return false;
+    }
+
+    r->n += (uint64_t)n;
+    uint64_t elapsed = mono_ns - r->t0_ns;
+    if (elapsed < RATE_MEAS_WINDOW_NS) return false;
+
+    uint64_t meas = elapsed / r->n;
+    uint64_t lo   = (uint64_t)nominal_ns * (100 - RATE_MEAS_TOL_PCT) / 100;
+    uint64_t hi   = (uint64_t)nominal_ns * (100 + RATE_MEAS_TOL_PCT) / 100;
+
+    /* This drain closes one window and opens the next. */
+    r->t0_ns = mono_ns;
+    r->n     = 0;
+
+    if (meas < lo || meas > hi) return false;
+
+    /* The first measurement whole and the rest filtered, as the anchor does
+     * with its tick period and for the same reasons. */
+    if (r->period_ns == 0) {
+        r->period_ns = (uint32_t)meas;
+    } else {
+        int64_t err = (int64_t)meas - (int64_t)r->period_ns;
+        r->period_ns = (uint32_t)((int64_t)r->period_ns + err / 4);
+    }
+    return true;
+}
+
 /* ── Utilities ───────────────────────────────────────────────────────────── */
 
 /* ── Sample latency ──────────────────────────────────────────────────────── */
