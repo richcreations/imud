@@ -148,7 +148,8 @@ struct imu_ctx {
      * `stop` became _Atomic with the 1.5 TSan job (the ring API takes
      * _Atomic int * now) — plain volatile is a C11 data race. */
     _Atomic int      stop;
-    _Atomic int      settled;      /* release-written by fusion_thread at Phase 4 entry;
+    _Atomic int      settled;      /* release-written by fusion_thread once aligned, and
+                                    * cleared again while it re-aligns after a filter reset;
                                     * acquire-read by output/health threads to suppress
                                     * output until settle + bias estimation + alignment done */
     _Atomic int      reconfigure;  /* set by main on SIGHUP; cleared by fusion_thread */
@@ -880,6 +881,164 @@ void imu_get_capture_status(imu_ctx_t *ctx, char *path, size_t path_sz,
     pthread_mutex_unlock(&ctx->shared.lock);
 }
 
+/*
+ * Alignment: tilt from accel, heading from mag.
+ *
+ * Average the accel, and every mag sample seen in the same window, rather
+ * than aligning from one instantaneous reading: a single mid-swing
+ * sample in waves can be ~10° off, and any alignment error is baked
+ * into m_ref (the heading reference), so averaging directly improves
+ * the long-term estimate. Wave-orbital accelerations largely cancel
+ * over the window.
+ *
+ * Runs at startup, and again whenever the filter is left uninitialised:
+ * mekf_sanitize has reset it, or the last window held nothing usable.
+ */
+static void fusion_align(imu_ctx_t *ctx, mekf_t *f, const imud_config_t *cfg,
+                         float odr_hz, float mag_odr_hz)
+{
+    double acc_sum[3] = {0}, mag_sum[3] = {0};
+    int    acc_n = 0, mag_n = 0;
+    /*
+     * Averaging window for the one-shot alignment (align_window_sec).
+     *
+     * A hardcoded ~1 s is fine at a dock and poor at
+     * sea: one second is a fifth of a typical roll period, so the mean is
+     * taken over an arbitrary fraction of the cycle and the tilt estimate
+     * — hence m_ref's dip and heading anchor — is left wherever the wave
+     * happened to be. Over the 12-seed wave benchmark, attitude
+     * RMS in the marine (yaw-only) default: 47.7° at 1 s, 2.28° at 2 s,
+     * 2.19° at 5 s, flat thereafter. The default is now 5 s.
+     */
+    double aw_s = cfg->align_window_sec;
+    if (!(aw_s > 0.0)) aw_s = 1.0;
+    int    n_avg = imu_align_window_samples(aw_s, odr_hz, 8);
+
+    /* The mag-starvation fallback must outlast the averaging window. */
+    double mag_wait_s = (aw_s > 5.0) ? aw_s : 5.0;
+
+    /*
+     * The magnetometer average has to cover the SAME window as the
+     * accelerometer one, and it did not.  The accel loop below stops at a
+     * count -- aw_s * odr_hz -- while the mag drain took whatever happened
+     * to be sitting in the ring, with the starvation guard further down
+     * only catching mag_n == 0.  So the two means were taken over
+     * different spans: on a replay, alignment averaged 4165 accel
+     * samples (5 s at the configured rate) against 2521 mag samples, which
+     * at ~105 Hz is about 24 seconds of field.  On a platform that turns
+     * during those extra 19 seconds the mag mean is smeared over a heading
+     * range the accel mean never saw, and the alignment tilts by the
+     * difference.
+     *
+     * It also made alignment irreproducible, which is how it was found: the
+     * count depends on a race between the mag reader filling the ring and
+     * this thread draining it, so the same capture replayed twice aligned
+     * from 2521 mag samples once and 2539 the next.
+     */
+    int n_mag_avg = imu_align_window_samples(aw_s, mag_odr_hz, 1);
+
+    struct timespec align_start;
+    clock_gettime(CLOCK_MONOTONIC, &align_start);
+
+    imu_sample_t isample;
+    mag_sample_t msample;
+
+    /* Alignment always uses the raw field — a measured heading, however
+     * offset, beats the forward-is-North fallback. Only for the log. */
+    bool mag_uncal = !ctx->cal.has_mag;
+
+    while (acc_n < n_avg && !ctx->stop) {
+        if (imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0) {
+            acc_sum[0] += isample.accel[0];
+            acc_sum[1] += isample.accel[1];
+            acc_sum[2] += isample.accel[2];
+            acc_n++;
+        }
+        while (mag_n < n_mag_avg
+               && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+            if (msample.valid) {
+                mag_sum[0] += msample.field[0];
+                mag_sum[1] += msample.field[1];
+                mag_sum[2] += msample.field[2];
+                mag_n++;
+            }
+        }
+    }
+
+    /* Keep waiting (up to mag_wait_s total) for at least one mag sample.
+     * Drain the IMU ring while waiting: it holds only ~0.3 s at 833 Hz,
+     * and an undrained wait counts thousands of ring drops as FIFO
+     * overflows.
+     *
+     * Not entered at all on a 6-DoF board: there is no mag_reader to fill
+     * the ring, so the whole window would be spent proving that nothing
+     * arrives, and every startup would carry mag_wait_s of dead time. */
+    while (ctx->mag_ops && mag_n == 0 && !ctx->stop) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
+                       + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
+        if (elapsed > mag_wait_s) break;
+        if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
+            if (msample.valid) {
+                mag_sum[0] += msample.field[0];
+                mag_sum[1] += msample.field[1];
+                mag_sum[2] += msample.field[2];
+                mag_n++;
+            }
+        } else {
+            /* Discard; the pop's 100 ms timeout paces the loop. */
+            imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop);
+        }
+    }
+
+    if (!ctx->stop && acc_n > 0) {
+        float acc_avg[3], mag_avg[3];
+        for (int k = 0; k < 3; k++)
+            acc_avg[k] = (float)(acc_sum[k] / acc_n);
+        if (mag_n > 0) {
+            for (int k = 0; k < 3; k++)
+                mag_avg[k] = (float)(mag_sum[k] / mag_n);
+        } else {
+            /*
+             * Align without heading: yaw starts at zero in the orientation
+             * the daemon booted in.  On a 6-DoF board that is the permanent
+             * arrangement, and the operator chose it.  With a magnetometer
+             * that is merely late it lasts until the first samples arrive
+             * and mekf_update_mag sets the reference from them.  The two
+             * cases want different responses, hence two messages.
+             */
+            if (!ctx->mag_ops)
+                LOG_I("[fusion] 6-DoF: aligned on gravity alone. Heading "
+                      "starts at zero and is relative to this orientation, "
+                      "not to earth north.\n");
+            else
+                LOG_W("[fusion] no mag sample after %.0f s; "
+                        "aligning without heading\n", mag_wait_s);
+        }
+        mekf_align(f, acc_avg, mag_n > 0 ? mag_avg : NULL);
+        /* mekf_align refuses a window whose mean is nowhere near gravity.
+         * The caller sees the filter still uninitialised and tries again. */
+        if (!f->initialized) {
+            LOG_W("[fusion] alignment refused: mean accel over the window is "
+                  "[%.2f, %.2f, %.2f] m/s², not gravity. Trying again.\n",
+                  (double)acc_avg[0], (double)acc_avg[1], (double)acc_avg[2]);
+            return;
+        }
+        /* WMM-known field invariants remove the residual alignment-tilt
+         * error from the magnetic reference at the source. */
+        if (cfg->pos_mref_valid)
+            mekf_set_mref_invariants(f, cfg->pos_mref_h_gauss,
+                                     cfg->pos_mref_z_gauss);
+        LOG_I("[fusion] aligned from %d accel + %d mag samples%s%s\n",
+                acc_n, mag_n,
+                (mag_n > 0 && mag_uncal)
+                    ? " (uncalibrated mag — heading approximate)" : "",
+                (cfg->pos_mref_valid && f->m_ref_valid)
+                    ? " (m_ref invariants from WMM)" : "");
+    }
+}
+
 /* ── fusion_thread ───────────────────────────────────────────────────────── */
 
 void *fusion_thread(void *arg)
@@ -1031,157 +1190,7 @@ void *fusion_thread(void *arg)
     else if (cfg.wave_tau_s > 0.0f)
         LOG_W("[fusion] wave_tau_s set but heave_tau_s = 0 — sea state disabled\n");
 
-    /* ── Phase 3: initial alignment (tilt from accel, heading from mag) ─────
-     *
-     * Average ~1 s of accel and every mag sample seen in that window rather
-     * than aligning from one instantaneous reading: a single mid-swing
-     * sample in waves can be ~10° off, and any alignment error is baked
-     * into m_ref (the heading reference), so averaging directly improves
-     * the long-term estimate. Wave-orbital accelerations largely cancel
-     * over the window. */
-
-    {
-        double acc_sum[3] = {0}, mag_sum[3] = {0};
-        int    acc_n = 0, mag_n = 0;
-        /*
-         * Averaging window for the one-shot alignment (align_window_sec).
-         *
-         * A hardcoded ~1 s is fine at a dock and poor at
-         * sea: one second is a fifth of a typical roll period, so the mean is
-         * taken over an arbitrary fraction of the cycle and the tilt estimate
-         * — hence m_ref's dip and heading anchor — is left wherever the wave
-         * happened to be. Over the 12-seed wave benchmark, attitude
-         * RMS in the marine (yaw-only) default: 47.7° at 1 s, 2.28° at 2 s,
-         * 2.19° at 5 s, flat thereafter. The default is now 5 s.
-         */
-        double aw_s = ctx->cfg.align_window_sec;
-        if (!(aw_s > 0.0)) aw_s = 1.0;
-        int    n_avg = imu_align_window_samples(aw_s, odr_hz, 8);
-
-        /* The mag-starvation fallback must outlast the averaging window. */
-        double mag_wait_s = (aw_s > 5.0) ? aw_s : 5.0;
-
-        /*
-         * The magnetometer average has to cover the SAME window as the
-         * accelerometer one, and it did not.  The accel loop below stops at a
-         * count -- aw_s * odr_hz -- while the mag drain took whatever happened
-         * to be sitting in the ring, with the starvation guard further down
-         * only catching mag_n == 0.  So the two means were taken over
-         * different spans: on a replay, alignment averaged 4165 accel
-         * samples (5 s at the configured rate) against 2521 mag samples, which
-         * at ~105 Hz is about 24 seconds of field.  On a platform that turns
-         * during those extra 19 seconds the mag mean is smeared over a heading
-         * range the accel mean never saw, and the alignment tilts by the
-         * difference.
-         *
-         * It also made alignment irreproducible, which is how it was found: the
-         * count depends on a race between the mag reader filling the ring and
-         * this thread draining it, so the same capture replayed twice aligned
-         * from 2521 mag samples once and 2539 the next.
-         */
-        int n_mag_avg = imu_align_window_samples(aw_s, mag_odr_hz, 1);
-
-        struct timespec align_start;
-        clock_gettime(CLOCK_MONOTONIC, &align_start);
-
-        imu_sample_t isample;
-        mag_sample_t msample;
-
-        /* Alignment always uses the raw field — a measured heading, however
-         * offset, beats the forward-is-North fallback. Only for the log. */
-        bool mag_uncal = !ctx->cal.has_mag;
-
-        while (acc_n < n_avg && !ctx->stop) {
-            if (imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop) == 0) {
-                acc_sum[0] += isample.accel[0];
-                acc_sum[1] += isample.accel[1];
-                acc_sum[2] += isample.accel[2];
-                acc_n++;
-            }
-            while (mag_n < n_mag_avg
-                   && mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid) {
-                    mag_sum[0] += msample.field[0];
-                    mag_sum[1] += msample.field[1];
-                    mag_sum[2] += msample.field[2];
-                    mag_n++;
-                }
-            }
-        }
-
-        /* Keep waiting (up to mag_wait_s total) for at least one mag sample.
-         * Drain the IMU ring while waiting: it holds only ~0.3 s at 833 Hz,
-         * and an undrained wait counts thousands of ring drops as FIFO
-         * overflows.
-         *
-         * Not entered at all on a 6-DoF board: there is no mag_reader to fill
-         * the ring, so the whole window would be spent proving that nothing
-         * arrives, and every startup would carry mag_wait_s of dead time. */
-        while (ctx->mag_ops && mag_n == 0 && !ctx->stop) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            double elapsed = (double)(now.tv_sec  - align_start.tv_sec)
-                           + (double)(now.tv_nsec - align_start.tv_nsec) * 1e-9;
-            if (elapsed > mag_wait_s) break;
-            if (mag_ring_try_pop(&ctx->mag_ring, &msample) == 0) {
-                if (msample.valid) {
-                    mag_sum[0] += msample.field[0];
-                    mag_sum[1] += msample.field[1];
-                    mag_sum[2] += msample.field[2];
-                    mag_n++;
-                }
-            } else {
-                /* Discard; the pop's 100 ms timeout paces the loop. */
-                imu_ring_pop(&ctx->imu_ring, &isample, &ctx->stop);
-            }
-        }
-
-        if (!ctx->stop && acc_n > 0) {
-            float acc_avg[3], mag_avg[3];
-            for (int k = 0; k < 3; k++)
-                acc_avg[k] = (float)(acc_sum[k] / acc_n);
-            if (mag_n > 0) {
-                for (int k = 0; k < 3; k++)
-                    mag_avg[k] = (float)(mag_sum[k] / mag_n);
-            } else {
-                /*
-                 * Align without heading: yaw starts at zero in the orientation
-                 * the daemon booted in.  On a 6-DoF board that is the permanent
-                 * arrangement, and the operator chose it.  With a magnetometer
-                 * that is merely late it lasts until the first samples arrive
-                 * and mekf_update_mag sets the reference from them.  The two
-                 * cases want different responses, hence two messages.
-                 */
-                if (!ctx->mag_ops)
-                    LOG_I("[fusion] 6-DoF: aligned on gravity alone. Heading "
-                          "starts at zero and is relative to this orientation, "
-                          "not to earth north.\n");
-                else
-                    LOG_W("[fusion] no mag sample after %.0f s; "
-                            "aligning without heading\n", mag_wait_s);
-            }
-            mekf_align(&f, acc_avg, mag_n > 0 ? mag_avg : NULL);
-            /* WMM-known field invariants remove the residual alignment-tilt
-             * error from the magnetic reference at the source. */
-            if (cfg.pos_mref_valid)
-                mekf_set_mref_invariants(&f, cfg.pos_mref_h_gauss,
-                                         cfg.pos_mref_z_gauss);
-            LOG_I("[fusion] aligned from %d accel + %d mag samples%s%s\n",
-                    acc_n, mag_n,
-                    (mag_n > 0 && mag_uncal)
-                        ? " (uncalibrated mag — heading approximate)" : "",
-                    (cfg.pos_mref_valid && f.m_ref_valid)
-                        ? " (m_ref invariants from WMM)" : "");
-        }
-    }
-
-    if (ctx->stop) return NULL;
-
-    /* ── Phase 4: main prediction + update loop ───────────────────────────── */
-
-    /* All startup phases complete (settle → bias → MEKF init → alignment).
-     * Release-store so output/health threads see all prior writes. */
-    atomic_store_explicit(&ctx->settled, 1, memory_order_release);
+    /* ── Phase 3: alignment, then the prediction + update loop ────────────── */
 
     imu_sample_t s;
     mag_sample_t m;
@@ -1220,6 +1229,23 @@ void *fusion_thread(void *arg)
     ovf_latch_t ovf = OVF_LATCH_INIT;
 
     while (!ctx->stop) {
+        /*
+         * The filter has no attitude: this is startup, or mekf_sanitize reset
+         * it, or the last window held nothing alignment could use.  Align,
+         * with the outputs held until there is something to send, and restart
+         * the estimators that integrate over attitude.
+         */
+        if (!f.initialized) {
+            atomic_store_explicit(&ctx->settled, 0, memory_order_release);
+            cfg_snapshot(ctx, &cfg);
+            fusion_align(ctx, &f, &cfg, odr_hz, mag_odr_hz);
+            if (!f.initialized) continue;
+            heave_init(&heave, cfg.heave_tau_s, f.dt);
+            seastate_init(&wave, heave.enabled ? cfg.wave_tau_s : 0.0f, f.dt);
+            /* Release-store so output/health threads see all prior writes. */
+            atomic_store_explicit(&ctx->settled, 1, memory_order_release);
+        }
+
         if (imu_ring_pop(&ctx->imu_ring, &s, &ctx->stop) != 0)
             continue;
 
@@ -1388,10 +1414,15 @@ void *fusion_thread(void *arg)
          * the first message — the one that says when it started — is the one
          * worth keeping.
          */
-        if (mekf_sanitize(&f) &&
-            (f.reset_count == 1 || (f.reset_count % 1000) == 0))
-            LOG_E("[fusion] non-finite filter state — reset and re-aligning "
-                    "(occurrence %u)\n", f.reset_count);
+        if (mekf_sanitize(&f)) {
+            /* Hold the outputs before the reset state is published below:
+             * the next pass re-aligns, and until then there is no attitude
+             * to send — least of all in NMEA, which has no flag to say so. */
+            atomic_store_explicit(&ctx->settled, 0, memory_order_release);
+            if (f.reset_count == 1 || (f.reset_count % 1000) == 0)
+                LOG_E("[fusion] non-finite filter state — reset and "
+                        "re-aligning (occurrence %u)\n", f.reset_count);
+        }
 
         /* Extract fused state and fill the fields mekf_get_state leaves at zero. */
         fused_state_t state;

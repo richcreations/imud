@@ -31,6 +31,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <math.h>
+
+#include "capture.h"
 #include "config.h"
 #include "imu.h"
 #include "output.h"
@@ -340,12 +343,115 @@ static void test_late_magnetometer(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/* ── Part D: the filter resets mid-run and has to align again ────────────── */
+
+/*
+ * Six seconds of a level board pointing north, with one sample three seconds
+ * in whose gyro is not a number.  Nothing on the sample path refuses that, so
+ * it reaches the filter and mekf_sanitize resets it.
+ */
+static int write_reset_capture(const char *path)
+{
+    const uint64_t t0_mono = 1000000000ULL;
+    const uint64_t t0_wall = 1700000000000000000ULL;
+    cap_writer_t w;
+    if (cap_writer_open(&w, path, 200, 200000, "sim", "sim", "test",
+                        t0_wall, t0_mono) != 0)
+        return -1;
+
+    for (int i = 0; i < 200 * 6; i++) {
+        uint64_t dt = (uint64_t)i * 5000000ULL;        /* 200 Hz */
+        imu_sample_t s;
+        memset(&s, 0, sizeof s);
+        s.accel[2] = -9.80665f;
+        s.temp_c   = 25.0f;
+        s.seq      = (uint32_t)i;
+        s.chip_ts  = (uint32_t)i * 200u;               /* 25 µs ticks */
+        if (i == 200 * 3) s.gyro[0] = NAN;
+        if (cap_writer_imu(&w, &s, t0_mono + dt) != 0) return -1;
+
+        if (i % 4 == 0) {                              /* 50 Hz */
+            mag_sample_t m;
+            memset(&m, 0, sizeof m);
+            m.field[0] = 25.0f;
+            m.field[2] = 40.0f;
+            m.wall_ns  = t0_wall + dt;
+            m.valid    = true;
+            if (cap_writer_mag(&w, &m, t0_mono + dt) != 0) return -1;
+        }
+    }
+    cap_writer_close(&w);
+    return 0;
+}
+
+/*
+ * After a reset the filter has no attitude.  It must take one again from the
+ * samples that follow, with the outputs held in between, rather than publish
+ * identity for the rest of the run.
+ */
+static void test_realign_after_reset(void)
+{
+    printf("%-40s", "test_realign_after_reset");
+    int fb = g_fail;
+
+    char path[96];
+    snprintf(path, sizeof path, "/tmp/imud_conc_reset_%d.imucap", (int)getpid());
+    EXPECT(write_reset_capture(path) == 0, "capture written");
+
+    imud_config_t cfg;
+    sim_cfg(&cfg);
+    cfg.align_window_sec = 0.5;
+    snprintf(cfg.sim_file, sizeof cfg.sim_file, "%s", path);
+
+    imu_ctx_t *imu = NULL;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0, "imu_ctx_open (replay)");
+    if (!imu) { unlink(path); puts("FAIL"); return; }
+
+    pthread_t ism, mag, fus;
+    pthread_create(&ism, NULL, ism_reader_thread, imu);
+    pthread_create(&mag, NULL, mag_reader_thread, imu);
+    pthread_create(&fus, NULL, fusion_thread, imu);
+
+    /* Aligned, then held by the reset, then aligned again. */
+    bool aligned = false, held = false, realigned = false;
+    double t0 = now_s();
+    while (!realigned && now_s() - t0 < 15.0) {
+        usleep(2000);
+        bool up = imu_ctx_is_settled(imu);
+        if      (!aligned) aligned   = up;
+        else if (!held)    held      = !up;
+        else               realigned = up;
+    }
+    EXPECT(aligned,   "aligned at startup");
+    EXPECT(held,      "the non-finite sample reset the filter and held the outputs");
+    EXPECT(realigned, "and the filter aligned again");
+
+    /* Half a second on: an attitude, the right one, and heading corrected. */
+    usleep(500000);
+    fused_state_t st;
+    imu_get_state(imu, &st, NULL, NULL, NULL);
+    EXPECT(!(st.flags & FLAG_STARTUP), "the filter has an attitude again");
+    EXPECT(fabsf(st.roll) < 0.05f && fabsf(st.pitch) < 0.05f,
+           "and it is the level one");
+    EXPECT((st.flags & (FLAG_MAG_VALID | FLAG_MAG_UNCAL)) != 0,
+           "with heading being corrected");
+
+    imu_ctx_stop(imu);
+    pthread_join(fus, NULL);
+    pthread_join(mag, NULL);
+    pthread_join(ism, NULL);
+    imu_ctx_free(imu);
+    unlink(path);
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud concurrency tests (run under TSan) ===");
     test_reload_race();
     test_stream_shutdown_race();
     test_late_magnetometer();
+    test_realign_after_reset();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

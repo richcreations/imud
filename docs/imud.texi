@@ -3290,8 +3290,9 @@ catch this --- it only bites at device-open time.
 Filter reports @code{R} in @code{imud-mon}, or @code{imud_state_reset}
 is 1
  @tab The MEKF found a non-finite value in its own state and reset
-itself; it re-aligns automatically and the flag clears when it
-re-converges. Repeated resets are a bug --- capture the log line
+itself. Output pauses while it re-aligns, for one
+@code{align_window_sec}, and the flag clears when it re-converges.
+Repeated resets are a bug --- capture the log line
 (@code{[fusion] non-finite filter state}) and the @code{.imucap} that
 produced it.
 @item 

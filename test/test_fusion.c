@@ -1073,6 +1073,28 @@ TEST(test_state_reset_flag_latches_until_converged)
 }
 
 /*
+ * A reset returns the gyro bias to what the filter started from, not to zero.
+ * The startup estimate is the best thing known about the part, and relearning
+ * a bias online costs minutes of heading pulled the wrong way.
+ */
+TEST(test_sanitize_returns_to_starting_bias)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0.010f, -0.020f, 0.005f};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+    mekf_align(&f, (float[]){0,0,-G}, (float[]){20.0f,0,5.0f});
+
+    f.bias[0] = NAN;
+    imu_sample_t s = make_gyro(0.0f, 0.0f, 0.0f);
+    s.accel[2] = -G;
+    mekf_predict(&f, &s, f.dt);
+    EXPECT(mekf_sanitize(&f), "sanitize acted");
+    EXPECT(f.bias[0] == bias[0] && f.bias[1] == bias[1] && f.bias[2] == bias[2],
+           "bias is back at the startup estimate");
+}
+
+/*
  * get_state: heading wraps correctly at 0° / 360° boundary.
  */
 TEST(test_get_state_heading_wrap)
@@ -4694,6 +4716,7 @@ int main(void)
     RUN(test_get_state_defines_every_field);
     RUN(test_sanitize_recovers_from_non_finite);
     RUN(test_state_reset_flag_latches_until_converged);
+    RUN(test_sanitize_returns_to_starting_bias);
     RUN(test_get_state_heading_wrap);
     RUN(test_align_accel_too_weak);
     RUN(test_mag_update_skips_invalid);

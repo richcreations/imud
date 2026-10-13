@@ -47,6 +47,7 @@ typedef struct {
     /* ── Nominal state ────────────────────────────────────────────────── */
     float q[4];        /* unit quaternion [w, x, y, z], body→NED */
     float bias[3];     /* gyro bias estimate, rad/s */
+    float bias_init[3];/* the bias mekf_init was given; a reset returns to it */
     float wave_acc[3]; /* wave-acceleration estimate, body frame, g units */
 
     /* ── Error-state covariance P (9×9) ───────────────────────────────── */

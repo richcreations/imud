@@ -33,6 +33,9 @@ Fixed:
 * Heave, heave rate, wave height and wave period are integrated over the
   measured sample interval. On a part whose oscillator runs fast they read
   high: about 8 % in heave on an ISM330DHCX that is 4 % fast.
+* After a filter reset the daemon aligns again and carries on. It previously
+  published a level attitude for the rest of the run. Output pauses for the
+  alignment window.
 
 
 1.11.1

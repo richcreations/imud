@@ -54,6 +54,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "Heave, heave rate, wave height and wave period are integrated over the measured sample interval. On a part whose oscillator runs fast they read high: about 8 % in heave on an ISM330DHCX that is 4 % fast."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "After a filter reset the daemon aligns again and carries on. It previously published a level attitude for the rest of the run. Output pauses for the alignment window."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

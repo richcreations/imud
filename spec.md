@@ -941,13 +941,13 @@ bit 12  wave_valid         Sea-state statistics settled (wave/roll/pitch
 bit 13  engine_on          Engine-vibration detector currently asserting
 bit 14  state_reset        The MEKF found a non-finite value in its own state
                            and reset itself: nominal state and covariance back
-                           to their initial values, re-aligning from the next
-                           good accel/mag pair. LATCHED from the reset until
-                           the filter next converges, not a single-packet
-                           pulse — at up to 500 Hz a momentary bit is invisible
-                           to a 1 Hz consumer. Bit 2 is clear for the same
-                           span. Attitude remains readable throughout; it is
-                           unconverged, not invalid.
+                           to their initial values. No packet is sent while it
+                           re-aligns, which takes align_window_sec. LATCHED
+                           from then until the filter next converges, not a
+                           single-packet pulse — at up to 500 Hz a momentary
+                           bit is invisible to a 1 Hz consumer. Bit 2 is clear
+                           for the same span. Attitude is readable while the
+                           bit is set; it is unconverged, not invalid.
 bit 15  mag_uncal          Heading is being corrected by a magnetometer with
                            NO calibration. The uncorrected hard iron offsets
                            heading by a deviation that varies with heading —

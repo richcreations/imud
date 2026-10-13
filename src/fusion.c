@@ -993,10 +993,11 @@ static void mekf_derive_tuning(mekf_t *f, const imud_config_t *cfg)
  */
 static void mekf_reset_state(mekf_t *f)
 {
-    /* Nominal state: identity attitude, zero bias and wave acceleration. */
+    /* Nominal state: identity attitude, the bias the filter started from,
+     * zero wave acceleration. */
     f->q[0] = 1.0f;
     f->q[1] = f->q[2] = f->q[3] = 0.0f;
-    f->bias[0] = f->bias[1] = f->bias[2] = 0.0f;
+    memcpy(f->bias, f->bias_init, sizeof f->bias);
     f->wave_acc[0] = f->wave_acc[1] = f->wave_acc[2] = 0.0f;
 
     /*
@@ -1030,16 +1031,13 @@ void mekf_init(mekf_t *f,
 
     mekf_derive_tuning(f, cfg);
 
+    /* Pre-estimated bias from the startup still window, if the caller has one.
+     * Kept, so that a later reset returns to it rather than to zero. */
+    if (gyro_bias_init)
+        memcpy(f->bias_init, gyro_bias_init, sizeof f->bias_init);
+
     /* After derive_tuning: the wave block of P is sized from wave_sig2. */
     mekf_reset_state(f);
-
-    /* Pre-estimated bias from the startup still window, if the caller has one.
-     * Applied after the reset, which zeroes it. */
-    if (gyro_bias_init) {
-        f->bias[0] = gyro_bias_init[0];
-        f->bias[1] = gyro_bias_init[1];
-        f->bias[2] = gyro_bias_init[2];
-    }
 
     f->Ra_scale = 1.0f;   /* raised by fusion_thread during engine vibration */
     f->acc_quiet_ema = 1.0f;   /* start "loud"; must earn quiescence from data */
