@@ -55,6 +55,10 @@ typedef struct {
     /* ── Magnetometer reference ───────────────────────────────────────── */
     float m_ref[3];     /* Earth field direction in NED (with magnitude), Gauss */
     bool  m_ref_valid;  /* true once set from first good mag reading */
+    /* Level-frame field summed toward m_ref when alignment had no
+     * magnetometer reading; see mref_acquire in fusion.c. */
+    float    mref_sum[3];
+    uint32_t mref_n;
 
     /* ── Filter state ─────────────────────────────────────────────────── */
     bool  initialized;   /* true once tilt-init from accel has run */
@@ -181,6 +185,8 @@ void mekf_init(mekf_t *f,
  * mekf_align — call with the first ~N static accel+mag readings to
  * initialise attitude (tilt from accel, heading from mag).
  * Safe to call multiple times; uses the most recent values.
+ * mag may be NULL when no magnetometer reading exists: yaw then starts at
+ * zero, and mekf_update_mag sets the heading reference when one arrives.
  */
 void mekf_align(mekf_t *f, const float accel[3], const float mag[3]);
 
@@ -225,7 +231,8 @@ bool mekf_accel_probe(const mekf_t *f, const imu_sample_t *s,
 
 /*
  * mekf_update_mag — magnetometer heading correction.
- * Skipped if m_ref not yet valid, or residual exceeds mag_reject_gauss.
+ * While m_ref is not yet valid the samples go to establishing it instead.
+ * Skipped if the residual exceeds mag_reject_gauss.
  * Expects mag in calibrated body frame, µT (Z sign already flipped by driver).
  */
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m);

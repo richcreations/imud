@@ -1114,8 +1114,9 @@ TEST(test_align_accel_too_weak)
 }
 
 /*
- * mekf_update_mag must skip when m->valid is false (invalid reading) or
- * when m_ref_valid is false (reference not yet established).
+ * mekf_update_mag must skip when m->valid is false (invalid reading).  With no
+ * reference yet, a sample goes toward establishing one and moves nothing by
+ * itself.
  */
 TEST(test_mag_update_skips_invalid)
 {
@@ -1140,6 +1141,53 @@ TEST(test_mag_update_skips_invalid)
     mekf_update_mag(&f, &m);
     EXPECT_NEAR(f.q[0], q0[0], 1e-7f, "w unchanged when m_ref_valid=false");
     EXPECT_NEAR(f.q[3], q0[3], 1e-7f, "z unchanged when m_ref_valid=false");
+    EXPECT(!f.m_ref_valid, "one sample is not yet a reference");
+}
+
+/*
+ * Alignment that ran before the magnetometer delivered takes no heading
+ * reference, and the first second of samples sets one.  The alternative was a
+ * placeholder reference of 1 µT, against which the magnitude gate refused every
+ * real sample for the rest of the run.
+ *
+ * Heeled and well off north, so levelling the field with the wrong attitude,
+ * or not at all, shows up in both the heading and the reference.
+ */
+TEST(test_late_mag_sets_heading_reference)
+{
+    imud_config_t cfg = make_cfg();
+    mekf_t f;
+    float bias[3] = {0};
+    mekf_init(&f, &cfg, 833.0f, (float)cfg.mag_odr_mhz * 1e-3f, bias);
+
+    const float roll = 20.0f * DEG, psi = 135.0f * DEG;
+    const float H = 0.2f, Z = 0.4f;                       /* Gauss */
+    imu_sample_t s = make_accel(0.0f, -sinf(roll) * G, -cosf(roll) * G);
+
+    mekf_align(&f, s.accel, NULL);
+    EXPECT(f.initialized,  "aligned on gravity alone");
+    EXPECT(!f.m_ref_valid, "no heading reference without a magnetometer");
+
+    /* The NED field [H, 0, Z] as that attitude sees it in body axes. */
+    mag_sample_t m = make_mag(H * cosf(psi),
+                              -H * sinf(psi) * cosf(roll) + Z * sinf(roll),
+                               H * sinf(psi) * sinf(roll) + Z * cosf(roll));
+
+    for (int i = 0; i < 833 * 3; i++) {                   /* 3 s */
+        mekf_predict(&f, &s, f.dt);
+        if (i % 8 == 0) mekf_update_mag(&f, &m);          /* ~100 Hz */
+        mekf_update_accel(&f, &s);
+    }
+
+    fused_state_t out;
+    mekf_get_state(&f, &out, 0);
+    EXPECT(f.m_ref_valid, "reference set once the magnetometer delivers");
+    EXPECT(f.mag_accepted > 0, "and its samples are fused from then on");
+    EXPECT_NEAR(out.heading_deg, 135.0f, 1.0f, "heading is the measured one");
+    EXPECT_NEAR(out.roll, roll, 1.0f * DEG, "heel is undisturbed");
+    EXPECT_NEAR(f.m_ref[0], H,    0.01f, "m_ref points north at the measured |H|");
+    EXPECT_NEAR(f.m_ref[1], 0.0f, 0.01f, "with no east component");
+    EXPECT_NEAR(f.m_ref[2], Z,    0.01f, "and the measured vertical field");
 }
 
 /*
@@ -4578,6 +4626,7 @@ int main(void)
     RUN(test_get_state_heading_wrap);
     RUN(test_align_accel_too_weak);
     RUN(test_mag_update_skips_invalid);
+    RUN(test_late_mag_sets_heading_reference);
     RUN(test_mag_uncalibrated_is_fused);
     RUN(test_mag_uncalibrated_never_touches_roll_pitch);
     RUN(test_mag_uncalibrated_withdrawal);

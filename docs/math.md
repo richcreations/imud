@@ -402,12 +402,25 @@ Full attitude $q = q_\psi\otimes q_{tilt}$, $q_\psi=[\cos\tfrac\psi2,0,0,
 the measurement rotated to NED and scaled µT→Gauss:
 $$ m_{ref} = 0.01\, R(q)\, m_b. $$
 
+**No magnetometer at alignment.** If the window ends with no magnetometer
+sample, alignment takes the tilt alone: $\psi=0$ and `m_ref` stays unset. On a
+6-DoF board that is permanent. Otherwise the first second of samples sets the
+reference (`mref_acquire`, `fusion.c:1456`). Each is rotated into the level
+frame with the filter's own attitude; with $\bar m$ their mean,
+
+$$ \beta = \operatorname{atan2}(\bar m_E,\ \bar m_N),\qquad
+   q \leftarrow q_z(-\beta)\otimes q,\qquad
+   m_{ref} = \big[\sqrt{\bar m_N^2+\bar m_E^2},\ 0,\ \bar m_D\big]. $$
+
+$P$ is unchanged, because $\delta\theta$ is a body-frame error and turning the
+nominal about a world axis does not alter it.
+
 **As-implemented / audit note.** The heading sign is
 $\operatorname{atan2}(-m_y,m_x)$, **not** $\operatorname{atan2}(+m_y,m_x)$;
 the levelled field is the true NED field rotated by $-\psi$, so the negative
 sign recovers vessel yaw. (The `+m_y` form returns $-\psi$, mirrored about
 north — a historical bug invisible when aligning while pointing north; see
-the in-code comment at `fusion.c:1104`.) The initial `m_ref` inherits any
+the in-code comment at `fusion.c:1106`.) The initial `m_ref` inherits any
 alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 (§4.8) and the WMM invariants (§4.9) later remove; its horizontal
 **direction** is the heading datum and is never subsequently adapted.
@@ -415,7 +428,7 @@ alignment tilt error in its magnitude/dip, which the quiescence-gated EMA
 **Source:** tilt/heading coarse alignment — Farrell 2008 §10; TRIAD lineage
 Shuster & Oh 1981 *(canonical)*.
 
-### 4.4 Prediction — `mekf_predict()` (`fusion.c:1134`)
+### 4.4 Prediction — `mekf_predict()` (`fusion.c:1139`)
 
 Per IMU sample, with measured interval $dt$ (from hardware timestamps, §11;
 falls back to nominal $1/\text{ODR}$).
@@ -433,7 +446,7 @@ $\delta q\approx[1,\tfrac12\vartheta]$ for $|\vartheta|<10^{-7}$. Renormalized
 after.
 
 **Covariance propagation** $P \leftarrow \Phi P \Phi^\top + Q_d$, first-order
-discrete transition (`mekf_predict`, `fusion.c:1162`):
+discrete transition (`mekf_predict`, `fusion.c:1167`):
 
 $$
 \Phi = \begin{bmatrix} I_3 - [\omega]_\times\,dt & -I_3\,dt & 0_3 \\
@@ -659,7 +672,7 @@ $\gamma_\psi=6.63$ ($\chi^2_1$ 99%), rank-1 Joseph covariance update.
 
 **Source:** scalar-measurement EKF specialization of §4.5 *(canonical)*.
 
-### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1374`)
+### 4.7 Accelerometer update — `mekf_update_accel()` (`fusion.c:1379`)
 
 **Speed-aided centripetal correction.** In a turn the accelerometer senses
 $a = a_{platform} - g$, and with speed-over-ground $v$ (body $\approx[v,0,0]$,
@@ -973,7 +986,7 @@ off optimal for 3-D — a deliberate compromise favouring the marine default, no
 an arbitrary number. Reproduce with `-DBENCH_SWEEP_NG`, composable with
 `-DBENCH_ODR_HZ=<rate>`.
 
-### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1438`)
+### 4.8 Magnetometer update — `mekf_update_mag()` (`fusion.c:1491`)
 
 Measurement in Gauss ($m = 0.01\,m_{\mu T}$). Predicted body field
 $h_{raw}=R^\top m_{ref}$, magnitude $|h_{raw}|$.
@@ -1135,7 +1148,7 @@ and its dip channel is least trustworthy.
 **Source:** heading-only / tilt-compensated magnetometer fusion — standard
 marine AHRS practice, Farrell 2008 *(canonical)*; gauge-feedback avoidance is
 imud-specific design (see the in-code rationale in `mekf_update_mag`,
-`fusion.c:1550`).
+`fusion.c:1610`).
 
 ### 4.9 WMM reference invariants — `mekf_set_mref_invariants()` (`fusion.c:1057`)
 
@@ -1149,7 +1162,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2006`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2068`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1161,7 +1174,7 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1936`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1996`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
@@ -1176,7 +1189,7 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`fusion_thread`, `imu.c:1304`–`1351`) from the
+Computed in the fusion thread (`fusion_thread`, `imu.c:1376`–`1445`) from the
 bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
 angles, using the inverse of the 3-2-1 kinematic relation.
 
@@ -1202,7 +1215,7 @@ falls back to the body-axis rate to avoid division blow-up.
 
 ---
 
-## 6. Heave estimator — `heave_update()` (`fusion.c:1789`)
+## 6. Heave estimator — `heave_update()` (`fusion.c:1849`)
 
 Vertical displacement from vertical acceleration, by leaky double integration
 followed by a true first-order high-pass.
@@ -1238,18 +1251,18 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:1847`–`1934`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1907`–`1994`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1865`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1925`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:1872`).
+`fusion.c:1932`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):
@@ -1290,7 +1303,7 @@ recursion, West 1979 / Finch 2009 *(canonical)*.
 
 ---
 
-## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1438`)
+## 8. Compass-health diagnostics — `mekf_update_mag()` (`fusion.c:1491`)
 
 Two EMAs ($\alpha=1/3000$, $\tau\approx30$ s at 100 Hz mag ODR), updated
 **before** the rejection gates so that gated-out anomalies still register:

@@ -287,11 +287,65 @@ static void test_stream_shutdown_race(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/* ── Part C: a magnetometer that starts after alignment has given up ─────── */
+
+/*
+ * The mag reader is started only once the fusion thread has aligned without
+ * it, which is what a magnetometer that is slow to deliver looks like from
+ * there.  Heading must then start being corrected rather than dead-reckon for
+ * the rest of the run.
+ */
+static void test_late_magnetometer(void)
+{
+    printf("%-40s", "test_late_magnetometer");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    sim_cfg(&cfg);
+
+    imu_ctx_t *imu = NULL;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0, "imu_ctx_open (late mag)");
+    if (!imu) { puts("FAIL"); return; }
+
+    pthread_t ism, mag, fus;
+    pthread_create(&ism, NULL, ism_reader_thread, imu);
+    pthread_create(&fus, NULL, fusion_thread, imu);
+
+    /* Alignment waits out its window for a first mag sample, then goes on. */
+    double t0 = now_s();
+    while (!imu_ctx_is_settled(imu) && now_s() - t0 < 20.0) usleep(10000);
+    EXPECT(imu_ctx_is_settled(imu), "aligned without the magnetometer");
+
+    fused_state_t st;
+    imu_get_state(imu, &st, NULL, NULL, NULL);
+    EXPECT(!(st.flags & (FLAG_MAG_VALID | FLAG_MAG_UNCAL)),
+           "no heading correction before it delivers");
+
+    pthread_create(&mag, NULL, mag_reader_thread, imu);
+
+    bool fused = false;
+    t0 = now_s();
+    while (!fused && now_s() - t0 < 5.0) {
+        usleep(20000);
+        imu_get_state(imu, &st, NULL, NULL, NULL);
+        fused = (st.flags & (FLAG_MAG_VALID | FLAG_MAG_UNCAL)) != 0;
+    }
+    EXPECT(fused, "heading is corrected once the magnetometer delivers");
+
+    imu_ctx_stop(imu);
+    pthread_join(fus, NULL);
+    pthread_join(mag, NULL);
+    pthread_join(ism, NULL);
+    imu_ctx_free(imu);
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud concurrency tests (run under TSan) ===");
     test_reload_race();
     test_stream_shutdown_race();
+    test_late_magnetometer();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

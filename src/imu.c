@@ -1116,12 +1116,12 @@ void *fusion_thread(void *arg)
                     mag_avg[k] = (float)(mag_sum[k] / mag_n);
             } else {
                 /*
-                 * Align without heading: forward IS the reference, so yaw
-                 * starts at zero and every later heading is relative to the
-                 * orientation the daemon booted in.  On a 6-DoF board that is
-                 * the permanent arrangement rather than a timeout, and saying
-                 * so matters — the operator chose it, and the two cases want
-                 * different responses.
+                 * Align without heading: yaw starts at zero in the orientation
+                 * the daemon booted in.  On a 6-DoF board that is the permanent
+                 * arrangement, and the operator chose it.  With a magnetometer
+                 * that is merely late it lasts until the first samples arrive
+                 * and mekf_update_mag sets the reference from them.  The two
+                 * cases want different responses, hence two messages.
                  */
                 if (!ctx->mag_ops)
                     LOG_I("[fusion] 6-DoF: aligned on gravity alone. Heading "
@@ -1130,9 +1130,8 @@ void *fusion_thread(void *arg)
                 else
                     LOG_W("[fusion] no mag sample after %.0f s; "
                             "aligning without heading\n", mag_wait_s);
-                mag_avg[0] = 1.0f; mag_avg[1] = 0.0f; mag_avg[2] = 0.0f;
             }
-            mekf_align(&f, acc_avg, mag_avg);
+            mekf_align(&f, acc_avg, mag_n > 0 ? mag_avg : NULL);
             /* WMM-known field invariants remove the residual alignment-tilt
              * error from the magnetic reference at the source. */
             if (cfg.pos_mref_valid)
@@ -1142,7 +1141,8 @@ void *fusion_thread(void *arg)
                     acc_n, mag_n,
                     (mag_n > 0 && mag_uncal)
                         ? " (uncalibrated mag — heading approximate)" : "",
-                    cfg.pos_mref_valid ? " (m_ref invariants from WMM)" : "");
+                    (cfg.pos_mref_valid && f.m_ref_valid)
+                        ? " (m_ref invariants from WMM)" : "");
         }
     }
 
@@ -1267,7 +1267,20 @@ void *fusion_thread(void *arg)
         /* Drain all pending mag samples before the accel update. */
         while (mag_ring_try_pop(&ctx->mag_ring, &m) == 0) {
             if (m.valid) {
+                bool had_mref = f.m_ref_valid;
                 mekf_update_mag(&f, &m);
+                /* A magnetometer that started after alignment gave up on it:
+                 * the filter has just set its heading reference, and the WMM
+                 * invariants apply to it as they would have at alignment. */
+                if (f.m_ref_valid && !had_mref) {
+                    if (cfg.pos_mref_valid)
+                        mekf_set_mref_invariants(&f, cfg.pos_mref_h_gauss,
+                                                 cfg.pos_mref_z_gauss);
+                    LOG_I("[fusion] magnetometer is delivering — heading "
+                          "reference set%s\n",
+                          cfg.pos_mref_valid
+                              ? " (m_ref invariants from WMM)" : "");
+                }
                 if (f.mag_accepted != prev_mag_accepted) {
                     prev_mag_accepted = f.mag_accepted;
                     mag_accept_age_s  = 0.0f;

@@ -28,6 +28,8 @@ Fixed:
   a time daemon sets one.
 * A [mount] rotation given as nan or inf loaded, and every sample the daemon
   published was then NaN. Both keys now refuse a non-finite value.
+* A magnetometer that starts delivering after startup alignment now sets the
+  heading reference. Heading previously dead-reckoned for the rest of the run.
 
 
 1.11.1

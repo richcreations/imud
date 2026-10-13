@@ -1095,19 +1095,24 @@ void mekf_align(mekf_t *f, const float accel[3], const float mag[3])
     q_normalize(qtilt);
 
     /* ── 3. Heading from magnetometer ────────────────────────────────────
-     * Rotate mag to NED, take atan2 of horizontal components. */
-    float R[3][3];
-    q_to_R(qtilt, R);
+     * Rotate mag to NED, take atan2 of horizontal components.  With no
+     * reading (mag NULL) yaw starts at zero and m_ref stays unset, for
+     * mekf_update_mag to establish when the magnetometer delivers. */
+    float yaw = 0.0f;
+    if (mag) {
+        float R[3][3];
+        q_to_R(qtilt, R);
 
-    /* m_lvl = R(qtilt) × mag_body — the field in the tilt-levelled frame,
-     * which is the true NED field rotated by −yaw: [H·cosψ, −H·sinψ, Z].
-     * Vessel yaw is therefore atan2(−m_y, m_x); the +m_y form returns −ψ
-     * (heading mirrored about north — invisible only when aligning while
-     * pointing north, which is what every early test happened to do). */
-    float mnx = R[0][0]*mag[0] + R[0][1]*mag[1] + R[0][2]*mag[2];
-    float mny = R[1][0]*mag[0] + R[1][1]*mag[1] + R[1][2]*mag[2];
+        /* m_lvl = R(qtilt) × mag_body — the field in the tilt-levelled frame,
+         * which is the true NED field rotated by −yaw: [H·cosψ, −H·sinψ, Z].
+         * Vessel yaw is therefore atan2(−m_y, m_x); the +m_y form returns −ψ
+         * (heading mirrored about north — invisible only when aligning while
+         * pointing north, which is what every early test happened to do). */
+        float mnx = R[0][0]*mag[0] + R[0][1]*mag[1] + R[0][2]*mag[2];
+        float mny = R[1][0]*mag[0] + R[1][1]*mag[1] + R[1][2]*mag[2];
 
-    float yaw = atan2f(-mny, mnx);  /* magnetic heading in NED */
+        yaw = atan2f(-mny, mnx);  /* magnetic heading in NED */
+    }
 
     /* ── 4. Full quaternion: q_yaw ⊗ q_tilt ──────────────────────────── */
     float cy = cosf(yaw*0.5f), sy = sinf(yaw*0.5f);
@@ -1118,7 +1123,7 @@ void mekf_align(mekf_t *f, const float accel[3], const float mag[3])
     memcpy(f->q, qfull, sizeof f->q);
 
     /* ── 5. Set magnetometer reference in NED (stored in Gauss) */
-    if (!f->m_ref_valid) {
+    if (mag && !f->m_ref_valid) {
         float Rf[3][3];
         q_to_R(f->q, Rf);
         /* m_ref_NED = R(q) × mag_body, converted µT → Gauss */
@@ -1435,9 +1440,64 @@ void mekf_update_accel(mekf_t *f, const imu_sample_t *s)
                 f->wave_enabled ? f->wave_acc : NULL, NULL, h);
 }
 
+/* How much magnetometer goes into a late heading reference, in seconds. */
+#define MREF_ACQUIRE_S 1.0f
+
+/*
+ * Establish the heading reference when alignment ran with no magnetometer
+ * reading.  Each sample is rotated into the level frame with the filter's own
+ * attitude and summed.  The horizontal direction of the mean is magnetic north
+ * by definition, so q is turned about the vertical to put it there and m_ref is
+ * set to the mean — what mekf_align does when the magnetometer is on time.
+ *
+ * P is left alone: δθ is a body-frame error, which turning the nominal about a
+ * world axis does not change.
+ */
+static void mref_acquire(mekf_t *f, const mag_sample_t *m)
+{
+    float R[3][3];
+    q_to_R(f->q, R);
+    for (int i = 0; i < 3; i++)
+        f->mref_sum[i] += (R[i][0]*m->field[0] + R[i][1]*m->field[1]
+                         + R[i][2]*m->field[2]) * 0.01f;      /* µT → Gauss */
+    f->mref_n++;
+    if ((float)f->mref_n < f->mag_odr_hz * MREF_ACQUIRE_S) return;
+
+    float mn = f->mref_sum[0] / (float)f->mref_n;
+    float me = f->mref_sum[1] / (float)f->mref_n;
+    float md = f->mref_sum[2] / (float)f->mref_n;
+    f->mref_sum[0] = f->mref_sum[1] = f->mref_sum[2] = 0.0f;
+    f->mref_n = 0;
+
+    /* A vertical field has no heading in it and a non-finite one has nothing:
+     * start the window again rather than turn q by either. */
+    float mh = sqrtf(mn*mn + me*me);
+    if (!isfinite(mh) || !isfinite(md) || mh < 1e-6f) return;
+
+    /* The field sits at bearing atan2(me, mn) and belongs at zero. */
+    float half = -0.5f * atan2f(me, mn);
+    float qz[4] = { cosf(half), 0.0f, 0.0f, sinf(half) };
+    float qn[4];
+    q_mul(qz, f->q, qn);
+    q_normalize(qn);
+    memcpy(f->q, qn, sizeof f->q);
+
+    f->m_ref[0] = mh;
+    f->m_ref[1] = 0.0f;
+    f->m_ref[2] = md;
+    f->m_ref_valid = true;
+}
+
 void mekf_update_mag(mekf_t *f, const mag_sample_t *m)
 {
-    if (!f->initialized || !f->m_ref_valid || !m->valid) return;
+    if (!f->initialized || !m->valid) return;
+
+    /* No reference yet: alignment ran before the magnetometer delivered.
+     * Like alignment, this takes the field whether or not it is calibrated. */
+    if (!f->m_ref_valid) {
+        mref_acquire(f, m);
+        return;
+    }
 
     /*
      * An uncalibrated sample carries an uncorrected hard/soft-iron error.  It
@@ -1996,6 +2056,8 @@ bool mekf_sanitize(mekf_t *f)
     f->initialized  = false;
     f->converged    = false;
     f->m_ref_valid  = false;
+    f->mref_n       = 0;
+    f->mref_sum[0]  = f->mref_sum[1] = f->mref_sum[2] = 0.0f;
     f->state_reset  = true;
     /* mag_uncal_withdrawn deliberately survives: it is an assessment of the
      * magnetometer's hard iron, which a filter reset does not change, and the

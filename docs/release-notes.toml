@@ -44,6 +44,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "A [mount] rotation given as nan or inf loaded, and every sample the daemon published was then NaN. Both keys now refuse a non-finite value."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A magnetometer that starts delivering after startup alignment now sets the heading reference. Heading previously dead-reckoned for the rest of the run."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"
