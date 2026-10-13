@@ -3287,6 +3287,13 @@ nodes. The shipped list covers @code{/dev/i2c-1}, @code{/dev/i2c-3},
 its own @code{DeviceAllow=} line. @code{systemd-analyze verify} will not
 catch this --- it only bites at device-open time.
 @item 
+Will not start: @code{[cal] @dots{} is empty or cut off}, or
+@code{holds N numbers where M are required}
+ @tab @code{cal.json} is not whole --- a write that an older release
+left half-done at a power cut, or a hand edit. Re-run the calibration it
+names, or remove the file to start uncalibrated. @code{imud-cal} now
+replaces the file in one step, so it cannot leave one like this.
+@item 
 Filter reports @code{R} in @code{imud-mon}, or @code{imud_state_reset}
 is 1
  @tab The MEKF found a non-finite value in its own state and reset

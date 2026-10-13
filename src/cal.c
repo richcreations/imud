@@ -138,30 +138,75 @@ static const char *cal_first_overflowing(const imud_cal_t *cal, bool gated)
 /* ── JSON float-array parser ─────────────────────────────────────────────── */
 
 /*
- * Parse up to n floats from the first [...] block at or after *s.
- * '[', ']', and ',' are treated as delimiters alongside whitespace so that
- * both flat [a,b,c] and nested [[a,b,c],[d,e,f],...] arrays are fully parsed.
+ * Parse the first [...] block at or after *s into out[0..n), and return how
+ * many numbers the block holds.  Brackets are followed to the matching close,
+ * so a flat [a,b,c] counts three and a nested [[a,b,c],[d,e,f],[g,h,i]] nine.
+ * Returns -1 when the block is never closed or holds something that is not a
+ * number.
+ *
+ * The count is the point: the caller compares it with n, because a block that
+ * is short or long is a file that was cut off or edited wrong.
  */
 static int parse_float_array(const char *s, float *out, int n)
 {
     const char *p = strchr(s, '[');
-    if (!p) return 0;
-    p++;
+    if (!p) return -1;
 
-    int count = 0;
-    while (count < n) {
-        while (*p && ((*p == ' ') || (*p == '\t') || (*p == '\n') ||
-                      (*p == '\r') || (*p == ',') || (*p == '[') || (*p == ']')))
+    int depth = 0, count = 0;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')
             p++;
-        if (!*p) break;
+        if (*p == '[') { depth++; p++; continue; }
+        if (*p == ']') {
+            p++;
+            if (--depth == 0) return count;
+            continue;
+        }
+        if (!*p) return -1;
 
         char *end;
         float v = strtof(p, &end);
-        if (end == p) break;
-        out[count++] = v;
+        if (end == p) return -1;
+        if (count < n) out[count] = v;
+        count++;
         p = end;
     }
-    return count;
+}
+
+/*
+ * Load one array-valued key of a section.  Returns 1 when it is there and
+ * whole, 0 when the section has no such key, and -1 — having said why — when
+ * it is there but is not exactly n numbers.
+ */
+static int load_array(const char *path, const char *sec, const char *key,
+                      const char *name, float *out, int n)
+{
+    const char *k = strstr(sec, key);
+    if (!k) return 0;
+
+    int got = parse_float_array(k, out, n);
+    if (got == n) return 1;
+    if (got < 0)
+        LOG_E("[cal] %s: %s is not a complete array of numbers\n", path, name);
+    else
+        LOG_E("[cal] %s: %s holds %d number%s where %d are required\n",
+              path, name, got, got == 1 ? "" : "s", n);
+    return -1;
+}
+
+/*
+ * True when the text is one closed JSON object.  A file cut off between two
+ * sections holds nothing but whole arrays, and only this says it is not whole.
+ */
+static bool json_object_closed(const char *s)
+{
+    int  depth = 0;
+    bool any   = false;
+    for (; *s; s++) {
+        if (*s == '{') { depth++; any = true; }
+        else if (*s == '}' && --depth < 0) return false;
+    }
+    return any && depth == 0;
 }
 
 /* Parse the scalar after the next ':' at or after *s. */
@@ -209,50 +254,66 @@ int cal_load(const char *path, imud_cal_t *cal)
                 path, sizeof(buf) - 1);
     buf[nr] = '\0';
 
+    /*
+     * A file that is not whole is refused, like one holding a NaN below and
+     * for the same reason: whatever loads from it reaches the filter as if it
+     * were the calibration.  A write cut short leaves either an object that is
+     * never closed or an array without all its numbers.
+     */
+    if (!json_object_closed(buf)) {
+        LOG_E("[cal] %s is empty or cut off — refusing to start on part of a "
+              "calibration\n", path);
+        return -1;
+    }
+
+    int got;
     const char *sec = strstr(buf, "\"mag\"");
     if (sec) {
-        const char *hi = strstr(sec, "\"hard_iron\"");
-        if (hi && parse_float_array(hi, cal->mag_hard_iron, 3) == 3)
-            cal->has_mag = true;
-
-        const char *si = strstr(sec, "\"soft_iron\"");
-        if (si) parse_float_array(si, &cal->mag_soft_iron[0][0], 9);
+        got = load_array(path, sec, "\"hard_iron\"", "mag.hard_iron",
+                         cal->mag_hard_iron, 3);
+        if (got < 0) return -1;
+        cal->has_mag = (got == 1);
+        if (load_array(path, sec, "\"soft_iron\"", "mag.soft_iron",
+                       &cal->mag_soft_iron[0][0], 9) < 0) return -1;
     }
 
     sec = strstr(buf, "\"accel\"");
     if (sec) {
-        const char *off = strstr(sec, "\"offset\"");
-        if (off && parse_float_array(off, cal->accel_offset, 3) == 3)
-            cal->has_accel = true;
-
-        const char *sc = strstr(sec, "\"scale\"");
-        if (sc) parse_float_array(sc, cal->accel_scale, 3);
+        got = load_array(path, sec, "\"offset\"", "accel.offset",
+                         cal->accel_offset, 3);
+        if (got < 0) return -1;
+        cal->has_accel = (got == 1);
+        if (load_array(path, sec, "\"scale\"", "accel.scale",
+                       cal->accel_scale, 3) < 0) return -1;
     }
 
     sec = strstr(buf, "\"gyro\"");
     if (sec) {
-        const char *bias = strstr(sec, "\"bias\"");
-        if (bias && parse_float_array(bias, cal->gyro_bias, 3) == 3)
-            cal->has_gyro = true;
+        got = load_array(path, sec, "\"bias\"", "gyro.bias", cal->gyro_bias, 3);
+        if (got < 0) return -1;
+        cal->has_gyro = (got == 1);
     }
 
     sec = strstr(buf, "\"noise\"");
     if (sec) {
-        const char *gd = strstr(sec, "\"gyro_density\"");
-        const char *gi = strstr(sec, "\"gyro_instability\"");
-        const char *ad = strstr(sec, "\"accel_density\"");
-        if (gd && parse_float_array(gd, cal->gyro_noise_density, 3) == 3)
-            cal->has_noise = true;
-        if (gi) parse_float_array(gi, cal->gyro_bias_instability, 3);
-        if (ad) parse_float_array(ad, cal->accel_noise_density, 3);
+        got = load_array(path, sec, "\"gyro_density\"", "noise.gyro_density",
+                         cal->gyro_noise_density, 3);
+        if (got < 0) return -1;
+        cal->has_noise = (got == 1);
+        if (load_array(path, sec, "\"gyro_instability\"",
+                       "noise.gyro_instability",
+                       cal->gyro_bias_instability, 3) < 0) return -1;
+        if (load_array(path, sec, "\"accel_density\"", "noise.accel_density",
+                       cal->accel_noise_density, 3) < 0) return -1;
     }
 
     sec = strstr(buf, "\"gyro_temp\"");
     if (sec) {
-        const char *co = strstr(sec, "\"coeff\"");
+        got = load_array(path, sec, "\"coeff\"", "gyro_temp.coeff",
+                         cal->gyro_temp_coeff, 3);
+        if (got < 0) return -1;
         const char *rc = strstr(sec, "\"ref_c\"");
-        if (co && parse_float_array(co, cal->gyro_temp_coeff, 3) == 3 &&
-            rc && parse_scalar(rc, &cal->gyro_temp_ref_c))
+        if (got == 1 && rc && parse_scalar(rc, &cal->gyro_temp_ref_c))
             cal->has_gyro_temp = true;
     }
 
@@ -288,13 +349,8 @@ int cal_load(const char *path, imud_cal_t *cal)
 
 int cal_write(const char *path, const imud_cal_t *cal)
 {
-    /*
-     * Before the open, not after: fcreate takes "w", which truncates.  A check
-     * placed below would destroy a calibration that was still good on its way
-     * to reporting that the new one is not — losing the operator the file that
-     * was correct.  A fit that produced a NaN is a failed fit; say so and
-     * leave what is on disk alone.
-     */
+    /* A fit that produced a NaN is a failed fit; say so and leave what is on
+     * disk alone. */
     const char *bad = cal_first_non_finite(cal, true);
     if (bad) {
         LOG_E("[cal] refusing to write %s: %s is not a finite number — "
@@ -308,9 +364,20 @@ int cal_write(const char *path, const imud_cal_t *cal)
         return -1;
     }
 
-    FILE *f = fcreate(path, "w", IMUD_FILE_MODE);
+    /*
+     * Written beside the file and renamed over it, so cal.json is at every
+     * instant either the old calibration or the new one.  Truncating it in
+     * place left a power cut or a full disk with part of a file, which loaded.
+     */
+    char tmp[PATH_MAX];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) {
+        LOG_E("[cal] cannot write %s: path too long\n", path);
+        return -1;
+    }
+    FILE *f = fcreate(tmp, "w", IMUD_FILE_MODE);
     if (!f) {
-        LOG_E("[cal] cannot write %s: %s\n", path, strerror(errno));
+        LOG_E("[cal] cannot write %s: %s — the calibration on disk is "
+              "unchanged\n", tmp, strerror(errno));
         return -1;
     }
 
@@ -377,6 +444,40 @@ int cal_write(const char *path, const imud_cal_t *cal)
     }
 
     fprintf(f, "}\n");
-    fclose(f);
+
+    /* A write that failed anywhere above is latched in the stream's error
+     * indicator; fflush is where the buffer meets the disk, and fsync where
+     * the disk is asked to mean it. */
+    bool ok    = fflush(f) == 0 && !ferror(f) && fsync(fileno(f)) == 0;
+    int  saved = errno;
+    if (fclose(f) != 0 && ok) {
+        ok    = false;
+        saved = errno;
+    }
+    if (ok && rename(tmp, path) != 0) {
+        ok    = false;
+        saved = errno;
+    }
+    if (!ok) {
+        LOG_E("[cal] writing %s failed: %s — the calibration on disk is "
+              "unchanged\n", path, strerror(saved));
+        unlink(tmp);
+        return -1;
+    }
+
+    /* The rename is a change to the directory, so that is what must reach
+     * the disk for it to survive a power cut.  Best effort: not every
+     * filesystem lets a directory be opened and synced. */
+    char dir[PATH_MAX];
+    const char *slash = strrchr(path, '/');
+    if (!slash)             snprintf(dir, sizeof dir, ".");
+    else if (slash == path) snprintf(dir, sizeof dir, "/");
+    else                    snprintf(dir, sizeof dir, "%.*s",
+                                     (int)(slash - path), path);
+    int dfd = open(dir, O_RDONLY | O_CLOEXEC);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
     return 0;
 }

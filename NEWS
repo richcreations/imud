@@ -43,6 +43,10 @@ Fixed:
 * GPS speed is dropped from the turn correction after 5 s without a report, on
   a lost fix and when gpsd disconnects. The last speed was held for up to
   fix_max_age_h and tilted the horizon in every turn.
+* imud-cal replaces cal.json in one step and reports a failed write. A power
+  cut or a full disk could leave part of a file, which then loaded.
+  A cal.json that is cut off, or has an array of the wrong length, is now
+  refused at startup rather than loaded in part.
 
 
 1.11.1

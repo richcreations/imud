@@ -18,7 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <signal.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #include "cal.h"
 #include "cal_capture.h"
 #include "capture.h"
@@ -422,6 +424,114 @@ static void test_write_rejects_non_finite(void)
 }
 
 /*
+ * A cal.json has to be whole.  A short array is what a write cut off mid-file
+ * leaves, and taking the numbers that made it turned nine soft-iron terms into
+ * six from the file and three from the identity the matrix started as.
+ */
+static void test_load_requires_a_whole_file(void)
+{
+    begin("test_load_requires_a_whole_file");
+    int fb = g_fail;
+
+    static const char soft_iron_short[] =
+        "{\"mag\": {\"hard_iron\": [1,2,3], "
+        "\"soft_iron\": [[1,0,0],[0,1,0],[0,0]]}}\n";
+    static const char soft_iron_long[] =
+        "{\"mag\": {\"hard_iron\": [1,2,3], "
+        "\"soft_iron\": [[1,0,0],[0,1,0],[0,0,1,5]]}}\n";
+    static const char noise_short[] =
+        "{\"noise\": {\"gyro_density\": [1e-5,1e-5,1e-5], "
+        "\"accel_density\": [1e-4]}}\n";
+    static const char cut_in_array[] =
+        "{\"mag\": {\"hard_iron\": [1,2,3], \"soft_iron\": [[1,0,0],[0,1";
+
+    static const char *bodies[] = {
+        soft_iron_short,
+        soft_iron_long,
+        "{\"accel\": {\"offset\": [0,0,0], \"scale\": [1, 1]}}\n",
+        /* Was taken as "no magnetometer calibration", in silence. */
+        "{\"mag\": {\"hard_iron\": [1,2]}}\n",
+        "{\"gyro\": {\"bias\": [0.001, 0.002, 0.003, 0.004]}}\n",
+        noise_short,
+        cut_in_array,
+        /* Cut off between sections: every array it holds is whole. */
+        "{\n  \"mag\": {\n    \"hard_iron\": [1,2,3]\n  },\n",
+        /* Cut off at the open. */
+        "",
+    };
+
+    int id = 50;
+    for (unsigned i = 0; i < sizeof bodies / sizeof bodies[0]; i++) {
+        const char *path = write_tmpjson(id++, bodies[i]);
+        imud_cal_t cal;
+        EXPECT(cal_load(path, &cal) < 0, "a cal.json that is not whole is refused");
+        remove(path);
+    }
+
+    /* The same shapes, whole, still load — the nested matrix included. */
+    const char *ok = write_tmpjson(id,
+        "{\"mag\": {\"hard_iron\": [1,2,3], "
+        "\"soft_iron\": [[1,0,0],[0,2,0],[0,0,3]]},\n"
+        " \"accel\": {\"offset\": [0,0,0], \"scale\": [1,1,1]}}\n");
+    imud_cal_t cal;
+    EXPECT(cal_load(ok, &cal) == 0, "a whole cal.json loads");
+    EXPECT(cal.has_mag && cal.has_accel, "with both its sections");
+    EXPECT_NEAR(cal.mag_soft_iron[1][1], 2.0f, 1e-6f, "soft iron row 2 landed");
+    EXPECT_NEAR(cal.mag_soft_iron[2][2], 3.0f, 1e-6f, "soft iron row 3 landed");
+    remove(ok);
+    end(fb);
+}
+
+/*
+ * cal_write replaces the file or leaves it alone.  It used to truncate it and
+ * write over it without looking at a single return value, so a disk that
+ * filled part-way left part of a calibration and reported success.  A
+ * file-size limit stands in for the full disk here.
+ */
+static void test_write_is_all_or_nothing(void)
+{
+    begin("test_write_is_all_or_nothing");
+    int fb = g_fail;
+    const char *path = tmppath(70);
+    char tmp[96];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+
+    imud_cal_t good;
+    memset(&good, 0, sizeof(good));
+    good.gyro_bias[0] = 0.00125f;
+    good.gyro_bias[1] = 0.00250f;
+    good.gyro_bias[2] = 0.00375f;
+    good.has_gyro = true;
+    EXPECT(cal_write(path, &good) == 0, "good calibration written");
+    EXPECT(access(tmp, F_OK) != 0, "and no temporary file left beside it");
+
+    imud_cal_t next = good;
+    next.gyro_bias[1] = 0.5f;
+
+    struct rlimit old, tight;
+    getrlimit(RLIMIT_FSIZE, &old);
+    tight = old;
+    tight.rlim_cur = 16;
+    void (*prev)(int) = signal(SIGXFSZ, SIG_IGN);
+    fflush(stdout);
+    setrlimit(RLIMIT_FSIZE, &tight);
+    int rc = cal_write(path, &next);
+    setrlimit(RLIMIT_FSIZE, &old);
+    signal(SIGXFSZ, prev);
+
+    EXPECT(rc < 0, "a write the disk cut short is reported");
+    EXPECT(access(tmp, F_OK) != 0, "and its temporary file is removed");
+
+    imud_cal_t back;
+    EXPECT(cal_load(path, &back) == 0 && back.has_gyro,
+           "the file on disk still loads");
+    EXPECT_NEAR(back.gyro_bias[1], 0.00250f, 1e-7f,
+                "and is still the old calibration");
+    remove(path);
+    end(fb);
+}
+
+/*
  * Finite is not the same as usable.
  *
  * The non-finite guard above stops a NaN or an infinity being *stored*. It
@@ -769,6 +879,8 @@ int main(void)
     test_round_trip_noise_temp();
     test_load_rejects_non_finite();
     test_write_rejects_non_finite();
+    test_load_requires_a_whole_file();
+    test_write_is_all_or_nothing();
     test_rejects_finite_but_overflowing();
 
     test_calcap_basic();
