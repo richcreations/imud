@@ -1192,7 +1192,7 @@ stats_hz       = 1               # interval for periodic stats line to log
 # [restart]
 # Magnetic declination → true heading.  Three modes (highest priority wins):
 #
-#   1. WMM auto-compute: set lat_deg and lon_deg (both non-zero).
+#   1. WMM auto-compute: set lat_deg and lon_deg (0, 0 means unset).
 #      imud loads wmm_file and computes declination at startup and on SIGHUP.
 #      Accurate to ±0.01° against NOAA WMM2025 test values.
 #

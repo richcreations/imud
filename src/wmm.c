@@ -91,37 +91,23 @@ double wmm_model_year(const wmm_t *wmm, double year, bool *held)
     return y;
 }
 
-/* ── wmm_declination ────────────────────────────────────────────────────── */
+/* ── wmm_field_ned, wmm_declination ─────────────────────────────────────── */
 
 /*
- * Degree-12 spherical harmonic evaluation per WMM TN-28 §A.
+ * Degree-12 spherical harmonic evaluation per WMM TN-28 §A, with Schmidt
+ * quasi-normal Legendre functions; the recursion is at step 3.
  *
- * Schmidt quasi-normal ALF recursion (Langel 1987):
- *
- *   Seeds:
- *     P[0][0] = 1,  P[1][0] = cos θ,  P[1][1] = sin θ
- *
- *   Sectorial (m = n, n ≥ 2):
- *     P[n][n] = sin θ · √((2n-1)/(2n)) · P[n-1][n-1]
- *
- *   Sub-diagonal (m = n-1, n ≥ 2):
- *     P[n][n-1] = cos θ · √(2n-1) · P[n-1][n-1]
- *
- *   Tesseral (1 ≤ m ≤ n-2) and zonal (m = 0, n ≥ 2):
- *     m = 0:  P[n][0] = [(2n-1) cos θ P[n-1][0] - (n-1) P[n-2][0]] / n
- *     m ≥ 1:  P[n][m] = A · cos θ · P[n-1][m] - B · P[n-2][m]
- *             A = √((4n²-1)/(n²-m²))
- *             B = √(((n-1)²-m²) / ((2n-3)(2n-1)))
- *
- * Field components (geocentric spherical, a = WMM_A_KM, r in km):
+ * Field components (geocentric spherical, a = WMM_A_KM, r in km, θ the
+ * co-latitude):
  *
  *   X_gc (north) = + Σ_n (a/r)^{n+2} Σ_m [g cos(mλ) + h sin(mλ)] dP/dθ
- *   Y_gc (east)  = + Σ_n (a/r)^{n+2} Σ_m m [h cos(mλ) - g sin(mλ)] P / sin θ
+ *   Y_gc (east)  = + Σ_n (a/r)^{n+2} Σ_m m [g sin(mλ) - h cos(mλ)] P / sin θ
  *   Z_gc (down)  = - Σ_n (n+1)(a/r)^{n+2} Σ_m [g cos(mλ) + h sin(mλ)] P
  *
- * Geodetic correction (small oblate-Earth angle ψ = φ_c - φ):
- *   X_ned = X_gc cos ψ + Z_gc sin ψ
+ * Rotation to geodetic, δ = φ - φ_c (geodetic minus geocentric latitude):
+ *   X_ned = X_gc cos δ + Z_gc sin δ
  *   Y_ned = Y_gc
+ *   Z_ned = Z_gc cos δ - X_gc sin δ
  *
  * Declination = atan2(Y_ned, X_ned).
  */

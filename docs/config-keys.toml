@@ -1713,14 +1713,14 @@ md_groups = [["declination_deg", "lat_deg", "lon_deg", "wmm_file"], ["gpsd_enabl
   man_style = "tight"
   man = '''
 Static magnetic declination in degrees.
-Ignored when
+Ignored unless
 .B lat_deg
 and
 .B lon_deg
-are both non-zero.'''
+are both zero.'''
   md_type = 'float'
   md_default = '`0.0`'
-  desc = 'Static declination in degrees. East positive (+), west negative (−). Ignored when `lat_deg` and `lon_deg` are both non-zero.'
+  desc = 'Static declination in degrees. East positive (+), west negative (−). Ignored unless `lat_deg` and `lon_deg` are both zero.'
 
   [[section.key]]
   names = ["lat_deg"]

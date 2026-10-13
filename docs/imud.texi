@@ -1734,8 +1734,8 @@ horizon level through sustained turns.
 
 @enumerate 
 @item
-@strong{WMM auto-compute} --- set @code{lat_deg} and @code{lon_deg}
-(both non-zero). imud loads the WMM2025 coefficient file at startup and
+@strong{WMM auto-compute} --- set @code{lat_deg} and @code{lon_deg} (0,
+0 means unset). imud loads the WMM2025 coefficient file at startup and
 on SIGHUP, computes the local declination, and applies it immediately.
 Accurate to ±0.5° for a fixed installation. The model is evaluated at
 the system clock's date, held inside the five years its coefficients
@@ -1765,7 +1765,7 @@ Key
  @tab float
  @tab @code{0.0}
  @tab Static declination in degrees. East positive (+), west negative
-(−). Ignored when @code{lat_deg} and @code{lon_deg} are both non-zero.
+(−). Ignored unless @code{lat_deg} and @code{lon_deg} are both zero.
 @item 
 @code{lat_deg}
  @tab double

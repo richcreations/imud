@@ -590,7 +590,7 @@ static bool replay_poll(imu_ctx_t *imu, const char *file,
 /* ── WMM declination ─────────────────────────────────────────────────────── */
 
 /*
- * apply_wmm_if_configured — when lat_deg and lon_deg are both non-zero,
+ * apply_wmm_if_configured — unless lat_deg and lon_deg are both zero,
  * load WMM.COF, compute declination, and write it into cfg->pos_declination_deg
  * (overriding any static value).  Called at startup and on SIGHUP.
  * Not fatal: logs a warning and leaves pos_declination_deg unchanged on error.

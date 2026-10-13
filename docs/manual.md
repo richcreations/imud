@@ -806,7 +806,7 @@ sustained turns.
 
 **Declination modes (highest priority wins):**
 
-1. **WMM auto-compute** — set `lat_deg` and `lon_deg` (both non-zero). imud
+1. **WMM auto-compute** — set `lat_deg` and `lon_deg` (0, 0 means unset). imud
    loads the WMM2025 coefficient file at startup and on SIGHUP, computes the
    local declination, and applies it immediately. Accurate to ±0.5° for a
    fixed installation. The model is evaluated at the system clock's date,
@@ -824,7 +824,7 @@ sustained turns.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys position.1 -->
-| `declination_deg` | float | `0.0` | Static declination in degrees. East positive (+), west negative (−). Ignored when `lat_deg` and `lon_deg` are both non-zero. |
+| `declination_deg` | float | `0.0` | Static declination in degrees. East positive (+), west negative (−). Ignored unless `lat_deg` and `lon_deg` are both zero. |
 | `lat_deg` | double | `0.0` | Geodetic latitude in decimal degrees (+N / −S), −90 to 90. Set with `lon_deg` to enable WMM auto-compute. |
 | `lon_deg` | double | `0.0` | Geodetic longitude in decimal degrees (+E / −W), −180 to 180. Set with `lat_deg` to enable WMM auto-compute. |
 | `wmm_file` | string | `""` (auto) | Path to the WMM coefficient file. Empty = auto-resolve: `/etc/imud/WMM.COF` if present (operator override), else `/usr/share/imud/WMM.COF` (`imud-wmm-data` package / `make install-wmm-data`). Bundled model WMM2025, valid 2025.0–2030.0. |

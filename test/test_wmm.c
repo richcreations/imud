@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define WMM_COF_PATH "data/WMM.COF"
 #define TOL_DEG      0.05
@@ -100,12 +101,14 @@ int main(void)
         printf("  INFO  Reykjavik 64.1N -21.9E  2025.5 → %.2f°E  (expect ~-13°)\n", d);
     }
 
-    /* ── wmm_decimal_year sanity ───────────────────────────────────────── */
+    /* ── wmm_decimal_year follows the clock, whatever the clock says ───── */
     {
-        double y = wmm_decimal_year();
-        int ok = (y >= 2025.0 && y <= 2031.0);
-        printf("  %s  wmm_decimal_year() = %.4f  (expect 2025–2031)\n",
-               ok ? "PASS" : "FAIL", y);
+        /* The mean Gregorian year is within 0.004 of the calendar one. */
+        double y   = wmm_decimal_year();
+        double ref = 1970.0 + (double)time(NULL) / (365.2425 * 86400.0);
+        int ok = (fabs(y - ref) < 0.01);
+        printf("  %s  wmm_decimal_year() = %.4f  (the clock says %.4f)\n",
+               ok ? "PASS" : "FAIL", y, ref);
         if (ok) passed++; else failed++;
     }
 

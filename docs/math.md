@@ -161,21 +161,26 @@ One IMU sample traverses, in order:
 
 1. **Driver read** → raw `imu_sample_t{accel[3], gyro[3], temp_c, chip_ts}`
    in board axes.
-2. **Mount rotation** `apply_mount_rot_if_set()` (§3.1) → body axes.
-3. **Calibration** `apply_imu_cal()` (§3.2): gyro temperature compensation,
-   accel offset/scale. (Magnetometer: `apply_mag_cal()`, hard/soft iron.)
+2. **Calibration** `apply_imu_cal()` (§3.2), still in board axes: gyro
+   temperature compensation, accel offset/scale. (Magnetometer:
+   `apply_mag_cal()`, hard/soft iron, §3.3.)
+3. **Mount rotation** `apply_mount_rot_if_set()` (§3.1) → body axes.
 4. **MEKF** (§4): `mekf_predict` on every IMU sample; `mekf_update_accel`
    every sample; `mekf_update_mag` per magnetometer sample.
 5. **Derived outputs**: Euler angles and heading (§4.10); Euler rates and
    rate of turn (§5); heave (§6); sea-state statistics (§7); compass-health
    (§8) and engine (§9) metrics.
 
-Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
+Gyro **bias** is *not* removed in step 2; the MEKF estimates and subtracts it
 (§4.4). Timestamps are reconstructed from the chip counter (§11).
 
 ---
 
 ## 3. Calibration application (live path)
+
+`imu_finalise_sample()` (`imu_math.c:519`) and `mag_finalise_sample()`
+(`imu_math.c:531`) calibrate first and rotate second: `cal.json` is in board
+axes (§12).
 
 ### 3.1 Mount rotation
 
@@ -184,8 +189,8 @@ matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
 
-Applied identically to accel, gyro, and magnetometer vectors. Accumulated in
-double, stored back as float.
+Applied identically to the calibrated accel, gyro, and magnetometer vectors.
+Accumulated in double, stored back as float.
 
 **As-implemented.** $R_{mount}$ is supplied by configuration (a fixed
 installation rotation, e.g. yaw 180° for a stern-facing board); imud does not
@@ -1204,7 +1209,7 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`fusion_thread`, `imu.c:1447`–`1516`) from the
+Computed in the fusion thread (`fusion_thread`, `imu.c:1436`–`1505`) from the
 bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
 angles, using the inverse of the 3-2-1 kinematic relation.
 
@@ -1452,7 +1457,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1049`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1038`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$
@@ -1631,7 +1636,7 @@ applied live in §3.2.
 
 ---
 
-## 13. World Magnetic Model — `wmm_field_ned()` (`wmm.c:128`)
+## 13. World Magnetic Model — `wmm_field_ned()` (`wmm.c:114`)
 
 Degree/order 12 spherical-harmonic geomagnetic field. This section states the
 implemented computation; the defining theory is the WMM report cited below.
@@ -1650,7 +1655,7 @@ $$ r=\sqrt{p_x^2+p_z^2},\quad \theta=\arccos(p_z/r)\ (\text{co-latitude}),
    \quad \lambda=\text{lon}. $$
 
 **Schmidt quasi-normalized associated Legendre functions** $P_n^m$ and
-derivatives $dP_n^m/d\theta$, as coded (`wmm.c:187`): seeds $P_0^0=1$,
+derivatives $dP_n^m/d\theta$, as coded (`wmm.c:173`): seeds $P_0^0=1$,
 $P_1^0=\cos\theta$, $P_1^1=\sin\theta$; for $n\ge2$,
 $$
 P_n^n = \sqrt{\tfrac{2n-1}{2n}}\,\sin\theta\,P_{n-1}^{n-1},\qquad
@@ -1679,7 +1684,7 @@ $$
 $$ X_{NED}=X_{gc}\cos\delta + Z_{gc}\sin\delta,\quad Y_{NED}=Y_{gc},\quad
    Z_{NED}=Z_{gc}\cos\delta - X_{gc}\sin\delta. $$
 
-**Declination** (`wmm_declination`, `wmm.c:260`):
+**Declination** (`wmm_declination`, `wmm.c:246`):
 $D=\operatorname{atan2}(Y_{NED},X_{NED})$. The horizontal magnitude
 $H=\sqrt{X^2+Y^2}$ and vertical $Z$ supply the §4.9 magnetic invariants.
 

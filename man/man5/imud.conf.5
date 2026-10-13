@@ -1082,7 +1082,7 @@ Set
 .B lat_deg
 and
 .B lon_deg
-(both non-zero).
+(0, 0 means unset).
 imud loads
 .B wmm_file
 and computes declination at startup and on SIGHUP.
@@ -1103,11 +1103,11 @@ Configuration keys:
 .B declination_deg
 .RI (float,\ default:\ 0.0)
 Static magnetic declination in degrees.
-Ignored when
+Ignored unless
 .B lat_deg
 and
 .B lon_deg
-are both non-zero.
+are both zero.
 .TP
 .B lat_deg
 .RI (double,\ default:\ 0.0)

@@ -225,12 +225,12 @@ void *ism_reader_thread(void *arg)
      * the FIFO, so an early fallback holds it below the threshold and the line
      * never asserts at all.  Measured as drains=0/1261 e/t on a working line.
      *
-     * Recomputed after every cfg_snapshot() so a SIGHUP that changes fifo_wm,
-     * int_grace or poll_ms takes effect without a restart.
+     * Fixed for the run: fifo_wm, int_grace and poll_ms are not reloaded.
      */
     cfg_snapshot(ctx, &cfg);
-    long imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
-                                           cfg.imu_fifo_wm, cfg.imu_int_grace);
+    const long imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
+                                                 cfg.imu_fifo_wm,
+                                                 cfg.imu_int_grace);
     /*
      * Interrupt-less installs poll.  That cadence must be adaptive too: a flat
      * interval under-polls at high ODR -- the FIFO overflows and the effective
@@ -240,10 +240,10 @@ void *ism_reader_thread(void *arg)
      * poll_ms > 0 forces a fixed cadence for anyone who wants one; it is
      * IGNORED entirely when an interrupt line exists.
      */
-    long imu_poll_ms = cfg.imu_poll_ms > 0
-                     ? cfg.imu_poll_ms
-                     : imu_poll_interval_ms(ctx->actual_odr_mhz,
-                                            cfg.imu_fifo_wm);
+    const long imu_poll_ms = cfg.imu_poll_ms > 0
+                           ? cfg.imu_poll_ms
+                           : imu_poll_interval_ms(ctx->actual_odr_mhz,
+                                                  cfg.imu_fifo_wm);
 
     /* Replaying a capture rather than reading a part: see the poll branch. */
     const bool replaying = (cfg.sim_file[0] != '\0');
@@ -284,12 +284,6 @@ void *ism_reader_thread(void *arg)
 
 
         cfg_snapshot(ctx, &cfg);
-        imu_wait_ms = imu_int_fallback_ms(ctx->actual_odr_mhz,
-                                          cfg.imu_fifo_wm, cfg.imu_int_grace);
-        imu_poll_ms = cfg.imu_poll_ms > 0
-                    ? cfg.imu_poll_ms
-                    : imu_poll_interval_ms(ctx->actual_odr_mhz,
-                                           cfg.imu_fifo_wm);
 
         struct timespec t_before, t_after, t_tai;
         clock_gettime(CLOCK_REALTIME, &t_before);
@@ -612,14 +606,14 @@ void *mag_reader_thread(void *arg)
      */
     cfg_snapshot(ctx, &cfg);
     /* depth 1: these magnetometers have no FIFO, so the line signals one
-     * finished conversion.  Recomputed below on SIGHUP. */
-    long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
-                                           cfg.mag_int_grace);
+     * finished conversion.  Fixed for the run, as in the IMU reader. */
+    const long mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
+                                                 cfg.mag_int_grace);
     /* No interrupt line: poll from the sample period, not from the missed-edge
      * fallback, which would cap the rate at ODR/(1 + int_grace). */
-    long mag_poll_ms = cfg.mag_poll_ms > 0
-                     ? cfg.mag_poll_ms
-                     : imu_poll_interval_ms(ctx->actual_mag_odr_mhz, 1);
+    const long mag_poll_ms = cfg.mag_poll_ms > 0
+                           ? cfg.mag_poll_ms
+                           : imu_poll_interval_ms(ctx->actual_mag_odr_mhz, 1);
 
     /* Stall watch: read() returning 1 is normal, but only for a while. */
     struct timespec last_good;
@@ -668,11 +662,6 @@ void *mag_reader_thread(void *arg)
         }
 
         cfg_snapshot(ctx, &cfg);
-        mag_wait_ms = imu_int_fallback_ms(ctx->actual_mag_odr_mhz, 1,
-                                          cfg.mag_int_grace);
-        mag_poll_ms = cfg.mag_poll_ms > 0
-                    ? cfg.mag_poll_ms
-                    : imu_poll_interval_ms(ctx->actual_mag_odr_mhz, 1);
 
     /* Periodic SET/RESET (degauss) — skip this read cycle; wait for next edge. */
         if (cfg.mag_set_period_s > 0.0f && ctx->mag_ops->set_reset) {
