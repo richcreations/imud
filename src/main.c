@@ -607,13 +607,17 @@ static void apply_wmm_if_configured(imud_config_t *cfg)
         return;
     }
 
-    double year     = wmm_decimal_year();
-    double valid_end = wmm.epoch + 5.0;
-    if (year < wmm.epoch || year > valid_end + 0.5) {
-        LOG_W("[pos] WARNING: WMM epoch %.1f, current year %.2f — "
-                "coefficients may be stale (update %s)\n",
-                wmm.epoch, year, cfg->pos_wmm_file);
-    }
+    /* wmm_field_ned holds the year inside the model's window by itself; this
+     * is only so that the operator hears about it. */
+    double year = wmm_decimal_year();
+    bool   held;
+    double at = wmm_model_year(&wmm, year, &held);
+    if (held)
+        LOG_W("[pos] the clock reads %.2f, outside the %.1f–%.1f that %s "
+              "covers — evaluating the model at %.1f. Set the clock, or "
+              "update the file.\n",
+              year, wmm.epoch, wmm.epoch + WMM_VALID_YEARS,
+              cfg->pos_wmm_file, at);
 
     double ned[3];
     wmm_field_ned(cfg->pos_lat_deg, cfg->pos_lon_deg, 0.0, year, &wmm, ned);

@@ -82,6 +82,15 @@ double wmm_decimal_year(void)
     return year + doy / (leap ? 366.0 : 365.0);
 }
 
+double wmm_model_year(const wmm_t *wmm, double year, bool *held)
+{
+    double lo = wmm->epoch, hi = wmm->epoch + WMM_VALID_YEARS;
+    /* Written so that a NaN year lands on the epoch rather than passing. */
+    double y = !(year >= lo) ? lo : (year > hi ? hi : year);
+    if (held) *held = (y != year);
+    return y;
+}
+
 /* ── wmm_declination ────────────────────────────────────────────────────── */
 
 /*
@@ -122,8 +131,8 @@ void wmm_field_ned(double lat_deg, double lon_deg,
 {
     const int NMAX = 12;
 
-    /* ── Step 1: secular variation ──────────────────────────────────────── */
-    double dt = decimal_year - wmm->epoch;
+    /* ── Step 1: secular variation, inside the years the model covers ───── */
+    double dt = wmm_model_year(wmm, decimal_year, NULL) - wmm->epoch;
     double g[13][13], h[13][13];
     for (int n = 1; n <= NMAX; n++)
         for (int m = 0; m <= n; m++) {

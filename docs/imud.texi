@@ -1736,7 +1736,11 @@ horizon level through sustained turns.
 @strong{WMM auto-compute} --- set @code{lat_deg} and @code{lon_deg}
 (both non-zero). imud loads the WMM2025 coefficient file at startup and
 on SIGHUP, computes the local declination, and applies it immediately.
-Accurate to ±0.5° for a fixed installation.
+Accurate to ±0.5° for a fixed installation. The model is evaluated at
+the system clock's date, held inside the five years its coefficients
+cover: a board with no clock battery comes up in 1970, and that must not
+run the declination out by 55 years of drift. imud logs a warning when
+it has had to.
 @item
 @strong{Static override} --- set @code{declination_deg} only (leave
 @code{lat_deg} and @code{lon_deg} at @code{0.0}). Look up your value at

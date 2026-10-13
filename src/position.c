@@ -252,7 +252,15 @@ static void maybe_update_decl(pos_ctx_t *ctx, const wmm_t *wmm,
         fabs(lon - *last_lon) < POS_UPDATE_THRESH_DEG)
         return;
 
+    /* wmm_field_ned holds the year inside the model's window by itself; this
+     * is only so that the operator hears about it. */
     double year = wmm_decimal_year();
+    bool   held;
+    double at = wmm_model_year(wmm, year, &held);
+    if (held)
+        LOG_W("[pos] the clock reads %.2f, outside the model's %.1f–%.1f — "
+              "evaluating it at %.1f\n",
+              year, wmm->epoch, wmm->epoch + WMM_VALID_YEARS, at);
     double ned[3];
     wmm_field_ned(lat, lon, alt_m, year, wmm, ned);
     /* Declination + MEKF field invariants (nT → Gauss) from the one vector. */

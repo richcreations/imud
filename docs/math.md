@@ -1594,13 +1594,14 @@ applied live in §3.2.
 
 ---
 
-## 13. World Magnetic Model — `wmm_field_ned()` (`wmm.c:119`)
+## 13. World Magnetic Model — `wmm_field_ned()` (`wmm.c:128`)
 
 Degree/order 12 spherical-harmonic geomagnetic field. This section states the
 implemented computation; the defining theory is the WMM report cited below.
 
 **Secular variation** to the decimal year $t$ (`wmm_decimal_year`,
-`wmm.c:73`), $\Delta t = t - t_{epoch}$:
+`wmm.c:73`), held inside the model's window (`wmm_model_year`, `wmm.c:85`),
+$\Delta t = \min(\max(t,\ t_{epoch}),\ t_{epoch}+5) - t_{epoch}$:
 $$ g_n^m(t) = g_n^m + \dot g_n^m\,\Delta t,\qquad
    h_n^m(t) = h_n^m + \dot h_n^m\,\Delta t. $$
 
@@ -1612,7 +1613,7 @@ $$ r=\sqrt{p_x^2+p_z^2},\quad \theta=\arccos(p_z/r)\ (\text{co-latitude}),
    \quad \lambda=\text{lon}. $$
 
 **Schmidt quasi-normalized associated Legendre functions** $P_n^m$ and
-derivatives $dP_n^m/d\theta$, as coded (`wmm.c:178`): seeds $P_0^0=1$,
+derivatives $dP_n^m/d\theta$, as coded (`wmm.c:187`): seeds $P_0^0=1$,
 $P_1^0=\cos\theta$, $P_1^1=\sin\theta$; for $n\ge2$,
 $$
 P_n^n = \sqrt{\tfrac{2n-1}{2n}}\,\sin\theta\,P_{n-1}^{n-1},\qquad
@@ -1641,12 +1642,14 @@ $$
 $$ X_{NED}=X_{gc}\cos\delta + Z_{gc}\sin\delta,\quad Y_{NED}=Y_{gc},\quad
    Z_{NED}=Z_{gc}\cos\delta - X_{gc}\sin\delta. $$
 
-**Declination** (`wmm_declination`, `wmm.c:251`):
+**Declination** (`wmm_declination`, `wmm.c:260`):
 $D=\operatorname{atan2}(Y_{NED},X_{NED})$. The horizontal magnitude
 $H=\sqrt{X^2+Y^2}$ and vertical $Z$ supply the §4.9 magnetic invariants.
 
 **As-implemented.** Secular variation is linear extrapolation from the epoch
-coefficients (valid over the model's 5-year validity window). `wmm_load`
+coefficients, and only over the model's 5-year validity window: a system clock
+outside it is held at the nearer end, so a wrong clock cannot run the field
+out by decades. `wmm_load`
 requires exactly the 90 degree-12 coefficient rows and rejects truncated
 files. Powers $(a/r)^{n+2}$ are formed by iterative multiplication, not
 `pow`. Poles are guarded by clamping $\sin\theta\ge10^{-10}$.

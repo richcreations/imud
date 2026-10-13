@@ -809,7 +809,10 @@ sustained turns.
 1. **WMM auto-compute** — set `lat_deg` and `lon_deg` (both non-zero). imud
    loads the WMM2025 coefficient file at startup and on SIGHUP, computes the
    local declination, and applies it immediately. Accurate to ±0.5° for a
-   fixed installation.
+   fixed installation. The model is evaluated at the system clock's date,
+   held inside the five years its coefficients cover: a board with no clock
+   battery comes up in 1970, and that must not run the declination out by 55
+   years of drift. imud logs a warning when it has had to.
 2. **Static override** — set `declination_deg` only (leave `lat_deg` and
    `lon_deg` at `0.0`). Look up your value at
    <https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml>. East

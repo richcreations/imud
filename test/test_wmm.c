@@ -168,6 +168,39 @@ int main(void)
         if (ok) passed++; else failed++;
     }
 
+    /*
+     * The model is never run out past the years its coefficients cover.  A
+     * board with no clock battery comes up in 1970, and evaluated there the
+     * secular variation moves San Francisco's declination by more than four
+     * degrees — which the daemon then published as valid.
+     */
+    {
+        const double end = wmm.epoch + WMM_VALID_YEARS;
+        struct { double year, want; int held; const char *what; } c[] = {
+            { 2027.3,       2027.3,    0, "a year inside the window is used as it is" },
+            { 1970.0,       wmm.epoch, 1, "1970 is held at the epoch" },
+            { 2060.0,       end,       1, "2060 is held at the window's end" },
+            { (double)NAN,  wmm.epoch, 1, "a year that is not a number is held too" },
+        };
+        for (unsigned i = 0; i < sizeof c / sizeof c[0]; i++) {
+            bool held = !c[i].held;
+            double y = wmm_model_year(&wmm, c[i].year, &held);
+            int ok = (y == c[i].want) && (held == (c[i].held != 0));
+            printf("  %s  %s  (%.1f)\n", ok ? "PASS" : "FAIL", c[i].what, y);
+            if (ok) passed++; else failed++;
+        }
+
+        double sf_1970  = wmm_declination(37.8, -122.4, 0.0, 1970.0,    &wmm);
+        double sf_epoch = wmm_declination(37.8, -122.4, 0.0, wmm.epoch, &wmm);
+        double sf_2060  = wmm_declination(37.8, -122.4, 0.0, 2060.0,    &wmm);
+        double sf_end   = wmm_declination(37.8, -122.4, 0.0, end,       &wmm);
+        int ok = (sf_1970 == sf_epoch) && (sf_2060 == sf_end);
+        printf("  %s  San Francisco with the clock at 1970 reads the epoch's "
+               "%.2f°E, and at 2060 the window's last %.2f°E\n",
+               ok ? "PASS" : "FAIL", sf_1970, sf_2060);
+        if (ok) passed++; else failed++;
+    }
+
     printf("\n%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

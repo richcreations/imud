@@ -47,6 +47,9 @@ Fixed:
   cut or a full disk could leave part of a file, which then loaded.
   A cal.json that is cut off, or has an array of the wrong length, is now
   refused at startup rather than loaded in part.
+* The WMM is evaluated inside the five years its coefficients cover. A clock
+  at 1970 used to run it out by 55 years: 4.6° of declination at San
+  Francisco, published as valid.
 
 
 1.11.1
