@@ -1632,6 +1632,14 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     if (ctx->imu_ops->has_hw_timestamp && ctx->imu_ops->ts_tick_ns == 0)
         LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
                 "hardware timestamps will not advance\n", cfg->imu_driver);
+    {
+        char why[160];
+        if (imu_fs_check(ctx->imu_ops, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                         why, sizeof why) < 0) {
+            LOG_E("[imu] %s\n", why);
+            goto fail;
+        }
+    }
 
     /*
      * "none" is a 6-DoF board, not a missing setting.  ctx->mag_ops then stays

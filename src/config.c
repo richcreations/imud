@@ -900,10 +900,24 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
  *                        convention the daemon does not rely on would be a
  *                        worse bug than the one this guards.
  *
- * Keys with a natural range but no wrap-into-plausible failure (mqtt qos,
- * mavlink version/system_id/component_id, serial_baud) are deliberately left
- * on plain NEED_INT: each bound would be a judgement call able to reject a
- * legitimate setup, which is the more expensive mistake.
+ *   mqtt qos   0..2      the protocol's three levels; libmosquitto refuses any
+ *                        other, and the bridge then publishes nothing.
+ *   mavlink    1..255    system_id and component_id are one byte on the wire,
+ *   ids                  so 300 would go out as 44. Zero is the broadcast
+ *                        address and not something a sender may be.
+ *   fifo_wm    1..511    a count of sample-sets. Zero or less makes the
+ *                        reader's wait zero and wraps in the part's watermark
+ *                        register; 511 is past what any part here can hold,
+ *                        and each driver clamps to its own FIFO below that.
+ *   lat, lon   ±90, ±180 anything else is not a position.
+ *   skip       0.001..1  a fraction of g. Negative turns the |a| window
+ *   thresholds           inside out, so that every accelerometer update is
+ *                        skipped.
+ *
+ * Keys with a natural range but no wrap-into-plausible failure (mavlink
+ * version, serial_baud) are deliberately left on plain NEED_INT: each bound
+ * would be a judgement call able to reject a legitimate setup, which is the
+ * more expensive mistake.
  */
 #define NEED_RANGE_INT(field, lo, hi, what) \
     do { PARSE_INT_OR_FAIL(); \
@@ -971,6 +985,16 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
               path, lineno, key, val); \
         return -1; } \
         (field) = strcmp(kbuf, "spi") == 0 ? BUS_SPI : BUS_I2C; } while (0)
+
+/* "NED" or "ENU", exactly: any other spelling would be taken for NED. */
+#define NEED_FRAME(field) \
+    do { char fbuf[8]; \
+         if (copy_str(val, fbuf, sizeof fbuf) != COPY_OK || \
+             (strcmp(fbuf, "NED") != 0 && strcmp(fbuf, "ENU") != 0)) { \
+        LOG_E("%s:%d: '%s': must be \"NED\" or \"ENU\" (got %s)\n", \
+              path, lineno, key, val); \
+        return -1; } \
+        snprintf((field), sizeof(field), "%s", fbuf); } while (0)
 
 #define NEED_STR(field) \
     do { switch (copy_str(val, (field), sizeof(field))) { \
@@ -1103,7 +1127,9 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "odr_hz")   == 0) NEED_POS_MHZ(cfg->imu_odr_mhz);
         else if (strcmp(key, "accel_g")  == 0) NEED_INT(cfg->imu_accel_g);
         else if (strcmp(key, "gyro_dps") == 0) NEED_INT(cfg->imu_gyro_dps);
-        else if (strcmp(key, "fifo_wm")  == 0) NEED_INT(cfg->imu_fifo_wm);
+        else if (strcmp(key, "fifo_wm")  == 0)
+            NEED_RANGE_INT(cfg->imu_fifo_wm, 1, 511,
+                           "a FIFO watermark in sample-sets");
         else if (strcmp(key, "int_grace") == 0) NEED_POS_INT(cfg->imu_int_grace);
         else if (strcmp(key, "poll_ms")  == 0) NEED_INT(cfg->imu_poll_ms);
         else WARN_UNKNOWN();
@@ -1140,9 +1166,13 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "mekf_wave_accel_tau_s") == 0) NEED_DBL(cfg->mekf_wave_accel_tau_s);
         else if (strcmp(key, "mekf_mag_dip_sigma_deg") == 0) NEED_DBL(cfg->mekf_mag_dip_sigma_deg);
         else if (strcmp(key, "mag_reject_gauss")          == 0) NEED_DBL(cfg->mag_reject_gauss);
-        else if (strcmp(key, "accel_skip_thresh")         == 0) NEED_DBL(cfg->accel_skip_thresh);
+        else if (strcmp(key, "accel_skip_thresh")         == 0)
+            NEED_RANGE_DBL(cfg->accel_skip_thresh, 0.001, 1.0,
+                           "a fraction of g");
         else if (strcmp(key, "engine_vibration_g2")       == 0) NEED_DBL(cfg->engine_vibration_g2);
-        else if (strcmp(key, "engine_accel_skip_thresh")  == 0) NEED_DBL(cfg->engine_accel_skip_thresh);
+        else if (strcmp(key, "engine_accel_skip_thresh")  == 0)
+            NEED_RANGE_DBL(cfg->engine_accel_skip_thresh, 0.001, 1.0,
+                           "a fraction of g");
         else WARN_UNKNOWN();
         break;
 
@@ -1170,7 +1200,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "rate_hz")     == 0) NEED_POS_INT(cfg->highrate_rate_hz);
         else if (strcmp(key, "dest_addr")   == 0) NEED_STR(cfg->highrate_dest_addr);
         else if (strcmp(key, "dest_port")   == 0) NEED_PORT(cfg->highrate_dest_port);
-        else if (strcmp(key, "coord_frame") == 0) NEED_STR(cfg->highrate_coord_frame);
+        else if (strcmp(key, "coord_frame") == 0) NEED_FRAME(cfg->highrate_coord_frame);
         else WARN_UNKNOWN();
         break;
 
@@ -1208,7 +1238,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "client_id")     == 0) NEED_STR(cfg->mqtt_client_id);
         else if (strcmp(key, "topic_prefix")  == 0) NEED_STR(cfg->mqtt_topic_prefix);
         else if (strcmp(key, "rate_hz")       == 0) NEED_POS_INT(cfg->mqtt_rate_hz);
-        else if (strcmp(key, "qos")           == 0) NEED_INT(cfg->mqtt_qos);
+        else if (strcmp(key, "qos")           == 0)
+            NEED_RANGE_INT(cfg->mqtt_qos, 0, 2, "an MQTT QoS");
         else if (strcmp(key, "retain")        == 0) NEED_BOOL(cfg->mqtt_retain);
         else if (strcmp(key, "units")         == 0) NEED_STR(cfg->mqtt_units);
         else if (strcmp(key, "publish_heave") == 0) NEED_BOOL(cfg->publish_heave);
@@ -1256,8 +1287,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled")        == 0) NEED_BOOL(cfg->mav_enabled);
         else if (strcmp(key, "socket")         == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "version")        == 0) NEED_INT(cfg->mav_version);
-        else if (strcmp(key, "system_id")      == 0) NEED_INT(cfg->mav_system_id);
-        else if (strcmp(key, "component_id")   == 0) NEED_INT(cfg->mav_component_id);
+        else if (strcmp(key, "system_id")      == 0)
+            NEED_RANGE_INT(cfg->mav_system_id, 1, 255, "a MAVLink system id");
+        else if (strcmp(key, "component_id")   == 0)
+            NEED_RANGE_INT(cfg->mav_component_id, 1, 255,
+                           "a MAVLink component id");
         else if (strcmp(key, "rate_hz")        == 0) NEED_POS_INT(cfg->mav_rate_hz);
         else if (strcmp(key, "send_attitude")  == 0) NEED_BOOL(cfg->mav_send_attitude);
         else if (strcmp(key, "send_attitude_quaternion") == 0) NEED_BOOL(cfg->mav_send_attitude_quaternion);
@@ -1287,8 +1321,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
              * declination may be valid at exactly 0.0 (agonic line). */
             cfg->pos_declination_valid = (cfg->pos_declination_deg != 0.0f);
         }
-        else if (strcmp(key, "lat_deg")           == 0) NEED_DBL(cfg->pos_lat_deg);
-        else if (strcmp(key, "lon_deg")           == 0) NEED_DBL(cfg->pos_lon_deg);
+        else if (strcmp(key, "lat_deg")           == 0)
+            NEED_RANGE_DBL(cfg->pos_lat_deg, -90.0, 90.0, "a latitude");
+        else if (strcmp(key, "lon_deg")           == 0)
+            NEED_RANGE_DBL(cfg->pos_lon_deg, -180.0, 180.0, "a longitude");
         else if (strcmp(key, "wmm_file")          == 0) NEED_STR(cfg->pos_wmm_file);
         else if (strcmp(key, "gpsd_enabled")      == 0) NEED_BOOL(cfg->pos_gpsd_enabled);
         else if (strcmp(key, "gpsd_host")         == 0) NEED_STR(cfg->pos_gpsd_host);

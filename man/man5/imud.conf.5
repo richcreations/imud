@@ -318,11 +318,13 @@ Rates above 1666 need
 .RI (int,\ default:\ 8)
 Accelerometer full-scale range in g.
 ISM330DHCX: 2, 4, 8, 16.
+A range the part does not have is refused at startup.
 .TP
 .B gyro_dps
 .RI (int,\ default:\ 2000)
 Gyroscope full-scale range in degrees/second.
 ISM330DHCX: 125, 250, 500, 1000, 2000, 4000.
+A range the part does not have is refused at startup.
 .TP
 .B fifo_wm
 .RI (int,\ default:\ 64)
@@ -337,6 +339,7 @@ On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at
 32 and above \(en so the same watermark holds about 63 sample-sets
 rather than 64.
+From 1 to 511; each part clamps to its own FIFO depth below that.
 .TP
 .B int_grace
 .RI (int,\ default:\ 2)
@@ -636,7 +639,7 @@ internal chi-squared innovation gates; keep this a coarse threshold
 .RI (double,\ default:\ 0.05)
 Skip accelerometer updates when
 .RI |a|\(en1g
-exceeds this fraction of g.
+exceeds this fraction of g, from 0.001 to 1.
 .TP
 .B mag_yaw_only
 .RI (bool,\ default:\ true)
@@ -701,6 +704,7 @@ to disable.
 .RI (double,\ default:\ 0.20)
 Accelerometer skip threshold override applied while engine vibration is
 detected (wider gate; accel noise is additionally inflated 4x).
+From 0.001 to 1.
 .\" END GENERATED: config-keys fusion
 .SS [capture]
 Black-box recording of every raw sensor sample to rotating .imucap
@@ -884,7 +888,7 @@ Output frame:
 .B NED
 (North-East-Down) or
 .B ENU
-(East-North-Up).
+(East-North-Up), spelled exactly so.
 .\" END GENERATED: config-keys highrate
 .SS [stream]
 Local AF_UNIX subscription stream carrying the same 276-byte binary packets
@@ -1107,14 +1111,14 @@ are both non-zero.
 .TP
 .B lat_deg
 .RI (double,\ default:\ 0.0)
-Geodetic latitude in decimal degrees (+N / \-S).
+Geodetic latitude in decimal degrees (+N / \-S), \-90 to 90.
 Set with
 .B lon_deg
 to enable WMM auto-compute.
 .TP
 .B lon_deg
 .RI (double,\ default:\ 0.0)
-Geodetic longitude in decimal degrees (+E / \-W).
+Geodetic longitude in decimal degrees (+E / \-W), \-180 to 180.
 .TP
 .B wmm_file
 .RI (string,\ default:\ \(dq\(dq\ =\ auto)

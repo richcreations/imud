@@ -156,6 +156,11 @@ int imt_run(const imud_config_t *cfg, const imt_opts_t *opts,
         snprintf(errbuf, errbufsz, "unknown IMU driver '%s'", cfg->imu_driver);
         return -1;
     }
+    /* The range the report would be graded against, were the driver to fall
+     * back from it in silence. */
+    if (imu_fs_check(imu, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                     errbuf, errbufsz) < 0)
+        return -1;
 
     /* "none" is how an IMU-only breakout is described; several parts under
      * test ship without a compass and the daemon has no notion of that. */

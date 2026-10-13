@@ -416,7 +416,7 @@ CASES = [
 
     # A key the parser gained and nobody documented.
     ("check-docs", "src/config.c",
-     sub(r'(else if \(strcmp\(key, "fifo_wm"\)  == 0\) NEED_INT\(cfg->imu_fifo_wm\);)',
+     sub(r'(else if \(strcmp\(key, "gyro_dps"\) == 0\) NEED_INT\(cfg->imu_gyro_dps\);)',
          r'\1\n        else if (strcmp(key, "zzz_new")  == 0) '
          r'NEED_INT(cfg->imu_accel_g);'),
      "zzz_new"),

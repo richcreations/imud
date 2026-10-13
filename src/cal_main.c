@@ -414,6 +414,12 @@ static int do_gyro(const imud_config_t *cfg, imud_cal_t *cal)
         fprintf(stderr, "cal: unknown IMU driver '%s'\n", cfg->imu_driver);
         return -1;
     }
+    char why[160];
+    if (imu_fs_check(ops, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                     why, sizeof why) < 0) {
+        fprintf(stderr, "cal: %s\n", why);
+        return -1;
+    }
 
     imud_bus_t bus;
     if (open_sensor_bus(cfg, true, &ops->bus_caps, &bus) < 0 &&
@@ -514,6 +520,12 @@ static int do_accel(const imud_config_t *cfg, imud_cal_t *cal)
     const imu_ops_t *ops = imu_driver_find(cfg->imu_driver);
     if (!ops) {
         fprintf(stderr, "cal: unknown IMU driver '%s'\n", cfg->imu_driver);
+        return -1;
+    }
+    char why[160];
+    if (imu_fs_check(ops, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                     why, sizeof why) < 0) {
+        fprintf(stderr, "cal: %s\n", why);
         return -1;
     }
 

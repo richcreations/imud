@@ -246,6 +246,35 @@ static void test_unknown_lookups(void)
     end(fb);
 }
 
+/* A full-scale range a part does not have is refused, with the ones it has. */
+static void test_full_scale_is_checked(void)
+{
+    begin("test_full_scale_is_checked");
+    int fb = g_fail;
+
+    const imu_ops_t *ism = imu_driver_find("ism330dhcx");
+    const imu_ops_t *mpu = imu_driver_find("mpu9250");
+    char why[160];
+
+    EXPECT(imu_fs_check(ism, 8, 4000, why, sizeof why) == 0,
+           "4000 dps on a part that has it");
+    EXPECT(imu_fs_check(mpu, 8, 4000, why, sizeof why) == -1,
+           "and not on one that does not");
+    EXPECT(strstr(why, "gyro_dps") && strstr(why, "250, 500, 1000, 2000"),
+           "which is told what it does have");
+    EXPECT(imu_fs_check(ism, 8, 200, why, sizeof why) == -1,
+           "200 dps is no part's range");
+    EXPECT(imu_fs_check(ism, 3, 2000, why, sizeof why) == -1 &&
+           strstr(why, "accel_g") && strstr(why, "2, 4, 8, 16"),
+           "nor is 3 g");
+
+    /* The shipped defaults suit every registered driver. */
+    for (const char **p = imu_names; *p; p++)
+        EXPECT(imu_fs_check(imu_driver_find(*p), 8, 2000, why, sizeof why) == 0,
+               "the defaults are in every driver's tables");
+    end(fb);
+}
+
 /* The hardware-validated production drivers must not be flagged experimental
  * (the flag prints a "not validated on hardware" warning), and the parts still
  * awaiting a bench report must keep it — mpu9250 shares its file with two
@@ -418,6 +447,7 @@ int main(void)
     test_mag_lookups();
     test_rate_ladder_covers_registry();
     test_unknown_lookups();
+    test_full_scale_is_checked();
     test_validated_not_experimental();
     test_spi_capability_declarations();
     test_mag_degauss_presence();

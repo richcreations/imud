@@ -986,6 +986,38 @@ static void test_cal_unknown_driver(void)
     end(fb);
 }
 
+/* A range the part does not have is refused before the bus is touched: the
+ * bias or level would otherwise be measured at the driver's fallback range. */
+static void test_cal_unsupported_range(void)
+{
+    begin("test_cal_unsupported_range");
+    int fb = g_fail;
+    int rc;
+
+    char conf[128];
+    tmppath(conf, sizeof conf, "badfs.conf");
+    write_one_config(conf, "/dev/null", "sim", "sim");
+    FILE *f = fopen(conf, "a");
+    if (!f) { perror(conf); exit(1); }
+    fputs("\n[imu]\ngyro_dps = 200\n", f);
+    fclose(f);
+
+    run_cal_mode(conf, "gyro", 30, g_out, sizeof g_out, &rc);
+    EXPECT(rc == 1, "gyro at a range the part lacks exits 1");
+    EXPECT(strstr(g_out, "gyro_dps must be one of") != NULL,
+           "and lists the ones it has");
+    EXPECT(strstr(g_out, "bias calibration") == NULL, "before measuring");
+
+    run_cal_mode(conf, "accel", 31, g_out, sizeof g_out, &rc);
+    EXPECT(rc == 1, "accel at a range the part lacks exits 1");
+    EXPECT(strstr(g_out, "gyro_dps must be one of") != NULL,
+           "and lists the ones it has");
+    EXPECT(strstr(g_out, "6-position calibration") == NULL, "before measuring");
+
+    remove(conf);
+    end(fb);
+}
+
 static void test_cal_bus_open_failure(void)
 {
     begin("test_cal_bus_open_failure");
@@ -1555,6 +1587,16 @@ static void test_imt_run_open_errors(void)
     EXPECT(strstr(err, "unknown IMU driver") != NULL, "and names it");
 
     snprintf(cfg.imu_driver, sizeof cfg.imu_driver, "sim");
+    cfg.imu_gyro_dps = 200;
+    err[0] = '\0';
+    cap_begin(&c, CAPFILE);
+    int rc_fs = imt_run(&cfg, &o, rep, err, sizeof err);
+    cap_end(&c, g_out, sizeof g_out);
+    EXPECT(rc_fs < 0, "a range the part lacks fails");
+    EXPECT(strstr(err, "gyro_dps must be one of") != NULL,
+           "and lists the ones it has");
+    cfg.imu_gyro_dps = 2000;
+
     snprintf(cfg.mag_driver, sizeof cfg.mag_driver, "nosuchmag");
     err[0] = '\0';
     cap_begin(&c, CAPFILE);
@@ -1984,6 +2026,7 @@ int main(void)
     test_cal_motion_gate();
     test_cal_unwritable_target();
     test_cal_unknown_driver();
+    test_cal_unsupported_range();
     test_cal_bus_open_failure();
     test_cal_sensor_bringup_failure();
     test_cal_gyro();

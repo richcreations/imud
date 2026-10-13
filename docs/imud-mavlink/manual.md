@@ -56,8 +56,8 @@ transports are enabled require a restart.
 | `enabled` | bool | `false` | Run the bridge daemon. With it true and every transport off the daemon runs but sends nothing; set false to not run the bridge at all (it exits cleanly, so systemd does not restart it). The shipped configuration file sets it true; `false` is what applies when the key is absent altogether. |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | imud stream socket to read. |
 | `version` | int | `2` | MAVLink protocol version (1 or 2). |
-| `system_id` | int | `1` | MAVLink system id. |
-| `component_id` | int | `1` | MAVLink component id (raise, e.g. 191, on a shared autopilot bus). |
+| `system_id` | int | `1` | MAVLink system id, 1 to 255. |
+| `component_id` | int | `1` | MAVLink component id, 1 to 255 (raise, e.g. 191, on a shared autopilot bus). |
 | `rate_hz` | int | `10` | ATTITUDE/quaternion rate; must be greater than zero (heartbeat is fixed 1 Hz). |
 | `send_attitude` | bool | `true` | Emit ATTITUDE (#30). |
 | `send_attitude_quaternion` | bool | `true` | Emit ATTITUDE_QUATERNION (#31). |

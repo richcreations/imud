@@ -538,10 +538,11 @@ Rates above 1666 need
   man_style = "tight"
   man = '''
 Accelerometer full-scale range in g.
-ISM330DHCX: {values}.'''
+ISM330DHCX: {values}.
+A range the part does not have is refused at startup.'''
   md_type = 'int'
   md_default = '`8`'
-  desc = 'Accelerometer full-scale range in g. ISM330DHCX: {values}.'
+  desc = 'Accelerometer full-scale range in g. ISM330DHCX: {values}. A range the part does not have is refused at startup.'
 
   [[section.key]]
   names = ["gyro_dps"]
@@ -554,15 +555,16 @@ ISM330DHCX: {values}.'''
   man_style = "tight"
   man = '''
 Gyroscope full-scale range in degrees/second.
-ISM330DHCX: {values}.'''
+ISM330DHCX: {values}.
+A range the part does not have is refused at startup.'''
   md_type = 'int'
   md_default = '`2000`'
-  desc = 'Gyroscope full-scale range in degrees/second. ISM330DHCX: {values}.'
+  desc = 'Gyroscope full-scale range in degrees/second. ISM330DHCX: {values}. A range the part does not have is refused at startup.'
 
   [[section.key]]
   names = ["fifo_wm"]
   fields = ["imu_fifo_wm"]
-  macros = ["NEED_INT"]
+  macros = ["NEED_RANGE_INT"]
   type = 'int'
   default = 'default:\ 64'
   scope = ""
@@ -578,7 +580,8 @@ sample periods, so a watermark of 64 at 833\~Hz batches about 77\~ms.
 On the ST parts a watermark of 8 or more also batches the chip
 timestamp into the FIFO, which costs 1.6\~% of the word budget at
 32 and above \(en so the same watermark holds about 63 sample-sets
-rather than 64.'''
+rather than 64.
+From 1 to 511; each part clamps to its own FIFO depth below that.'''
 
   md_type = 'int'
   md_default = '`64`'
@@ -1076,7 +1079,7 @@ internal chi-squared innovation gates; keep this a coarse threshold
   [[section.key]]
   names = ["accel_skip_thresh"]
   fields = ["accel_skip_thresh"]
-  macros = ["NEED_DBL"]
+  macros = ["NEED_RANGE_DBL"]
   type = 'double'
   default = 'default:\ 0.05'
   scope = ""
@@ -1084,10 +1087,10 @@ internal chi-squared innovation gates; keep this a coarse threshold
   man = '''
 Skip accelerometer updates when
 .RI |a|\(en1g
-exceeds this fraction of g.'''
+exceeds this fraction of g, from 0.001 to 1.'''
   md_type = 'double'
   md_default = '`0.05`'
-  desc = 'Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g.'
+  desc = 'Skip an accelerometer update if `||a| − 1g|` exceeds this fraction of g. Prevents linear acceleration from corrupting the tilt estimate. `0.05` = skip if more than 5% off 1g. From 0.001 to 1.'
 
   [[section.key]]
   names = ["mag_yaw_only"]
@@ -1216,14 +1219,15 @@ to disable.'''
   [[section.key]]
   names = ["engine_accel_skip_thresh"]
   fields = ["engine_accel_skip_thresh"]
-  macros = ["NEED_DBL"]
+  macros = ["NEED_RANGE_DBL"]
   type = 'double'
   default = 'default:\ 0.20'
   scope = ""
   man_style = "tight"
   man = '''
 Accelerometer skip threshold override applied while engine vibration is
-detected (wider gate; accel noise is additionally inflated 4x).'''
+detected (wider gate; accel noise is additionally inflated 4x).
+From 0.001 to 1.'''
   md_type = 'double'
   md_default = '`0.20`'
   desc = '''
@@ -1506,7 +1510,7 @@ for broadcast or a unicast IP for point-to-point.'''
   [[section.key]]
   names = ["coord_frame"]
   fields = ["highrate_coord_frame"]
-  macros = ["NEED_STR"]
+  macros = ["NEED_FRAME"]
   type = 'string'
   default = 'default:\ \(dqNED\(dq'
   scope = ""
@@ -1516,10 +1520,10 @@ Output frame:
 .B NED
 (North-East-Down) or
 .B ENU
-(East-North-Up).'''
+(East-North-Up), spelled exactly so.'''
   md_type = 'string'
   md_default = '`"NED"`'
-  desc = 'Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet.'
+  desc = 'Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. Any other spelling is refused.'
 
 [[section]]
 name = "stream"
@@ -1721,32 +1725,32 @@ are both non-zero.'''
   [[section.key]]
   names = ["lat_deg"]
   fields = ["pos_lat_deg"]
-  macros = ["NEED_DBL"]
+  macros = ["NEED_RANGE_DBL"]
   type = 'double'
   default = 'default:\ 0.0'
   scope = ""
   man_style = "tight"
   man = '''
-Geodetic latitude in decimal degrees (+N / \-S).
+Geodetic latitude in decimal degrees (+N / \-S), \-90 to 90.
 Set with
 .B lon_deg
 to enable WMM auto-compute.'''
   md_type = 'double'
   md_default = '`0.0`'
-  desc = 'Geodetic latitude in decimal degrees (+N / −S). Set with `lon_deg` to enable WMM auto-compute.'
+  desc = 'Geodetic latitude in decimal degrees (+N / −S), −90 to 90. Set with `lon_deg` to enable WMM auto-compute.'
 
   [[section.key]]
   names = ["lon_deg"]
   fields = ["pos_lon_deg"]
-  macros = ["NEED_DBL"]
+  macros = ["NEED_RANGE_DBL"]
   type = 'double'
   default = 'default:\ 0.0'
   scope = ""
   man_style = "tight"
-  man = 'Geodetic longitude in decimal degrees (+E / \-W).'
+  man = 'Geodetic longitude in decimal degrees (+E / \-W), \-180 to 180.'
   md_type = 'double'
   md_default = '`0.0`'
-  desc = 'Geodetic longitude in decimal degrees (+E / −W). Set with `lat_deg` to enable WMM auto-compute.'
+  desc = 'Geodetic longitude in decimal degrees (+E / −W), −180 to 180. Set with `lat_deg` to enable WMM auto-compute.'
 
   [[section.key]]
   names = ["wmm_file"]
@@ -2200,7 +2204,7 @@ Connect to the broker and publish (the bridge's only output).'''
   [[section.key]]
   names = ["qos"]
   fields = ["mqtt_qos"]
-  macros = ["NEED_INT"]
+  macros = ["NEED_RANGE_INT"]
   type = 'int'
   default = 'default:\ 0'
   scope = "hot"
@@ -2753,30 +2757,30 @@ the key is absent altogether.'''
   [[section.key]]
   names = ["system_id"]
   fields = ["mav_system_id"]
-  macros = ["NEED_INT"]
+  macros = ["NEED_RANGE_INT"]
   type = 'int'
   default = 'default:\ 1'
   scope = "restart"
   man_style = "spaced"
-  man = 'MAVLink system id.'
+  man = 'MAVLink system id, 1 to 255.'
   md_type = 'int'
   md_default = '`1`'
-  desc = 'MAVLink system id.'
+  desc = 'MAVLink system id, 1 to 255.'
 
   [[section.key]]
   names = ["component_id"]
   fields = ["mav_component_id"]
-  macros = ["NEED_INT"]
+  macros = ["NEED_RANGE_INT"]
   type = 'int'
   default = 'default:\ 1'
   scope = "restart"
   man_style = "spaced"
   man = '''
-MAVLink component id (raise, e.g. 191, when sharing a bus with a real
-autopilot).'''
+MAVLink component id, 1 to 255 (raise, e.g. 191, when sharing a bus with
+a real autopilot).'''
   md_type = 'int'
   md_default = '`1`'
-  desc = 'MAVLink component id (raise, e.g. 191, on a shared autopilot bus).'
+  desc = 'MAVLink component id, 1 to 255 (raise, e.g. 191, on a shared autopilot bus).'
 
   [[section.key]]
   names = ["rate_hz"]

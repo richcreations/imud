@@ -204,8 +204,10 @@ CK = {
     "NEED_PORT":      "CK_INT",
     "NEED_GPIO":      "CK_INT",
     "NEED_I2C_ADDR":  "CK_INT",
+    "NEED_RANGE_INT": "CK_INT",
     "NEED_BOOL":      "CK_BOOL",
     "NEED_STR":       "CK_STR",
+    "NEED_FRAME":     "CK_STR",
     "NEED_FLT":       "CK_FLT",
     "NEED_DBL":       "CK_DBL",
     "NEED_POS_DBL":   "CK_DBL",
@@ -269,7 +271,7 @@ def c_literal(macro, shown, where):
             return None, "expected true or false, got %r" % text
         return text, None
 
-    if macro == "NEED_STR":
+    if macro in ("NEED_STR", "NEED_FRAME"):
         if unset:
             return '""', None                   # nothing assigned, so memset's ""
         if text.startswith('"') and text.endswith('"') and len(text) >= 2:

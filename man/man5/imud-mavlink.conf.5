@@ -51,12 +51,12 @@ MAVLink protocol version: 1 or 2.
 .TP
 .B system_id
 .RI ( int ,\ default:\ 1 )\ [restart]
-MAVLink system id.
+MAVLink system id, 1 to 255.
 .TP
 .B component_id
 .RI ( int ,\ default:\ 1 )\ [restart]
-MAVLink component id (raise, e.g. 191, when sharing a bus with a real
-autopilot).
+MAVLink component id, 1 to 255 (raise, e.g. 191, when sharing a bus with
+a real autopilot).
 .TP
 .B rate_hz
 .RI ( int ,\ default:\ 10 )\ [hot]

@@ -445,9 +445,37 @@ static void test_realign_after_reset(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/* A full-scale range the part does not have stops the daemon at open, rather
+ * than running at whatever the driver falls back to. */
+static void test_open_refuses_unsupported_range(void)
+{
+    printf("%-40s", "test_open_refuses_unsupported_range");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    sim_cfg(&cfg);
+    imu_ctx_t *imu = NULL;
+
+    cfg.imu_gyro_dps = 200;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) < 0 && imu == NULL,
+           "200 dps is refused");
+    cfg.imu_gyro_dps = 2000;
+    cfg.imu_accel_g  = 3;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) < 0 && imu == NULL,
+           "3 g is refused");
+    cfg.imu_accel_g  = 16;
+    cfg.imu_gyro_dps = 4000;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0 && imu != NULL,
+           "a range the part has opens");
+    if (imu) imu_ctx_free(imu);
+
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud concurrency tests (run under TSan) ===");
+    test_open_refuses_unsupported_range();
     test_reload_race();
     test_stream_shutdown_race();
     test_late_magnetometer();

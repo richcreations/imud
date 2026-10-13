@@ -303,6 +303,18 @@ typedef struct {
 const imu_ops_t *imu_driver_find(const char *name);
 const mag_ops_t *mag_driver_find(const char *name);
 
+/*
+ * Refuse a full-scale range the part does not have.  Returns 0 when accel_g
+ * and gyro_dps are both in the driver's tables, or -1 with the reason in
+ * `why`, naming the ranges it does have.
+ *
+ * Every driver's encoder falls back to a default for a value it does not
+ * know, so without this `gyro_dps = 200` runs at 2000 in silence.  Call it
+ * wherever an imu_cfg_t is built from a config file.
+ */
+int imu_fs_check(const imu_ops_t *ops, int accel_g, int gyro_dps,
+                 char *why, size_t whysz);
+
 /* ── Sim driver synthesis hooks (src/drivers/sim.c) ────────────────────────── */
 
 /*

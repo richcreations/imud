@@ -951,14 +951,15 @@ rates of some parts are beyond what a Raspberry Pi can sustain.
  @tab int
  @tab @code{8}
  @tab Accelerometer full-scale range in g. ISM330DHCX: @code{2},
-@code{4}, @code{8}, @code{16}.
+@code{4}, @code{8}, @code{16}. A range the part does not have is refused
+at startup.
 @item 
 @code{gyro_dps}
  @tab int
  @tab @code{2000}
  @tab Gyroscope full-scale range in degrees/second. ISM330DHCX:
 @code{125}, @code{250}, @code{500}, @code{1000}, @code{2000},
-@code{4000}.
+@code{4000}. A range the part does not have is refused at startup.
 @item 
 @code{fifo_wm}
  @tab int
@@ -1445,7 +1446,7 @@ link-local). Consumers join with @code{IP_ADD_MEMBERSHIP}. Use
  @tab @code{"NED"}
  @tab Output coordinate frame: @code{"NED"} (North-East-Down) or
 @code{"ENU"} (East-North-Up). Affects the quaternion, gyro, accel, and
-mag vector fields in the binary packet.
+mag vector fields in the binary packet. Any other spelling is refused.
 @end multitable
 
 @node [stream]
@@ -1769,14 +1770,14 @@ Key
 @code{lat_deg}
  @tab double
  @tab @code{0.0}
- @tab Geodetic latitude in decimal degrees (+N / −S). Set with
-@code{lon_deg} to enable WMM auto-compute.
+ @tab Geodetic latitude in decimal degrees (+N / −S), −90 to 90. Set
+with @code{lon_deg} to enable WMM auto-compute.
 @item 
 @code{lon_deg}
  @tab double
  @tab @code{0.0}
- @tab Geodetic longitude in decimal degrees (+E / −W). Set with
-@code{lat_deg} to enable WMM auto-compute.
+ @tab Geodetic longitude in decimal degrees (+E / −W), −180 to 180. Set
+with @code{lat_deg} to enable WMM auto-compute.
 @item 
 @code{wmm_file}
  @tab string

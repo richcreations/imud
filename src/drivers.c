@@ -12,7 +12,9 @@
  * No other files need to change.
  */
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include "drivers.h"
 
@@ -72,4 +74,35 @@ const mag_ops_t *mag_driver_find(const char *name)
         if (strcmp(mag_registry[i]->name, name) == 0)
             return mag_registry[i];
     return NULL;
+}
+
+/* Is `v` in a 0-terminated table of at most 8?  If not, list the table. */
+static bool fs_in_table(const int tab[8], int v, char *list, size_t listsz)
+{
+    size_t pos = 0;
+    list[0] = '\0';
+    for (int i = 0; i < 8 && tab[i]; i++) {
+        if (tab[i] == v) return true;
+        int n = snprintf(list + pos, listsz - pos, "%s%d", i ? ", " : "", tab[i]);
+        if (n < 0 || (size_t)n >= listsz - pos) break;
+        pos += (size_t)n;
+    }
+    return false;
+}
+
+int imu_fs_check(const imu_ops_t *ops, int accel_g, int gyro_dps,
+                 char *why, size_t whysz)
+{
+    char list[64];
+    if (!fs_in_table(ops->supported_accel_g, accel_g, list, sizeof list)) {
+        snprintf(why, whysz, "%s has no ±%d g accelerometer range: accel_g "
+                 "must be one of %s", ops->name, accel_g, list);
+        return -1;
+    }
+    if (!fs_in_table(ops->supported_gyro_dps, gyro_dps, list, sizeof list)) {
+        snprintf(why, whysz, "%s has no %d dps gyro range: gyro_dps must be "
+                 "one of %s", ops->name, gyro_dps, list);
+        return -1;
+    }
+    return 0;
 }

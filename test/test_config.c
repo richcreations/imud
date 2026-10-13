@@ -726,6 +726,68 @@ static void test_load_rejects_too_long_string(void)
  * NEED_POS_INT — whose whole purpose is to stop a nonsense rate reaching the
  * filter — was satisfied by a value the operator never wrote.
  */
+/*
+ * Keys whose value has a range that nothing downstream enforces: a negative
+ * skip threshold skips every accelerometer update, "enu" means NED, QoS 3
+ * publishes nothing, and MAVLink system id 300 goes out as 44.
+ */
+static void test_load_bounds_semantic_keys(void)
+{
+    begin_test("test_load_bounds_semantic_keys");
+    int fb = g_fail;
+
+    static const char *bad[] = {
+        "[imu]\nfifo_wm = 0\n",
+        "[imu]\nfifo_wm = -4\n",
+        "[imu]\nfifo_wm = 4000\n",
+        "[fusion]\naccel_skip_thresh = -0.05\n",
+        "[fusion]\naccel_skip_thresh = 0\n",
+        "[fusion]\naccel_skip_thresh = 1.5\n",
+        "[fusion]\nengine_accel_skip_thresh = -0.2\n",
+        "[fusion]\nengine_accel_skip_thresh = 1.5\n",
+        "[highrate]\ncoord_frame = \"enu\"\n",
+        "[highrate]\ncoord_frame = \"East\"\n",
+        "[position]\nlat_deg = 91\n",
+        "[position]\nlat_deg = -91\n",
+        "[position]\nlon_deg = -181\n",
+        "[position]\nlon_deg = 181\n",
+        "[imud-mqtt]\nqos = 3\n",
+        "[imud-mqtt]\nqos = -1\n",
+        "[imud-mavlink]\nsystem_id = 300\n",
+        "[imud-mavlink]\nsystem_id = 0\n",
+        "[imud-mavlink]\ncomponent_id = 256\n",
+        "[imud-mavlink]\ncomponent_id = 0\n",
+    };
+    imud_config_t cfg;
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        const char *path = write_tmpconf(170 + (int)i, bad[i]);
+        config_defaults(&cfg);
+        if (config_load(path, &cfg) == CONFIG_ERR_PARSE) g_pass++;
+        else { g_fail++; fprintf(stderr, "  FAIL  accepted: %s", bad[i]); }
+        remove(path);
+    }
+
+    /* Both ends of each range are inside it. */
+    const char *path = write_tmpconf(190,
+        "[imu]\nfifo_wm = 1\n"
+        "[fusion]\naccel_skip_thresh = 1.0\nengine_accel_skip_thresh = 0.001\n"
+        "[highrate]\ncoord_frame = \"ENU\"\n"
+        "[position]\nlat_deg = -90\nlon_deg = 180\n"
+        "[imud-mqtt]\nqos = 2\n"
+        "[imud-mavlink]\nsystem_id = 255\ncomponent_id = 1\n");
+    config_defaults(&cfg);
+    EXPECT(config_load(path, &cfg) == 0, "the ends of every range load");
+    EXPECT(cfg.imu_fifo_wm == 1 && cfg.accel_skip_thresh == 1.0 &&
+           cfg.engine_accel_skip_thresh == 0.001, "watermark and thresholds applied");
+    EXPECT(strcmp(cfg.highrate_coord_frame, "ENU") == 0, "ENU applied");
+    EXPECT(cfg.pos_lat_deg == -90.0 && cfg.pos_lon_deg == 180.0, "position applied");
+    EXPECT(cfg.mqtt_qos == 2 && cfg.mav_system_id == 255 &&
+           cfg.mav_component_id == 1, "QoS and MAVLink ids applied");
+    remove(path);
+
+    end_test(fb);
+}
+
 static void test_load_rejects_out_of_range_int(void)
 {
     begin_test("test_load_rejects_out_of_range_int");
@@ -2163,6 +2225,7 @@ int main(void)
     test_load_rejects_non_finite();
     test_load_rejects_too_long_string();
     test_load_rejects_out_of_range_int();
+    test_load_bounds_semantic_keys();
     test_load_bad_bool();
     test_load_unknown_section();
     test_load_unknown_key();
