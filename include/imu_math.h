@@ -132,6 +132,16 @@ void anchor_update(ts_anchor_t *a, uint32_t chip_ts,
 uint64_t anchor_wall_ns(uint64_t t_before_ns, uint64_t t_after_ns,
                         bool ts_is_sample_instant);
 
+/*
+ * TAI for the instant the wall anchor names.  `realtime_ns` and `tai_ns` are
+ * one reading of each clock taken together, so their difference is the TAI
+ * offset and nothing else.  Anchoring TAI on a clock read at any other moment
+ * — it was read after the burst — puts that read's duration into ts_tai_ns
+ * and not into ts_wall_ns.
+ */
+uint64_t anchor_tai_ns(uint64_t wall_at_ns,
+                       uint64_t realtime_ns, uint64_t tai_ns);
+
 /* The measured tick period in ns, or 0.0 while still using the nominal one.
  * For logging and for `imud-status`; not needed to convert a timestamp. */
 double anchor_measured_tick_ns(ts_anchor_t *a);

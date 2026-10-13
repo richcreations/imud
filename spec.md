@@ -1859,7 +1859,9 @@ Anchor procedure:
   t_mono         = clock_gettime(CLOCK_MONOTONIC)
   t_chip         = read ISM330 TIMESTAMP registers
   t_wall_after   = clock_gettime(CLOCK_REALTIME)
+  t_tai          = clock_gettime(CLOCK_TAI)
   anchor_wall_ns = (t_wall_before + t_wall_after) / 2
+  anchor_tai_ns  = anchor_wall_ns + (t_tai - t_wall_after)   # the same instant
   anchor_chip    = t_chip
   anchor_gen    += 1
 

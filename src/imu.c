@@ -460,8 +460,13 @@ void *ism_reader_thread(void *arg)
             /* `now` is CLOCK_MONOTONIC and is what the tick-period measurement
              * runs on; the REALTIME pair is only the absolute reference, and
              * an NTP step in it must not be read as the oscillator drifting. */
+            /* TAI at that same instant: t_tai was read with t_after, so the
+             * pair gives the offset alone. */
             anchor_update(&ctx->anchor, buf[n - 1].chip_ts, wall_at,
-                          cap_tb ? cap_wall : ts_ns(&t_tai), ts_ns(&now),
+                          cap_tb ? cap_wall
+                                 : anchor_tai_ns(wall_at, ts_ns(&t_after),
+                                                 ts_ns(&t_tai)),
+                          ts_ns(&now),
                           ctx->imu_ops->has_hw_timestamp
                               ? ctx->ts_tick_ns : 0);
             anchor_last  = now;

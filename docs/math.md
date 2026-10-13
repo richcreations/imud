@@ -179,7 +179,7 @@ Gyro **bias** is *not* removed in step 3; the MEKF estimates and subtracts it
 
 ### 3.1 Mount rotation
 
-`apply_mount_rot_if_set()` (`imu_math.c:485`) applies a fixed 3×3 board→body
+`apply_mount_rot_if_set()` (`imu_math.c:493`) applies a fixed 3×3 board→body
 matrix $R_{mount}=$ `cfg->mount_rot` in place, when `cfg->mount_set`:
 
 $$ v \leftarrow R_{mount}\, v, \qquad v\in\{a_b,\ \omega_b,\ m_b\}. $$
@@ -1190,7 +1190,7 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`fusion_thread`, `imu.c:1442`–`1511`) from the
+Computed in the fusion thread (`fusion_thread`, `imu.c:1447`–`1516`) from the
 bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
 angles, using the inverse of the 3-2-1 kinematic relation.
 
@@ -1438,7 +1438,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1044`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1049`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$
@@ -1452,14 +1452,16 @@ $\max_k\sigma_k > 0.00873$ rad·s⁻¹ ($0.5°$·s⁻¹) the window is **doubled
 
 ---
 
-## 11. Timestamp anchoring and per-sample dt — `imu_math.c:58`–`244`
+## 11. Timestamp anchoring and per-sample dt — `imu_math.c:58`–`252`
 
 A single anchor $(\text{chip\_ticks}, \text{wall\_ns}, \text{tai\_ns},
 \text{gen})$ maps the sensor's free-running counter to system time. Per
-sample (`chip_to_wall`, `imu_math.c:178`), with `tick_ns` the counter period:
+sample (`chip_to_wall`, `imu_math.c:186`), with `tick_ns` the counter period:
 $$ \text{offset} = (\text{chip\_ts} - \text{chip\_ticks})\cdot\text{tick\_ns},
 \qquad t_{wall} = \text{wall\_ns} + \text{offset}, $$
-$t_{tai}$ likewise. Subtraction is unsigned 32-bit (wrap-safe within one
+$t_{tai}$ likewise, from $\text{tai\_ns} = \text{wall\_ns} + (\text{TAI} -
+\text{REALTIME})$ with the two clocks read together, so both fields name the
+same instant. Subtraction is unsigned 32-bit (wrap-safe within one
 anchor interval). The anchor is refreshed on first read, every 60 s with a
 hardware counter, or every burst without one.
 
@@ -1470,7 +1472,7 @@ $1/\text{ODR}$ is used. This keeps oscillator tolerance (few % on the chip
 clock) from scaling integrated rotation while rejecting gap artefacts.
 
 **A part with no chip timer** has no such delta, so its period is measured
-(`rate_meas_step`, `imu_math.c:204`): the samples delivered across a 30 s
+(`rate_meas_step`, `imu_math.c:212`): the samples delivered across a 30 s
 window of `CLOCK_MONOTONIC`. A FIFO overflow abandons the window, a result more
 than 10 % from nominal is ignored, and after the first each measurement moves
 the estimate a quarter of the way. Until one exists $dt$ is nominal.

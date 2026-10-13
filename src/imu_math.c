@@ -139,6 +139,14 @@ uint64_t anchor_wall_ns(uint64_t t_before_ns, uint64_t t_after_ns,
     return (t_before_ns >> 1) + (t_after_ns >> 1);
 }
 
+uint64_t anchor_tai_ns(uint64_t wall_at_ns,
+                       uint64_t realtime_ns, uint64_t tai_ns)
+{
+    /* Unsigned wrap carries a negative offset through unharmed; a host with
+     * no TAI clock can produce one of a few nanoseconds. */
+    return wall_at_ns + (tai_ns - realtime_ns);
+}
+
 double anchor_measured_tick_ns(ts_anchor_t *a)
 {
     pthread_mutex_lock(&a->mtx);

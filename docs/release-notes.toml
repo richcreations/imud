@@ -64,6 +64,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "A reload now applies mag_fuse_uncal, mag_uncal_reject_frac and stats_hz. A stats_hz above 1 had no effect at all, at startup or on reload."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "ts_tai_ns names the same instant as ts_wall_ns. It was later by the duration of the FIFO read, which is tens of milliseconds at a deep watermark."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

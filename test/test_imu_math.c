@@ -561,6 +561,37 @@ static void test_anchor_pairs_the_sample_instant(void)
 }
 
 /*
+ * ts_tai_ns and ts_wall_ns name the same instant, so they must differ by the
+ * TAI offset and by nothing else.  The TAI anchor used to be a clock read
+ * taken after the burst, which put the read's duration into one and not the
+ * other.
+ */
+static void test_anchor_tai_is_the_same_instant(void)
+{
+    begin("test_anchor_tai_is_the_same_instant");
+    int fb = g_fail;
+
+    const uint64_t tai_off  = 37000000000ULL;             /* 37 s */
+    const uint64_t t_before = 1000000000000ULL;
+    const uint64_t t_after  = t_before + 24000000ULL;     /* 24 ms drain */
+    const uint64_t t_tai    = t_after + tai_off;          /* read with t_after */
+
+    for (int hw = 0; hw <= 1; hw++) {
+        uint64_t wall_at = anchor_wall_ns(t_before, t_after, hw != 0);
+        uint64_t tai_at  = anchor_tai_ns(wall_at, t_after, t_tai);
+        EXPECT(tai_at - wall_at == tai_off,
+               hw ? "chip timer: TAI is the wall anchor plus the offset"
+                  : "no chip timer: likewise at the read midpoint");
+    }
+
+    /* A host with no TAI clock hands back UTC, and the offset is then zero. */
+    EXPECT(anchor_tai_ns(t_before, t_after, t_after) == t_before,
+           "with no TAI clock the two fields carry the same time");
+
+    end(fb);
+}
+
+/*
  * A sample OLDER than the anchor must reconstruct behind it, not 29.8 hours
  * ahead of it.
  *
@@ -1417,6 +1448,7 @@ int main(void)
     test_timestamp_no_hw_timer();
     test_anchor_gen_increments();
     test_anchor_pairs_the_sample_instant();
+    test_anchor_tai_is_the_same_instant();
     test_samples_older_than_the_anchor();
     test_tick_measured_from_anchors();
     test_no_sawtooth_within_epoch();
