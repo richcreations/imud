@@ -1367,7 +1367,7 @@ void *fusion_thread(void *arg)
          * is also what a fitted magnetometer looks like while it is stale. */
         if (!ctx->mag_ops) state.flags_ext |= FLAG_EXT_MAG_ABSENT;
 
-        state.heave_m    = heave_update(&heave, f.q, s.accel);
+        state.heave_m    = heave_update(&heave, f.q, s.accel, dt);
         /* heave.vel is double (see heave_t); the wire field is float. */
         state.heave_rate = (float)(-heave.vel);  /* NED down → up, m/s */
         if (heave.enabled && heave.settled)
@@ -1389,7 +1389,7 @@ void *fusion_thread(void *arg)
                 : wx;
             float theta_dot = wy * cf - wz * sf;
             seastate_update(&wave, state.heave_m, state.heave_rate,
-                            state.roll, phi_dot, state.pitch, theta_dot);
+                            state.roll, phi_dot, state.pitch, theta_dot, dt);
         }
         state.wave_height_m   = seastate_wave_height(&wave);
         state.wave_period_s   = seastate_wave_period(&wave);

@@ -49,6 +49,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "A magnetometer that starts delivering after startup alignment now sets the heading reference. Heading previously dead-reckoned for the rest of the run."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "Heave, heave rate, wave height and wave period are integrated over the measured sample interval. On a part whose oscillator runs fast they read high: about 8 % in heave on an ISM330DHCX that is 4 % fast."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

@@ -1162,7 +1162,7 @@ No-op before alignment or if $H\le0$.
 
 **Source:** imud-specific (WMM supplies the invariants of §13).
 
-### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2068`)
+### 4.10 State extraction — `mekf_get_state()` (`fusion.c:2073`)
 
 Euler angles from $R(q)$ (NED 3-2-1 aerospace):
 $$ \theta=\arcsin(-R[2][0]),\quad \phi=\operatorname{atan2}(R[2][1],R[2][2]),
@@ -1174,7 +1174,7 @@ by the fusion thread (§5).
 
 **Source:** quaternion→Euler, Diebel 2006 *(canonical)*.
 
-### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:1996`)
+### 4.11 Reconfigure — `mekf_reconfigure()` (`fusion.c:2001`)
 
 Recomputes $Q_g,Q_b,R_a,R_m$, the skip band, `mag_reject_sq`,
 `mag_yaw_only`, `mref_alpha`, `conv_thresh`, and the gate-health EMA rate from
@@ -1229,6 +1229,10 @@ v \leftarrow (v + a_D\,dt)(1-\ell),\qquad
 d \leftarrow (d + v\,dt)(1-\ell).
 $$
 
+$dt$ is the measured interval for the sample, the one `mekf_predict` integrates
+over (§4.4). The nominal period would carry the part's oscillator error into
+$v$ and again into $d$: a part 4 % fast reads 8 % more heave.
+
 **Output high-pass** (exact zero at DC), $\alpha_{hp}=\tau/(\tau+dt)$:
 $$ y \leftarrow \alpha_{hp}\,(y + d - d_{prev}),\qquad d_{prev}\leftarrow d, $$
 heave (positive **up**) $= -y$. `heave_rate` output $=-v$. Settled after
@@ -1251,18 +1255,18 @@ plus-high-pass heave technique is long-standing in wave-buoy practice
 
 ---
 
-## 7. Sea-state statistics — `seastate_*` (`fusion.c:1907`–`1994`)
+## 7. Sea-state statistics — `seastate_*` (`fusion.c:1911`–`1999`)
 
 Windowed spectral moments over the heave, roll, and pitch oscillations via
 exponentially-weighted mean/variance pairs — no FFT, no sample storage.
 
-**EW mean/variance recursion** (`ew_stat`, `fusion.c:1925`), $\alpha=dt/\tau$:
+**EW mean/variance recursion** (`ew_stat`, `fusion.c:1929`), $\alpha=dt/\tau$:
 $$ \mu \leftarrow \mu + \alpha\,d,\qquad
    \sigma^2 \leftarrow \sigma^2 + \alpha\big((1-\alpha)\,d^2 - \sigma^2\big),
    \qquad d = x-\mu. $$
 Applied to six signals: heave, heave-rate, roll, roll-rate, pitch,
 pitch-rate. Fed **only while heave is settled** (`seastate_update`,
-`fusion.c:1932`).
+`fusion.c:1936`).
 
 **Outputs** (from the variances; $m_0=\operatorname{var}(x)$,
 $m_2=\operatorname{var}(\dot x)$):

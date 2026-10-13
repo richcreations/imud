@@ -1846,7 +1846,8 @@ void heave_init(heave_t *h, float tau_s, float dt)
         ? settle_samples(HEAVE_SETTLE_FACTOR, tau_s, dt) : 0;
 }
 
-float heave_update(heave_t *h, const float q[4], const float accel[3])
+float heave_update(heave_t *h, const float q[4], const float accel[3],
+                   float dt_s)
 {
     if (!h->enabled) return 0.0f;
 
@@ -1865,7 +1866,10 @@ float heave_update(heave_t *h, const float q[4], const float accel[3])
     const double a_down = (double)R[2][0]*accel[0] + (double)R[2][1]*accel[1]
                         + (double)R[2][2]*accel[2] + (double)G_MS2;
 
-    const double dt   = (double)h->dt;
+    /* The measured step where the caller has one, as in mekf_predict: the
+     * nominal period carries the part's oscillator error into velocity and
+     * again into displacement. */
+    const double dt   = (dt_s > 0.0f) ? (double)dt_s : (double)h->dt;
     const double tau  = (double)h->tau;
     const double leak = dt / tau;
     h->vel  += a_down * dt;
@@ -1931,14 +1935,15 @@ static void ew_stat(double *mean, double *var, double x, double alpha)
 
 void seastate_update(seastate_t *w, float heave_m, float heave_rate,
                      float roll, float roll_rate,
-                     float pitch, float pitch_rate)
+                     float pitch, float pitch_rate, float dt_s)
 {
     if (!w->enabled) return;
 
     /* alpha in double as well: at 32 kHz with a 1200 s window it is 2.6e-8,
      * which float32 still represents fine — but rounding it there before
      * multiplying would give back some of what the double accumulators buy. */
-    double alpha = (double)w->dt / (double)w->tau;
+    double alpha = ((dt_s > 0.0f) ? (double)dt_s : (double)w->dt)
+                 / (double)w->tau;
     ew_stat(&w->h_mean,  &w->h_var,  (double)heave_m,    alpha);
     ew_stat(&w->hr_mean, &w->hr_var, (double)heave_rate, alpha);
     ew_stat(&w->r_mean,  &w->r_var,  (double)roll,       alpha);

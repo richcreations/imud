@@ -335,8 +335,11 @@ typedef struct {
 void  heave_init(heave_t *h, float tau_s, float dt);
 
 /* Returns heave in metres, positive up. q = current attitude (body→NED),
- * accel = calibrated specific force in body frame (m/s²). */
-float heave_update(heave_t *h, const float q[4], const float accel[3]);
+ * accel = calibrated specific force in body frame (m/s²).  dt_s is the
+ * measured interval since the previous sample, as for mekf_predict; pass 0
+ * to use the nominal period given to heave_init. */
+float heave_update(heave_t *h, const float q[4], const float accel[3],
+                   float dt_s);
 
 /* ── Sea-state estimator ──────────────────────────────────────────────────── */
 
@@ -393,10 +396,10 @@ void seastate_init(seastate_t *w, float tau_s, float dt);
 
 /* Accumulate one sample. Call ONLY while heave is settled (its output is a
  * ramp during settling and would poison the variances). Angles/rates in rad,
- * rad/s (Euler rates, not body ω). */
+ * rad/s (Euler rates, not body ω).  dt_s as for heave_update. */
 void seastate_update(seastate_t *w, float heave_m, float heave_rate,
                      float roll, float roll_rate,
-                     float pitch, float pitch_rate);
+                     float pitch, float pitch_rate, float dt_s);
 
 /* Output getters; all return 0.0 when disabled or not yet settled. Periods
  * additionally return 0.0 when the respective oscillation is too small to

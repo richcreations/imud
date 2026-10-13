@@ -30,6 +30,9 @@ Fixed:
   published was then NaN. Both keys now refuse a non-finite value.
 * A magnetometer that starts delivering after startup alignment now sets the
   heading reference. Heading previously dead-reckoned for the rest of the run.
+* Heave, heave rate, wave height and wave period are integrated over the
+  measured sample interval. On a part whose oscillator runs fast they read
+  high: about 8 % in heave on an ISM330DHCX that is 4 % fast.
 
 
 1.11.1

@@ -2836,7 +2836,7 @@ static float heave_sine_amp_at(float fs, float period_s, float amp_m, float tau_
     for (int i = 0; i < n_settle + n_meas; i++) {
         float t = (float)i*dt;
         float acc[3] = { 0, 0, -G + amp_m*w*w*sinf(w*t) };
-        float hv = heave_update(&h, q_id, acc);
+        float hv = heave_update(&h, q_id, acc, 0.0f);
         if (i >= n_settle && fabsf(hv) > peak) peak = fabsf(hv);
     }
     return peak;
@@ -2940,14 +2940,14 @@ TEST(test_heave_disabled_and_settle)
     /* tau = 0 disables. */
     heave_t off;
     heave_init(&off, 0.0f, dt);
-    EXPECT(heave_update(&off, q_id, still) == 0.0f, "tau=0 → heave 0.0");
+    EXPECT(heave_update(&off, q_id, still, 0.0f) == 0.0f, "tau=0 → heave 0.0");
 
     /* Zero input settles to (numerically) zero. */
     heave_t h;
     heave_init(&h, 12.0f, dt);
     float last = 0;
     for (int i = 0; i < (int)(30.0f*fs); i++)
-        last = heave_update(&h, q_id, still);
+        last = heave_update(&h, q_id, still, 0.0f);
     EXPECT(fabsf(last) < 1e-3f, "zero input settles to ~0");
 
     /* A constant accel-bias step must not run away: the bias tracker +
@@ -2957,11 +2957,82 @@ TEST(test_heave_disabled_and_settle)
     float biased[3] = {0, 0, -G + 0.2f};
     float peak = 0, final = 0;
     for (int i = 0; i < (int)(300.0f*fs); i++) {
-        final = heave_update(&hb, q_id, biased);
+        final = heave_update(&hb, q_id, biased, 0.0f);
         if (fabsf(final) > peak) peak = fabsf(final);
     }
     EXPECT(peak < 6.0f,          "bias step response bounded");
     EXPECT(fabsf(final) < 0.05f, "bias step fully absorbed after 300 s");
+}
+
+/*
+ * 1 m of heave at 8 s through the heave estimator and on into sea state, from a
+ * part whose oscillator runs `fast` times its nominal rate.  The estimators are
+ * set up for the nominal rate, as src/imu.c sets them up; the samples arrive at
+ * the true one.
+ */
+typedef struct { float heave, hs, tz; } heave_run_t;
+
+static heave_run_t heave_on_part(float fast, bool measured_dt)
+{
+    const float fs_nom = 833.0f, dt_true = 1.0f / (fs_nom * fast);
+    const float period = 8.0f, amp = 1.0f, tau = 12.0f, wave_tau = 30.0f;
+    const float w = 2.0f*(float)M_PI/period;
+    const float dt_arg = measured_dt ? dt_true : 0.0f;
+
+    heave_t h;
+    heave_init(&h, tau, 1.0f/fs_nom);
+    seastate_t ss;
+    seastate_init(&ss, wave_tau, 1.0f/fs_nom);
+    float q_id[4] = {1, 0, 0, 0};
+
+    heave_run_t r = {0};
+    int n_settle = (int)(10.0f*tau/dt_true);
+    int n_meas   = (int)(10.0f*wave_tau/dt_true);
+    for (int i = 0; i < n_settle + n_meas; i++) {
+        float t = (float)i*dt_true;
+        float acc[3] = { 0, 0, -G + amp*w*w*sinf(w*t) };
+        float hv = heave_update(&h, q_id, acc, dt_arg);
+        if (i < n_settle) continue;
+        if (fabsf(hv) > r.heave) r.heave = fabsf(hv);
+        /* heave rate as src/imu.c forms it */
+        seastate_update(&ss, hv, (float)(-h.vel), 0, 0, 0, 0, dt_arg);
+    }
+    r.hs = seastate_wave_height(&ss);
+    r.tz = seastate_wave_period(&ss);
+    return r;
+}
+
+/*
+ * A part that samples faster than its nominal rate — the reference ISM330DHCX
+ * runs 4.05 % fast — must not read more heave for it.  Integrated over the
+ * nominal period, velocity and displacement each pick the factor up, so heave
+ * and wave height come out about 8 % high and the wave period 4 % long.
+ */
+TEST(test_heave_integrates_over_measured_dt)
+{
+    heave_run_t ref   = heave_on_part(1.0f,    false);
+    heave_run_t fixed = heave_on_part(1.0405f, true);
+    heave_run_t stale = heave_on_part(1.0405f, false);
+
+    EXPECT(ref.heave > 0.9f && ref.hs > 2.5f && ref.tz > 7.0f,
+           "the reference run produces a sea state at all");
+    EXPECT_NEAR(fixed.heave / ref.heave, 1.0f, 0.01f,
+                "heave is the same on a fast part");
+    EXPECT_NEAR(fixed.hs / ref.hs, 1.0f, 0.01f,
+                "so is significant wave height");
+    EXPECT_NEAR(fixed.tz / ref.tz, 1.0f, 0.01f, "and wave period");
+    EXPECT(stale.heave / ref.heave > 1.06f,
+           "which the nominal period would have read 6 % high or worse");
+
+    /* The sea-state window follows the step too: one update moves the mean
+     * by dt/tau. */
+    seastate_t a, b;
+    seastate_init(&a, 30.0f, 0.01f);
+    seastate_init(&b, 30.0f, 0.01f);
+    seastate_update(&a, 1.0f, 0, 0, 0, 0, 0, 0.0f);
+    seastate_update(&b, 1.0f, 0, 0, 0, 0, 0, 0.02f);
+    EXPECT(fabs(b.h_mean / a.h_mean - 2.0) < 1e-6,
+           "a step twice as long weighs twice as much");
 }
 
 /* ── Sea-state estimator ────────────────────────────────────────────────────── */
@@ -2994,7 +3065,7 @@ static void seastate_drive_sine(seastate_t *w, float fs)
         float t = (float)i*dt;
         seastate_update(w, SEASTATE_A*sinf(ww*t), SEASTATE_A*ww*cosf(ww*t),
                         heel + SEASTATE_B*sinf(wr*t), SEASTATE_B*wr*cosf(wr*t),
-                        trim + SEASTATE_C*sinf(wp*t), SEASTATE_C*wp*cosf(wp*t));
+                        trim + SEASTATE_C*sinf(wp*t), SEASTATE_C*wp*cosf(wp*t), 0.0f);
     }
 }
 
@@ -3109,7 +3180,7 @@ TEST(test_seastate_gates)
     /* tau = 0 disables. */
     seastate_t off;
     seastate_init(&off, 0.0f, dt);
-    seastate_update(&off, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    seastate_update(&off, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f);
     EXPECT(!off.enabled && seastate_wave_height(&off) == 0.0f, "tau=0 → off");
 
     /* Becalmed: mm-scale heave and 0.05° roll ripple → periods report 0,
@@ -3121,7 +3192,7 @@ TEST(test_seastate_gates)
         float t = (float)i*dt;
         seastate_update(&calm, a*sinf(wq*t), a*wq*cosf(wq*t),
                         b*sinf(wq*t), b*wq*cosf(wq*t),
-                        b*sinf(wq*t), b*wq*cosf(wq*t));
+                        b*sinf(wq*t), b*wq*cosf(wq*t), 0.0f);
     }
     EXPECT(calm.settled, "calm run settled");
     EXPECT(seastate_wave_period(&calm) == 0.0f, "becalmed → wave period 0");
@@ -3219,7 +3290,7 @@ TEST(test_leaks_survive_a_tiny_dt_over_tau)
     const double leak = (double)dt / 900.0;
 
     h.vel = 1.0;
-    (void)heave_update(&h, q, rest);
+    (void)heave_update(&h, q, rest, 0.0f);
     const double dropped = 1.0 - h.vel;
     EXPECT(h.vel < 1.0, "heave leak still bites at dt/tau = 3.5e-8");
     EXPECT(fabs(dropped - leak) < 0.01 * leak,
@@ -3229,7 +3300,7 @@ TEST(test_leaks_survive_a_tiny_dt_over_tau)
      * non-decaying y means alpha rounded to 1.0 and the DC zero is gone. */
     h.vel = 0.0; h.disp = 0.0; h.disp_prev = 0.0;
     h.hp_y = 1.0;
-    (void)heave_update(&h, q, rest);
+    (void)heave_update(&h, q, rest, 0.0f);
     const double hp_drop = 1.0 - h.hp_y;             /* = 1 - alpha */
     const double want_hp = (double)dt / (900.0 + (double)dt);
     EXPECT(h.hp_y < 1.0, "heave high-pass still decays at dt/tau = 3.5e-8");
@@ -3242,7 +3313,7 @@ TEST(test_leaks_survive_a_tiny_dt_over_tau)
     seastate_init(&w, 1200.0f, dt);
     const double alpha = (double)dt / 1200.0;
     w.h_mean = 1.0;
-    seastate_update(&w, 2.0f, 0, 0, 0, 0, 0);
+    seastate_update(&w, 2.0f, 0, 0, 0, 0, 0, 0.0f);
     EXPECT(w.h_mean > 1.0, "ew_stat mean still advances at alpha = 2.6e-8");
     EXPECT(fabs((w.h_mean - 1.0) - alpha) < 0.01 * alpha,
            "ew_stat mean advances by alpha*d");
@@ -3292,9 +3363,9 @@ TEST(test_settling_survives_a_long_window_at_a_high_rate)
     EXPECT(fabs((double)w.settle_n * dt - 2.0 * 550.0) <= (double)dt,
            "seastate settle_n is 2 tau worth of samples");
     for (uint64_t i = 0; i < w.settle_n - 1; i++)
-        seastate_update(&w, 0, 0, 0, 0, 0, 0);
+        seastate_update(&w, 0, 0, 0, 0, 0, 0, 0.0f);
     EXPECT(!w.settled, "seastate not settled one sample early");
-    seastate_update(&w, 0, 0, 0, 0, 0, 0);
+    seastate_update(&w, 0, 0, 0, 0, 0, 0, 0.0f);
     EXPECT(w.settled, "seastate settles at 2 tau even at 32 kHz / 550 s");
 
     /* Heave: 110 s tau → latches at 1100 s, likewise past the stall. */
@@ -3305,9 +3376,9 @@ TEST(test_settling_survives_a_long_window_at_a_high_rate)
     const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
     const float a[3] = { 0.0f, 0.0f, -G };          /* at rest: a_down = 0 */
     for (uint64_t i = 0; i < h.settle_n - 1; i++)
-        (void)heave_update(&h, q, a);
+        (void)heave_update(&h, q, a, 0.0f);
     EXPECT(!h.settled, "heave not settled one sample early");
-    (void)heave_update(&h, q, a);
+    (void)heave_update(&h, q, a, 0.0f);
     EXPECT(h.settled, "heave settles at 10 tau even at 32 kHz / 110 s");
 
     /*
@@ -4338,7 +4409,7 @@ static void bench_precision_row(double fs, double tau)
         const float  hrf = (float)((double)SEASTATE_A * ww * cos(ww * t));
         const float  af  = (float)(-a_amp * sin(ww * t));
 
-        seastate_update(&w, hf, hrf, 0.0f, 0.0f, 0.0f, 0.0f);
+        seastate_update(&w, hf, hrf, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
         ew_stat_d(&h_mean,  &h_var,  (double)hf,  alpha);
         ew_stat_d(&hr_mean, &hr_var, (double)hrf, alpha);
 
@@ -4350,7 +4421,7 @@ static void bench_precision_row(double fs, double tau)
          * measured, which is right: it is arithmetic, not input rounding.
          */
         float accel[3] = { 0.0f, 0.0f, -(float)G + af };
-        (void)heave_update(&hv, q, accel);
+        (void)heave_update(&hv, q, accel, 0.0f);
         const double a_down_d = (double)accel[2] + (double)G;
         d_vel  += a_down_d * dt;     d_vel  -= d_vel * leak;
         d_disp += d_vel * dt;        d_disp -= d_disp * leak;
@@ -4409,7 +4480,7 @@ static void bench_precision_heave_row(double fs, double htau)
         const float af = (float)(-a_amp * sin(ww * t));
         float accel[3] = { 0.0f, 0.0f, -(float)G + af };
         const float q[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
-        (void)heave_update(&hv, q, accel);
+        (void)heave_update(&hv, q, accel, 0.0f);
         const double a_down_d = (double)accel[2] + (double)G;
         d_vel  += a_down_d * dt;     d_vel  -= d_vel * leak;
         d_disp += d_vel * dt;        d_disp -= d_disp * leak;
@@ -4655,6 +4726,7 @@ int main(void)
     RUN(test_heave_sine_amplitude);
     RUN(test_heave_across_rates);
     RUN(test_heave_disabled_and_settle);
+    RUN(test_heave_integrates_over_measured_dt);
     RUN(test_seastate_sine);
     RUN(test_seastate_across_rates);
     RUN(test_seastate_gates);
