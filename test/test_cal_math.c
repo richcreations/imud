@@ -672,6 +672,73 @@ static void test_mag_fit_follows_the_mount(void)
     end(fb);
 }
 
+/*
+ * A level swing carries no vertical information: every sample reads the same
+ * vertical field, so a sphere through them puts its centre AT that reading.
+ * The whole vertical field then goes into the hard iron, and on a heeled
+ * vessel the heading is wrong by the vertical field times the sine of the
+ * heel: 18° at 10° of heel in a field like San Francisco's.
+ */
+static void test_mag_fit_level_swing_leaves_the_vertical(void)
+{
+    begin("test_mag_fit_level_swing_leaves_the_vertical");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    const double H = 22.0, Z = 42.0, hard[3] = { 6.0, -4.0, 8.0 };
+    const double heels[] = { 0.0, 2.0, 5.0 };
+
+    cal_mag_fit_t f;
+    for (unsigned k = 0; k < sizeof heels / sizeof heels[0]; k++) {
+        make_swing(s, N, NULL, H, Z, hard, heels[k], 0.3);
+        EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+        EXPECT(f.level, "a swing within a few degrees of level is taken as level");
+        EXPECT_NEAR_D(f.hard_iron[0], hard[0], 0.3, "horizontal hard iron X");
+        EXPECT_NEAR_D(f.hard_iron[1], hard[1], 0.3, "horizontal hard iron Y");
+        EXPECT(f.hard_iron[2] == 0.0, "no vertical hard iron is taken from it");
+        EXPECT_NEAR_D(f.radius, H, 0.5, "the radius reported is the horizontal field's");
+        EXPECT(f.soft_iron[2][2] == 1.0, "and the vertical axis is not scaled");
+    }
+
+    /* What it is for.  Heading north at 10° of heel, with the calibration
+     * from the dead-level swing: level the corrected field with the true
+     * heel and read the heading off it. */
+    make_swing(s, N, NULL, H, Z, hard, 0.0, 0.3);
+    cal_mag_fit((const float (*)[3])s, N, NULL, &f);
+    const double roll = 10.0 * M_PI / 180.0;
+    const float raw[3] = { (float)(H + hard[0]),
+                           (float)(Z * sin(roll) + hard[1]),
+                           (float)(Z * cos(roll) + hard[2]) };
+    double b[3];
+    apply_fit(&f, NULL, raw, b);
+    double y_level = b[1] * cos(roll) - b[2] * sin(roll);
+    double heading = atan2(-y_level, b[0]) * 180.0 / M_PI;
+    EXPECT(fabs(heading) < 5.0,
+           "heading at 10° of heel is off by the vertical hard iron alone");
+
+    end(fb);
+}
+
+/* A swing that leaves level far enough does measure the vertical, and the
+ * sphere is then the better answer. */
+static void test_mag_fit_heeled_swing_measures_the_vertical(void)
+{
+    begin("test_mag_fit_heeled_swing_measures_the_vertical");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    const double hard[3] = { 6.0, -4.0, 8.0 };
+    make_swing(s, N, NULL, 22.0, 42.0, hard, 8.0, 0.3);
+
+    cal_mag_fit_t f;
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+    EXPECT(!f.level, "±8° of heel is not a level swing");
+    EXPECT_NEAR_D(f.hard_iron[2], hard[2], 1.5, "and the vertical hard iron is found");
+    end(fb);
+}
+
 /* A full tumble on a flat board is the case the sphere fit is for, and the
  * mount handling must not have disturbed it. */
 static void test_mag_fit_tumble(void)
@@ -1094,6 +1161,8 @@ int main(void)
     test_cov_half_circle();
     test_cov_wrong_center();
     test_mag_fit_follows_the_mount();
+    test_mag_fit_level_swing_leaves_the_vertical();
+    test_mag_fit_heeled_swing_measures_the_vertical();
     test_mag_fit_tumble();
     test_allan_constant_signal();
     test_allan_white_noise();

@@ -183,13 +183,25 @@ void cal_softiron_diag(const double half[3], double radius, double si[3]);
 typedef struct {
     double hard_iron[3];      /* µT, board axes */
     double soft_iron[3][3];   /* board axes */
-    double radius;            /* fitted field radius, µT */
+    double radius;            /* fitted field radius, µT; of the HORIZONTAL
+                               * field when the swing was level */
     double rms;               /* RMS residual about it, µT */
     double half[3];           /* half-extent per body axis after centring, µT */
     double S2[2][2];          /* horizontal soft-iron block, body axes */
     double si[3];             /* diagonal soft iron, body axes */
     bool   ellipse_ok;        /* S2 came from the ellipse fit; otherwise si */
+    bool   level;             /* a level swing: circle fit, and no vertical
+                               * hard iron taken from it */
+    double vertical;          /* mean body-vertical reading, µT, uncorrected */
 } cal_mag_fit_t;
+
+/*
+ * A swing is level when its vertical half-extent is under this fraction of
+ * the horizontal circle's radius.  The ratio is the sine of the heel, so a
+ * tenth is about ±6°: under that the sphere's vertical centre is wrong by
+ * anything up to the whole vertical field, over it by a microtesla or two.
+ */
+#define CAL_LEVEL_MAX_SPAN 0.1
 
 /*
  * cal_mag_fit — hard and soft iron from a swing of n raw samples (µT, board
@@ -202,6 +214,10 @@ typedef struct {
  * The result is mapped back for cal.json, h_board = Rᵀ·h and
  * S_board = Rᵀ·S·R, so that the daemon's R·S_board·(m − h_board) is the
  * body-axis correction S·(R·m − h).
+ *
+ * A level swing — the one a vessel can do — gets a circle fit in the
+ * horizontal plane, and no vertical hard iron: see CAL_LEVEL_MAX_SPAN.  One
+ * that leaves level enough to measure the vertical gets the sphere.
  *
  * Returns 0, or -1 when the samples do not determine a fit.
  */

@@ -1162,7 +1162,11 @@ static void test_cal_mag_swing(void)
     EXPECT(strstr(buf, "magnetometer calibration") != NULL, "prints the banner");
     EXPECT(strstr(buf, "24/24") != NULL, "the swing covered every sector");
     EXPECT(strstr(buf, "Hard iron") != NULL, "reports hard iron");
-    EXPECT(strstr(buf, "Field radius") != NULL, "reports the field radius");
+    /* The scenario rolls ±4°, which is a level swing: the horizontal field is
+     * what such a swing measures, and the vertical is said to be left alone. */
+    EXPECT(strstr(buf, "Horizontal field") != NULL, "reports the horizontal field");
+    EXPECT(strstr(buf, "left at 0") != NULL,
+           "says the vertical hard iron is not taken from a level swing");
     EXPECT(strstr(buf, "RMS residual") != NULL, "reports the residual");
     EXPECT(strstr(buf, "Saved to") != NULL, "reports the save");
 
@@ -1170,7 +1174,7 @@ static void test_cal_mag_swing(void)
     EXPECT(cal_load(out, &cal) == 0, "the written cal.json loads back");
     EXPECT(cal.has_mag, "has_mag survives the round trip");
     /* The sim field is 25 uT north and 40 uT down with no hard iron, so the
-     * fitted radius is hypot(25, 40) = 47.2 uT and the centre is the origin. */
+     * fitted circle has a radius of 25 uT and its centre is the origin. */
     double r = sqrt((double)cal.mag_hard_iron[0] * cal.mag_hard_iron[0] +
                     (double)cal.mag_hard_iron[1] * cal.mag_hard_iron[1] +
                     (double)cal.mag_hard_iron[2] * cal.mag_hard_iron[2]);

@@ -183,35 +183,99 @@ static void rot3(const double R[3][3], const double v[3], double out[3])
         out[i] = R[i][0]*v[0] + R[i][1]*v[1] + R[i][2]*v[2];
 }
 
+/*
+ * Algebraic circle through the horizontal components: the 2-D case of the
+ * sphere fit above, about the mean for conditioning.  0, or -1 when the
+ * points do not determine one.
+ */
+static int circle_fit(const double (*b)[3], int n, double c[2], double *radius)
+{
+    if (n < 5) return -1;
+    double mx = 0.0, my = 0.0;
+    for (int i = 0; i < n; i++) { mx += b[i][0]; my += b[i][1]; }
+    mx /= n; my /= n;
+
+    double sxx = 0, sxy = 0, syy = 0, sx = 0, sy = 0, sxr = 0, syr = 0, sr = 0;
+    for (int i = 0; i < n; i++) {
+        double x = b[i][0] - mx, y = b[i][1] - my, r2 = x*x + y*y;
+        sxx += x*x;  sxy += x*y;  syy += y*y;  sx += x;  sy += y;
+        sxr += x*r2; syr += y*r2; sr  += r2;
+    }
+    /* x² + y² = 2a·x + 2b·y + k, with k = r² − a² − b². */
+    double A[4][4] = {
+        { 4*sxx, 4*sxy, 2*sx,      0 },
+        { 4*sxy, 4*syy, 2*sy,      0 },
+        { 2*sx,  2*sy,  (double)n, 0 },
+        { 0,     0,     0,         1 },
+    };
+    double rhs[4] = { 2*sxr, 2*syr, sr, 0 }, p[4];
+    if (gauss4(A, rhs, p) < 0) return -1;
+
+    double r2 = p[2] + p[0]*p[0] + p[1]*p[1];
+    if (r2 <= 0.0) return -1;
+    c[0] = p[0] + mx;
+    c[1] = p[1] + my;
+    *radius = sqrt(r2);
+    return 0;
+}
+
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
                 cal_mag_fit_t *out)
 {
     static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
     const double (*R)[3] = mount ? mount : I3;
+    if (n < 5) return -1;
 
-    /* Sphere through the samples, in body axes. */
-    sphere_accum_t acc = {0};
+    double (*b)[3] = malloc((size_t)n * sizeof *b);
+    if (!b) return -1;
+    double zmin = 0.0, zmax = 0.0, zsum = 0.0;
     for (int i = 0; i < n; i++) {
-        double m[3] = { samps[i][0], samps[i][1], samps[i][2] }, b[3];
-        rot3(R, m, b);
-        sphere_add(&acc, (float)b[0], (float)b[1], (float)b[2]);
+        double m[3] = { samps[i][0], samps[i][1], samps[i][2] };
+        rot3(R, m, b[i]);
+        if (i == 0 || b[i][2] < zmin) zmin = b[i][2];
+        if (i == 0 || b[i][2] > zmax) zmax = b[i][2];
+        zsum += b[i][2];
     }
-    double c[3];
-    if (sphere_fit(&acc, c, &out->radius) < 0) return -1;
+    out->vertical = zsum / n;
 
-    /* Residual, per-axis extent and the horizontal ellipse, about its centre. */
+    /*
+     * A level swing is a circle in the horizontal plane, and says nothing of
+     * the vertical hard iron: every sample has the same vertical reading, so a
+     * sphere through them can put its centre anywhere on the axis, and puts it
+     * AT the reading — the whole vertical field goes into the "hard iron", and
+     * the heading that comes out is wrong by the vertical field times the
+     * sine of the heel.  So a level swing gets the circle, and the vertical
+     * hard iron is left at zero, which is wrong only by the hard iron itself.
+     */
+    double c[3] = { 0.0, 0.0, 0.0 }, cc[2], rc;
+    out->level = circle_fit((const double (*)[3])b, n, cc, &rc) == 0 &&
+                 0.5 * (zmax - zmin) < CAL_LEVEL_MAX_SPAN * rc;
+    if (out->level) {
+        c[0] = cc[0];
+        c[1] = cc[1];
+        out->radius = rc;
+    } else {
+        sphere_accum_t acc = {0};
+        for (int i = 0; i < n; i++)
+            sphere_add(&acc, (float)b[i][0], (float)b[i][1], (float)b[i][2]);
+        if (sphere_fit(&acc, c, &out->radius) < 0) { free(b); return -1; }
+    }
+
+    /* Residual, per-axis extent and the horizontal ellipse, about the centre.
+     * For a level swing both are taken in the plane it was swung in. */
     ellipse_accum_t eacc = {0};
     extent_accum_t  xacc = {0};
     double ss = 0.0;
     for (int i = 0; i < n; i++) {
-        double m[3] = { samps[i][0], samps[i][1], samps[i][2] }, b[3];
-        rot3(R, m, b);
-        double dx = b[0] - c[0], dy = b[1] - c[1], dz = b[2] - c[2];
-        double res = sqrt(dx*dx + dy*dy + dz*dz) - out->radius;
+        double dx = b[i][0] - c[0], dy = b[i][1] - c[1];
+        double dz = b[i][2] - (out->level ? out->vertical : c[2]);
+        double res = (out->level ? sqrt(dx*dx + dy*dy)
+                                 : sqrt(dx*dx + dy*dy + dz*dz)) - out->radius;
         ss += res * res;
         ellipse_add(&eacc, (float)dx, (float)dy);
         extent_add(&xacc, dx, dy, dz);
     }
+    free(b);
     out->rms = sqrt(ss / n);
     if (extent_half(&xacc, out->half) < 0) return -1;
 
@@ -220,8 +284,8 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
      * samples.  Unlike the per-axis half-range it recovers the CROSS term — a
      * distortion ellipse turned away from the axes, which is the common case
      * and shows as a heading error that varies round the swing.  The radius
-     * it is scaled to is the mean horizontal half-extent, because the sphere's
-     * includes the vertical field and over-scales a flat swing.
+     * it is scaled to is the mean horizontal half-extent: the sphere's
+     * includes the vertical field, and would over-scale.
      */
     double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
     double r_h = 0.5 * (out->half[0] + out->half[1]);

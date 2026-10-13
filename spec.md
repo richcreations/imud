@@ -1438,8 +1438,10 @@ Results printed before saving:
 
 ```text
 Results:
-  Hard iron (µT):   [ -12.34,   8.76,  -3.21]
-  Field radius:     47.3 µT  (typical: 25–65 µT)
+  Hard iron (µT):   [ -12.34,   8.76,   0.00]
+  Horizontal field: 24.1 µT  (typical: 10–40 µT)
+  Vertical:         reads 41.7 µT. A level swing cannot tell the vertical
+                    hard iron from the field, so it is left at 0.
   Soft iron diag:   [1.0234, 0.9781, 1.0000]  (Z: no 3D coverage, left as 1.0)
   RMS residual:     0.23 µT  (< 1.0 µT is good)
   Coverage:         20/24 sectors (83%)

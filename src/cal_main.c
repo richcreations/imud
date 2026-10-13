@@ -252,11 +252,13 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     float (*samps)[3] = malloc(MAX_MAG_SAMPLES * sizeof(*samps));
     if (!samps) { perror("malloc"); bus_close(&bus); return -1; }
 
-    sphere_accum_t acc = {0};
+    /* The fit is done in body axes, which is what the mount rotation is for. */
+    const double (*mount)[3] = cfg->mount_set ? cfg->mount_rot : NULL;
     int    sectors[N_SECTORS] = {0};
     int    n = 0;
 
-    /* Running center estimate used for coverage display once we have > 50 pts */
+    /* Running centre estimate (board axes) used for coverage display once we
+     * have > 50 pts */
     double cx = 0, cy = 0, cz = 0;
     bool   have_center = false;
 
@@ -275,26 +277,19 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         samps[n][0] = s.field[0];
         samps[n][1] = s.field[1];
         samps[n][2] = s.field[2];
-        sphere_add(&acc, s.field[0], s.field[1], s.field[2]);
         n++;
 
-        /* Update center estimate + live fit quality every 50 samples */
+        /* Update centre estimate + live fit quality every 50 samples, from
+         * the fit the result will come from. */
         if (n % 50 == 0 && n >= 50) {
-            double r;
-            double ctr[3];
-            if (sphere_fit(&acc, ctr, &r) == 0) {
-                cx = ctr[0]; cy = ctr[1]; cz = ctr[2];
+            cal_mag_fit_t live;
+            if (cal_mag_fit((const float (*)[3])samps, n, mount, &live) == 0) {
+                cx = live.hard_iron[0];
+                cy = live.hard_iron[1];
+                cz = live.hard_iron[2];
                 have_center = true;
-                double ss = 0.0;
-                for (int i = 0; i < n; i++) {
-                    double dx = samps[i][0] - ctr[0];
-                    double dy = samps[i][1] - ctr[1];
-                    double dz = samps[i][2] - ctr[2];
-                    double res = sqrt(dx*dx + dy*dy + dz*dz) - r;
-                    ss += res * res;
-                }
-                live_r   = r;
-                live_rms = sqrt(ss / n);
+                live_r   = live.radius;
+                live_rms = live.rms;
                 have_fit = true;
             }
         }
@@ -320,10 +315,8 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* ── Fit ─────────────────────────────────────────────────────────── */
 
-    /* In body axes, which is what the mount rotation is for: see cal_mag_fit. */
     cal_mag_fit_t fit;
-    int frc = cal_mag_fit((const float (*)[3])samps, n,
-                          cfg->mount_set ? cfg->mount_rot : NULL, &fit);
+    int frc = cal_mag_fit((const float (*)[3])samps, n, mount, &fit);
     free(samps);
     if (frc < 0) {
         fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
@@ -341,7 +334,15 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     printf("Results:\n");
     printf("  Hard iron (µT):   [%7.2f, %7.2f, %7.2f]\n",
            center[0], center[1], center[2]);
-    printf("  Field radius:     %.1f µT  (typical: 25–65 µT)\n", radius);
+    if (fit.level) {
+        printf("  Horizontal field: %.1f µT  (typical: 10–40 µT)\n", radius);
+        printf("  Vertical:         reads %.1f µT. A level swing cannot tell the "
+               "vertical\n"
+               "                    hard iron from the field, so it is left at "
+               "0.\n", fit.vertical);
+    } else {
+        printf("  Field radius:     %.1f µT  (typical: 25–65 µT)\n", radius);
+    }
     if (ellipse_ok) {
         printf("  Soft iron (2D):   [%.4f %+.4f; %+.4f %.4f]  Z=%.4f%s\n",
                S2[0][0], S2[0][1], S2[1][0], S2[1][1], si[2],
@@ -365,9 +366,14 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* ── Sanity checks ───────────────────────────────────────────────── */
 
-    if (radius < 15.0 || radius > 100.0)
+    if (fit.level) {
+        if (radius < 5.0 || radius > 65.0)
+            printf("WARNING: horizontal field %.1f µT is outside 5–65 µT — "
+                   "check sensor and environment\n", radius);
+    } else if (radius < 15.0 || radius > 100.0) {
         printf("WARNING: field radius %.1f µT is outside 15–100 µT — "
                "check sensor and environment\n", radius);
+    }
     if (rms > 2.0)
         printf("WARNING: RMS residual %.2f µT > 2 µT — "
                "consider re-running in a cleaner magnetic environment\n", rms);
