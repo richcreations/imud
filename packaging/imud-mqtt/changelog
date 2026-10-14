@@ -1,3 +1,21 @@
+imud-mqtt (1.11.2) unstable; urgency=medium
+
+  * Out-of-range values are refused for fifo_wm, the accel skip
+    thresholds, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and
+    accel_g and gyro_dps are checked against the part. Each was accepted,
+    then ignored or misapplied.  A config carrying one of these out of
+    range no longer starts.
+  * A topic_prefix or ha_prefix containing the MQTT wildcard + or # is
+    refused. imud-mqtt used to start with one and publish nothing under
+    it.  A config with either no longer starts.
+  * A topic imud-mqtt stops publishing is deleted from the broker, and
+    Home Assistant sensors expire. The last heading stayed retained, and
+    showed as current, after the magnetometer was lost.
+  * A label, measurement name, topic prefix or client id with a space,
+    quote or comma in it is escaped, so the bridges' output stays valid.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700
+
 imud-mqtt (1.11.0) unstable; urgency=medium
 
   * imud runs on macOS: it builds, installs, and runs as a launchd

@@ -1,3 +1,78 @@
+imud (1.11.2-1) unstable; urgency=medium
+
+  * On macOS the output cadence and the IMU ring's waits now run on the
+    mach timebase, so a wall-clock step can no longer stretch or cut them.
+  * Out-of-range values are refused for fifo_wm, the accel skip
+    thresholds, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and
+    accel_g and gyro_dps are checked against the part. Each was accepted,
+    then ignored or misapplied.  A config carrying one of these out of
+    range no longer starts.
+  * Every output is NED, and coord_frame = "ENU" is refused: its
+    quaternion and vectors were in different body frames, and it also
+    changed the stream the bridges read. spec.md gives the conversion to
+    ROS's ENU.  ACTION: Remove coord_frame = "ENU" from imud.conf and
+    convert in the consumer.
+  * $PASHR follows the Trimble/Applanix layout: UTC time first, true
+    heading with T (null without declination), heading accuracy and a
+    numeric alignment status. imud-mon reads the new layout.  ACTION:
+    Update any consumer that parsed imud's previous $PASHR layout; its
+    fields have moved.
+  * macOS reads the TAI offset from the kernel NTP state, so ts_tai_ns is
+    TAI wherever a time daemon has set it.  macOS sets no offset of its
+    own, so ts_tai_ns still carries UTC there until a time daemon sets
+    one.
+  * A [mount] rotation given as nan or inf loaded, and every sample the
+    daemon published was then NaN. Both keys now refuse a non-finite
+    value.
+  * A magnetometer that starts delivering after startup alignment now sets
+    the heading reference. Heading previously dead-reckoned for the rest
+    of the run.
+  * Heave, heave rate, wave height and wave period are integrated over the
+    measured sample interval. On a part whose oscillator runs fast they
+    read high: about 8 % in heave on an ISM330DHCX that is 4 % fast.
+  * After a filter reset the daemon aligns again and carries on. It
+    previously published a level attitude for the rest of the run. Output
+    pauses for the alignment window.
+  * A reload now applies mag_fuse_uncal, mag_uncal_reject_frac and
+    stats_hz. A stats_hz above 1 had no effect at all, at startup or on
+    reload.
+  * ts_tai_ns names the same instant as ts_wall_ns. It was later by the
+    duration of the FIFO read, which is tens of milliseconds at a deep
+    watermark.
+  * GPS speed is dropped from the turn correction after 5 s without a
+    report, on a lost fix and when gpsd disconnects. The last speed was
+    held for up to fix_max_age_h and tilted the horizon in every turn.
+  * imud-cal replaces cal.json in one step and reports a failed write. A
+    power cut or a full disk could leave part of a file, which then
+    loaded.  A cal.json that is cut off, or has an array of the wrong
+    length, is now refused at startup rather than loaded in part.
+  * The WMM is evaluated inside the five years its coefficients cover. A
+    clock at 1970 used to run it out by 55 years: 4.6° of declination at
+    San Francisco, published as valid.
+  * imud-cal mag fits in vessel axes, so it is right for a board mounted
+    on edge. It fitted board X/Y whatever the [mount], which on such a
+    board took the vertical field for a horizontal axis.  ACTION: On a
+    board with a roll or pitch [mount], repeat the magnetometer swing.
+  * imud-cal mag no longer takes a vertical hard iron from a swing that
+    holds its heel, level or not. It absorbed the whole vertical field,
+    and heading was then wrong at any other heel: up to 18° at 10°.
+    ACTION: Repeat the magnetometer swing if cal.json's hard-iron Z is
+    near the local vertical field, about 40 µT at mid latitudes.
+  * imud-cal mag no longer takes a swing's roll for soft iron. A swing
+    that rolled a few degrees came out with a correction that was not
+    there, worth up to 5° of heading in a steep field.
+  * A TCP or stream client that stops reading is dropped after 30 s. It
+    used to hold one of the eight client slots for as long as it stayed
+    connected.
+  * imud-cal mag collects until Ctrl-C, however long the swing takes. It
+    stopped without a word at 16000 samples, which is 16 s at a 1 kHz
+    magnetometer.
+  * A FIFO overflow found on a drain that delivered no samples is counted
+    and flagged. Those were missed, and on the MPU-925x family every
+    overflow is one.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700
+
 imud (1.11.1-1) unstable; urgency=medium
 
   * Heading no longer arrives in bursts after a magnetometer calibration.

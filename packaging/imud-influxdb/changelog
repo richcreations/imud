@@ -1,3 +1,10 @@
+imud-influxdb (1.11.2) unstable; urgency=medium
+
+  * A label, measurement name, topic prefix or client id with a space,
+    quote or comma in it is escaped, so the bridges' output stays valid.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700
+
 imud-influxdb (1.11.0) unstable; urgency=medium
 
   * imud runs on macOS: it builds, installs, and runs as a launchd

@@ -1,3 +1,18 @@
+imud-utils (1.11.2) unstable; urgency=medium
+
+  * Out-of-range values are refused for fifo_wm, the accel skip
+    thresholds, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and
+    accel_g and gyro_dps are checked against the part. Each was accepted,
+    then ignored or misapplied.  A config carrying one of these out of
+    range no longer starts.
+  * $PASHR follows the Trimble/Applanix layout: UTC time first, true
+    heading with T (null without declination), heading accuracy and a
+    numeric alignment status. imud-mon reads the new layout.  ACTION:
+    Update any consumer that parsed imud's previous $PASHR layout; its
+    fields have moved.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700
+
 imud-utils (1.11.0) unstable; urgency=medium
 
   * imud runs on macOS: it builds, installs, and runs as a launchd
