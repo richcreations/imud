@@ -480,6 +480,63 @@ static void test_stream_tcp(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/*
+ * A subscriber that stops reading is dropped once it has taken nothing for
+ * NETSRV_STALL_NS — 300 ms in this build — while one that reads is kept.
+ * 1 kHz fills the socket buffer in well under a second.
+ */
+static void test_stalled_subscriber(void)
+{
+    int fb = g_fail;
+    printf("%-52s", "test_stream_stalled_subscriber");
+    fflush(stdout);
+
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    cfg.nmea_enabled     = false;
+    cfg.highrate_enabled = false;
+    cfg.stream_enabled   = true;
+    cfg.stream_rate_hz   = 1000;
+    snprintf(cfg.stream_socket, sizeof cfg.stream_socket, TEST_SOCK);
+
+    unlink(TEST_SOCK);
+    out_ctx_t *out = NULL;
+    EXPECT(out_ctx_open(&out, &cfg, (imu_ctx_t *)0x1) == 0, "out_ctx_open");
+    pthread_t tid;
+    EXPECT(pthread_create(&tid, NULL, stream_out_thread, out) == 0,
+           "stream_out_thread starts");
+
+    int live  = connect_subscriber();
+    int stuck = connect_subscriber();
+    EXPECT(live >= 0 && stuck >= 0, "two subscribers connect");
+
+    /* Three seconds of reading one and not the other. */
+    unsigned char sink[65536];
+    for (int i = 0; i < 300; i++) {
+        while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
+        usleep(10 * 1000);
+    }
+
+    /* Dropped means its backlog ends in EOF; kept means frames keep coming,
+     * so the drain is bounded at two seconds' worth. */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 500000 };
+    setsockopt(stuck, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    ssize_t n = 1;
+    for (int i = 0; i < 2000 && n > 0; i++) n = read(stuck, sink, sizeof sink);
+    EXPECT(n == 0, "the subscriber that stopped reading was dropped");
+
+    unsigned char frame[sizeof(imu_packet_t)];
+    while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
+    EXPECT(read_frame(live, frame) == 0, "the reading one still receives");
+
+    out_ctx_stop(out);
+    EXPECT(pthread_join(tid, NULL) == 0, "stream_out_thread joins cleanly");
+    close(live);
+    close(stuck);
+    out_ctx_free(out);
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -544,6 +601,7 @@ int main(void)
 
     test_socket_mode();
     test_stream_tcp();
+    test_stalled_subscriber();
     test_udp_outputs();
     test_reload_and_shutdown();
 

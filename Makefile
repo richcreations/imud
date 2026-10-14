@@ -587,11 +587,11 @@ test_client: src/packet.c test/test_client.c test/test_client_impl.c
 
 # End-to-end AF_UNIX + TCP subscription stream: real output.c, stubbed imu accessors
 test_stream: src/output.c $(HOST_TIME_SRC) src/nmea.c src/netserv.c src/packet.c src/config.c src/log.c test/test_stream.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+	$(CC) $(CPPFLAGS) -DNETSRV_STALL_NS=300000000ULL $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 # netserv TCP broadcast server (pure sockets; macOS-buildable)
 test_netserv: src/netserv.c src/log.c test/test_netserv.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
+	$(CC) $(CPPFLAGS) -DNETSRV_STALL_NS=300000000ULL $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)
 
 test_log: src/log.c test/test_log.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c %.o,$^) -lm $(ATOMIC_LIB)

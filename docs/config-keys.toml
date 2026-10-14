@@ -1390,10 +1390,11 @@ md_groups = [["enabled", "rate_hz", "dest_addr", "dest_port", "tcp_enabled", "tc
 Enable the NMEA-over-TCP listener.
 Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP
 clients and each receives every sentence burst; up to 8 clients, slow clients
-skip bursts rather than stalling the daemon.'''
+skip bursts rather than stalling the daemon, and one that has taken nothing
+for 30 s is dropped.'''
   md_type = 'bool'
   md_default = '`false`'
-  desc = 'NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon.'
+  desc = 'NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon, and one that has taken nothing for 30 s is dropped.'
 
   [[section.key]]
   names = ["tcp_bind_addr"]

@@ -77,6 +77,8 @@ Fixed:
 * A topic imud-mqtt stops publishing is deleted from the broker, and Home
   Assistant sensors expire. The last heading stayed retained, and showed as
   current, after the magnetometer was lost.
+* A TCP or stream client that stops reading is dropped after 30 s. It used to
+  hold one of the eight client slots for as long as it stayed connected.
 
 
 1.11.1

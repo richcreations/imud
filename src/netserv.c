@@ -21,6 +21,8 @@
 
 #include <string.h>
 #include <errno.h>
+#include <stdbool.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -39,6 +41,13 @@ void netserv_init(netserv_t *s)
 {
     memset(s, 0, sizeof *s);
     s->listen_fd = -1;
+}
+
+uint64_t netserv_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
 int netserv_open(netserv_t *s, const char *bind_addr, int port,
@@ -109,6 +118,7 @@ void netserv_accept(netserv_t *s)
                     s->tag, NETSRV_MAX_CLIENTS);
             close(c);
         } else {
+            s->taken_ns[s->nclients] = netserv_now_ns();
             s->clients[s->nclients++] = c;
             LOG_I("[%s] client connected (%d/%d)\n",
                     s->tag, s->nclients, NETSRV_MAX_CLIENTS);
@@ -116,22 +126,38 @@ void netserv_accept(netserv_t *s)
     }
 }
 
-void netserv_broadcast(netserv_t *s, const void *buf, size_t len)
+int netserv_send_each(int *fds, uint64_t *taken_ns, int n, int max,
+                      const void *buf, size_t len, const char *tag)
 {
-    if (s->listen_fd < 0 || len == 0) return;
-    for (int i = 0; i < s->nclients; ) {
-        ssize_t n = send(s->clients[i], buf, len, MSG_NOSIGNAL);
-        if (n == (ssize_t)len) { i++; continue; }
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    uint64_t now = netserv_now_ns();
+    for (int i = 0; i < n; ) {
+        ssize_t sent = send(fds[i], buf, len, MSG_NOSIGNAL);
+        if (sent == (ssize_t)len) { taken_ns[i++] = now; continue; }
+        bool full = sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+        if (full && now - taken_ns[i] < NETSRV_STALL_NS) {
             i++;            /* buffer full: drop this payload, keep client */
             continue;
         }
-        /* Error, hangup, or partial write (would corrupt framing). */
-        close(s->clients[i]);
-        s->clients[i] = s->clients[--s->nclients];
-        LOG_I("[%s] client disconnected (%d/%d)\n",
-                s->tag, s->nclients, NETSRV_MAX_CLIENTS);
+        /* Error, hangup, partial write (would corrupt framing), or a client
+         * that has stopped reading. */
+        close(fds[i]);
+        n--;
+        fds[i]      = fds[n];
+        taken_ns[i] = taken_ns[n];
+        if (full)
+            LOG_W("[%s] client stopped reading — dropped (%d/%d)\n",
+                    tag, n, max);
+        else
+            LOG_I("[%s] client disconnected (%d/%d)\n", tag, n, max);
     }
+    return n;
+}
+
+void netserv_broadcast(netserv_t *s, const void *buf, size_t len)
+{
+    if (s->listen_fd < 0 || len == 0) return;
+    s->nclients = netserv_send_each(s->clients, s->taken_ns, s->nclients,
+                                    NETSRV_MAX_CLIENTS, buf, len, s->tag);
 }
 
 int netserv_nclients(const netserv_t *s)

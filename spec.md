@@ -188,7 +188,8 @@ is true.
 Each optional TCP listener (netserv, `src/netserv.c`) is owned by exactly one
 output thread: non-blocking accept each tick, broadcast-only (clients are
 never read), at most 8 clients, and a slow-client policy of drop-payload on a
-full kernel buffer / disconnect on error or partial write. Default posture
+full kernel buffer / disconnect on error, on a partial write, or once a client
+has taken nothing for 30 s. Default posture
 (1.6): only the local AF_UNIX stream socket is enabled — every network
 output is an explicit config opt-in.
 
@@ -686,8 +687,8 @@ Any chartplotter, MFD, multiplexer, OpenCPN, Expedition, SignalK server, or
 logging tool on the vessel LAN receives the broadcast without configuration;
 TCP-client consumers (most plotter apps) connect to `tcp://<host>:10110` and
 receive the identical sentence bursts. Up to 8 TCP clients; a slow client
-skips bursts (never stalls the daemon), and a client that errors or would
-receive a partial burst is disconnected.
+skips bursts (never stalls the daemon), and a client that errors, would
+receive a partial burst, or has taken nothing for 30 s is disconnected.
 
 ### Sentence Set
 
@@ -1263,8 +1264,8 @@ every packet as an exact 276-byte frame — no datagram loss, self-framing via
 the fixed size plus magic/CRC, so client-library validation (libimud, or
 the deprecated `lib/imud_client.h`) works unchanged on 276-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
-framing, so it disconnects that subscriber instead. The daemon never blocks
-on a consumer.
+framing, so it disconnects that subscriber instead, as does taking nothing
+for 30 s. The daemon never blocks on a consumer.
 
 The TCP listener carries the exact same framed packets to remote consumers
 (≤ 8 clients, same slow-client policy, served by the same `stream_out`

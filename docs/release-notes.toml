@@ -120,6 +120,11 @@ and a TAI offset it previously had no way to read."""
   text     = "$PASHR follows the Trimble/Applanix layout: UTC time first, true heading with T (null without declination), heading accuracy and a numeric alignment status. imud-mon reads the new layout."
   action   = "Update any consumer that parsed imud's previous $PASHR layout; its fields have moved."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud", "imud-signalk", "imud-mavlink"]
+  text     = "A TCP or stream client that stops reading is dropped after 30 s. It used to hold one of the eight client slots for as long as it stayed connected."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

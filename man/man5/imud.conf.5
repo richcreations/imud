@@ -820,7 +820,8 @@ Destination UDP port.
 Enable the NMEA-over-TCP listener.
 Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP
 clients and each receives every sentence burst; up to 8 clients, slow clients
-skip bursts rather than stalling the daemon.
+skip bursts rather than stalling the daemon, and one that has taken nothing
+for 30 s is dropped.
 .TP
 .B tcp_bind_addr
 .RI (string,\ default:\ \(dq0.0.0.0\(dq)

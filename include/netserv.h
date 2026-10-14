@@ -14,7 +14,8 @@
  *
  *   - full send            → keep the client
  *   - EAGAIN/EWOULDBLOCK   → drop THIS payload for that client, keep it
- *                            (consumers see a gap, the daemon never stalls)
+ *                            (consumers see a gap, the daemon never stalls),
+ *                            unless it has taken nothing for NETSRV_STALL_NS
  *   - error / hangup /
  *     partial write        → close + swap-remove (a partial write would
  *                            corrupt framing for stream payloads)
@@ -32,14 +33,22 @@
 #define IMUD_NETSERV_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Max simultaneous TCP subscribers per listener (mirrors the AF_UNIX
  * stream's STREAM_MAX_CLIENTS). */
 #define NETSRV_MAX_CLIENTS 8
 
+/* A client that has taken no whole payload for this long has stopped reading
+ * and is only holding a slot, so it is closed.  The tests build a short one. */
+#ifndef NETSRV_STALL_NS
+#define NETSRV_STALL_NS 30000000000ULL
+#endif
+
 typedef struct {
     int         listen_fd;                   /* -1 when not open */
     int         clients[NETSRV_MAX_CLIENTS];
+    uint64_t    taken_ns[NETSRV_MAX_CLIENTS]; /* last whole payload, monotonic */
     int         nclients;
     int         port;                        /* actual bound port (after open) */
     const char *tag;                         /* log prefix, e.g. "nmea_tcp" */
@@ -63,6 +72,18 @@ void netserv_accept(netserv_t *s);
 
 /* Send buf to every connected client with the slow-client policy above. */
 void netserv_broadcast(netserv_t *s, const void *buf, size_t len);
+
+/*
+ * The policy itself, over any array of client fds: sends buf to the first n,
+ * closes and swap-removes the ones it drops, keeps taken_ns[] in step, and
+ * returns the new count.  The AF_UNIX stream in output.c uses it directly;
+ * max and tag only label the log line.
+ */
+int  netserv_send_each(int *fds, uint64_t *taken_ns, int n, int max,
+                       const void *buf, size_t len, const char *tag);
+
+/* The clock taken_ns[] runs on, for a caller stamping a client it accepted. */
+uint64_t netserv_now_ns(void);
 
 /* Number of currently connected clients (0 when not open). */
 int  netserv_nclients(const netserv_t *s);

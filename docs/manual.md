@@ -634,7 +634,7 @@ details.
 | `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host. |
 | `dest_port` | int | `10110` | Destination UDP port. Standard NMEA-over-UDP port is 10110. |
-| `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon. |
+| `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon, and one that has taken nothing for 30 s is dropped. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10110` | Listener TCP port (the de-facto NMEA-over-TCP port). |
 <!-- END GENERATED: config-keys nmea.1 -->
@@ -1333,7 +1333,7 @@ OpenCPN). Two transports, independently enabled:
 - **TCP listener** (`tcp_enabled`) — most plotter apps (OpenCPN, Navionics,
   iOS/Android nav apps) connect as TCP clients; point them at
   `tcp://<host>:10110`. Up to 8 clients; a slow client skips bursts, never
-  stalls the daemon.
+  stalls the daemon, and one that has taken nothing for 30 s is dropped.
 
 Per burst at `nmea.rate_hz`:
 

@@ -73,6 +73,7 @@ struct out_ctx {
      * Only stream_out_thread touches clients[]/nclients after startup. */
     int                  stream_fd;
     int                  stream_clients[STREAM_MAX_CLIENTS];
+    uint64_t             stream_taken_ns[STREAM_MAX_CLIENTS]; /* see netserv.h */
     int                  stream_nclients;
 
     /* Optional TCP listeners (1.6). Single-owner: after the threads start,
@@ -283,11 +284,12 @@ void *hirate_out_thread(void *arg)
  * time and validate exactly as with UDP (lib/imud_client.h works unchanged
  * on chunks read from this socket).
  *
- * Slow-consumer policy: sends are non-blocking. A full kernel buffer
- * (EAGAIN) drops that packet for that subscriber; a PARTIAL write would
- * corrupt framing, so it disconnects the subscriber instead. Consumers are
- * expected to drain at rate_hz — anything that can't keep up gets packet
- * gaps (detectable via imu_seq), never a stalled daemon.
+ * Slow-consumer policy: netserv's (netserv_send_each), shared with the TCP
+ * listeners. A full kernel buffer drops that packet for that subscriber; a
+ * PARTIAL write would corrupt framing, so it disconnects the subscriber
+ * instead, and so does taking nothing for NETSRV_STALL_NS. Consumers are
+ * expected to drain at rate_hz — anything that can't keep up gets packet gaps
+ * (detectable via imu_seq), never a stalled daemon.
  */
 void *stream_out_thread(void *arg)
 {
@@ -324,6 +326,7 @@ void *stream_out_thread(void *arg)
                         "— rejecting\n", STREAM_MAX_CLIENTS);
                 close(c);
             } else {
+                ctx->stream_taken_ns[ctx->stream_nclients] = netserv_now_ns();
                 ctx->stream_clients[ctx->stream_nclients++] = c;
                 LOG_I("[stream_out] subscriber connected (%d/%d)\n",
                         ctx->stream_nclients, STREAM_MAX_CLIENTS);
@@ -340,21 +343,10 @@ void *stream_out_thread(void *arg)
         packet_build(&pkt, &state, &mag, &imu, &raw_imu);
         packet_encode(wire, &pkt);
 
-        for (int i = 0; i < ctx->stream_nclients; ) {
-            ssize_t s = send(ctx->stream_clients[i], wire, sizeof(wire),
-                             MSG_NOSIGNAL);
-            if (s == (ssize_t)sizeof(wire)) { i++; continue; }
-            if (s < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                i++;            /* buffer full: drop this packet, keep client */
-                continue;
-            }
-            /* Error, hangup, or partial write (would corrupt framing). */
-            close(ctx->stream_clients[i]);
-            ctx->stream_clients[i] =
-                ctx->stream_clients[--ctx->stream_nclients];
-            LOG_I("[stream_out] subscriber disconnected (%d/%d)\n",
-                    ctx->stream_nclients, STREAM_MAX_CLIENTS);
-        }
+        ctx->stream_nclients =
+            netserv_send_each(ctx->stream_clients, ctx->stream_taken_ns,
+                              ctx->stream_nclients, STREAM_MAX_CLIENTS,
+                              wire, sizeof(wire), "stream_out");
 
         /* Same framed packet to TCP subscribers (same slow-client policy). */
         netserv_broadcast(&ctx->bin_tcp, wire, sizeof(wire));

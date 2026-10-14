@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/select.h>
@@ -296,6 +297,98 @@ static void test_dead_client_pruned(void)
     end_test(fb);
 }
 
+/* A client with a small receive window, set before connecting so that the
+ * handshake uses it: a server send then fills within a few kilobytes. */
+static int connect_small_client(int port)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    int small = 2048;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &small, sizeof small);
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons((uint16_t)port);
+    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* One byte at a time, which a send can only take whole or refuse: a partial
+ * write is its own reason to drop, and must not be the one under test. */
+static void send_bytes(netserv_t *s, int count)
+{
+    for (int k = 0; k < count; k++) netserv_broadcast(s, "x", 1);
+}
+
+static double seconds_since(const struct timespec *t0)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)(t.tv_sec - t0->tv_sec) + (t.tv_nsec - t0->tv_nsec) * 1e-9;
+}
+
+/*
+ * A client that stops reading is dropped once it has taken nothing for
+ * NETSRV_STALL_NS — 300 ms in this build.  The limit runs from the last whole
+ * payload, not from connecting: a reader that falls behind for a moment, long
+ * after it connected, stays.
+ */
+static void test_stalled_client_dropped(void)
+{
+    begin_test("test_stalled_client_dropped");
+    int fb = g_fail;
+
+    netserv_t s;
+    EXPECT(netserv_open(&s, "127.0.0.1", 0, "test") == 0, "server opens");
+    int live  = connect_small_client(s.port);
+    int stuck = connect_small_client(s.port);
+    accept_n(&s, 2);
+    EXPECT(netserv_nclients(&s) == 2, "two clients accepted");
+    int small = 2048;
+    for (int i = 0; i < s.nclients; i++)
+        setsockopt(s.clients[i], SOL_SOCKET, SO_SNDBUF, &small, sizeof small);
+
+    char sink[65536];
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    while (netserv_nclients(&s) == 2 && seconds_since(&t0) < 5.0) {
+        send_bytes(&s, 64);
+        while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
+        usleep(2000);
+    }
+    EXPECT(netserv_nclients(&s) == 1, "the client that stopped reading is dropped");
+    EXPECT(seconds_since(&t0) >= NETSRV_STALL_NS * 1e-9, "and not before the limit");
+
+    /* The reader falls behind until its buffers are full, well past the limit
+     * since it connected, then catches up. */
+    send_bytes(&s, 20000);
+    EXPECT(netserv_nclients(&s) == 1, "a reader that fell behind for a moment stays");
+    while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
+    usleep(20 * 1000);
+    while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
+    netserv_broadcast(&s, "ping\n", 5);
+    char ping[5];
+    EXPECT(read_exact(live, ping, sizeof ping) == 0 &&
+           memcmp(ping, "ping\n", 5) == 0, "and still receives");
+
+    ssize_t n;
+    while ((n = read(stuck, sink, sizeof sink)) > 0) {}
+    EXPECT(n == 0, "the dropped client reads its backlog, then EOF");
+
+    close(live);
+    close(stuck);
+    netserv_close(&s);
+    end_test(fb);
+}
+
 static void test_unopened_noops(void)
 {
     begin_test("test_unopened_noops");
@@ -325,6 +418,7 @@ int main(void)
     test_broadcast_to_all();
     test_client_limit();
     test_dead_client_pruned();
+    test_stalled_client_dropped();
     test_unopened_noops();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);

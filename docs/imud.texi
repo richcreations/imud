@@ -1384,7 +1384,7 @@ unicast or multicast address to target a specific host.
  @tab NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics,
 phone/tablet nav apps) connect as TCP clients and each receives every
 sentence burst; up to 8 clients, slow clients skip bursts rather than
-stalling the daemon.
+stalling the daemon, and one that has taken nothing for 30 s is dropped.
 @item 
 @code{tcp_bind_addr}
  @tab string
@@ -2822,7 +2822,8 @@ the LAN.
 @strong{TCP listener} (@code{tcp_enabled}) --- most plotter apps
 (OpenCPN, Navionics, iOS/Android nav apps) connect as TCP clients; point
 them at @code{tcp://<host>:10110}. Up to 8 clients; a slow client skips
-bursts, never stalls the daemon.
+bursts, never stalls the daemon, and one that has taken nothing for 30 s
+is dropped.
 @end itemize
 
 Per burst at @code{nmea.rate_hz}:
