@@ -254,7 +254,7 @@ static void write_conf_opt(conf_opt_t o)
         fprintf(f,
             "[device]\n"
             "sim_speed = %s\n"
-            "[fusion]\n"
+            "[calibration]\n"
             "startup_settle_sec = 0.0\n"
             "align_window_sec = 0.5\n",
             o.replay_realtime ? "1.0" : "0.0");
@@ -1024,13 +1024,18 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
     unlink(T_STATUS_SOCK);
     unlink(T_STREAM_SOCK);
     unlink(T_PID_FILE);
+    unlink(T_REPLAY_LOG);
     write_conf_opt((conf_opt_t){ .nmea_rate_hz = 10, .imu_odr_mhz = 100,
-                                 .replay = true });
+                                 .replay = true, .log_file = T_REPLAY_LOG });
     const char *cap = make_replay_capture();
 
     char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
                      (char *)"--replay", (char *)cap,
                      (char *)"--skip-bias-cal", NULL };
+    /* [logging] file dup2()s over fd 2 process-wide; see the next case. */
+    int saved_stderr = dup(STDERR_FILENO);
+    EXPECT(saved_stderr >= 0, "stderr saved");
+
     sigset_t old;
     daemon_run_t d = { .argv = argv, .argc = 6 };
     daemon_start(&d, &old);
@@ -1040,11 +1045,21 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
         if (atomic_load(&d.done)) { exited = true; break; }
         msleep(50);
     }
-    EXPECT(exited, "--replay returns when the capture runs out");
     if (!exited) pthread_kill(d.tid, SIGTERM);   /* don't wedge the suite */
     pthread_join(d.tid, NULL);
 
+    if (saved_stderr >= 0) {                     /* before the first FAIL below */
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    EXPECT(exited, "--replay returns when the capture runs out");
     EXPECT(d.rc == 0, "a finished replay is a success, not a failure");
+
+    /* The 3 s capture is shorter than the default startup settle, so the
+     * quick-start keys must land or nothing reaches the filter. */
+    EXPECT(log_has(T_REPLAY_LOG, "[fusion] aligned from"),
+           "the replay reaches the filter");
 
     /* Exiting is not enough: it has to leave through the normal unwind. */
     struct stat st;
@@ -1055,6 +1070,7 @@ static void test_daemon_replay_exits_at_end_of_capture(void)
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_CONF);
     unlink(T_REPLAY_CAP);
+    unlink(T_REPLAY_LOG);
     end(fb);
 }
 
