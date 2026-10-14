@@ -316,6 +316,32 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
     return 0;
 }
 
+void cal_mag_keep_init(cal_mag_keep_t *k, float (*buf)[3], int cap)
+{
+    k->s      = buf;
+    k->cap    = cap;
+    k->n      = 0;
+    k->seen   = 0;
+    k->stride = 1;
+}
+
+bool cal_mag_keep(cal_mag_keep_t *k, const float v[3])
+{
+    long long i = k->seen++;
+    if (i % k->stride != 0) return false;
+    if (k->n == k->cap) {
+        /* Full: every other kept sample goes, and the spacing doubles to
+         * match, so the kept ones are still every stride-th offered. */
+        for (int j = 0; j < k->cap / 2; j++)
+            memcpy(k->s[j], k->s[2 * j], sizeof k->s[0]);
+        k->n = k->cap / 2;
+        k->stride *= 2;
+        if (i % k->stride != 0) return false;
+    }
+    memcpy(k->s[k->n++], v, sizeof k->s[0]);
+    return true;
+}
+
 /* ── Six-position accelerometer calibration ───────────────────────────────── */
 
 /*

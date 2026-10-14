@@ -741,6 +741,37 @@ static void test_mag_fit_heeled_swing_measures_the_vertical(void)
 
 /* A full tumble on a flat board is the case the sphere fit is for, and the
  * mount handling must not have disturbed it. */
+/*
+ * The swing never stops for want of room: once the buffer is full, what is
+ * kept thins out evenly over the whole run, from the first sample to the
+ * latest stretch.
+ */
+static void test_mag_keep_thins_evenly(void)
+{
+    begin("test_mag_keep_thins_evenly");
+    int fb = g_fail;
+
+    float buf[8][3];
+    cal_mag_keep_t k;
+    cal_mag_keep_init(&k, buf, 8);
+    int kept = 0;
+    for (int i = 0; i < 100; i++) {
+        float v[3] = { (float)i, 0.0f, 0.0f };
+        kept += cal_mag_keep(&k, v);
+    }
+    EXPECT(k.seen == 100, "every sample is offered, none refused for room");
+    EXPECT(k.n >= 4 && k.n <= 8, "the buffer stays between half full and full");
+    EXPECT(k.stride == 16, "the spacing doubled each time it filled");
+    bool even = true;
+    for (int j = 0; j < k.n; j++)
+        if (buf[j][0] != (float)(j * k.stride)) even = false;
+    EXPECT(even, "what is kept is every stride-th sample, from the first");
+    EXPECT(buf[k.n - 1][0] >= 100 - k.stride, "and reaches the latest stretch");
+    EXPECT(kept > k.n, "earlier keeps were let go to make room");
+
+    end(fb);
+}
+
 static void test_mag_fit_tumble(void)
 {
     begin("test_mag_fit_tumble");
@@ -1164,6 +1195,7 @@ int main(void)
     test_mag_fit_level_swing_leaves_the_vertical();
     test_mag_fit_heeled_swing_measures_the_vertical();
     test_mag_fit_tumble();
+    test_mag_keep_thins_evenly();
     test_allan_constant_signal();
     test_allan_white_noise();
     test_allan_random_walk();

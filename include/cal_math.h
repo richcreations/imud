@@ -224,6 +224,25 @@ typedef struct {
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
                 cal_mag_fit_t *out);
 
+/*
+ * A swing of any length in a fixed buffer.  Every sample is kept until the
+ * buffer is full; then every other kept one is let go and only one sample in
+ * two is kept from there, and so on.  What is kept stays evenly spread over
+ * the whole swing, so the swing runs for as long as it takes.
+ */
+typedef struct {
+    float     (*s)[3];  /* cap samples, the caller's */
+    int       cap;      /* even, at least 2 */
+    int       n;        /* kept */
+    long long seen;     /* offered */
+    long long stride;   /* one kept in this many */
+} cal_mag_keep_t;
+
+void cal_mag_keep_init(cal_mag_keep_t *k, float (*buf)[3], int cap);
+
+/* Offer one sample; true when it was kept. */
+bool cal_mag_keep(cal_mag_keep_t *k, const float v[3]);
+
 /* ── Allan-variance sensor characterization (imud-cal characterize) ─────── */
 
 typedef struct {

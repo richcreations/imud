@@ -1591,7 +1591,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:450`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:476`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1599,7 +1599,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:469`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:495`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1607,7 +1607,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:502`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:528`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1622,7 +1622,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:526`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:552`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,

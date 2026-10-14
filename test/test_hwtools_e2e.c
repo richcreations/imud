@@ -22,7 +22,8 @@
  *     synthetic scenario yaws 6 deg/s, so a real swing takes two minutes;
  *     replaying a capture of that same scenario at speed 0, looped, walks the
  *     whole heading circle as fast as the loop can read it.  do_mag then ends
- *     on its own MAX_MAG_SAMPLES bound rather than on a signal — which matters,
+ *     after CAL_MAG_STOP_AFTER samples, which only this build sets (the
+ *     shipped swing runs until Ctrl-C), rather than on a signal — which matters,
  *     because cal_main.c's g_stop is a file static that on_sigint sets and
  *     nothing ever clears, so one SIGINT-terminated case would poison every
  *     later one in this process.
@@ -141,7 +142,7 @@ static void cap_end(cap_t *c, char *out, size_t outsz)
 #define CAPFILE "/tmp/imud_hwtools_cap.txt"
 
 /* Most cases print a few kB.  do_mag prints a progress line per sample and is
- * bounded by MAX_MAG_SAMPLES, so it gets its own heap buffer. */
+ * bounded by CAL_MAG_STOP_AFTER, so it gets its own heap buffer. */
 static char g_out[64 * 1024];
 
 /* ── Paths ───────────────────────────────────────────────────────────────── */
@@ -906,7 +907,7 @@ static void test_cal_unwritable_target(void)
     EXPECT(secs < 2.0, "and refuses before the 5 s capture, not after it");
 
     /* The mode the report came from.  Playback is armed so that a regression
-     * fails rather than swings for MAX_MAG_SAMPLES. */
+     * fails rather than swings for CAL_MAG_STOP_AFTER samples. */
     sim_set_playback(g_cap_swing, true, 0.0f);
     stdin_from("y\n");
     av[5] = (char *)"mag";
@@ -1160,7 +1161,8 @@ static void test_cal_accel_geometry_refused(void)
  * The magnetometer swing.  Replayed rather than synthesised: the scenario yaws
  * 6 deg/s, so a live swing is two minutes of wall clock, while the same
  * scenario replayed at speed 0 and looped walks the circle as fast as do_mag
- * can read it and ends on MAX_MAG_SAMPLES.
+ * can read it and ends on CAL_MAG_STOP_AFTER — after the 4000 samples this
+ * build keeps have been thinned twice.
  *
  * Last of the cal cases, and the only one that leaves sim state behind — the
  * teardown puts playback back.
@@ -1176,7 +1178,7 @@ static void test_cal_mag_swing(void)
     sim_set_playback(g_cap_swing, true, 0.0f);
 
     /* One progress line of about 140 bytes per sample, bounded by
-     * MAX_MAG_SAMPLES = 16000 — so around 2.3 MB, and the assertions that
+     * CAL_MAG_STOP_AFTER = 16000 — so around 2.3 MB, and the assertions that
      * matter are at the far end of it. */
     size_t bufsz = 8u * 1024 * 1024;
     char *buf = malloc(bufsz);
@@ -1193,6 +1195,8 @@ static void test_cal_mag_swing(void)
     EXPECT(rc == 0, "mag exits 0");
     EXPECT(strstr(buf, "magnetometer calibration") != NULL, "prints the banner");
     EXPECT(strstr(buf, "24/24") != NULL, "the swing covered every sector");
+    EXPECT(strstr(buf, "Samples: 16000") != NULL,
+           "and ran on past the 4000 samples this build holds");
     EXPECT(strstr(buf, "Hard iron") != NULL, "reports hard iron");
     /* The scenario rolls ±4°, which is a level swing: the horizontal field is
      * what such a swing measures, and the vertical is said to be left alone. */

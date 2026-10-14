@@ -817,7 +817,8 @@ HWTOOLS_SRCS = $(sort $(CAL_SRCS) $(IMUTEST_SRCS))
 # absent.  /etc/imud/imud.conf is not that on a machine where `make install`
 # has run.  The two get different names so neither case can be satisfied by
 # the other's file.
-src/cal_main.entry.o:     CPPFLAGS += -DSYS_CONF='"/tmp/imud_hwtools_cal_sysconf.conf"'
+src/cal_main.entry.o:     CPPFLAGS += -DSYS_CONF='"/tmp/imud_hwtools_cal_sysconf.conf"' \
+                                      -DCAL_MAG_STOP_AFTER=16000 -DMAG_KEEP=4000
 src/imutest_main.entry.o: CPPFLAGS += -DSYS_CONF='"/tmp/imud_hwtools_imt_sysconf.conf"'
 src/cal_main.entry.o src/imutest_main.entry.o: Makefile
 

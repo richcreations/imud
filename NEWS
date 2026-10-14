@@ -79,6 +79,8 @@ Fixed:
   current, after the magnetometer was lost.
 * A TCP or stream client that stops reading is dropped after 30 s. It used to
   hold one of the eight client slots for as long as it stayed connected.
+* imud-cal mag collects until Ctrl-C, however long the swing takes. It stopped
+  without a word at 16000 samples, which is 16 s at a 1 kHz magnetometer.
 
 
 1.11.1

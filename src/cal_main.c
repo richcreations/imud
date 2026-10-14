@@ -66,8 +66,15 @@
 
 #define G_MS2            9.80665f
 
-/* Mag mode */
-#define MAX_MAG_SAMPLES  16000    /* ~2.7 min at 100 Hz */
+/* Mag mode.  The swing runs until Ctrl-C, held in MAG_KEEP samples that thin
+ * out as it goes on (cal_mag_keep).  The test build ends a replayed swing
+ * after CAL_MAG_STOP_AFTER samples instead; 0 is never. */
+#ifndef MAG_KEEP
+#define MAG_KEEP         16000
+#endif
+#ifndef CAL_MAG_STOP_AFTER
+#define CAL_MAG_STOP_AFTER 0
+#endif
 #define N_SECTORS        24       /* 15° each */
 #define MAG_POLL_US      5000     /* poll interval when sensor not ready */
 
@@ -118,11 +125,11 @@ static bool settle_imu(const imud_bus_t *bus, const imu_ops_t *ops, const imud_c
  * show the fit converging; at full coverage the line says so (with a bell)
  * and invites one more circle before Ctrl-C.
  */
-static void print_mag_progress(int n, const int sectors[N_SECTORS], int cur,
+static void print_mag_progress(long long n, const int sectors[N_SECTORS], int cur,
                                bool have_fit, double radius, double rms)
 {
     int filled = cal_cov_count(sectors, N_SECTORS);
-    printf("\r  Samples: %5d  [", n);
+    printf("\r  Samples: %5lld  [", n);
     for (int i = 0; i < N_SECTORS; i++)
         putchar(i == cur ? 'o' : (sectors[i] ? '#' : '.'));
     printf("] %2d/%d (%3.0f%%)", filled, N_SECTORS,
@@ -248,42 +255,44 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     printf("'o' where you are pointing now. Turn until every '.' becomes '#';\n");
     printf("it will tell you when the circle is complete. Ctrl-C when done.\n\n");
 
-    /* Storage for all raw samples (for residual and soft-iron computation) */
-    float (*samps)[3] = malloc(MAX_MAG_SAMPLES * sizeof(*samps));
+    /* The raw samples the fit is made from, thinned as the swing goes on. */
+    float (*samps)[3] = malloc(MAG_KEEP * sizeof(*samps));
     if (!samps) { perror("malloc"); bus_close(&bus); return -1; }
+    cal_mag_keep_t keep;
+    cal_mag_keep_init(&keep, samps, MAG_KEEP);
 
     /* The fit is done in body axes, which is what the mount rotation is for. */
     const double (*mount)[3] = cfg->mount_set ? cfg->mount_rot : NULL;
     int    sectors[N_SECTORS] = {0};
-    int    n = 0;
 
     /* Running centre estimate (board axes) used for coverage display once we
      * have > 50 pts */
     double cx = 0, cy = 0, cz = 0;
     bool   have_center = false;
 
-    /* Live fit-quality feedback, refreshed every 50 samples */
+    /* Live fit-quality feedback, refreshed every 50 kept samples */
     bool   have_fit = false;
     double live_r = 0.0, live_rms = 0.0;
     bool   full_announced = false;
+    int    since_fit = 0;
 
-    while (!g_stop && n < MAX_MAG_SAMPLES) {
+    while (!g_stop &&
+           (CAL_MAG_STOP_AFTER == 0 || keep.seen < CAL_MAG_STOP_AFTER)) {
         mag_sample_t s;
         int rc = ops->read(&bus, &s);
         if (rc < 0) { fprintf(stderr, "\ncal: mag read error\n"); break; }
         if (rc != 0) { usleep(MAG_POLL_US); continue; }   /* not ready */
         if (!s.valid) { usleep(MAG_POLL_US); continue; }
 
-        samps[n][0] = s.field[0];
-        samps[n][1] = s.field[1];
-        samps[n][2] = s.field[2];
-        n++;
+        if (cal_mag_keep(&keep, s.field)) since_fit++;
 
-        /* Update centre estimate + live fit quality every 50 samples, from
-         * the fit the result will come from. */
-        if (n % 50 == 0 && n >= 50) {
+        /* Update centre estimate + live fit quality every 50 kept samples,
+         * from the fit the result will come from. */
+        if (since_fit >= 50) {
+            since_fit = 0;
             cal_mag_fit_t live;
-            if (cal_mag_fit((const float (*)[3])samps, n, mount, &live) == 0) {
+            if (cal_mag_fit((const float (*)[3])samps, keep.n, mount,
+                            &live) == 0) {
                 cx = live.hard_iron[0];
                 cy = live.hard_iron[1];
                 cz = live.hard_iron[2];
@@ -307,7 +316,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             full_announced = true;
             putchar('\a');   /* audible cue: eyes are on the helm, not the screen */
         }
-        print_mag_progress(n, sectors, cur, have_fit, live_r, live_rms);
+        print_mag_progress(keep.seen, sectors, cur, have_fit, live_r, live_rms);
     }
 
     signal(SIGINT, SIG_DFL);
@@ -316,7 +325,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     /* ── Fit ─────────────────────────────────────────────────────────── */
 
     cal_mag_fit_t fit;
-    int frc = cal_mag_fit((const float (*)[3])samps, n, mount, &fit);
+    int frc = cal_mag_fit((const float (*)[3])samps, keep.n, mount, &fit);
     free(samps);
     if (frc < 0) {
         fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
