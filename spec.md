@@ -651,9 +651,9 @@ data has real 3D coverage.
   direction), but only while the platform is quiescent
   (EMA of (|a|/g−1)² < 2·10⁻⁴, τ ≈ 2 s). The horizontal direction — the
   heading anchor — is never adapted (no gauge feedback).
-- **Alignment averaging**: initial tilt/heading alignment averages ~1 s of
-  accel and all mag samples in that window instead of one instantaneous
-  reading.
+- **Alignment averaging**: alignment, at startup and after a filter reset,
+  averages `align_window_sec` (default 5 s) of accel and all mag samples in
+  that window instead of one instantaneous reading.
 - **WMM-informed m_ref**: when position is known (static lat/lon or live
   GPS), the magnetic reference's magnitude and dip are set analytically
   from the WMM field vector (`wmm_field_ned`), direction-preservingly —
