@@ -576,20 +576,22 @@ static const double MOUNT_ROLL_90[3][3] = { {1, 0, 0}, {0, 0, -1}, {0, 1, 0} };
 
 /*
  * A swing as the magnetometer hands it over: two circles of heading on a
- * vessel heeling ±heel_deg as it goes, in a field of H horizontal and Z down,
- * with hard iron `hard` (body axes).  Samples come out in BOARD axes,
- * m = Rᵀ·b, for a board→body mount R; NULL is a board mounted flat.
+ * vessel heeled steady_deg and heeling ±heel_deg about that as it goes, in a
+ * field of H horizontal and Z down, with hard iron `hard` (body axes).
+ * Samples come out in BOARD axes, m = Rᵀ·b, for a board→body mount R; NULL is
+ * a board mounted flat.
  */
 static void make_swing(float (*out)[3], int n, const double R[3][3],
                        double H, double Z, const double hard[3],
-                       double heel_deg, double noise_ut)
+                       double steady_deg, double heel_deg, double noise_ut)
 {
     static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
     if (!R) R = I3;
     unsigned lcg = 12345u;
     for (int i = 0; i < n; i++) {
         double psi  = 4.0 * M_PI * i / n;
-        double heel = heel_deg * (M_PI / 180.0) * sin(7.0 * psi);
+        double heel = steady_deg * (M_PI / 180.0)
+                    + heel_deg * (M_PI / 180.0) * sin(7.0 * psi);
         /* The level field [H cos ψ, −H sin ψ, Z], seen from a heeled body. */
         double ly = -H * sin(psi);
         double b[3] = { H * cos(psi),
@@ -647,7 +649,7 @@ static void test_mag_fit_follows_the_mount(void)
     enum { N = 2000 };
     static float s[N][3];
     const double H = 22.0, Z = 42.0, hard[3] = { 6.0, -4.0, 0.0 };
-    make_swing(s, N, MOUNT_ROLL_90, H, Z, hard, 0.5, 0.3);
+    make_swing(s, N, MOUNT_ROLL_90, H, Z, hard, 0.0, 0.5, 0.3);
 
     cal_mag_fit_t f;
     EXPECT(cal_mag_fit((const float (*)[3])s, N, MOUNT_ROLL_90, &f) == 0,
@@ -691,20 +693,22 @@ static void test_mag_fit_level_swing_leaves_the_vertical(void)
 
     cal_mag_fit_t f;
     for (unsigned k = 0; k < sizeof heels / sizeof heels[0]; k++) {
-        make_swing(s, N, NULL, H, Z, hard, heels[k], 0.3);
+        make_swing(s, N, NULL, H, Z, hard, 0.0, heels[k], 0.3);
         EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
         EXPECT(f.level, "a swing within a few degrees of level is taken as level");
         EXPECT_NEAR_D(f.hard_iron[0], hard[0], 0.3, "horizontal hard iron X");
         EXPECT_NEAR_D(f.hard_iron[1], hard[1], 0.3, "horizontal hard iron Y");
-        EXPECT(f.hard_iron[2] == 0.0, "no vertical hard iron is taken from it");
+        /* The vertical is the swing's fitted axis, which noise tilts by about
+         * 0.01°: 1e-3 µT of hard iron, and 2e-9 of scale. */
+        EXPECT_NEAR_D(f.hard_iron[2], 0.0, 0.01, "no vertical hard iron is taken from it");
         EXPECT_NEAR_D(f.radius, H, 0.5, "the radius reported is the horizontal field's");
-        EXPECT(f.soft_iron[2][2] == 1.0, "and the vertical axis is not scaled");
+        EXPECT_NEAR_D(f.soft_iron[2][2], 1.0, 1e-6, "and the vertical axis is not scaled");
     }
 
     /* What it is for.  Heading north at 10° of heel, with the calibration
      * from the dead-level swing: level the corrected field with the true
      * heel and read the heading off it. */
-    make_swing(s, N, NULL, H, Z, hard, 0.0, 0.3);
+    make_swing(s, N, NULL, H, Z, hard, 0.0, 0.0, 0.3);
     cal_mag_fit((const float (*)[3])s, N, NULL, &f);
     const double roll = 10.0 * M_PI / 180.0;
     const float raw[3] = { (float)(H + hard[0]),
@@ -730,7 +734,7 @@ static void test_mag_fit_heeled_swing_measures_the_vertical(void)
     enum { N = 2000 };
     static float s[N][3];
     const double hard[3] = { 6.0, -4.0, 8.0 };
-    make_swing(s, N, NULL, 22.0, 42.0, hard, 8.0, 0.3);
+    make_swing(s, N, NULL, 22.0, 42.0, hard, 0.0, 8.0, 0.3);
 
     cal_mag_fit_t f;
     EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
@@ -778,7 +782,7 @@ static void test_mag_fit_heeled_swing_keeps_the_field_round(void)
     static float s[N][3];
     static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
     const double H = 12.0, Z = 55.0, hard[3] = { 6.0, -4.0, 8.0 };
-    make_swing(s, N, NULL, H, Z, hard, 12.0, 0.3);
+    make_swing(s, N, NULL, H, Z, hard, 0.0, 12.0, 0.3);
 
     cal_mag_fit_t f;
     EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
@@ -792,6 +796,16 @@ static void test_mag_fit_heeled_swing_keeps_the_field_round(void)
     end(fb);
 }
 
+/* The field as soft iron D and hard iron put it to the sensor. */
+static void distort(float (*s)[3], int n, const double D[3][3], const double hard[3])
+{
+    for (int i = 0; i < n; i++) {
+        double m[3] = { s[i][0], s[i][1], s[i][2] };
+        for (int k = 0; k < 3; k++)
+            s[i][k] = (float)(D[k][0]*m[0] + D[k][1]*m[1] + D[k][2]*m[2] + hard[k]);
+    }
+}
+
 /* The same fit has to find soft iron that is there: X 10% long, axes turned. */
 static void test_mag_fit_heeled_swing_finds_the_soft_iron(void)
 {
@@ -802,12 +816,8 @@ static void test_mag_fit_heeled_swing_finds_the_soft_iron(void)
     static float s[N][3];
     static const double D[3][3] = { {1.10, 0.05, 0}, {0.05, 0.95, 0}, {0, 0, 1} };
     const double H = 22.0, Z = 42.0, hard[3] = { 6.0, -4.0, 8.0 }, none[3] = { 0 };
-    make_swing(s, N, NULL, H, Z, none, 12.0, 0.3);
-    for (int i = 0; i < N; i++) {
-        double m[3] = { s[i][0], s[i][1], s[i][2] };
-        for (int k = 0; k < 3; k++)
-            s[i][k] = (float)(D[k][0]*m[0] + D[k][1]*m[1] + D[k][2]*m[2] + hard[k]);
-    }
+    make_swing(s, N, NULL, H, Z, none, 0.0, 12.0, 0.3);
+    distort(s, N, D, hard);
 
     cal_mag_fit_t f;
     EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
@@ -817,6 +827,65 @@ static void test_mag_fit_heeled_swing_finds_the_soft_iron(void)
     EXPECT(worst_heading_deg(&f, D, hard, H, Z, 0.0) < 1.5 &&
            worst_heading_deg(&f, D, hard, H, Z, 10.0) < 3.0,
            "heading within 1.5° level and 3° at 10° of heel");
+
+    /* And at a steady 10° of heel, fitted in the swing's own axes.  Measured
+     * 3.69° and 1.52°; the fit in body axes gave 16.6° level. */
+    make_swing(s, N, NULL, H, Z, none, 10.0, 0.0, 0.3);
+    distort(s, N, D, hard);
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0 && f.level,
+           "a steady heel is a level swing in its own axes");
+    EXPECT(worst_heading_deg(&f, D, hard, H, Z, 0.0) < 4.5 &&
+           worst_heading_deg(&f, D, hard, H, Z, 10.0) < 2.5,
+           "heading within 4.5° level and 2.5° at its own 10° of heel");
+    end(fb);
+}
+
+/*
+ * A vessel heels steadily through its turn, so its swing is a circle tilted
+ * with it, about the vertical it turned on.  Fitted in body axes, the hard
+ * iron took up the field along that vertical: after 10° of steady heel,
+ * heading on a level keel was out by 19° in a 22/42 µT field and 53° in a
+ * 12/55 µT one.  In the swing's own axes it is wrong only by the hard iron
+ * along that vertical.
+ */
+static void test_mag_fit_steady_heel(void)
+{
+    begin("test_mag_fit_steady_heel");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    static const double field[2][2] = { { 22.0, 42.0 }, { 12.0, 55.0 } };
+    const double hard[3] = { 6.0, -4.0, 8.0 }, heels[2] = { 3.0, 10.0 };
+
+    cal_mag_fit_t f;
+    for (int k = 0; k < 4; k++) {
+        double H = field[k / 2][0], Z = field[k / 2][1], heel = heels[k % 2];
+        make_swing(s, N, NULL, H, Z, hard, heel, 0.0, 0.3);
+        EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+        EXPECT(f.level, "a swing that holds its heel is level in its own axes");
+
+        /* The vertical it turned about, in body axes. */
+        double phi = heel * M_PI / 180.0, g[3] = { 0.0, sin(phi), cos(phi) };
+        double hg = hard[0]*g[0] + hard[1]*g[1] + hard[2]*g[2];
+        for (int i = 0; i < 3; i++)
+            EXPECT_NEAR_D(f.hard_iron[i], hard[i] - hg * g[i], 0.1,
+                          "the hard iron, less its part along that vertical");
+        EXPECT(worst_heading_deg(&f, I3, hard, H, Z, heel) < 0.5,
+               "heading at the swing's own heel");
+    }
+
+    /* Coverage is counted about the swing's centre.  In a steep field at 12°
+     * of heel the hard iron lies outside the circle the swing traces in body
+     * X–Y, and only 10 of 24 sectors fill about it. */
+    make_swing(s, N, NULL, 12.0, 55.0, hard, 12.0, 0.0, 0.3);
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+    int sec[24] = { 0 };
+    for (int i = 0; i < N; i++)
+        cal_cov_mark(sec, 24, s[i][0], s[i][1], f.centre[0], f.centre[1]);
+    EXPECT(cal_cov_count(sec, 24) == 24, "a full swing fills every sector about its centre");
+
     end(fb);
 }
 
@@ -1277,6 +1346,7 @@ int main(void)
     test_mag_fit_heeled_swing_measures_the_vertical();
     test_mag_fit_heeled_swing_keeps_the_field_round();
     test_mag_fit_heeled_swing_finds_the_soft_iron();
+    test_mag_fit_steady_heel();
     test_mag_fit_tumble();
     test_mag_keep_thins_evenly();
     test_allan_constant_signal();

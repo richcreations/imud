@@ -293,9 +293,9 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             cal_mag_fit_t live;
             if (cal_mag_fit((const float (*)[3])samps, keep.n, mount,
                             &live) == 0) {
-                cx = live.hard_iron[0];
-                cy = live.hard_iron[1];
-                cz = live.hard_iron[2];
+                cx = live.centre[0];
+                cy = live.centre[1];
+                cz = live.centre[2];
                 have_center = true;
                 live_r   = live.radius;
                 live_rms = live.rms;
@@ -345,10 +345,10 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
            center[0], center[1], center[2]);
     if (fit.level) {
         printf("  Horizontal field: %.1f µT  (typical: 10–40 µT)\n", radius);
-        printf("  Vertical:         reads %.1f µT. A level swing cannot tell the "
-               "vertical\n"
-               "                    hard iron from the field, so it is left at "
-               "0.\n", fit.vertical);
+        printf("  Vertical:         reads %.1f µT. A swing that holds its heel "
+               "cannot tell\n"
+               "                    the vertical hard iron from the field, so "
+               "it is left at 0.\n", fit.vertical);
     } else {
         printf("  Field radius:     %.1f µT  (typical: 25–65 µT)\n", radius);
     }

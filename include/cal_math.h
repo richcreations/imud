@@ -177,48 +177,54 @@ void cal_softiron_diag(const double half[3], double radius, double si[3]);
 /*
  * What `imud-cal mag` writes, and what it tells the operator on the way.
  * hard_iron and soft_iron are in BOARD axes, because that is where the daemon
- * applies them — before the mount rotation.  The rest is in BODY axes, where
- * the fit is done.
+ * applies them — before the mount rotation.  So is centre, for the coverage
+ * display.  The rest is in the swing's own axes, where the fit is done.
  */
 typedef struct {
     double hard_iron[3];      /* µT, board axes */
     double soft_iron[3][3];   /* board axes */
+    double centre[3];         /* centre of the swing's circle, µT, board
+                               * axes; off the hard iron along the vertical */
     double radius;            /* fitted field radius, µT; of the HORIZONTAL
                                * field when the swing was level */
     double rms;               /* RMS residual about it, µT */
-    double half[3];           /* half-extent per body axis after centring, µT */
-    double S2[2][2];          /* horizontal soft-iron block, body axes */
-    double si[3];             /* diagonal soft iron, body axes */
+    double half[3];           /* half-extent per axis after centring, µT */
+    double S2[2][2];          /* horizontal soft-iron block */
+    double si[3];             /* diagonal soft iron */
     bool   ellipse_ok;        /* S2 is a fitted 2-D block; otherwise si */
     bool   level;             /* a level swing: circle fit, and no vertical
                                * hard iron taken from it */
-    double vertical;          /* mean body-vertical reading, µT, uncorrected */
+    double vertical;          /* mean vertical reading, µT, uncorrected */
 } cal_mag_fit_t;
 
 /*
- * A swing is level when its vertical half-extent is under this fraction of
- * the horizontal circle's radius.  The ratio is the sine of the heel, so a
- * tenth is about ±6°: under that the sphere's vertical centre is wrong by
- * anything up to the whole vertical field, over it by a microtesla or two.
+ * A swing is level when its vertical half-extent, in its own axes, is under
+ * this fraction of the horizontal circle's radius.  The ratio is the sine of
+ * the heel either side of the swing's mean, so a tenth is about ±6°: under
+ * that the sphere's vertical centre is wrong by anything up to the whole
+ * vertical field, over it by a microtesla or two.
  */
 #define CAL_LEVEL_MAX_SPAN 0.1
 
 /*
  * cal_mag_fit — hard and soft iron from a swing of n raw samples (µT, board
- * axes).  `mount` is the board→body rotation from [mount], or NULL for a
+ * axes).  `mount` is the board→body rotation M from [mount], or NULL for a
  * board mounted flat.
  *
- * The fit is done in body axes, because that is where a level swing is
- * level: on a board mounted on edge the swing lies in board X–Z or Y–Z, and a
- * fit of board X/Y takes the vertical field for one of the horizontal axes.
- * The result is mapped back for cal.json, h_board = Rᵀ·h and
- * S_board = Rᵀ·S·R, so that the daemon's R·S_board·(m − h_board) is the
- * body-axis correction S·(R·m − h).
+ * The fit is done in the swing's own axes: body axes, turned onto the plane
+ * the swing was made in.  Body axes, because on a board mounted on edge the
+ * swing lies in board X–Z or Y–Z, and a fit of board X/Y takes the vertical
+ * field for one of the horizontal axes.  Turned, because a vessel heels
+ * steadily through its turn, and its swing is then a circle tilted with it.
+ * With R the whole board→swing rotation, the result is mapped back for
+ * cal.json, h_board = Rᵀ·h and S_board = Rᵀ·S·R, so that the daemon's
+ * M·S_board·(m − h_board) is the swing-axis correction S·(R·m − h), turned
+ * back to body axes.
  *
- * A level swing — the one a vessel can do — gets a circle fit in the
- * horizontal plane, and no vertical hard iron: see CAL_LEVEL_MAX_SPAN.  One
- * that leaves level enough to measure the vertical gets the sphere, and its
- * horizontal soft iron is fitted against that sphere.
+ * A level swing — one that holds its heel, as a vessel's does — gets a
+ * circle fit in the horizontal plane, and no vertical hard iron: see
+ * CAL_LEVEL_MAX_SPAN.  One whose heel varies enough to measure the vertical
+ * gets the sphere, and its horizontal soft iron is fitted against that sphere.
  *
  * Returns 0, or -1 when the samples do not determine a fit.
  */

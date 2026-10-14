@@ -73,9 +73,9 @@ Fixed:
   the vertical field for a horizontal axis.
   ACTION: On a board with a roll or pitch [mount], repeat the magnetometer
   swing.
-* imud-cal mag no longer takes a vertical hard iron from a level swing. It
-  absorbed the whole vertical field, and heading was then wrong under heel: up
-  to 18° at 10°.
+* imud-cal mag no longer takes a vertical hard iron from a swing that holds
+  its heel, level or not. It absorbed the whole vertical field, and heading
+  was then wrong at any other heel: up to 18° at 10°.
   ACTION: Repeat the magnetometer swing if cal.json's hard-iron Z is near the
   local vertical field, about 40 µT at mid latitudes.
 * A topic imud-mqtt stops publishing is deleted from the broker, and Home

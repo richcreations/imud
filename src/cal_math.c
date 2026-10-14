@@ -251,15 +251,66 @@ static int softiron_on_sphere(const double (*b)[3], int n, const double c[3],
     return 0;
 }
 
+/*
+ * The swing's own axes: Q is the least rotation taking body Z onto the normal
+ * of the plane the samples lie nearest, z = p·x + q·y + d by least squares
+ * about their mean.  The identity when that plane is level, or when the
+ * samples do not determine one.
+ */
+static void swing_axes(const double (*b)[3], int n, double Q[3][3])
+{
+    double m[3] = { 0.0, 0.0, 0.0 };
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 3; k++) m[k] += b[i][k];
+    for (int k = 0; k < 3; k++) m[k] /= n;
+
+    double sxx = 0, sxy = 0, syy = 0, sxz = 0, syz = 0;
+    for (int i = 0; i < n; i++) {
+        double x = b[i][0] - m[0], y = b[i][1] - m[1], z = b[i][2] - m[2];
+        sxx += x*x;  sxy += x*y;  syy += y*y;  sxz += x*z;  syz += y*z;
+    }
+    double det = sxx*syy - sxy*sxy, p = 0.0, q = 0.0;
+    if (det > 1e-12 * (sxx + syy) * (sxx + syy)) {
+        p = (sxz*syy - syz*sxy) / det;
+        q = (syz*sxx - sxz*sxy) / det;
+    }
+
+    /* n = (−p, −q, 1)/‖·‖, and Q = I + [k]× + [k]×²/(1 + n_z), k = Z × n:
+     * body X and Y turned onto the plane, and n. */
+    double nz = 1.0 / sqrt(1.0 + p*p + q*q), nx = -p * nz, ny = -q * nz;
+    double f = 1.0 / (1.0 + nz);
+    Q[0][0] = 1.0 - nx*nx*f;  Q[0][1] = -nx*ny*f;       Q[0][2] = nx;
+    Q[1][0] = -nx*ny*f;       Q[1][1] = 1.0 - ny*ny*f;  Q[1][2] = ny;
+    Q[2][0] = -nx;            Q[2][1] = -ny;            Q[2][2] = nz;
+}
+
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
                 cal_mag_fit_t *out)
 {
     static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
-    const double (*R)[3] = mount ? mount : I3;
+    const double (*M)[3] = mount ? mount : I3;
     if (n < 5) return -1;
 
     double (*b)[3] = malloc((size_t)n * sizeof *b);
     if (!b) return -1;
+    for (int i = 0; i < n; i++) {
+        double m[3] = { samps[i][0], samps[i][1], samps[i][2] };
+        rot3(M, m, b[i]);
+    }
+
+    /*
+     * A vessel heels steadily through its turn, so its swing is a circle
+     * tilted with it, about the vertical it turned on.  The fit is done in the
+     * swing's own axes, R = Qᵀ·M, where that circle is level: "level",
+     * "horizontal" and "vertical" below are all in these axes.
+     */
+    double Q[3][3], RQ[3][3];
+    swing_axes((const double (*)[3])b, n, Q);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            RQ[i][j] = Q[0][i]*M[0][j] + Q[1][i]*M[1][j] + Q[2][i]*M[2][j];
+    const double (*R)[3] = (const double (*)[3])RQ;
+
     double zmin = 0.0, zmax = 0.0, zsum = 0.0;
     for (int i = 0; i < n; i++) {
         double m[3] = { samps[i][0], samps[i][1], samps[i][2] };
@@ -319,8 +370,8 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
      * recovers the CROSS term — a distortion ellipse turned away from the
      * axes, which is the common case and shows as a heading error that varies
      * round the swing.  A level swing gets an ellipse through the centred
-     * horizontal samples, scaled to their mean half-extent.  A heeled swing
-     * moves vertical field into the body's horizontal axes, which an ellipse
+     * horizontal samples, scaled to their mean half-extent.  A swing whose heel
+     * varies moves vertical field into the horizontal axes, which an ellipse
      * through them takes for soft iron, so it is fitted against the sphere.
      */
     double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
@@ -338,9 +389,11 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
         S[1][0] = out->S2[1][0];  S[1][1] = out->S2[1][1];
     }
 
-    /* Back to board axes: h_board = Rᵀ·h, S_board = Rᵀ·S·R. */
+    /* Back to board axes: h_board = Rᵀ·h, S_board = Rᵀ·S·R, and the centre
+     * of the swing's circle, which sits off the hard iron along the vertical. */
     for (int i = 0; i < 3; i++) {
         out->hard_iron[i] = R[0][i]*c[0] + R[1][i]*c[1] + R[2][i]*c[2];
+        out->centre[i]    = R[0][i]*c[0] + R[1][i]*c[1] + R[2][i]*out->vertical;
         for (int j = 0; j < 3; j++) {
             double v = 0.0;
             for (int k = 0; k < 3; k++)
