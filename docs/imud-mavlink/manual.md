@@ -37,6 +37,8 @@ For **serial** output (e.g. a telemetry radio on `/dev/serial0`), set
 `serial_enabled = true`, `serial_device`, and `serial_baud`. The shipped unit
 grants the service the `dialout` group and tty-device access. On a vehicle bus
 alongside a real autopilot, raise `component_id` (e.g. 191) to avoid an id clash.
+A radio that stops taking data costs frames on that link only; UDP and TCP
+carry on.
 
 For **TCP** output, set `tcp_enabled = true` and point the ground station at
 `tcp://<host>:5760` (QGroundControl: Comm Links → Add → TCP; Mission Planner:

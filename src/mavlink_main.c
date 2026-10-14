@@ -96,7 +96,9 @@ static int open_serial(const char *dev, int baud)
 {
     speed_t sp = baud_to_speed(baud);
     if (sp == 0) { LOG_E("[mavlink] unsupported serial baud %d\n", baud); return -1; }
-    int fd = open(dev, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    /* Non-blocking, so a radio that stops draining costs frames on this link
+     * rather than stalling every sink. */
+    int fd = open(dev, O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) { LOG_E("[mavlink] open %s: %s\n", dev, strerror(errno)); return -1; }
     struct termios t;
     if (tcgetattr(fd, &t) != 0) {
@@ -128,8 +130,10 @@ static void sink_write(sink_t *s, const uint8_t *buf, int n)
     else if (s->is_udp)
         sendto(s->fd, buf, (size_t)n, 0, (struct sockaddr *)&s->dst, s->dlen);
     else {
+        /* Best-effort: a full queue drops the frame, and a partial one is
+         * discarded by the receiver's CRC. */
         ssize_t w = write(s->fd, buf, (size_t)n);
-        (void)w;   /* best-effort; a stalled radio must not wedge the reader */
+        (void)w;
     }
 }
 

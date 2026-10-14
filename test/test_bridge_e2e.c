@@ -46,6 +46,7 @@
 #endif
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -598,6 +599,64 @@ static void test_mavlink_udp_frames(void)
     end(fb);
 }
 
+/*
+ * A serial link nobody drains must not stall the bridge.  The serial sink is a
+ * pty whose other end is never read, so it fills in under a second at 1 kHz;
+ * the UDP sink beside it has to keep receiving after that.
+ */
+static void test_mavlink_serial_does_not_block(void)
+{
+    begin("test_mavlink_serial_does_not_block");
+    int fb = g_fail;
+
+    int pty = posix_openpt(O_RDWR | O_NOCTTY);
+    EXPECT(pty >= 0 && grantpt(pty) == 0 && unlockpt(pty) == 0, "a pty opens");
+    const char *tty = pty >= 0 ? ptsname(pty) : NULL;
+    if (!tty) { end(fb); return; }
+
+    fakestream_t fs;
+    EXPECT(fs_start(&fs, MV_SOCK, 200) == 0, "fake stream started");
+    int port = 0;
+    int sink = udp_bind_ephemeral(&port);
+    write_conf(MV_CONF,
+               "[imud-mavlink]\n"
+               "enabled = true\n"
+               "socket = \"%s\"\n"
+               "rate_hz = 1000\n"
+               "send_attitude = true\n"
+               "send_attitude_quaternion = true\n"
+               "udp_enabled = true\n"
+               "udp_addr = \"127.0.0.1\"\n"
+               "udp_port = %d\n"
+               "serial_enabled = true\n"
+               "serial_device = \"%s\"\n"
+               "serial_baud = 115200\n"
+               "[logging]\nlevel = \"error\"\n",
+               MV_SOCK, port, tty);
+
+    bridge_run_t r;
+    bridge_start(&r, mavlink_main_entry, MV_CONF);
+    char buf[512];
+    EXPECT(udp_recv(sink, buf, sizeof buf) > 0, "frames arrive at first");
+
+    /* Two seconds is twice what the pty holds at this rate. */
+    usleep(2000 * 1000);
+    while (recv(sink, buf, sizeof buf, MSG_DONTWAIT) > 0) {}
+    EXPECT(udp_recv(sink, buf, sizeof buf) > 0,
+           "and keep arriving once the serial link is full");
+    char probe;
+    EXPECT(read(pty, &probe, 1) == 1, "the serial link did fill");
+
+    /* Hanging up the pty frees a writer that did block, so a regression
+     * fails here rather than hanging the suite. */
+    close(pty);
+    bridge_finish(&r);
+    close(sink);
+    fs_stop(&fs);
+    unlink(MV_CONF);
+    end(fb);
+}
+
 /* MAVLink v2 header: STX, len, incompat, compat, seq, sysid, compid, msgid[3];
  * the payload starts at byte 10. */
 #define MV2_PAYLOAD 10
@@ -1037,6 +1096,7 @@ int main(void)
     test_influx_enables_are_restart_scoped();
     test_influx_http_post();
     test_mavlink_udp_frames();
+    test_mavlink_serial_does_not_block();
     test_mavlink_payload_fields();
     test_mavlink_tcp_listener();
     test_prometheus_scrape();
