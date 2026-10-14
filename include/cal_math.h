@@ -189,7 +189,7 @@ typedef struct {
     double half[3];           /* half-extent per body axis after centring, µT */
     double S2[2][2];          /* horizontal soft-iron block, body axes */
     double si[3];             /* diagonal soft iron, body axes */
-    bool   ellipse_ok;        /* S2 came from the ellipse fit; otherwise si */
+    bool   ellipse_ok;        /* S2 is a fitted 2-D block; otherwise si */
     bool   level;             /* a level swing: circle fit, and no vertical
                                * hard iron taken from it */
     double vertical;          /* mean body-vertical reading, µT, uncorrected */
@@ -217,7 +217,8 @@ typedef struct {
  *
  * A level swing — the one a vessel can do — gets a circle fit in the
  * horizontal plane, and no vertical hard iron: see CAL_LEVEL_MAX_SPAN.  One
- * that leaves level enough to measure the vertical gets the sphere.
+ * that leaves level enough to measure the vertical gets the sphere, and its
+ * horizontal soft iron is fitted against that sphere.
  *
  * Returns 0, or -1 when the samples do not determine a fit.
  */

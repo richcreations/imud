@@ -219,6 +219,38 @@ static int circle_fit(const double (*b)[3], int n, double c[2], double *radius)
     return 0;
 }
 
+/*
+ * The horizontal soft-iron block of a swing that is not level, fitted against
+ * the sphere of centre c and radius R: every sample's horizontal part must
+ * satisfy |S2·d_xy|² = R² − (sz·d_z)², however the vessel heeled.  Least
+ * squares on P = S2ᵀS2, then S2 = √P.  0, or -1 when P is not positive
+ * definite.
+ */
+static int softiron_on_sphere(const double (*b)[3], int n, const double c[3],
+                              double R, double sz, double S2[2][2])
+{
+    double A[4][4] = { {0} }, rhs[4] = { 0 }, p[4];
+    for (int i = 0; i < n; i++) {
+        double x = b[i][0] - c[0], y = b[i][1] - c[1], z = sz * (b[i][2] - c[2]);
+        double r[3] = { x*x, 2.0*x*y, y*y }, t = R*R - z*z;
+        for (int j = 0; j < 3; j++) {
+            rhs[j] += r[j] * t;
+            for (int k = 0; k < 3; k++) A[j][k] += r[j] * r[k];
+        }
+    }
+    A[3][3] = 1.0;                       /* identity pad row, as ellipse_fit */
+    if (gauss4(A, rhs, p) < 0) return -1;
+
+    double det = p[0]*p[2] - p[1]*p[1];
+    if (p[0] <= 0.0 || det <= 0.0) return -1;
+    /* √P of a 2×2 positive-definite P is (P + √det·I) / √(tr P + 2√det). */
+    double sd = sqrt(det), t = sqrt(p[0] + p[2] + 2.0 * sd);
+    S2[0][0] = (p[0] + sd) / t;
+    S2[0][1] = S2[1][0] = p[1] / t;
+    S2[1][1] = (p[2] + sd) / t;
+    return 0;
+}
+
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
                 cal_mag_fit_t *out)
 {
@@ -275,26 +307,30 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
         ellipse_add(&eacc, (float)dx, (float)dy);
         extent_add(&xacc, dx, dy, dz);
     }
-    free(b);
     out->rms = sqrt(ss / n);
-    if (extent_half(&xacc, out->half) < 0) return -1;
-
-    /*
-     * Horizontal soft iron: a 2-D ellipse fit on the centred horizontal
-     * samples.  Unlike the per-axis half-range it recovers the CROSS term — a
-     * distortion ellipse turned away from the axes, which is the common case
-     * and shows as a heading error that varies round the swing.  The radius
-     * it is scaled to is the mean horizontal half-extent: the sphere's
-     * includes the vertical field, and would over-scale.
-     */
-    double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
-    double r_h = 0.5 * (out->half[0] + out->half[1]);
-    out->ellipse_ok = (ellipse_fit(&eacc, r_h, S2) == 0);
-    memcpy(out->S2, S2, sizeof out->S2);
+    if (extent_half(&xacc, out->half) < 0) { free(b); return -1; }
 
     /* The diagonal fallback, and the vertical axis either way: only an axis
      * the swing swept is scaled — see CAL_SI_MIN_SPAN. */
     cal_softiron_diag(out->half, out->radius, out->si);
+
+    /*
+     * Horizontal soft iron as a 2-D block.  Unlike the per-axis half-range it
+     * recovers the CROSS term — a distortion ellipse turned away from the
+     * axes, which is the common case and shows as a heading error that varies
+     * round the swing.  A level swing gets an ellipse through the centred
+     * horizontal samples, scaled to their mean half-extent.  A heeled swing
+     * moves vertical field into the body's horizontal axes, which an ellipse
+     * through them takes for soft iron, so it is fitted against the sphere.
+     */
+    double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
+    double r_h = 0.5 * (out->half[0] + out->half[1]);
+    out->ellipse_ok = out->level
+        ? ellipse_fit(&eacc, r_h, S2) == 0
+        : softiron_on_sphere((const double (*)[3])b, n, c, out->radius,
+                             out->si[2], S2) == 0;
+    free(b);
+    memcpy(out->S2, S2, sizeof out->S2);
 
     double S[3][3] = { {out->si[0], 0, 0}, {0, out->si[1], 0}, {0, 0, out->si[2]} };
     if (out->ellipse_ok) {

@@ -739,6 +739,87 @@ static void test_mag_fit_heeled_swing_measures_the_vertical(void)
     end(fb);
 }
 
+/*
+ * Heel moves vertical field into the body's horizontal axes, and an ellipse
+ * through them takes that for soft iron: in a steep field, ±12° of heel made
+ * a round field's correction 1.54 × 0.80, and heading was out by up to 18° on
+ * a level keel.
+ */
+/* Worst heading error, in degrees, of a calibrated sample levelled with the
+ * true heel: every 5° of heading at `roll_deg` of heel.  The field reaches the
+ * sensor as D·b + hard. */
+static double worst_heading_deg(const cal_mag_fit_t *f, const double D[3][3],
+                                const double hard[3], double H, double Z,
+                                double roll_deg)
+{
+    double roll = roll_deg * M_PI / 180.0, worst = 0.0;
+    for (int deg = 0; deg < 360; deg += 5) {
+        double psi = deg * M_PI / 180.0, ly = -H * sin(psi);
+        double t[3] = { H * cos(psi), ly * cos(roll) + Z * sin(roll),
+                        -ly * sin(roll) + Z * cos(roll) };
+        float raw[3];
+        for (int i = 0; i < 3; i++)
+            raw[i] = (float)(D[i][0]*t[0] + D[i][1]*t[1] + D[i][2]*t[2] + hard[i]);
+        double b[3];
+        apply_fit(f, NULL, raw, b);
+        double y_level = b[1] * cos(roll) - b[2] * sin(roll);
+        double e = fabs(remainder(atan2(-y_level, b[0]) - psi, 2.0 * M_PI));
+        if (e > worst) worst = e;
+    }
+    return worst * 180.0 / M_PI;
+}
+
+static void test_mag_fit_heeled_swing_keeps_the_field_round(void)
+{
+    begin("test_mag_fit_heeled_swing_keeps_the_field_round");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    const double H = 12.0, Z = 55.0, hard[3] = { 6.0, -4.0, 8.0 };
+    make_swing(s, N, NULL, H, Z, hard, 12.0, 0.3);
+
+    cal_mag_fit_t f;
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+    EXPECT(!f.level && f.ellipse_ok, "a heeled swing, with a 2-D soft-iron block");
+    EXPECT_NEAR_D(f.S2[0][0], 1.0, 0.02, "a round field needs no soft-iron scale in X");
+    EXPECT_NEAR_D(f.S2[1][1], 1.0, 0.02, "nor in Y");
+    EXPECT_NEAR_D(f.S2[0][1], 0.0, 0.02, "nor a cross term");
+    EXPECT(worst_heading_deg(&f, I3, hard, H, Z, 0.0) < 1.0 &&
+           worst_heading_deg(&f, I3, hard, H, Z, 10.0) < 1.5,
+           "heading within 1° level and 1.5° at 10° of heel");
+    end(fb);
+}
+
+/* The same fit has to find soft iron that is there: X 10% long, axes turned. */
+static void test_mag_fit_heeled_swing_finds_the_soft_iron(void)
+{
+    begin("test_mag_fit_heeled_swing_finds_the_soft_iron");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    static const double D[3][3] = { {1.10, 0.05, 0}, {0.05, 0.95, 0}, {0, 0, 1} };
+    const double H = 22.0, Z = 42.0, hard[3] = { 6.0, -4.0, 8.0 }, none[3] = { 0 };
+    make_swing(s, N, NULL, H, Z, none, 12.0, 0.3);
+    for (int i = 0; i < N; i++) {
+        double m[3] = { s[i][0], s[i][1], s[i][2] };
+        for (int k = 0; k < 3; k++)
+            s[i][k] = (float)(D[k][0]*m[0] + D[k][1]*m[1] + D[k][2]*m[2] + hard[k]);
+    }
+
+    cal_mag_fit_t f;
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0, "the fit succeeds");
+    EXPECT(!f.level && f.ellipse_ok, "a heeled swing, with a 2-D soft-iron block");
+    /* Measured 0.99° and 2.37°; the ellipse through the heeled samples gave
+     * 6.8° and 7.8°. */
+    EXPECT(worst_heading_deg(&f, D, hard, H, Z, 0.0) < 1.5 &&
+           worst_heading_deg(&f, D, hard, H, Z, 10.0) < 3.0,
+           "heading within 1.5° level and 3° at 10° of heel");
+    end(fb);
+}
+
 /* A full tumble on a flat board is the case the sphere fit is for, and the
  * mount handling must not have disturbed it. */
 /*
@@ -1194,6 +1275,8 @@ int main(void)
     test_mag_fit_follows_the_mount();
     test_mag_fit_level_swing_leaves_the_vertical();
     test_mag_fit_heeled_swing_measures_the_vertical();
+    test_mag_fit_heeled_swing_keeps_the_field_round();
+    test_mag_fit_heeled_swing_finds_the_soft_iron();
     test_mag_fit_tumble();
     test_mag_keep_thins_evenly();
     test_allan_constant_signal();
