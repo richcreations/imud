@@ -120,7 +120,7 @@ static bool flip_byte(const char *path, long off, unsigned char mask)
 {
     FILE *f = fopen(path, "r+b");
     if (!f) return false;
-    unsigned char c;
+    unsigned char c = 0;
     bool ok = fseek(f, off, SEEK_SET) == 0 && fread(&c, 1, 1, f) == 1;
     c ^= mask;
     ok = ok && fseek(f, off, SEEK_SET) == 0 && fwrite(&c, 1, 1, f) == 1;
@@ -1014,6 +1014,11 @@ int main(void)
     test_playback_driver();
     test_playback_replays_recorded_bursts();
     test_end_to_end_replay();
+
+    /* Don't leave a directory per run in /tmp. */
+    char cmd[sizeof g_dir + 16];
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
+    if (system(cmd) != 0) { /* best effort */ }
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

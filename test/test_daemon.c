@@ -1357,6 +1357,14 @@ static void make_home_dir(void)
     mkdir(T_HOME "/.config/imud", 0700);
 }
 
+/* And its undoing, once the file in it is gone. */
+static void remove_home_dir(void)
+{
+    rmdir(T_HOME "/.config/imud");
+    rmdir(T_HOME "/.config");
+    rmdir(T_HOME);
+}
+
 /*
  * Reload seeded from the RUNNING config, so a key deleted from the file kept
  * its old value while the daemon logged "config reloaded" — the operator
@@ -1555,6 +1563,7 @@ static void test_daemon_reload_follows_the_home_fallback(void)
     else            unsetenv("HOME");
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_HOME_CONF);
+    remove_home_dir();
     unlink(T_STREAM_SOCK);
     end(fb);
 }
@@ -1614,6 +1623,7 @@ static void test_daemon_explicit_config_does_not_fall_back(void)
     else            unsetenv("HOME");
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     unlink(T_HOME_CONF);
+    remove_home_dir();
     unlink(T_STREAM_SOCK);
     end(fb);
 }

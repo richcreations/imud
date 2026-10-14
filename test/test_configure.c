@@ -1600,6 +1600,13 @@ int main(void)
     test_uninstall_stops_the_service();
     test_config_mk_is_valid_make();
 
+    /* Don't leave a directory per run in /tmp.  rm is on the real PATH, not
+     * the stub one the cases run under. */
+    char cmd[sizeof g_work + 16];
+    setenv("PATH", g_real_path, 1);
+    snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_work);
+    if (system(cmd) != 0) { /* best effort */ }
+
     printf("\n%d passed, %d failed\n", g_checks - g_fail, g_fail);
     return g_fail ? 1 : 0;
 }
