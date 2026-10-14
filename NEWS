@@ -83,6 +83,8 @@ Fixed:
   without a word at 16000 samples, which is 16 s at a 1 kHz magnetometer.
 * A serial link that stops draining no longer stalls imud-mavlink: its frames
   are dropped and the UDP and TCP outputs carry on.
+* A label, measurement name, topic prefix or client id with a space, quote or
+  comma in it is escaped, so the bridges' output stays valid.
 
 
 1.11.1

@@ -97,6 +97,23 @@ static void test_core_paths_and_units(void)
     end(fb);
 }
 
+/* A configured label lands inside a JSON string, so its quotes, backslashes
+ * and control characters are escaped rather than ending the string. */
+static void test_label_is_escaped(void)
+{
+    begin("test_label_is_escaped");
+    int fb = g_fail;
+
+    imud_data_t d = make_data();
+    char buf[1024];
+    EXPECT(sk_build_delta(buf, sizeof buf, &d, "aft \"nav\"\\\t1", false) > 0,
+           "encode succeeds");
+    EXPECT(strstr(buf, "\"label\":\"aft \\\"nav\\\"\\\\\\u00091\"") != NULL,
+           "quote, backslash and tab are escaped");
+    EXPECT(braces_balanced(buf), "and the delta still balances");
+    end(fb);
+}
+
 static void test_attitude_object_and_sign(void)
 {
     begin("test_attitude_object_and_sign");
@@ -313,6 +330,7 @@ int main(void)
     test_heading_withheld_without_mag();
     test_heading_published_when_uncal();
     test_buffer_too_small();
+    test_label_is_escaped();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

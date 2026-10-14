@@ -150,7 +150,7 @@ int main(int argc, char **argv)
     memset(&ctx, 0, sizeof ctx);
     snprintf(ctx.prefix,    sizeof ctx.prefix,    "%s", cfg.mqtt_topic_prefix);
     snprintf(ctx.ha_prefix, sizeof ctx.ha_prefix, "%s", cfg.mqtt_ha_prefix);
-    snprintf(ctx.node_id,   sizeof ctx.node_id,   "%s", cfg.mqtt_client_id);
+    mqtt_node_id(ctx.node_id, sizeof ctx.node_id, cfg.mqtt_client_id);
     snprintf(ctx.avail_topic, sizeof ctx.avail_topic, "%s/status/online",
              cfg.mqtt_topic_prefix);
     ctx.ha_discovery = cfg.mqtt_ha_discovery;

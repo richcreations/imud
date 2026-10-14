@@ -14,6 +14,7 @@
  */
 
 #include "mqtt_publish.h"
+#include "json_esc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -200,6 +201,9 @@ int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
     if (expire_after_s > 0)
         snprintf(expire, sizeof expire, "\"exp_aft\":%d,", expire_after_s);
 
+    char pre[JSON_ESC_SIZE(64)];
+    json_esc(pre, sizeof pre, prefix);
+
     int n = 0;
     for (int i = 0; i < NFIELDS && n < max; i++) {
         /* Advertise every field except heave when heave is off. Declination
@@ -214,8 +218,8 @@ int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
             "\"unit_of_meas\":\"%s\",%s\"avty_t\":\"%s/status/online\","
             "\"dev\":{\"ids\":[\"imud_%s\"],\"name\":\"imud\","
             "\"mf\":\"imud\",\"mdl\":\"IMU daemon\"}}",
-            FIELDS[i].name, node_id, FIELDS[i].oid, prefix, FIELDS[i].sub,
-            unit_str(FIELDS[i].unit, deg), expire, prefix, node_id);
+            FIELDS[i].name, node_id, FIELDS[i].oid, pre, FIELDS[i].sub,
+            unit_str(FIELDS[i].unit, deg), expire, pre, node_id);
         n++;
     }
 
@@ -230,8 +234,22 @@ int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
             "%s\"avty_t\":\"%s/status/online\","
             "\"dev\":{\"ids\":[\"imud_%s\"],\"name\":\"imud\","
             "\"mf\":\"imud\",\"mdl\":\"IMU daemon\"}}",
-            node_id, prefix, expire, prefix, node_id);
+            node_id, pre, expire, pre, node_id);
         n++;
     }
     return n;
+}
+
+void mqtt_node_id(char *out, size_t sz, const char *client_id)
+{
+    if (!sz) return;
+    if (!client_id || !*client_id) client_id = "imud";
+    size_t o = 0;
+    for (; *client_id && o + 1 < sz; client_id++) {
+        char c = *client_id;
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-';
+        out[o++] = ok ? c : '_';
+    }
+    out[o] = '\0';
 }

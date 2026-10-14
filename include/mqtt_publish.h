@@ -22,13 +22,14 @@
 #define IMUD_MQTT_PUBLISH_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "../lib/imud.h"  /* imud_data_t + IMUD_FLAG_* */
 
 /* One MQTT message. payload is sized for the largest case (a discovery config). */
 typedef struct {
     char topic[128];
-    char payload[384];
+    char payload[1280];   /* a discovery config with the prefix escaped twice */
 } mqtt_msg_t;
 
 /*
@@ -76,9 +77,19 @@ int mqtt_build_clears(mqtt_msg_t *out, int max, mqtt_retained_t *r,
  * ignores an empty payload, so clearing a retained topic does not stop it
  * showing the last value — a sensor that marks itself unavailable when its
  * updates stop is what does.  0 leaves the key out.
+ *
+ * `node_id` must already be one mqtt_node_id() made; `prefix` is escaped
+ * where it lands inside the JSON.
  */
 int mqtt_build_discovery(mqtt_msg_t *out, int max, const char *prefix,
                          const char *ha_prefix, const char *node_id,
                          bool emit_heave, bool deg, int expire_after_s);
+
+/*
+ * The Home Assistant node id for a client id: Home Assistant takes only
+ * [A-Za-z0-9_-] in a discovery topic, so anything else becomes '_'.  An empty
+ * client id gives "imud".
+ */
+void mqtt_node_id(char *out, size_t sz, const char *client_id);
 
 #endif /* IMUD_MQTT_PUBLISH_H */

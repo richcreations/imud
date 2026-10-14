@@ -267,6 +267,34 @@ static void test_prefix_and_count_cap(void)
     end(fb);
 }
 
+/*
+ * The topic prefix lands inside JSON strings in a discovery config, and the
+ * client id in Home Assistant's discovery topic, which takes [A-Za-z0-9_-].
+ */
+static void test_discovery_names_are_safe(void)
+{
+    begin("test_discovery_names_are_safe");
+    int fb = g_fail;
+
+    char node[64];
+    mqtt_node_id(node, sizeof node, "aft nav/1.b");
+    EXPECT(strcmp(node, "aft_nav_1_b") == 0, "the node id keeps only what HA takes");
+    mqtt_node_id(node, sizeof node, "");
+    EXPECT(strcmp(node, "imud") == 0, "an empty client id is imud");
+
+    mqtt_msg_t m[24];
+    int n = mqtt_build_discovery(m, 24, "boat \"one\"", "homeassistant", "imud",
+                                 false, true, 0);
+    const mqtt_msg_t *d = find_topic(m, n, "homeassistant/sensor/imud_roll/config");
+    EXPECT(d && strstr(d->payload,
+                       "\"stat_t\":\"boat \\\"one\\\"/attitude/roll\"") != NULL,
+           "the prefix is escaped in the state topic");
+    EXPECT(d && strstr(d->payload,
+                       "\"avty_t\":\"boat \\\"one\\\"/status/online\"") != NULL,
+           "and in the availability topic");
+    end(fb);
+}
+
 static void test_discovery(void)
 {
     begin("test_discovery");
@@ -470,6 +498,7 @@ int main(void)
     test_withheld_topics_are_cleared();
     test_discovery_expires();
     test_discovery();
+    test_discovery_names_are_safe();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

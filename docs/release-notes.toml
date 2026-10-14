@@ -135,6 +135,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud-mavlink"]
   text     = "A serial link that stops draining no longer stalls imud-mavlink: its frames are dropped and the UDP and TCP outputs carry on."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud-signalk", "imud-influxdb", "imud-mqtt"]
+  text     = "A label, measurement name, topic prefix or client id with a space, quote or comma in it is escaped, so the bridges' output stays valid."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

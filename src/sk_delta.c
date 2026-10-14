@@ -27,6 +27,7 @@
  */
 
 #include "sk_delta.h"
+#include "json_esc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -71,7 +72,9 @@ int sk_build_delta(char *buf, size_t sz, const imud_data_t *d,
 
     int pos = 0;
 
-    APPEND("{\"updates\":[{\"source\":{\"label\":\"%s\"},", source_label);
+    char label[JSON_ESC_SIZE(64)];
+    APPEND("{\"updates\":[{\"source\":{\"label\":\"%s\"},",
+           json_esc(label, sizeof label, source_label));
 
     /* A sample with no timestamp gets no "timestamp": the property is
      * optional, and the server fills it in on receipt. */

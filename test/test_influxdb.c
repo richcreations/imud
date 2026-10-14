@@ -75,6 +75,27 @@ static imud_data_t make_data(void)
     return d;
 }
 
+/*
+ * Line protocol separates with commas, equals signs and spaces, so a name
+ * holding one is escaped with a backslash; a backslash is doubled, so that a
+ * name ending in one cannot escape the separator after it.
+ */
+static void test_names_are_escaped(void)
+{
+    begin("test_names_are_escaped");
+    int fb = g_fail;
+
+    imud_data_t d = make_data();
+    char buf[1024];
+    EXPECT(influx_build_line(buf, sizeof buf, &d, "imu data,x", "aft deck=1\\",
+                             false, true, INFLUX_DETAIL_HEALTH) > 0,
+           "encode succeeds");
+    const char *want = "imu\\ data\\,x,source=aft\\ deck\\=1\\\\ ";
+    EXPECT(strncmp(buf, want, strlen(want)) == 0,
+           "measurement and tag escaped as line protocol asks");
+    end(fb);
+}
+
 static void test_structure_and_deg(void)
 {
     begin("test_structure_and_deg");
@@ -474,6 +495,7 @@ int main(void)
     test_detail_levels_are_cumulative();
     test_detail_boundaries();
     test_buffer_too_small();
+    test_names_are_escaped();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

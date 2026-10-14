@@ -8,14 +8,30 @@
  * influx_line.c — InfluxDB line-protocol encoder (see influx_line.h)
  *
  * Attitude uses imud's native NED convention (roll + = starboard down, pitch +
- * = bow up); no sign is flipped. `measurement` and `source_label` are assumed
- * to be simple identifiers (no spaces/commas) — the defaults are.
+ * = bow up); no sign is flipped. `measurement` and `source_label` are escaped
+ * as line protocol asks, so any configured name survives.
  */
 
 #include "influx_line.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+
+/* Line protocol's escaping: a backslash before each character of `special`. */
+static const char *lp_esc(char *out, size_t sz, const char *s,
+                          const char *special)
+{
+    size_t o = 0;
+    for (; s && *s; s++) {
+        bool esc = strchr(special, *s) != NULL;
+        if (o + 1 + esc >= sz) break;
+        if (esc) out[o++] = '\\';
+        out[o++] = *s;
+    }
+    if (sz) out[o] = '\0';
+    return out;
+}
 
 #define RAD2DEG  57.29577951308232
 #define DEG2RAD  0.017453292519943295
@@ -63,8 +79,12 @@ int influx_build_line(char *buf, size_t sz, const imud_data_t *d,
     if (detail < INFLUX_DETAIL_ATTITUDE || detail > INFLUX_DETAIL_FULL)
         detail = INFLUX_DETAIL_HEALTH;
 
-    /* measurement + tag set, then a space before the field set */
-    APPEND("%s,source=%s ", measurement, source_label);
+    /* measurement + tag set, then a space before the field set.  A doubled
+     * backslash is a literal one, so a name ending in one cannot swallow the
+     * separator after it. */
+    char m[2 * 64 + 1], src[2 * 64 + 1];
+    APPEND("%s,source=%s ", lp_esc(m, sizeof m, measurement, ", \\"),
+           lp_esc(src, sizeof src, source_label, ",= \\"));
 
     /* quaternion (unitless), then Euler angles */
     APPEND("qw=%.6f,qx=%.6f,qy=%.6f,qz=%.6f",
