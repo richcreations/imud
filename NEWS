@@ -28,6 +28,11 @@ Changed:
   bridges read. spec.md gives the conversion to ROS's ENU.
   ACTION: Remove coord_frame = "ENU" from imud.conf and convert in the
   consumer.
+* $PASHR follows the Trimble/Applanix layout: UTC time first, true heading
+  with T (null without declination), heading accuracy and a numeric alignment
+  status. imud-mon reads the new layout.
+  ACTION: Update any consumer that parsed imud's previous $PASHR layout; its
+  fields have moved.
 
 Fixed:
 

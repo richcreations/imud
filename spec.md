@@ -710,29 +710,31 @@ it is published normally.
 **`$PASHR` — Attitude (primary)**
 
 Always emitted: roll, pitch and heave stay valid with no magnetometer at all.
+The layout is the Trimble/Applanix one.
 
 ```text
-$PASHR,HHH.H,M,RRR.R,PPP.P,0.0,ra.r,pa.p,0,A,,*hh<CR><LF>
+$PASHR,hhmmss.ss,HHH.HH,T,RRR.RR,PPP.PP,h.hh,ra.rrr,pa.ppp,ha.hhh,0,s*hh<CR><LF>
 
 Fields:
-  HHH.H   Magnetic heading (0–360°); null when the magnetometer is not fused
-  M       Always magnetic (PASHR carries magnetic heading regardless of declination)
-  RRR.R   Roll, degrees (+ = starboard down, i.e. a heel to starboard)
-  PPP.P   Pitch, degrees (+ = bow up)
-  h.hh    Heave, metres, positive up (band-passed vertical-accel double
-          integration; live when heave_tau_s > 0, else 0.0)
-  ra.r    Roll accuracy estimate, degrees (from MEKF covariance)
-  pa.p    Pitch accuracy estimate, degrees (from MEKF covariance)
-  0       GPS quality flag (0 = no GPS)
-  A       IMU status: A=valid
+  hhmmss.ss  UTC time of the sample; null when it had no timestamp
+  HHH.HH     True heading (0–360°); null unless the magnetometer is fused and
+             declination is known
+  T          Always true
+  RRR.RR     Roll, degrees (+ = starboard down, i.e. a heel to starboard)
+  PPP.PP     Pitch, degrees (+ = bow up)
+  h.hh       Heave, metres, positive up (band-passed vertical-accel double
+             integration; live when heave_tau_s > 0, else 0.00)
+  ra.rrr     Roll accuracy, degrees (from MEKF covariance)
+  pa.ppp     Pitch accuracy, degrees (from MEKF covariance)
+  ha.hhh     Heading accuracy, degrees; null with the heading
+  0          GNSS quality: 0, no fix aids the solution
+  s          Alignment status: 4 converged with a fused magnetometer,
+             3 not yet converged, 2 heading dead-reckoned
 
 Example:
-  $PASHR,214.7,M,-9.5,+3.1,0.0,0.3,0.3,0,A,,*hh<CR><LF>
-  $PASHR,,M,-9.5,+3.1,0.0,0.3,0.3,0,A,,*hh<CR><LF>       (heading not fused)
+  $PASHR,123456.78,229.20,T,-9.50,+3.10,+0.00,0.300,0.300,0.850,0,4*hh<CR><LF>
+  $PASHR,123456.78,,T,-9.50,+3.10,+0.00,0.300,0.300,,0,2*hh<CR><LF>   (no magnetometer)
 ```
-
-The `A` in the status field stays `A`: the IMU is healthy and roll and pitch
-are valid. It says nothing about heading.
 
 **`$HCHDM` — Magnetic Heading** *(emitted only when the magnetometer is fused)*
 

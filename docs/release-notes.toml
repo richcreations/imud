@@ -114,6 +114,12 @@ and a TAI offset it previously had no way to read."""
   text     = "Every output is NED, and coord_frame = \"ENU\" is refused: its quaternion and vectors were in different body frames, and it also changed the stream the bridges read. spec.md gives the conversion to ROS's ENU."
   action   = "Remove coord_frame = \"ENU\" from imud.conf and convert in the consumer."
 
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-utils"]
+  text     = "$PASHR follows the Trimble/Applanix layout: UTC time first, true heading with T (null without declination), heading accuracy and a numeric alignment status. imud-mon reads the new layout."
+  action   = "Update any consumer that parsed imud's previous $PASHR layout; its fields have moved."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

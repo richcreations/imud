@@ -124,8 +124,8 @@ static void print_snapshot(const mon_state_t *st,
 
     if (want_nmea) {
         if (st->have_nmea) {
-            /* A null $PASHR heading means imud is not fusing a magnetometer;
-             * pitch, roll and rate of turn are still good. */
+            /* No $HCHDM means imud is not fusing a magnetometer; pitch, roll
+             * and rate of turn are still good. */
             char hdg[16];
             if (st->nmea_has_hdg)
                 snprintf(hdg, sizeof hdg, "%6.1f°", st->nmea_hdg);

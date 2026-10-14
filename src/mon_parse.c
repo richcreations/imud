@@ -43,14 +43,15 @@ bool mon_nmea_get_field(const char *sentence, int field, float *out)
 }
 
 /*
- * PASHR layout: $PASHR,hdg,M,roll,pitch,...
- *   field 0 = heading, field 2 = roll, field 3 = pitch
+ * PASHR layout: $PASHR,time,true_hdg,T,roll,pitch,...
  *
- * The heading field is null when imud is not fusing a magnetometer, so the
- * two forms are matched separately rather than by field index: an index walk
- * would take the "junk" of a malformed sentence as 0.0 through strtof, where
- * both scans below reject it and the last good attitude stands.  Roll and
- * pitch are still valid in the null-heading form and must survive it.
+ * Time and heading may be null, so roll and pitch are read after the T flag
+ * rather than by field index, and only as a matched pair: an index walk would
+ * take the "junk" of a malformed sentence as 0.0 through strtof, where the
+ * scan below rejects it and the last good attitude stands.
+ *
+ * Magnetic heading comes from $HCHDM, which imud sends only while it is
+ * fusing a magnetometer, so its absence is what clears nmea_has_hdg.
  */
 void mon_parse_nmea(mon_state_t *st, const char *buf, size_t len)
 {
@@ -59,19 +60,25 @@ void mon_parse_nmea(mon_state_t *st, const char *buf, size_t len)
     st->nmea_raw[len] = '\0';
     st->have_nmea = true;
     st->nmea_has_true_hdg = false;   /* cleared each burst; set below if $HCHDT present */
+    st->nmea_has_hdg      = false;   /* the same, for $HCHDM */
 
     const char *pas = strstr(st->nmea_raw, "$PASHR,");
     if (pas) {
-        float hdg = 0, roll = 0, pitch = 0;
-        if (sscanf(pas + 7, "%f,M,%f,%f", &hdg, &roll, &pitch) == 3) {
-            st->nmea_hdg     = hdg;
-            st->nmea_roll    = roll;
-            st->nmea_pitch   = pitch;
+        const char *t = strchr(pas + 7, ',');        /* end of the time field */
+        if (t) t = strchr(t + 1, ',');                /* end of the heading */
+        float roll = 0, pitch = 0;
+        if (t && sscanf(t + 1, "T,%f,%f", &roll, &pitch) == 2) {
+            st->nmea_roll  = roll;
+            st->nmea_pitch = pitch;
+        }
+    }
+
+    const char *hdm = strstr(st->nmea_raw, "$HCHDM,");
+    if (hdm) {
+        float h = 0;
+        if (mon_nmea_get_field(hdm, 0, &h)) {
+            st->nmea_hdg     = h;
             st->nmea_has_hdg = true;
-        } else if (sscanf(pas + 7, ",M,%f,%f", &roll, &pitch) == 2) {
-            st->nmea_roll    = roll;
-            st->nmea_pitch   = pitch;
-            st->nmea_has_hdg = false;
         }
     }
 

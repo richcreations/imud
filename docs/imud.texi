@@ -2833,7 +2833,8 @@ Sentence
  @tab Contents
 @item 
 @code{$PASHR}
- @tab Roll, pitch, heading, @strong{heave}, accuracy flags.
+ @tab Time, true heading, roll, pitch, @strong{heave}, their accuracies
+and an alignment status, in the Trimble/Applanix layout.
 @item 
 @code{$TIROT}
  @tab Rate of turn (deg/min).

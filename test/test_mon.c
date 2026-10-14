@@ -120,10 +120,11 @@ static void test_parse_nmea(void)
     int fb = g_fail;
     mon_state_t st;
 
-    /* A realistic burst: all three sentences imud-mon looks for, in one
-     * datagram, mixed in with one it ignores. */
+    /* A realistic burst: every sentence imud-mon looks for, in one datagram,
+     * mixed in with one it ignores. */
     const char *burst =
-        "$PASHR,123.4,M,-2.50,1.25,0.00,,,,,0*00\r\n"
+        "$PASHR,123456.78,138.40,T,-2.50,+1.25,+0.00,0.100,0.100,0.200,0,4*00\r\n"
+        "$HCHDM,123.4,M*00\r\n"
         "$HCHDG,123.4,,,,*00\r\n"
         "$TIROT,15.0,A*00\r\n"
         "$HCHDT,138.4,T*00\r\n";
@@ -131,20 +132,23 @@ static void test_parse_nmea(void)
     memset(&st, 0, sizeof st);
     mon_parse_nmea(&st, burst, strlen(burst));
     EXPECT(st.have_nmea, "have_nmea set");
-    EXPECT_NEAR(st.nmea_hdg,   123.4f, 1e-3, "PASHR heading");
-    EXPECT_NEAR(st.nmea_roll,   -2.50f, 1e-3, "PASHR roll (field 2)");
-    EXPECT_NEAR(st.nmea_pitch,   1.25f, 1e-3, "PASHR pitch (field 3)");
+    EXPECT_NEAR(st.nmea_hdg,   123.4f, 1e-3, "HCHDM magnetic heading");
+    EXPECT(st.nmea_has_hdg, "HCHDM present → heading valid");
+    EXPECT_NEAR(st.nmea_roll,   -2.50f, 1e-3, "PASHR roll (after T)");
+    EXPECT_NEAR(st.nmea_pitch,   1.25f, 1e-3, "PASHR pitch (after T)");
     EXPECT_NEAR(st.nmea_rot,    15.0f, 1e-3, "TIROT rate of turn");
     EXPECT(st.nmea_has_true_hdg, "HCHDT present → true heading valid");
     EXPECT_NEAR(st.nmea_true_hdg, 138.4f, 1e-3, "HCHDT true heading");
 
-    /* nmea_has_true_hdg is the only field cleared per burst: when declination
-     * stops being available the daemon stops sending $HCHDT, and imud-mon must
-     * stop showing a true heading rather than freezing the last one. */
-    const char *no_hdt = "$PASHR,200.0,M,0.00,0.00,0.00,,,,,0*00\r\n";
+    /* When declination stops being available the daemon stops sending $HCHDT,
+     * and imud-mon must stop showing a true heading rather than freezing the
+     * last one. */
+    const char *no_hdt =
+        "$PASHR,123457.78,,T,+1.50,-0.75,+0.00,0.100,0.100,,0,4*00\r\n"
+        "$HCHDM,200.0,M*00\r\n";
     mon_parse_nmea(&st, no_hdt, strlen(no_hdt));
     EXPECT(!st.nmea_has_true_hdg, "HCHDT absent → true heading goes invalid");
-    EXPECT_NEAR(st.nmea_hdg, 200.0f, 1e-3, "new PASHR heading applied");
+    EXPECT_NEAR(st.nmea_hdg, 200.0f, 1e-3, "new HCHDM heading applied");
     /* …while the others deliberately persist. */
     EXPECT_NEAR(st.nmea_rot, 15.0f, 1e-3, "TIROT persists across a burst");
 
@@ -152,15 +156,17 @@ static void test_parse_nmea(void)
      * writing partial values. */
     const char *bad = "$PASHR,junk\r\n";
     mon_parse_nmea(&st, bad, strlen(bad));
-    EXPECT_NEAR(st.nmea_hdg, 200.0f, 1e-3, "malformed PASHR keeps last heading");
-    EXPECT(st.nmea_has_hdg, "malformed PASHR does not clear the heading flag");
+    EXPECT_NEAR(st.nmea_roll,   1.50f, 1e-3, "malformed PASHR keeps last roll");
+    EXPECT_NEAR(st.nmea_pitch, -0.75f, 1e-3, "malformed PASHR keeps last pitch");
 
-    /* imud nulls the $PASHR heading field when no magnetometer is being fused.
-     * Roll and pitch are still good and must survive it; the heading must be
-     * marked absent rather than read as 0.0 or frozen at its last value. */
-    const char *nulled = "$PASHR,,M,-7.50,2.25,0.00,,,,,0*00\r\n";
+    /* imud withholds $HCHDM when no magnetometer is being fused, and nulls
+     * $PASHR's heading and time where it has none.  Roll and pitch are still
+     * good and must survive it; the heading must be marked absent rather than
+     * read as 0.0 or frozen at its last value. */
+    const char *nulled =
+        "$PASHR,,,T,-7.50,+2.25,+0.00,0.100,0.100,,0,2*00\r\n";
     mon_parse_nmea(&st, nulled, strlen(nulled));
-    EXPECT(!st.nmea_has_hdg, "null PASHR heading → nmea_has_hdg clear");
+    EXPECT(!st.nmea_has_hdg, "no HCHDM → nmea_has_hdg clear");
     EXPECT_NEAR(st.nmea_roll,  -7.50f, 1e-3, "null heading: roll still parsed");
     EXPECT_NEAR(st.nmea_pitch,  2.25f, 1e-3, "null heading: pitch still parsed");
 
@@ -171,11 +177,12 @@ static void test_parse_nmea(void)
 
     /* Sentence order must not matter. */
     const char *reordered =
-        "$HCHDT,10.0,T*00\r\n$TIROT,1.0,A*00\r\n"
-        "$PASHR,20.0,M,3.00,4.00,0.00,,,,,0*00\r\n";
+        "$HCHDT,10.0,T*00\r\n$TIROT,1.0,A*00\r\n$HCHDM,20.0,M*00\r\n"
+        "$PASHR,123456.78,10.00,T,+3.00,+4.00,+0.00,0.1,0.1,0.2,0,4*00\r\n";
     memset(&st, 0, sizeof st);
     mon_parse_nmea(&st, reordered, strlen(reordered));
     EXPECT_NEAR(st.nmea_hdg,      20.0f, 1e-3, "reordered: heading");
+    EXPECT_NEAR(st.nmea_roll,      3.0f, 1e-3, "reordered: roll");
     EXPECT_NEAR(st.nmea_rot,       1.0f, 1e-3, "reordered: rot");
     EXPECT_NEAR(st.nmea_true_hdg, 10.0f, 1e-3, "reordered: true heading");
 

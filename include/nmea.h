@@ -23,7 +23,7 @@
  * Encode one 10 Hz burst into buf.
  *
  * Sentences emitted (in order):
- *   $PASHR   — attitude (magnetic heading, roll, pitch, accuracy)
+ *   $PASHR   — attitude: time, true heading, roll, pitch, heave, accuracies
  *   $HCHDM   — magnetic heading
  *   $HCHDG   — heading + variation (variation filled when declination known)
  *   $HCHDT   — true heading (only when FLAG_DECLINATION_VALID is set)

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <time.h>
 #include "nmea.h"
 
 #ifndef M_PI
@@ -53,31 +54,51 @@ static int append_sentence(char *buf, size_t bufsz, int *pos, const char *conten
 /* ── Individual sentence builders ────────────────────────────────────────── */
 
 /*
- * $PASHR — proprietary attitude sentence (magnetic heading, always 'M').
- * roll_acc / pitch_acc from MEKF attitude covariance (cov[0], cov[4]).
+ * $PASHR — attitude, in the Trimble/Applanix layout:
  *
- * The sentence is always emitted, because roll, pitch and heave stay valid
- * with no magnetometer at all.  The heading field is left null when heading
- * is not earth-referenced: there is no status field that could say so, and a
- * null field is how NMEA spells "no data".
+ *   PASHR,hhmmss.ss,hhh.hh,T,roll,pitch,heave,roll_acc,pitch_acc,hdg_acc,gnss,status
+ *
+ * Always emitted, because roll, pitch and heave stay valid with no
+ * magnetometer at all.  Heading is TRUE, so it and its accuracy are null
+ * unless the magnetometer is fused and declination is known; time is null
+ * when the sample had none.  No GNSS fix aids the solution, so its quality
+ * is 0.  Status is the alignment code: 4 converged and earth-referenced, 3 not
+ * yet converged, 2 heading dead-reckoned.
  */
 static int build_pashr(char *buf, size_t bufsz, int *pos,
                        const fused_state_t *s, int hdg_referenced)
 {
-    float pitch_deg     = s->pitch * (float)(180.0 / M_PI);
-    float roll_deg      = s->roll  * (float)(180.0 / M_PI);
-    float roll_acc_deg  = sqrtf(s->cov[0]) * (float)(180.0 / M_PI);
-    float pitch_acc_deg = sqrtf(s->cov[4]) * (float)(180.0 / M_PI);
+    const float r2d = (float)(180.0 / M_PI);
 
-    char hdg[16];
-    if (hdg_referenced) snprintf(hdg, sizeof(hdg), "%05.1f", s->heading_deg);
-    else                hdg[0] = '\0';
+    char utc[16] = "";
+    time_t secs = (time_t)(s->ts_wall_ns / 1000000000ULL);
+    struct tm tm;
+    if (s->ts_wall_ns && gmtime_r(&secs, &tm))
+        snprintf(utc, sizeof utc, "%02d%02d%02d.%02u", tm.tm_hour, tm.tm_min,
+                 tm.tm_sec, (unsigned)(s->ts_wall_ns % 1000000000ULL / 10000000ULL));
 
-    char content[128];
+    char hdg[16] = "", hdg_acc[16] = "";
+    if (hdg_referenced && (s->flags & FLAG_DECLINATION_VALID)) {
+        snprintf(hdg, sizeof hdg, "%06.2f",
+                 fmodf(s->heading_deg + s->declination_deg + 360.0f, 360.0f));
+        /* The attitude variance about the vertical, d = R(q)ᵀ·down. */
+        const float *q = s->q;
+        float d[3] = { 2.0f*(q[1]*q[3] - q[0]*q[2]), 2.0f*(q[2]*q[3] + q[0]*q[1]),
+                       1.0f - 2.0f*(q[1]*q[1] + q[2]*q[2]) };
+        float var = 0.0f;
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) var += d[i] * s->cov[3*i + j] * d[j];
+        snprintf(hdg_acc, sizeof hdg_acc, "%.3f", sqrtf(fmaxf(var, 0.0f)) * r2d);
+    }
+
+    int status = !hdg_referenced ? 2
+               : (s->flags & FLAG_FUSION_CONVERGED) ? 4 : 3;
+
+    char content[160];
     snprintf(content, sizeof(content),
-             "PASHR,%s,M,%+06.1f,%+06.1f,%+.2f,%04.1f,%04.1f,0,A,,",
-             hdg, roll_deg, pitch_deg, s->heave_m,
-             roll_acc_deg, pitch_acc_deg);
+             "PASHR,%s,%s,T,%+.2f,%+.2f,%+.2f,%.3f,%.3f,%s,0,%d",
+             utc, hdg, s->roll * r2d, s->pitch * r2d, s->heave_m,
+             sqrtf(s->cov[0]) * r2d, sqrtf(s->cov[4]) * r2d, hdg_acc, status);
 
     return append_sentence(buf, bufsz, pos, content);
 }

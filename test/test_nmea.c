@@ -16,7 +16,9 @@
  *   - $HCHDT emitted with correct true heading when FLAG_DECLINATION_VALID set
  *   - $HCHDG emitted whenever the mag is fused; variation fields carry
  *     declination (E/W) when FLAG_DECLINATION_VALID is set, empty otherwise
- *   - PASHR T/M flag is always 'M' (magnetic heading)
+ *   - $PASHR in the Trimble/Applanix layout: UTC time, true heading with T
+ *     (null without declination), heading accuracy about the vertical, and a
+ *     numeric alignment status
  *   - Rate-of-turn sign preserved in $TIROT
  *   - Buffer-too-small returns -1
  *
@@ -215,7 +217,7 @@ static void test_pashr_heave_field(void)
     s.heave_m = 1.23f;
     nmea_encode(buf, sizeof(buf), &s);
 
-    const char *f = sentence_field(buf, "PASHR", 4);   /* hdg,M,roll,pitch,heave */
+    const char *f = sentence_field(buf, "PASHR", 5);   /* time,hdg,T,roll,pitch,heave */
     EXPECT(f != NULL, "$PASHR heave field present");
     EXPECT(f && strncmp(f, "+1.23", 5) == 0, "$PASHR heave = +1.23");
     end(fb);
@@ -328,18 +330,78 @@ static void test_crlf_termination(void)
     end(fb);
 }
 
-/* PASHR always shows 'M' (magnetic) — declination is left to consumers. */
-static void test_tm_flag_always_magnetic(void)
+/* The field after a $PASHR field, as a string, for exact comparisons. */
+static void pashr_field(const char *buf, int field, char *out, size_t sz)
 {
-    begin("test_tm_flag_always_magnetic");
-    int fb = g_fail;
+    const char *f = sentence_field(buf, "PASHR", field);
+    size_t n = 0;
+    while (f && f[n] && f[n] != ',' && f[n] != '*' && n + 1 < sz) n++;
+    if (f) memcpy(out, f, n);
+    out[f ? n : 0] = '\0';
+}
 
-    char buf[NMEA_BUF_MIN];
-    fused_state_t s = make_state(0, 0, 90.0f, 0);
+/*
+ * $PASHR is the Trimble/Applanix layout: time, TRUE heading with its T flag,
+ * roll, pitch, heave, three accuracies, GNSS quality and a numeric status.
+ */
+static void test_pashr_layout(void)
+{
+    begin("test_pashr_layout");
+    int fb = g_fail;
+    char buf[NMEA_BUF_MIN], f[32];
+
+    fused_state_t s = make_state(3.1f, -9.5f, 214.7f, 0);
+    s.q[0] = 1.0f;
+    s.cov[8] = powf(0.85f * (float)(M_PI / 180.0), 2.0f);
+    s.ts_wall_ns = 1792067696789000000ULL;      /* 2026-10-15 12:34:56.789 UTC */
     nmea_encode(buf, sizeof(buf), &s);
-    /* $PASHR field 1 (after heading) is T or M */
-    const char *f = sentence_field(buf, "PASHR", 1);
-    EXPECT(f && *f == 'M', "PASHR always shows M (magnetic only)");
+
+    const char *ps = strstr(buf, "$PASHR,");
+    int commas = 0;
+    for (const char *p = ps; p && *p && *p != '*'; p++) commas += (*p == ',');
+    EXPECT(commas == 11, "eleven fields after the sentence id");
+    pashr_field(buf, 0, f, sizeof f);
+    EXPECT(strcmp(f, "123456.78") == 0, "time is the sample's UTC time");
+    pashr_field(buf, 1, f, sizeof f);
+    EXPECT(f[0] == '\0', "no true heading without declination");
+    pashr_field(buf, 2, f, sizeof f);
+    EXPECT(strcmp(f, "T") == 0, "the heading flag is T");
+    pashr_field(buf, 3, f, sizeof f);
+    EXPECT(strcmp(f, "-9.50") == 0, "roll");
+    pashr_field(buf, 4, f, sizeof f);
+    EXPECT(strcmp(f, "+3.10") == 0, "pitch");
+    pashr_field(buf, 8, f, sizeof f);
+    EXPECT(f[0] == '\0', "no heading accuracy without a heading");
+    pashr_field(buf, 9, f, sizeof f);
+    EXPECT(strcmp(f, "0") == 0, "GNSS quality 0");
+    pashr_field(buf, 10, f, sizeof f);
+    EXPECT(strcmp(f, "4") == 0, "converged with a fused magnetometer is 4");
+
+    s.flags |= FLAG_DECLINATION_VALID;
+    s.declination_deg = 14.5f;
+    nmea_encode(buf, sizeof(buf), &s);
+    pashr_field(buf, 1, f, sizeof f);
+    EXPECT(strcmp(f, "229.20") == 0, "true heading is magnetic plus declination");
+    pashr_field(buf, 8, f, sizeof f);
+    EXPECT(strcmp(f, "0.850") == 0, "heading accuracy from the variance about the vertical");
+
+    /* On its side the vertical is body Y, so the accuracy is cov[4]'s. */
+    s.q[0] = s.q[1] = (float)M_SQRT1_2;
+    nmea_encode(buf, sizeof(buf), &s);
+    pashr_field(buf, 8, f, sizeof f);
+    EXPECT_NEAR(strtof(f, NULL), sqrtf(s.cov[4]) * (float)(180.0 / M_PI), 0.002,
+                "heading accuracy follows the vertical, not body Z");
+
+    s.flags &= (uint16_t)~FLAG_FUSION_CONVERGED;
+    nmea_encode(buf, sizeof(buf), &s);
+    pashr_field(buf, 10, f, sizeof f);
+    EXPECT(strcmp(f, "3") == 0, "not yet converged is 3");
+
+    s.ts_wall_ns = 0;
+    nmea_encode(buf, sizeof(buf), &s);
+    pashr_field(buf, 0, f, sizeof f);
+    EXPECT(f[0] == '\0', "no time when the sample had none");
+    EXPECT(verify_checksum(strstr(buf, "$PASHR,")), "and the checksum still holds");
     end(fb);
 }
 
@@ -405,12 +467,13 @@ static void test_nmea_heading_zero(void)
 
     char buf[NMEA_BUF_MIN];
     fused_state_t s = make_state(0, 0, 0.0f, 0);
+    s.flags |= FLAG_DECLINATION_VALID;          /* $PASHR's heading is true */
     int n = nmea_encode(buf, sizeof(buf), &s);
     EXPECT(n > 0, "encode succeeded at heading=0");
 
-    const char *f = sentence_field(buf, "PASHR", 0);
+    const char *f = sentence_field(buf, "PASHR", 1);
     EXPECT(f != NULL, "$PASHR heading field present");
-    EXPECT(f && strncmp(f, "000.0", 5) == 0, "heading=0.0 encodes as '000.0'");
+    EXPECT(f && strncmp(f, "000.00", 6) == 0, "heading=0.0 encodes as '000.00'");
 
     const char *fh = sentence_field(buf, "HCHDM", 0);
     EXPECT(fh != NULL, "$HCHDM heading field present");
@@ -426,9 +489,10 @@ static void test_nmea_heading_359_9(void)
 
     char buf[NMEA_BUF_MIN];
     fused_state_t s = make_state(0, 0, 359.9f, 0);
+    s.flags |= FLAG_DECLINATION_VALID;
     nmea_encode(buf, sizeof(buf), &s);
 
-    const char *f = sentence_field(buf, "PASHR", 0);
+    const char *f = sentence_field(buf, "PASHR", 1);
     EXPECT(f != NULL, "$PASHR heading field present");
     float hdg = f ? strtof(f, NULL) : 0.0f;
     EXPECT_NEAR(hdg, 359.9f, 0.05f, "heading=359.9 encoded correctly in $PASHR");
@@ -487,17 +551,20 @@ static void test_dead_reckoned_pashr_null_heading(void)
     s.heave_m = 1.23f;
     nmea_encode(buf, sizeof(buf), &s);
 
-    EXPECT(strstr(buf, "$PASHR,,M,") != NULL, "$PASHR heading field is null");
+    EXPECT(strstr(buf, "$PASHR,,,T,") != NULL, "$PASHR heading field is null");
 
-    const char *roll  = sentence_field(buf, "PASHR", 2);
-    const char *pitch = sentence_field(buf, "PASHR", 3);
-    const char *heave = sentence_field(buf, "PASHR", 4);
+    const char *roll  = sentence_field(buf, "PASHR", 3);
+    const char *pitch = sentence_field(buf, "PASHR", 4);
+    const char *heave = sentence_field(buf, "PASHR", 5);
     EXPECT(roll && pitch && heave, "$PASHR fields still addressable");
     if (roll && pitch && heave) {
         EXPECT_NEAR(strtof(roll,  NULL), -9.5f, 0.05, "roll survives null heading");
         EXPECT_NEAR(strtof(pitch, NULL),  3.1f, 0.05, "pitch survives null heading");
         EXPECT_NEAR(strtof(heave, NULL), 1.23f, 0.005, "heave survives null heading");
     }
+    char f[8];
+    pashr_field(buf, 10, f, sizeof f);
+    EXPECT(strcmp(f, "2") == 0, "a dead-reckoned heading is status 2");
     end(fb);
 }
 
@@ -519,18 +586,16 @@ static void test_uncal_mag_publishes_heading(void)
     EXPECT(has_sentence(buf, "HCHDM"), "$HCHDM emitted on an uncalibrated fuse");
     EXPECT(has_sentence(buf, "HCHDG"), "$HCHDG emitted on an uncalibrated fuse");
     EXPECT(count_sentences(buf) == 5, "5 sentences on an uncalibrated fuse");
-    EXPECT(strstr(buf, "$PASHR,,M,") == NULL, "$PASHR heading field is not null");
 
-    const char *h = sentence_field(buf, "PASHR", 0);
-    EXPECT(h != NULL, "$PASHR heading field present");
-    if (h) EXPECT_NEAR(strtof(h, NULL), 214.7f, 0.05, "$PASHR heading value");
-
-    /* And $HCHDT still follows the declination on top of that. */
+    /* And $HCHDT and $PASHR's true heading follow the declination on top. */
     s.flags |= FLAG_DECLINATION_VALID;
     s.declination_deg = 14.5f;
     nmea_encode(buf, sizeof(buf), &s);
     EXPECT(has_sentence(buf, "HCHDT"), "$HCHDT emitted on uncal fuse + declination");
     EXPECT(count_sentences(buf) == 6, "6 sentences on uncal fuse + declination");
+    const char *h = sentence_field(buf, "PASHR", 1);
+    EXPECT(h != NULL, "$PASHR heading field present");
+    if (h) EXPECT_NEAR(strtof(h, NULL), 229.2f, 0.05, "$PASHR true heading value");
     end(fb);
 }
 
@@ -564,7 +629,7 @@ int main(void)
     test_hchdg_variation_east();
     test_hchdg_variation_west();
     test_crlf_termination();
-    test_tm_flag_always_magnetic();
+    test_pashr_layout();
     test_rot_sign_positive();
     test_rot_sign_negative();
     test_iixdr_signs();

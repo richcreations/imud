@@ -1339,7 +1339,7 @@ Per burst at `nmea.rate_hz`:
 
 | Sentence | Contents |
 |---|---|
-| `$PASHR` | Roll, pitch, heading, **heave**, accuracy flags. |
+| `$PASHR` | Time, true heading, roll, pitch, **heave**, their accuracies and an alignment status, in the Trimble/Applanix layout. |
 | `$TIROT` | Rate of turn (deg/min). |
 | `$IIXDR` | Pitch and roll as transducer measurements. |
 | `$HCHDM` | Magnetic heading — **only** while the magnetometer is fused. |
