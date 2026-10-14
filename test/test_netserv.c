@@ -349,6 +349,24 @@ static void fill_until_refused(int fd)
     }
 }
 
+/* Read a client's stream until a ping arrives, broadcasting one every 10 ms:
+ * one sent while its buffer is full is dropped, and one that is not can land
+ * behind bytes still queued.  0, or -1 after 2 s without one. */
+static int read_until_ping(netserv_t *s, int fd)
+{
+    char tail[5] = { 0 }, c;
+    for (int i = 0; i < 200; i++) {
+        netserv_broadcast(s, "ping\n", 5);
+        usleep(10 * 1000);
+        while (recv(fd, &c, 1, MSG_DONTWAIT) == 1) {
+            memmove(tail, tail + 1, sizeof tail - 1);
+            tail[sizeof tail - 1] = c;
+            if (memcmp(tail, "ping\n", sizeof tail) == 0) return 0;
+        }
+    }
+    return -1;
+}
+
 /*
  * A client that stops reading is dropped once it has taken nothing for
  * NETSRV_STALL_NS — 300 ms in this build.  The limit runs from the last whole
@@ -388,13 +406,7 @@ static void test_stalled_client_dropped(void)
      * since it connected, then catches up. */
     send_bytes(&s, 20000);
     EXPECT(netserv_nclients(&s) == 1, "a reader that fell behind for a moment stays");
-    while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
-    usleep(20 * 1000);
-    while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
-    netserv_broadcast(&s, "ping\n", 5);
-    char ping[5];
-    EXPECT(read_exact(live, ping, sizeof ping) == 0 &&
-           memcmp(ping, "ping\n", 5) == 0, "and still receives");
+    EXPECT(read_until_ping(&s, live) == 0, "and still receives");
 
     ssize_t n;
     while ((n = read(stuck, sink, sizeof sink)) > 0) {}
