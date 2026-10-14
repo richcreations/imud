@@ -85,6 +85,9 @@ Fixed:
   are dropped and the UDP and TCP outputs carry on.
 * A label, measurement name, topic prefix or client id with a space, quote or
   comma in it is escaped, so the bridges' output stays valid.
+* A FIFO overflow found on a drain that delivered no samples is counted and
+  flagged. Those were missed, and on the MPU-925x family every overflow is
+  one.
 
 
 1.11.1

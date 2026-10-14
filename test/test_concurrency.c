@@ -472,9 +472,41 @@ static void test_open_refuses_unsupported_range(void)
     puts(g_fail == fb ? "OK" : "FAIL");
 }
 
+/* A FIFO overflow that delivered nothing still lost samples, so the reader
+ * counts it like any other. */
+static void test_empty_overflow_is_counted(void)
+{
+    printf("%-40s", "test_empty_overflow_is_counted");
+    int fb = g_fail;
+
+    imud_config_t cfg;
+    sim_cfg(&cfg);
+    imu_ctx_t *imu = NULL;
+    EXPECT(imu_ctx_open(&imu, &cfg, NULL) == 0, "imu_ctx_open (sim)");
+    if (!imu) { puts("FAIL"); return; }
+
+    sim_inject_overflow(3);
+    pthread_t ism;
+    pthread_create(&ism, NULL, ism_reader_thread, imu);
+
+    imu_stats_t st = {0};
+    for (int i = 0; i < 100; i++) {
+        imu_get_stats(imu, &st);
+        if (st.fifo_overflows >= 3) break;
+        usleep(10000);
+    }
+    EXPECT(st.fifo_overflows == 3, "three empty overflows, three counted");
+
+    imu_ctx_stop(imu);
+    pthread_join(ism, NULL);
+    imu_ctx_free(imu);
+    puts(g_fail == fb ? "OK" : "FAIL");
+}
+
 int main(void)
 {
     puts("=== imud concurrency tests (run under TSan) ===");
+    test_empty_overflow_is_counted();
     test_open_refuses_unsupported_range();
     test_reload_race();
     test_stream_shutdown_race();

@@ -140,6 +140,11 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud-signalk", "imud-influxdb", "imud-mqtt"]
   text     = "A label, measurement name, topic prefix or client id with a space, quote or comma in it is escaped, so the bridges' output stays valid."
 
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "A FIFO overflow found on a drain that delivered no samples is counted and flagged. Those were missed, and on the MPU-925x family every overflow is one."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

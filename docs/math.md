@@ -1209,7 +1209,7 @@ leaving the m_ref EMA at a stale rate after any `mag_odr_hz` change.
 
 ## 5. Euler rates and rate of turn
 
-Computed in the fusion thread (`fusion_thread`, `imu.c:1436`–`1505`) from the
+Computed in the fusion thread (`fusion_thread`, `imu.c:1440`–`1509`) from the
 bias-corrected body rate $\omega = s.\text{gyro}-b$ and the current Euler
 angles, using the inverse of the 3-2-1 kinematic relation.
 
@@ -1457,7 +1457,7 @@ both on every sample, so a config reload cannot leave the skip band and
 
 ---
 
-## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1038`)
+## 10. Startup gyro-bias estimation — `fusion_thread()` (`imu.c:1042`)
 
 Mean of the gyro over a still window ($N=$ `gyro_bias_sec`·ODR samples):
 $$ \hat b_k = \frac1N\sum_{i=1}^{N} \omega_{i,k}. $$

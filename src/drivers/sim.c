@@ -269,6 +269,14 @@ static struct {
 static _Atomic int pb_imu_status = SIM_PB_OFF;
 static _Atomic int pb_mag_status = SIM_PB_OFF;
 
+/* IMU reads still to report an empty overflow; see sim_inject_overflow(). */
+static _Atomic int sim_overflows = 0;
+
+void sim_inject_overflow(int reads)
+{
+    atomic_store(&sim_overflows, reads);
+}
+
 /*
  * Capture-clock timestamps of the newest IMU sample handed out, published for
  * sim_playback_timebase().  Outside `pb` for the same reason as the status
@@ -559,6 +567,12 @@ static int sim_imu_read(const imud_bus_t *bus,
     (void)bus;
 
     if (pb.enabled) return pb_imu_read(buf, max, n_out);
+
+    if (atomic_load(&sim_overflows) > 0) {
+        atomic_fetch_sub(&sim_overflows, 1);
+        *n_out = 0;
+        return 1;
+    }
 
     uint64_t now_ns    = mono_ns();
     uint64_t period_ns = 1000000000000ULL / (uint64_t)imu_s.odr_mhz;

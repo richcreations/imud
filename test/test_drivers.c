@@ -2091,6 +2091,88 @@ static void test_icm42_probe_and_init(void)
     end(fb);
 }
 
+/* TMSTVAL, 20 bits over bank 1's 0x62-0x64 — flat in the mock. */
+static void icm42_set_tmstval(uint32_t v)
+{
+    i2cmock_set_reg(ICM42_ADDR, 0x62, (uint8_t)(v & 0xFF));
+    i2cmock_set_reg(ICM42_ADDR, 0x63, (uint8_t)((v >> 8) & 0xFF));
+    i2cmock_set_reg(ICM42_ADDR, 0x64, (uint8_t)((v >> 16) & 0x0F));
+}
+
+static void icm42_set_count(int packets)
+{
+    i2cmock_set_reg(ICM42_ADDR, 0x2E, (uint8_t)((packets * 16) >> 8));
+    i2cmock_set_reg(ICM42_ADDR, 0x2F, (uint8_t)((packets * 16) & 0xFF));
+}
+
+/*
+ * FIFO_FULL in INT_STATUS is a gap: read() returns 1, keeps what it drained,
+ * and the bit clears on that read.  Packets come several to a transfer, and
+ * never more than the caller has room for.  The timestamp guard starts again
+ * after a gap, where the real jump forward would otherwise be refused.
+ */
+static void test_icm42_read_overflow_and_bursts(void)
+{
+    begin("test_icm42_read_overflow_and_bursts");
+    int fb = g_fail;
+    const imu_ops_t *d = &icm42688p_ops;
+    const float as = 4.0f * 9.80665f / 32768.0f;
+
+    i2cmock_reset();
+    imu_cfg_t cfg = { .odr_mhz = 1000000, .accel_g = 4, .gyro_dps = 500, .fifo_wm = 64 };
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    i2cmock_set_fifo_reg(ICM42_ADDR, 0x30);
+    i2cmock_set_selfclear(ICM42_ADDR, 0x2D, 0x02);   /* INT_STATUS reads to clear */
+
+    imu_sample_t buf[64];
+    int n = -1;
+
+    i2cmock_set_reg(ICM42_ADDR, 0x2D, 0x02);
+    icm42_set_count(0);
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 64, &n) == 1 && n == 0,
+           "an empty FIFO that filled returns 1");
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 64, &n) == 0,
+           "and FIFO_FULL clears on that read");
+
+    /* 40 packets: more than one transfer takes. */
+    i2cmock_set_reg(ICM42_ADDR, 0x2D, 0x02);
+    icm42_set_count(40);
+    for (int k = 0; k < 40; k++) icm42_push_packet(0x60, (int16_t)k, 0, 0, 0, 0, 0, 5);
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 64, &n) == 1, "an overflow with data returns 1");
+    EXPECT(n == 40, "and keeps every packet it drained");
+    bool order = true;
+    for (int k = 0; k < n; k++)
+        if (fabsf(buf[k].accel[0] - (float)k * as) > 1e-4f) order = false;
+    EXPECT(order, "in order across the transfers");
+
+    i2cmock_fifo_clear(ICM42_ADDR);
+    icm42_set_count(40);
+    for (int k = 0; k < 40; k++) icm42_push_packet(0x60, (int16_t)k, 0, 0, 0, 0, 0, 5);
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 10, &n) == 0 && n == 10,
+           "no more packets than the caller has room for");
+    EXPECT(i2cmock_fifo_len(ICM42_ADDR) == 30 * 16, "and the rest stay in the FIFO");
+
+    /* A drain at 100000 ticks, then a gap of half a second with FIFO_FULL.
+     * Re-initialised first, so the guard has no anchor from the reads above. */
+    (void)d->init(I2CBUS(ICM42_ADDR), &cfg);
+    i2cmock_fifo_clear(ICM42_ADDR);
+    icm42_set_count(2);
+    icm42_push_packet(0x60, 1, 0, 0, 0, 0, 0, 5);
+    icm42_push_packet(0x60, 2, 0, 0, 0, 0, 0, 5);
+    icm42_set_tmstval(100000);
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 64, &n) == 0 && n == 2, "a drain before the gap");
+    EXPECT(buf[1].chip_ts == 100000, "stamped with the counter");
+
+    i2cmock_set_reg(ICM42_ADDR, 0x2D, 0x02);
+    icm42_push_packet(0x60, 3, 0, 0, 0, 0, 0, 5);
+    icm42_push_packet(0x60, 4, 0, 0, 0, 0, 0, 5);
+    icm42_set_tmstval(568750);
+    EXPECT(d->read(I2CBUS(ICM42_ADDR), buf, 64, &n) == 1 && n == 2, "the drain after it");
+    EXPECT(buf[1].chip_ts == 568750, "takes the counter's jump, not an extrapolation");
+
+    end(fb);
+}
+
 static void test_icm42_read_decode(void)
 {
     begin("test_icm42_read_decode");
@@ -3871,8 +3953,8 @@ static void test_int_pin_config(void)
     }
 
     /*
-     * Pulsed, not latched: a latched INT1 clears only on a status read, and
-     * icm_read never issues one, so the first edge would be the last.
+     * Pulsed, not latched: each watermark crossing is then an edge of its own,
+     * whatever the reader has or has not cleared.
      */
     i2cmock_reset();
     imu_cfg_t cfg = { .odr_mhz = 100000, .accel_g = 8, .gyro_dps = 2000,
@@ -4627,6 +4709,7 @@ int main(void)
 
     test_icm42_probe_and_init();
     test_icm42_read_decode();
+    test_icm42_read_overflow_and_bursts();
     test_icm42_batched_timestamps();
 
     test_icm209_probe();

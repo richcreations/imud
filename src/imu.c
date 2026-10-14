@@ -344,9 +344,14 @@ void *ism_reader_thread(void *arg)
             atomic_store(&ctx->drain_max, (uint64_t)n);
 
         got_burst = (n > 0);
-        /* An overflow that delivered nothing still lost samples, so the count
-         * across this drain is not a rate. */
-        if (rc == 1) rate.open = false;
+        /* A hardware FIFO overflow lost samples whether or not this drain
+         * delivered any, so it is counted before the empty drain is skipped,
+         * and the count across this drain is not a rate. */
+        if (rc == 1) {
+            rate.open = false;
+            ctx->fifo_overflow_count++;
+            pend_hw++;
+        }
         if (n == 0) continue;
         /* Counted per delivered burst rather than per poll: the replay branch
          * above polls far faster than it reads, and counting polls would make
@@ -538,8 +543,7 @@ void *ism_reader_thread(void *arg)
             }
         }
 
-        /* Track hardware FIFO overflow (rc == 1) and software ring overflow. */
-        if (rc == 1) { ctx->fifo_overflow_count++; pend_hw++; }
+        /* Software ring overflow; the hardware kind is counted above. */
         int dropped = imu_ring_push(&ctx->imu_ring, buf, n);
         ctx->fifo_overflow_count += (uint64_t)dropped;
         ctx->imu_sample_count    += (uint64_t)n;

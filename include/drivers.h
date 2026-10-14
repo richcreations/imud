@@ -328,6 +328,13 @@ void sim_synth_imu(double t, imu_sample_t *out);
 void sim_synth_mag(double t, mag_sample_t *out);
 
 /*
+ * The next `reads` IMU read()s report a FIFO overflow that delivered nothing
+ * (return 1, no samples), which is what the MPU-925x family does.  Safe to
+ * call from any thread; synthesis mode only.
+ */
+void sim_inject_overflow(int reads);
+
+/*
  * Switch both sim ops into .imucap playback mode (file != NULL/"" enables;
  * NULL/"" returns to built-in synthesis).  Call before imu_ctx_open —
  * driven by [device] sim_file / sim_loop / sim_speed or `imud --replay`.

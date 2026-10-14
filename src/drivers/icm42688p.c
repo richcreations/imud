@@ -44,6 +44,7 @@
 #define REG_INT_CONFIG      0x14   /* bit2=INT1_MODE, bit1=INT1_DRIVE_CIRCUIT,
                                     * bit0=INT1_POLARITY; INT2 in [5:3] */
 #define REG_FIFO_CONFIG     0x16   /* bits[7:6]: 00=bypass, 01=stream */
+#define REG_INT_STATUS      0x2D   /* read-to-clear; bit1=FIFO_FULL_INT */
 #define REG_FIFO_COUNTH     0x2E   /* high byte; burst-read latches count */
 #define REG_FIFO_COUNTL     0x2F   /* low byte */
 #define REG_FIFO_DATA       0x30   /* 16-byte packets */
@@ -71,6 +72,26 @@
 /* ── Chip identity ─────────────────────────────────────────────────────────── */
 
 #define WHO_AM_I_VALUE  0x47
+
+/*
+ * FIFO packets per bus transfer: as many as fit in ICM_FIFO_BURST_US at the
+ * bus clock, at most ICM_FIFO_BURST_PKTS.  The same bound, for the same
+ * reasons, as st_fifo_burst_words() in ism330dhcx.c: per-transaction cost is
+ * what a drain spends its time on, and a burst sized for one clock must not
+ * hold the bus at a slower one.
+ */
+#define ICM_FIFO_BURST_PKTS 16
+#define ICM_FIFO_BURST_US   400
+
+static int icm_fifo_burst_pkts(uint32_t spi_hz)
+{
+    if (spi_hz == 0) return ICM_FIFO_BURST_PKTS;      /* unknown: assume fast */
+    uint64_t bytes = (uint64_t)spi_hz * ICM_FIFO_BURST_US / 8000000u;
+    int pkts = (int)(bytes / 16u);
+    if (pkts < 1)                   pkts = 1;
+    if (pkts > ICM_FIFO_BURST_PKTS) pkts = ICM_FIFO_BURST_PKTS;
+    return pkts;
+}
 
 /* ── FIFO packet header bits ───────────────────────────────────────────────── */
 
@@ -278,8 +299,8 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
      * open drain (§14.3, reset value 0x00), which imud can read neither way:
      * imu_gpio waits for a RISING edge and requests the line with no bias, so
      * an open-drain output has nothing to pull it up.  Pulsed rather than
-     * latched because latched clears only on a status read the reader never
-     * issues.
+     * latched, so that each watermark crossing is an edge of its own whatever
+     * the reader has or has not cleared.
      */
     if (bus_reg_write(bus, REG_INT_CONFIG, 0x03) < 0) return -1;
 
@@ -370,6 +391,9 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 /*
  * icm_read — drain FIFO and return calibrated sample-pairs.
  *
+ * Returns 0, 1 when the FIFO had filled since the last read (samples lost; the
+ * ones drained are good), or -1 on a bus error.
+ *
  * FIFO Packet 3 layout (16 bytes, accel+gyro+temp+timestamp enabled):
  *   [0]    header:  bit7=MSG(skip), bit6=ACCEL_valid, bit5=GYRO_valid
  *   [1–2]  accel X  (MSB first, big endian)
@@ -399,29 +423,46 @@ static int icm_init(const imud_bus_t *bus, const imu_cfg_t *cfg)
 static int icm_read(const imud_bus_t *bus,
                     imu_sample_t *buf, int max, int *n_out)
 {
-    /* ── 1. Read FIFO byte count (big endian; COUNTH read latches both) ─── */
-    uint8_t cnt[2];
-    if (bus_burst_read(bus, REG_FIFO_COUNTH, cnt, 2) < 0) return -1;
+    /* ── 1. INT_STATUS, then the FIFO byte count (big endian; reading COUNTH
+     *       latches both), in one transfer ─────────────────────────────── */
+    uint8_t st[3];
+    if (bus_burst_read(bus, REG_INT_STATUS, st, 3) < 0) return -1;
 
-    int n_bytes = (((int)(cnt[0] & 0x3F)) << 8) | cnt[1];
-    int n_pkts  = n_bytes / 16;
+    /* FIFO_FULL: the FIFO filled since the last read, so samples were lost. */
+    bool overflow = (st[0] & 0x02) != 0;
+    int  n_bytes  = (((int)(st[1] & 0x3F)) << 8) | st[2];
+    int  n_pkts   = n_bytes / 16;
 
     if (n_pkts == 0) {
         *n_out = 0;
-        return 0;
+        return overflow ? 1 : 0;
     }
 
-    /* ── 2. Drain FIFO packets ──────────────────────────────────────────── */
+    /* ── 2. Drain FIFO packets, several per transfer ─────────────────────── */
     int  produced    = 0;
     /* Every packet must carry an ODR timestamp for the batched path to be
      * used.  One that does not makes the whole burst fall back, because a
      * burst half-stamped by the chip and half back-calculated would have a
      * seam in the middle of it and no way to tell which side is which. */
     bool all_stamped = true;
+    const int burst_pkts = icm_fifo_burst_pkts(bus->spi_hz);
 
-    for (int i = 0; i < n_pkts && produced < max; i++) {
-        uint8_t pkt[16];
-        if (bus_burst_read(bus, REG_FIFO_DATA, pkt, 16) < 0) return -1;
+    for (int i = 0; i < n_pkts && produced < max; ) {
+      uint8_t block[ICM_FIFO_BURST_PKTS * 16];
+      /* No more than the caller has room for, so a packet is never read out
+       * of the FIFO and then dropped. */
+      int want = n_pkts - i;
+      if (want > burst_pkts)     want = burst_pkts;
+      if (want > max - produced) want = max - produced;
+      /* want >= 1 here; stated on the byte count, as in ism330dhcx.c, so the
+       * static analyser does not explore a short read. */
+      int nbytes = want * 16;
+      if (nbytes < 16) break;
+      if (bus_burst_read(bus, REG_FIFO_DATA, block, (uint16_t)nbytes) < 0)
+          return -1;
+
+      for (int p = 0; p < want; p++, i++) {
+        const uint8_t *pkt = block + p * 16;
 
         uint8_t hdr = pkt[0];
         if (hdr & FIFO_HDR_MSG) continue;                    /* empty/padding */
@@ -456,7 +497,12 @@ static int icm_read(const imud_bus_t *bus,
             all_stamped = false;
         }
         produced++;
+      }
     }
+
+    /* Samples were lost, so the next stamp does not follow the last one: the
+     * one legitimate break in the chain the guard checks. */
+    if (overflow) chip_ts_guard_reset(&ic.ts_guard);
 
     /* ── 3. Timestamp: read Bank 1 TMSTVAL, back-calculate per sample ───── */
     if (produced > 0) {
@@ -630,7 +676,7 @@ static int icm_read(const imud_bus_t *bus,
     }
 
     *n_out = produced;
-    return 0;
+    return overflow ? 1 : 0;
 }
 
 /* ── Driver descriptor ─────────────────────────────────────────────────────── */
