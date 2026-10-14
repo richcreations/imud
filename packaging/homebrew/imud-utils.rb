@@ -7,8 +7,8 @@ class ImudUtils < Formula
   # url and sha256 are rewritten at every release by homebrew-publish.yml, on
   # the gate apt already uses: publishing the draft release.  There is no head
   # block by design — a tap serves releases, never a branch.
-  url "https://github.com/richcreations/imud/releases/download/v1.11.1/imud-1.11.1.tar.gz"
-  sha256 "deca92a6b62e3b0e1e42a25d75ecee8db303e731f9a74fd15c6dd11c2d55c904"
+  url "https://github.com/richcreations/imud/releases/download/v1.11.2/imud-1.11.2.tar.gz"
+  sha256 "0b39f7f41f9d49b3c03936671e32c2ae47a809874aca1d922ef1d32a703ddd5d"
   license "MIT"
 
   depends_on "richcreations/imud/imud"
