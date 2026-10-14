@@ -12,8 +12,9 @@ registry rather than this file.
 
 1.11.2
 ------
-macOS gets a clock backend of its own: mach where it has no POSIX equivalent,
-and a TAI offset it previously had no way to read.
+Correctness fixes across fusion, calibration, timestamps and the bridges.
+$PASHR takes the Trimble/Applanix layout, every output is NED, and a config
+value out of range now stops the daemon.
 
 Changed:
 
