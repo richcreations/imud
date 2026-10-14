@@ -463,7 +463,7 @@ static void test_daemon_lifecycle(void)
         if (r <= 0) break;
         got += (size_t)r;
     }
-    EXPECT(got == sizeof pkt, "a full 276-byte frame arrived");
+    EXPECT(got == sizeof pkt, "a full 288-byte frame arrived");
     EXPECT(got == sizeof pkt && pkt.magic == IMUD_MAGIC, "with the right magic");
 
     /* ── the status responder answers ─────────────────────────────────────── */

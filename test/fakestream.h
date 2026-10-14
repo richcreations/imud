@@ -8,7 +8,7 @@
  * fakestream.h — stand in for imud's [stream] socket, from a thread
  *
  * The bridge daemons are stream consumers: they connect to an AF_UNIX socket,
- * read 276-byte packets, and emit. Everything they emit is already unit-tested
+ * read 288-byte packets, and emit. Everything they emit is already unit-tested
  * (sk_delta, influx_line, mavlink_encode, prom_metrics, mqtt_publish), and
  * everything they use to get there is too (bridge.c, netserv.c, libimud) — what
  * was never tested is the wiring, because it only exists inside main().

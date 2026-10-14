@@ -361,7 +361,7 @@ class ImudClient:
     tcp : (host, port) tuple or None
         When set, connect as a TCP client to the daemon's [stream] TCP
         listener (tcp_enabled in imud.conf; default port 10112) and read
-        lossless 276-byte frames instead of receiving UDP datagrams.
+        lossless 288-byte frames instead of receiving UDP datagrams.
     """
 
     def __init__(self, port: int = 10111, addr: Optional[str] = None,
@@ -420,7 +420,7 @@ class ImudClient:
             self._sock = None
 
     def _recv_frame(self) -> Optional[bytes]:
-        """TCP mode: read exactly one 276-byte frame (None on timeout)."""
+        """TCP mode: read exactly one 288-byte frame (None on timeout)."""
         chunks = []
         got = 0
         while got < IMUD_PACKET_SIZE:

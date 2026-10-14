@@ -7,7 +7,7 @@
 /*
  * wire.h — little-endian scalar accessors for imud's byte-oriented formats
  *
- * imud's binary formats (the 276-byte wire packet, the .imucap file) are
+ * imud's binary formats (the 288-byte wire packet, the .imucap file) are
  * little-endian on the wire on every host.  These read and write them through
  * shifts on the VALUE, never through the host's in-memory representation, so
  * one compiled path is correct on either endianness — a big-endian host runs

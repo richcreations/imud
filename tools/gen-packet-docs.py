@@ -7,7 +7,7 @@
 """
 gen-packet-docs.py — render spec.md's wire tables from include/types.h.
 
-spec.md §8 prints the 276-byte packet as an offset/size/type/field table.  It
+spec.md §8 prints the 288-byte packet as an offset/size/type/field table.  It
 is the document a third-party integrator reads to write a decoder, and its
 version row said
 

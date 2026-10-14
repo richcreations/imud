@@ -174,7 +174,7 @@ pinned to a release.
 |`fusion`      |New sample in ring buffer   |MEKF predict step at 833 Hz; mag update at 100 Hz                        |
 |`nmea_out`    |100 ms timer (10 Hz)        |Snapshot fused state, encode NMEA sentences, broadcast UDP + serve TCP clients |
 |`hirate_out`  |2 ms timer (500 Hz)         |Pack latest fused state + mag; send UDP                                  |
-|`stream_out`  |rate_hz timer (100 Hz)      |Serve 276-byte binary packets to local AF_UNIX subscribers + TCP clients |
+|`stream_out`  |rate_hz timer (100 Hz)      |Serve 288-byte binary packets to local AF_UNIX subscribers + TCP clients |
 |`health`      |1 s timer + status socket   |Stats logging, serve imud-status queries, systemd watchdog heartbeat     |
 |`position`    |gpsd TCP stream / 30 s poll |Read GPS fixes from gpsd or SignalK, recompute WMM declination on ≥5 km move, push into fusion |
 
@@ -799,7 +799,7 @@ Example: $IIXDR,A,+3.1,D,PTCH,A,-9.5,D,ROLL*hh<CR><LF>
 
 **Port:** 10111  
 **Rate:** 500 Hz  
-**Format:** Binary, little-endian, 276 bytes fixed  
+**Format:** Binary, little-endian, 288 bytes fixed  
 **Wire load:** ~120 KB/s
 
 Little-endian on the wire whatever the daemon's host byte order: `packet_encode`
@@ -1162,7 +1162,7 @@ coord_frame    = "NED"           # every output is NED; "ENU" is refused
 [stream]
 # [restart]: enabled, socket, tcp_enabled, tcp_bind_addr, tcp_port
 # [hot]:     rate_hz
-# Local AF_UNIX subscription stream — 276-byte binary packets (§8 format)
+# Local AF_UNIX subscription stream — 288-byte binary packets (§8 format)
 # over SOCK_STREAM; loss-free for same-host consumers, ≤ 8 subscribers.
 # The one output enabled by default (1.6).
 enabled        = true
@@ -1255,14 +1255,14 @@ owner `imud:imud` — a consumer joins the `imud` group to connect)
 **TCP listener (optional):** `stream.tcp_bind_addr`:`stream.tcp_port`
 (default `0.0.0.0:10112`), enabled by `stream.tcp_enabled` (off by default)
 **Rate:** 100 Hz default per subscriber (hot-reloadable via `stream.rate_hz`)
-**Format:** identical 276-byte binary packets as Stream B (§8)
+**Format:** identical 288-byte binary packets as Stream B (§8)
 **Enabled by:** `stream.enabled = true` (the default — the one output a
 stock daemon provides)
 
 Local consumers subscribe by connecting (up to 8 concurrent); each receives
-every packet as an exact 276-byte frame — no datagram loss, self-framing via
+every packet as an exact 288-byte frame — no datagram loss, self-framing via
 the fixed size plus magic/CRC, so client-library validation (libimud, or
-the deprecated `lib/imud_client.h`) works unchanged on 276-byte reads. Sends are non-blocking: a slow consumer gets
+the deprecated `lib/imud_client.h`) works unchanged on 288-byte reads. Sends are non-blocking: a slow consumer gets
 dropped packets (detectable as `imu_seq` gaps); a partial write would corrupt
 framing, so it disconnects that subscriber instead, as does taking nothing
 for 30 s. The daemon never blocks on a consumer.
