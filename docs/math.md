@@ -934,7 +934,7 @@ correlation time, 416 to 52, does not move it — but *no point in the grid* bri
 NIS$_a$ near 1. The best is ≈1.69 at $\sigma = 1.8$, twice the shipped value and
 at a real accuracy cost. The decisive evidence is `SCEN_GM`, the one
 configuration whose right answer is known in advance: with the knobs set to the
-truth it reports NIS$_a = 0.87$ at 833 Hz and **≈3.4 at 104 Hz**. Whatever this
+truth it reports NIS$_a = 0.87$ at 833 Hz and **19.8 at 104 Hz**. Whatever this
 is, it is structural, and it is the open question this section leaves behind.
 
 It is *not* the harness. The benchmark injects per-sample sigmas while the filter
