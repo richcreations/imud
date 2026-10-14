@@ -1507,7 +1507,7 @@ the per-sample time).
 
 ## 12. Offline calibration fits (`imud-cal`, `cal_math.c`)
 
-**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:222`). The swing
+**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:254`). The swing
 is fitted in body axes: each raw sample is turned by the mount rotation,
 $b = R\,m$, because that is where a level swing is level — on a board mounted
 on edge it lies in board X–Z or Y–Z. `cal.json` is in board axes, where the
@@ -1577,13 +1577,22 @@ and
 $$ S = s_1\,v v^\top + s_2\,v_\perp v_\perp^\top,\qquad
    s_{1,2}=r_h\sqrt{\lambda_{1,2}},\ v_\perp=(-v_y,v_x). $$
 $r_h$ is the mean of the two horizontal half-extents of the centred samples
-(`cal_mag_fit`), not the §12.2 radius: for a heeled swing that one is the
-total field, and would over-scale the horizontal plane.
+(`cal_mag_fit`). Only a level swing is fitted this way.
+
+**A heeled swing is fitted against the sphere.** Heel turns vertical field
+into the body's horizontal axes, $Z\sin\phi$ into Y at heel $\phi$, and an
+ellipse through them takes that for soft iron. With the §12.2 centre $c$ and
+radius $r$, every sample satisfies
+$\lVert S_2\,d_{xy}\rVert^2 = r^2 - (s_z d_z)^2$ whatever the heel, where
+$d = b - c$ and $s_z$ is the vertical's per-axis scale (1 unless the swing
+swept it). `softiron_on_sphere` (`cal_math.c:229`) solves for
+$P = S_2^\top S_2$ by least squares on the regressors $(x^2, 2xy, y^2)$, then
+$$ S_2 = \sqrt P = \frac{P + \sqrt{\det P}\,I}{\sqrt{\operatorname{tr}P + 2\sqrt{\det P}}}. $$
 
 **As-implemented / audit note.** The soft-iron correction is **2-D** (X–Y
 plane only). This is a deliberate specialization for the heading-only fusion
 default (§4.8): the swing is a horizontal circle, so the vertical/dip channel
-is not calibrated. When the conic is degenerate `cal_mag_fit` falls back to a
+is not calibrated. When either fit is degenerate `cal_mag_fit` falls back to a
 per-axis scale $r/\text{half-extent}$ (`cal_softiron_diag`), on the axes the
 swing swept. The full `mag_soft_iron[3][3]` applied live (§3.3) therefore
 has its Z couplings from configuration/identity, not from this fit.
@@ -1591,7 +1600,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:476`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:512`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1599,7 +1608,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:495`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:531`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1607,7 +1616,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:528`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:564`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1622,7 +1631,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:552`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:588`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,
