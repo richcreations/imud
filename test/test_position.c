@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -624,15 +625,21 @@ static void *scripted_gpsd_thread(void *arg)
     return NULL;
 }
 
-/* Wait for a speed to be in use, or not.  Returns how long it took in ms,
- * or -1 on timeout. */
+/* Wait for a speed to be in use, or not.  Returns how long it took in ms, or
+ * -1 on timeout.  Timed by the clock, not by counting sleeps: macOS stretches
+ * a 20 ms sleep enough that 5 s of them counted under 3. */
 static int wait_speed_live(int want, int timeout_ms)
 {
-    for (int waited = 0; waited <= timeout_ms; waited += 20) {
-        if (g_speed_live == want) return waited;
+    struct timespec t0, now;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int ms = (int)((now.tv_sec - t0.tv_sec) * 1000
+                       + (now.tv_nsec - t0.tv_nsec) / 1000000);
+        if (g_speed_live == want) return ms;
+        if (ms > timeout_ms) return -1;
         usleep(20000);
     }
-    return -1;
 }
 
 /*
