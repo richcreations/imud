@@ -208,6 +208,7 @@ CK = {
     "NEED_BOOL":      "CK_BOOL",
     "NEED_STR":       "CK_STR",
     "NEED_FRAME":     "CK_STR",
+    "NEED_TOPIC":     "CK_STR",
     "NEED_FLT":       "CK_FLT",
     "NEED_DBL":       "CK_DBL",
     "NEED_POS_DBL":   "CK_DBL",
@@ -271,7 +272,7 @@ def c_literal(macro, shown, where):
             return None, "expected true or false, got %r" % text
         return text, None
 
-    if macro in ("NEED_STR", "NEED_FRAME"):
+    if macro in ("NEED_STR", "NEED_FRAME", "NEED_TOPIC"):
         if unset:
             return '""', None                   # nothing assigned, so memset's ""
         if text.startswith('"') and text.endswith('"') and len(text) >= 2:

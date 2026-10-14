@@ -74,7 +74,7 @@ MQTT keepalive interval in seconds.
 .TP
 .B topic_prefix
 .RI ( string ,\ default:\ \(dqimud\(dq )\ [restart]
-Prefix for all published topics.
+Prefix for all published topics. The MQTT wildcards + and # are refused.
 .TP
 .B rate_hz
 .RI ( int ,\ default:\ 5 )\ [hot]
@@ -107,7 +107,7 @@ Publish Home Assistant MQTT-discovery configs.
 .TP
 .B ha_prefix
 .RI ( string ,\ default:\ \(dqhomeassistant\(dq )\ [restart]
-Home Assistant discovery topic prefix.
+Home Assistant discovery topic prefix. The MQTT wildcards + and # are refused.
 .TP
 .BR username ", " password
 .RI ( string ,\ default:\ \(dq\(dq )\ [restart]

@@ -64,14 +64,14 @@ broker/client/topic changes need a restart.
 | `broker_port` | int | `1883` | Broker TCP port. |
 | `client_id` | string | `"imud"` | MQTT client id; also the Home Assistant device/node id. |
 | `keepalive_s` | int | `30` | MQTT keepalive interval in seconds. |
-| `topic_prefix` | string | `"imud"` | Prefix for all published topics. |
+| `topic_prefix` | string | `"imud"` | Prefix for all published topics. The MQTT wildcards `+` and `#` are refused. |
 | `rate_hz` | int | `5` | Publish rate in Hz; must be greater than zero. |
 | `qos` | int | `0` | Publish QoS (0/1/2). |
 | `retain` | bool | `true` | Retain values so late subscribers / HA see current state. |
 | `units` | string | `"deg"` | `"deg"` (degrees, °/min, m, °C) or `"rad"` (SI). |
 | `publish_heave` | bool | `true` | Publish the heave family: `environment/heave`, `environment/heaveRate` (m/s), plus the sea-state topics `environment/waveHeight` (m), `wavePeriod`/`rollPeriod`/`pitchPeriod` (s), and `rollAmplitude`/`pitchAmplitude` (angles, follow `units`). State topics are withheld until the respective estimator settles (heave ~10·τ; sea state ~2·`wave_tau_s` after that); HA discovery is still advertised on this flag alone. |
 | `ha_discovery` | bool | `true` | Publish Home Assistant discovery configs. |
-| `ha_prefix` | string | `"homeassistant"` | HA discovery topic prefix. |
+| `ha_prefix` | string | `"homeassistant"` | HA discovery topic prefix. The MQTT wildcards `+` and `#` are refused. |
 | `username` / `password` | string | `""` | Broker auth. The password is stored in plaintext, so `/etc/imud/imud-mqtt.conf` installs mode 0640 owned `root:imud` — keep it that way if you replace the file. |
 | `tls` | bool | `false` | Enable TLS (empty `tls_cafile` = system CA store). |
 | `tls_cafile` | string | `""` | CA certificate path for TLS. |

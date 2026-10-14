@@ -145,6 +145,12 @@ and a TAI offset it previously had no way to read."""
   packages = ["imud"]
   text     = "A FIFO overflow found on a drain that delivered no samples is counted and flagged. Those were missed, and on the MPU-925x family every overflow is one."
 
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud-mqtt"]
+  text     = "A topic_prefix or ha_prefix containing the MQTT wildcard + or # is refused. imud-mqtt used to start with one and publish nothing under it."
+  impact   = "A config with either no longer starts."
+
 [[release]]
 version = "1.11.1"
 date    = "2026-09-16"

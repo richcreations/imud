@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "config.h"          /* the string limits a configured name can reach */
 #include "mqtt_publish.h"
 
 static int g_pass, g_fail;
@@ -295,6 +296,44 @@ static void test_discovery_names_are_safe(void)
     end(fb);
 }
 
+/*
+ * Every message has to survive the longest names the config accepts: a topic
+ * cut short is published as some other topic, and a discovery config cut
+ * short is not JSON.  \x01 is the prefix character json_esc grows most.
+ */
+static void test_longest_names_fit(void)
+{
+    begin("test_longest_names_fit");
+    int fb = g_fail;
+
+    imud_config_t c;
+    char prefix[sizeof c.mqtt_topic_prefix], ha[sizeof c.mqtt_ha_prefix];
+    char client[sizeof c.mqtt_client_id], node[sizeof c.mqtt_client_id];
+    memset(prefix, '\x01', sizeof prefix - 1);  prefix[sizeof prefix - 1] = '\0';
+    memset(ha,     'h',    sizeof ha - 1);      ha[sizeof ha - 1]         = '\0';
+    memset(client, 'n',    sizeof client - 1);  client[sizeof client - 1] = '\0';
+    mqtt_node_id(node, sizeof node, client);
+
+    mqtt_msg_t m[24];
+    int n = mqtt_build_discovery(m, 24, prefix, ha, node, true, true, 3600);
+    EXPECT(n == 17, "every discovery config built");
+    int whole = 0;
+    for (int i = 0; i < n; i++) {
+        size_t tl = strlen(m[i].topic), pl = strlen(m[i].payload);
+        whole += tl > 7 && strcmp(m[i].topic + tl - 7, "/config") == 0 &&
+                 pl > 2 && strcmp(m[i].payload + pl - 2, "}}") == 0;
+    }
+    EXPECT(whole == n, "no discovery topic or config is cut short");
+
+    imud_data_t d = make_data();
+    d.flags |= IMUD_FLAG_DECLINATION_VALID;
+    n = mqtt_build_state(m, 24, &d, prefix, false, true);
+    char want[sizeof prefix + 32];
+    snprintf(want, sizeof want, "%s/navigation/magneticVariation", prefix);
+    EXPECT(find_topic(m, n, want) != NULL, "the longest state topic is whole");
+    end(fb);
+}
+
 static void test_discovery(void)
 {
     begin("test_discovery");
@@ -499,6 +538,7 @@ int main(void)
     test_discovery_expires();
     test_discovery();
     test_discovery_names_are_safe();
+    test_longest_names_fit();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

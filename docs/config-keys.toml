@@ -2181,15 +2181,15 @@ Connect to the broker and publish (the bridge's only output).'''
   [[section.key]]
   names = ["topic_prefix"]
   fields = ["mqtt_topic_prefix"]
-  macros = ["NEED_STR"]
+  macros = ["NEED_TOPIC"]
   type = 'string'
   default = 'default:\ \(dqimud\(dq'
   scope = "restart"
   man_style = "spaced"
-  man = 'Prefix for all published topics.'
+  man = 'Prefix for all published topics. The MQTT wildcards + and # are refused.'
   md_type = 'string'
   md_default = '`"imud"`'
-  desc = 'Prefix for all published topics.'
+  desc = 'Prefix for all published topics. The MQTT wildcards `+` and `#` are refused.'
 
   [[section.key]]
   names = ["rate_hz"]
@@ -2279,15 +2279,15 @@ topic.'''
   [[section.key]]
   names = ["ha_prefix"]
   fields = ["mqtt_ha_prefix"]
-  macros = ["NEED_STR"]
+  macros = ["NEED_TOPIC"]
   type = 'string'
   default = 'default:\ \(dqhomeassistant\(dq'
   scope = "restart"
   man_style = "spaced"
-  man = 'Home Assistant discovery topic prefix.'
+  man = 'Home Assistant discovery topic prefix. The MQTT wildcards + and # are refused.'
   md_type = 'string'
   md_default = '`"homeassistant"`'
-  desc = 'HA discovery topic prefix.'
+  desc = 'HA discovery topic prefix. The MQTT wildcards `+` and `#` are refused.'
 
   [[section.key]]
   names = ["username", "password"]

@@ -1012,6 +1012,15 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
             return -1; \
          } } while (0)
 
+/* A topic prefix: NEED_STR, less MQTT's two wildcards, which libmosquitto
+ * refuses in any topic it is asked to publish to. */
+#define NEED_TOPIC(field) \
+    do { if (strpbrk(val, "+#")) { \
+        LOG_E("%s:%d: '%s': '+' and '#' are MQTT wildcards, not allowed " \
+              "in a topic (got %s)\n", path, lineno, key, val); \
+        return -1; } \
+        NEED_STR(field); } while (0)
+
     switch (sec) {
 
     case SEC_MOUNT:
@@ -1238,7 +1247,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "broker_addr")   == 0) NEED_STR(cfg->mqtt_broker_addr);
         else if (strcmp(key, "broker_port")   == 0) NEED_PORT(cfg->mqtt_broker_port);
         else if (strcmp(key, "client_id")     == 0) NEED_STR(cfg->mqtt_client_id);
-        else if (strcmp(key, "topic_prefix")  == 0) NEED_STR(cfg->mqtt_topic_prefix);
+        else if (strcmp(key, "topic_prefix")  == 0) NEED_TOPIC(cfg->mqtt_topic_prefix);
         else if (strcmp(key, "rate_hz")       == 0) NEED_POS_INT(cfg->mqtt_rate_hz);
         else if (strcmp(key, "qos")           == 0)
             NEED_RANGE_INT(cfg->mqtt_qos, 0, 2, "an MQTT QoS");
@@ -1251,7 +1260,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "tls_cafile")    == 0) NEED_STR(cfg->mqtt_tls_cafile);
         else if (strcmp(key, "keepalive_s")   == 0) NEED_INT(cfg->mqtt_keepalive_s);
         else if (strcmp(key, "ha_discovery")  == 0) NEED_BOOL(cfg->mqtt_ha_discovery);
-        else if (strcmp(key, "ha_prefix")     == 0) NEED_STR(cfg->mqtt_ha_prefix);
+        else if (strcmp(key, "ha_prefix")     == 0) NEED_TOPIC(cfg->mqtt_ha_prefix);
         else WARN_UNKNOWN();
         break;
 

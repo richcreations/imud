@@ -33,6 +33,9 @@ Changed:
   status. imud-mon reads the new layout.
   ACTION: Update any consumer that parsed imud's previous $PASHR layout; its
   fields have moved.
+* A topic_prefix or ha_prefix containing the MQTT wildcard + or # is refused.
+  imud-mqtt used to start with one and publish nothing under it.
+  A config with either no longer starts.
 
 Fixed:
 

@@ -26,9 +26,10 @@
 #include <stdint.h>
 #include "../lib/imud.h"  /* imud_data_t + IMUD_FLAG_* */
 
-/* One MQTT message. payload is sized for the largest case (a discovery config). */
+/* One MQTT message, sized for the longest of each that the config's string
+ * limits allow; test_mqtt builds them at those limits. */
 typedef struct {
-    char topic[128];
+    char topic[192];      /* a discovery topic: ha_prefix and node id in full */
     char payload[1280];   /* a discovery config with the prefix escaped twice */
 } mqtt_msg_t;
 

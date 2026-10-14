@@ -730,7 +730,8 @@ static void test_load_rejects_too_long_string(void)
  * Keys whose value has a range that nothing downstream enforces: a negative
  * skip threshold skips every accelerometer update, QoS 3 publishes nothing,
  * and MAVLink system id 300 goes out as 44.  coord_frame is "NED" or nothing:
- * every output is NED, and a config that asks for ENU has to find out.
+ * every output is NED, and a config that asks for ENU has to find out.  An
+ * MQTT wildcard in a topic prefix makes libmosquitto refuse every publish.
  */
 static void test_load_bounds_semantic_keys(void)
 {
@@ -759,6 +760,10 @@ static void test_load_bounds_semantic_keys(void)
         "[imud-mavlink]\nsystem_id = 0\n",
         "[imud-mavlink]\ncomponent_id = 256\n",
         "[imud-mavlink]\ncomponent_id = 0\n",
+        "[imud-mqtt]\ntopic_prefix = \"boat/+\"\n",
+        "[imud-mqtt]\ntopic_prefix = \"boat#1\"\n",
+        "[imud-mqtt]\nha_prefix = \"home+assistant\"\n",
+        "[imud-mqtt]\nha_prefix = \"homeassistant/#\"\n",
     };
     imud_config_t cfg;
     for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
@@ -775,7 +780,8 @@ static void test_load_bounds_semantic_keys(void)
         "[fusion]\naccel_skip_thresh = 1.0\nengine_accel_skip_thresh = 0.001\n"
         "[highrate]\ncoord_frame = \"NED\"\n"
         "[position]\nlat_deg = -90\nlon_deg = 180\n"
-        "[imud-mqtt]\nqos = 2\n"
+        "[imud-mqtt]\nqos = 2\ntopic_prefix = \"boat/imu-1\"\n"
+        "ha_prefix = \"ha/discovery\"\n"
         "[imud-mavlink]\nsystem_id = 255\ncomponent_id = 1\n");
     config_defaults(&cfg);
     EXPECT(config_load(path, &cfg) == 0, "the ends of every range load");
@@ -785,6 +791,9 @@ static void test_load_bounds_semantic_keys(void)
     EXPECT(cfg.pos_lat_deg == -90.0 && cfg.pos_lon_deg == 180.0, "position applied");
     EXPECT(cfg.mqtt_qos == 2 && cfg.mav_system_id == 255 &&
            cfg.mav_component_id == 1, "QoS and MAVLink ids applied");
+    EXPECT(strcmp(cfg.mqtt_topic_prefix, "boat/imu-1") == 0 &&
+           strcmp(cfg.mqtt_ha_prefix, "ha/discovery") == 0,
+           "a multi-level topic prefix loads");
     remove(path);
 
     end_test(fb);
