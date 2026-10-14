@@ -1860,16 +1860,18 @@ TAI field equals CLOCK_REALTIME; the daemon logs a startup warning in this case.
 The ISM330DHCX embeds a 32-bit hardware timestamp counter (25 µs resolution,
 enabled via `CTRL10_C.TIMESTAMP_EN`). The chip counter is the high-precision
 per-sample reference; `CLOCK_REALTIME` is the shared epoch. They are bridged
-once at startup and re-anchored every 60 seconds:
+at startup, every 25 s until the counter's period has been measured, and every
+60 s after:
 
 ```text
-Anchor procedure:
+Anchor procedure, on a FIFO drain:
   t_wall_before  = clock_gettime(CLOCK_REALTIME)
-  t_mono         = clock_gettime(CLOCK_MONOTONIC)
-  t_chip         = read ISM330 TIMESTAMP registers
+  burst          = drain the FIFO
   t_wall_after   = clock_gettime(CLOCK_REALTIME)
   t_tai          = clock_gettime(CLOCK_TAI)
-  anchor_wall_ns = (t_wall_before + t_wall_after) / 2
+  t_mono         = clock_gettime(CLOCK_MONOTONIC)
+  t_chip         = chip timestamp of the newest sample in burst
+  anchor_wall_ns = t_wall_before    # that sample was in the FIFO when the read began
   anchor_tai_ns  = anchor_wall_ns + (t_tai - t_wall_after)   # the same instant
   anchor_chip    = t_chip
   anchor_gen    += 1
@@ -1895,6 +1897,9 @@ def chip_to_wall_ns(chip_ts: int) -> int:
     return anchor_wall_ns + delta * (tick_ns or 25_000)
 ```
 
+A part with no chip timer re-anchors on every drain, at the read's midpoint
+`(t_wall_before + t_wall_after) / 2`, and every sample in the drain carries it.
+
 **The declared 25 µs is nominal, and the oscillator is not that good.** A
 measured ISM330DHCX ran **4.08% fast** — 40800 ppm, not the 100 ppm this budget
 originally assumed. Scaling ticks by the declared period therefore ran sample
@@ -1910,10 +1915,10 @@ when it is more than 1% off nominal.
 |Source                                                  |Contribution                   |
 |--------------------------------------------------------|-------------------------------|
 |GNSS+PPS clock discipline (each node)                   |< 5 µs typical, < 20 µs worst  |
-|Anchor I2C read half-width                              |~150–300 µs (dominant)         |
+|Anchor pairing: newest sample's age when the read begins|< 1 sample period, 1.2 ms at 833 Hz (dominant)|
 |ISM330 timer resolution                                 |25 µs                          |
 |Residual period error after measurement (60 s × ~200 ppm)|< 12 ms → corrected at re-anchor|
-|**Total per-sample, steady state**                      |**~300–500 µs**                |
+|**Total per-sample, steady state**                      |**< 1 sample period + ~45 µs** |
 
 Without the measurement that fourth row is 60 s × 40800 ppm ≈ **2.4 s**, which
 dominates everything above it by four orders of magnitude.
