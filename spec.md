@@ -599,10 +599,10 @@ there to show what the sensor delivered in body axes, not as an intermediate of
 the calibration chain.
 
 The soft-iron matrix from `imud-cal mag` carries a full 2×2 horizontal block
-(including the cross term) from a least-squares ellipse fit of the swing
-circle — a distortion ellipse whose axes are rotated relative to the sensor
-axes cannot be corrected by per-axis scales alone. Z stays 1.0 unless the
-data has real 3D coverage.
+(including the cross term) from a least-squares fit of the swing against the
+field's sphere — a distortion ellipse whose axes are rotated relative to the
+sensor axes cannot be corrected by per-axis scales alone. Z stays 1.0 unless
+the data has real 3D coverage.
 
 ### Rough-sea mechanics (v1.1 fusion revision)
 

@@ -68,15 +68,6 @@ void sphere_add(sphere_accum_t *a, float fx, float fy, float fz)
     a->n++;
 }
 
-void ellipse_add(ellipse_accum_t *a, float fx, float fy)
-{
-    double x = fx, y = fy;
-    a->s40 += x*x*x*x;  a->s31 += x*x*x*y;  a->s22 += x*x*y*y;
-    a->s13 += x*y*y*y;  a->s04 += y*y*y*y;
-    a->s20 += x*x;      a->s11 += x*y;      a->s02 += y*y;
-    a->n++;
-}
-
 void extent_add(extent_accum_t *a, double x, double y, double z)
 {
     const double p[3] = { x, y, z };
@@ -102,53 +93,6 @@ void cal_softiron_diag(const double half[3], double radius, double si[3])
 {
     for (int k = 0; k < 3; k++)
         si[k] = (half[k] > CAL_SI_MIN_SPAN * radius) ? (radius / half[k]) : 1.0;
-}
-
-int ellipse_fit(const ellipse_accum_t *a, double radius, double S[2][2])
-{
-    if (a->n < 8 || radius <= 0.0) return -1;
-
-    /*
-     * Least squares on A·x² + B·xy + C·y² = 1: normal equations over the
-     * regressors (x², xy, y²).  Solved via gauss4 with an identity pad row.
-     */
-    double M4[4][4] = {
-        { a->s40, a->s31, a->s22, 0 },
-        { a->s31, a->s22, a->s13, 0 },
-        { a->s22, a->s13, a->s04, 0 },
-        { 0,      0,      0,      1 },
-    };
-    double b4[4] = { a->s20, a->s11, a->s02, 0 };
-    double p[4];
-    if (gauss4(M4, b4, p) < 0) return -1;
-
-    /* Conic matrix M = [[A, B/2], [B/2, C]] must be positive definite. */
-    double A = p[0], B = p[1], C = p[2];
-    double det = A*C - 0.25*B*B;
-    if (A <= 0.0 || det <= 0.0) return -1;
-
-    /* S = radius · sqrtm(M) via 2×2 symmetric eigendecomposition. */
-    double half_tr = 0.5*(A + C);
-    double disc    = sqrt(0.25*(A - C)*(A - C) + 0.25*B*B);
-    double l1 = half_tr + disc, l2 = half_tr - disc;
-    if (l2 <= 0.0) return -1;
-
-    /* Eigenvector for l1 (pick the better-conditioned expression). */
-    double vx, vy;
-    if (fabs(B) > 1e-12) { vx = 0.5*B; vy = l1 - A; }
-    else if (A >= C)     { vx = 1.0;   vy = 0.0;    }
-    else                 { vx = 0.0;   vy = 1.0;    }
-    double vn = sqrt(vx*vx + vy*vy);
-    if (vn < 1e-15) return -1;
-    vx /= vn; vy /= vn;
-
-    double s1 = radius * sqrt(l1), s2 = radius * sqrt(l2);
-    /* S = s1·v·vᵀ + s2·v⊥·v⊥ᵀ with v⊥ = (−vy, vx) */
-    S[0][0] = s1*vx*vx + s2*vy*vy;
-    S[0][1] = s1*vx*vy - s2*vx*vy;
-    S[1][0] = S[0][1];
-    S[1][1] = s1*vy*vy + s2*vx*vx;
-    return 0;
 }
 
 int sphere_fit(const sphere_accum_t *a, double center[3], double *radius)
@@ -220,11 +164,10 @@ static int circle_fit(const double (*b)[3], int n, double c[2], double *radius)
 }
 
 /*
- * The horizontal soft-iron block of a swing that is not level, fitted against
- * the sphere of centre c and radius R: every sample's horizontal part must
- * satisfy |S2·d_xy|² = R² − (sz·d_z)², however the vessel heeled.  Least
- * squares on P = S2ᵀS2, then S2 = √P.  0, or -1 when P is not positive
- * definite.
+ * The horizontal soft-iron block, fitted against the sphere of centre c and
+ * radius R: every sample's horizontal part must satisfy
+ * |S2·d_xy|² = R² − (sz·d_z)², however the vessel heeled.  Least squares on
+ * P = S2ᵀS2, then S2 = √P.  0, or -1 when P is not positive definite.
  */
 static int softiron_on_sphere(const double (*b)[3], int n, const double c[3],
                               double R, double sz, double S2[2][2])
@@ -238,7 +181,7 @@ static int softiron_on_sphere(const double (*b)[3], int n, const double c[3],
             for (int k = 0; k < 3; k++) A[j][k] += r[j] * r[k];
         }
     }
-    A[3][3] = 1.0;                       /* identity pad row, as ellipse_fit */
+    A[3][3] = 1.0;                       /* identity pad row: gauss4 is 4×4 */
     if (gauss4(A, rhs, p) < 0) return -1;
 
     double det = p[0]*p[2] - p[1]*p[1];
@@ -344,10 +287,9 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
         if (sphere_fit(&acc, c, &out->radius) < 0) { free(b); return -1; }
     }
 
-    /* Residual, per-axis extent and the horizontal ellipse, about the centre.
-     * For a level swing both are taken in the plane it was swung in. */
-    ellipse_accum_t eacc = {0};
-    extent_accum_t  xacc = {0};
+    /* Residual and per-axis extent, about the centre.  For a level swing both
+     * are taken in the plane it was swung in. */
+    extent_accum_t xacc = {0};
     double ss = 0.0;
     for (int i = 0; i < n; i++) {
         double dx = b[i][0] - c[0], dy = b[i][1] - c[1];
@@ -355,7 +297,6 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
         double res = (out->level ? sqrt(dx*dx + dy*dy)
                                  : sqrt(dx*dx + dy*dy + dz*dz)) - out->radius;
         ss += res * res;
-        ellipse_add(&eacc, (float)dx, (float)dy);
         extent_add(&xacc, dx, dy, dz);
     }
     out->rms = sqrt(ss / n);
@@ -369,17 +310,16 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
      * Horizontal soft iron as a 2-D block.  Unlike the per-axis half-range it
      * recovers the CROSS term — a distortion ellipse turned away from the
      * axes, which is the common case and shows as a heading error that varies
-     * round the swing.  A level swing gets an ellipse through the centred
-     * horizontal samples, scaled to their mean half-extent.  A swing whose heel
-     * varies moves vertical field into the horizontal axes, which an ellipse
-     * through them takes for soft iron, so it is fitted against the sphere.
+     * round the swing.  Heel moves vertical field into the horizontal axes,
+     * which an ellipse through them would take for soft iron, so the block is
+     * fitted against the sphere.  A level swing gets the sphere its own
+     * assumption implies: centre at no vertical hard iron, through the circle
+     * and the mean vertical reading.
      */
     double S2[2][2] = { {1.0, 0.0}, {0.0, 1.0} };
-    double r_h = 0.5 * (out->half[0] + out->half[1]);
-    out->ellipse_ok = out->level
-        ? ellipse_fit(&eacc, r_h, S2) == 0
-        : softiron_on_sphere((const double (*)[3])b, n, c, out->radius,
-                             out->si[2], S2) == 0;
+    double rs = out->level ? hypot(out->radius, out->vertical) : out->radius;
+    out->ellipse_ok = softiron_on_sphere((const double (*)[3])b, n, c, rs,
+                                         out->si[2], S2) == 0;
     free(b);
     memcpy(out->S2, S2, sizeof out->S2);
 

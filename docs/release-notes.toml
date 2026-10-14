@@ -100,6 +100,11 @@ value out of range now stops the daemon."""
 
   [[release.change]]
   kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag no longer takes a swing's roll for soft iron. A swing that rolled a few degrees came out with a correction that was not there, worth up to 5° of heading in a steep field."
+
+  [[release.change]]
+  kind     = "fix"
   packages = ["imud-mqtt"]
   text     = "A topic imud-mqtt stops publishing is deleted from the broker, and Home Assistant sensors expire. The last heading stayed retained, and showed as current, after the magnetometer was lost."
 

@@ -1507,13 +1507,13 @@ the per-sample time).
 
 ## 12. Offline calibration fits (`imud-cal`, `cal_math.c`)
 
-**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:287`). The swing
+**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:230`). The swing
 is fitted in its own axes, $b = R\,m$ with $R = Q^\top M$. The mount rotation
 $M$ takes each raw sample to body axes — on a board mounted on edge the swing
 lies in board X–Z or Y–Z. $Q$ turns body Z onto the plane the swing was made
 in: a vessel heels steadily through its turn, and its swing is then a circle
 tilted with it, about the vertical it turned on. `swing_axes`
-(`cal_math.c:260`) fits that plane as $z = p\,x + q\,y + d$ by least squares
+(`cal_math.c:203`) fits that plane as $z = p\,x + q\,y + d$ by least squares
 about the samples' mean, and $Q$ is the least rotation from body Z onto its
 normal $n \propto (-p, -q, 1)$:
 $$ Q = I + [k]_\times + \frac{[k]_\times^2}{1 + n_z},\qquad k = \hat z \times n, $$
@@ -1532,7 +1532,7 @@ Double precision.
 
 **Source:** Golub & Van Loan 2013 §3.4 *(canonical)*.
 
-### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:154`)
+### 12.2 Hard-iron sphere fit — `sphere_fit()` (`cal_math.c:98`)
 
 Algebraic (linearized) sphere fit. The sphere
 $(x-c_x)^2+(y-c_y)^2+(z-c_z)^2=r^2$ is linearized as
@@ -1571,38 +1571,30 @@ versus a geometric fit.
 **Source:** algebraic sphere/magnetometer fit, Renaudin et al. 2010; Coope
 1993 *(canonical)*.
 
-### 12.3 Soft-iron 2-D ellipse fit — `ellipse_fit()` (`cal_math.c:107`)
+### 12.3 Soft-iron 2-D fit — `softiron_on_sphere()` (`cal_math.c:172`)
 
-Conic least-squares on the horizontal magnetometer locus
-$A x^2 + B xy + C y^2 = 1$ (regressors $x^2,xy,y^2$; normal equations from
-$S_{40},S_{31},S_{22},S_{13},S_{04},S_{20},S_{11},S_{02}$ via `ellipse_add`,
-solved by `gauss4` with an identity pad row). Requires the conic
-$M=\begin{pmatrix}A&B/2\\B/2&C\end{pmatrix}$ positive-definite
-($A>0$, $\det>0$).
-
-Soft-iron matrix $S = r_h\cdot M^{1/2}$ via the $2\times2$ symmetric
-eigendecomposition: eigenvalues $\lambda_{1,2}=\tfrac{A+C}2\pm
-\sqrt{\tfrac14(A-C)^2+\tfrac14 B^2}$, unit eigenvector $v$ for $\lambda_1$,
-and
-$$ S = s_1\,v v^\top + s_2\,v_\perp v_\perp^\top,\qquad
-   s_{1,2}=r_h\sqrt{\lambda_{1,2}},\ v_\perp=(-v_y,v_x). $$
-$r_h$ is the mean of the two horizontal half-extents of the centred samples
-(`cal_mag_fit`). Only a level swing is fitted this way.
-
-**A swing whose heel varies is fitted against the sphere.** Heel turns
-vertical field into the horizontal axes, $Z\sin\phi$ into Y at $\phi$ from the
-swing's mean, and an ellipse through them takes that for soft iron. With the §12.2 centre $c$ and
-radius $r$, every sample satisfies
-$\lVert S_2\,d_{xy}\rVert^2 = r^2 - (s_z d_z)^2$ whatever the heel, where
-$d = b - c$ and $s_z$ is the vertical's per-axis scale (1 unless the swing
-swept it). `softiron_on_sphere` (`cal_math.c:229`) solves for
-$P = S_2^\top S_2$ by least squares on the regressors $(x^2, 2xy, y^2)$, then
+The horizontal soft iron is a symmetric $2\times2$ block $S_2$, which unlike a
+per-axis scale recovers the cross term of a distortion ellipse turned away
+from the axes. It is fitted against the sphere, not as an ellipse through the
+horizontal samples: heel turns vertical field into the horizontal axes,
+$Z\sin\phi$ into Y at $\phi$ from the swing's mean, and an ellipse takes the
+swing's roll for soft iron. With centre $c$ and radius $r$, every sample
+satisfies $\lVert S_2\,d_{xy}\rVert^2 = r^2 - (s_z d_z)^2$ whatever the heel,
+where $d = b - c$ and $s_z$ is the vertical's per-axis scale (1 unless the
+swing swept it). `softiron_on_sphere` solves for $P = S_2^\top S_2$ by least
+squares on the regressors $(x^2, 2xy, y^2)$, then
 $$ S_2 = \sqrt P = \frac{P + \sqrt{\det P}\,I}{\sqrt{\operatorname{tr}P + 2\sqrt{\det P}}}. $$
+
+A swing whose heel varies uses the §12.2 sphere. A level swing uses the one
+its own assumption implies: centre on its axis with no vertical hard iron, and
+$r^2 = r_c^2 + \bar b_z^2$ from the circle's radius $r_c$ and the mean
+vertical reading $\bar b_z$. Its roll is then corrected in proportion to
+$\bar b_z$, which includes the vertical hard iron the fit leaves out.
 
 **As-implemented / audit note.** The soft-iron correction is **2-D** (X–Y
 plane only). This is a deliberate specialization for the heading-only fusion
 default (§4.8): the swing is a horizontal circle, so the vertical/dip channel
-is not calibrated. When either fit is degenerate `cal_mag_fit` falls back to a
+is not calibrated. When the fit is degenerate `cal_mag_fit` falls back to a
 per-axis scale $r/\text{half-extent}$ (`cal_softiron_diag`), on the axes the
 swing swept. The full `mag_soft_iron[3][3]` applied live (§3.3) therefore
 has its Z couplings from configuration/identity, not from this fit.
@@ -1610,7 +1602,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:565`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:505`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1618,7 +1610,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:584`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:524`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1626,7 +1618,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:617`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:557`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1641,7 +1633,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:641`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:581`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,

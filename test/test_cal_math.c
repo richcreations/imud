@@ -200,123 +200,6 @@ static void test_sphere_add_count(void)
     end(fb);
 }
 
-/* ── ellipse_fit tests ───────────────────────────────────────────────────── */
-
-/*
- * Generate points on a distorted circle m = D·c, |c| = r, with D a known
- * symmetric 2×2 (soft iron). ellipse_fit must recover S ≈ D⁻¹ so that S·m
- * lies back on the radius-r circle: check S·D ≈ I.
- */
-static void gen_ellipse(ellipse_accum_t *acc, const double D[2][2],
-                        double r, int n, double noise)
-{
-    unsigned rng = 7;
-    for (int i = 0; i < n; i++) {
-        double th = 2.0*M_PI*i/n;
-        double cx = r*cos(th), cy = r*sin(th);
-        double mx = D[0][0]*cx + D[0][1]*cy;
-        double my = D[1][0]*cx + D[1][1]*cy;
-        if (noise > 0) {
-            rng = rng*1664525u + 1013904223u;
-            mx += ((double)(int)(rng>>8)/8388608.0 - 1.0) * noise;
-            rng = rng*1664525u + 1013904223u;
-            my += ((double)(int)(rng>>8)/8388608.0 - 1.0) * noise;
-        }
-        ellipse_add(acc, (float)mx, (float)my);
-    }
-}
-
-/* D = R(30°)·diag(1.2, 0.9)·R(−30°): rotated-axis distortion whose cross
- * term a diagonal fit cannot represent. */
-static void make_D(double D[2][2])
-{
-    double c = cos(30.0*M_PI/180.0), s = sin(30.0*M_PI/180.0);
-    double a = 1.2, b = 0.9;
-    D[0][0] = c*c*a + s*s*b;
-    D[0][1] = c*s*(a - b);
-    D[1][0] = D[0][1];
-    D[1][1] = s*s*a + c*c*b;
-}
-
-static void check_SD_identity(const double S[2][2], const double D[2][2],
-                              double tol, const char *tag)
-{
-    char msg[96];
-    for (int i = 0; i < 2; i++)
-        for (int j = 0; j < 2; j++) {
-            double sd = S[i][0]*D[0][j] + S[i][1]*D[1][j];
-            snprintf(msg, sizeof msg, "%s: (S*D)[%d][%d] = I", tag, i, j);
-            EXPECT_NEAR_D(sd, (i == j) ? 1.0 : 0.0, tol, msg);
-        }
-}
-
-static void test_ellipse_fit_rotated(void)
-{
-    begin("test_ellipse_fit_rotated");
-    int fb = g_fail;
-
-    double D[2][2];
-    make_D(D);
-    ellipse_accum_t acc = {0};
-    gen_ellipse(&acc, D, 45.0, 360, 0.0);
-
-    double S[2][2];
-    EXPECT(ellipse_fit(&acc, 45.0, S) == 0, "fit succeeds");
-    EXPECT(fabs(S[0][1]) > 0.01, "cross term recovered (non-diagonal)");
-    check_SD_identity(S, D, 1e-3, "exact");
-    end(fb);
-}
-
-static void test_ellipse_fit_noise(void)
-{
-    begin("test_ellipse_fit_noise");
-    int fb = g_fail;
-
-    double D[2][2];
-    make_D(D);
-    ellipse_accum_t acc = {0};
-    gen_ellipse(&acc, D, 45.0, 720, 0.25);   /* ±0.25 µT ≈ 0.5% noise */
-
-    double S[2][2];
-    EXPECT(ellipse_fit(&acc, 45.0, S) == 0, "noisy fit succeeds");
-    check_SD_identity(S, D, 0.02, "noisy");
-    end(fb);
-}
-
-static void test_ellipse_fit_circle_identity(void)
-{
-    begin("test_ellipse_fit_circle_identity");
-    int fb = g_fail;
-
-    double I2[2][2] = {{1, 0}, {0, 1}};
-    ellipse_accum_t acc = {0};
-    gen_ellipse(&acc, I2, 30.0, 360, 0.0);
-
-    double S[2][2];
-    EXPECT(ellipse_fit(&acc, 30.0, S) == 0, "circle fit succeeds");
-    check_SD_identity(S, I2, 1e-3, "circle");
-    end(fb);
-}
-
-static void test_ellipse_fit_degenerate(void)
-{
-    begin("test_ellipse_fit_degenerate");
-    int fb = g_fail;
-
-    double S[2][2];
-    ellipse_accum_t few = {0};
-    ellipse_add(&few, 1.0f, 0.0f);
-    ellipse_add(&few, 0.0f, 1.0f);
-    EXPECT(ellipse_fit(&few, 1.0, S) == -1, "too few points rejected");
-
-    /* Collinear points: conic is degenerate, must be rejected. */
-    ellipse_accum_t line = {0};
-    for (int i = 0; i < 50; i++)
-        ellipse_add(&line, (float)(i - 25), (float)(2.0*(i - 25)));
-    EXPECT(ellipse_fit(&line, 10.0, S) == -1, "collinear points rejected");
-    end(fb);
-}
-
 /* ── Centered extent + diagonal soft iron ────────────────────────────────── */
 
 /*
@@ -429,7 +312,7 @@ static void test_softiron_needs_real_coverage(void)
  * Seeding mn[]/mx[] from the RAW first sample and then updating
  * them with CENTERED ones.  Wherever the raw seed fell outside the centered
  * range it was never displaced, so half[] came out inflated by the hard iron —
- * which under-scaled si[] and over-stated the radius handed to ellipse_fit.
+ * which under-scaled si[].
  * This reproduces the broken seeding alongside the correct path and pins both.
  *
  * Center Y is chosen positive so the lattice's first point (the pole, at
@@ -654,11 +537,11 @@ static void test_mag_fit_follows_the_mount(void)
     cal_mag_fit_t f;
     EXPECT(cal_mag_fit((const float (*)[3])s, N, MOUNT_ROLL_90, &f) == 0,
            "the fit succeeds");
-    EXPECT(f.ellipse_ok, "with a horizontal ellipse");
-    /* 5 %: the half-extent the scale is taken from includes the noise. */
-    EXPECT_NEAR_D(f.S2[0][0], 1.0, 0.05, "a round field needs no soft-iron scale in X");
-    EXPECT_NEAR_D(f.S2[1][1], 1.0, 0.05, "nor in Y");
-    EXPECT_NEAR_D(f.S2[0][1], 0.0, 0.05, "nor a cross term");
+    EXPECT(f.ellipse_ok, "with a 2-D soft-iron block");
+    /* Measured within 0.0014; scaled to the noisy half-extent, it was 0.021. */
+    EXPECT_NEAR_D(f.S2[0][0], 1.0, 0.01, "a round field needs no soft-iron scale in X");
+    EXPECT_NEAR_D(f.S2[1][1], 1.0, 0.01, "nor in Y");
+    EXPECT_NEAR_D(f.S2[0][1], 0.0, 0.01, "nor a cross term");
 
     /* The stored hard iron is in board axes; in body axes it is the one put in. */
     double hb[3];
@@ -886,6 +769,42 @@ static void test_mag_fit_steady_heel(void)
         cal_cov_mark(sec, 24, s[i][0], s[i][1], f.centre[0], f.centre[1]);
     EXPECT(cal_cov_count(sec, 24) == 24, "a full swing fills every sector about its centre");
 
+    end(fb);
+}
+
+/*
+ * A level swing that rolls a few degrees moves Z·sin(roll) into Y.  An
+ * ellipse through the horizontal samples took that for soft iron: at ±4° in a
+ * 12/55 µT field it "corrected" a round field by 1.20 × 1.02, and heading on
+ * a level keel was out by 4.9°.
+ */
+static void test_mag_fit_level_swing_rolls(void)
+{
+    begin("test_mag_fit_level_swing_rolls");
+    int fb = g_fail;
+
+    enum { N = 2000 };
+    static float s[N][3];
+    static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
+    static const double D[3][3] = { {1.10, 0.05, 0}, {0.05, 0.95, 0}, {0, 0, 1} };
+    const double H = 12.0, Z = 55.0, hard[3] = { 6.0, -4.0, 8.0 }, none[3] = { 0 };
+
+    cal_mag_fit_t f;
+    make_swing(s, N, NULL, H, Z, hard, 0.0, 4.0, 0.3);
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0 &&
+           f.level && f.ellipse_ok, "a level swing, with a 2-D soft-iron block");
+    EXPECT_NEAR_D(f.S2[0][0], 1.0, 0.02, "a round field needs no soft-iron scale in X");
+    EXPECT_NEAR_D(f.S2[1][1], 1.0, 0.02, "nor in Y");
+    EXPECT_NEAR_D(f.S2[0][1], 0.0, 0.02, "nor a cross term");
+    EXPECT(worst_heading_deg(&f, I3, hard, H, Z, 0.0) < 1.0,
+           "heading within 1° on a level keel");
+
+    make_swing(s, N, NULL, H, Z, none, 0.0, 4.0, 0.3);
+    distort(s, N, D, hard);
+    EXPECT(cal_mag_fit((const float (*)[3])s, N, NULL, &f) == 0 &&
+           f.level && f.ellipse_ok, "with soft iron, still level with a 2-D block");
+    EXPECT(worst_heading_deg(&f, D, hard, H, Z, 0.0) < 1.0,
+           "and heading within 1° on a level keel");
     end(fb);
 }
 
@@ -1329,10 +1248,6 @@ int main(void)
     test_sphere_fit_unit_origin();
     test_sphere_fit_hard_iron_offset();
     test_sphere_fit_large_offset();
-    test_ellipse_fit_rotated();
-    test_ellipse_fit_noise();
-    test_ellipse_fit_circle_identity();
-    test_ellipse_fit_degenerate();
     test_extent_full_sphere();
     test_extent_ignores_hard_iron();
     test_softiron_diag_scales_distorted_axis();
@@ -1347,6 +1262,7 @@ int main(void)
     test_mag_fit_heeled_swing_keeps_the_field_round();
     test_mag_fit_heeled_swing_finds_the_soft_iron();
     test_mag_fit_steady_heel();
+    test_mag_fit_level_swing_rolls();
     test_mag_fit_tumble();
     test_mag_keep_thins_evenly();
     test_allan_constant_signal();

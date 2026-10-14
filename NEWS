@@ -78,6 +78,9 @@ Fixed:
   was then wrong at any other heel: up to 18° at 10°.
   ACTION: Repeat the magnetometer swing if cal.json's hard-iron Z is near the
   local vertical field, about 40 µT at mid latitudes.
+* imud-cal mag no longer takes a swing's roll for soft iron. A swing that
+  rolled a few degrees came out with a correction that was not there, worth up
+  to 5° of heading in a steep field.
 * A topic imud-mqtt stops publishing is deleted from the broker, and Home
   Assistant sensors expire. The last heading stayed retained, and showed as
   current, after the magnetometer was lost.
