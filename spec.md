@@ -991,20 +991,23 @@ bit 0   mag_absent         No magnetometer is configured, so
 
 ### Coordinate Frame
 
-NED (North-East-Down), right-handed:
+Every output is NED: a North-East-Down world and a forward-right-down body,
+right-handed:
 
 - +X: forward (vessel bow / camera forward axis)
 - +Y: starboard / right
 - +Z: down
 
-Configurable to ENU via `coord_frame = "ENU"`.
+The quaternion takes body vectors into the world, `v_NED = R(q)·v_body`. A
+consumer that wants ROS's ENU (REP-103: East-North-Up world, forward-left-up
+body) converts:
 
-The v1.2 diagnostic fields (`gyro_bias_*`, `gyro_bias_var_*`, `heave_rate`,
-`accel_quiescence`) and the v14 sea-state / compass-health fields
-(`wave_height_m`, `wave_period_s`, `roll_period_s`, `roll_amplitude`,
-`pitch_period_s`, `pitch_amplitude`, `mag_anomaly`, `mag_residual`,
-`innov_weight`, `innov_reject`) are
-body-frame or frame-neutral scalars and are **not** affected by `coord_frame`.
+- body vectors (accel, gyro, mag, their raw forms, the gyro bias): `(x, −y, −z)`
+- quaternion: `w' = (w + z)/√2`, `x' = (x + y)/√2`, `y' = (x − y)/√2`,
+  `z' = (w − z)/√2`
+- attitude covariance: negate `cov[1]`, `cov[2]`, `cov[3]` and `cov[6]`
+
+Euler angles, heading and rate of turn are nautical, and stay as they are.
 
 ### Near-vertical pitch: read the quaternion, not the Euler angles
 
@@ -1151,7 +1154,7 @@ enabled        = false
 rate_hz        = 500
 dest_addr      = "239.255.0.1"   # multicast (224.0.0.0/4), broadcast, or unicast
 dest_port      = 10111
-coord_frame    = "NED"           # "NED" or "ENU"
+coord_frame    = "NED"           # every output is NED; "ENU" is refused
 
 [stream]
 # [restart]: enabled, socket, tcp_enabled, tcp_bind_addr, tcp_port

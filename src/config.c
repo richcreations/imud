@@ -986,13 +986,15 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         return -1; } \
         (field) = strcmp(kbuf, "spi") == 0 ? BUS_SPI : BUS_I2C; } while (0)
 
-/* "NED" or "ENU", exactly: any other spelling would be taken for NED. */
+/* "NED" only, which every output is.  Anything else, "ENU" included, is
+ * refused rather than ignored, so a config that asked for it finds out. */
 #define NEED_FRAME(field) \
     do { char fbuf[8]; \
          if (copy_str(val, fbuf, sizeof fbuf) != COPY_OK || \
-             (strcmp(fbuf, "NED") != 0 && strcmp(fbuf, "ENU") != 0)) { \
-        LOG_E("%s:%d: '%s': must be \"NED\" or \"ENU\" (got %s)\n", \
-              path, lineno, key, val); \
+             strcmp(fbuf, "NED") != 0) { \
+        LOG_E("%s:%d: '%s': every output is NED, so this can only be " \
+              "\"NED\" (got %s); a consumer that needs ENU converts, " \
+              "see spec.md\n", path, lineno, key, val); \
         return -1; } \
         snprintf((field), sizeof(field), "%s", fbuf); } while (0)
 

@@ -1516,14 +1516,16 @@ for broadcast or a unicast IP for point-to-point.'''
   scope = ""
   man_style = "tight"
   man = '''
-Output frame:
-.B NED
-(North-East-Down) or
+Always
+.BR NED :
+every output is North-East-Down with a forward-right-down body, and a
+consumer that needs ENU converts.
+Accepted so that older configs load;
 .B ENU
-(East-North-Up), spelled exactly so.'''
+is refused.'''
   md_type = 'string'
   md_default = '`"NED"`'
-  desc = 'Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. Any other spelling is refused.'
+  desc = 'Always `"NED"`: every output is North-East-Down with a forward-right-down body, and a consumer that needs ENU converts (spec.md gives the conversion). Accepted so that older configs load; `"ENU"` is refused.'
 
 [[section]]
 name = "stream"

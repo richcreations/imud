@@ -391,7 +391,7 @@ static void test_mon_renders_both_streams(void)
     memset(&im, 0, sizeof im);
     im.temp_c = 31.4f;
     imu_packet_t pkt;
-    packet_build(&pkt, &s, &mg, &im, &im, "NED");
+    packet_build(&pkt, &s, &mg, &im, &im);
     uint8_t wire[IMUD_PACKET_BYTES];
     packet_encode(wire, &pkt);
 

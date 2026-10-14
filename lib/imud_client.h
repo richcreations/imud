@@ -158,7 +158,7 @@ typedef struct IMUD__PACKED {
     float    declination_deg; /* °E+; 0.0 when IMUD_FLAG_DECLINATION_VALID not set */
     float    heave_m;         /* vertical displacement, m, + up (v1.1); 0.0 when
                                * the daemon's heave estimator is disabled */
-    /* v1.2 diagnostics — IMU body frame / frame-neutral (not coord_frame-rotated) */
+    /* v1.2 diagnostics — IMU body frame / frame-neutral */
     float    gyro_bias_x;     /* estimated gyro bias, rad/s */
     float    gyro_bias_y;
     float    gyro_bias_z;

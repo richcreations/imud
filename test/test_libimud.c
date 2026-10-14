@@ -123,7 +123,7 @@ static imu_packet_t make_pkt(void)
     i.temp_c = 31.4f; i.accel[2] = -9.81f;
 
     imu_packet_t pkt;
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     /* Carry the wire CRC so this matches what the library decodes. */
     uint8_t w[IMUD_PACKET_BYTES];
     pkt.crc32 = packet_encode(w, &pkt);

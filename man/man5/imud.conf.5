@@ -856,8 +856,7 @@ High-rate binary UDP stream.
 .B [restart]:
 .BR enabled ,
 .BR dest_addr ,
-.BR dest_port ,
-.BR coord_frame .
+.BR dest_port .
 .B [hot]:
 .BR rate_hz .
 .\" BEGIN GENERATED: config-keys highrate
@@ -884,11 +883,13 @@ Destination UDP port.
 .TP
 .B coord_frame
 .RI (string,\ default:\ \(dqNED\(dq)
-Output frame:
-.B NED
-(North-East-Down) or
+Always
+.BR NED :
+every output is North-East-Down with a forward-right-down body, and a
+consumer that needs ENU converts.
+Accepted so that older configs load;
 .B ENU
-(East-North-Up), spelled exactly so.
+is refused.
 .\" END GENERATED: config-keys highrate
 .SS [stream]
 Local AF_UNIX subscription stream carrying the same 276-byte binary packets

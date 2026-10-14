@@ -15,9 +15,7 @@
  * Build one imu_packet_t from the current fused state, latest mag,
  * bias-corrected IMU sample, and raw (pre-calibration) IMU sample.
  *
- * coord_frame: "NED" (default) or "ENU".  If "ENU", vectors and quaternion
- *              are transformed from NED to ENU before packing.
- *              All other fields (Euler angles, heading, etc.) are frame-neutral.
+ * Every frame-dependent field is NED world, forward-right-down body.
  *
  * Leaves .crc32 zero: the CRC covers the little-endian WIRE bytes, which only
  * packet_encode() has.  Nothing may transmit this struct directly.
@@ -26,8 +24,7 @@ void packet_build(imu_packet_t       *pkt,
                   const fused_state_t *state,
                   const mag_sample_t  *mag,
                   const imu_sample_t  *imu,
-                  const imu_sample_t  *raw_imu,
-                  const char          *coord_frame);
+                  const imu_sample_t  *raw_imu);
 
 /*
  * Serialise pkt into the 288 little-endian wire bytes, computing the CRC over

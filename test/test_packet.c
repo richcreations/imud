@@ -11,10 +11,7 @@
  *   - CRC32 implementation matches the IEEE 802.3 test vector
  *   - packet_build() populates the CRC field correctly
  *   - Flipping any payload byte changes the CRC (corruption detected)
- *   - NED mode: sensor vectors are copied unchanged
- *   - ENU mode: vectors are permuted (x,y,z)→(y,x,-z)
- *   - ENU mode: quaternion norm is preserved (still unit quaternion)
- *   - ENU mode: identity NED quaternion maps to the NED→ENU rotation quaternion
+ *   - Sensor vectors are copied unchanged: every output is NED
  *   - Magic, version, flags, timestamps, seq all copied correctly
  */
 
@@ -175,7 +172,7 @@ static void test_magic_version(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT(pkt.magic   == IMUD_MAGIC,   "magic == 0x494D5544");
     EXPECT(pkt.version == IMUD_VERSION, "version == IMUD_VERSION (17 = v1.7)");
     end(fb);
@@ -189,7 +186,7 @@ static void test_crc_correct(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     uint8_t wire[IMUD_PACKET_BYTES];
     uint32_t crc = packet_encode(wire, &pkt);
 
@@ -210,7 +207,7 @@ static void test_crc_detects_corruption(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
 
     /* Flip one bit in byte 10 (well inside the CRC-covered range). */
     ((uint8_t *)&pkt)[10] ^= 0x01u;
@@ -227,7 +224,7 @@ static void test_flags_copied(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT(pkt.flags == s.flags, "flags copied from fused_state_t");
     end(fb);
 }
@@ -240,7 +237,7 @@ static void test_timestamps_copied(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT(pkt.ts_wall_ns    == s.ts_wall_ns,    "ts_wall_ns");
     EXPECT(pkt.ts_tai_ns     == s.ts_tai_ns,     "ts_tai_ns");
     EXPECT(pkt.ts_chip_ticks == s.ts_chip_ticks, "ts_chip_ticks");
@@ -261,18 +258,13 @@ static void test_v12_fields_copied(void)
     s.bias_gyro_var[0] = 1e-6f; s.bias_gyro_var[1] = 2e-6f; s.bias_gyro_var[2] = 3e-6f;
     s.heave_rate = 0.25f;
     s.quiescence = 0.01f;
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT_NEAR(pkt.gyro_bias_x,      s.bias_gyro[0],     1e-9f,  "gyro_bias_x copied");
     EXPECT_NEAR(pkt.gyro_bias_y,      s.bias_gyro[1],     1e-9f,  "gyro_bias_y copied");
     EXPECT_NEAR(pkt.gyro_bias_z,      s.bias_gyro[2],     1e-9f,  "gyro_bias_z copied");
     EXPECT_NEAR(pkt.gyro_bias_var_x,  s.bias_gyro_var[0], 1e-12f, "gyro_bias_var_x copied");
     EXPECT_NEAR(pkt.heave_rate,       s.heave_rate,       1e-9f,  "heave_rate copied");
     EXPECT_NEAR(pkt.accel_quiescence, s.quiescence,       1e-9f,  "accel_quiescence copied");
-    /* v12 diagnostics are body-frame — identical in ENU (NOT coord_frame-rotated) */
-    imu_packet_t pkt_enu;
-    packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
-    EXPECT_NEAR(pkt_enu.gyro_bias_x, s.bias_gyro[0], 1e-9f, "gyro_bias not ENU-rotated");
-    EXPECT_NEAR(pkt_enu.heave_rate,  s.heave_rate,   1e-9f, "heave_rate not ENU-rotated");
     end(fb);
 }
 
@@ -294,7 +286,7 @@ static void test_v14_fields_copied(void)
     s.mag_residual = 0.025f;
     s.innov_weight = 0.87f;
     s.innov_reject = 0.06f;
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT_NEAR(pkt.wave_height_m, s.wave_height_m, 1e-9f, "wave_height_m copied");
     EXPECT_NEAR(pkt.wave_period_s, s.wave_period_s, 1e-9f, "wave_period_s copied");
     EXPECT_NEAR(pkt.roll_period_s, s.roll_period_s, 1e-9f, "roll_period_s copied");
@@ -305,10 +297,6 @@ static void test_v14_fields_copied(void)
     EXPECT_NEAR(pkt.mag_residual,    s.mag_residual,    1e-9f, "mag_residual copied");
     EXPECT_NEAR(pkt.innov_weight,    s.innov_weight,    1e-9f, "innov_weight copied");
     EXPECT_NEAR(pkt.innov_reject,    s.innov_reject,    1e-9f, "innov_reject copied");
-    /* frame-neutral scalars — identical in ENU */
-    imu_packet_t pkt_enu;
-    packet_build(&pkt_enu, &s, &m, &i, &i, "ENU");
-    EXPECT_NEAR(pkt_enu.wave_height_m, s.wave_height_m, 1e-9f, "wave_height not ENU-rotated");
     end(fb);
 }
 
@@ -320,7 +308,7 @@ static void test_ned_vectors_unchanged(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
 
     EXPECT_NEAR(pkt.accel_x, i.accel[0], 1e-6f, "NED accel_x unchanged");
     EXPECT_NEAR(pkt.accel_y, i.accel[1], 1e-6f, "NED accel_y unchanged");
@@ -334,107 +322,6 @@ static void test_ned_vectors_unchanged(void)
     end(fb);
 }
 
-/*
- * NED→ENU vector: (x, y, z)_ENU = (y_NED, x_NED, -z_NED)
- * accel NED = [0.12, 0.34, 9.80] → ENU = [0.34, 0.12, -9.80]
- */
-static void test_enu_vectors_permuted(void)
-{
-    begin("test_enu_vectors_permuted");
-    int fb = g_fail;
-    imu_packet_t pkt;
-    fused_state_t s = make_state();
-    mag_sample_t  m = make_mag();
-    imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "ENU");
-
-    EXPECT_NEAR(pkt.accel_x,  i.accel[1],  1e-5f, "ENU accel_x = NED accel_y");
-    EXPECT_NEAR(pkt.accel_y,  i.accel[0],  1e-5f, "ENU accel_y = NED accel_x");
-    EXPECT_NEAR(pkt.accel_z, -i.accel[2],  1e-5f, "ENU accel_z = -NED accel_z");
-    EXPECT_NEAR(pkt.gyro_x,   i.gyro[1],   1e-5f, "ENU gyro_x = NED gyro_y");
-    EXPECT_NEAR(pkt.gyro_y,   i.gyro[0],   1e-5f, "ENU gyro_y = NED gyro_x");
-    EXPECT_NEAR(pkt.gyro_z,  -i.gyro[2],   1e-5f, "ENU gyro_z = -NED gyro_z");
-    EXPECT_NEAR(pkt.mag_x,    m.field[1],  1e-5f, "ENU mag_x = NED mag_y");
-    EXPECT_NEAR(pkt.mag_y,    m.field[0],  1e-5f, "ENU mag_y = NED mag_x");
-    EXPECT_NEAR(pkt.mag_z,   -m.field[2],  1e-5f, "ENU mag_z = -NED mag_z");
-    end(fb);
-}
-
-/* ENU quaternion must still be a unit quaternion. */
-static void test_enu_quat_norm_preserved(void)
-{
-    begin("test_enu_quat_norm_preserved");
-    int fb = g_fail;
-    imu_packet_t pkt;
-    fused_state_t s = make_state();
-    mag_sample_t  m = make_mag();
-    imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "ENU");
-
-    float norm2 = pkt.quat_w * pkt.quat_w + pkt.quat_x * pkt.quat_x
-                + pkt.quat_y * pkt.quat_y + pkt.quat_z * pkt.quat_z;
-    EXPECT_NEAR(norm2, 1.0f, 1e-5f, "ENU quaternion has unit norm");
-    end(fb);
-}
-
-/*
- * Identity quaternion in NED ([1,0,0,0]) converted to ENU should give
- * [0, 1/√2, 1/√2, 0]: the rotation that maps NED basis vectors to ENU.
- * Derivation: q_ENU = [0, 1/√2, 1/√2, 0] ⊗ [1,0,0,0] = [0, 1/√2, 1/√2, 0]
- */
-static void test_enu_quat_identity_ned(void)
-{
-    begin("test_enu_quat_identity_ned");
-    int fb = g_fail;
-
-    imu_packet_t pkt;
-    fused_state_t s = make_state();  /* q = [1,0,0,0] by construction */
-    mag_sample_t  m = make_mag();
-    imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "ENU");
-
-#define INV_SQRT2_D 0.7071067811865476
-    EXPECT_NEAR(pkt.quat_w, 0.0f,        1e-5f, "ENU identity: qw=0");
-    EXPECT_NEAR(pkt.quat_x, INV_SQRT2_D, 1e-5f, "ENU identity: qx=1/√2");
-    EXPECT_NEAR(pkt.quat_y, INV_SQRT2_D, 1e-5f, "ENU identity: qy=1/√2");
-    EXPECT_NEAR(pkt.quat_z, 0.0f,        1e-5f, "ENU identity: qz=0");
-#undef INV_SQRT2_D
-    end(fb);
-}
-
-/* ENU mode CRC must still be valid (computed after transformation). */
-static void test_enu_crc_valid(void)
-{
-    begin("test_enu_crc_valid");
-    int fb = g_fail;
-    imu_packet_t pkt;
-    fused_state_t s = make_state();
-    mag_sample_t  m = make_mag();
-    imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "ENU");
-    uint8_t wire[IMUD_PACKET_BYTES];
-    uint32_t crc = packet_encode(wire, &pkt);
-    uint32_t expected = ref_crc32(wire, offsetof(imu_packet_t, crc32));
-    EXPECT(crc == expected, "ENU packet CRC32 is valid");
-    end(fb);
-}
-
-/* NED and ENU packets should have different CRCs (sensor fields differ). */
-static void test_ned_enu_crc_differ(void)
-{
-    begin("test_ned_enu_crc_differ");
-    int fb = g_fail;
-    imu_packet_t ned_pkt, enu_pkt;
-    fused_state_t s = make_state();
-    mag_sample_t  m = make_mag();
-    imu_sample_t  i = make_imu();
-    packet_build(&ned_pkt, &s, &m, &i, &i, "NED");
-    packet_build(&enu_pkt, &s, &m, &i, &i, "ENU");
-    uint8_t ned_wire[IMUD_PACKET_BYTES], enu_wire[IMUD_PACKET_BYTES];
-    EXPECT(packet_encode(ned_wire, &ned_pkt) != packet_encode(enu_wire, &enu_pkt),
-           "NED and ENU packets have different CRCs");
-    end(fb);
-}
 
 /*
  * Raw gyro fields must match the raw_imu sample passed to packet_build,
@@ -452,7 +339,7 @@ static void test_raw_gyro_copied(void)
     /* Give raw_imu different gyro values so we can distinguish them */
     raw.gyro[0] = 0.11f; raw.gyro[1] = 0.22f; raw.gyro[2] = 0.33f;
 
-    packet_build(&pkt, &s, &m, &imu_fused, &raw, "NED");
+    packet_build(&pkt, &s, &m, &imu_fused, &raw);
 
     /* Fused (bias-corrected) gyro comes from imu_fused */
     EXPECT_NEAR(pkt.gyro_x, imu_fused.gyro[0], 1e-6f, "gyro_x from fused sample");
@@ -477,7 +364,7 @@ static void test_raw_accel_copied(void)
     /* Give raw distinct accel_raw to distinguish from calibrated */
     raw.accel_raw[0] = 1.1f; raw.accel_raw[1] = 2.2f; raw.accel_raw[2] = 3.3f;
 
-    packet_build(&pkt, &s, &m, &raw, &raw, "NED");
+    packet_build(&pkt, &s, &m, &raw, &raw);
 
     EXPECT_NEAR(pkt.accel_raw_x, 1.1f, 1e-6f, "accel_raw_x from raw sample");
     EXPECT_NEAR(pkt.accel_raw_y, 2.2f, 1e-6f, "accel_raw_y from raw sample");
@@ -494,7 +381,7 @@ static void test_raw_mag_copied(void)
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
 
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
 
     EXPECT_NEAR(pkt.mag_raw_x, m.field_raw[0], 1e-6f, "mag_raw_x from field_raw");
     EXPECT_NEAR(pkt.mag_raw_y, m.field_raw[1], 1e-6f, "mag_raw_y from field_raw");
@@ -510,7 +397,7 @@ static void test_covariance_copied(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     for (int j = 0; j < 9; j++)
         EXPECT_NEAR(pkt.cov[j], s.cov[j], 1e-9f, "covariance element copied");
     end(fb);
@@ -524,7 +411,7 @@ static void test_temp_copied(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT_NEAR(pkt.temp_c, i.temp_c, 1e-5f, "temp_c copied from imu sample");
     end(fb);
 }
@@ -537,7 +424,7 @@ static void test_rate_of_turn_copied(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     EXPECT_NEAR(pkt.rate_of_turn, s.rate_of_turn, 1e-5f, "rate_of_turn from fused state");
     end(fb);
 }
@@ -603,7 +490,7 @@ static void test_wire_is_little_endian(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
 
     /* Pin values whose encodings are known by hand. */
     pkt.ts_wall_ns = 0x0102030405060708ull;
@@ -681,7 +568,7 @@ static void test_wire_matches_struct_image_on_le(void)
     fused_state_t s = make_state();
     mag_sample_t  m = make_mag();
     imu_sample_t  i = make_imu();
-    packet_build(&pkt, &s, &m, &i, &i, "ENU");
+    packet_build(&pkt, &s, &m, &i, &i);
 
     uint8_t w[IMUD_PACKET_BYTES];
     uint32_t crc = packet_encode(w, &pkt);
@@ -712,11 +599,6 @@ int main(void)
     test_v12_fields_copied();
     test_v14_fields_copied();
     test_ned_vectors_unchanged();
-    test_enu_vectors_permuted();
-    test_enu_quat_norm_preserved();
-    test_enu_quat_identity_ned();
-    test_enu_crc_valid();
-    test_ned_enu_crc_differ();
     test_raw_gyro_copied();
     test_raw_accel_copied();
     test_raw_mag_copied();

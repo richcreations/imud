@@ -110,7 +110,7 @@ static inline imu_packet_t fs_packet(uint32_t seq, float heading_deg,
     i.gyro[2]  = 0.033f;
 
     imu_packet_t pkt;
-    packet_build(&pkt, &s, &m, &i, &i, "NED");
+    packet_build(&pkt, &s, &m, &i, &i);
     return pkt;
 }
 

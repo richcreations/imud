@@ -20,11 +20,14 @@ Changed:
 * On macOS the output cadence and the IMU ring's waits now run on the mach
   timebase, so a wall-clock step can no longer stretch or cut them.
 * Out-of-range values are refused for fifo_wm, the accel skip thresholds,
-  coord_frame, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and accel_g and
-  gyro_dps are checked against the part. Each was accepted, then ignored or
-  misapplied.
-  A config carrying one of these, coord_frame = "enu" among them, no longer
-  starts.
+  lat_deg, lon_deg, MQTT qos and the MAVLink ids, and accel_g and gyro_dps are
+  checked against the part. Each was accepted, then ignored or misapplied.
+  A config carrying one of these out of range no longer starts.
+* Every output is NED, and coord_frame = "ENU" is refused: its quaternion and
+  vectors were in different body frames, and it also changed the stream the
+  bridges read. spec.md gives the conversion to ROS's ENU.
+  ACTION: Remove coord_frame = "ENU" from imud.conf and convert in the
+  consumer.
 
 Fixed:
 

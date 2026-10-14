@@ -641,7 +641,7 @@ details.
 
 ### `[highrate]`
 
-High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`, `coord_frame`. **[hot]**: `rate_hz`.
+High-rate binary UDP stream (500 Hz by default). **[restart]**: `enabled`, `dest_addr`, `dest_port`. **[hot]**: `rate_hz`.
 
 The 288-byte binary packet format is documented in [spec.md §8](../spec.md).
 Consumer libraries are in `lib/`.
@@ -653,7 +653,7 @@ Consumer libraries are in `lib/`.
 | `rate_hz` | int | `500` | Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
 | `dest_addr` | string | `"239.255.0.1"` | Destination IP. Default is an IPv4 multicast group (TTL=1, link-local). Consumers join with `IP_ADD_MEMBERSHIP`. Use `255.255.255.255` for broadcast or a unicast IP for point-to-point. |
 | `dest_port` | int | `10111` | Destination UDP port. |
-| `coord_frame` | string | `"NED"` | Output coordinate frame: `"NED"` (North-East-Down) or `"ENU"` (East-North-Up). Affects the quaternion, gyro, accel, and mag vector fields in the binary packet. Any other spelling is refused. |
+| `coord_frame` | string | `"NED"` | Always `"NED"`: every output is North-East-Down with a forward-right-down body, and a consumer that needs ENU converts (spec.md gives the conversion). Accepted so that older configs load; `"ENU"` is refused. |
 <!-- END GENERATED: config-keys highrate.1 -->
 
 ### `[stream]`

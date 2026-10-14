@@ -254,7 +254,7 @@ typedef struct __attribute__((packed)) {
     float    declination_deg; /* °E+; 0.0 when FLAG_DECLINATION_VALID not set */
     float    heave_m;        /* vertical displacement, m, + up (v11); 0.0 when
                               * the heave estimator is disabled */
-    /* v12 additions — body-frame / frame-neutral (NOT coord_frame-converted) */
+    /* v12 additions — body frame / frame-neutral */
     float    gyro_bias_x;    /* estimated gyro bias, rad/s, IMU body frame */
     float    gyro_bias_y;
     float    gyro_bias_z;

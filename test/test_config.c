@@ -728,8 +728,9 @@ static void test_load_rejects_too_long_string(void)
  */
 /*
  * Keys whose value has a range that nothing downstream enforces: a negative
- * skip threshold skips every accelerometer update, "enu" means NED, QoS 3
- * publishes nothing, and MAVLink system id 300 goes out as 44.
+ * skip threshold skips every accelerometer update, QoS 3 publishes nothing,
+ * and MAVLink system id 300 goes out as 44.  coord_frame is "NED" or nothing:
+ * every output is NED, and a config that asks for ENU has to find out.
  */
 static void test_load_bounds_semantic_keys(void)
 {
@@ -745,6 +746,7 @@ static void test_load_bounds_semantic_keys(void)
         "[fusion]\naccel_skip_thresh = 1.5\n",
         "[fusion]\nengine_accel_skip_thresh = -0.2\n",
         "[fusion]\nengine_accel_skip_thresh = 1.5\n",
+        "[highrate]\ncoord_frame = \"ENU\"\n",
         "[highrate]\ncoord_frame = \"enu\"\n",
         "[highrate]\ncoord_frame = \"East\"\n",
         "[position]\nlat_deg = 91\n",
@@ -768,10 +770,10 @@ static void test_load_bounds_semantic_keys(void)
     }
 
     /* Both ends of each range are inside it. */
-    const char *path = write_tmpconf(190,
+    const char *path = write_tmpconf(195,
         "[imu]\nfifo_wm = 1\n"
         "[fusion]\naccel_skip_thresh = 1.0\nengine_accel_skip_thresh = 0.001\n"
-        "[highrate]\ncoord_frame = \"ENU\"\n"
+        "[highrate]\ncoord_frame = \"NED\"\n"
         "[position]\nlat_deg = -90\nlon_deg = 180\n"
         "[imud-mqtt]\nqos = 2\n"
         "[imud-mavlink]\nsystem_id = 255\ncomponent_id = 1\n");
@@ -779,7 +781,7 @@ static void test_load_bounds_semantic_keys(void)
     EXPECT(config_load(path, &cfg) == 0, "the ends of every range load");
     EXPECT(cfg.imu_fifo_wm == 1 && cfg.accel_skip_thresh == 1.0 &&
            cfg.engine_accel_skip_thresh == 0.001, "watermark and thresholds applied");
-    EXPECT(strcmp(cfg.highrate_coord_frame, "ENU") == 0, "ENU applied");
+    EXPECT(strcmp(cfg.highrate_coord_frame, "NED") == 0, "NED still loads");
     EXPECT(cfg.pos_lat_deg == -90.0 && cfg.pos_lon_deg == 180.0, "position applied");
     EXPECT(cfg.mqtt_qos == 2 && cfg.mav_system_id == 255 &&
            cfg.mav_component_id == 1, "QoS and MAVLink ids applied");

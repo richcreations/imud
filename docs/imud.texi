@@ -1402,8 +1402,8 @@ host-local.
 @section [highrate]
 @anchor{#highrate}
 High-rate binary UDP stream (500 Hz by default). @strong{[restart]}:
-@code{enabled}, @code{dest_addr}, @code{dest_port}, @code{coord_frame}.
-@strong{[hot]}: @code{rate_hz}.
+@code{enabled}, @code{dest_addr}, @code{dest_port}. @strong{[hot]}:
+@code{rate_hz}.
 
 The 288-byte binary packet format is documented in
 @uref{https://github.com/richcreations/imud/blob/main/spec.md,spec.md
@@ -1444,9 +1444,10 @@ link-local). Consumers join with @code{IP_ADD_MEMBERSHIP}. Use
 @code{coord_frame}
  @tab string
  @tab @code{"NED"}
- @tab Output coordinate frame: @code{"NED"} (North-East-Down) or
-@code{"ENU"} (East-North-Up). Affects the quaternion, gyro, accel, and
-mag vector fields in the binary packet. Any other spelling is refused.
+ @tab Always @code{"NED"}: every output is North-East-Down with a
+forward-right-down body, and a consumer that needs ENU converts (spec.md
+gives the conversion). Accepted so that older configs load; @code{"ENU"}
+is refused.
 @end multitable
 
 @node [stream]

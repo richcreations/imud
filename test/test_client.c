@@ -98,7 +98,7 @@ static void test_client_accepts_daemon_packet(void)
     fused_state_t st; mag_sample_t mag; imu_sample_t imu, raw;
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     uint8_t wire[IMUD_PACKET_BYTES];
     packet_encode(wire, &pkt);
 
@@ -118,7 +118,7 @@ static void test_client_rejects_corruption(void)
     fused_state_t st; mag_sample_t mag; imu_sample_t imu, raw;
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
 
     unsigned char bytes[288];
     packet_encode(bytes, &pkt);
@@ -141,7 +141,7 @@ static void test_client_field_offsets(void)
     fused_state_t st; mag_sample_t mag; imu_sample_t imu, raw;
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
 
     EXPECT(client_flags(&pkt) == st.flags,            "flags roundtrip");
     EXPECT(client_ts_wall_ns(&pkt) == st.ts_wall_ns,  "ts_wall_ns roundtrip");
@@ -166,7 +166,7 @@ static void test_client_true_heading_helper(void)
     fused_state_t st; mag_sample_t mag; imu_sample_t imu, raw;
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
 
     /* 214.7 mag + 13.2 E = 227.9 true */
     EXPECT_NEAR(client_true_heading(&pkt), 227.9f, 0.01f,
@@ -175,7 +175,7 @@ static void test_client_true_heading_helper(void)
     /* Without the flag the helper must return the -1.0 sentinel. */
     st.flags = FLAG_MAG_VALID;
     st.declination_deg = 0.0f;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
                 "helper returns -1.0 without FLAG_DECLINATION_VALID");
 
@@ -184,17 +184,17 @@ static void test_client_true_heading_helper(void)
      * normalization with Inf/1e38 for 20 minutes). */
     make_inputs(&st, &mag, &imu, &raw);
     st.heading_deg = 3.4e38f;                     /* huge finite */
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
                 "huge heading returns the sentinel, promptly");
 
     st.heading_deg = 1.0f / 0.0f;                 /* +Inf */
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
                 "Inf heading returns the sentinel");
 
     st.heading_deg = 0.0f / 0.0f;                 /* NaN */
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     EXPECT_NEAR(client_true_heading(&pkt), -1.0f, 1e-6f,
                 "NaN heading returns the sentinel");
 
@@ -202,7 +202,7 @@ static void test_client_true_heading_helper(void)
     make_inputs(&st, &mag, &imu, &raw);
     st.heading_deg = 359.0f;
     st.declination_deg = 5.0f;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     EXPECT_NEAR(client_true_heading(&pkt), 4.0f, 0.01f,
                 "wraparound 359+5 -> 4 still works");
     end(fb);
@@ -267,7 +267,7 @@ static void test_client_socket_roundtrip(void)
     fused_state_t st; mag_sample_t mag; imu_sample_t imu, raw;
     make_inputs(&st, &mag, &imu, &raw);
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     uint8_t wire[IMUD_PACKET_BYTES];
     pkt.crc32 = packet_encode(wire, &pkt);   /* what a decode will read back */
 

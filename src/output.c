@@ -256,8 +256,7 @@ void *hirate_out_thread(void *arg)
         imu_sample_t raw_imu;
         imu_get_state(ctx->imu, &state, &mag, &imu, &raw_imu);
 
-        packet_build(&pkt, &state, &mag, &imu, &raw_imu,
-                     ctx->cfg->highrate_coord_frame);
+        packet_build(&pkt, &state, &mag, &imu, &raw_imu);
         packet_encode(wire, &pkt);
 
         ssize_t sent = sendto(ctx->hirate_fd, wire, sizeof(wire), 0,
@@ -338,8 +337,7 @@ void *stream_out_thread(void *arg)
 
         imu_sample_t raw_imu;
         imu_get_state(ctx->imu, &state, &mag, &imu, &raw_imu);
-        packet_build(&pkt, &state, &mag, &imu, &raw_imu,
-                     ctx->cfg->highrate_coord_frame);
+        packet_build(&pkt, &state, &mag, &imu, &raw_imu);
         packet_encode(wire, &pkt);
 
         for (int i = 0; i < ctx->stream_nclients; ) {
@@ -377,8 +375,7 @@ void *stream_out_thread(void *arg)
         state.flags |= FLAG_SHUTDOWN;
         imu_packet_t pkt;
         uint8_t      wire[IMUD_PACKET_BYTES];
-        packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s,
-                     ctx->cfg->highrate_coord_frame);
+        packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s);
         packet_encode(wire, &pkt);
         for (int i = 0; i < ctx->stream_nclients; i++)
             send(ctx->stream_clients[i], wire, sizeof(wire), MSG_NOSIGNAL);
@@ -541,7 +538,7 @@ void out_ctx_send_shutdown(out_ctx_t *ctx)
 
     imu_packet_t pkt;
     uint8_t      wire[IMUD_PACKET_BYTES];
-    packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s, ctx->cfg->highrate_coord_frame);
+    packet_build(&pkt, &state, &mag, &imu_s, &raw_imu_s);
     packet_encode(wire, &pkt);
     sendto(ctx->hirate_fd, wire, sizeof(wire), 0,
            (struct sockaddr *)&ctx->hirate_dest,

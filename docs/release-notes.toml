@@ -105,8 +105,14 @@ and a TAI offset it previously had no way to read."""
   [[release.change]]
   kind     = "behaviour"
   packages = ["imud", "imud-utils", "imud-mqtt", "imud-mavlink"]
-  text     = "Out-of-range values are refused for fifo_wm, the accel skip thresholds, coord_frame, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and accel_g and gyro_dps are checked against the part. Each was accepted, then ignored or misapplied."
-  impact   = "A config carrying one of these, coord_frame = \"enu\" among them, no longer starts."
+  text     = "Out-of-range values are refused for fifo_wm, the accel skip thresholds, lat_deg, lon_deg, MQTT qos and the MAVLink ids, and accel_g and gyro_dps are checked against the part. Each was accepted, then ignored or misapplied."
+  impact   = "A config carrying one of these out of range no longer starts."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud"]
+  text     = "Every output is NED, and coord_frame = \"ENU\" is refused: its quaternion and vectors were in different body frames, and it also changed the stream the bridges read. spec.md gives the conversion to ROS's ENU."
+  action   = "Remove coord_frame = \"ENU\" from imud.conf and convert in the consumer."
 
 [[release]]
 version = "1.11.1"

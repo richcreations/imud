@@ -67,7 +67,7 @@ int main(int argc, char **argv)
     mag.valid=true;
 
     imu_packet_t pkt;
-    packet_build(&pkt, &st, &mag, &imu, &raw, "NED");
+    packet_build(&pkt, &st, &mag, &imu, &raw);
     uint8_t wire[IMUD_PACKET_BYTES];
     packet_encode(wire, &pkt);
 
