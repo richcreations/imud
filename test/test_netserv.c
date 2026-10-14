@@ -298,7 +298,8 @@ static void test_dead_client_pruned(void)
 }
 
 /* A client with a small receive window, set before connecting so that the
- * handshake uses it: a server send then fills within a few kilobytes. */
+ * handshake uses it: a server send then fills within a few kilobytes, on
+ * Linux.  macOS sizes a loopback window at connect, whatever this asks. */
 static int connect_small_client(int port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -335,6 +336,19 @@ static double seconds_since(const struct timespec *t0)
     return (double)(t.tv_sec - t0->tv_sec) + (t.tv_nsec - t0->tv_nsec) * 1e-9;
 }
 
+/* Fill the server's end of a connection until the client takes nothing more,
+ * as one that stopped reading long ago has.  Its send buffer is left at the
+ * default: a small one, paced by macOS's delayed ACKs, stalls in a way that
+ * looks full long before the client's ~320 KB loopback window is. */
+static void fill_until_refused(int fd)
+{
+    static const char chunk[65536];
+    for (int refused = 0; refused < 50; ) {
+        if (send(fd, chunk, sizeof chunk, 0) > 0) refused = 0;
+        else { refused++; usleep(1000); }
+    }
+}
+
 /*
  * A client that stops reading is dropped once it has taken nothing for
  * NETSRV_STALL_NS — 300 ms in this build.  The limit runs from the last whole
@@ -348,17 +362,20 @@ static void test_stalled_client_dropped(void)
 
     netserv_t s;
     EXPECT(netserv_open(&s, "127.0.0.1", 0, "test") == 0, "server opens");
-    int live  = connect_small_client(s.port);
+    struct timespec t0;                     /* no later than either accept */
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     int stuck = connect_small_client(s.port);
+    accept_n(&s, 1);                        /* so it is s.clients[0] */
+    int live  = connect_small_client(s.port);
     accept_n(&s, 2);
     EXPECT(netserv_nclients(&s) == 2, "two clients accepted");
-    int small = 2048;
-    for (int i = 0; i < s.nclients; i++)
-        setsockopt(s.clients[i], SOL_SOCKET, SO_SNDBUF, &small, sizeof small);
+    if (s.nclients == 2) {
+        fill_until_refused(s.clients[0]);
+        int small = 2048;                   /* so that the reader falls behind */
+        setsockopt(s.clients[1], SOL_SOCKET, SO_SNDBUF, &small, sizeof small);
+    }
 
     char sink[65536];
-    struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
     while (netserv_nclients(&s) == 2 && seconds_since(&t0) < 5.0) {
         send_bytes(&s, 64);
         while (recv(live, sink, sizeof sink, MSG_DONTWAIT) > 0) {}
