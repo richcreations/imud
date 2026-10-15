@@ -1,3 +1,11 @@
+imud-prometheus (1.11.3) unstable; urgency=medium
+
+  * imud and the bridges take --check-config, which reports what would
+    stop a start. A package upgrade runs it, and NEWS.Debian lists what
+    1.11.2 refuses.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 20:51:41 -0700
+
 imud-prometheus (1.11.0) unstable; urgency=medium
 
   * imud runs on macOS: it builds, installs, and runs as a launchd

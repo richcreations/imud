@@ -23,7 +23,7 @@
 
 [[release]]
 version = "1.11.3"
-date    = "unreleased"
+date    = "2026-10-14"
 summary = """
 imud-cal mag fits about the accelerometer's vertical and is not fooled by
 noise, and an upgrade now says when a config will stop imud or a bridge

@@ -15,7 +15,7 @@
 #ifndef IMUD_VERSION_H
 #define IMUD_VERSION_H
 
-#define IMUD_VERSION_STR "1.11.2"
+#define IMUD_VERSION_STR "1.11.3"
 
 /*
  * Release date, ISO 8601, stamped into every generated man page's .TH line.

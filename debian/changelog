@@ -1,3 +1,21 @@
+imud (1.11.3-1) unstable; urgency=medium
+
+  * imud and the bridges take --check-config, which reports what would
+    stop a start. A package upgrade runs it, and NEWS.Debian lists what
+    1.11.2 refuses.
+  * stats_hz is refused outside 1 to 100, and any rate_hz above 32000.
+    From 10⁹ up either left its thread with no wait, at full CPU.  A
+    config carrying one of these no longer starts.
+  * imud-cal mag reads the accelerometer through the swing and fits about
+    its vertical. Soft iron that tilts the swing was taken for heel, worth
+    5° of heading on a level keel.  ACTION: Run imud-cal accel before
+    imud-cal mag, and repeat a magnetometer swing made with 1.11.2.
+  * imud-cal mag no longer takes sensor noise, one bad sample or a step in
+    the field for roll. Each could put the vertical field into the hard
+    iron: 20° of heading at 10° of heel.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 20:51:41 -0700
+
 imud (1.11.2-1) unstable; urgency=medium
 
   * On macOS the output cadence and the IMU ring's waits now run on the

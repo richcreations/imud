@@ -1,3 +1,14 @@
+imud-mavlink (1.11.3) unstable; urgency=medium
+
+  * imud and the bridges take --check-config, which reports what would
+    stop a start. A package upgrade runs it, and NEWS.Debian lists what
+    1.11.2 refuses.
+  * stats_hz is refused outside 1 to 100, and any rate_hz above 32000.
+    From 10⁹ up either left its thread with no wait, at full CPU.  A
+    config carrying one of these no longer starts.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 20:51:41 -0700
+
 imud-mavlink (1.11.2) unstable; urgency=medium
 
   * Out-of-range values are refused for fifo_wm, the accel skip
