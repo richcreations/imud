@@ -636,6 +636,8 @@ imud [OPTIONS]
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
+  --check-config     Check the config, cal.json and driver settings as a
+                     start would, then exit; 0 when imud would start
   --foreground       Accepted and ignored (imud always runs in the foreground)
   --version          Print the version and exit
   -h, --help         Print this help and exit
@@ -645,7 +647,9 @@ If @code{--config} is omitted, imud tries @code{/etc/imud/imud.conf} and
 then @code{~/.config/imud/imud.conf}. A config file that exists but
 contains a bad value is fatal --- imud reports every error and refuses
 to start rather than run on a half-applied config. A missing file is not
-an error (built-in defaults are used).
+an error (built-in defaults are used). @code{--check-config} reports the
+same errors without opening a device, and every bridge takes it too; a
+package upgrade runs it for each installed config.
 
 @node Signals
 @section Signals
@@ -1364,8 +1368,8 @@ Key
 @code{rate_hz}
  @tab int
  @tab @code{10}
- @tab Output rate in Hz (shared by UDP and TCP); must be greater than
-zero. Hot-reloadable.
+ @tab Output rate in Hz (shared by UDP and TCP), from 1 to 32000.
+Hot-reloadable.
 @item 
 @code{dest_addr}
  @tab string
@@ -1425,9 +1429,9 @@ ROS2, or any consumer needing quaternion + covariance at high rate.
 @code{rate_hz}
  @tab int
  @tab @code{500}
- @tab Publish rate in Hz; must be greater than zero. The MEKF runs at
-the full @code{imu.odr_hz} internally; this controls how often results
-are published. Hot-reloadable.
+ @tab Publish rate in Hz, from 1 to 32000. The MEKF runs at the full
+@code{imu.odr_hz} internally; this controls how often results are
+published. Hot-reloadable.
 @item 
 @code{dest_addr}
  @tab string
@@ -1486,8 +1490,8 @@ needs @code{adduser <user> imud}).
 @code{rate_hz}
  @tab int
  @tab @code{100}
- @tab Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be
-greater than zero. Hot-reloadable.
+ @tab Per-subscriber packet rate in Hz (AF_UNIX and TCP), from 1 to
+32000. Hot-reloadable.
 @item 
 @code{tcp_enabled}
  @tab bool
@@ -1709,8 +1713,8 @@ it (@code{postrotate: systemctl reload imud}).
 @code{stats_hz}
  @tab int
  @tab @code{1}
- @tab Rate of the @code{[stats]} heartbeat log line. Only visible at
-@code{level = "info"} or @code{"debug"}.
+ @tab Rate of the @code{[stats]} heartbeat log line, from 1 to 100 Hz.
+Only visible at @code{level = "info"} or @code{"debug"}.
 @end multitable
 
 @node [position]
@@ -2680,13 +2684,18 @@ correction (including the cross term, so a distortion ellipse whose axes
 are rotated relative to the sensor is corrected --- a per-axis scale
 cannot do this). The fit is done in vessel axes, so set @code{[mount]}
 before swinging: a board mounted on edge has the swing in a different
-plane of its own axes. A swing that holds its heel --- level, or heeled
-steadily through the turn --- cannot tell the vertical hard iron from
-the vertical field, so that component is left at zero rather than
-fitted; a swing whose heel varies by more than about 6° either way does
-measure it. It reports the horizontal field (the whole field when the
-heel varied), a fit residual, and swing coverage; a residual under ~1 µT
-and coverage above ~75% indicate a good fit. Afterward, watch the wire's
+plane of its own axes. @code{imud-cal mag} reads the accelerometer
+through the swing and fits about its vertical, which tells a steady heel
+from soft iron that tilts the swing the same way; run
+@code{imud-cal accel} first, so that vertical is the one the daemon
+uses. A swing that holds its heel --- level, or heeled steadily through
+the turn --- cannot tell the vertical hard iron from the vertical field,
+so that component is left at zero rather than fitted; a swing whose heel
+varies by more than about 6° either way, well clear of the sensor's
+noise, does measure it. It reports which fit it made and the swing's
+tilt, the horizontal field (the whole field when the heel varied), a fit
+residual, and swing coverage; a residual under ~1 µT and coverage above
+~75% indicate a good fit. Afterward, watch the wire's
 @code{mag_residual} / @code{mag_anomaly} compass-health metrics (v14,
 also on the InfluxDB and Prometheus bridges): a rising residual means
 the calibration is degrading and the swing should be repeated.

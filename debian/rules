@@ -64,5 +64,13 @@ override_dh_fixperms:
 # remaps them, and libimud-dev.links symlinks to libimud0's (permitted: it
 # already Depends on libimud0 (= ${binary:Version})).  Since dh_installdocs
 # is skipped, nothing else would create those directories.
+#
+# The NEWS.Debian files are the one thing dh_installchangelogs would add, and
+# apt-listchanges shows them on upgrade, which is where an install learns that
+# a config it ran will now be refused.  dh_compress gzips them.
 override_dh_installchangelogs:
+	for p in imud imud-mqtt imud-mavlink; do \
+	    install -D -m 0644 debian/$$p.NEWS \
+	        debian/$$p/usr/share/doc/$$p/NEWS.Debian; \
+	done
 override_dh_installdocs:

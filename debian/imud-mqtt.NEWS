@@ -1,0 +1,7 @@
+imud (1.11.2-1) unstable; urgency=medium
+
+  imud-mqtt refuses to start on a topic_prefix or ha_prefix holding the
+  MQTT wildcard + or #, or on a qos other than 0, 1 or 2.
+  "imud-mqtt --check-config" names any of these, and an upgrade runs it.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700

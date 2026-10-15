@@ -1718,6 +1718,27 @@ jobs:
                 echo "  /etc/imud/$c.conf repaired to 640 root:imud"
               done
 
+              # ── a config the new version refuses ─────────────────────────
+              # The restart after an upgrade fails with no more than "Job
+              # failed", so the postinst runs --check-config first and says
+              # what will stop the daemon.  The upgrade itself still succeeds.
+              # apt-listchanges shows NEWS.Debian, so each must be there.
+              echo "=== refused config on upgrade ==="
+              for p in imud imud-mqtt imud-mavlink; do
+                test -s /usr/share/doc/$p/NEWS.Debian.gz
+                echo "  /usr/share/doc/$p/NEWS.Debian.gz"
+              done
+              imud --check-config --config /etc/imud/imud.conf
+              sed -i "s/^coord_frame *= *\"NED\"/coord_frame = \"ENU\"/" /etc/imud/imud.conf
+              grep -q "^coord_frame = \"ENU\"" /etc/imud/imud.conf
+              dpkg -i /tmp/d/imud_*.deb 2>&1 | tee /tmp/upgrade.log
+              grep -q "coord_frame" /tmp/upgrade.log
+              grep -q "imud will not start until the errors above" /tmp/upgrade.log
+              dpkg -s imud | grep -q "^Status: install ok installed"
+              sed -i "s/^coord_frame = \"ENU\"/coord_frame = \"NED\"/" /etc/imud/imud.conf
+              imud --check-config --config /etc/imud/imud.conf
+              echo "  the upgrade names the refused key, and still configures"
+
               # ── purge ───────────────────────────────────────────────────
               echo "=== purge ==="
               apt-get purge -y imud imud-utils libimud0 libimud-dev \

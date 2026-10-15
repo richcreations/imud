@@ -168,41 +168,61 @@ typedef struct {
     bool   level;             /* a level swing: circle fit, and no vertical
                                * hard iron taken from it */
     double vertical;          /* mean vertical reading, µT, uncorrected */
+    double tilt_deg;          /* the swing's vertical from body Z, degrees */
+    bool   accel_vertical;    /* that vertical is the accelerometer's; else
+                               * the normal of the swing's own plane */
 } cal_mag_fit_t;
 
 /*
- * A swing is level when its vertical half-extent, in its own axes, is under
- * this fraction of the horizontal circle's radius.  The ratio is the sine of
- * the heel either side of the swing's mean, so a tenth is about ±6°: under
- * that the sphere's vertical centre is wrong by anything up to the whole
- * vertical field, over it by a microtesla or two.
+ * A swing is level when the standard deviation of its vertical reading about
+ * the plane it lies in, in its own axes, is under this fraction of the
+ * horizontal circle's radius: about ±6° of roll.  A deviation, not the
+ * extremes, so that noise and a stray sample barely move it.
  */
-#define CAL_LEVEL_MAX_SPAN 0.1
+#define CAL_LEVEL_MAX_SD 0.05
+
+/*
+ * A swing that is not level keeps the sphere only if the sphere found the
+ * vertical field.  Noise in the vertical reading pulls the sphere's centre
+ * towards the swing's own plane, and the field with it into the hard iron:
+ * so the roll, the scatter less the noise seen from one sample to the next,
+ * must be CAL_SPHERE_MIN_SNR times the noise, as standard deviations; and the
+ * sphere's radius CAL_SPHERE_MIN_GAIN times the circle's, which a slow drift
+ * does not give.  Past CAL_SPHERE_FREE_SD of the radius the sphere is taken
+ * as it is: a tumble's centre is its own mean height.
+ */
+#define CAL_SPHERE_MIN_SNR  3.0
+#define CAL_SPHERE_MIN_GAIN 1.05
+#define CAL_SPHERE_FREE_SD  0.2
 
 /*
  * cal_mag_fit — hard and soft iron from a swing of n raw samples (µT, board
  * axes).  `mount` is the board→body rotation M from [mount], or NULL for a
- * board mounted flat.
+ * board mounted flat.  `accel` is the accelerometer's mean over the swing
+ * (m/s², board axes, corrected as the daemon corrects it), or NULL.
  *
- * The fit is done in the swing's own axes: body axes, turned onto the plane
- * the swing was made in.  Body axes, because on a board mounted on edge the
+ * The fit is done in the swing's own axes: body axes, turned onto the vertical
+ * the swing was made about.  Body axes, because on a board mounted on edge the
  * swing lies in board X–Z or Y–Z, and a fit of board X/Y takes the vertical
  * field for one of the horizontal axes.  Turned, because a vessel heels
  * steadily through its turn, and its swing is then a circle tilted with it.
- * With R the whole board→swing rotation, the result is mapped back for
- * cal.json, h_board = Rᵀ·h and S_board = Rᵀ·S·R, so that the daemon's
+ * The vertical is gravity's, from `accel`: soft iron that couples a
+ * horizontal axis to the vertical tilts the swing's plane just as heel does.
+ * Without `accel` it is the normal of that plane.  With R the whole
+ * board→swing rotation, the result is mapped back for cal.json,
+ * h_board = Rᵀ·h and S_board = Rᵀ·S·R, so that the daemon's
  * M·S_board·(m − h_board) is the swing-axis correction S·(R·m − h), turned
  * back to body axes.
  *
  * A level swing — one that holds its heel, as a vessel's does — gets a
  * circle fit in the horizontal plane, and no vertical hard iron: see
- * CAL_LEVEL_MAX_SPAN.  One whose heel varies enough to measure the vertical
+ * CAL_LEVEL_MAX_SD.  One whose heel varies enough to measure the vertical
  * gets the sphere, and its horizontal soft iron is fitted against that sphere.
  *
  * Returns 0, or -1 when the samples do not determine a fit.
  */
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
-                cal_mag_fit_t *out);
+                const double accel[3], cal_mag_fit_t *out);
 
 /*
  * A swing of any length in a fixed buffer.  Every sample is kept until the

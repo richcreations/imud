@@ -1342,15 +1342,15 @@ md_groups = [["enabled", "rate_hz", "dest_addr", "dest_port", "tcp_enabled", "tc
   [[section.key]]
   names = ["rate_hz"]
   fields = ["nmea_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 10'
   scope = ""
   man_style = "tight"
-  man = 'Output rate in Hz (shared by UDP and TCP).'
+  man = 'Output rate in Hz (shared by UDP and TCP), from 1 to 32000.'
   md_type = 'int'
   md_default = '`10`'
-  desc = 'Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable.'
+  desc = 'Output rate in Hz (shared by UDP and TCP), from 1 to 32000. Hot-reloadable.'
 
   [[section.key]]
   names = ["dest_addr"]
@@ -1467,15 +1467,15 @@ md_groups = [["enabled", "rate_hz", "dest_addr", "dest_port", "coord_frame"]]
   [[section.key]]
   names = ["rate_hz"]
   fields = ["highrate_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 500'
   scope = ""
   man_style = "tight"
-  man = 'Output rate in Hz.'
+  man = 'Output rate in Hz, from 1 to 32000.'
   md_type = 'int'
   md_default = '`500`'
-  desc = 'Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable.'
+  desc = 'Publish rate in Hz, from 1 to 32000. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable.'
 
   [[section.key]]
   names = ["dest_addr"]
@@ -1565,15 +1565,15 @@ Enable the subscription stream \(em the one output a stock daemon provides
   [[section.key]]
   names = ["rate_hz"]
   fields = ["stream_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 100'
   scope = ""
   man_style = "tight"
-  man = 'Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers).'
+  man = 'Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers), from 1 to 32000.'
   md_type = 'int'
   md_default = '`100`'
-  desc = 'Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be greater than zero. Hot-reloadable.'
+  desc = 'Per-subscriber packet rate in Hz (AF_UNIX and TCP), from 1 to 32000. Hot-reloadable.'
 
   [[section.key]]
   names = ["tcp_enabled"]
@@ -1682,7 +1682,7 @@ Repeated identical messages are suppressed and logged as a count.'''
   [[section.key]]
   names = ["stats_hz"]
   fields = ["log_stats_hz"]
-  macros = ["NEED_INT"]
+  macros = ["NEED_RANGE_INT"]
   type = 'int'
   default = 'default:\ 1'
   scope = ""
@@ -1690,7 +1690,7 @@ Repeated identical messages are suppressed and logged as a count.'''
   man = '''
 Rate of the
 .B [stats]
-heartbeat line.
+heartbeat line, from 1 to 100\~Hz.
 Only visible at
 .B info
 or
@@ -1698,7 +1698,7 @@ or
 level.'''
   md_type = 'int'
   md_default = '`1`'
-  desc = 'Rate of the `[stats]` heartbeat log line. Only visible at `level = "info"` or `"debug"`.'
+  desc = 'Rate of the `[stats]` heartbeat log line, from 1 to 100 Hz. Only visible at `level = "info"` or `"debug"`.'
 
 [[section]]
 name = "position"
@@ -1982,15 +1982,15 @@ UDP port — must match the Signal K server's UDP input connection.'''
   [[section.key]]
   names = ["rate_hz"]
   fields = ["sk_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 10'
   scope = "hot"
   man_style = "spaced"
-  man = 'Delta emit rate in Hz; must be greater than zero.'
+  man = 'Delta emit rate in Hz, from 1 to 32000.'
   md_type = 'int'
   md_default = '`10`'
-  desc = 'Delta emit rate in Hz; must be greater than zero.'
+  desc = 'Delta emit rate in Hz, from 1 to 32000.'
 
   [[section.key]]
   names = ["source_label"]
@@ -2194,15 +2194,15 @@ Connect to the broker and publish (the bridge's only output).'''
   [[section.key]]
   names = ["rate_hz"]
   fields = ["mqtt_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 5'
   scope = "hot"
   man_style = "spaced"
-  man = 'Publish rate in Hz; must be greater than zero.'
+  man = 'Publish rate in Hz, from 1 to 32000.'
   md_type = 'int'
   md_default = '`5`'
-  desc = 'Publish rate in Hz; must be greater than zero.'
+  desc = 'Publish rate in Hz, from 1 to 32000.'
 
   [[section.key]]
   names = ["qos"]
@@ -2398,15 +2398,15 @@ value is mapped to the matching enable (with a warning).  Prefer the enables.'''
   [[section.key]]
   names = ["rate_hz"]
   fields = ["influx_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 10'
   scope = "hot"
   man_style = "spaced"
-  man = 'Point emit rate in Hz; must be greater than zero.'
+  man = 'Point emit rate in Hz, from 1 to 32000.'
   md_type = 'int'
   md_default = '`10`'
-  desc = 'Point emit rate in Hz; must be greater than zero.'
+  desc = 'Point emit rate in Hz, from 1 to 32000.'
 
   [[section.key]]
   names = ["measurement"]
@@ -2788,17 +2788,17 @@ a real autopilot).'''
   [[section.key]]
   names = ["rate_hz"]
   fields = ["mav_rate_hz"]
-  macros = ["NEED_POS_INT"]
+  macros = ["NEED_RATE_HZ"]
   type = 'int'
   default = 'default:\ 10'
   scope = "hot"
   man_style = "spaced"
   man = '''
-ATTITUDE / ATTITUDE_QUATERNION rate in Hz; must be greater than zero
+ATTITUDE / ATTITUDE_QUATERNION rate in Hz, from 1 to 32000
 (HEARTBEAT is fixed at 1 Hz).'''
   md_type = 'int'
   md_default = '`10`'
-  desc = 'ATTITUDE/quaternion rate; must be greater than zero (heartbeat is fixed 1 Hz).'
+  desc = 'ATTITUDE/quaternion rate, from 1 to 32000 (heartbeat is fixed 1 Hz).'
 
   [[section.key]]
   names = ["send_attitude"]

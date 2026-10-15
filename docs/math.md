@@ -1507,17 +1507,22 @@ the per-sample time).
 
 ## 12. Offline calibration fits (`imud-cal`, `cal_math.c`)
 
-**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:230`). The swing
+**Frame of the magnetometer fit** (`cal_mag_fit`, `cal_math.c:247`). The swing
 is fitted in its own axes, $b = R\,m$ with $R = Q^\top M$. The mount rotation
 $M$ takes each raw sample to body axes — on a board mounted on edge the swing
-lies in board X–Z or Y–Z. $Q$ turns body Z onto the plane the swing was made
-in: a vessel heels steadily through its turn, and its swing is then a circle
-tilted with it, about the vertical it turned on. `swing_axes`
-(`cal_math.c:203`) fits that plane as $z = p\,x + q\,y + d$ by least squares
-about the samples' mean, and $Q$ is the least rotation from body Z onto its
-normal $n \propto (-p, -q, 1)$:
+lies in board X–Z or Y–Z. $Q$ turns body Z onto the vertical the swing was
+made about: a vessel heels steadily through its turn, and its swing is then a
+circle tilted with it. That vertical is gravity's, $n = -M\bar a /
+\lVert M\bar a\rVert$ from the accelerometer's mean $\bar a$ over the swing
+(`accel_down`, `cal_math.c:235`), corrected as the daemon corrects it, so an
+accelerometer bias tilts the fit and the daemon's attitude alike. Without an
+accelerometer it is the normal $n \propto (-p, -q, 1)$ of the plane
+$z = p\,x + q\,y + d$ the samples lie nearest, by least squares about their
+mean (`plane_fit`, `cal_math.c:201`) — but soft iron that couples a
+horizontal axis to the vertical tilts that plane just as heel does. $Q$ is
+the least rotation from body Z onto $n$ (`z_onto`, `cal_math.c:224`):
 $$ Q = I + [k]_\times + \frac{[k]_\times^2}{1 + n_z},\qquad k = \hat z \times n, $$
-the identity for a level plane. In these axes a swing that holds its heel is
+the identity for a level swing. In these axes a swing that holds its heel is
 level. `cal.json` is in board axes, where the daemon applies it (§3.3), so the
 result is mapped back:
 $$ h_{board} = R^\top h,\qquad S_{board} = R^\top S\,R, $$
@@ -1557,11 +1562,21 @@ vertical field, so the centre is unconstrained along the vertical and lands
 on that reading: the whole vertical field $Z$ goes into the hard iron, and
 $\phi$ of heel away from the swing's the levelled field gains an east
 component $Z\sin\phi$ — 18° of heading at 10° where $Z/H\approx2$. When the
-vertical half-extent is under a tenth of the horizontal radius (the ratio is
-the sine of the heel either side of the swing's mean, so about ±6°),
-`cal_mag_fit` fits a circle to the horizontal components instead, by the same
+standard deviation $s$ of the vertical reading about the swing's plane is
+under a twentieth of the horizontal radius (about ±6° of roll), `cal_mag_fit`
+fits a circle to the horizontal components instead, by the same
 linearization in two dimensions, and leaves the vertical hard iron at zero.
 That is wrong by the vertical hard iron itself and by nothing else.
+
+A swing over that line keeps the sphere only if the sphere found the vertical
+field. Noise of deviation $\sigma$ in the vertical reading pulls the fitted
+centre from the true one towards the swing's mean height, by the fraction
+$\sigma^2/(\sigma^2 + s_r^2)$ for a roll of deviation $s_r$. So the roll,
+$s_r^2 = s^2 - \sigma^2$ with $\sigma$ taken from one sample to the next
+(roll barely changes there; noise does), must be three times $\sigma$, and the
+sphere's radius at least 1.05 times the circle's, which a slow drift in the
+vertical does not give. Past a fifth of the radius — a tumble, whose centre is
+its own mean height — the sphere is taken as it is.
 
 **As-implemented.** This is the *algebraic* fit (minimizes an algebraic
 residual, not orthogonal geometric distance); fast, closed-form, and adequate
@@ -1589,7 +1604,10 @@ A swing whose heel varies uses the §12.2 sphere. A level swing uses the one
 its own assumption implies: centre on its axis with no vertical hard iron, and
 $r^2 = r_c^2 + \bar b_z^2$ from the circle's radius $r_c$ and the mean
 vertical reading $\bar b_z$. Its roll is then corrected in proportion to
-$\bar b_z$, which includes the vertical hard iron the fit leaves out.
+$\bar b_z$, which includes the vertical hard iron the fit leaves out. Its
+vertical reading is taken less the tilt of its plane, which is soft iron or
+the accelerometer's error rather than roll; over a swing that covers the
+headings unevenly, that tilt would otherwise reach $S_2$.
 
 **As-implemented / audit note.** The soft-iron correction is **2-D** (X–Y
 plane only). This is a deliberate specialization for the heading-only fusion
@@ -1602,7 +1620,7 @@ has its Z couplings from configuration/identity, not from this fit.
 **Source:** algebraic conic/ellipse fit, Fitzgibbon, Pilu & Fisher 1999;
 magnetometer soft-iron, Renaudin et al. 2010 *(canonical)*.
 
-### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:505`)
+### 12.4 Heading-circle coverage — `cal_cov_mark()` (`cal_math.c:564`)
 
 Guided-swing coverage: the heading circle is split into `nsec` sectors; the
 sample $(x,y)$ relative to center $(c_x,c_y)$ is binned by
@@ -1610,7 +1628,7 @@ $$ s = \Big\lfloor \frac{\operatorname{atan2}(y-c_y,\,x-c_x)\bmod 2\pi}
 {2\pi/\text{nsec}} \Big\rfloor. $$
 `cal_cov_count` sums the marked sectors. Pure bookkeeping (no fit).
 
-### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:524`)
+### 12.5 Allan variance — `allan_deviation()` (`cal_math.c:583`)
 
 **Overlapping** Allan deviation. With the cumulative integral
 $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
@@ -1618,7 +1636,7 @@ $\theta[k]=\sum_{j<k} x_j\,dt$ and octave cluster lengths $m=1,2,4,\dots$
 $$ \sigma^2(\tau) = \frac{1}{2\tau^2\,(N-2m+1)}
    \sum_{k=0}^{N-2m}\big(\theta[k{+}2m]-2\theta[k{+}m]+\theta[k]\big)^2. $$
 
-**Characterization** (`allan_characterize`, `cal_math.c:557`): white-noise
+**Characterization** (`allan_characterize`, `cal_math.c:616`): white-noise
 density from the shortest cluster,
 $$ N = \sigma(\tau_0)\sqrt{\tau_0}, $$
 bias instability from the curve minimum,
@@ -1633,7 +1651,7 @@ the filter tuning (§4.2 note).
 **Source:** Allan 1966; overlapping estimator Riley 2008 (NIST SP 1065);
 $N$/$B$ extraction and $0.664$, IEEE Std 952 *(code comment: "IEEE 952")*.
 
-### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:581`)
+### 12.6 Gyro-bias / temperature fit — `gyro_temp_fit()` (`cal_math.c:640`)
 
 Ordinary least-squares line of gyro bias vs. temperature about a reference
 $T_{ref}$: with $t_i=T_i-T_{ref}$,

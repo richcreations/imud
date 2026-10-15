@@ -1,0 +1,17 @@
+#!/bin/sh
+# postinst for imud-signalk — a config the bridge will refuse is said here,
+# not by the restart below, which fails with no more than "Job failed".
+set -e
+
+case "$1" in
+    configure)
+        if ! imud-signalk --check-config --config /etc/imud/imud-signalk.conf >/dev/null; then
+            echo "imud-signalk: imud-signalk will not start until the errors" \
+                 "above are corrected; then: systemctl restart imud-signalk" >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

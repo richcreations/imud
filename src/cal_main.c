@@ -47,7 +47,7 @@
 #include "config.h"
 #include "fileio.h"
 #include "imu.h"
-#include "imu_math.h"   /* odr_actual_imu / odr_actual_mag */
+#include "imu_math.h"   /* odr_actual_imu / odr_actual_mag, apply_imu_cal */
 #include "drivers.h"
 #include "fit_ra.h"
 #include "paths.h"
@@ -205,6 +205,55 @@ static int imu_collect(const imud_bus_t *bus, const imu_ops_t *ops,
 
 /* ── Mode: magnetometer hard/soft-iron ─────────────────────────────────── */
 
+/* Start the IMU as the daemon does, for its accelerometer alone.  0, or -1
+ * with the bus closed. */
+static int start_imu(const imud_config_t *cfg, const imu_ops_t *ops, imud_bus_t *bus)
+{
+    char why[160];
+    if (imu_fs_check(ops, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                     why, sizeof why) < 0) return -1;
+    if (open_sensor_bus(cfg, true, &ops->bus_caps, bus) < 0 &&
+        strcmp(cfg->imu_driver, "sim") != 0) return -1;
+
+    imu_cfg_t icfg = {
+        .odr_mhz  = odr_actual_imu(ops, cfg->imu_odr_mhz),
+        .accel_g  = cfg->imu_accel_g,
+        .gyro_dps = cfg->imu_gyro_dps,
+        .fifo_wm  = cfg->imu_fifo_wm,
+    };
+    if (ops->probe(bus) < 0 || ops->reset(bus) < 0 || ops->init(bus, &icfg) < 0) {
+        bus_close(bus);
+        return -1;
+    }
+    return 0;
+}
+
+/* Add what the IMU's FIFO holds to the accelerometer sum, corrected as the
+ * daemon corrects it.  At most every 20 ms, so that a fast magnetometer is
+ * not held up by it. */
+static void accel_drain(const imu_ops_t *ops, const imud_bus_t *bus,
+                        const imud_cal_t *cal, double sum[3], long long *n,
+                        struct timespec *last)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if ((now.tv_sec - last->tv_sec) * 1000000000L
+        + (now.tv_nsec - last->tv_nsec) < 20000000L) return;
+    *last = now;
+
+    imu_sample_t buf[128];
+    for (int r = 0; r < 8; r++) {
+        int got = 0;
+        if (ops->read(bus, buf, 128, &got) < 0) return;
+        for (int i = 0; i < got; i++) {
+            apply_imu_cal(cal, &buf[i]);
+            for (int k = 0; k < 3; k++) sum[k] += buf[i].accel[k];
+        }
+        *n += got;
+        if (got == 0) return;
+    }
+}
+
 static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 {
     const mag_ops_t *ops = mag_driver_find(cfg->mag_driver);
@@ -213,9 +262,21 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         return -1;
     }
 
+    /* The accelerometer's mean over the swing is the vertical the fit turns
+     * onto.  Started first, as the daemon starts it. */
+    const imu_ops_t *iops = imu_driver_find(cfg->imu_driver);
+    imud_bus_t ibus;
+    bool imu = iops && start_imu(cfg, iops, &ibus) == 0;
+    if (!imu)
+        printf("No accelerometer: the swing's vertical is taken from its own "
+               "plane.\n");
+
     imud_bus_t bus;
     if (open_sensor_bus(cfg, false, &ops->bus_caps, &bus) < 0 &&
-        strcmp(cfg->mag_driver, "sim") != 0) return -1;
+        strcmp(cfg->mag_driver, "sim") != 0) {
+        if (imu) bus_close(&ibus);
+        return -1;
+    }
 
     /* Resolved, as the daemon does — imu_cfg_t/mag_cfg_t take the rate the
      * driver will really program, not the raw request. */
@@ -227,6 +288,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
         ops->init (&bus, &mcfg) < 0) {
         fprintf(stderr, "cal: mag sensor init failed\n");
         bus_close(&bus);
+        if (imu) bus_close(&ibus);
         return -1;
     }
 
@@ -246,7 +308,12 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             ops->read(&bus, &tmp);
             usleep(MAG_POLL_US);
         }
-        if (g_stop) { signal(SIGINT, SIG_DFL); bus_close(&bus); return 0; }
+        if (g_stop) {
+            signal(SIGINT, SIG_DFL);
+            bus_close(&bus);
+            if (imu) bus_close(&ibus);
+            return 0;
+        }
     }
 
     printf("imud-cal: magnetometer calibration\n");
@@ -257,7 +324,12 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     /* The raw samples the fit is made from, thinned as the swing goes on. */
     float (*samps)[3] = malloc(MAG_KEEP * sizeof(*samps));
-    if (!samps) { perror("malloc"); bus_close(&bus); return -1; }
+    if (!samps) {
+        perror("malloc");
+        bus_close(&bus);
+        if (imu) bus_close(&ibus);
+        return -1;
+    }
     cal_mag_keep_t keep;
     cal_mag_keep_init(&keep, samps, MAG_KEEP);
 
@@ -276,8 +348,16 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
     bool   full_announced = false;
     int    since_fit = 0;
 
+    /* The accelerometer over the swing, and its mean once there is one. */
+    double asum[3] = { 0.0, 0.0, 0.0 }, amean[3] = { 0.0, 0.0, 0.0 };
+    long long an = 0;
+    struct timespec adrain = { 0, 0 };
+
     while (!g_stop &&
            (CAL_MAG_STOP_AFTER == 0 || keep.seen < CAL_MAG_STOP_AFTER)) {
+        if (imu) accel_drain(iops, &ibus, cal, asum, &an, &adrain);
+        for (int k = 0; k < 3 && an > 0; k++) amean[k] = asum[k] / (double)an;
+
         mag_sample_t s;
         int rc = ops->read(&bus, &s);
         if (rc < 0) { fprintf(stderr, "\ncal: mag read error\n"); break; }
@@ -292,7 +372,7 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
             since_fit = 0;
             cal_mag_fit_t live;
             if (cal_mag_fit((const float (*)[3])samps, keep.n, mount,
-                            &live) == 0) {
+                            an > 0 ? amean : NULL, &live) == 0) {
                 cx = live.centre[0];
                 cy = live.centre[1];
                 cz = live.centre[2];
@@ -321,11 +401,13 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     signal(SIGINT, SIG_DFL);
     printf("\n");
+    if (imu) bus_close(&ibus);
 
     /* ── Fit ─────────────────────────────────────────────────────────── */
 
     cal_mag_fit_t fit;
-    int frc = cal_mag_fit((const float (*)[3])samps, keep.n, mount, &fit);
+    int frc = cal_mag_fit((const float (*)[3])samps, keep.n, mount,
+                          an > 0 ? amean : NULL, &fit);
     free(samps);
     if (frc < 0) {
         fprintf(stderr, "cal: sphere fit failed — not enough distinct samples\n");
@@ -341,6 +423,11 @@ static int do_mag(const imud_config_t *cfg, imud_cal_t *cal)
 
     int covered = cal_cov_count(sectors, N_SECTORS);
     printf("Results:\n");
+    printf("  Fit:              %s\n", fit.level
+           ? "level swing: a circle in the swing's plane"
+           : "sphere: the swing's heel varied");
+    printf("  Swing tilt:       %.1f° from level, by the %s\n", fit.tilt_deg,
+           fit.accel_vertical ? "accelerometer" : "swing's own plane");
     printf("  Hard iron (µT):   [%7.2f, %7.2f, %7.2f]\n",
            center[0], center[1], center[2]);
     if (fit.level) {

@@ -1581,6 +1581,87 @@ void *fusion_thread(void *arg)
 
 /* ── imu_ctx_open ────────────────────────────────────────────────────────── */
 
+int imu_cfg_check(const imud_config_t *cfg, const imu_ops_t **imu_out,
+                  const mag_ops_t **mag_out)
+{
+    const imu_ops_t *imu = imu_driver_find(cfg->imu_driver);
+    if (!imu) {
+        LOG_E("[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
+        return -1;
+    }
+    if (imu->experimental)
+        LOG_W("[imu] WARNING: driver '%s' is EXPERIMENTAL — "
+                "not yet validated on hardware\n", cfg->imu_driver);
+    if (imu->has_hw_timestamp && imu->ts_tick_ns == 0)
+        LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
+                "hardware timestamps will not advance\n", cfg->imu_driver);
+    char why[160];
+    if (imu_fs_check(imu, cfg->imu_accel_g, cfg->imu_gyro_dps,
+                     why, sizeof why) < 0) {
+        LOG_E("[imu] %s\n", why);
+        return -1;
+    }
+
+    /*
+     * "none" is a 6-DoF board, not a missing setting.  The mag driver is then
+     * NULL and every mag stage of imu_ctx_open is skipped — the bus is never
+     * opened, the interrupt line never requested, and main() does not start
+     * mag_reader.  The fusion already copes: it consumes the mag ring with
+     * try_pop, so a ring nothing ever fills is the path it takes between
+     * samples anyway, and heading dead-reckons from the gyro exactly as it
+     * does for a part whose yaw update is disabled.
+     */
+    const mag_ops_t *mag = NULL;
+    if (!mag_configured(cfg->mag_driver)) {
+        LOG_I("[mag] no magnetometer configured — 6-DoF. Roll and pitch are "
+              "gravity-referenced as usual; heading is dead-reckoned from the "
+              "gyro and drifts without bound, and FLAG_MAG_VALID stays "
+              "clear.\n");
+    } else {
+        mag = mag_driver_find(cfg->mag_driver);
+        if (!mag) {
+            LOG_E("[imu] unknown mag driver '%s' — name a driver, or \"none\" "
+                  "for a board with no magnetometer\n", cfg->mag_driver);
+            return -1;
+        }
+        if (mag->experimental)
+            LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
+                    "not yet validated on hardware\n", cfg->mag_driver);
+    }
+
+    /*
+     * Two SPI devices on ONE controller must agree about the clock mode.
+     *
+     * spidev sets the mode per chip select, but the controller has a single
+     * SCLK and can only idle it at one level -- mode 0 idles low, mode 3 high.
+     * Put a mode-3 part on spidev0.0 beside a mode-0 part on spidev0.1 and the
+     * bus corrupts: on the reference rig the daemon opened both
+     * parts, settled, and then never produced a sample. Nothing in the log
+     * said why, because each device was individually configured exactly as its
+     * driver asked.
+     *
+     * Refuse it at startup instead. This is a wiring-and-driver combination
+     * question, not an operator mistake, so the message names both parts and
+     * the modes they want rather than blaming the config.
+     */
+    if (mag &&
+        cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
+        imu->bus_caps.spi_mode != mag->bus_caps.spi_mode &&
+        bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev)) {
+        LOG_E("[imu] %s wants SPI mode %u and %s wants mode %u, but %s and %s "
+              "share one SPI controller, which has a single clock. Move one "
+              "part to another SPI bus.\n",
+              imu->name, imu->bus_caps.spi_mode,
+              mag->name, mag->bus_caps.spi_mode,
+              cfg->imu_spi_dev, cfg->mag_spi_dev);
+        return -1;
+    }
+
+    if (imu_out) *imu_out = imu;
+    if (mag_out) *mag_out = mag;
+    return 0;
+}
+
 int imu_ctx_open(imu_ctx_t **ctx_out,
                  const imud_config_t *cfg,
                  const imud_cal_t *cal)
@@ -1614,52 +1695,7 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
     /* Arm sim-driver playback before init ([device] sim_file / --replay). */
     sim_set_playback(cfg->sim_file, cfg->sim_loop, cfg->sim_speed);
 
-    ctx->imu_ops = imu_driver_find(cfg->imu_driver);
-    if (!ctx->imu_ops) {
-        LOG_E("[imu] unknown IMU driver '%s'\n", cfg->imu_driver);
-        goto fail;
-    }
-    if (ctx->imu_ops->experimental)
-        LOG_W("[imu] WARNING: driver '%s' is EXPERIMENTAL — "
-                "not yet validated on hardware\n", cfg->imu_driver);
-    if (ctx->imu_ops->has_hw_timestamp && ctx->imu_ops->ts_tick_ns == 0)
-        LOG_W("[imu] driver '%s' sets has_hw_timestamp but no ts_tick_ns — "
-                "hardware timestamps will not advance\n", cfg->imu_driver);
-    {
-        char why[160];
-        if (imu_fs_check(ctx->imu_ops, cfg->imu_accel_g, cfg->imu_gyro_dps,
-                         why, sizeof why) < 0) {
-            LOG_E("[imu] %s\n", why);
-            goto fail;
-        }
-    }
-
-    /*
-     * "none" is a 6-DoF board, not a missing setting.  ctx->mag_ops then stays
-     * NULL and every mag stage below is skipped — the bus is never opened, the
-     * interrupt line never requested, and main() does not start mag_reader.
-     * The fusion already copes: it consumes the mag ring with try_pop, so a
-     * ring nothing ever fills is the path it takes between samples anyway, and
-     * heading dead-reckons from the gyro exactly as it does for a part whose
-     * yaw update is disabled.
-     */
-    if (!mag_configured(cfg->mag_driver)) {
-        ctx->mag_ops = NULL;
-        LOG_I("[mag] no magnetometer configured — 6-DoF. Roll and pitch are "
-              "gravity-referenced as usual; heading is dead-reckoned from the "
-              "gyro and drifts without bound, and FLAG_MAG_VALID stays "
-              "clear.\n");
-    } else {
-        ctx->mag_ops = mag_driver_find(cfg->mag_driver);
-        if (!ctx->mag_ops) {
-            LOG_E("[imu] unknown mag driver '%s' — name a driver, or \"none\" "
-                  "for a board with no magnetometer\n", cfg->mag_driver);
-            goto fail;
-        }
-        if (ctx->mag_ops->experimental)
-            LOG_W("[mag] WARNING: driver '%s' is EXPERIMENTAL — "
-                    "not yet validated on hardware\n", cfg->mag_driver);
-    }
+    if (imu_cfg_check(cfg, &ctx->imu_ops, &ctx->mag_ops) < 0) goto fail;
 
     /*
      * Resolve both requested rates to what the drivers will really program,
@@ -1680,34 +1716,6 @@ int imu_ctx_open(imu_ctx_t **ctx_out,
      * descriptor and buys a uniform model: no shared-fd ownership to track,
      * and the two sensors are free to live on different buses. */
     bus_spec_t spec;
-
-    /*
-     * Two SPI devices on ONE controller must agree about the clock mode.
-     *
-     * spidev sets the mode per chip select, but the controller has a single
-     * SCLK and can only idle it at one level -- mode 0 idles low, mode 3 high.
-     * Put a mode-3 part on spidev0.0 beside a mode-0 part on spidev0.1 and the
-     * bus corrupts: on the reference rig the daemon opened both
-     * parts, settled, and then never produced a sample. Nothing in the log
-     * said why, because each device was individually configured exactly as its
-     * driver asked.
-     *
-     * Refuse it at startup instead. This is a wiring-and-driver combination
-     * question, not an operator mistake, so the message names both parts and
-     * the modes they want rather than blaming the config.
-     */
-    if (ctx->mag_ops &&
-        cfg->imu_bus_kind == BUS_SPI && cfg->mag_bus_kind == BUS_SPI &&
-        ctx->imu_ops->bus_caps.spi_mode != ctx->mag_ops->bus_caps.spi_mode &&
-        bus_spi_same_controller(cfg->imu_spi_dev, cfg->mag_spi_dev)) {
-        LOG_E("[imu] %s wants SPI mode %u and %s wants mode %u, but %s and %s "
-              "share one SPI controller, which has a single clock. Move one "
-              "part to another SPI bus.\n",
-              ctx->imu_ops->name, ctx->imu_ops->bus_caps.spi_mode,
-              ctx->mag_ops->name, ctx->mag_ops->bus_caps.spi_mode,
-              cfg->imu_spi_dev, cfg->mag_spi_dev);
-        goto fail;
-    }
 
     config_imu_bus_spec(cfg, &spec);
     if (bus_open(&ctx->imu_bus, &spec, &ctx->imu_ops->bus_caps, "imu") < 0)

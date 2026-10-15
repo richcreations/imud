@@ -22,6 +22,36 @@
 #             it is rendered prominently.
 
 [[release]]
+version = "1.11.3"
+date    = "unreleased"
+summary = """
+imud-cal mag fits about the accelerometer's vertical and is not fooled by
+noise, and an upgrade now says when a config will stop imud or a bridge
+starting."""
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag reads the accelerometer through the swing and fits about its vertical. Soft iron that tilts the swing was taken for heel, worth 5° of heading on a level keel."
+  action   = "Run imud-cal accel before imud-cal mag, and repeat a magnetometer swing made with 1.11.2."
+
+  [[release.change]]
+  kind     = "fix"
+  packages = ["imud"]
+  text     = "imud-cal mag no longer takes sensor noise, one bad sample or a step in the field for roll. Each could put the vertical field into the hard iron: 20° of heading at 10° of heel."
+
+  [[release.change]]
+  kind     = "feature"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink", "imud-prometheus"]
+  text     = "imud and the bridges take --check-config, which reports what would stop a start. A package upgrade runs it, and NEWS.Debian lists what 1.11.2 refuses."
+
+  [[release.change]]
+  kind     = "behaviour"
+  packages = ["imud", "imud-signalk", "imud-mqtt", "imud-influxdb", "imud-mavlink"]
+  text     = "stats_hz is refused outside 1 to 100, and any rate_hz above 32000. From 10⁹ up either left its thread with no wait, at full CPU."
+  impact   = "A config carrying one of these no longer starts."
+
+[[release]]
 version = "1.11.2"
 date    = "2026-10-14"
 summary = """

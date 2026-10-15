@@ -195,14 +195,13 @@ static int softiron_on_sphere(const double (*b)[3], int n, const double c[3],
 }
 
 /*
- * The swing's own axes: Q is the least rotation taking body Z onto the normal
- * of the plane the samples lie nearest, z = p·x + q·y + d by least squares
- * about their mean.  The identity when that plane is level, or when the
- * samples do not determine one.
+ * The plane z = p·x + q·y + d the samples lie nearest, by least squares about
+ * their mean m.  p = q = 0 when the samples do not determine one.
  */
-static void swing_axes(const double (*b)[3], int n, double Q[3][3])
+static void plane_fit(const double (*b)[3], int n, double m[3],
+                      double *p, double *q)
 {
-    double m[3] = { 0.0, 0.0, 0.0 };
+    m[0] = m[1] = m[2] = 0.0;
     for (int i = 0; i < n; i++)
         for (int k = 0; k < 3; k++) m[k] += b[i][k];
     for (int k = 0; k < 3; k++) m[k] /= n;
@@ -212,23 +211,41 @@ static void swing_axes(const double (*b)[3], int n, double Q[3][3])
         double x = b[i][0] - m[0], y = b[i][1] - m[1], z = b[i][2] - m[2];
         sxx += x*x;  sxy += x*y;  syy += y*y;  sxz += x*z;  syz += y*z;
     }
-    double det = sxx*syy - sxy*sxy, p = 0.0, q = 0.0;
+    double det = sxx*syy - sxy*sxy;
+    *p = *q = 0.0;
     if (det > 1e-12 * (sxx + syy) * (sxx + syy)) {
-        p = (sxz*syy - syz*sxy) / det;
-        q = (syz*sxx - sxz*sxy) / det;
+        *p = (sxz*syy - syz*sxy) / det;
+        *q = (syz*sxx - sxz*sxy) / det;
     }
+}
 
-    /* n = (−p, −q, 1)/‖·‖, and Q = I + [k]× + [k]×²/(1 + n_z), k = Z × n:
-     * body X and Y turned onto the plane, and n. */
-    double nz = 1.0 / sqrt(1.0 + p*p + q*q), nx = -p * nz, ny = -q * nz;
-    double f = 1.0 / (1.0 + nz);
+/* Q = I + [k]× + [k]×²/(1 + n_z), k = Z × n: the least rotation taking body Z
+ * onto the unit vector n, which must have n_z > 0. */
+static void z_onto(const double n[3], double Q[3][3])
+{
+    double nx = n[0], ny = n[1], nz = n[2], f = 1.0 / (1.0 + nz);
     Q[0][0] = 1.0 - nx*nx*f;  Q[0][1] = -nx*ny*f;       Q[0][2] = nx;
     Q[1][0] = -nx*ny*f;       Q[1][1] = 1.0 - ny*ny*f;  Q[1][2] = ny;
     Q[2][0] = -nx;            Q[2][1] = -ny;            Q[2][2] = nz;
 }
 
+/* Down in body axes, −M·a/|M·a|, from the accelerometer's mean a.  false when
+ * there is none, it is not about 1 g, or it is more than 60° from body Z,
+ * which is no vertical a swing is made about. */
+static bool accel_down(const double M[3][3], const double accel[3],
+                       double down[3])
+{
+    if (!accel) return false;
+    double g[3];
+    rot3(M, accel, g);
+    double norm = sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+    if (!(norm > 0.5 * CAL_G_MS2 && norm < 1.5 * CAL_G_MS2)) return false;
+    for (int k = 0; k < 3; k++) down[k] = -g[k] / norm;
+    return down[2] > 0.5;
+}
+
 int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
-                cal_mag_fit_t *out)
+                const double accel[3], cal_mag_fit_t *out)
 {
     static const double I3[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
     const double (*M)[3] = mount ? mount : I3;
@@ -244,25 +261,49 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
     /*
      * A vessel heels steadily through its turn, so its swing is a circle
      * tilted with it, about the vertical it turned on.  The fit is done in the
-     * swing's own axes, R = Qᵀ·M, where that circle is level: "level",
-     * "horizontal" and "vertical" below are all in these axes.
+     * swing's own axes, R = Qᵀ·M, whose Z is that vertical: "level",
+     * "horizontal" and "vertical" below are all in these axes.  It is
+     * gravity's when there is an accelerometer, and otherwise the normal of
+     * the plane the samples lie in, which soft iron coupling a horizontal
+     * axis to the vertical tilts as well.
      */
+    double down[3], m0[3], p, q;
+    out->accel_vertical = accel_down(M, accel, down);
+    if (!out->accel_vertical) {
+        plane_fit((const double (*)[3])b, n, m0, &p, &q);
+        down[2] = 1.0 / sqrt(1.0 + p*p + q*q);
+        down[0] = -p * down[2];
+        down[1] = -q * down[2];
+    }
+    out->tilt_deg = acos(down[2] < 1.0 ? down[2] : 1.0) * 180.0 / M_PI;
+
     double Q[3][3], RQ[3][3];
-    swing_axes((const double (*)[3])b, n, Q);
+    z_onto(down, Q);
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             RQ[i][j] = Q[0][i]*M[0][j] + Q[1][i]*M[1][j] + Q[2][i]*M[2][j];
     const double (*R)[3] = (const double (*)[3])RQ;
 
-    double zmin = 0.0, zmax = 0.0, zsum = 0.0;
     for (int i = 0; i < n; i++) {
         double m[3] = { samps[i][0], samps[i][1], samps[i][2] };
         rot3(R, m, b[i]);
-        if (i == 0 || b[i][2] < zmin) zmin = b[i][2];
-        if (i == 0 || b[i][2] > zmax) zmax = b[i][2];
-        zsum += b[i][2];
     }
-    out->vertical = zsum / n;
+
+    /* The vertical reading's scatter about the plane the swing lies in.  Any
+     * tilt of that plane is soft iron or the accelerometer's own error, and
+     * what remains about it is roll and noise.  The noise is what changes
+     * from one sample to the next, which roll does not. */
+    plane_fit((const double (*)[3])b, n, m0, &p, &q);
+    out->vertical = m0[2];
+    double vv = 0.0, dd = 0.0, rprev = 0.0;
+    for (int i = 0; i < n; i++) {
+        double r = b[i][2] - m0[2] - p * (b[i][0] - m0[0]) - q * (b[i][1] - m0[1]);
+        vv += r * r;
+        if (i > 0) dd += (r - rprev) * (r - rprev);
+        rprev = r;
+    }
+    double sd = sqrt(vv / n), noise = sqrt(dd / (2.0 * (n - 1)));
+    double roll2 = sd * sd - noise * noise;
 
     /*
      * A level swing is a circle in the horizontal plane, and says nothing of
@@ -272,19 +313,37 @@ int cal_mag_fit(const float (*samps)[3], int n, const double mount[3][3],
      * the heading that comes out is wrong by the vertical field times the
      * sine of the heel.  So a level swing gets the circle, and the vertical
      * hard iron is left at zero, which is wrong only by the hard iron itself.
+     * A swing that is not level keeps the sphere only if it found the
+     * vertical field: see CAL_SPHERE_MIN_SNR.
      */
-    double c[3] = { 0.0, 0.0, 0.0 }, cc[2], rc;
-    out->level = circle_fit((const double (*)[3])b, n, cc, &rc) == 0 &&
-                 0.5 * (zmax - zmin) < CAL_LEVEL_MAX_SPAN * rc;
+    double c[3] = { 0.0, 0.0, 0.0 }, cc[2] = { 0.0, 0.0 }, rc = 0.0;
+    bool circle = circle_fit((const double (*)[3])b, n, cc, &rc) == 0;
+    out->level = circle && sd < CAL_LEVEL_MAX_SD * rc;
+    if (!out->level) {
+        sphere_accum_t acc = {0};
+        for (int i = 0; i < n; i++)
+            sphere_add(&acc, (float)b[i][0], (float)b[i][1], (float)b[i][2]);
+        double cs[3], rs;
+        bool sphere = sphere_fit(&acc, cs, &rs) == 0;
+        bool found  = roll2 >= CAL_SPHERE_MIN_SNR * CAL_SPHERE_MIN_SNR * noise * noise
+                   && rs >= CAL_SPHERE_MIN_GAIN * rc;
+        if (sphere && (!circle || sd >= CAL_SPHERE_FREE_SD * rc || found)) {
+            memcpy(c, cs, sizeof c);
+            out->radius = rs;
+        } else if (circle) {
+            out->level = true;
+        } else {
+            free(b);
+            return -1;
+        }
+    }
     if (out->level) {
         c[0] = cc[0];
         c[1] = cc[1];
         out->radius = rc;
-    } else {
-        sphere_accum_t acc = {0};
+        /* Its vertical, less that plane's tilt: what is left is roll. */
         for (int i = 0; i < n; i++)
-            sphere_add(&acc, (float)b[i][0], (float)b[i][1], (float)b[i][2]);
-        if (sphere_fit(&acc, c, &out->radius) < 0) { free(b); return -1; }
+            b[i][2] -= p * (b[i][0] - m0[0]) + q * (b[i][1] - m0[1]);
     }
 
     /* Residual and per-axis extent, about the centre.  For a level swing both

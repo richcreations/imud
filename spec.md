@@ -1393,6 +1393,8 @@ imud [OPTIONS]
   --skip-bias-cal    Skip startup gyro bias estimation
   --no-nmea          Disable NMEA output stream
   --no-highrate      Disable high-rate binary stream
+  --check-config     Check the config, cal.json and driver settings as a
+                     start would, then exit; 0 when imud would start
   --foreground       Accepted and ignored (always foreground under systemd)
   --version          Print version and exit
   -h, --help         Print this help and exit
@@ -1444,6 +1446,8 @@ Results printed before saving:
 
 ```text
 Results:
+  Fit:              level swing: a circle in the swing's plane
+  Swing tilt:       2.3° from level, by the accelerometer
   Hard iron (µT):   [ -12.34,   8.76,   0.00]
   Horizontal field: 24.1 µT  (typical: 10–40 µT)
   Vertical:         reads 41.7 µT. A swing that holds its heel cannot tell

@@ -819,18 +819,15 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         (field) = dv; } while (0)
 
 /*
- * Same reasoning as NEED_POS_DBL, for the sample and publish rates. A rate of
- * zero or less is not a slow rate, it is an impossible one: it divides into a
- * period, and on the sensor side it also lands in the filter's noise
- * variances — [mag] odr_hz = 0 gives Rm = 0, hence a magnetometer Kalman gain
- * of exactly 1. Fatal rather than clamped, for the same reason: substituting a
- * plausible default would hide the typo.
+ * Same reasoning as NEED_POS_DBL, for a count that must be positive
+ * (int_grace).  Fatal rather than clamped: substituting a plausible default
+ * would hide the typo.  The publish rates have a ceiling as well, and take
+ * NEED_RATE_HZ below.
  */
 #define NEED_POS_INT(field) \
     do { PARSE_INT_OR_FAIL(); \
         if (iv <= 0) { \
-        LOG_E("%s:%d: '%s': must be greater than zero (got %d) — " \
-              "a rate of zero or less is not a valid sample or publish rate\n", \
+        LOG_E("%s:%d: '%s': must be greater than zero (got %d)\n", \
               path, lineno, key, iv); \
         return -1; } \
         (field) = iv; } while (0)
@@ -848,6 +845,10 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
  * Parsed as a double and scaled once, here at the edge; everything inward of
  * this is milli-Hz.  Rounded to the nearest milli-Hz rather than truncated, so
  * a value a user typed exactly is stored exactly.
+ *
+ * Zero or less is refused, not defaulted: the rate also sizes the filter's
+ * noise variances, and [mag] odr_hz = 0 gives Rm = 0, a magnetometer Kalman
+ * gain of exactly 1.
  */
 #define NEED_POS_MHZ(field) \
     do { if (!parse_double(val, &dv)) { \
@@ -913,6 +914,11 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
  *   skip       0.001..1  a fraction of g. Negative turns the |a| window
  *   thresholds           inside out, so that every accelerometer update is
  *                        skipped.
+ *   rate_hz    1..32000  every output and bridge rate.  The period is 1e9 /
+ *                        rate in integer ns, zero from 10⁹ up, and the thread
+ *                        then never waits.  32 kHz is the fastest any
+ *                        supported part samples (icm42688p).
+ *   stats_hz   1..100    the same division, in the health thread.
  *
  * Keys with a natural range but no wrap-into-plausible failure (mavlink
  * version, serial_baud) are deliberately left on plain NEED_INT: each bound
@@ -939,6 +945,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
 #define NEED_PORT(field)     NEED_RANGE_INT((field), 1, 65535, "a TCP/UDP port")
 #define NEED_GPIO(field)     NEED_RANGE_INT((field), 0, 255, "a GPIO line")
+#define NEED_RATE_HZ(field)  NEED_RANGE_INT((field), 1, 32000, "a rate in Hz")
 
 /* Its own macro rather than NEED_RANGE_INT(0x00, 0x7F, …) so the message is in
  * the base the operator wrote: every i2c_addr in the shipped configs is hex,
@@ -1197,7 +1204,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_NMEA:
         if      (strcmp(key, "enabled")   == 0) NEED_BOOL(cfg->nmea_enabled);
-        else if (strcmp(key, "rate_hz")   == 0) NEED_POS_INT(cfg->nmea_rate_hz);
+        else if (strcmp(key, "rate_hz")   == 0) NEED_RATE_HZ(cfg->nmea_rate_hz);
         else if (strcmp(key, "dest_addr") == 0) NEED_STR(cfg->nmea_dest_addr);
         else if (strcmp(key, "dest_port") == 0) NEED_PORT(cfg->nmea_dest_port);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->nmea_tcp_enabled);
@@ -1208,7 +1215,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
 
     case SEC_HIGHRATE:
         if      (strcmp(key, "enabled")     == 0) NEED_BOOL(cfg->highrate_enabled);
-        else if (strcmp(key, "rate_hz")     == 0) NEED_POS_INT(cfg->highrate_rate_hz);
+        else if (strcmp(key, "rate_hz")     == 0) NEED_RATE_HZ(cfg->highrate_rate_hz);
         else if (strcmp(key, "dest_addr")   == 0) NEED_STR(cfg->highrate_dest_addr);
         else if (strcmp(key, "dest_port")   == 0) NEED_PORT(cfg->highrate_dest_port);
         else if (strcmp(key, "coord_frame") == 0) NEED_FRAME(cfg->highrate_coord_frame);
@@ -1218,7 +1225,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
     case SEC_STREAM:
         if      (strcmp(key, "enabled") == 0) NEED_BOOL(cfg->stream_enabled);
         else if (strcmp(key, "socket")  == 0) NEED_STR(cfg->stream_socket);
-        else if (strcmp(key, "rate_hz") == 0) NEED_POS_INT(cfg->stream_rate_hz);
+        else if (strcmp(key, "rate_hz") == 0) NEED_RATE_HZ(cfg->stream_rate_hz);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->stream_tcp_enabled);
         else if (strcmp(key, "tcp_bind_addr") == 0) NEED_STR(cfg->stream_tcp_bind_addr);
         else if (strcmp(key, "tcp_port")      == 0) NEED_PORT(cfg->stream_tcp_port);
@@ -1231,7 +1238,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "socket")       == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "dest_addr")    == 0) NEED_STR(cfg->sk_dest_addr);
         else if (strcmp(key, "dest_port")    == 0) NEED_PORT(cfg->sk_dest_port);
-        else if (strcmp(key, "rate_hz")      == 0) NEED_POS_INT(cfg->sk_rate_hz);
+        else if (strcmp(key, "rate_hz")      == 0) NEED_RATE_HZ(cfg->sk_rate_hz);
         else if (strcmp(key, "source_label") == 0) NEED_STR(cfg->sk_source_label);
         else if (strcmp(key, "publish_heave")== 0) NEED_BOOL(cfg->publish_heave);
         else if (strcmp(key, "tcp_enabled")   == 0) NEED_BOOL(cfg->sk_tcp_enabled);
@@ -1248,7 +1255,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "broker_port")   == 0) NEED_PORT(cfg->mqtt_broker_port);
         else if (strcmp(key, "client_id")     == 0) NEED_STR(cfg->mqtt_client_id);
         else if (strcmp(key, "topic_prefix")  == 0) NEED_TOPIC(cfg->mqtt_topic_prefix);
-        else if (strcmp(key, "rate_hz")       == 0) NEED_POS_INT(cfg->mqtt_rate_hz);
+        else if (strcmp(key, "rate_hz")       == 0) NEED_RATE_HZ(cfg->mqtt_rate_hz);
         else if (strcmp(key, "qos")           == 0)
             NEED_RANGE_INT(cfg->mqtt_qos, 0, 2, "an MQTT QoS");
         else if (strcmp(key, "retain")        == 0) NEED_BOOL(cfg->mqtt_retain);
@@ -1268,7 +1275,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         if      (strcmp(key, "enabled")       == 0) NEED_BOOL(cfg->influx_enabled);
         else if (strcmp(key, "socket")        == 0) NEED_STR(cfg->stream_socket);
         else if (strcmp(key, "transport")     == 0) NEED_STR(cfg->influx_transport);
-        else if (strcmp(key, "rate_hz")       == 0) NEED_POS_INT(cfg->influx_rate_hz);
+        else if (strcmp(key, "rate_hz")       == 0) NEED_RATE_HZ(cfg->influx_rate_hz);
         else if (strcmp(key, "measurement")   == 0) NEED_STR(cfg->influx_measurement);
         else if (strcmp(key, "source_label")  == 0) NEED_STR(cfg->influx_source_label);
         else if (strcmp(key, "units")         == 0) NEED_STR(cfg->influx_units);
@@ -1303,7 +1310,7 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
         else if (strcmp(key, "component_id")   == 0)
             NEED_RANGE_INT(cfg->mav_component_id, 1, 255,
                            "a MAVLink component id");
-        else if (strcmp(key, "rate_hz")        == 0) NEED_POS_INT(cfg->mav_rate_hz);
+        else if (strcmp(key, "rate_hz")        == 0) NEED_RATE_HZ(cfg->mav_rate_hz);
         else if (strcmp(key, "send_attitude")  == 0) NEED_BOOL(cfg->mav_send_attitude);
         else if (strcmp(key, "send_attitude_quaternion") == 0) NEED_BOOL(cfg->mav_send_attitude_quaternion);
         else if (strcmp(key, "udp_enabled")    == 0) NEED_BOOL(cfg->mav_udp_enabled);
@@ -1321,7 +1328,8 @@ static int apply_kv(imud_config_t *cfg, section_t sec,
     case SEC_LOGGING:
         if      (strcmp(key, "level")    == 0) NEED_STR(cfg->log_level);
         else if (strcmp(key, "file")     == 0) NEED_STR(cfg->log_file);
-        else if (strcmp(key, "stats_hz") == 0) NEED_INT(cfg->log_stats_hz);
+        else if (strcmp(key, "stats_hz") == 0)
+            NEED_RANGE_INT(cfg->log_stats_hz, 1, 100, "a stats rate in Hz");
         else WARN_UNKNOWN();
         break;
 

@@ -443,6 +443,7 @@ static void test_load_rates_must_be_positive(void)
         { "imud-mqtt",      "rate_hz" },
         { "imud-influxdb",  "rate_hz" },
         { "imud-mavlink",   "rate_hz" },
+        { "logging",        "stats_hz" },
     };
     for (unsigned i = 0; i < sizeof rates / sizeof rates[0]; i++) {
         for (int neg = 0; neg < 2; neg++) {
@@ -470,6 +471,54 @@ static void test_load_rates_must_be_positive(void)
     EXPECT(config_load(ok, &cfg) == 0, "positive rates accepted");
     EXPECT(cfg.mag_odr_mhz == 200000,      "positive mag odr_hz applied");
     EXPECT(cfg.nmea_rate_hz == 1,      "a rate of 1 Hz is legal");
+    remove(ok);
+    end_test(fb);
+}
+
+/*
+ * The publish rates and stats_hz have a ceiling as well.  Each thread's period
+ * is 1e9 / rate in integer ns, zero from 10⁹ up, and the thread then never
+ * waits.  The ceiling itself must load.
+ */
+static void test_load_rates_have_a_ceiling(void)
+{
+    begin_test("test_load_rates_have_a_ceiling");
+    int fb = g_fail;
+
+    static const struct { const char *section, *key, *over, *top; } rates[] = {
+        { "nmea",          "rate_hz",  "32001", "32000" },
+        { "highrate",      "rate_hz",  "32001", "32000" },
+        { "stream",        "rate_hz",  "32001", "32000" },
+        { "imud-signalk",  "rate_hz",  "32001", "32000" },
+        { "imud-mqtt",     "rate_hz",  "32001", "32000" },
+        { "imud-influxdb", "rate_hz",  "32001", "32000" },
+        { "imud-mavlink",  "rate_hz",  "32001", "32000" },
+        { "logging",       "stats_hz", "101",   "100"   },
+    };
+    int id = 300;
+    for (unsigned i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        const char *vals[] = { rates[i].over, "2000000000", rates[i].top };
+        for (int v = 0; v < 3; v++) {
+            char body[128];
+            snprintf(body, sizeof body, "[%s]\n%s = %s\n",
+                     rates[i].section, rates[i].key, vals[v]);
+            const char *path = write_tmpconf(id++, body);
+            imud_config_t cfg;
+            config_defaults(&cfg);
+            int rc = config_load(path, &cfg);
+            if (v < 2) EXPECT(rc == CONFIG_ERR_PARSE, "rate over the ceiling rejected");
+            else       EXPECT(rc == 0,                "rate at the ceiling accepted");
+            remove(path);
+        }
+    }
+
+    const char *ok = write_tmpconf(id,
+        "[highrate]\nrate_hz = 32000\n[logging]\nstats_hz = 100\n");
+    imud_config_t cfg;
+    config_defaults(&cfg);
+    EXPECT(config_load(ok, &cfg) == 0,     "both ceilings load together");
+    EXPECT(cfg.highrate_rate_hz == 32000,  "rate_hz ceiling applied");
+    EXPECT(cfg.log_stats_hz == 100,        "stats_hz ceiling applied");
     remove(ok);
     end_test(fb);
 }
@@ -2233,6 +2282,7 @@ int main(void)
     test_load_bad_int();
     test_load_noise_density_must_be_positive();
     test_load_rates_must_be_positive();
+    test_load_rates_have_a_ceiling();
     test_load_rejects_non_finite();
     test_load_rejects_too_long_string();
     test_load_rejects_out_of_range_int();

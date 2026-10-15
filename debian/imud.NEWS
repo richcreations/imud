@@ -1,0 +1,16 @@
+imud (1.11.2-1) unstable; urgency=medium
+
+  imud refuses to start on settings 1.11.1 accepted, and says why in the
+  journal: coord_frame = "ENU"; fifo_wm, an accel skip threshold, lat_deg
+  or lon_deg out of range; an accel_g or gyro_dps the IMU does not have;
+  and a cal.json that is cut off.  "imud --check-config" names any of
+  these, and an upgrade runs it.
+
+  $PASHR has the Trimble/Applanix layout: update any consumer that parsed
+  the old one.
+
+  Repeat the magnetometer swing (imud-cal mag) on a board with a roll or
+  pitch [mount], or if cal.json's hard-iron Z is near the local vertical
+  field, about 40 uT at mid latitudes.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700

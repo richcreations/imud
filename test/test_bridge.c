@@ -196,6 +196,22 @@ static void test_parse_cli(void)
     char *argv4[] = { "imud-test", "--bogus", NULL };
     EXPECT(bridge_parse_cli(2, argv4, &TBI, path, sizeof path) == -1, "unknown → error");
 
+    /* --check-config loads the config and stops: handled when the bridge
+     * would start on it, an error when it would refuse. */
+    static const char *chk = "/tmp/imud_test_bridge_check.conf";
+    char *argv6[] = { "imud-test", "--check-config", "--config", (char *)chk, NULL };
+    FILE *f = fopen(chk, "w");
+    fputs("[imud-mqtt]\ntopic_prefix = \"boat/imu\"\n", f);
+    fclose(f);
+    EXPECT(bridge_parse_cli(4, argv6, &TBI, path, sizeof path) == 1,
+           "--check-config on a good config → handled");
+    f = fopen(chk, "w");
+    fputs("[imud-mqtt]\ntopic_prefix = \"boat/+\"\n", f);
+    fclose(f);
+    EXPECT(bridge_parse_cli(4, argv6, &TBI, path, sizeof path) == -1,
+           "--check-config on a refused config → error");
+    remove(chk);
+
     /* --config without a value falls through to unknown-option handling. */
     char *argv5[] = { "imud-test", "--config", NULL };
     EXPECT(bridge_parse_cli(2, argv5, &TBI, path, sizeof path) == -1,

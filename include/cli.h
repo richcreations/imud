@@ -51,6 +51,7 @@ typedef struct {
     int  skip_bias_cal;
     int  no_nmea;
     int  no_hirate;
+    int  check_config;
 } cli_imud_t;
 
 int cli_parse_imud(int argc, char **argv, cli_imud_t *a);

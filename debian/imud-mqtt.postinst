@@ -13,6 +13,11 @@ case "$1" in
         if [ -e "$conf" ] && getent group imud >/dev/null; then
             chgrp imud "$conf" && chmod 640 "$conf"
         fi
+        # A config the bridge will refuse is said now, not by a failed restart.
+        if ! imud-mqtt --check-config --config "$conf" >/dev/null; then
+            echo "imud-mqtt: imud-mqtt will not start until the errors" \
+                 "above are corrected; then: systemctl restart imud-mqtt" >&2
+        fi
         ;;
 esac
 

@@ -65,7 +65,7 @@ broker/client/topic changes need a restart.
 | `client_id` | string | `"imud"` | MQTT client id; also the Home Assistant device/node id. |
 | `keepalive_s` | int | `30` | MQTT keepalive interval in seconds. |
 | `topic_prefix` | string | `"imud"` | Prefix for all published topics. The MQTT wildcards `+` and `#` are refused. |
-| `rate_hz` | int | `5` | Publish rate in Hz; must be greater than zero. |
+| `rate_hz` | int | `5` | Publish rate in Hz, from 1 to 32000. |
 | `qos` | int | `0` | Publish QoS (0/1/2). |
 | `retain` | bool | `true` | Retain values so late subscribers / HA see current state. |
 | `units` | string | `"deg"` | `"deg"` (degrees, °/min, m, °C) or `"rad"` (SI). |

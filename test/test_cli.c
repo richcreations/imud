@@ -206,11 +206,18 @@ static void test_imud(void)
                "all three booleans");
     }
 
+    {   char *v[] = { "imud", "--check-config", NULL };
+        cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); cap_end();
+        EXPECT(rc == 0 && a.check_config &&
+               !a.skip_bias_cal && !a.no_nmea && !a.no_hirate,
+               "--check-config sets only check_config");
+    }
+
     /* --foreground is accepted and ignored (compat with pre-systemd units). */
     {   char *v[] = { "imud", "--foreground", NULL };
         cap_begin(); rc = cli_parse_imud(argc_of(v), v, &a); out = cap_end();
         EXPECT(rc == 0, "--foreground accepted");
-        EXPECT(!a.skip_bias_cal && !a.no_nmea && !a.no_hirate,
+        EXPECT(!a.skip_bias_cal && !a.no_nmea && !a.no_hirate && !a.check_config,
                "--foreground sets nothing");
         EXPECT(out[0] == '\0', "--foreground is silent");
     }

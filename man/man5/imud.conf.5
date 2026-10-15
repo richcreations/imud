@@ -805,7 +805,7 @@ Enable NMEA UDP output.
 .TP
 .B rate_hz
 .RI (int,\ default:\ 10)
-Output rate in Hz (shared by UDP and TCP).
+Output rate in Hz (shared by UDP and TCP), from 1 to 32000.
 .TP
 .B dest_addr
 .RI (string,\ default:\ \(dq255.255.255.255\(dq)
@@ -868,7 +868,7 @@ Enable the high-rate stream.
 .TP
 .B rate_hz
 .RI (int,\ default:\ 500)
-Output rate in Hz.
+Output rate in Hz, from 1 to 32000.
 .TP
 .B dest_addr
 .RI (string,\ default:\ \(dq239.255.0.1\(dq)
@@ -921,7 +921,7 @@ Listen socket path (mode 0660).
 .TP
 .B rate_hz
 .RI (int,\ default:\ 100)
-Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers).
+Per-subscriber packet rate in Hz (shared by AF_UNIX and TCP subscribers), from 1 to 32000.
 .TP
 .B tcp_enabled
 .RI (bool,\ default:\ false)
@@ -1053,7 +1053,7 @@ Repeated identical messages are suppressed and logged as a count.
 .RI (int,\ default:\ 1)
 Rate of the
 .B [stats]
-heartbeat line.
+heartbeat line, from 1 to 100\~Hz.
 Only visible at
 .B info
 or

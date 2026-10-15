@@ -9,7 +9,8 @@
  *
  * Startup sequence:
  *    1. Parse CLI args; load config
- *    2. Load cal.json (warn if missing; not fatal)
+ *    2. Load cal.json (warn if missing; not fatal); --check-config exits
+ *       here, after the driver checks (imu_cfg_check)
  *    3. Open log file if configured; set log level
  *    4. Clock health check (TAI offset, CLOCK_REALTIME sanity)
  *    5. Ignore SIGPIPE; block SIGTERM/SIGINT/SIGHUP for sigwait()
@@ -730,6 +731,14 @@ int main(int argc, char **argv)
 
     imud_cal_t cal;
     if (cal_load(cfg.cal_file, &cal) < 0) return 1;
+
+    /* --check-config: what a start refuses before it opens a device, which
+     * is the config and cal.json above and the drivers they name. */
+    if (args.check_config) {
+        if (imu_cfg_check(&cfg, NULL, NULL) < 0) return 1;
+        printf("%s: ok\n", cfg_path);
+        return 0;
+    }
 
     /* cal.json's "noise" section (imud-cal characterize) is per-unit sensor
      * characterization for the record ONLY — it never feeds the filter.  The

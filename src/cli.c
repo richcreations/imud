@@ -118,6 +118,8 @@ static void usage_imud(FILE *o, const char *prog)
         "  --replay FILE      Replay an .imucap capture through the sim driver\n"
         "  --no-nmea          Disable NMEA output stream\n"
         "  --no-highrate      Disable high-rate binary stream\n"
+        "  --check-config     Check the config, cal.json and driver settings\n"
+        "                     as a start would, then exit; 0 when imud would start\n"
         "  --foreground       Compatibility no-op (imud always runs in foreground)\n"
         "  --version          Print version and exit\n"
         "  -h, --help         Print this help and exit\n",
@@ -141,6 +143,8 @@ int cli_parse_imud(int argc, char **argv, cli_imud_t *a)
             a->no_nmea = 1;
         } else if (strcmp(argv[i], "--no-highrate") == 0) {
             a->no_hirate = 1;
+        } else if (strcmp(argv[i], "--check-config") == 0) {
+            a->check_config = 1;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("imud %s\n", IMUD_VERSION_STR);
             return 1;

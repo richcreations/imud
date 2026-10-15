@@ -76,6 +76,8 @@ static void usage(FILE *o, const char *prog, const bridge_info_t *bi)
         "\n"
         "Options:\n"
         "  --config PATH   Config file (default: %s)\n"
+        "  --check-config  Check the config as a start would, then exit;\n"
+        "                  0 when the bridge would start\n"
         "  --version       Print version and exit\n"
         "  -h, --help      Print this help and exit\n",
         prog, bi->usage_desc, bi->default_conf);
@@ -85,10 +87,13 @@ int bridge_parse_cli(int argc, char **argv, const bridge_info_t *bi,
                      char *config_path, size_t pathsz)
 {
     snprintf(config_path, pathsz, "%s", bi->default_conf);
+    bool check = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             snprintf(config_path, pathsz, "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--check-config") == 0) {
+            check = true;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("%s %s\n", bi->prog, IMUD_VERSION_STR);
             return 1;
@@ -100,6 +105,15 @@ int bridge_parse_cli(int argc, char **argv, const bridge_info_t *bi,
             usage(stderr, argv[0], bi);
             return -1;
         }
+    }
+
+    /* What a bridge refuses before it opens a socket or a port is its config;
+     * the rest is the start itself. */
+    if (check) {
+        imud_config_t cfg;
+        if (bridge_load_config(bi, config_path, &cfg) < 0) return -1;
+        printf("%s: ok\n", config_path);
+        return 1;
     }
     return 0;
 }

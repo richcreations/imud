@@ -1,0 +1,7 @@
+imud (1.11.2-1) unstable; urgency=medium
+
+  imud-mavlink refuses to start on a system_id or component_id outside
+  1 to 255.  "imud-mavlink --check-config" names either, and an upgrade
+  runs it.
+
+ -- Richard Simpson <richcreations@gmail.com>  Wed, 14 Oct 2026 10:53:21 -0700

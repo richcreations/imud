@@ -418,6 +418,8 @@ imud [OPTIONS]
   --skip-bias-cal    Skip the startup gyro-bias estimation window
   --no-nmea          Disable the NMEA output stream
   --no-highrate      Disable the high-rate binary stream
+  --check-config     Check the config, cal.json and driver settings as a
+                     start would, then exit; 0 when imud would start
   --foreground       Accepted and ignored (imud always runs in the foreground)
   --version          Print the version and exit
   -h, --help         Print this help and exit
@@ -427,7 +429,9 @@ If `--config` is omitted, imud tries `/etc/imud/imud.conf` and then
 `~/.config/imud/imud.conf`. A config file that exists but contains a bad
 value is fatal — imud reports every error and refuses to start rather than
 run on a half-applied config. A missing file is not an error (built-in
-defaults are used).
+defaults are used). `--check-config` reports the same errors without opening
+a device, and every bridge takes it too; a package upgrade runs it for each
+installed config.
 
 ### Signals
 
@@ -631,7 +635,7 @@ details.
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys nmea.1 -->
 | `enabled` | bool | `false` | Enable the NMEA UDP output stream. |
-| `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP); must be greater than zero. Hot-reloadable. |
+| `rate_hz` | int | `10` | Output rate in Hz (shared by UDP and TCP), from 1 to 32000. Hot-reloadable. |
 | `dest_addr` | string | `"255.255.255.255"` | Destination IP address. `255.255.255.255` = broadcast; use a unicast or multicast address to target a specific host. |
 | `dest_port` | int | `10110` | Destination UDP port. Standard NMEA-over-UDP port is 10110. |
 | `tcp_enabled` | bool | `false` | NMEA-over-TCP listener. Chartplotter apps (OpenCPN, Navionics, phone/tablet nav apps) connect as TCP clients and each receives every sentence burst; up to 8 clients, slow clients skip bursts rather than stalling the daemon, and one that has taken nothing for 30 s is dropped. |
@@ -650,7 +654,7 @@ Consumer libraries are in `lib/`.
 |-----|------|---------|-------------|
 <!-- BEGIN GENERATED: config-keys highrate.1 -->
 | `enabled` | bool | `false` | Enable the high-rate binary stream. Opt in for machine vision, ROS2, or any consumer needing quaternion + covariance at high rate. |
-| `rate_hz` | int | `500` | Publish rate in Hz; must be greater than zero. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
+| `rate_hz` | int | `500` | Publish rate in Hz, from 1 to 32000. The MEKF runs at the full `imu.odr_hz` internally; this controls how often results are published. Hot-reloadable. |
 | `dest_addr` | string | `"239.255.0.1"` | Destination IP. Default is an IPv4 multicast group (TTL=1, link-local). Consumers join with `IP_ADD_MEMBERSHIP`. Use `255.255.255.255` for broadcast or a unicast IP for point-to-point. |
 | `dest_port` | int | `10111` | Destination UDP port. |
 | `coord_frame` | string | `"NED"` | Always `"NED"`: every output is North-East-Down with a forward-right-down body, and a consumer that needs ENU converts (spec.md gives the conversion). Accepted so that older configs load; `"ENU"` is refused. |
@@ -673,7 +677,7 @@ machine (`imud_connect_tcp` / `ImudClient.connect_tcp`). **[restart]**:
 <!-- BEGIN GENERATED: config-keys stream.1 -->
 | `enabled` | bool | `true` | Enable the subscription stream — the one output a stock daemon provides (the bridges and libimud consumers read it). |
 | `socket` | string | `"/run/imud/imud-stream.sock"` | Listen path (mode 0660, owner `imud:imud` — a consumer needs `adduser <user> imud`). |
-| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP); must be greater than zero. Hot-reloadable. |
+| `rate_hz` | int | `100` | Per-subscriber packet rate in Hz (AF_UNIX and TCP), from 1 to 32000. Hot-reloadable. |
 | `tcp_enabled` | bool | `false` | TCP listener carrying the same framed packets over the network — lossless like the AF_UNIX socket. |
 | `tcp_bind_addr` | string | `"0.0.0.0"` | Listener bind address (numeric IPv4). `127.0.0.1` keeps it host-local. |
 | `tcp_port` | int | `10112` | Listener TCP port. |
@@ -785,7 +789,7 @@ to check is the wiring and `int_gpio`. On an install with no IMU interrupt line,
 <!-- BEGIN GENERATED: config-keys logging.1 -->
 | `level` | string | `"warn"` | Log verbosity: `"debug"`, `"info"`, `"warn"`, or `"error"`. `"warn"` is recommended for production (SD-card friendly). `"info"` adds lifecycle messages and a periodic `[stats]` heartbeat. Applied live on SIGHUP. |
 | `file` | string | `""` | Log destination. Empty = stderr; under systemd, lines carry sd-daemon priority prefixes so journald records real priorities (`journalctl -p warning` filters work). Set an absolute path for a timestamped log file; it is reopened on SIGHUP so logrotate can rotate it (`postrotate: systemctl reload imud`). |
-| `stats_hz` | int | `1` | Rate of the `[stats]` heartbeat log line. Only visible at `level = "info"` or `"debug"`. |
+| `stats_hz` | int | `1` | Rate of the `[stats]` heartbeat log line, from 1 to 100 Hz. Only visible at `level = "info"` or `"debug"`. |
 <!-- END GENERATED: config-keys logging.1 -->
 
 ### `[position]`
@@ -1236,12 +1240,16 @@ The magnetometer calibration fits a hard-iron offset and a 2D soft-iron
 correction (including the cross term, so a distortion ellipse whose axes are
 rotated relative to the sensor is corrected — a per-axis scale cannot do
 this). The fit is done in vessel axes, so set `[mount]` before swinging: a
-board mounted on edge has the swing in a different plane of its own axes. A
-swing that holds its heel — level, or heeled steadily through the turn —
-cannot tell the vertical hard iron from the vertical field, so that component
-is left at zero rather than fitted; a swing whose heel varies by more than
-about 6° either way does measure it. It reports the horizontal field (the
-whole field when the heel varied), a fit residual, and swing coverage; a
+board mounted on edge has the swing in a different plane of its own axes.
+`imud-cal mag` reads the accelerometer through the swing and fits about its
+vertical, which tells a steady heel from soft iron that tilts the swing the
+same way; run `imud-cal accel` first, so that vertical is the one the daemon
+uses. A swing that holds its heel — level, or heeled steadily through the
+turn — cannot tell the vertical hard iron from the vertical field, so that
+component is left at zero rather than fitted; a swing whose heel varies by
+more than about 6° either way, well clear of the sensor's noise, does measure
+it. It reports which fit it made and the swing's tilt, the horizontal field
+(the whole field when the heel varied), a fit residual, and swing coverage; a
 residual under ~1 µT and coverage above ~75% indicate a good fit. Afterward,
 watch the wire's `mag_residual` / `mag_anomaly` compass-health metrics (v14,
 also on the InfluxDB and Prometheus bridges): a rising residual means the

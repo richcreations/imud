@@ -1,0 +1,17 @@
+#!/bin/sh
+# postinst for imud-prometheus — a config the bridge will refuse is said here,
+# not by the restart below, which fails with no more than "Job failed".
+set -e
+
+case "$1" in
+    configure)
+        if ! imud-prometheus --check-config --config /etc/imud/imud-prometheus.conf >/dev/null; then
+            echo "imud-prometheus: imud-prometheus will not start until the" \
+                 "errors above are corrected; then: systemctl restart imud-prometheus" >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

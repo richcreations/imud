@@ -58,9 +58,11 @@ void bridge_sleep_interruptible(int secs);
 /* ── CLI + config ────────────────────────────────────────────────────────── */
 
 /*
- * Parse --config/--version/--help; fills config_path (starts at
- * bi->default_conf). Returns 0 to continue, 1 when handled (--version/--help;
- * caller exits 0), -1 on an unknown option (usage printed; caller exits 1).
+ * Parse --config/--check-config/--version/--help; fills config_path (starts
+ * at bi->default_conf). Returns 0 to continue, 1 when handled (--version,
+ * --help, or a config --check-config passes; caller exits 0), -1 on an
+ * unknown option (usage printed) or a config the check refuses (caller exits
+ * 1).
  */
 int bridge_parse_cli(int argc, char **argv, const bridge_info_t *bi,
                      char *config_path, size_t pathsz);
@@ -93,9 +95,9 @@ void bridge_reload_done(const bridge_info_t *bi);
 /* ── Emit-tick timing (pure timespec math) ───────────────────────────────── */
 
 /* 1e9/rate_hz, or fallback_ns when rate_hz <= 0. Config can no longer deliver
- * a non-positive rate — every rate_hz key is parsed with NEED_POS_INT, which
- * makes zero or negative a fatal parse error — so the fallback is now only
- * reachable from a caller that builds an imud_config_t by hand. Kept as
+ * a non-positive rate — every rate_hz key is parsed with NEED_RATE_HZ, which
+ * makes anything outside 1..32000 a fatal parse error — so the fallback is
+ * only reachable from a caller that builds an imud_config_t by hand. Kept as
  * defence in depth against a division by zero. */
 long bridge_period_ns(int rate_hz, long fallback_ns);
 

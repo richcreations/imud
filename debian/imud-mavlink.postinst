@@ -8,6 +8,11 @@ case "$1" in
         if getent passwd imud >/dev/null && getent group dialout >/dev/null; then
             adduser --quiet imud dialout || true
         fi
+        # A config the bridge will refuse is said now, not by a failed restart.
+        if ! imud-mavlink --check-config --config /etc/imud/imud-mavlink.conf >/dev/null; then
+            echo "imud-mavlink: imud-mavlink will not start until the errors" \
+                 "above are corrected; then: systemctl restart imud-mavlink" >&2
+        fi
         ;;
 esac
 

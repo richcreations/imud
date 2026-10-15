@@ -1628,6 +1628,50 @@ static void test_daemon_explicit_config_does_not_fall_back(void)
     end(fb);
 }
 
+/*
+ * --check-config refuses what a start would refuse before it opens a device,
+ * and opens none: the ism330dhcx cases name a bus that does not exist.
+ */
+#define T_CHECK_CAL "/tmp/imud_e2e_daemon_check_cal.json"
+static void test_daemon_check_config(void)
+{
+    begin("test_daemon_check_config");
+    int fb = g_fail;
+
+    static const struct { const char *body; int rc; const char *what; } cases[] = {
+        { "[imu]\ndriver = \"sim\"\n[mag]\ndriver = \"sim\"\n",
+          0, "a config the daemon would start on passes" },
+        { "[imu]\ndriver = \"ism330dhcx\"\naccel_g = 4\n[mag]\ndriver = \"none\"\n",
+          0, "and no device is opened to check one" },
+        { "[imu]\ndriver = \"sim\"\n[highrate]\ncoord_frame = \"ENU\"\n",
+          1, "coord_frame = \"ENU\" is refused" },
+        { "[imu]\ndriver = \"ism330dhcx\"\naccel_g = 3\n[mag]\ndriver = \"none\"\n",
+          1, "an accel_g the part does not have is refused" },
+        { "[imu]\ndriver = \"nosuchimu\"\n",
+          1, "an unknown driver is refused" },
+        { "[imu]\ndriver = \"sim\"\n[calibration]\nfile = \"" T_CHECK_CAL "\"\n",
+          1, "a cut-off cal.json is refused" },
+    };
+    FILE *c = fopen(T_CHECK_CAL, "w");
+    fputs("{\n  \"mag\": {\n    \"hard_iron\": [1.0, 2.0", c);
+    fclose(c);
+
+    char *argv[] = { (char *)"imud", (char *)"--config", (char *)T_CONF,
+                     (char *)"--check-config", NULL };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        FILE *f = fopen(T_CONF, "w");
+        fprintf(f, "[device]\ni2c_bus = \"/dev/imud-e2e-no-such-bus\"\n"
+                   "[calibration]\nfile = \"/tmp/imud_e2e_no_such_cal.json\"\n"
+                   "[logging]\nlevel = \"error\"\n%s", cases[i].body);
+        fclose(f);
+        EXPECT(main_entry(4, argv) == cases[i].rc, cases[i].what);
+    }
+
+    unlink(T_CONF);
+    unlink(T_CHECK_CAL);
+    end(fb);
+}
+
 /* --version is handled before any hardware or socket work. */
 static void test_daemon_version_flag(void)
 {
@@ -1645,6 +1689,7 @@ static void test_daemon_version_flag(void)
 int main(void)
 {
     test_daemon_version_flag();
+    test_daemon_check_config();
     test_daemon_refuses_bad_config();
     test_daemon_refuses_overlong_socket();
     test_daemon_lifecycle();

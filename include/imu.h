@@ -87,6 +87,15 @@ typedef struct {
 /* ── API ────────────────────────────────────────────────────────────────── */
 
 /*
+ * What imu_ctx_open refuses before it opens a device: an unknown driver, an
+ * accel_g or gyro_dps the IMU lacks, and two SPI parts that want different
+ * clock modes on one controller.  Logs the reason and returns -1, or returns 0
+ * with the drivers in *imu and *mag (NULL for "none"); either may be NULL.
+ */
+int imu_cfg_check(const imud_config_t *cfg, const imu_ops_t **imu,
+                  const mag_ops_t **mag);
+
+/*
  * Open /dev/i2cN, probe and initialise both sensors, request GPIO lines.
  * cal may be NULL (no calibration applied, all flags = 0).
  * Returns 0 on success, -1 on any fatal error (logged to stderr).

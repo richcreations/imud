@@ -43,6 +43,13 @@ case "$1" in
             chgrp gpio "$n" 2>/dev/null || true
             chmod 0660 "$n" 2>/dev/null || true
         done
+        # Say now if the config or cal.json is one imud will refuse: the
+        # restart below fails with no more than "Job failed", and the unit
+        # then retries every few seconds.
+        if ! imud --check-config --config /etc/imud/imud.conf >/dev/null; then
+            echo "imud: imud will not start until the errors above are" \
+                 "corrected; then: systemctl restart imud" >&2
+        fi
         ;;
 esac
 

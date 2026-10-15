@@ -451,15 +451,29 @@ static void write_swing_capture(const char *path, double hz, double dur_s,
         mag_sample_t m;
         memset(&m, 0, sizeof m);
         sim_synth_mag(t, &m);
+        /* imud-cal mag reads the accelerometer alongside, for the vertical:
+         * here gravity at the swing's mean attitude, level.  Playback hands
+         * the two streams out at different rates, so a mean of the scenario's
+         * own rolling samples would depend on how far the IMU stream got. */
+        imu_sample_t a;
+        memset(&a, 0, sizeof a);
+        a.accel[2] = -9.80665f;
+        a.temp_c   = 25.0f;
+        a.seq      = (uint32_t)i;
         /* The sim speaks body axes.  A board mounted with `mount` reports the
          * same field in its own: board = Rᵀ·body. */
         if (mount) {
             float b[3] = { m.field[0], m.field[1], m.field[2] };
-            for (int k = 0; k < 3; k++)
+            float g[3] = { a.accel[0], a.accel[1], a.accel[2] };
+            for (int k = 0; k < 3; k++) {
                 m.field[k] = (float)(mount[0][k]*b[0] + mount[1][k]*b[1]
                                    + mount[2][k]*b[2]);
+                a.accel[k] = (float)(mount[0][k]*g[0] + mount[1][k]*g[1]
+                                   + mount[2][k]*g[2]);
+            }
         }
         m.wall_ns = t0 + (uint64_t)(t * 1e9);
+        cap_writer_imu(&w, &a, t0 + (uint64_t)(t * 1e9));
         cap_writer_mag(&w, &m, t0 + (uint64_t)(t * 1e9));
     }
     cap_writer_close(&w);
@@ -1200,6 +1214,10 @@ static void test_cal_mag_swing(void)
     EXPECT(strstr(buf, "Hard iron") != NULL, "reports hard iron");
     /* The scenario rolls ±4°, which is a level swing: the horizontal field is
      * what such a swing measures, and the vertical is said to be left alone. */
+    EXPECT(strstr(buf, "Fit:              level swing") != NULL,
+           "says it fitted a level swing");
+    EXPECT(strstr(buf, "by the accelerometer") != NULL,
+           "about the accelerometer's vertical");
     EXPECT(strstr(buf, "Horizontal field") != NULL, "reports the horizontal field");
     EXPECT(strstr(buf, "left at 0") != NULL,
            "says the vertical hard iron is not taken from a level swing");
@@ -1252,6 +1270,9 @@ static void test_cal_mag_swing_on_edge(void)
     EXPECT(rc == 0, "mag exits 0");
     EXPECT(strstr(buf, "24/24") != NULL,
            "the swing covers every sector, counted in body axes");
+    /* Gravity in board Y, turned into body axes by the same mount. */
+    EXPECT(strstr(buf, "Swing tilt:       0.0° from level, by the accelerometer") != NULL,
+           "the accelerometer's vertical is body Z");
 
     imud_cal_t cal;
     EXPECT(cal_load(out, &cal) == 0 && cal.has_mag,

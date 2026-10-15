@@ -205,6 +205,7 @@ CK = {
     "NEED_GPIO":      "CK_INT",
     "NEED_I2C_ADDR":  "CK_INT",
     "NEED_RANGE_INT": "CK_INT",
+    "NEED_RATE_HZ":   "CK_INT",
     "NEED_BOOL":      "CK_BOOL",
     "NEED_STR":       "CK_STR",
     "NEED_FRAME":     "CK_STR",
