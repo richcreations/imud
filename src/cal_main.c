@@ -237,8 +237,9 @@ static void accel_drain(const imu_ops_t *ops, const imud_bus_t *bus,
 {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    if ((now.tv_sec - last->tv_sec) * 1000000000L
-        + (now.tv_nsec - last->tv_nsec) < 20000000L) return;
+    int64_t ns = (int64_t)(now.tv_sec - last->tv_sec) * 1000000000
+               + (now.tv_nsec - last->tv_nsec);
+    if (ns < 20000000) return;
     *last = now;
 
     imu_sample_t buf[128];
