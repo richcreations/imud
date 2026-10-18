@@ -131,21 +131,57 @@ entirely in guarantees that need a platform to validate them on.
 
 ---
 
+## The 2.0 architecture
+
+2.0 arranges the daemon into explicit layers, each with its own selectable
+implementations. Priority follows what IMU software most often gets wrong:
+raw data with correct, synchronized timestamps first, then calibration, then
+detecting bad samples, with fusion and reporting built on those.
+
+- **Hardware.** The driver contract stays as it is, with FIFO and interrupts
+  optional. Placing each magnetometer sample on the accel/gyro timeline gets
+  a defined, documented method.
+- **Calibration.** Methods and storage formats become pluggable, including
+  temperature and timing calibration. A guided calibration needs a front end
+  beyond the CLI; it is a separate client of the daemon, not part of it.
+- **Startup.** Alignment while already moving stays the default. Alignment at
+  rest is added for platforms that start still.
+- **Data quality.** Today's scattered checks become one layer that detects
+  faulty reads and flags or drops them before fusion.
+- **Fusion.** Swappable behind a C interface, with several able to run at
+  once. The MEKF stays the default beside a lighter filter such as Mahony,
+  and users can supply their own.
+- **Conventions.** Axes and units stated in one place, and output frames
+  selectable: NED, plus at least Z-up.
+- **Quality metrics.** A standard diagnostic run on real hardware reports
+  noise standard deviations and still biases after calibration. Whether a
+  fusion backend consumes them is that backend's choice; the MEKF keeps its
+  tuned values.
+
+- **Wire and ABI.** The packet and libimud are redesigned to carry several
+  IMUs and several fusion outputs. This is a breaking change: consumers and
+  bridges move to 2.0 together.
+
+Reporting is otherwise unchanged: NMEA and the bridges already cover it.
+Multi-sensor redundancy, above, builds on the same layers.
+
+---
+
 ## Long-term direction
 
 The project's centre of gravity is the **stable interfaces**: an append-only
 wire packet, an append-only client ABI, and a driver contract narrow enough that
 a new part is one file. Those are what let consumers and satellite projects
 exist without tracking imud's internals, and they constrain everything else —
-the packet grows, it does not change shape.
+within a major version the packet grows, it does not change shape.
 
 **Distribution** follows the same logic. imud already publishes a signed apt
 repository; submission to the Debian archive proper is the next step, and the
 packaging is laid out for it.
 
 **Versioning** is `MAJOR.MINOR.PATCH`. A major version means a break in the
-libimud ABI, which has never happened and is not planned; the wire packet is
-versioned separately and consumers reject a mismatch outright.
+libimud ABI. 2.0 is the first, for multi-IMU and multi-fusion; the wire packet
+is versioned separately and consumers reject a mismatch outright.
 
 ---
 
