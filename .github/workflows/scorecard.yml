@@ -39,7 +39,7 @@ jobs:
       # not resolve — it needs an exact vX.Y.Z.  Verify any new action ref
       # with `git ls-remote --tags --refs https://github.com/<repo>` rather
       # than assuming a major tag exists.
-      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
         with:
           results_file: scorecard.sarif
           results_format: sarif
